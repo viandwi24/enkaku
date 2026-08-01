@@ -1,0 +1,17 @@
+{
+  "name": "enkaku-core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@enkaku/adb": "workspace:*",
+    "@enkaku/protocol": "workspace:*",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.6.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.0"
+  }
+}
