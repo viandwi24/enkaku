@@ -28,8 +28,13 @@
 | 09 | `09-m7-multiuser-packaging.md` | M7 | Auth/ACL + TLS, single-binary, Docker image, Tauri shell, auto-update, artifact retention/GC. |
 | 10 | `10-m7.5-business-plumbing.md` | M7.5 | Docs, license/activation, telemetry opt-in, AUP, support/update channel, `LICENSES.md`. |
 | 11 | `11-m8-cloud.md` | M8 | Cloud tunnel agent, split control plane, WebRTC video, security boundary per-job, appium opt-in, redroid, `scrcpy-aoa`. |
+| 12 | `12-m9-cloud-session.md` | M9a | Mode cloud berfungsi penuh: `@enkaku/session`, session/input/job jarak jauh. |
+| 13 | `13-m9-webrtc-backend.md` | M9b | Backend WebRTC (werift), relay RTP, TURN. |
+| 14 | `14-m9-desktop-tauri.md` | M9c | Aplikasi desktop Tauri. |
+| 15 | `15-m10-design-system.md` | M10a | **Fondasi desain**: Tailwind + shadcn/ui, token, kerangka layout, perbaikan cacat fungsional UI. |
+| 16 | `16-m10-screens.md` | M10b | **Perombakan tiap layar** & alur pengguna. |
 
-Dependensi linier: `01 → 02 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11`. (07 dan 06 sebagian bisa paralel, tapi default: urut.)
+Dependensi linier: `01 → … → 11 → 12 → 13 → 14`, lalu `15 → 16` untuk lapisan antarmuka. (07 dan 06 sebagian bisa paralel, tapi default: urut.)
 
 ## 3. Stack & keputusan yang TIDAK boleh diubah
 
