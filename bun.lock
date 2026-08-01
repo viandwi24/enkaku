@@ -43,6 +43,7 @@
         "@enkaku/drivers": "workspace:*",
         "@enkaku/protocol": "workspace:*",
         "@enkaku/scrcpy": "workspace:*",
+        "@enkaku/session": "workspace:*",
         "@enkaku/toolchain": "workspace:*",
         "drizzle-orm": "^0.44.0",
         "hono": "^4.6.0",
@@ -91,6 +92,18 @@
         "zod": "^4.0.0",
       },
     },
+    "packages/session": {
+      "name": "@enkaku/session",
+      "version": "0.0.1",
+      "dependencies": {
+        "@enkaku/adb": "workspace:*",
+        "@enkaku/drivers": "workspace:*",
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/scrcpy": "workspace:*",
+        "@enkaku/toolchain": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
     "packages/studio": {
       "name": "@enkaku/studio",
       "version": "0.0.1",
@@ -132,6 +145,8 @@
     "@enkaku/scrcpy": ["@enkaku/scrcpy@workspace:packages/scrcpy"],
 
     "@enkaku/sdk": ["@enkaku/sdk@workspace:packages/sdk"],
+
+    "@enkaku/session": ["@enkaku/session@workspace:packages/session"],
 
     "@enkaku/studio": ["@enkaku/studio@workspace:packages/studio"],
 

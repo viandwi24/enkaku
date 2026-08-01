@@ -1,0 +1,15 @@
+{
+  "name": "@enkaku/session",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@enkaku/adb": "workspace:*",
+    "@enkaku/drivers": "workspace:*",
+    "@enkaku/protocol": "workspace:*",
+    "@enkaku/scrcpy": "workspace:*",
+    "@enkaku/toolchain": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}

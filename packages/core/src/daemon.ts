@@ -21,7 +21,7 @@ import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
 import { createFarmSettingsStore } from './settings/farm-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
-import { createJobRunner } from './runner/job-runner'
+import { createJobRunner, createSessionManager, createInspectorForSession, PortAllocator, parsePortRange, type SessionManager } from '@enkaku/session'
 import { createScriptExecutor } from './jobs/executors/script'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, type OpenedDb } from './db'
@@ -40,9 +40,8 @@ import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
 import { createJobService } from './services/job-service'
 import { startScrcpySession } from '@enkaku/scrcpy'
-import { createSessionManager, type SessionManager } from './session/manager'
-import { createInspectorForSession } from './session/inspector-factory'
-import { PortAllocator, parsePortRange } from './session/port-allocator'
+import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
+import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { createToolInstallStore } from './tools/store'
@@ -351,7 +350,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
 
         sessions = createSessionManager({
           client: adb,
-          db,
+          devices: createDbDeviceSource(db),
           log: log.child('session'),
           makeScrcpy: async (deviceId, transport) => {
             // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
@@ -398,9 +397,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
 
         // Script executor (M4) butuh SessionManager → didaftarkan setelah adb siap.
         const runner = createJobRunner({
-          db,
-          dataDir: cfg.dataDir,
+          logDir: cfg.dataDir,
           sessions,
+          artifacts: (jobId) =>
+            createDbArtifactSink({
+              db,
+              dataDir: cfg.dataDir,
+              jobId,
+              onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
+            }),
           log: log.child('runner'),
           onLog: (entry) =>
             hub.broadcast({
@@ -414,14 +419,16 @@ export function createDaemon(cfg: CoreConfig): Daemon {
                 ...(entry.fields ? { fields: entry.fields } : {}),
               },
             }),
-          onArtifact: (jobId, artifact) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } }),
+          onArtifact: () => {
+            // Broadcast sudah dilakukan oleh sink saat menulis baris DB.
+          },
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
           },
           heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
         })
-        executors.setFallback(createScriptExecutor({ db, runner }))
+        executors.setFallback(createScriptExecutor({ db, dataDir: cfg.dataDir, runner }))
         hub.setRouter(
           createWsMessageHandler({
             sessions,

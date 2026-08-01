@@ -1,11 +1,9 @@
 import type { AdbClient } from '@enkaku/adb'
 import type { FrameMeta } from '@enkaku/protocol'
-import { eq } from 'drizzle-orm'
-import type { Db } from '../db'
-import { devices } from '../db/schema'
-import { EnkakuError } from '../util/errors'
-import type { Logger } from '../util/logger'
+import { SessionError } from './errors'
+import type { Logger } from './logger'
 import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
+import type { DeviceSnapshotSource } from './types'
 
 const GRACE_MS = 5000
 
@@ -32,7 +30,7 @@ export interface SessionManager {
  */
 export function createSessionManager(deps: {
   client: AdbClient
-  db: Db
+  devices: DeviceSnapshotSource
   log: Logger
   makeInspector?: CreateSessionDeps['makeInspector']
   makeScrcpy?: CreateSessionDeps['makeScrcpy']
@@ -67,10 +65,10 @@ export function createSessionManager(deps: {
         return existing.session
       }
 
-      const row = deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
-      if (!row) throw new EnkakuError('E_DEVICE_NOT_FOUND', `device tidak ada: ${deviceId}`)
+      const row = deps.devices.get(deviceId)
+      if (!row) throw new SessionError('device_not_found', `device tidak ada: ${deviceId}`)
       if (row.status === 'offline') {
-        throw new EnkakuError('E_DEVICE_NOT_READY', `device ${row.label} sedang offline`)
+        throw new SessionError('device_not_ready', `device ${row.label} sedang offline`)
       }
 
       const session = await createSession(
@@ -83,9 +81,7 @@ export function createSessionManager(deps: {
           input: row.input,
           inspection: row.inspection,
           apiLevel: row.apiLevel,
-          preferredInputMode:
-            (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
-            'uhid',
+          preferredInputMode: row.preferredInputMode,
           screenW: row.screenW,
           screenH: row.screenH,
         },

@@ -1,4 +1,4 @@
-import { EnkakuError } from '../util/errors'
+import { SessionError } from './errors'
 
 export interface PortAllocatorOptions {
   /** Default 27100–27299 (env ENKAKU_UI_SERVER_PORT_RANGE). */
@@ -23,8 +23,8 @@ export class PortAllocator {
       this.inUse.set(port, deviceId)
       return port
     }
-    throw new EnkakuError(
-      'PORT_RANGE_EXHAUSTED',
+    throw new SessionError(
+      'port_range_exhausted',
       `tidak ada port bebas di ${this.opts.rangeStart}–${this.opts.rangeEnd}`,
     )
   }

@@ -1,8 +1,8 @@
 import { centerOf, matchSelector, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
 import { resolveKeyCode, type Inspector, type KeyCode, type Point, type Selector, type UiNode } from '@enkaku/protocol'
-import type { DeviceSession } from '../session/session'
-import { EnkakuError } from '../util/errors'
-import type { DeviceCall } from './ipc'
+import { SessionError } from './errors'
+import type { DeviceCall } from './runner/ipc'
+import type { DeviceSession } from './session'
 
 export interface TimingSettings {
   /** Jitter durasi tekan (ms). */
@@ -45,7 +45,7 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
   async function resolveTarget(sel: Selector): Promise<Point> {
     if ('point' in sel) return sel.point
     const node = await inspector.find(sel)
-    if (!node) throw new EnkakuError('ELEMENT_NOT_FOUND', `elemen tidak ditemukan: ${JSON.stringify(sel)}`)
+    if (!node) throw new SessionError('element_not_found', `elemen tidak ditemukan: ${JSON.stringify(sel)}`)
     return centerOf(node.bounds)
   }
 
@@ -94,8 +94,8 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
           const node = await inspector.find(call.args.sel).catch(() => null)
           if (node) return node
           if (Date.now() >= deadline) {
-            throw new EnkakuError(
-              'WAITFOR_TIMEOUT',
+            throw new SessionError(
+              'waitfor_timeout',
               `menunggu ${JSON.stringify(call.args.sel)} melewati ${call.args.timeout}ms`,
             )
           }

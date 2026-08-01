@@ -8,7 +8,7 @@ import {
 } from '@enkaku/protocol'
 import type { PairingService } from '../enroll/pairing'
 import type { LeaseManager } from '../lease/lease-manager'
-import type { SessionManager } from '../session/manager'
+import type { SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
 import type { Logger } from '../util/logger'
 

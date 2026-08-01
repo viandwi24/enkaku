@@ -1,7 +1,8 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db'
 import { scripts, type JobRow } from '../../db/schema'
-import type { JobRunner } from '../../runner/job-runner'
+import type { JobRunner } from '@enkaku/session'
+import { materializeBundle } from '../../scripts/bundle-cache'
 import { EnkakuError } from '../../util/errors'
 import type { ExecutorContext, JobExecutor } from '../executor'
 
@@ -13,7 +14,7 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  * Validasi params otoritatif terjadi DI CHILD (`def.params.parse` dari
  * bundle) — di sini params hanya diteruskan apa adanya.
  */
-export function createScriptExecutor(deps: { db: Db; runner: JobRunner }): JobExecutor {
+export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: JobRunner }): JobExecutor {
   return {
     validateParams(params) {
       return params ?? {}
@@ -27,7 +28,14 @@ export function createScriptExecutor(deps: { db: Db; runner: JobRunner }): JobEx
       // Cancel dari core → abort child (grace → SIGTERM → SIGKILL).
       ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
 
-      const result = await deps.runner.execute(job)
+      // Bundle dimaterialkan di core (punya akses DB); runner hanya menerima path.
+      const bundlePath = await materializeBundle(deps.dataDir, script)
+      const result = await deps.runner.execute({
+        id: job.id,
+        deviceId: job.deviceId,
+        bundlePath,
+        params: job.params ?? {},
+      })
       if (!result.ok) {
         const err = result.error ?? { code: 'SCRIPT_FAILED', message: 'script gagal', phase: 'run' }
         throw Object.assign(new EnkakuError(err.code, err.message), {

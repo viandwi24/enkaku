@@ -11,8 +11,8 @@ import {
 } from '@enkaku/drivers'
 import type { ScrcpySession } from '@enkaku/scrcpy'
 import type { DisplaySource, FrameMeta, InputSink, Inspector, Transport } from '@enkaku/protocol'
-import { EnkakuError } from '../util/errors'
-import type { Logger } from '../util/logger'
+import { SessionError } from './errors'
+import type { Logger } from './logger'
 
 export interface DeviceSession {
   deviceId: string
@@ -79,7 +79,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   } else if (transportId === 'adb-tcp') {
     transport = new AdbTcpTransport({ client, serial: opts.serial, stableId: opts.stableId })
   } else {
-    throw new EnkakuError('E_ENGINE_NOT_FOUND', `transport tidak dikenal: ${transportId}`)
+    throw new SessionError('engine_not_found', `transport tidak dikenal: ${transportId}`)
   }
   await transport.connect()
 

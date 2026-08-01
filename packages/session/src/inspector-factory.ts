@@ -6,7 +6,7 @@ import {
 } from '@enkaku/drivers'
 import type { Inspector, Transport } from '@enkaku/protocol'
 import type { ToolchainManager } from '@enkaku/toolchain'
-import type { Logger } from '../util/logger'
+import type { Logger } from './logger'
 import type { PortAllocator } from './port-allocator'
 
 export interface InspectorHandle {

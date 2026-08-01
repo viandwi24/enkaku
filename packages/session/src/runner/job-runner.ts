@@ -1,20 +1,15 @@
 import { join } from 'node:path'
-import type { ArtifactInfo } from '@enkaku/protocol'
 import { UiautomatorDumpInspector } from '@enkaku/drivers'
-import { eq } from 'drizzle-orm'
 import type { Subprocess } from 'bun'
-import type { Db } from '../db'
-import { scripts, type JobRow } from '../db/schema'
-import type { SessionManager } from '../session/manager'
-import type { DeviceSession } from '../session/session'
-import { EnkakuError } from '../util/errors'
-import type { Logger } from '../util/logger'
-import { createArtifactStore } from './artifact-store'
-import { createDeviceExecutor } from './device-executor'
+import { createDeviceExecutor } from '../device-executor'
+import { SessionError } from '../errors'
+import type { Logger } from '../logger'
+import type { SessionManager } from '../manager'
+import type { DeviceSession } from '../session'
+import type { ArtifactSink } from '../types'
 import { ChildToParentSchema, DeviceCallSchema, type ChildToParent, type ParentToChild } from './ipc'
 import { createJobLogger, type JobLogEntry } from './job-logger'
-import { resolveIsolation, type IsolationProvider } from '../isolation/provider'
-import { materializeBundle } from '../scripts/bundle-cache'
+import { resolveIsolation, type IsolationProvider } from './isolation'
 
 const DEFAULT_TIMEOUT_MS = 300_000
 const FINISH_GRACE_MS = 30_000
@@ -36,15 +31,29 @@ export interface AttemptOutcome {
   finishRan: boolean
 }
 
+/**
+ * Job yang siap dijalankan — bundle sudah dimaterialkan oleh host.
+ * Runner tidak mengenal database maupun tabel `scripts`.
+ */
+export interface JobSpec {
+  id: string
+  deviceId: string
+  /** Path file bundle ESM yang akan di-import child. */
+  bundlePath: string
+  params: unknown
+}
+
 export interface JobRunnerDeps {
-  db: Db
   /** Isolasi eksekusi job — child process (local) atau container (cloud). */
   isolation?: IsolationProvider
-  dataDir: string
+  /** Root untuk file log job (host menentukan lokasinya). */
+  logDir: string
   sessions: SessionManager
+  /** Dibuat per job — penomoran urut artifact bersifat per-job. */
+  artifacts: (jobId: string) => ArtifactSink
   log: Logger
   onLog: (entry: JobLogEntry) => void
-  onArtifact: (jobId: string, artifact: ArtifactInfo) => void
+  onArtifact: (jobId: string, artifact: { kind: string; label: string; path: string; sizeBytes: number }) => void
   onPhase: (jobId: string, attempt: number, phase: 'prepare' | 'run' | 'finish') => void
   /** Perpanjang lease job (heartbeat child / aktivitas device). */
   heartbeat: (jobId: string) => void
@@ -55,7 +64,7 @@ export interface RunningJob {
 }
 
 export interface JobRunner {
-  execute(job: JobRow): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure }>
+  execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure }>
   abort(jobId: string, reason: 'timeout' | 'cancelled' | 'hung'): boolean
 }
 
@@ -66,7 +75,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const active = new Map<string, RunningJob>()
 
   async function runAttempt(opts: {
-    job: JobRow
+    job: JobSpec
     attempt: number
     bundlePath: string
     session: DeviceSession
@@ -74,12 +83,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     mode: 'full' | 'finish-only'
     priorError?: ScriptFailure
     logger: ReturnType<typeof createJobLogger>
-    artifactStore: ReturnType<typeof createArtifactStore>
+    artifacts: ArtifactSink
     aborter: { current: ((reason: 'timeout' | 'cancelled' | 'hung') => void) | null }
     /** Diisi dari message `ready` — timeout & retries milik ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number }
   }): Promise<AttemptOutcome> {
-    const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifactStore } = opts
+    const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
 
     const execDevice = createDeviceExecutor({ session })
 
@@ -186,7 +195,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             .then((value) => send({ t: 'device.result', callId: msg.callId, ok: true, value }))
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err)
-              const code = err instanceof EnkakuError ? err.code : 'DEVICE_CALL_FAILED'
+              const code = err instanceof SessionError ? err.code : 'DEVICE_CALL_FAILED'
               send({ t: 'device.result', callId: msg.callId, ok: false, error: { code, message } })
             })
         } else if (msg.t === 'artifact.save') {
@@ -197,17 +206,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   ? // Screenshot diambil DI CORE → urutannya mengikuti per-device queue.
                     await (session.inspector ?? new UiautomatorDumpInspector(session.transport)).screenshot()
                   : Uint8Array.from(Buffer.from(msg.dataBase64 ?? '', 'base64'))
-              const info = await artifactStore.save({
+              const saved = await artifacts.save({
                 kind: msg.kind,
                 label: msg.label,
                 data,
                 ...(msg.ext ? { ext: msg.ext } : {}),
               })
-              deps.onArtifact(job.id, info)
+              deps.onArtifact(job.id, { kind: msg.kind, label: msg.label, ...saved })
               send({ t: 'artifact.result', callId: msg.callId, ok: true })
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err)
-              const code = err instanceof EnkakuError ? err.code : 'ARTIFACT_FAILED'
+              const code = err instanceof SessionError ? err.code : 'ARTIFACT_FAILED'
               logger.append('error', 'runner', `artifact "${msg.label}" gagal: ${message}`)
               send({ t: 'artifact.result', callId: msg.callId, ok: false, error: { code, message } })
             }
@@ -273,18 +282,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     },
 
     async execute(job) {
-      const script = deps.db.select().from(scripts).where(eq(scripts.id, job.scriptId)).get()
-      if (!script) {
-        return { ok: false, error: { code: 'unknown_script', message: `script tidak ada: ${job.scriptId}`, phase: 'run' } }
-      }
-
-      const logger = createJobLogger({ dataDir: deps.dataDir, jobId: job.id, onEntry: deps.onLog })
-      const artifactStore = createArtifactStore({
-        db: deps.db,
-        dataDir: deps.dataDir,
-        jobId: job.id,
-        onSaved: (info) => deps.onArtifact(job.id, info),
-      })
+      const logger = createJobLogger({ dataDir: deps.logDir, jobId: job.id, onEntry: deps.onLog })
+      const artifacts = deps.artifacts(job.id)
       const aborter: { current: ((reason: 'timeout' | 'cancelled' | 'hung') => void) | null } = { current: null }
       active.set(job.id, { abort: (reason) => aborter.current?.(reason) })
 
@@ -293,7 +292,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const noopFrame = () => {}
 
       try {
-        const bundlePath = await materializeBundle(deps.dataDir, script)
+        const bundlePath = job.bundlePath
         session = await deps.sessions.acquire(job.deviceId, noopFrame)
 
         // timeout/retries hanya diketahui setelah child mem-`import` bundle;
@@ -313,7 +312,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             timeoutMs,
             mode: 'full',
             logger,
-            artifactStore,
+            artifacts,
             aborter,
             meta,
           })
@@ -332,7 +331,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               mode: 'finish-only',
               ...(outcome.error ? { priorError: outcome.error } : {}),
               logger,
-              artifactStore,
+              artifacts,
               aborter,
             }).catch(() => undefined)
           }
@@ -350,8 +349,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         active.delete(job.id)
         if (session) deps.sessions.release(job.deviceId, noopFrame)
         const { bytes } = await logger.close()
-        await artifactStore
+        await artifacts
           .save({ kind: 'log', label: 'job', data: bytes, ext: 'log' })
+          .then((saved) => deps.onArtifact(job.id, { kind: 'log', label: 'job', ...saved }))
           .catch(() => undefined)
       }
 

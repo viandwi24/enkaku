@@ -14,7 +14,8 @@
     "drizzle-orm": "^0.44.0",
     "hono": "^4.6.0",
     "zod": "^4.0.0",
-    "@enkaku/scrcpy": "workspace:*"
+    "@enkaku/scrcpy": "workspace:*",
+    "@enkaku/session": "workspace:*"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.0"
