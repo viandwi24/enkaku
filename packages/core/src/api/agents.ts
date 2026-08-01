@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
-import { iceConfigFromEnv } from '../relay/rtc-peer'
+import { buildIceServers } from '../relay/ice-credentials'
 import type { AgentAuth } from '../tunnel/agent-auth'
 import { EnkakuError } from '../util/errors'
 
@@ -48,8 +48,8 @@ export function createAgentRoutes(deps: { agentAuth: AgentAuth }): Hono<AuthEnv>
     return c.json({ ok: true })
   })
 
-  /** Konfigurasi ICE untuk browser (STUN/TURN self-host). */
-  app.get('/ice-config', (c) => c.json(iceConfigFromEnv()))
+  /** Konfigurasi ICE untuk browser (STUN/TURN self-host, kredensial berjangka waktu). */
+  app.get('/ice-config', (c) => c.json({ iceServers: buildIceServers(c.get('user')?.id ?? 'anon') }))
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) return c.json(err.toJSON(), (ERROR_STATUS[err.code] ?? 400) as 400)

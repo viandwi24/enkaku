@@ -1,0 +1,27 @@
+# Control plane + TURN untuk mode cloud (plan 13 §4.4).
+services:
+  control-plane:
+    build: .
+    ports:
+      - '7700:7700'
+    volumes:
+      - enkaku-cp:/data
+    environment:
+      ENKAKU_MODE: orchestrator
+      ENKAKU_BIND: 0.0.0.0
+      ENKAKU_TLS_MODE: external
+      ENKAKU_STUN_URL: stun:turn.example.com:3478
+      ENKAKU_TURN_URL: turn:turn.example.com:3478
+      # Harus sama dengan static-auth-secret di turnserver.conf
+      ENKAKU_TURN_SECRET: GANTI_DENGAN_RAHASIA_PANJANG_ACAK
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host   # TURN butuh rentang port UDP yang lebar
+    volumes:
+      - ./deploy/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    restart: unless-stopped
+
+volumes:
+  enkaku-cp:

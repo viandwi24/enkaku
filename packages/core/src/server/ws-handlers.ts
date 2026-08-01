@@ -50,7 +50,16 @@ export interface RemoteSessions {
   get(deviceId: string): { frameSize: { width: number; height: number }; input: { tap(p: Point): Promise<void>; swipe(f: Point, t: Point, ms: number): Promise<void>; key(c: number): Promise<void>; text(s: string): Promise<void> } } | null
 }
 
+export interface WebRtcSignaling {
+  request(ws: ServerWebSocket<unknown>, deviceId: string): Promise<void>
+  answer(deviceId: string, sdp: string): Promise<void>
+  ice(deviceId: string, candidate: unknown): Promise<void>
+  stop(deviceId: string): Promise<void>
+}
+
 export interface WsHandlerDeps {
+  /** Jalur video WebRTC (mode cloud); tidak dipakai di LAN. */
+  webrtc?: WebRtcSignaling
   /** null di mode orchestrator: control plane tidak memegang device lokal. */
   sessions: SessionManager | null
   /** Sesi device milik agent (mode cloud); null di mode lokal murni. */
@@ -249,6 +258,33 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           case 'job.cancel': {
             const info = deps.jobs.cancel(msg.payload.jobId)
             send(ws, { type: 'job.status', payload: info })
+            return
+          }
+
+          case 'video.webrtc.request': {
+            if (!deps.webrtc) {
+              send(ws, {
+                type: 'video.webrtc.failed',
+                payload: { deviceId: msg.payload.deviceId, reason: 'jalur WebRTC tidak aktif di mode ini' },
+              })
+              return
+            }
+            await deps.webrtc.request(ws, msg.payload.deviceId)
+            return
+          }
+
+          case 'video.webrtc.answer': {
+            await deps.webrtc?.answer(msg.payload.deviceId, msg.payload.sdp)
+            return
+          }
+
+          case 'video.webrtc.ice': {
+            await deps.webrtc?.ice(msg.payload.deviceId, msg.payload.candidate)
+            return
+          }
+
+          case 'video.webrtc.stop': {
+            await deps.webrtc?.stop(msg.payload.deviceId)
             return
           }
 

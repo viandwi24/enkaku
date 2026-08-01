@@ -212,5 +212,7 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   WebRtcRequestMessage,
   WebRtcAnswerMessage,
   WebRtcStopMessage,
+  // ICE dua arah: browser juga mengirim kandidatnya.
+  WebRtcIceMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

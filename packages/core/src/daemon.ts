@@ -10,6 +10,8 @@ import { createTunnelRegistry } from './tunnel/registry'
 import { createTunnelRouter } from './tunnel/router'
 import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
 import { createRemoteJobBridge } from './jobs/executors/remote'
+import { createWebRtcRelay } from './relay/webrtc-relay'
+import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
@@ -70,6 +72,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
+  let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
   let retention: RetentionGc | null = null
   let stopScheduler: (() => void) | null = null
   let stopReaper: (() => void) | null = null
@@ -295,6 +298,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // runner in-process (didaftarkan setelah adb siap).
       executors.setFallback(remoteBridge.executor)
 
+      // Relay WebRTC: dipakai untuk device milik agent (mode cloud). Di LAN,
+      // Studio tetap memakai WS+WebCodecs yang lebih sederhana.
+      const webrtcRelay = createWebRtcRelay({
+        factory: createWeriftFactory(),
+        log: log.child('webrtc'),
+        subscribeVideo: (deviceId, cb) =>
+          tunnelRouter.subscribeVideo(deviceId, (payload) => cb(payload, BigInt(Date.now()) * 1000n)),
+        requestKeyframe: (deviceId) => {
+          // scrcpy 3.3.1: minta IDR baru lewat control message reset-video.
+          tunnelRouter.sendToDevice(deviceId, {
+            type: 'session.start',
+            payload: { deviceId, engines: {} },
+          } as never)
+        },
+      })
+
+      webrtcRelayRef = webrtcRelay
+
       // 4. HTTP + WS server naik DULU supaya client bisa lihat progress provision
       const app = createApp({
         listDevices: () => db.select().from(devices).all().map(rowToDeviceInfo),
@@ -416,6 +437,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           createWsMessageHandler({
             sessions: localSessions,
             ...(remoteSessions ? { remote: remoteSessions } : {}),
+            webrtc: webrtcRelay,
             pairing: pairingService,
             leases,
             jobs: jobService,
@@ -597,6 +619,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       sessions = null
       await remoteSessions?.closeAll()
       remoteSessions = null
+      await webrtcRelayRef?.closeAll()
+      webrtcRelayRef = null
       await registry?.stop()
       registry = null
       await adb?.dispose()

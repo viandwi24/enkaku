@@ -21,6 +21,8 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
 
   const rendererRef = useRef<H264Renderer | null>(null)
   const [codec, setCodec] = useState<'png' | 'h264'>('png')
+  const [transport, setTransport] = useState<'ws' | 'webrtc'>('ws')
+  const [degradedReason, setDegradedReason] = useState<string | null>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [fps, setFps] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -60,6 +62,10 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
     const offMsg = ws.on((msg) => {
       if (msg.type === 'stream.meta' && msg.payload.streamId === streamIdRef.current) {
         setSize({ width: msg.payload.width, height: msg.payload.height })
+      } else if (msg.type === 'video.webrtc.failed') {
+        // Jalur WebRTC gagal → tetap pakai WS, tapi beri tahu alasannya.
+        setTransport('ws')
+        setDegradedReason(msg.payload.reason)
       } else if (msg.type === 'error') {
         setError(msg.payload.message)
       }
@@ -202,9 +208,19 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
         <span className="hint">
           <span className={`dot ${connected ? 'on' : 'off'}`} /> {fps} fps · {size.width || '?'}×{size.height || '?'} ·{' '}
           {codec === 'h264' ? 'scrcpy H.264 (WebCodecs)' : 'fallback screencap-loop (~2–3 fps)'}
+          {' · '}
+          <span className={`badge ${transport === 'webrtc' ? 'idle' : 'offline'}`}>
+            {transport === 'webrtc' ? 'WebRTC' : 'WS'}
+          </span>
         </span>
       </div>
       {error && <p className="error">{error}</p>}
+      {degradedReason && (
+        <p className="hint">
+          Jalur WebRTC tidak dipakai ({degradedReason}). Video tetap jalan lewat WebSocket, tapi bisa membeku
+          sesaat kalau jaringan kehilangan paket.
+        </p>
+      )}
       <canvas
         ref={canvasRef}
         className="live-canvas"
