@@ -13,15 +13,15 @@ ENKAKU_ADB_PATH=$(which adb) ENKAKU_DATA_DIR=/tmp/enkaku-dev bun run dev
 
 ## Package map
 
-| Package | Status | Isi |
-|---|---|---|
-| `packages/protocol` | ✅ M0 | `@enkaku/protocol` — envelope + message Zod Core⇄Studio, shared types |
-| `packages/adb` | ✅ M0 | `@enkaku/adb` — adb smartsocket client, track-devices, per-device queue |
-| `packages/core` | ✅ M0 | daemon Bun + Hono: registry, DB, API, WS |
-| `packages/toolchain` | ⏳ Plan 02 | provisioning tool (download, sha256, versi) |
-| `packages/drivers` | ⏳ Plan 03 | engine Transport/DisplaySource/InputSink/Inspector |
-| `packages/studio` | ⏳ Plan 03 | web UI Next.js |
-| `packages/sdk` | ⏳ Plan 05 | `@enkaku/sdk` — `defineScript`, tipe publik |
-| `packages/scrcpy` | ⏳ Plan 08 | scrcpy protocol client (versi-locked ke core) |
-| `packages/agent` | ⏳ Plan 11 | mini-core cloud tunnel |
-| `apps/desktop` | ⏳ Plan 09 | shell Tauri |
+| Package | Isi |
+|---|---|
+| `packages/protocol` | Envelope + message Zod Core⇄Studio, tipe driver, framing biner, protokol tunnel |
+| `packages/adb` | Client adb smartsocket, `track-devices`, per-device queue + semaphore |
+| `packages/toolchain` | Provisioning tool: manifest, download + sha256 wajib, versi, pointer aktif |
+| `packages/drivers` | Engine 4 lapisan: transport adb, display screencap/scrcpy, input adb/UHID/SDK, inspector dump/ui-server |
+| `packages/scrcpy` | Client protokol scrcpy (versi-locked): demuxer H.264, control message, HID pointer absolut |
+| `packages/sdk` | `@enkaku/sdk` — `defineScript` + CLI `enkaku publish` |
+| `packages/core` | Daemon Bun + Hono: registry, queue/lease, runner, auth/ACL, API + WS |
+| `packages/studio` | Web UI Next.js: dashboard, live control, scripts, jobs, tools, settings |
+| `packages/agent` | Mini-core cloud: enrollment + tunnel outbound (M8a) |
+| `examples/` | Contoh script automation (mencerminkan project script author) |
