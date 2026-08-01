@@ -24,6 +24,14 @@ bun run --cwd packages/core dev         # core serve out/ di /
 
 Lokasi build bisa di-override dengan `ENKAKU_STUDIO_DIST`.
 
+## Konfigurasi
+
+Konfigurasi package ini mengikuti keluaran `create-next-app` (TypeScript, App Router, tanpa Tailwind/ESLint) supaya tidak menyimpang dari konvensi Next:
+
+- `tsconfig.json` **berdiri sendiri**, tidak meng-extend `tsconfig.base.json` repo. Base repo menyetel opsi untuk Bun/TypeScript 7 (`types: ["bun"]`, `verbatimModuleSyntax`) yang bertabrakan dengan toolchain Next.
+- `typescript` dan `@types/*` dipasang sebagai devDependency **lokal package ini** pada versi 5.x. Root repo memakai TypeScript 7 untuk typecheck-nya sendiri; Next memanggil API compiler TS 5, jadi keduanya harus hidup berdampingan.
+- `next-env.d.ts` dibuat ulang otomatis tiap `dev`/`build` dan tidak dilacak git.
+
 ## Catatan
 
 Halaman device memakai query param `/device?id=<deviceId>` (bukan route dinamis `[id]`) karena static export tidak bisa pre-render id dinamis.

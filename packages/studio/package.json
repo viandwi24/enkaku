@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "NEXT_PUBLIC_ENKAKU_CORE_URL=${NEXT_PUBLIC_ENKAKU_CORE_URL:-http://localhost:7700} next dev -p 3001",
-    "build": "next build"
+    "build": "next build",
+    "start": "next start -p 3001"
   },
   "dependencies": {
     "@enkaku/protocol": "workspace:*",
@@ -13,7 +14,9 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0"
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
   }
 }
