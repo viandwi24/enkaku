@@ -30,6 +30,7 @@ import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
 import { createJobService } from './services/job-service'
+import { startScrcpySession } from '@enkaku/scrcpy'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createInspectorForSession } from './session/inspector-factory'
 import { PortAllocator, parsePortRange } from './session/port-allocator'
@@ -41,7 +42,7 @@ import { createLogger } from './util/logger'
 export const CORE_VERSION = '0.0.1'
 
 /** Tool wajib: adb (M1) + APK inspector on-device (M4.5). M6 += scrcpy-server. */
-const REQUIRED_TOOLS = ['adb', 'ui-server', 'ui-server-test']
+const REQUIRED_TOOLS = ['adb', 'ui-server', 'ui-server-test', 'scrcpy-server']
 
 export interface Daemon {
   start(): Promise<void>
@@ -228,14 +229,36 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        // Inspector on-device (M4.5): ui-server dgn fallback uiautomator-dump.
+        // Port pool bersama: ui-server (M4.5) & scrcpy (M6).
         const ports = new PortAllocator(parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE))
         const adbClient = adb
         const inspectorLog = log.child('inspector')
+        const scrcpyLog = log.child('scrcpy')
+        const hostAdb = async (args: string[]) => {
+          const proc = Bun.spawn([adbClient.binaryPath, ...args], { stdout: 'pipe', stderr: 'pipe' })
+          const out = await new Response(proc.stdout).text()
+          const exit = await proc.exited
+          if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
+          return out
+        }
+
         sessions = createSessionManager({
           client: adb,
           db,
           log: log.child('session'),
+          makeScrcpy: async (deviceId, transport) => {
+            // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
+            const jarPath = await toolchain.resolveToolPath('scrcpy-server').catch(() => null)
+            if (!jarPath) {
+              scrcpyLog.info('scrcpy-server belum ter-provision — memakai fallback screencap-loop')
+              return null
+            }
+            const port = await ports.claim(`scrcpy:${deviceId}`)
+            return startScrcpySession(
+              { serial: transport.serial, exec: (cmd) => transport.exec(cmd), hostAdb },
+              { jarPath, port, onLog: (level, msg) => scrcpyLog[level](msg) },
+            )
+          },
           makeInspector: (deviceId, transport, requested) =>
             createInspectorForSession(
               {

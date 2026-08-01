@@ -31,6 +31,7 @@
         "@enkaku/adb": "workspace:*",
         "@enkaku/drivers": "workspace:*",
         "@enkaku/protocol": "workspace:*",
+        "@enkaku/scrcpy": "workspace:*",
         "@enkaku/toolchain": "workspace:*",
         "drizzle-orm": "^0.44.0",
         "hono": "^4.6.0",
@@ -46,6 +47,7 @@
       "dependencies": {
         "@enkaku/adb": "workspace:*",
         "@enkaku/protocol": "workspace:*",
+        "@enkaku/scrcpy": "workspace:*",
         "fast-xml-parser": "^4.5.0",
         "zod": "^4.0.0",
       },
@@ -55,6 +57,13 @@
       "version": "0.0.1",
       "dependencies": {
         "zod": "^4.0.0",
+      },
+    },
+    "packages/scrcpy": {
+      "name": "@enkaku/scrcpy",
+      "version": "0.0.1",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
       },
     },
     "packages/sdk": {
@@ -106,6 +115,8 @@
     "@enkaku/examples": ["@enkaku/examples@workspace:examples"],
 
     "@enkaku/protocol": ["@enkaku/protocol@workspace:packages/protocol"],
+
+    "@enkaku/scrcpy": ["@enkaku/scrcpy@workspace:packages/scrcpy"],
 
     "@enkaku/sdk": ["@enkaku/sdk@workspace:packages/sdk"],
 

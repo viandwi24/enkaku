@@ -102,17 +102,29 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // input yang di-reject.
             const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame)
             state.streams.set(streamId, binding)
+            const codec = session.displayEngineId === 'scrcpy' ? ('h264' as const) : ('png' as const)
             send(ws, {
               type: 'stream.started',
               id: msg.id,
               payload: {
                 deviceId: msg.payload.deviceId,
                 streamId,
-                codec: 'png',
+                codec,
                 width: session.frameSize.width,
                 height: session.frameSize.height,
               },
             })
+            // Viewer baru butuh SPS/PPS sebelum frame pertama bisa di-decode.
+            const config = session.videoConfig?.()
+            if (config) {
+              ws.send(
+                encodeVideoFrame(
+                  streamId,
+                  { width: session.frameSize.width, height: session.frameSize.height, codec: 'h264', seq: 0, capturedAt: Date.now() },
+                  config,
+                ),
+              )
+            }
             return
           }
 

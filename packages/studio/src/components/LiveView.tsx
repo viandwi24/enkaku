@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { decodeVideoFrame } from '@enkaku/protocol'
+import { decodeVideoFrame, VIDEO_CODEC } from '@enkaku/protocol'
+import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
 import { newId, ws } from '@/lib/ws'
 
 /** Keycode Android yang dipakai tombol nav & keyboard. */
@@ -18,6 +19,8 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
   const textBufferRef = useRef('')
   const textTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const rendererRef = useRef<H264Renderer | null>(null)
+  const [codec, setCodec] = useState<'png' | 'h264'>('png')
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [fps, setFps] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -34,6 +37,15 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
         if (res.type !== 'stream.started' || disposed) return
         streamIdRef.current = res.payload.streamId
         lastSeqRef.current = -1
+        setCodec(res.payload.codec)
+        if (res.payload.codec === 'h264') {
+          if (!isWebCodecsSupported()) {
+            setError('Browser ini belum mendukung WebCodecs — pakai Chromium untuk stream H.264.')
+            return
+          }
+          const canvas = canvasRef.current
+          if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m))
+        }
         if (res.payload.width > 0) setSize({ width: res.payload.width, height: res.payload.height })
         setError(null)
       } catch (err) {
@@ -61,7 +73,21 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
         return
       }
       if (frame.streamId !== streamIdRef.current) return
-      if (frame.seq <= lastSeqRef.current) return // buang frame out-of-order
+
+      // H.264 (scrcpy): urutan paket penting, jangan buang berdasarkan seq.
+      if (frame.codec === VIDEO_CODEC.H264) {
+        const renderer = rendererRef.current
+        if (!renderer) return
+        // seq 0 dari core = config packet (SPS/PPS) untuk init/re-init decoder.
+        renderer.decode(frame.data, frame.seq === 0, frame.width, frame.height)
+        const now = performance.now()
+        frameTimes.push(now)
+        while (frameTimes.length > 0 && now - frameTimes[0]! > 3000) frameTimes.shift()
+        setFps(Number((frameTimes.length / 3).toFixed(1)))
+        return
+      }
+
+      if (frame.seq <= lastSeqRef.current) return // PNG: buang frame out-of-order
       lastSeqRef.current = frame.seq
 
       const now = performance.now()
@@ -89,6 +115,8 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
       offBinary()
       offStatus()
       offReconnect()
+      rendererRef.current?.close()
+      rendererRef.current = null
       if (streamIdRef.current !== null) {
         ws.send({ type: 'stream.stop', payload: { streamId: streamIdRef.current } })
         streamIdRef.current = null
@@ -172,8 +200,8 @@ export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; 
           ■ Recents
         </button>
         <span className="hint">
-          <span className={`dot ${connected ? 'on' : 'off'}`} /> {fps} fps · {size.width || '?'}×{size.height || '?'} ·
-          fallback display: screencap-loop (~2–3 fps)
+          <span className={`dot ${connected ? 'on' : 'off'}`} /> {fps} fps · {size.width || '?'}×{size.height || '?'} ·{' '}
+          {codec === 'h264' ? 'scrcpy H.264 (WebCodecs)' : 'fallback screencap-loop (~2–3 fps)'}
         </span>
       </div>
       {error && <p className="error">{error}</p>}

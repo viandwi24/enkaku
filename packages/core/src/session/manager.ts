@@ -35,6 +35,7 @@ export function createSessionManager(deps: {
   db: Db
   log: Logger
   makeInspector?: CreateSessionDeps['makeInspector']
+  makeScrcpy?: CreateSessionDeps['makeScrcpy']
 }): SessionManager {
   const entries = new Map<string, Entry>()
 
@@ -81,6 +82,10 @@ export function createSessionManager(deps: {
           display: row.display,
           input: row.input,
           inspection: row.inspection,
+          apiLevel: row.apiLevel,
+          preferredInputMode:
+            (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
+            'uhid',
           screenW: row.screenW,
           screenH: row.screenH,
         },
@@ -93,6 +98,7 @@ export function createSessionManager(deps: {
             void closeEntry(deviceId)
           },
           ...(deps.makeInspector ? { makeInspector: deps.makeInspector } : {}),
+          ...(deps.makeScrcpy ? { makeScrcpy: deps.makeScrcpy } : {}),
         },
       )
       const entry: Entry = { session, refcount: 1, frameSubscribers: new Set([onFrame]), closeTimer: null }

@@ -19,3 +19,11 @@ export {
   type UiServerLauncher,
   type UiServerStatus,
 } from './inspector/ui-server/index'
+export { ScrcpyDisplay } from './display/scrcpy'
+export { ScrcpySdkInput, ScrcpyUhidInput, type ScrcpyInputDeps } from './input/scrcpy-input'
+export {
+  selectInputEngine,
+  type InputModePreference,
+  type ResolvedInputEngine,
+  type InputSelectionResult,
+} from './input/select'
