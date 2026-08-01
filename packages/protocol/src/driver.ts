@@ -2,6 +2,7 @@
  * Interface 4 lapisan driver (spec §7) — lokasi kanonik shared types.
  * Implementasi engine di packages/drivers (mulai Plan 03).
  */
+import type { Selector, UiNode } from './ui-node'
 
 export interface Point {
   x: number
@@ -45,10 +46,10 @@ export interface InputSink {
   text(s: string): Promise<void>
 }
 
-/** Implementasi: Plan 05/06 — M2 hanya deklarasi tipe. */
+/** Engine inspeksi UI (spec §7): `uiautomator-dump` (M4), `ui-server` (M4.5). */
 export interface Inspector {
   id: string
-  dump(): Promise<unknown>
-  find(sel: unknown): Promise<unknown | null>
+  dump(): Promise<UiNode>
+  find(sel: Selector): Promise<UiNode | null>
   screenshot(): Promise<Uint8Array>
 }

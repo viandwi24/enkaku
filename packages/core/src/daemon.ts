@@ -25,6 +25,8 @@ import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
 import { createJobService } from './services/job-service'
 import { createSessionManager, type SessionManager } from './session/manager'
+import { createInspectorForSession } from './session/inspector-factory'
+import { PortAllocator, parsePortRange } from './session/port-allocator'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { createToolInstallStore } from './tools/store'
@@ -32,8 +34,8 @@ import { createLogger } from './util/logger'
 
 export const CORE_VERSION = '0.0.1'
 
-/** Tool wajib M1: adb. M4.5 += ui-server; M6 += scrcpy-server. */
-const REQUIRED_TOOLS = ['adb']
+/** Tool wajib: adb (M1) + APK inspector on-device (M4.5). M6 += scrcpy-server. */
+const REQUIRED_TOOLS = ['adb', 'ui-server', 'ui-server-test']
 
 export interface Daemon {
   start(): Promise<void>
@@ -210,7 +212,43 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        sessions = createSessionManager({ client: adb, db, log: log.child('session') })
+        // Inspector on-device (M4.5): ui-server dgn fallback uiautomator-dump.
+        const ports = new PortAllocator(parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE))
+        const adbClient = adb
+        const inspectorLog = log.child('inspector')
+        sessions = createSessionManager({
+          client: adb,
+          db,
+          log: log.child('session'),
+          makeInspector: (deviceId, transport, requested) =>
+            createInspectorForSession(
+              {
+                toolchain,
+                ports,
+                log: inspectorLog,
+                hostAdb: async (args) => {
+                  const proc = Bun.spawn([adbClient.binaryPath, ...args], { stdout: 'pipe', stderr: 'pipe' })
+                  const out = await new Response(proc.stdout).text()
+                  const exit = await proc.exited
+                  if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
+                  return out
+                },
+                onStatus: (deviceId, status) =>
+                  hub.broadcast({
+                    type: 'device.inspector.status',
+                    payload: {
+                      deviceId,
+                      state: status.state,
+                      ...('reason' in status ? { reason: status.reason } : {}),
+                      ...('attempt' in status ? { attempt: status.attempt } : {}),
+                    },
+                  }),
+                onFallback: (deviceId, from, to, reason) =>
+                  hub.broadcast({ type: 'device.inspector.fallback', payload: { deviceId, from, to, reason } }),
+              },
+              { deviceId, transport, requested },
+            ),
+        })
 
         // Script executor (M4) butuh SessionManager → didaftarkan setelah adb siap.
         const runner = createJobRunner({

@@ -85,10 +85,43 @@
     },
     {
       "id": "ui-server",
-      "displayName": "Enkaku UI inspector server (placeholder — M4.5)",
+      "displayName": "Enkaku UI inspector server (openatx uiautomator-server)",
       "swappable": false,
       "format": "raw",
-      "versions": []
+      "versions": [
+        {
+          "version": "2.3.3",
+          "releasedAt": "unknown",
+          "compatibleCoreRange": "TODO-M4.5",
+          "platforms": {
+            "*": {
+              "url": "https://github.com/openatx/android-uiautomator-server/releases/download/2.3.3/app-uiautomator.apk",
+              "sha256": "5f06e7d10c06d264bf56fa579e9f7ae57d3c98f0723ba209d8f276253f898ff3",
+              "sizeBytes": 2191186
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "ui-server-test",
+      "displayName": "Enkaku UI inspector server \u2014 test APK (instrumentation)",
+      "swappable": false,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "2.3.3",
+          "releasedAt": "unknown",
+          "compatibleCoreRange": "TODO-M4.5",
+          "platforms": {
+            "*": {
+              "url": "https://github.com/openatx/android-uiautomator-server/releases/download/2.3.3/app-uiautomator-test.apk",
+              "sha256": "9d4659c01c59f1929ad0f079b432cf18a88d1bd270ba5c2c7874c3d78dd3ae54",
+              "sizeBytes": 1061950
+            }
+          }
+        }
+      ]
     }
   ]
 }

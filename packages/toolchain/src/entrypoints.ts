@@ -12,6 +12,8 @@ export function entrypointRelPath(toolId: string, platform: string): string {
       return 'scrcpy-server.jar'
     case 'ui-server':
       return 'ui-server.apk'
+    case 'ui-server-test':
+      return 'ui-server-test.apk'
     default:
       throw new ToolchainError('E_TOOL_UNKNOWN_ENTRYPOINT', `entrypoint tidak dikenal untuk tool: ${toolId}`)
   }

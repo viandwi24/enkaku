@@ -1,6 +1,6 @@
 import type { AdbClient } from '@enkaku/adb'
 import { AdbInput, AdbTcpTransport, AdbUsbTransport, ScreencapLoop } from '@enkaku/drivers'
-import type { DisplaySource, FrameMeta, InputSink, Transport } from '@enkaku/protocol'
+import type { DisplaySource, FrameMeta, InputSink, Inspector, Transport } from '@enkaku/protocol'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 
@@ -9,8 +9,12 @@ export interface DeviceSession {
   transport: Transport
   display: DisplaySource
   input: InputSink
-  /** Plan 05. */
-  inspector: null
+  /** Engine inspector session ini (ui-server / uiautomator-dump). */
+  inspector: Inspector | null
+  /** Engine id efektif — bisa berbeda dari kolom DB karena fallback. */
+  inspectorEngineId: string
+  /** Interval polling waitFor yang cocok untuk engine aktif. */
+  inspectorPollIntervalMs: number
   /** Selalu di-overwrite oleh meta frame terbaru (mekanisme rotasi). */
   frameSize: { width: number; height: number }
   close(): Promise<void>
@@ -21,6 +25,13 @@ export interface CreateSessionDeps {
   log: Logger
   onFrame?: (chunk: Uint8Array, meta: FrameMeta) => void
   onDisplayError?: (err: unknown) => void
+  /** Rakit engine inspector (ui-server dgn fallback) — Plan 06. */
+  makeInspector?: (deviceId: string, transport: Transport, requested: string | null) => Promise<{
+    inspector: Inspector
+    engineId: string
+    pollIntervalMs: number
+    release(): Promise<void>
+  }>
 }
 
 export interface CreateSessionOpts {
@@ -30,6 +41,7 @@ export interface CreateSessionOpts {
   transport?: string | null
   display?: string | null
   input?: string | null
+  inspection?: string | null
   /** Nilai awal sebelum frame pertama datang (probe Plan 01). */
   screenW?: number | null
   screenH?: number | null
@@ -71,15 +83,22 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   resolveDisplayId(opts.display, log)
   resolveInputId(opts.input, log)
 
+  const inspectorHandle = deps.makeInspector
+    ? await deps.makeInspector(opts.deviceId, transport, opts.inspection ?? null)
+    : null
+
   const session: DeviceSession = {
     deviceId: opts.deviceId,
     transport,
     display: null as unknown as DisplaySource,
     input: new AdbInput(transport),
-    inspector: null,
+    inspector: inspectorHandle?.inspector ?? null,
+    inspectorEngineId: inspectorHandle?.engineId ?? 'none',
+    inspectorPollIntervalMs: inspectorHandle?.pollIntervalMs ?? 500,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     async close() {
       await session.display.stop()
+      await inspectorHandle?.release()
       await transport.disconnect()
     },
   }

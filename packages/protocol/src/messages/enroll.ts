@@ -39,3 +39,25 @@ export const DevicePairingCodeResultMessage = z.object({
   id: z.string(),
   payload: z.object({ success: z.boolean(), message: z.string() }),
 })
+
+/** Status engine inspector on-device (M4.5). */
+export const DeviceInspectorStatusMessage = z.object({
+  type: z.literal('device.inspector.status'),
+  payload: z.object({
+    deviceId: z.string(),
+    state: z.enum(['starting', 'healthy', 'restarting', 'dead']),
+    reason: z.string().optional(),
+    attempt: z.number().int().optional(),
+  }),
+})
+
+/** Engine inspector turun ke fallback untuk session ini (M4.5). */
+export const DeviceInspectorFallbackMessage = z.object({
+  type: z.literal('device.inspector.fallback'),
+  payload: z.object({
+    deviceId: z.string(),
+    from: z.string(),
+    to: z.string(),
+    reason: z.string(),
+  }),
+})

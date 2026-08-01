@@ -5,7 +5,7 @@ import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
-import { createSession, type DeviceSession } from './session'
+import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
 
 const GRACE_MS = 5000
 
@@ -30,7 +30,12 @@ export interface SessionManager {
  * Satu DisplaySource per device di-share ke semua viewer; loop capture
  * hidup hanya saat subscriber > 0 (hemat baterai device).
  */
-export function createSessionManager(deps: { client: AdbClient; db: Db; log: Logger }): SessionManager {
+export function createSessionManager(deps: {
+  client: AdbClient
+  db: Db
+  log: Logger
+  makeInspector?: CreateSessionDeps['makeInspector']
+}): SessionManager {
   const entries = new Map<string, Entry>()
 
   const dispatchFrame = (deviceId: string) => (chunk: Uint8Array, meta: FrameMeta) => {
@@ -75,6 +80,7 @@ export function createSessionManager(deps: { client: AdbClient; db: Db; log: Log
           transport: row.transport,
           display: row.display,
           input: row.input,
+          inspection: row.inspection,
           screenW: row.screenW,
           screenH: row.screenH,
         },
@@ -86,6 +92,7 @@ export function createSessionManager(deps: { client: AdbClient; db: Db; log: Log
             deps.log.warn(`display error ${deviceId}: ${String(err)} — menutup sesi`)
             void closeEntry(deviceId)
           },
+          ...(deps.makeInspector ? { makeInspector: deps.makeInspector } : {}),
         },
       )
       const entry: Entry = { session, refcount: 1, frameSubscribers: new Set([onFrame]), closeTimer: null }

@@ -35,6 +35,14 @@ export const engineDescriptors: EngineDescriptor[] = [
     configSchema: {},
   },
   {
+    id: 'ui-server',
+    displayName: 'UI server (persistent on-device, <200 ms per find)',
+    kind: 'inspector',
+    capabilities: ['dump', 'find', 'screenshot', 'set-text', 'long-click', 'double-click'],
+    locks: ['instrumentation'],
+    configSchema: {},
+  },
+  {
     id: 'uiautomator-dump',
     displayName: 'UiAutomator dump (jembatan, 0,5–2 dtk per query)',
     kind: 'inspector',

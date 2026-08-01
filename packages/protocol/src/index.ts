@@ -6,6 +6,8 @@ import {
   DevicePairingRequestMessage,
   DevicePairingRequestResultMessage,
   DeviceUnauthorizedMessage,
+  DeviceInspectorStatusMessage,
+  DeviceInspectorFallbackMessage,
 } from './messages/enroll'
 import { InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
 import {
@@ -58,6 +60,8 @@ export {
   DevicePairingRequestResultMessage,
   DevicePairingCodeMessage,
   DevicePairingCodeResultMessage,
+  DeviceInspectorStatusMessage,
+  DeviceInspectorFallbackMessage,
 } from './messages/enroll'
 export { CHANNEL, VIDEO_CODEC, encodeVideoFrame, decodeVideoFrame, type DecodedVideoFrame } from './binary'
 export {
@@ -106,6 +110,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceRemovedMessage,
   DeviceStatusMessage,
   DeviceUnauthorizedMessage,
+  DeviceInspectorStatusMessage,
+  DeviceInspectorFallbackMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
   ToolChangedMessage,

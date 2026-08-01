@@ -1,5 +1,5 @@
-import { centerOf, matchSelector } from '@enkaku/drivers'
-import { resolveKeyCode, type KeyCode, type Point, type Selector, type UiNode } from '@enkaku/protocol'
+import { centerOf, matchSelector, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
+import { resolveKeyCode, type Inspector, type KeyCode, type Point, type Selector, type UiNode } from '@enkaku/protocol'
 import type { DeviceSession } from '../session/session'
 import { EnkakuError } from '../util/errors'
 import type { DeviceCall } from './ipc'
@@ -29,17 +29,11 @@ const randBetween = (lo: number, hi: number): number => lo + Math.random() * Mat
  * Timing realism (spec §9.3): jitter jeda antar-aksi + offset koordinat,
  * supaya test menempuh jalur app yang sebenarnya.
  */
-export function createDeviceExecutor(deps: {
-  session: DeviceSession
-  timing?: TimingSettings
-  inspectorFor: (session: DeviceSession) => {
-    dump(): Promise<UiNode>
-    find(sel: Selector): Promise<UiNode | null>
-    screenshot(): Promise<Uint8Array>
-  }
-}) {
+export function createDeviceExecutor(deps: { session: DeviceSession; timing?: TimingSettings }) {
   const timing = deps.timing ?? DEFAULT_TIMING
-  const inspector = deps.inspectorFor(deps.session)
+  // Inspector milik session (ui-server / uiautomator-dump). Kalau session
+  // dibuat tanpa inspector (mode kontrol manual), pakai engine dump ad-hoc.
+  const inspector: Inspector = deps.session.inspector ?? new UiautomatorDumpInspector(deps.session.transport)
 
   const jitterPoint = (p: Point): Point => ({
     x: Math.round(p.x + (Math.random() * 2 - 1) * timing.coordJitterPx),
@@ -55,10 +49,14 @@ export function createDeviceExecutor(deps: {
     return centerOf(node.bounds)
   }
 
+  /** Selector terakhir yang di-tap — target implisit untuk `type`. */
+  let lastTarget: Selector | null = null
+
   return async function execute(call: DeviceCall): Promise<unknown> {
     switch (call.method) {
       case 'tap': {
         await pause()
+        lastTarget = 'point' in call.args.target ? null : call.args.target
         const point = jitterPoint(await resolveTarget(call.args.target))
         await deps.session.input.tap(point)
         return undefined
@@ -70,6 +68,12 @@ export function createDeviceExecutor(deps: {
       }
       case 'type': {
         await pause()
+        // Engine dengan aksi elemen (ui-server) memakai setText pada elemen
+        // yang sedang fokus — jauh lebih reliable, termasuk di WebView.
+        if (supportsElementActions(inspector) && lastTarget) {
+          await inspector.setText(lastTarget, call.args.text)
+          return undefined
+        }
         await deps.session.input.text(call.args.text)
         return undefined
       }
@@ -83,6 +87,8 @@ export function createDeviceExecutor(deps: {
       }
       case 'waitFor': {
         // Loop polling di parent — satu call = satu semantik, pacing terpusat.
+        // Interval mengikuti engine aktif: ui-server murah (~80ms), dump mahal.
+        const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         const deadline = Date.now() + call.args.timeout
         for (;;) {
           const node = await inspector.find(call.args.sel).catch(() => null)
@@ -93,7 +99,7 @@ export function createDeviceExecutor(deps: {
               `menunggu ${JSON.stringify(call.args.sel)} melewati ${call.args.timeout}ms`,
             )
           }
-          await Bun.sleep(call.args.intervalMs)
+          await Bun.sleep(interval)
         }
       }
       case 'screenshot': {

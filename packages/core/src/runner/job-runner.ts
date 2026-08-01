@@ -77,10 +77,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   }): Promise<AttemptOutcome> {
     const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifactStore } = opts
 
-    const execDevice = createDeviceExecutor({
-      session,
-      inspectorFor: (s) => new UiautomatorDumpInspector(s.transport, (level, msg) => deps.log[level](msg)),
-    })
+    const execDevice = createDeviceExecutor({ session })
 
     return new Promise<AttemptOutcome>((resolve) => {
       let settled = false
@@ -200,7 +197,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               const data =
                 msg.kind === 'screenshot'
                   ? // Screenshot diambil DI CORE → urutannya mengikuti per-device queue.
-                    await new UiautomatorDumpInspector(session.transport).screenshot()
+                    await (session.inspector ?? new UiautomatorDumpInspector(session.transport)).screenshot()
                   : Uint8Array.from(Buffer.from(msg.dataBase64 ?? '', 'base64'))
               const info = await artifactStore.save({
                 kind: msg.kind,
