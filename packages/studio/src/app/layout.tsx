@@ -14,6 +14,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <a href="/" className="brand">
             Enkaku <span className="brand-sub">Studio</span>
           </a>
+          <nav className="row">
+            <a href="/" className="hint">
+              Devices
+            </a>
+            <a href="/jobs" className="hint">
+              Jobs
+            </a>
+          </nav>
         </header>
         <main>{children}</main>
       </body>

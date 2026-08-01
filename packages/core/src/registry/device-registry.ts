@@ -1,8 +1,9 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
 import { DeviceInfoSchema, type DeviceInfo } from '@enkaku/protocol'
-import { eq, ne } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from './probe'
 import type { WsHub } from '../server/ws'
@@ -12,8 +13,12 @@ export interface DeviceRegistryDeps {
   db: Db
   hub: WsHub
   log: Logger
+  /** State machine device (Plan 04) — transisi status hanya lewat sini. */
+  states: DeviceStateMachine
   /** Device hilang/offline → tutup sesi yang masih terbuka (Plan 03). */
   onDeviceGone?: (deviceId: string) => void
+  /** Device siap dipakai → kick scheduler (Plan 04). */
+  onDeviceReady?: () => void
 }
 
 export interface DeviceRegistry {
@@ -87,7 +92,8 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         })
         .onConflictDoUpdate({
           target: devices.stableId,
-          // id & label TIDAK diubah (label milik user setelah rename).
+          // id, label, dan status TIDAK diubah di sini — status hanya lewat
+          // state machine (DEVICE_CONNECTED), supaya `quarantined` sticky.
           set: {
             serial,
             androidVersion: probe.androidVersion,
@@ -95,7 +101,6 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
             screenW: probe.screenW,
             screenH: probe.screenH,
             density: probe.density,
-            status: 'idle',
             lastSeen: now,
           },
         })
@@ -104,15 +109,14 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       const row = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()
       if (!row) return
       if (existing) {
-        hub.broadcast({
-          type: 'device.status',
-          payload: { id: row.id, stableId: row.stableId, status: 'idle' },
-        })
+        // Transisi resmi (offline→idle; quarantined tetap quarantined).
+        deps.states.apply(row.id, 'DEVICE_CONNECTED')
         log.info(`device online: ${row.label} (${probe.stableId}) via ${serial}`)
       } else {
         hub.broadcast({ type: 'device.added', payload: rowToDeviceInfo(row) })
         log.info(`device baru terdaftar: ${row.label} (${probe.stableId}) via ${serial}`)
       }
+      deps.onDeviceReady?.()
     } catch (err) {
       log.warn(`probe ${serial} gagal total — menunggu event berikutnya`, { err: String(err) })
     } finally {
@@ -134,12 +138,10 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         return
       }
     }
-    db.update(devices).set({ status: 'offline', lastSeen: new Date() }).where(eq(devices.id, row.id)).run()
-    hub.broadcast({
-      type: 'device.status',
-      payload: { id: row.id, stableId: row.stableId, status: 'offline' },
-    })
+    db.update(devices).set({ lastSeen: new Date() }).where(eq(devices.id, row.id)).run()
+    // Job running di device ini di-fail & sesi ditutup oleh caller.
     deps.onDeviceGone?.(row.id)
+    deps.states.apply(row.id, 'DEVICE_DISCONNECTED')
     log.info(`device offline: ${row.label} (${row.stableId})`)
   }
 
@@ -160,9 +162,13 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
 
   return {
     async start() {
-      // Recovery dari crash: semua row non-offline → offline; snapshot awal
-      // tracker akan meng-online-kan yang benar-benar ada.
-      db.update(devices).set({ status: 'offline' }).where(ne(devices.status, 'offline')).run()
+      // Recovery dari crash: idle|manual|busy → offline (quarantined sticky);
+      // snapshot awal tracker meng-online-kan yang benar-benar ada.
+      db
+        .update(devices)
+        .set({ status: 'offline' })
+        .where(and(ne(devices.status, 'offline'), ne(devices.status, 'quarantined')))
+        .run()
       const tracker = client.trackDevices()
       unsubscribe = tracker.on(onTrackerEvent)
       await tracker.start()

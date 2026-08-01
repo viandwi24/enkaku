@@ -8,6 +8,16 @@ import {
   DeviceUnauthorizedMessage,
 } from './messages/enroll'
 import { InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
+import {
+  JobCancelMessage,
+  JobEnqueueMessage,
+  JobStatusEventMessage,
+  LeaseAcquiredMessage,
+  LeaseAcquireMessage,
+  LeaseReleasedMessage,
+  LeaseReleaseMessage,
+  LeaseRevokedMessage,
+} from './messages/job'
 import { StreamMetaMessage, StreamStartedMessage, StreamStartMessage, StreamStopMessage } from './messages/stream'
 import {
   ToolChangedMessage,
@@ -48,6 +58,22 @@ export {
   DevicePairingCodeResultMessage,
 } from './messages/enroll'
 export { CHANNEL, VIDEO_CODEC, encodeVideoFrame, decodeVideoFrame, type DecodedVideoFrame } from './binary'
+export {
+  JobStatusSchema,
+  SleepJobParamsSchema,
+  JobInfoSchema,
+  JobEnqueueMessage,
+  JobCancelMessage,
+  JobStatusEventMessage,
+  LeaseAcquireMessage,
+  LeaseReleaseMessage,
+  LeaseAcquiredMessage,
+  LeaseReleasedMessage,
+  LeaseRevokedMessage,
+  type JobStatus,
+  type JobInfo,
+  type SleepJobParams,
+} from './messages/job'
 
 /** Error generik server→client (reply gagal, message invalid). */
 export const ErrorMessage = z.object({
@@ -69,6 +95,10 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   StreamMetaMessage,
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
+  JobStatusEventMessage,
+  LeaseAcquiredMessage,
+  LeaseReleasedMessage,
+  LeaseRevokedMessage,
   ErrorMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
@@ -83,5 +113,9 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   StreamStopMessage,
   DevicePairingRequestMessage,
   DevicePairingCodeMessage,
+  JobEnqueueMessage,
+  JobCancelMessage,
+  LeaseAcquireMessage,
+  LeaseReleaseMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

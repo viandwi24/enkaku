@@ -15,6 +15,13 @@
       "when": 1785563117653,
       "tag": "0001_calm_jack_murdock",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785564060620,
+      "tag": "0002_complex_anthem",
+      "breakpoints": true
     }
   ]
 }

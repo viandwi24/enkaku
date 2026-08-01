@@ -17,6 +17,7 @@ export interface HttpDeps {
   /** Status subsistem adb: 'provisioning' | 'ready' | 'error'. */
   adbState: () => string
   toolchain: ToolchainManager
+  jobRoutes: Hono
   startedAt: number
 }
 
@@ -53,6 +54,8 @@ export function createApp(deps: HttpDeps): Hono {
   app.route('/api/tools', createToolsRoutes(deps.toolchain))
 
   app.get('/api/registry', async (c) => c.json(await buildRegistryResponse(deps.toolchain)))
+
+  app.route('/api/jobs', deps.jobRoutes)
 
   // Studio static (mode prod satu-origin); /api/* & /ws sudah ditangani di atas.
   const serveStudio = createStudioServer(deps.log.child('studio'))

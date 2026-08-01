@@ -1,16 +1,27 @@
 import { join } from 'node:path'
+import { eq } from 'drizzle-orm'
 import { AdbClient } from '@enkaku/adb'
 import { ToolchainManager } from '@enkaku/toolchain'
+import type { DeviceStatus } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import { createJobRoutes } from './api/jobs'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, type OpenedDb } from './db'
 import { devices } from './db/schema'
+import { createDeviceStateMachine } from './device/state-machine'
 import { createPairingService } from './enroll/pairing'
+import { ExecutorRegistry } from './jobs/executor'
+import { createExecutorHost } from './jobs/executor-host'
+import { sleepExecutor } from './jobs/executors/sleep'
+import { createLeaseManager } from './lease/lease-manager'
+import { createJobStore } from './queue/job-store'
+import { createScheduler } from './queue/scheduler'
 import { createDeviceRegistry, rowToDeviceInfo, type DeviceRegistry } from './registry/device-registry'
-import { createSessionManager, type SessionManager } from './session/manager'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
+import { createJobService } from './services/job-service'
+import { createSessionManager, type SessionManager } from './session/manager'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { createToolInstallStore } from './tools/store'
@@ -34,6 +45,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let adb: AdbClient | null = null
   let registry: DeviceRegistry | null = null
   let sessions: SessionManager | null = null
+  let stopScheduler: (() => void) | null = null
+  let stopReaper: (() => void) | null = null
   let stopped = false
   let adbState = 'provisioning'
 
@@ -73,7 +86,78 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       await toolchain.init() // layout + manifest cache + reconcile (adopt pre-baked)
 
-      // 3. HTTP + WS server naik DULU supaya client bisa lihat progress provision
+      // 3. Queue / lease / scheduler (M3)
+      const jobStore = createJobStore(db)
+      const orphans = jobStore.failOrphanRunning()
+      if (orphans > 0) log.warn(`recovery boot: ${orphans} job 'running' yatim ditandai failed (core restarted)`)
+
+      const broadcastDeviceStatus = (deviceId: string, status?: DeviceStatus) => {
+        const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
+        if (!row) return
+        hub.broadcast({
+          type: 'device.status',
+          payload: { id: row.id, stableId: row.stableId, status: status ?? ((row.status ?? 'offline') as DeviceStatus) },
+        })
+      }
+
+      const states = createDeviceStateMachine({
+        db,
+        log: log.child('state'),
+        onChange: broadcastDeviceStatus,
+      })
+
+      const executors = new ExecutorRegistry()
+      executors.register('internal:sleep', sleepExecutor)
+
+      let scheduler: ReturnType<typeof createScheduler> | null = null
+      let leaseManager: ReturnType<typeof createLeaseManager> | null = null
+      const host = createExecutorHost({
+        registry: executors,
+        jobStore,
+        states,
+        leases: () => leaseManager!,
+        log: log.child('executor'),
+        jobTtlSec: cfg.lease.jobTtlSec,
+        heartbeatMs: cfg.lease.heartbeatMs,
+        onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
+        onFinished: () => scheduler?.kick(),
+      })
+
+      const leases = createLeaseManager({
+        states,
+        jobStore,
+        config: {
+          jobTtlSec: cfg.lease.jobTtlSec,
+          manualIdleTimeoutSec: cfg.lease.manualIdleTimeoutSec,
+          reaperIntervalMs: cfg.lease.reaperIntervalMs,
+        },
+        log: log.child('lease'),
+        onJobLeaseExpired: (jobId, reason) => host.finishExternally(jobId, 'failed', reason),
+        onManualRevoked: (deviceId, reason) => hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason } }),
+        onDeviceFreed: () => scheduler?.kick(),
+      })
+      leaseManager = leases
+
+      scheduler = createScheduler({
+        jobStore,
+        host,
+        log: log.child('scheduler'),
+        jobTtlSec: cfg.lease.jobTtlSec,
+        fallbackIntervalMs: cfg.scheduler.fallbackIntervalMs,
+        onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
+        onDeviceBusy: (deviceId) => broadcastDeviceStatus(deviceId, 'busy'),
+      })
+
+      const jobService = createJobService({
+        jobStore,
+        registry: executors,
+        scheduler,
+        host,
+        log: log.child('job'),
+        onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
+      })
+
+      // 4. HTTP + WS server naik DULU supaya client bisa lihat progress provision
       const app = createApp({
         listDevices: () => db.select().from(devices).all().map(rowToDeviceInfo),
         deviceCount: () => db.select().from(devices).all().length,
@@ -85,6 +169,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         adbState: () => adbState,
         toolchain,
+        jobRoutes: createJobRoutes(jobService),
         startedAt,
       })
       server = Bun.serve({
@@ -102,7 +187,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       log.info(`enkaku core v${CORE_VERSION} listen http://${cfg.host}:${cfg.port}`)
 
-      // 4. Provision tool wajib → baru subsistem adb boleh start (gate)
+      leases.startReaper()
+      stopReaper = () => leases.stopReaper()
+      scheduler.start()
+      const sched = scheduler
+      stopScheduler = () => sched.stop()
+
+      // 5. Provision tool wajib → baru subsistem adb boleh start (gate)
       try {
         await provisionRequiredTools({ manager: toolchain, hub, log: log.child('provision'), required: REQUIRED_TOOLS })
         const adbPath = await toolchain.resolveToolPath('adb')
@@ -111,12 +202,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        // Sesi (display/input) + handler WS untuk stream/input/pairing.
         sessions = createSessionManager({ client: adb, db, log: log.child('session') })
         hub.setRouter(
           createWsMessageHandler({
             sessions,
             pairing: createPairingService({ client: adb, log: log.child('pairing') }),
+            leases,
+            jobs: jobService,
             log: log.child('ws-handler'),
           }),
         )
@@ -126,7 +218,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           db,
           hub,
           log: log.child('registry'),
-          onDeviceGone: (deviceId) => void sessions?.closeDevice(deviceId),
+          states,
+          onDeviceGone: (deviceId) => {
+            void sessions?.closeDevice(deviceId)
+            // Job yang sedang jalan di device itu → failed (spec §10.1).
+            const running = jobStore.runningByDevice(deviceId)
+            if (running) host.finishExternally(running.id, 'failed', 'device disconnected')
+          },
+          onDeviceReady: () => scheduler?.kick(),
         })
         await registry.start()
         adbState = 'ready'
@@ -144,6 +243,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       log.info('stopping...')
       server?.stop(true)
       server = null
+      stopScheduler?.()
+      stopReaper?.()
       await sessions?.closeAll()
       sessions = null
       await registry?.stop()

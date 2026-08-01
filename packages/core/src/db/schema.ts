@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 
 /**
  * Tabel devices (spec §12, subset M0). Tabel lain (jobs, scripts, artifacts,
@@ -45,4 +45,30 @@ export const toolInstalls = sqliteTable('tool_installs', {
 })
 
 export type ToolInstallRow = typeof toolInstalls.$inferSelect
+
+/** Antrian job per-device (spec §12, §10.3). */
+export const jobs = sqliteTable(
+  'jobs',
+  {
+    id: text('id').primaryKey(),
+    scriptId: text('script_id').notNull(), // M3: 'internal:sleep'
+    deviceId: text('device_id').notNull(),
+    params: text('params', { mode: 'json' }),
+    priority: integer('priority').default(0),
+    status: text('status').default('queued'), // queued|running|success|failed|cancelled
+    /** Epoch detik — lease job, diperpanjang heartbeat runner (spec §10.2). */
+    leaseExpiresAt: integer('lease_expires_at'),
+    result: text('result', { mode: 'json' }),
+    error: text('error'),
+    createdAt: integer('created_at', { mode: 'timestamp' }),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    finishedAt: integer('finished_at', { mode: 'timestamp' }),
+  },
+  (t) => [
+    index('idx_jobs_claim').on(t.status, t.deviceId, t.priority, t.createdAt),
+    index('idx_jobs_device').on(t.deviceId, t.createdAt),
+  ],
+)
+
+export type JobRow = typeof jobs.$inferSelect
 

@@ -20,6 +20,16 @@ export function openDb(path: string): OpenedDb {
   return { db, sqlite }
 }
 
+/**
+ * Jumlah baris yang berubah dari statement Drizzle `.run()`.
+ * bun:sqlite mengembalikan { changes, lastInsertRowid } di runtime, tapi
+ * tipe Drizzle bun-sqlite untuk `.run()` adalah void — helper ini
+ * memusatkan penyesuaiannya di satu tempat.
+ */
+export function changedRows(runResult: unknown): number {
+  return (runResult as { changes?: number } | undefined)?.changes ?? 0
+}
+
 /** Jalankan migrasi dari folder drizzle/ (idempotent — drizzle journal). */
 export function runMigrations(db: Db): void {
   const migrationsFolder = join(import.meta.dir, '..', '..', 'drizzle')

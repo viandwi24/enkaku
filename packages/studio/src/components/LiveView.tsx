@@ -10,7 +10,7 @@ const AKEYCODE = { HOME: 3, BACK: 4, ENTER: 66, DEL: 67, APP_SWITCH: 187 } as co
 const DRAG_THRESHOLD_PX = 10
 const TEXT_DEBOUNCE_MS = 500
 
-export function LiveView({ deviceId }: { deviceId: string }) {
+export function LiveView({ deviceId, inputEnabled = true }: { deviceId: string; inputEnabled?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamIdRef = useRef<number | null>(null)
   const lastSeqRef = useRef(-1)
@@ -106,12 +106,14 @@ export function LiveView({ deviceId }: { deviceId: string }) {
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!inputEnabled) return
     const p = normalize(e)
     pointerDownRef.current = { ...p, t: Date.now() }
     e.currentTarget.focus()
   }
 
   function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!inputEnabled) return
     const start = pointerDownRef.current
     pointerDownRef.current = null
     if (!start) return
@@ -136,6 +138,7 @@ export function LiveView({ deviceId }: { deviceId: string }) {
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLCanvasElement>) {
+    if (!inputEnabled) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
     e.preventDefault()
     const key = e.key
@@ -151,14 +154,23 @@ export function LiveView({ deviceId }: { deviceId: string }) {
     if (keycode !== null) ws.send({ type: 'input.key', payload: { deviceId, keycode } })
   }
 
-  const sendKey = (keycode: number) => ws.send({ type: 'input.key', payload: { deviceId, keycode } })
+  const sendKey = (keycode: number) => {
+    if (!inputEnabled) return
+    ws.send({ type: 'input.key', payload: { deviceId, keycode } })
+  }
 
   return (
     <>
       <div className="row" style={{ marginBottom: '0.75rem' }}>
-        <button onClick={() => sendKey(AKEYCODE.BACK)}>◀ Back</button>
-        <button onClick={() => sendKey(AKEYCODE.HOME)}>● Home</button>
-        <button onClick={() => sendKey(AKEYCODE.APP_SWITCH)}>■ Recents</button>
+        <button onClick={() => sendKey(AKEYCODE.BACK)} disabled={!inputEnabled}>
+          ◀ Back
+        </button>
+        <button onClick={() => sendKey(AKEYCODE.HOME)} disabled={!inputEnabled}>
+          ● Home
+        </button>
+        <button onClick={() => sendKey(AKEYCODE.APP_SWITCH)} disabled={!inputEnabled}>
+          ■ Recents
+        </button>
         <span className="hint">
           <span className={`dot ${connected ? 'on' : 'off'}`} /> {fps} fps · {size.width || '?'}×{size.height || '?'} ·
           fallback display: screencap-loop (~2–3 fps)
@@ -172,7 +184,10 @@ export function LiveView({ deviceId }: { deviceId: string }) {
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
         onKeyDown={onKeyDown}
-        style={size.width > 0 ? { aspectRatio: `${size.width} / ${size.height}` } : undefined}
+        style={{
+          ...(size.width > 0 ? { aspectRatio: `${size.width} / ${size.height}` } : {}),
+          cursor: inputEnabled ? 'crosshair' : 'not-allowed',
+        }}
       />
       <p className="hint">
         Klik = tap · drag = swipe · ketik saat kanvas fokus (hanya ASCII di mode fallback) · Esc = Back.
