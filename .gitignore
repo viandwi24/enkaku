@@ -16,3 +16,9 @@ next-env.d.ts
 # rust / tauri
 target/
 apps/desktop/src-tauri/binaries/
+
+# data dev
+.dev-data/
+.dev-cloud/
+.dev-agent/
+.agent-data/

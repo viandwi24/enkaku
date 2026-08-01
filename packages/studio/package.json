@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3001",
+    "dev": "NEXT_PUBLIC_ENKAKU_CORE_URL=${NEXT_PUBLIC_ENKAKU_CORE_URL:-http://localhost:7700} next dev -p 3001",
     "build": "next build"
   },
   "dependencies": {

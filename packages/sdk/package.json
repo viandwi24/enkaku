@@ -14,5 +14,8 @@
   },
   "peerDependencies": {
     "zod": "^4.0.0"
+  },
+  "scripts": {
+    "publish-script": "bun run src/cli/index.ts publish"
   }
 }

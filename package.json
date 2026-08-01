@@ -1,10 +1,21 @@
 {
   "name": "openpf",
   "private": true,
-  "workspaces": ["packages/*", "apps/*", "examples"],
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples"
+  ],
   "scripts": {
-    "dev": "bun run packages/core/src/index.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "dev": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-data} bun run packages/core/src/index.ts",
+    "dev:studio": "bun run --cwd packages/studio dev",
+    "dev:cloud": "ENKAKU_MODE=orchestrator ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-cloud} bun run packages/core/src/index.ts",
+    "dev:agent": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-agent} bun run packages/agent/src/cli.ts",
+    "dev:desktop": "bun run --cwd apps/desktop dev",
+    "build:studio": "bun run --cwd packages/studio build",
+    "publish:example": "bun run packages/sdk/src/cli/index.ts publish examples/hello-no-device.ts",
+    "typecheck": "bash scripts/typecheck.sh",
+    "reset": "rm -rf .dev-data .dev-cloud .dev-agent"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

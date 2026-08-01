@@ -20,5 +20,9 @@
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.0"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "db:generate": "bunx drizzle-kit generate"
   }
 }
