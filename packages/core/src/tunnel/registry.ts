@@ -34,6 +34,7 @@ export function createTunnelRegistry(deps: {
   db: Db
   log: Logger
   onDevicesChanged?: (agentId: string) => void
+  onAgentGone?: (agentId: string) => void
 }): TunnelRegistry {
   const byAgentId = new Map<string, AgentConn>()
   const bySocket = new WeakMap<ServerWebSocket<unknown>, AgentConn>()
@@ -76,6 +77,7 @@ export function createTunnelRegistry(deps: {
         if (owner === conn.agentId) deviceOwner.delete(deviceId)
       }
       deps.log.info(`agent offline: ${conn.agentId}`)
+      deps.onAgentGone?.(conn.agentId)
       deps.onDevicesChanged?.(conn.agentId)
       return conn
     },

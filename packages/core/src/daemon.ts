@@ -8,6 +8,8 @@ import { createAgentRoutes } from './api/agents'
 import { createAgentAuth } from './tunnel/agent-auth'
 import { createTunnelRegistry } from './tunnel/registry'
 import { createTunnelRouter } from './tunnel/router'
+import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
+import { createRemoteJobBridge } from './jobs/executors/remote'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
@@ -27,7 +29,8 @@ import type { CoreConfig } from './config'
 import { openDb, runMigrations, type OpenedDb } from './db'
 import { devices, scripts } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
-import { createPairingService } from './enroll/pairing'
+import { createPairingService, type PairingService } from './enroll/pairing'
+import { EnkakuError } from './util/errors'
 import { ExecutorRegistry } from './jobs/executor'
 import { createExecutorHost } from './jobs/executor-host'
 import { sleepExecutor } from './jobs/executors/sleep'
@@ -66,6 +69,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let registry: DeviceRegistry | null = null
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
+  let remoteSessions: RemoteSessionManager | null = null
   let retention: RetentionGc | null = null
   let stopScheduler: (() => void) | null = null
   let stopReaper: (() => void) | null = null
@@ -123,8 +127,40 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         db,
         log: log.child('tunnel'),
         onDevicesChanged: () => scheduler?.kick(),
+        // Tunnel putus → sesi remote milik agent itu tidak lagi sah.
+        onAgentGone: (agentId) => remoteSessions?.dropAgent(agentId),
       })
-      const tunnelRouter = createTunnelRouter({ registry: tunnelRegistry, log: log.child('tunnel') })
+      // Hook di-set setelah remote manager & job bridge dibuat (siklus wiring).
+      let onSessionStarted: ((d: string, i: { codec: 'png' | 'h264'; width: number; height: number }) => void) | null =
+        null
+      let onSessionFailed: ((d: string, c: string, m: string) => void) | null = null
+      let onJobProgress: ((p: never) => void) | null = null
+      const tunnelRouter = createTunnelRouter({
+        registry: tunnelRegistry,
+        log: log.child('tunnel'),
+        onSessionStarted: (d, i) => onSessionStarted?.(d, i),
+        onSessionFailed: (d, c, m) => onSessionFailed?.(d, c, m),
+        onJobProgress: (p) => onJobProgress?.(p as never),
+      })
+
+      // Pairing butuh adb; di mode orchestrator enrollment dilakukan di agent.
+      let pairingService: PairingService = {
+        async request() {
+          throw new EnkakuError('not_supported_in_mode', 'pairing wireless dilakukan di agent, bukan control plane')
+        },
+        async submitCode() {
+          return { success: false, message: 'pairing wireless dilakukan di agent, bukan control plane' }
+        },
+      }
+
+      remoteSessions = createRemoteSessionManager({
+        db,
+        registry: tunnelRegistry,
+        router: tunnelRouter,
+        log: log.child('remote-session'),
+      })
+      onSessionStarted = (d, i) => remoteSessions?.onStarted(d, i)
+      onSessionFailed = (d, c, m) => remoteSessions?.onFailed(d, c, m)
       const audit = createAuditLogger(db)
       if (authMode === 'local') auth.ensureLocalAdmin()
       log.info(
@@ -205,6 +241,59 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           return row ? { enabled: row.enabled ?? true } : null
         },
       })
+
+      // Job jarak jauh: device milik agent dieksekusi di agent (plan 12 §4.5).
+      const remoteBridge = createRemoteJobBridge({
+        db,
+        router: tunnelRouter,
+        log: log.child('remote-job'),
+        hooks: {
+          onLog: (jobId, entry) =>
+            hub.broadcast({
+              type: 'job.log',
+              payload: {
+                jobId,
+                ts: entry.ts,
+                level: entry.level as 'debug' | 'info' | 'warn' | 'error',
+                source: entry.source as 'script' | 'stdout' | 'stderr' | 'runner',
+                msg: entry.msg,
+              },
+            }),
+          onArtifact: (jobId, artifact) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } }),
+          onPhase: (jobId, attempt, phase) => {
+            const info = jobService.get(jobId)
+            if (info) hub.broadcast({ type: 'job.status', payload: { ...info, ...(attempt ? { attempt } : {}), phase } })
+          },
+          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+        },
+        saveArtifact: async (jobId, a) => {
+          const sink = createDbArtifactSink({
+            db,
+            dataDir: cfg.dataDir,
+            jobId,
+            onSaved: () => {},
+          })
+          const saved = await sink.save({
+            kind: a.kind as 'screenshot' | 'file' | 'log',
+            label: a.label,
+            data: a.data,
+            ...(a.ext ? { ext: a.ext } : {}),
+          })
+          return {
+            id: crypto.randomUUID(),
+            jobId,
+            kind: a.kind as 'screenshot' | 'log' | 'file' | 'video',
+            label: a.label,
+            path: saved.path,
+            sizeBytes: saved.sizeBytes,
+            createdAt: Math.floor(Date.now() / 1000),
+          }
+        },
+      })
+      onJobProgress = (p) => remoteBridge.handleProgress(p)
+      // Device milik agent memakai executor jarak jauh; device lokal memakai
+      // runner in-process (didaftarkan setelah adb siap).
+      executors.setFallback(remoteBridge.executor)
 
       // 4. HTTP + WS server naik DULU supaya client bisa lihat progress provision
       const app = createApp({
@@ -319,9 +408,25 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const sched = scheduler
       stopScheduler = () => sched.stop()
 
+      // Router WS dipasang untuk SEMUA mode. Di orchestrator, `sessions`
+      // null dan seluruh operasi device dilayani lewat agent — tanpa ini,
+      // permintaan browser diabaikan diam-diam (bug yang diperbaiki Plan 12).
+      const attachWsRouter = (localSessions: SessionManager | null) =>
+        hub.setRouter(
+          createWsMessageHandler({
+            sessions: localSessions,
+            ...(remoteSessions ? { remote: remoteSessions } : {}),
+            pairing: pairingService,
+            leases,
+            jobs: jobService,
+            log: log.child('ws-handler'),
+          }),
+        )
+
       if (isOrchestrator) {
         // Orchestrator tidak menyentuh adb/device lokal sama sekali.
         adbState = 'orchestrator'
+        attachWsRouter(null)
         log.info('mode orchestrator: menunggu agent connect di /agent/ws')
         return
       }
@@ -428,16 +533,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           },
           heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
         })
-        executors.setFallback(createScriptExecutor({ db, dataDir: cfg.dataDir, runner }))
-        hub.setRouter(
-          createWsMessageHandler({
-            sessions,
-            pairing: createPairingService({ client: adb, log: log.child('pairing') }),
-            leases,
-            jobs: jobService,
-            log: log.child('ws-handler'),
-          }),
-        )
+        const localExecutor = createScriptExecutor({ db, dataDir: cfg.dataDir, runner })
+        executors.setFallback({
+          validateParams: (params) => localExecutor.validateParams(params),
+          run: (job, ctx) => {
+            // Device milik agent → jalankan di agent; selain itu lokal.
+            const owner = remoteSessions?.agentIdFor(job.deviceId) ?? null
+            return owner ? remoteBridge.executor.run(job, ctx) : localExecutor.run(job, ctx)
+          },
+        })
+        pairingService = createPairingService({ client: adb, log: log.child('pairing') })
+        attachWsRouter(sessions)
 
         // Battery/thermal poll + auto-quarantine (M5, spec §15.2).
         battery = createBatteryMonitor({
@@ -489,6 +595,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       retention = null
       await sessions?.closeAll()
       sessions = null
+      await remoteSessions?.closeAll()
+      remoteSessions = null
       await registry?.stop()
       registry = null
       await adb?.dispose()

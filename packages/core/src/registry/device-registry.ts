@@ -5,7 +5,7 @@ import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
-import { probeDeviceIdentity } from './probe'
+import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
 
 export interface DeviceRegistryDeps {

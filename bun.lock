@@ -31,6 +31,8 @@
         "@enkaku/adb": "workspace:*",
         "@enkaku/drivers": "workspace:*",
         "@enkaku/protocol": "workspace:*",
+        "@enkaku/scrcpy": "workspace:*",
+        "@enkaku/session": "workspace:*",
         "@enkaku/toolchain": "workspace:*",
         "zod": "^4.0.0",
       },

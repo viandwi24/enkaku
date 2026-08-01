@@ -27,6 +27,7 @@ export function mapNormToDevice(pos: { x: number; y: number }, frame: { width: n
 interface StreamBinding {
   streamId: number
   deviceId: string
+  remote?: boolean
   onFrame: (chunk: Uint8Array, meta: FrameMeta) => void
   lastSize: { width: number; height: number }
 }
@@ -38,8 +39,22 @@ interface ConnState {
   nextStreamId: number
 }
 
+export interface RemoteSessions {
+  agentIdFor(deviceId: string): string | null
+  acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<{
+    frameSize: { width: number; height: number }
+    codec: 'png' | 'h264'
+    input: { tap(p: Point): Promise<void>; swipe(f: Point, t: Point, ms: number): Promise<void>; key(c: number): Promise<void>; text(s: string): Promise<void> }
+  }>
+  release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
+  get(deviceId: string): { frameSize: { width: number; height: number }; input: { tap(p: Point): Promise<void>; swipe(f: Point, t: Point, ms: number): Promise<void>; key(c: number): Promise<void>; text(s: string): Promise<void> } } | null
+}
+
 export interface WsHandlerDeps {
-  sessions: SessionManager
+  /** null di mode orchestrator: control plane tidak memegang device lokal. */
+  sessions: SessionManager | null
+  /** Sesi device milik agent (mode cloud); null di mode lokal murni. */
+  remote?: RemoteSessions
   pairing: PairingService
   leases: LeaseManager
   jobs: JobService
@@ -100,9 +115,28 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             }
             // Video tetap jalan walau device `busy` (spec §10.1) — hanya
             // input yang di-reject.
-            const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame)
-            state.streams.set(streamId, binding)
-            const codec = session.displayEngineId === 'scrcpy' ? ('h264' as const) : ('png' as const)
+            const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
+            let codec: 'png' | 'h264'
+            let frameSize: { width: number; height: number }
+            if (remoteAgent) {
+              const remoteSession = await deps.remote!.acquire(msg.payload.deviceId, binding.onFrame)
+              codec = remoteSession.codec
+              frameSize = remoteSession.frameSize
+              binding.remote = true
+            } else if (deps.sessions) {
+              const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame)
+              codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'
+              frameSize = session.frameSize
+            } else {
+              // Device tidak dimiliki agent mana pun DAN tidak ada sesi lokal.
+              sendError(
+                ws,
+                'device_not_reachable',
+                'device tidak terhubung ke control plane ini maupun ke agent mana pun',
+                msg.id,
+              )
+              return
+            }
             send(ws, {
               type: 'stream.started',
               id: msg.id,
@@ -110,17 +144,18 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 deviceId: msg.payload.deviceId,
                 streamId,
                 codec,
-                width: session.frameSize.width,
-                height: session.frameSize.height,
+                width: frameSize.width,
+                height: frameSize.height,
               },
             })
             // Viewer baru butuh SPS/PPS sebelum frame pertama bisa di-decode.
-            const config = session.videoConfig?.()
+            const localSession = remoteAgent ? null : (deps.sessions?.get(msg.payload.deviceId) ?? null)
+            const config = localSession?.videoConfig?.()
             if (config) {
               ws.send(
                 encodeVideoFrame(
                   streamId,
-                  { width: session.frameSize.width, height: session.frameSize.height, codec: 'h264', seq: 0, capturedAt: Date.now() },
+                  { width: frameSize.width, height: frameSize.height, codec: 'h264', seq: 0, capturedAt: Date.now() },
                   config,
                 ),
               )
@@ -132,7 +167,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             const binding = state.streams.get(msg.payload.streamId)
             if (!binding) return
             state.streams.delete(binding.streamId)
-            deps.sessions.release(binding.deviceId, binding.onFrame)
+            if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
+            else deps.sessions?.release(binding.deviceId, binding.onFrame)
             return
           }
 
@@ -167,9 +203,19 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, allowed.code, allowed.message, msgId)
               return
             }
-            const session = deps.sessions.get(msg.payload.deviceId)
+            const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
+            const session = remoteAgent
+              ? deps.remote!.get(msg.payload.deviceId)
+              : (deps.sessions?.get(msg.payload.deviceId) ?? null)
             if (!session) {
-              sendError(ws, 'E_DEVICE_NOT_READY', 'tidak ada sesi aktif untuk device ini (mulai stream dulu)', msgId)
+              sendError(
+                ws,
+                remoteAgent ? 'agent_offline' : 'E_DEVICE_NOT_READY',
+                remoteAgent
+                  ? 'device dipegang agent yang sedang tidak terhubung'
+                  : 'tidak ada sesi aktif untuk device ini (mulai stream dulu)',
+                msgId,
+              )
               return
             }
             deps.leases.touchManual(msg.payload.deviceId, state.clientId)
@@ -231,7 +277,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       const state = conns.get(ws)
       if (!state) return
       for (const binding of state.streams.values()) {
-        deps.sessions.release(binding.deviceId, binding.onFrame)
+        if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
+        else deps.sessions?.release(binding.deviceId, binding.onFrame)
       }
       state.streams.clear()
       deps.leases.releaseAllForClient(state.clientId)

@@ -8,6 +8,18 @@ import {
 import type { Logger } from '../util/logger'
 import type { TunnelRegistry } from './registry'
 
+export interface TunnelRouterHooks {
+  onJobProgress?: (payload: {
+    jobId: string
+    kind: 'phase' | 'log' | 'artifact' | 'result'
+    phase?: 'prepare' | 'run' | 'finish'
+    attempt?: number
+    log?: { level: string; source: string; msg: string; ts: number }
+    artifact?: { label: string; kind: string; ext?: string; dataBase64: string }
+    result?: { ok: boolean; value?: unknown; error?: { code: string; message: string } }
+  }) => void
+}
+
 export interface TunnelRouter {
   handleAgentMessage(ws: ServerWebSocket<unknown>, agentId: string, raw: string): void
   handleAgentFrame(agentId: string, buf: Uint8Array): void
@@ -25,7 +37,14 @@ export interface TunnelRouter {
  * plane SEBELUM pesan diteruskan ke agent — agent memvalidasi ulang secara
  * lokal hanya sebagai defense in depth.
  */
-export function createTunnelRouter(deps: { registry: TunnelRegistry; log: Logger }): TunnelRouter {
+export function createTunnelRouter(deps: {
+  registry: TunnelRegistry
+  log: Logger
+  /** Diisi setelah remote session manager & job bridge dibuat (siklus wiring). */
+  onSessionStarted?: (deviceId: string, info: { codec: 'png' | 'h264'; width: number; height: number }) => void
+  onSessionFailed?: (deviceId: string, code: string, message: string) => void
+  onJobProgress?: (payload: Parameters<NonNullable<TunnelRouterHooks['onJobProgress']>>[0]) => void
+}): TunnelRouter {
   let nextChannelId = 1
   /** channelId → { deviceId, subscribers } */
   const channels = new Map<number, { deviceId: string; kind: string; subscribers: Set<(p: Uint8Array) => void> }>()
@@ -57,6 +76,16 @@ export function createTunnelRouter(deps: { registry: TunnelRegistry; log: Logger
         )
       } else if (msg.type === 'agent.devices') {
         deps.registry.syncDevices(agentId, msg.payload.devices)
+      } else if (msg.type === 'session.started') {
+        deps.onSessionStarted?.(msg.payload.deviceId, {
+          codec: msg.payload.codec,
+          width: msg.payload.width,
+          height: msg.payload.height,
+        })
+      } else if (msg.type === 'session.failed') {
+        deps.onSessionFailed?.(msg.payload.deviceId, msg.payload.code, msg.payload.message)
+      } else if (msg.type === 'job.progress') {
+        deps.onJobProgress?.(msg.payload)
       } else if (msg.type === 'tunnel.ping') {
         ws.send(JSON.stringify({ type: 'tunnel.pong', payload: msg.payload }))
       } else if (msg.type === 'tunnel.channel.close') {

@@ -23,3 +23,4 @@ export {
 export { SessionError } from './errors'
 export type { Logger } from './logger'
 export type { DeviceSnapshot, DeviceSnapshotSource, ArtifactSink, SavedArtifact } from './types'
+export { probeDeviceIdentity, parseWmSize, parseWmDensity, pickStableId, type DeviceProbeResult } from './probe'

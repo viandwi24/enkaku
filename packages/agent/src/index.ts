@@ -1,6 +1,8 @@
 import { AdbClient, type TrackerEvent } from '@enkaku/adb'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { ToolchainManager, type ToolInstallRecord, type ToolInstallStore } from '@enkaku/toolchain'
+import { probeDeviceIdentity, type DeviceSnapshot } from '@enkaku/session'
+import { createAgentHosts, type AgentHosts } from './hosts'
 import { createTunnel, type Tunnel } from './tunnel'
 import { enroll, loadState, saveState, type AgentState } from './state'
 
@@ -49,8 +51,10 @@ export function createAgent(opts: AgentOptions): Agent {
   const log = opts.log ?? ((msg: string) => console.error(`[agent] ${msg}`))
   let tunnel: Tunnel | null = null
   let adb: AdbClient | null = null
+  let hosts: AgentHosts | null = null
   let unsubscribe: (() => void) | null = null
   const devices = new Map<string, DeviceInfo>()
+  const snapshots = new Map<string, DeviceSnapshot>()
 
   return {
     async start() {
@@ -81,6 +85,26 @@ export function createAgent(opts: AgentOptions): Agent {
 
       adb = new AdbClient({ adbPath: await toolchain.resolveToolPath('adb'), onLog: (_l, m) => log(m) })
       await adb.ensureServer()
+      await toolchain.ensureRequiredTools(['ui-server', 'ui-server-test', 'scrcpy-server']).catch((err) => {
+        log(`tool opsional gagal di-provision: ${String(err)} — sebagian engine akan turun ke fallback`)
+      })
+
+      const agentLogger = {
+        debug: (m: string) => log(m),
+        info: (m: string) => log(m),
+        warn: (m: string) => log(m),
+        error: (m: string) => log(m),
+        child() {
+          return agentLogger
+        },
+      }
+      hosts = createAgentHosts({
+        client: adb,
+        toolchain,
+        tunnel: () => tunnel,
+        dataDir: opts.dataDir,
+        log: agentLogger,
+      })
 
       tunnel = createTunnel(
         state,
@@ -95,22 +119,60 @@ export function createAgent(opts: AgentOptions): Agent {
             tunnel?.send({ type: 'agent.devices', payload: { devices: [...devices.values()] } })
           },
           onDisconnected: (reason) => log(`tunnel terputus: ${reason}`),
-          onMessage: (msg) => {
-            // session.start/stop & job.dispatch di-handle sub-fase berikutnya
-            // (M8b/M8c) — di M8a cukup dicatat supaya jelas belum diimplement.
-            log(`message dari control plane belum ditangani: ${msg.type}`)
-          },
+          onMessage: (msg) => void hosts?.handle(msg).catch((err) => log(`handle ${msg.type} gagal: ${String(err)}`)),
         },
         log,
       )
       tunnel.start()
 
       const tracker = adb.trackDevices()
+      const client = adb
       unsubscribe = tracker.on((ev: TrackerEvent) => {
-        if (ev.kind === 'remove') devices.delete(ev.serial)
-        // Probe identity/dimensi = tanggung jawab control plane di M8a;
-        // agent mengirim apa yang terlihat dari track-devices.
-        tunnel?.send({ type: 'agent.devices', payload: { devices: [...devices.values()] } })
+        void (async () => {
+          if (ev.kind === 'remove') {
+            const gone = [...snapshots.values()].find((d) => d.serial === ev.serial)
+            if (gone) {
+              snapshots.delete(gone.id)
+              devices.delete(gone.id)
+            }
+          } else if (ev.state === 'device') {
+            // Probe identitas stabil di agent: control plane tidak punya adb.
+            const probe = await probeDeviceIdentity(client, ev.serial).catch(() => null)
+            if (!probe) return
+            const snapshot: DeviceSnapshot = {
+              id: probe.stableId,
+              stableId: probe.stableId,
+              serial: ev.serial,
+              label: probe.model ?? probe.stableId,
+              status: 'idle',
+              androidVersion: probe.androidVersion,
+              apiLevel: probe.apiLevel,
+              screenW: probe.screenW,
+              screenH: probe.screenH,
+              transport: 'adb-usb',
+              display: 'scrcpy',
+              input: 'scrcpy-uhid',
+              inspection: 'ui-server',
+              preferredInputMode: 'uhid',
+            }
+            snapshots.set(snapshot.id, snapshot)
+            devices.set(snapshot.id, {
+              id: snapshot.id,
+              stableId: snapshot.stableId,
+              serial: snapshot.serial,
+              label: snapshot.label,
+              androidVersion: snapshot.androidVersion,
+              apiLevel: snapshot.apiLevel,
+              screenW: snapshot.screenW,
+              screenH: snapshot.screenH,
+              density: null,
+              status: 'idle',
+              lastSeen: Math.floor(Date.now() / 1000),
+            })
+          }
+          hosts?.updateDevices([...snapshots.values()])
+          tunnel?.send({ type: 'agent.devices', payload: { devices: [...devices.values()] } })
+        })()
       })
       await tracker.start()
       log('agent siap')
@@ -119,6 +181,8 @@ export function createAgent(opts: AgentOptions): Agent {
     async stop() {
       unsubscribe?.()
       unsubscribe = null
+      await hosts?.closeAll()
+      hosts = null
       tunnel?.stop()
       tunnel = null
       await adb?.dispose()

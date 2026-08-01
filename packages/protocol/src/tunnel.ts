@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { DeviceInfoSchema } from './device'
+import { PointSchema } from './ui-node'
 
 /**
  * Protokol tunnel agent ⇄ control plane (plan 11 §4.2).
@@ -104,27 +105,6 @@ export const TunnelChannelCloseMessage = z.object({
   payload: z.object({ channelId: z.number().int() }),
 })
 
-export const AgentToControlSchema = z.discriminatedUnion('type', [
-  AgentHelloMessage,
-  AgentDevicesMessage,
-  TunnelPingMessage,
-  TunnelPongMessage,
-  TunnelChannelCloseMessage,
-])
-export type AgentToControl = z.infer<typeof AgentToControlSchema>
-
-export const ControlToAgentSchema = z.discriminatedUnion('type', [
-  AgentHelloAckMessage,
-  SessionStartMessage,
-  SessionStopMessage,
-  JobDispatchMessage,
-  TunnelPingMessage,
-  TunnelPongMessage,
-  TunnelChannelOpenMessage,
-  TunnelChannelCloseMessage,
-])
-export type ControlToAgent = z.infer<typeof ControlToAgentSchema>
-
 /**
  * Frame binary tunnel: `[0x02][channelId u16BE][payload]`.
  * Byte 0 = 0x02 menandai "tunnel frame" (berbeda dari channel VIDEO 0x01
@@ -181,3 +161,101 @@ export const WebRtcStopMessage = z.object({
   type: z.literal('video.webrtc.stop'),
   payload: z.object({ deviceId: z.string() }),
 })
+
+// ---- session & job jarak jauh (M9a) ----
+
+/**
+ * CP → agent: teruskan input. Koordinat sudah dalam PIXEL device — control
+ * plane yang memetakannya dari 0..1 memakai dimensi frame terakhir, supaya
+ * agent tidak perlu tahu ukuran tampilan di browser.
+ */
+export const InputForwardMessage = z.object({
+  type: z.literal('input.forward'),
+  payload: z.object({
+    deviceId: z.string(),
+    action: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('tap'), point: PointSchema }),
+      z.object({ kind: z.literal('swipe'), from: PointSchema, to: PointSchema, durationMs: z.number().int() }),
+      z.object({ kind: z.literal('key'), keycode: z.number().int() }),
+      z.object({ kind: z.literal('text'), text: z.string() }),
+    ]),
+  }),
+})
+
+export const JobCancelForwardMessage = z.object({
+  type: z.literal('job.cancel.forward'),
+  payload: z.object({ jobId: z.string() }),
+})
+
+/** agent → CP: sesi berhasil dibuat, termasuk engine efektif hasil degrade. */
+export const SessionStartedMessage = z.object({
+  type: z.literal('session.started'),
+  payload: z.object({
+    deviceId: z.string(),
+    codec: z.enum(['png', 'h264']),
+    width: z.number().int(),
+    height: z.number().int(),
+    displayEngine: z.string(),
+    inputEngine: z.string(),
+    inspectorEngine: z.string(),
+    degradedReason: z.string().optional(),
+  }),
+})
+
+export const SessionFailedMessage = z.object({
+  type: z.literal('session.failed'),
+  payload: z.object({ deviceId: z.string(), code: z.string(), message: z.string() }),
+})
+
+/** agent → CP: kemajuan job (fase, log, artifact kecil, hasil akhir). */
+export const JobProgressMessage = z.object({
+  type: z.literal('job.progress'),
+  payload: z.object({
+    jobId: z.string(),
+    kind: z.enum(['phase', 'log', 'artifact', 'result']),
+    phase: z.enum(['prepare', 'run', 'finish']).optional(),
+    attempt: z.number().int().optional(),
+    log: z
+      .object({ level: z.string(), source: z.string(), msg: z.string(), ts: z.number() })
+      .optional(),
+    artifact: z
+      .object({ label: z.string(), kind: z.string(), ext: z.string().optional(), dataBase64: z.string() })
+      .optional(),
+    result: z
+      .object({
+        ok: z.boolean(),
+        value: z.unknown().optional(),
+        error: z.object({ code: z.string(), message: z.string() }).optional(),
+      })
+      .optional(),
+  }),
+})
+
+// ---- union (harus di akhir: semua message sudah terdefinisi) ----
+
+export const AgentToControlSchema = z.discriminatedUnion('type', [
+  AgentHelloMessage,
+  AgentDevicesMessage,
+  SessionStartedMessage,
+  SessionFailedMessage,
+  JobProgressMessage,
+  TunnelPingMessage,
+  TunnelPongMessage,
+  TunnelChannelCloseMessage,
+])
+export type AgentToControl = z.infer<typeof AgentToControlSchema>
+
+export const ControlToAgentSchema = z.discriminatedUnion('type', [
+  AgentHelloAckMessage,
+  SessionStartMessage,
+  SessionStopMessage,
+  JobDispatchMessage,
+  InputForwardMessage,
+  JobCancelForwardMessage,
+  TunnelPingMessage,
+  TunnelPongMessage,
+  TunnelChannelOpenMessage,
+  TunnelChannelCloseMessage,
+])
+export type ControlToAgent = z.infer<typeof ControlToAgentSchema>
+
