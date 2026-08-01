@@ -25,6 +25,14 @@ import {
 } from './messages/job'
 import { StreamMetaMessage, StreamStartedMessage, StreamStartMessage, StreamStopMessage } from './messages/stream'
 import {
+  WebRtcAnswerMessage,
+  WebRtcFailedMessage,
+  WebRtcIceMessage,
+  WebRtcOfferMessage,
+  WebRtcRequestMessage,
+  WebRtcStopMessage,
+} from './tunnel'
+import {
   ToolChangedMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
@@ -135,6 +143,12 @@ export {
   TUNNEL_FRAME_MARKER,
   encodeTunnelFrame,
   decodeTunnelFrame,
+  WebRtcRequestMessage,
+  WebRtcOfferMessage,
+  WebRtcAnswerMessage,
+  WebRtcIceMessage,
+  WebRtcFailedMessage,
+  WebRtcStopMessage,
   type RoutedEnvelope,
   type AgentToControl,
   type ControlToAgent,
@@ -169,6 +183,9 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   LeaseAcquiredMessage,
   LeaseReleasedMessage,
   LeaseRevokedMessage,
+  WebRtcOfferMessage,
+  WebRtcFailedMessage,
+  WebRtcIceMessage,
   ErrorMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
@@ -187,5 +204,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   JobCancelMessage,
   LeaseAcquireMessage,
   LeaseReleaseMessage,
+  WebRtcRequestMessage,
+  WebRtcAnswerMessage,
+  WebRtcStopMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

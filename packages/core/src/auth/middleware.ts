@@ -9,7 +9,13 @@ export const SESSION_COOKIE = 'enkaku_session'
 export type AuthEnv = { Variables: { user: AuthUser } }
 
 /** Route yang boleh diakses tanpa login (halaman login butuh ini). */
-const PUBLIC_PATHS = new Set(['/api/health', '/api/auth/login', '/api/auth/setup'])
+const PUBLIC_PATHS = new Set([
+  '/api/health',
+  '/api/auth/login',
+  '/api/auth/setup',
+  // Autentikasinya adalah enrollment token sekali-pakai di body.
+  '/api/agents/enroll',
+])
 
 export function authMiddleware(deps: {
   auth: AuthService

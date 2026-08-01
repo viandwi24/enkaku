@@ -13,6 +13,7 @@ import { createArtifactStore } from './artifact-store'
 import { createDeviceExecutor } from './device-executor'
 import { ChildToParentSchema, DeviceCallSchema, type ChildToParent, type ParentToChild } from './ipc'
 import { createJobLogger, type JobLogEntry } from './job-logger'
+import { resolveIsolation, type IsolationProvider } from '../isolation/provider'
 import { materializeBundle } from '../scripts/bundle-cache'
 
 const DEFAULT_TIMEOUT_MS = 300_000
@@ -37,6 +38,8 @@ export interface AttemptOutcome {
 
 export interface JobRunnerDeps {
   db: Db
+  /** Isolasi eksekusi job — child process (local) atau container (cloud). */
+  isolation?: IsolationProvider
   dataDir: string
   sessions: SessionManager
   log: Logger
@@ -57,6 +60,7 @@ export interface JobRunner {
 }
 
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
+const defaultIsolation = resolveIsolation()
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const active = new Map<string, RunningJob>()
@@ -88,16 +92,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       let silenceTimer: ReturnType<typeof setTimeout> | null = null
       let abortReason: 'timeout' | 'cancelled' | 'hung' | null = null
 
-      const child: Subprocess<'ignore', 'pipe', 'pipe'> = Bun.spawn(
-        [process.execPath, childEntryPath, bundlePath],
-        {
-          ipc(raw) {
-            handleChildMessage(raw)
-          },
-          stdout: 'pipe',
-          stderr: 'pipe',
-          env: { ...process.env, ENKAKU_JOB_ID: job.id },
-        },
+      const isolation = deps.isolation ?? defaultIsolation
+      const child: Subprocess<'ignore', 'pipe', 'pipe'> = isolation.spawn(
+        { entryPath: childEntryPath, bundlePath, jobId: job.id, env: { ENKAKU_JOB_ID: job.id } },
+        handleChildMessage,
       )
 
       const send = (msg: ParentToChild) => {

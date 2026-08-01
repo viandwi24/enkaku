@@ -26,6 +26,7 @@ export interface HttpDeps {
   settingsRoutes: Hono
   artifactRoutes: Hono
   authRoutes: Hono<AuthEnv>
+  agentRoutes: Hono<AuthEnv>
   auth: AuthService
   authMode: AuthMode
   startedAt: number
@@ -51,6 +52,8 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.use('/api/*', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
 
   app.route('/api/auth', deps.authRoutes)
+
+  app.route('/api/agents', deps.agentRoutes)
 
   app.get('/api/health', async (c) => {
     return c.json({

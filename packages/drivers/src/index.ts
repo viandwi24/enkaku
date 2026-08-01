@@ -27,3 +27,5 @@ export {
   type ResolvedInputEngine,
   type InputSelectionResult,
 } from './input/select'
+export { AppiumInspector, type AppiumInspectorOptions } from './inspector/appium'
+export { ScrcpyAoaInput } from './input/scrcpy-aoa'

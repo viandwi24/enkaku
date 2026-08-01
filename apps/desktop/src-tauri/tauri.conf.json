@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Enkaku",
+  "version": "0.0.1",
+  "identifier": "dev.enkaku.desktop",
+  "build": {
+    "frontendDist": "../../../packages/studio/out",
+    "beforeBuildCommand": "bun run --cwd ../../packages/studio build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Enkaku",
+        "width": 1280,
+        "height": 860,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/icon.png",
+      "tooltip": "Enkaku — device farm"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://releases.enkaku.dev/desktop/{{target}}/{{arch}}/{{current_version}}"],
+      "pubkey": "TODO-verify: isi dengan public key updater saat rilis pertama"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "msi", "appimage"],
+    "icon": ["icons/icon.png"],
+    "resources": [],
+    "externalBin": []
+  }
+}

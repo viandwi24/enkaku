@@ -30,6 +30,9 @@ export const devices = sqliteTable('devices', {
   status: text('status').default('offline'),
   /** Alasan quarantine (mis. 'thermal:47.3C') — null saat tidak quarantined. */
   quarantineReason: text('quarantine_reason'),
+  /** Agent pemilik device (mode cloud); null = device lokal. */
+  agentId: text('agent_id'),
+  tenantId: text('tenant_id'),
   lastSeen: integer('last_seen', { mode: 'timestamp' }),
 })
 
@@ -160,3 +163,21 @@ export const auditLog = sqliteTable(
 )
 
 export type AuditRow = typeof auditLog.$inferSelect
+
+/** Agent cloud (plan 11 §4.3) — satu agent memegang banyak device. */
+export const agents = sqliteTable('agents', {
+  id: text('id').primaryKey(),
+  /** Multi-tenant (M8c) — null di single-tenant. */
+  tenantId: text('tenant_id'),
+  name: text('name').notNull(),
+  /** Enrollment token sekali pakai (null setelah ditukar credential). */
+  tokenHash: text('token_hash'),
+  credentialHash: text('credential_hash'),
+  status: text('status').default('pending'), // pending|online|offline|disabled
+  version: text('version'),
+  platform: text('platform'),
+  lastSeen: integer('last_seen', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }),
+})
+
+export type AgentRow = typeof agents.$inferSelect

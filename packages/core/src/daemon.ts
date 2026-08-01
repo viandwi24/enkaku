@@ -4,6 +4,10 @@ import { AdbClient } from '@enkaku/adb'
 import { ToolchainManager } from '@enkaku/toolchain'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import { createAgentRoutes } from './api/agents'
+import { createAgentAuth } from './tunnel/agent-auth'
+import { createTunnelRegistry } from './tunnel/registry'
+import { createTunnelRouter } from './tunnel/router'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
@@ -111,6 +115,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const authMode = resolveAuthMode(cfg)
       assertTlsPolicy(cfg, authMode)
       const auth = createAuthService({ db, sessionTtlHours: cfg.auth.sessionTtlHours })
+      const agentAuth = createAgentAuth(db)
+
+      // Mode cloud (spec §5.3): orchestrator tidak memegang device lokal;
+      // device datang dari agent lewat tunnel outbound.
+      const isOrchestrator = process.env.ENKAKU_MODE === 'orchestrator'
+      const tunnelRegistry = createTunnelRegistry({
+        db,
+        log: log.child('tunnel'),
+        onDevicesChanged: () => scheduler?.kick(),
+      })
+      const tunnelRouter = createTunnelRouter({ registry: tunnelRegistry, log: log.child('tunnel') })
       const audit = createAuditLogger(db)
       if (authMode === 'local') auth.ensureLocalAdmin()
       log.info(
@@ -220,6 +235,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           maxAttempts: cfg.auth.loginMaxAttempts,
           lockoutSeconds: cfg.auth.loginLockoutSeconds,
         }),
+        agentRoutes: createAgentRoutes({ agentAuth }),
         auth,
         authMode,
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
@@ -234,8 +250,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         hostname: cfg.host,
         port: cfg.port,
         ...tlsOptions,
-        fetch(req, srv) {
+        async fetch(req, srv) {
           const url = new URL(req.url)
+          // Tunnel agent: auth pakai credential hasil enrollment.
+          if (url.pathname === '/agent/ws') {
+            const agentId = await agentAuth.verify(req.headers.get('authorization'))
+            if (!agentId) return new Response('unauthorized', { status: 401 })
+            if (srv.upgrade(req, { data: { agentId } })) return undefined
+            return new Response('upgrade gagal', { status: 400 })
+          }
           if (url.pathname === '/ws') {
             // WS tidak selalu membawa cookie → dukung ticket sekali-pakai.
             if (authMode === 'server') {
@@ -249,7 +272,33 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           }
           return app.fetch(req, srv)
         },
-        websocket: hub.handlers,
+        websocket: {
+          open: (ws) => {
+            const agentId = (ws.data as { agentId?: string } | null)?.agentId
+            if (agentId) {
+              tunnelRegistry.attach(agentId, ws)
+              return
+            }
+            hub.handlers.open?.(ws)
+          },
+          close: (ws, code, reason) => {
+            const agentId = (ws.data as { agentId?: string } | null)?.agentId
+            if (agentId) {
+              tunnelRegistry.detach(ws)
+              return
+            }
+            hub.handlers.close?.(ws, code, reason)
+          },
+          message: (ws, message) => {
+            const agentId = (ws.data as { agentId?: string } | null)?.agentId
+            if (agentId) {
+              if (typeof message === 'string') tunnelRouter.handleAgentMessage(ws, agentId, message)
+              else tunnelRouter.handleAgentFrame(agentId, new Uint8Array(message))
+              return
+            }
+            hub.handlers.message?.(ws, message)
+          },
+        },
       })
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
       log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
@@ -270,6 +319,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       scheduler.start()
       const sched = scheduler
       stopScheduler = () => sched.stop()
+
+      if (isOrchestrator) {
+        // Orchestrator tidak menyentuh adb/device lokal sama sekali.
+        adbState = 'orchestrator'
+        log.info('mode orchestrator: menunggu agent connect di /agent/ws')
+        return
+      }
 
       // 5. Provision tool wajib → baru subsistem adb boleh start (gate)
       try {

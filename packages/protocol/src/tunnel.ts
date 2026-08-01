@@ -147,3 +147,37 @@ export function decodeTunnelFrame(buf: Uint8Array): { channelId: number; payload
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   return { channelId: dv.getUint16(1, false), payload: buf.subarray(3) }
 }
+
+// ---- signaling WebRTC (M8b) ----
+
+export const WebRtcRequestMessage = z.object({
+  type: z.literal('video.webrtc.request'),
+  id: z.string().optional(),
+  payload: z.object({ deviceId: z.string() }),
+})
+
+export const WebRtcOfferMessage = z.object({
+  type: z.literal('video.webrtc.offer'),
+  payload: z.object({ deviceId: z.string(), sdp: z.string() }),
+})
+
+export const WebRtcAnswerMessage = z.object({
+  type: z.literal('video.webrtc.answer'),
+  payload: z.object({ deviceId: z.string(), sdp: z.string() }),
+})
+
+export const WebRtcIceMessage = z.object({
+  type: z.literal('video.webrtc.ice'),
+  payload: z.object({ deviceId: z.string(), candidate: z.unknown() }),
+})
+
+/** Gagal negosiasi → Studio jatuh ke WS+WebCodecs (degraded, bukan mati). */
+export const WebRtcFailedMessage = z.object({
+  type: z.literal('video.webrtc.failed'),
+  payload: z.object({ deviceId: z.string(), reason: z.string() }),
+})
+
+export const WebRtcStopMessage = z.object({
+  type: z.literal('video.webrtc.stop'),
+  payload: z.object({ deviceId: z.string() }),
+})

@@ -43,25 +43,34 @@ const PLANNED: EngineDescriptor[] = [
   },
   {
     id: 'scrcpy-aoa',
-    displayName: 'scrcpy AOA/OTG (HID fisik via USB)',
+    displayName: 'scrcpy AOA/OTG (HID fisik via USB — butuh kabel, tanpa video)',
     kind: 'input',
     capabilities: ['tap', 'swipe', 'key', 'hardware-like-input'],
     locks: ['input-injection'],
     requires: [],
     configSchema: {},
     available: false,
-    unavailableReason: 'Tersedia mulai M8 (opt-in)',
+    unavailableReason: 'Butuh transport USB AOA (libusb) — belum diimplementasi; pakai scrcpy-uhid',
   },
   {
     id: 'appium',
-    displayName: 'Appium (WebView/hybrid, berat)',
+    displayName: 'Appium (WebView/hybrid — opt-in, berat ~500 MB/sesi)',
     kind: 'inspector',
     capabilities: ['dump', 'find', 'screenshot', 'webview'],
+    // Mengunci dua resource → tidak bisa barengan ui-server / input scrcpy.
     locks: ['instrumentation', 'input-injection'],
     requires: [],
-    configSchema: {},
-    available: false,
-    unavailableReason: 'Tersedia mulai M8 (opt-in)',
+    configSchema: {
+      type: 'object',
+      properties: {
+        serverUrl: {
+          type: 'string',
+          default: 'http://127.0.0.1:4723',
+          description: 'Base URL server Appium yang sudah berjalan',
+        },
+      },
+    },
+    available: true,
   },
 ]
 
