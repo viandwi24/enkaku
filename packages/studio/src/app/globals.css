@@ -44,6 +44,23 @@ body {
   font-weight: 400;
 }
 
+.navlink {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+}
+.navlink:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.navlink.active {
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
 main {
   padding: 1.25rem;
   max-width: 1200px;

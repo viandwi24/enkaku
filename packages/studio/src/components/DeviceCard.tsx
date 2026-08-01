@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import type { BatteryState, DeviceInfo } from '@enkaku/protocol'
 
 export function DeviceCard({ device, battery }: { device: DeviceInfo; battery?: BatteryState | null }) {
@@ -28,9 +29,9 @@ export function DeviceCard({ device, battery }: { device: DeviceInfo; battery?: 
     </>
   )
   return clickable ? (
-    <a className="card" href={`/device?id=${encodeURIComponent(device.id)}`}>
+    <Link className="card" href={`/device?id=${encodeURIComponent(device.id)}`}>
       {body}
-    </a>
+    </Link>
   ) : (
     <div className="card" style={{ opacity: 0.65 }}>
       {body}

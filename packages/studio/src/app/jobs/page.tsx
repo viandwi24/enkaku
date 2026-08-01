@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/JobStatusBadge'
 import { fetchDevices } from '@/lib/api'
@@ -138,9 +139,9 @@ export default function JobsPage() {
                   onClick={() => setExpanded(expanded === j.jobId ? null : j.jobId)}
                 >
                   <td style={{ padding: '0.6rem' }} className="meta">
-                    <a href={`/jobs/detail?id=${j.jobId}`} onClick={(e) => e.stopPropagation()}>
+                    <Link href={`/jobs/detail?id=${j.jobId}`} onClick={(e) => e.stopPropagation()}>
                       {j.jobId.slice(0, 8)}
-                    </a>
+                    </Link>
                   </td>
                   <td className="meta">{j.scriptId}</td>
                   <td>{deviceLabel(j.deviceId)}</td>
