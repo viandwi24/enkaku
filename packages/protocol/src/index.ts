@@ -118,6 +118,28 @@ export {
   type KeyName,
 } from './ui-node'
 
+export {
+  RoutedEnvelopeSchema,
+  AgentToControlSchema,
+  ControlToAgentSchema,
+  AgentHelloMessage,
+  AgentHelloAckMessage,
+  AgentDevicesMessage,
+  SessionStartMessage,
+  SessionStopMessage,
+  JobDispatchMessage,
+  TunnelPingMessage,
+  TunnelPongMessage,
+  TunnelChannelOpenMessage,
+  TunnelChannelCloseMessage,
+  TUNNEL_FRAME_MARKER,
+  encodeTunnelFrame,
+  decodeTunnelFrame,
+  type RoutedEnvelope,
+  type AgentToControl,
+  type ControlToAgent,
+} from './tunnel'
+
 /** Error generik server→client (reply gagal, message invalid). */
 export const ErrorMessage = z.object({
   type: z.literal('error'),

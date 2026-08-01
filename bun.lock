@@ -24,6 +24,17 @@
         "@enkaku/protocol": "workspace:*",
       },
     },
+    "packages/agent": {
+      "name": "@enkaku/agent",
+      "version": "0.0.1",
+      "dependencies": {
+        "@enkaku/adb": "workspace:*",
+        "@enkaku/drivers": "workspace:*",
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/toolchain": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
     "packages/core": {
       "name": "enkaku-core",
       "version": "0.0.1",
@@ -109,6 +120,8 @@
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 
     "@enkaku/adb": ["@enkaku/adb@workspace:packages/adb"],
+
+    "@enkaku/agent": ["@enkaku/agent@workspace:packages/agent"],
 
     "@enkaku/drivers": ["@enkaku/drivers@workspace:packages/drivers"],
 
