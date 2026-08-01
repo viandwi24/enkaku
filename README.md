@@ -2,14 +2,15 @@
 
 Device farm platform untuk remote control + automation smartphone Android — self-hosted, zero-config. Spec lengkap: [`docs/spec.md`](docs/spec.md), rencana kerja berurutan: [`docs/plans/`](docs/plans/).
 
-## Run dev (M0)
+## Run dev
 
 ```bash
 bun install
-ENKAKU_ADB_PATH=$(which adb) ENKAKU_DATA_DIR=/tmp/enkaku-dev bun run dev
+bun run dev
+# buka http://localhost:7700
 ```
 
-`ENKAKU_ADB_PATH` adalah jembatan sementara M0 — digantikan Toolchain Manager (Plan 02) yang mengelola binary adb sendiri.
+Tidak perlu meng-install adb: saat pertama jalan, core mengunduh adb + scrcpy-server + APK inspector, memverifikasi sha256-nya, lalu mengaktifkannya sendiri. Panduan lengkap: [`docs/guide/install.md`](docs/guide/install.md).
 
 ## Package map
 
