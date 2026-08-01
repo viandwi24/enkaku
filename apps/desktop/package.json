@@ -1,0 +1,12 @@
+{
+  "name": "@enkaku/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "cargo tauri dev --manifest-path src-tauri/Cargo.toml",
+    "build": "../../scripts/build-desktop.sh"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

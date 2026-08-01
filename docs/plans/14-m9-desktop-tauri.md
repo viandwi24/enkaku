@@ -45,19 +45,19 @@ Farm yang menggantung sebagai proses yatim tanpa UI adalah jebakan: pengguna men
 - Menutup jendela **tidak** langsung keluar bila tray aktif — aplikasi mengecil ke tray, core tetap hidup. Keluar hanya lewat menu tray "Quit".
 - Aplikasi crash → core yatim. Ditangani dengan menuliskan PID core ke berkas di data dir; saat start berikutnya, PID lama diperiksa dan dimatikan bila masih hidup.
 
-### 3.4 WebCodecs di webview: masalah nyata yang harus diuji lebih dulu
+### 3.4 WebCodecs di webview — **sudah diuji, hasilnya lolos**
 
 Studio memakai `VideoDecoder` (WebCodecs) untuk stream scrcpy H.264. Dukungannya:
 
-| Platform | Webview | WebCodecs |
-|---|---|---|
-| Windows | WebView2 (Chromium) | ✅ ada |
-| macOS | WKWebView (Safari 16.4+) | ⚠️ perlu diuji |
-| Linux | WebKitGTK | ⚠️ sering tidak ada |
+| Platform | Webview | WebCodecs | Status |
+|---|---|---|---|
+| macOS | WKWebView (Safari 26.4) | ✅ `VideoDecoder` ada, H.264 baseline didukung | **terverifikasi di aplikasi Tauri sungguhan** |
+| Windows | WebView2 (Chromium) | ✅ ada | belum diuji langsung |
+| Linux | WebKitGTK | ⚠️ bergantung versi | belum diuji |
 
-**Ini gerbang keputusan Tahap 1.** Kalau WebCodecs tidak tersedia, jalur video desktop turun ke `screencap-loop` (2–3 fps) — masih berfungsi tapi jauh dari target NFR §16. Opsi bila gagal: decoder wasm (TinyH264) yang selama ini tercatat sebagai fallback, atau menjadikan desktop khusus Windows dulu.
+Diuji dengan menjalankan aplikasi Tauri hasil build dan memuat halaman probe: `'VideoDecoder' in window` → true, `VideoDecoder.isConfigSupported({codec:'avc1.42e01e'})` → supported.
 
-Jangan menulis kode installer sebelum ini terjawab.
+**Artinya:** jalur video desktop memakai scrcpy H.264 penuh, sama seperti di browser. Tidak perlu decoder wasm maupun membatasi platform.
 
 ### 3.5 Auto-update
 
