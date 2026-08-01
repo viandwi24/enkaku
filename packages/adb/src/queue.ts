@@ -35,8 +35,39 @@ export class Semaphore {
 export class PerDeviceQueue {
   /** Chain promise per serial; entry dibersihkan saat chain kosong. */
   private chains = new Map<string, { tail: Promise<unknown>; pending: number }>()
+  /** Gate pause: task baru menunggu di sini saat queue di-pause (adb swap). */
+  private gate: Promise<void> = Promise.resolve()
+  private openGate: (() => void) | null = null
+  /** Jumlah task yang benar-benar sedang eksekusi (untuk drain). */
+  private inFlight = 0
+  private idleWaiters: Array<() => void> = []
 
   constructor(private sem: Semaphore) {}
+
+  /** Stop menerima eksekusi task baru (task antri tetap antri). */
+  pause(): void {
+    if (this.openGate) return
+    this.gate = new Promise((resolve) => {
+      this.openGate = resolve
+    })
+  }
+
+  resume(): void {
+    this.openGate?.()
+    this.openGate = null
+  }
+
+  /** Resolve saat tidak ada task in-flight (dipanggil setelah pause()). */
+  waitIdle(timeoutMs: number): Promise<boolean> {
+    if (this.inFlight === 0) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs)
+      this.idleWaiters.push(() => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
+  }
 
   run<T>(serial: string, task: () => Promise<T>): Promise<T> {
     const entry = this.chains.get(serial) ?? { tail: Promise.resolve(), pending: 0 }
@@ -44,10 +75,16 @@ export class PerDeviceQueue {
     const result = entry.tail
       .catch(() => {}) // error task sebelumnya tidak menular ke task berikut
       .then(async () => {
+        await this.gate
         const release = await this.sem.acquire()
+        this.inFlight++
         try {
           return await task()
         } finally {
+          this.inFlight--
+          if (this.inFlight === 0) {
+            for (const w of this.idleWaiters.splice(0)) w()
+          }
           release()
         }
       })

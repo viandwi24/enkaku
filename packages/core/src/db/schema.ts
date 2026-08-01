@@ -33,3 +33,16 @@ export const devices = sqliteTable('devices', {
 
 export type DeviceRow = typeof devices.$inferSelect
 export type DeviceInsert = typeof devices.$inferInsert
+
+/** Katalog install tool (spec §12) — kebenaran fisik tetap di disk. */
+export const toolInstalls = sqliteTable('tool_installs', {
+  id: text('id').primaryKey(),
+  toolId: text('tool_id').notNull(),
+  version: text('version').notNull(),
+  active: integer('active', { mode: 'boolean' }).default(false),
+  sha256: text('sha256'),
+  installedAt: integer('installed_at', { mode: 'timestamp' }),
+})
+
+export type ToolInstallRow = typeof toolInstalls.$inferSelect
+

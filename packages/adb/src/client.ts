@@ -98,6 +98,27 @@ export class AdbClient {
     return this.queue.pending(serial)
   }
 
+  /**
+   * Dipakai Toolchain Manager saat swap versi adb (plan 02 §4.11):
+   * pause → waitIdle (drain) → [kill/start-server di core] → resume.
+   */
+  pauseQueue(): void {
+    this.queue.pause()
+  }
+
+  resumeQueue(): void {
+    this.queue.resume()
+  }
+
+  waitQueueIdle(timeoutMs: number): Promise<boolean> {
+    return this.queue.waitIdle(timeoutMs)
+  }
+
+  /** Ganti binary adb setelah swap versi (path baru dari Toolchain Manager). */
+  setAdbPath(path: string): void {
+    this.adbPath = path
+  }
+
   trackDevices(): DeviceTracker {
     if (!this.tracker) {
       this.tracker = new DeviceTracker({ host: this.host, port: this.port, onLog: this.onLog })

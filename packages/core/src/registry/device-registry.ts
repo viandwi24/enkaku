@@ -166,6 +166,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     async stop() {
       unsubscribe?.()
       unsubscribe = null
+      await client.trackDevices().stop()
     },
     listDevices() {
       return db.select().from(devices).all().map(rowToDeviceInfo)

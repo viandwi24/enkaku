@@ -1,0 +1,94 @@
+{
+  "manifestVersion": 1,
+  "updatedAt": "2026-08-01T00:00:00Z",
+  "tools": [
+    {
+      "id": "adb",
+      "displayName": "ADB (Android platform-tools)",
+      "swappable": true,
+      "format": "zip",
+      "versions": [
+        {
+          "version": "36.0.0",
+          "releasedAt": "unknown",
+          "knownGood": true,
+          "platforms": {
+            "darwin-arm64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r36.0.0-darwin.zip",
+              "sha256": "d3e9fa1df3345cf728586908426615a60863d2632f73f1ce14f0f1349ef000fd",
+              "sizeBytes": 14186137
+            },
+            "darwin-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r36.0.0-darwin.zip",
+              "sha256": "d3e9fa1df3345cf728586908426615a60863d2632f73f1ce14f0f1349ef000fd",
+              "sizeBytes": 14186137
+            },
+            "linux-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r36.0.0-linux.zip",
+              "sha256": "0ead642c943ffe79701fccca8f5f1c69c4ce4f43df2eefee553f6ccb27cbfbe8",
+              "sizeBytes": 7904253
+            },
+            "win32-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r36.0.0-win.zip",
+              "sha256": "12c2841f354e92a0eb2fd7bf6f0f9bf8538abce7bd6b060ac8349d6f6a61107c",
+              "sizeBytes": 7138784
+            }
+          }
+        },
+        {
+          "version": "35.0.2",
+          "releasedAt": "unknown",
+          "platforms": {
+            "darwin-arm64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r35.0.2-darwin.zip",
+              "sha256": "1820078db90bf21628d257ff052528af1c61bb48f754b3555648f5652fa35d78",
+              "sizeBytes": 13335867
+            },
+            "darwin-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r35.0.2-darwin.zip",
+              "sha256": "1820078db90bf21628d257ff052528af1c61bb48f754b3555648f5652fa35d78",
+              "sizeBytes": 13335867
+            },
+            "linux-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r35.0.2-linux.zip",
+              "sha256": "acfdcccb123a8718c46c46c059b2f621140194e5ec1ac9d81715be3d6ab6cd0a",
+              "sizeBytes": 7472902
+            },
+            "win32-x64": {
+              "url": "https://dl.google.com/android/repository/platform-tools_r35.0.2-win.zip",
+              "sha256": "2975a3eac0b19182748d64195375ad056986561d994fffbdc64332a516300bb9",
+              "sizeBytes": 6700829
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "scrcpy-server",
+      "displayName": "scrcpy server (managed by core)",
+      "swappable": false,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "3.3.1",
+          "releasedAt": "unknown",
+          "compatibleCoreRange": "TODO-M6",
+          "platforms": {
+            "*": {
+              "url": "https://github.com/Genymobile/scrcpy/releases/download/v3.3.1/scrcpy-server-v3.3.1",
+              "sha256": "a0f70b20aa4998fbf658c94118cd6c8dab6abbb0647a3bdab344d70bc1ebcbb8",
+              "sizeBytes": 90788
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "ui-server",
+      "displayName": "Enkaku UI inspector server (placeholder — M4.5)",
+      "swappable": false,
+      "format": "raw",
+      "versions": []
+    }
+  ]
+}

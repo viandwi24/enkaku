@@ -1,13 +1,19 @@
 import { Hono } from 'hono'
-import type { DeviceRegistry } from '../registry/device-registry'
+import type { DeviceInfo } from '@enkaku/protocol'
+import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
+import { createToolsRoutes } from '../tools/routes'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 
 export interface HttpDeps {
-  registry: DeviceRegistry
+  listDevices: () => DeviceInfo[]
+  deviceCount: () => number
   log: Logger
   version: string
-  adbServerVersion: () => Promise<string>
+  adbServerVersion: () => Promise<string | null>
+  /** Status subsistem adb: 'provisioning' | 'ready' | 'error'. */
+  adbState: () => string
+  toolchain: ToolchainManager
   startedAt: number
 }
 
@@ -23,28 +29,28 @@ export function createApp(deps: HttpDeps): Hono {
   const app = new Hono()
 
   app.get('/api/health', async (c) => {
-    let adbVersion: string | null = null
-    try {
-      adbVersion = await deps.adbServerVersion()
-    } catch {
-      adbVersion = null
-    }
     return c.json({
       ok: true,
       version: deps.version,
-      adb: { serverVersion: adbVersion },
-      deviceCount: deps.registry.deviceCount(),
+      adb: { state: deps.adbState(), serverVersion: await deps.adbServerVersion() },
+      deviceCount: deps.deviceCount(),
       uptimeMs: Date.now() - deps.startedAt,
     })
   })
 
   app.get('/api/devices', (c) => {
-    return c.json({ devices: deps.registry.listDevices() })
+    return c.json({ devices: deps.listDevices() })
   })
+
+  app.route('/api/tools', createToolsRoutes(deps.toolchain))
 
   app.notFound((c) => c.json({ error: { code: 'E_NOT_FOUND', message: 'route tidak ada' } }, 404))
 
   app.onError((err, c) => {
+    if (err instanceof ToolchainError) {
+      deps.log.warn(`api error ${err.code}: ${err.message}`)
+      return c.json(err.toJSON(), 500)
+    }
     if (err instanceof EnkakuError) {
       const status = ERROR_STATUS[err.code] ?? 500
       deps.log.warn(`api error ${err.code}: ${err.message}`)
