@@ -1,5 +1,8 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import type { AuthMode } from '../config'
+import { authMiddleware, type AuthEnv } from '../auth/middleware'
+import type { AuthService } from '../auth/service'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { buildRegistryResponse } from '../registry/engines'
@@ -22,6 +25,9 @@ export interface HttpDeps {
   deviceRoutes: Hono
   settingsRoutes: Hono
   artifactRoutes: Hono
+  authRoutes: Hono<AuthEnv>
+  auth: AuthService
+  authMode: AuthMode
   startedAt: number
 }
 
@@ -33,13 +39,18 @@ const ERROR_STATUS: Record<string, number> = {
   E_DB: 500,
 }
 
-export function createApp(deps: HttpDeps): Hono {
-  const app = new Hono()
+export function createApp(deps: HttpDeps): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>()
 
   // Mode dev Studio (next dev di port lain) — hanya non-production.
   if (process.env.NODE_ENV !== 'production') {
     app.use('/api/*', cors({ origin: (origin) => (origin.startsWith('http://localhost:') ? origin : null) }))
   }
+
+  // Auth: mode local (loopback) inject admin implisit; mode server wajib login.
+  app.use('/api/*', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
+
+  app.route('/api/auth', deps.authRoutes)
 
   app.get('/api/health', async (c) => {
     return c.json({

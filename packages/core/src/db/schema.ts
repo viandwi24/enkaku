@@ -119,3 +119,44 @@ export const farmSettings = sqliteTable('farm_settings', {
 
 export type FarmSettingsRow = typeof farmSettings.$inferSelect
 
+
+/** User (spec §12) — password argon2, dipakai mulai M7. */
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull().unique(),
+  role: text('role').default('operator'), // admin|operator
+  passwordHash: text('password_hash'),
+  createdAt: integer('created_at', { mode: 'timestamp' }),
+})
+
+export type UserRow = typeof users.$inferSelect
+
+/** Session login — token mentah TIDAK disimpan, hanya sha256-nya. */
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  userId: text('user_id').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
+  userAgent: text('user_agent'),
+  ip: text('ip'),
+})
+
+export type SessionRow = typeof sessions.$inferSelect
+
+/** Audit trail (spec §14): siapa melakukan apa. */
+export const auditLog = sqliteTable(
+  'audit_log',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id'),
+    action: text('action').notNull(), // job.run|device.enroll|tool.activate|user.login|...
+    target: text('target'),
+    meta: text('meta', { mode: 'json' }),
+    at: integer('at', { mode: 'timestamp' }),
+  },
+  (t) => [index('idx_audit_at').on(t.at)],
+)
+
+export type AuditRow = typeof auditLog.$inferSelect

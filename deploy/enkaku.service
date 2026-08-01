@@ -1,0 +1,31 @@
+[Unit]
+Description=Enkaku device farm core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=enkaku
+Group=enkaku
+# Device USB butuh akses ke /dev/bus/usb — tambahkan user ke grup plugdev
+# dan pasang aturan udev untuk vendor device yang dipakai.
+SupplementaryGroups=plugdev
+Environment=ENKAKU_DATA_DIR=/var/lib/enkaku
+Environment=ENKAKU_BIND=0.0.0.0
+Environment=ENKAKU_PORT=7700
+# Mode server wajib TLS: pakai reverse proxy (external) atau cert sendiri.
+Environment=ENKAKU_TLS_MODE=external
+WorkingDirectory=/opt/enkaku
+ExecStart=/usr/local/bin/bun run packages/core/src/index.ts
+Restart=on-failure
+RestartSec=5
+
+# Hardening dasar — core tetap butuh tulis ke data dir & akses USB.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/enkaku
+
+[Install]
+WantedBy=multi-user.target

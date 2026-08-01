@@ -4,6 +4,11 @@ import { AdbClient } from '@enkaku/adb'
 import { ToolchainManager } from '@enkaku/toolchain'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import { createAuditLogger } from './auth/audit'
+import { createAuthRoutes } from './auth/routes'
+import { createAuthService } from './auth/service'
+import { createRetentionGc, type RetentionGc } from './maintenance/retention'
+import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes } from './api/artifacts'
 import { createDeviceRoutes } from './api/devices'
 import { createJobRoutes } from './api/jobs'
@@ -58,6 +63,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let registry: DeviceRegistry | null = null
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
+  let retention: RetentionGc | null = null
   let stopScheduler: (() => void) | null = null
   let stopReaper: (() => void) | null = null
   let stopped = false
@@ -100,6 +106,16 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       await toolchain.init() // layout + manifest cache + reconcile (adopt pre-baked)
 
       const settingsStore = createFarmSettingsStore(db)
+
+      // Auth & audit (M7). Mode efektif ditentukan bind address (spec §14).
+      const authMode = resolveAuthMode(cfg)
+      assertTlsPolicy(cfg, authMode)
+      const auth = createAuthService({ db, sessionTtlHours: cfg.auth.sessionTtlHours })
+      const audit = createAuditLogger(db)
+      if (authMode === 'local') auth.ensureLocalAdmin()
+      log.info(
+        `auth mode: ${authMode}${authMode === 'server' && !auth.hasAnyAdmin() ? ' (setup admin dibutuhkan)' : ''}`,
+      )
 
       // 3. Queue / lease / scheduler (M3)
       const jobStore = createJobStore(db)
@@ -196,15 +212,38 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
         artifactRoutes: createArtifactRoutes({ db, dataDir: cfg.dataDir }),
+        authRoutes: createAuthRoutes({
+          auth,
+          audit,
+          mode: authMode,
+          secureCookie: cfg.tls.mode !== 'off',
+          maxAttempts: cfg.auth.loginMaxAttempts,
+          lockoutSeconds: cfg.auth.loginLockoutSeconds,
+        }),
+        auth,
+        authMode,
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
         startedAt,
       })
+      const tlsOptions =
+        cfg.tls.mode === 'self' && cfg.tls.certPath && cfg.tls.keyPath
+          ? { tls: { cert: Bun.file(cfg.tls.certPath), key: Bun.file(cfg.tls.keyPath) } }
+          : {}
+
       server = Bun.serve({
         hostname: cfg.host,
         port: cfg.port,
+        ...tlsOptions,
         fetch(req, srv) {
           const url = new URL(req.url)
           if (url.pathname === '/ws') {
+            // WS tidak selalu membawa cookie → dukung ticket sekali-pakai.
+            if (authMode === 'server') {
+              const ticket = url.searchParams.get('ticket')
+              const cookie = req.headers.get('cookie')?.match(/enkaku_session=([^;]+)/)?.[1]
+              const user = ticket ? auth.consumeWsTicket(ticket) : cookie ? auth.validateSession(cookie) : null
+              if (!user) return new Response('unauthorized', { status: 401 })
+            }
             if (srv.upgrade(req, { data: null })) return undefined
             return new Response('upgrade gagal', { status: 400 })
           }
@@ -212,7 +251,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         websocket: hub.handlers,
       })
-      log.info(`enkaku core v${CORE_VERSION} listen http://${cfg.host}:${cfg.port}`)
+      const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
+      log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
+
+      // Retention artifact (spec §18) — kebijakan dari farm settings.
+      retention = createRetentionGc({
+        db,
+        dataDir: cfg.dataDir,
+        settings: settingsStore,
+        log: log.child('retention'),
+        intervalMinutes: cfg.retention.sweepIntervalMinutes,
+        onSwept: (r) => audit.record({ userId: null, action: 'retention.gc', meta: r }),
+      })
+      retention.start()
 
       leases.startReaper()
       stopReaper = () => leases.stopReaper()
@@ -371,6 +422,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       stopReaper?.()
       battery?.stop()
       battery = null
+      retention?.stop()
+      retention = null
       await sessions?.closeAll()
       sessions = null
       await registry?.stop()
