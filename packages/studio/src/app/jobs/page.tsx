@@ -138,7 +138,9 @@ export default function JobsPage() {
                   onClick={() => setExpanded(expanded === j.jobId ? null : j.jobId)}
                 >
                   <td style={{ padding: '0.6rem' }} className="meta">
-                    {j.jobId.slice(0, 8)}
+                    <a href={`/jobs/detail?id=${j.jobId}`} onClick={(e) => e.stopPropagation()}>
+                      {j.jobId.slice(0, 8)}
+                    </a>
                   </td>
                   <td className="meta">{j.scriptId}</td>
                   <td>{deviceLabel(j.deviceId)}</td>

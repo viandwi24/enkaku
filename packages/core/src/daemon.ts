@@ -4,7 +4,13 @@ import { AdbClient } from '@enkaku/adb'
 import { ToolchainManager } from '@enkaku/toolchain'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import { createArtifactRoutes } from './api/artifacts'
+import { createDeviceRoutes } from './api/devices'
 import { createJobRoutes } from './api/jobs'
+import { createSettingsRoutes } from './api/settings'
+import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
+import { createFarmSettingsStore } from './settings/farm-settings'
+import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
 import { createJobRunner } from './runner/job-runner'
 import { createScriptExecutor } from './jobs/executors/script'
@@ -50,6 +56,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let adb: AdbClient | null = null
   let registry: DeviceRegistry | null = null
   let sessions: SessionManager | null = null
+  let battery: BatteryMonitor | null = null
   let stopScheduler: (() => void) | null = null
   let stopReaper: (() => void) | null = null
   let stopped = false
@@ -90,6 +97,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         }),
       })
       await toolchain.init() // layout + manifest cache + reconcile (adopt pre-baked)
+
+      const settingsStore = createFarmSettingsStore(db)
 
       // 3. Queue / lease / scheduler (M3)
       const jobStore = createJobStore(db)
@@ -179,6 +188,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         adbState: () => adbState,
         toolchain,
         jobRoutes: createJobRoutes(jobService),
+        deviceRoutes: createDeviceRoutes({
+          db,
+          registry: () => buildRegistryResponse(toolchain),
+          battery: () => battery,
+        }),
+        settingsRoutes: createSettingsRoutes(settingsStore),
+        artifactRoutes: createArtifactRoutes({ db, dataDir: cfg.dataDir }),
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
         startedAt,
       })
@@ -286,6 +302,18 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           }),
         )
 
+        // Battery/thermal poll + auto-quarantine (M5, spec §15.2).
+        battery = createBatteryMonitor({
+          db,
+          client: () => adb,
+          states,
+          settings: settingsStore,
+          log: log.child('battery'),
+          onBattery: (deviceId, state) =>
+            hub.broadcast({ type: 'device.battery', payload: { deviceId, battery: state } }),
+        })
+        battery.start()
+
         registry = createDeviceRegistry({
           client: adb,
           db,
@@ -318,6 +346,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       server = null
       stopScheduler?.()
       stopReaper?.()
+      battery?.stop()
+      battery = null
       await sessions?.closeAll()
       sessions = null
       await registry?.stop()

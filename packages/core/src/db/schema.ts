@@ -28,6 +28,8 @@ export const devices = sqliteTable('devices', {
   battery: text('battery', { mode: 'json' }),
   settings: text('settings', { mode: 'json' }),
   status: text('status').default('offline'),
+  /** Alasan quarantine (mis. 'thermal:47.3C') — null saat tidak quarantined. */
+  quarantineReason: text('quarantine_reason'),
   lastSeen: integer('last_seen', { mode: 'timestamp' }),
 })
 
@@ -107,4 +109,13 @@ export const artifacts = sqliteTable(
 )
 
 export type ArtifactRow = typeof artifacts.$inferSelect
+
+/** Setting farm-wide — selalu satu baris (id = 1). */
+export const farmSettings = sqliteTable('farm_settings', {
+  id: integer('id').primaryKey(),
+  value: text('value', { mode: 'json' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }),
+})
+
+export type FarmSettingsRow = typeof farmSettings.$inferSelect
 

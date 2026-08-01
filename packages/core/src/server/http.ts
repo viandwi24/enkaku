@@ -19,6 +19,9 @@ export interface HttpDeps {
   toolchain: ToolchainManager
   jobRoutes: Hono
   scriptRoutes: Hono
+  deviceRoutes: Hono
+  settingsRoutes: Hono
+  artifactRoutes: Hono
   startedAt: number
 }
 
@@ -48,9 +51,11 @@ export function createApp(deps: HttpDeps): Hono {
     })
   })
 
-  app.get('/api/devices', (c) => {
-    return c.json({ devices: deps.listDevices() })
-  })
+  app.route('/api/devices', deps.deviceRoutes)
+
+  app.route('/api/settings', deps.settingsRoutes)
+
+  app.route('/api/artifacts', deps.artifactRoutes)
 
   app.route('/api/tools', createToolsRoutes(deps.toolchain))
 

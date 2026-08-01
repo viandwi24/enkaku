@@ -1,7 +1,11 @@
 import type { EngineDescriptor } from '@enkaku/protocol'
 
-/** Descriptor engine M2 (spec §8; locks mengikuti pola spec §9.5). */
-export const engineDescriptors: EngineDescriptor[] = [
+/**
+ * Descriptor engine yang benar-benar terimplementasi di package ini
+ * (spec §8; locks mengikuti pola spec §9.5). Engine yang masih rencana
+ * didaftarkan core dengan `available: false`.
+ */
+export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'available'>> = [
   {
     id: 'adb-usb',
     displayName: 'ADB (USB)',
@@ -47,7 +51,8 @@ export const engineDescriptors: EngineDescriptor[] = [
     displayName: 'UiAutomator dump (jembatan, 0,5–2 dtk per query)',
     kind: 'inspector',
     capabilities: ['dump', 'find', 'screenshot'],
-    locks: [],
+    // Merebut UiAutomation juga — tidak boleh barengan ui-server/appium.
+    locks: ['instrumentation'],
     configSchema: {},
   },
 ]

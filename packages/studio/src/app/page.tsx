@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { DeviceInfo } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo } from '@enkaku/protocol'
 import { DeviceCard } from '@/components/DeviceCard'
 import { EnrollmentWizard } from '@/components/EnrollmentWizard'
 import { fetchDevices } from '@/lib/api'
@@ -10,6 +10,7 @@ import { ws } from '@/lib/ws'
 export default function Dashboard() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [unauthorized, setUnauthorized] = useState<string[]>([])
+  const [batteries, setBatteries] = useState<Record<string, BatteryState>>({})
   const [connected, setConnected] = useState(false)
   const [showWizard, setShowWizard] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,6 +40,8 @@ export default function Dashboard() {
         if (msg.payload.status === 'idle') void load()
       } else if (msg.type === 'device.removed') {
         setDevices((prev) => prev.filter((d) => d.id !== msg.payload.id))
+      } else if (msg.type === 'device.battery') {
+        setBatteries((prev) => ({ ...prev, [msg.payload.deviceId]: msg.payload.battery }))
       } else if (msg.type === 'device.unauthorized') {
         setUnauthorized((prev) => (prev.includes(msg.payload.serial) ? prev : [...prev, msg.payload.serial]))
         setShowWizard(true)
@@ -80,7 +83,7 @@ export default function Dashboard() {
       ) : (
         <div className="grid">
           {devices.map((d) => (
-            <DeviceCard key={d.id} device={d} />
+            <DeviceCard key={d.id} device={d} battery={batteries[d.id] ?? null} />
           ))}
         </div>
       )}

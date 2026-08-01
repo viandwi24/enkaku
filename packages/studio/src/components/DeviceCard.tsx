@@ -1,8 +1,8 @@
 'use client'
 
-import type { DeviceInfo } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo } from '@enkaku/protocol'
 
-export function DeviceCard({ device }: { device: DeviceInfo }) {
+export function DeviceCard({ device, battery }: { device: DeviceInfo; battery?: BatteryState | null }) {
   const clickable = device.status !== 'offline'
   const body = (
     <>
@@ -16,6 +16,15 @@ export function DeviceCard({ device }: { device: DeviceInfo }) {
         {device.apiLevel ? ` (API ${device.apiLevel})` : ''}
         {device.screenW && device.screenH ? ` · ${device.screenW}×${device.screenH}` : ''}
       </div>
+      {battery && (
+        <div className="row" style={{ marginTop: '0.4rem', gap: '0.4rem' }}>
+          <span className={`badge ${battery.level < 20 ? 'quarantined' : 'idle'}`}>🔋 {battery.level}%</span>
+          <span className={`badge ${battery.temperatureC >= 45 ? 'quarantined' : ''}`}>
+            🌡 {battery.temperatureC.toFixed(1)}°C
+          </span>
+          {battery.status === 'charging' && <span className="hint">charging</span>}
+        </div>
+      )}
     </>
   )
   return clickable ? (

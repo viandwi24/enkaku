@@ -8,6 +8,7 @@ import {
   DeviceUnauthorizedMessage,
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
+  DeviceBatteryMessage,
 } from './messages/enroll'
 import { InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
 import {
@@ -43,7 +44,26 @@ export {
   type DeviceStatusEvent,
 } from './device'
 export type { Transport, DisplaySource, InputSink, Inspector, Point, FrameMeta } from './driver'
-export { EngineDescriptorSchema, RegistryResponseSchema, type EngineDescriptor, type RegistryResponse } from './registry'
+export {
+  EngineDescriptorSchema,
+  RegistryResponseSchema,
+  validateEngineSelection,
+  type EngineDescriptor,
+  type RegistryResponse,
+  type EngineSelection,
+  type EngineSelectionResult,
+} from './registry'
+export {
+  BatteryStateSchema,
+  TimingSettingsSchema,
+  DeviceSettingsSchema,
+  FarmSettingsSchema,
+  defaultFarmSettings,
+  defaultDeviceSettings,
+  type BatteryState,
+  type DeviceSettings,
+  type FarmSettings,
+} from './settings'
 export {
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
@@ -62,6 +82,7 @@ export {
   DevicePairingCodeResultMessage,
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
+  DeviceBatteryMessage,
 } from './messages/enroll'
 export { CHANNEL, VIDEO_CODEC, encodeVideoFrame, decodeVideoFrame, type DecodedVideoFrame } from './binary'
 export {
@@ -112,6 +133,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceUnauthorizedMessage,
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
+  DeviceBatteryMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
   ToolChangedMessage,

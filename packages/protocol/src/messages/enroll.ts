@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { BatteryStateSchema } from '../settings'
 
 /** Enrollment (spec §13, §15.1). */
 
@@ -60,4 +61,10 @@ export const DeviceInspectorFallbackMessage = z.object({
     to: z.string(),
     reason: z.string(),
   }),
+})
+
+/** Update baterai/suhu device (M5, spec §15.2). */
+export const DeviceBatteryMessage = z.object({
+  type: z.literal('device.battery'),
+  payload: z.object({ deviceId: z.string(), battery: BatteryStateSchema }),
 })
