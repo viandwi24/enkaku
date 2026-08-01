@@ -34,4 +34,12 @@ export const engineDescriptors: EngineDescriptor[] = [
     locks: ['input-injection'],
     configSchema: {},
   },
+  {
+    id: 'uiautomator-dump',
+    displayName: 'UiAutomator dump (jembatan, 0,5–2 dtk per query)',
+    kind: 'inspector',
+    capabilities: ['dump', 'find', 'screenshot'],
+    locks: [],
+    configSchema: {},
+  },
 ]

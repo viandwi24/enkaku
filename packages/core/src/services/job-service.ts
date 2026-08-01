@@ -24,9 +24,16 @@ export function createJobService(deps: {
   host: ExecutorHost
   log: Logger
   onJobStatus: (info: JobInfo) => void
+  /** Cek row tabel `scripts` untuk scriptId non-built-in (M4). */
+  findScript?: (scriptId: string) => { enabled: boolean } | null
 }): JobService {
   return {
     enqueue(input) {
+      if (!deps.registry.isBuiltIn(input.scriptId)) {
+        const script = deps.findScript?.(input.scriptId) ?? null
+        if (!script) throw new EnkakuError('unknown_script', `script tidak dikenal: ${input.scriptId}`)
+        if (!script.enabled) throw new EnkakuError('script_disabled', `script ${input.scriptId} dinonaktifkan`)
+      }
       const executor = deps.registry.get(input.scriptId)
       if (!executor) throw new EnkakuError('unknown_script', `script tidak dikenal: ${input.scriptId}`)
       const params = executor.validateParams(input.params)

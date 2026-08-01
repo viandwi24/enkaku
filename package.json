@@ -1,7 +1,7 @@
 {
   "name": "openpf",
   "private": true,
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": ["packages/*", "apps/*", "examples"],
   "scripts": {
     "dev": "bun run packages/core/src/index.ts",
     "typecheck": "bunx tsc --noEmit"

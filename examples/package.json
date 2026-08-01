@@ -1,0 +1,11 @@
+{
+  "name": "@enkaku/examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Contoh script automation — mencerminkan project milik script author sendiri",
+  "dependencies": {
+    "@enkaku/sdk": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}

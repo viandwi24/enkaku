@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Tabel devices (spec §12, subset M0). Tabel lain (jobs, scripts, artifacts,
@@ -71,4 +71,40 @@ export const jobs = sqliteTable(
 )
 
 export type JobRow = typeof jobs.$inferSelect
+
+/** Script hasil publish (spec §12, §11.4 — bundle jadi, bukan source mentah). */
+export const scripts = sqliteTable(
+  'scripts',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    version: text('version').notNull(),
+    /** Hasil `enkaku publish` (bundle esm satu file). */
+    bundle: text('bundle').notNull(),
+    paramsSchema: text('params_schema', { mode: 'json' }),
+    enabled: integer('enabled', { mode: 'boolean' }).default(true),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }),
+  },
+  (t) => [uniqueIndex('idx_scripts_name_version').on(t.name, t.version)],
+)
+
+export type ScriptRow = typeof scripts.$inferSelect
+
+/** Artifact per job (spec §12). `path` relatif terhadap app-data. */
+export const artifacts = sqliteTable(
+  'artifacts',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id').notNull(),
+    kind: text('kind').notNull(), // screenshot|log|file|video
+    label: text('label'),
+    path: text('path').notNull(),
+    sizeBytes: integer('size_bytes'),
+    createdAt: integer('created_at', { mode: 'timestamp' }),
+  },
+  (t) => [index('idx_artifacts_job').on(t.jobId, t.createdAt)],
+)
+
+export type ArtifactRow = typeof artifacts.$inferSelect
 

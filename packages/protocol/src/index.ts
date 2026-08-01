@@ -9,8 +9,10 @@ import {
 } from './messages/enroll'
 import { InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
 import {
+  JobArtifactMessage,
   JobCancelMessage,
   JobEnqueueMessage,
+  JobLogMessage,
   JobStatusEventMessage,
   LeaseAcquiredMessage,
   LeaseAcquireMessage,
@@ -62,6 +64,9 @@ export {
   JobStatusSchema,
   SleepJobParamsSchema,
   JobInfoSchema,
+  ArtifactInfoSchema,
+  JobLogMessage,
+  JobArtifactMessage,
   JobEnqueueMessage,
   JobCancelMessage,
   JobStatusEventMessage,
@@ -72,8 +77,21 @@ export {
   LeaseRevokedMessage,
   type JobStatus,
   type JobInfo,
+  type ArtifactInfo,
   type SleepJobParams,
 } from './messages/job'
+export {
+  PointSchema,
+  SelectorSchema,
+  KeyCodeSchema,
+  KEYCODES,
+  resolveKeyCode,
+  type Selector,
+  type UiNode,
+  type Bounds,
+  type KeyCode,
+  type KeyName,
+} from './ui-node'
 
 /** Error generik server→client (reply gagal, message invalid). */
 export const ErrorMessage = z.object({
@@ -96,6 +114,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
   JobStatusEventMessage,
+  JobLogMessage,
+  JobArtifactMessage,
   LeaseAcquiredMessage,
   LeaseReleasedMessage,
   LeaseRevokedMessage,

@@ -63,7 +63,40 @@ export type JobInfo = z.infer<typeof JobInfoSchema>
 
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
-  payload: JobInfoSchema,
+  payload: JobInfoSchema.extend({
+    /** Attempt ke berapa (1-based) & fase script yang sedang jalan (M4). */
+    attempt: z.number().int().optional(),
+    phase: z.enum(['prepare', 'run', 'finish']).nullable().optional(),
+  }),
+})
+
+/** Log realtime per job (M4). */
+export const JobLogMessage = z.object({
+  type: z.literal('job.log'),
+  payload: z.object({
+    jobId: z.string(),
+    ts: z.number(),
+    level: z.enum(['debug', 'info', 'warn', 'error']),
+    source: z.enum(['script', 'stdout', 'stderr', 'runner']),
+    msg: z.string(),
+    fields: z.record(z.string(), z.unknown()).optional(),
+  }),
+})
+
+export const ArtifactInfoSchema = z.object({
+  id: z.string(),
+  jobId: z.string(),
+  kind: z.enum(['screenshot', 'log', 'file', 'video']),
+  label: z.string().nullable(),
+  path: z.string(),
+  sizeBytes: z.number().nullable(),
+  createdAt: z.number(),
+})
+export type ArtifactInfo = z.infer<typeof ArtifactInfoSchema>
+
+export const JobArtifactMessage = z.object({
+  type: z.literal('job.artifact'),
+  payload: z.object({ jobId: z.string(), artifact: ArtifactInfoSchema }),
 })
 
 export const LeaseAcquiredMessage = z.object({

@@ -16,19 +16,29 @@ export interface JobExecutor {
   run(job: JobRow, ctx: ExecutorContext): Promise<unknown>
 }
 
-/** Registry executor: M3 hanya 'internal:sleep'; M4 menambah subprocess runner. */
+/**
+ * Registry executor: id built-in (mis. 'internal:sleep') di-map eksplisit;
+ * scriptId lain (row tabel `scripts`) jatuh ke fallback = script executor
+ * berbasis child process (M4).
+ */
 export class ExecutorRegistry {
   private map = new Map<string, JobExecutor>()
+  private fallback: JobExecutor | null = null
 
   register(scriptId: string, executor: JobExecutor): void {
     this.map.set(scriptId, executor)
   }
 
-  get(scriptId: string): JobExecutor | null {
-    return this.map.get(scriptId) ?? null
+  /** Executor untuk semua scriptId yang bukan built-in. */
+  setFallback(executor: JobExecutor): void {
+    this.fallback = executor
   }
 
-  has(scriptId: string): boolean {
+  get(scriptId: string): JobExecutor | null {
+    return this.map.get(scriptId) ?? this.fallback
+  }
+
+  isBuiltIn(scriptId: string): boolean {
     return this.map.has(scriptId)
   }
 }

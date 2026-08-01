@@ -5,9 +5,12 @@ import { ToolchainManager } from '@enkaku/toolchain'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Server } from 'bun'
 import { createJobRoutes } from './api/jobs'
+import { createScriptRoutes } from './scripts/routes'
+import { createJobRunner } from './runner/job-runner'
+import { createScriptExecutor } from './jobs/executors/script'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, type OpenedDb } from './db'
-import { devices } from './db/schema'
+import { devices, scripts } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createPairingService } from './enroll/pairing'
 import { ExecutorRegistry } from './jobs/executor'
@@ -155,6 +158,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         host,
         log: log.child('job'),
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
+        findScript: (scriptId) => {
+          const row = db.select().from(scripts).where(eq(scripts.id, scriptId)).get()
+          return row ? { enabled: row.enabled ?? true } : null
+        },
       })
 
       // 4. HTTP + WS server naik DULU supaya client bisa lihat progress provision
@@ -170,6 +177,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         adbState: () => adbState,
         toolchain,
         jobRoutes: createJobRoutes(jobService),
+        scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
         startedAt,
       })
       server = Bun.serve({
@@ -203,6 +211,33 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
         sessions = createSessionManager({ client: adb, db, log: log.child('session') })
+
+        // Script executor (M4) butuh SessionManager → didaftarkan setelah adb siap.
+        const runner = createJobRunner({
+          db,
+          dataDir: cfg.dataDir,
+          sessions,
+          log: log.child('runner'),
+          onLog: (entry) =>
+            hub.broadcast({
+              type: 'job.log',
+              payload: {
+                jobId: entry.jobId,
+                ts: entry.ts,
+                level: entry.level,
+                source: entry.source,
+                msg: entry.msg,
+                ...(entry.fields ? { fields: entry.fields } : {}),
+              },
+            }),
+          onArtifact: (jobId, artifact) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } }),
+          onPhase: (jobId, attempt, phase) => {
+            const info = jobService.get(jobId)
+            if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
+          },
+          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+        })
+        executors.setFallback(createScriptExecutor({ db, runner }))
         hub.setRouter(
           createWsMessageHandler({
             sessions,

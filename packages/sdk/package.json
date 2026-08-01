@@ -1,14 +1,18 @@
 {
-  "name": "@enkaku/drivers",
+  "name": "@enkaku/sdk",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
+  "bin": {
+    "enkaku": "./src/cli/index.ts"
+  },
   "dependencies": {
-    "@enkaku/adb": "workspace:*",
     "@enkaku/protocol": "workspace:*",
-    "fast-xml-parser": "^4.5.0"
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
   }
 }
