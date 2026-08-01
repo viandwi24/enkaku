@@ -5,9 +5,12 @@ import type { Server } from 'bun'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, type OpenedDb } from './db'
 import { devices } from './db/schema'
+import { createPairingService } from './enroll/pairing'
 import { createDeviceRegistry, rowToDeviceInfo, type DeviceRegistry } from './registry/device-registry'
+import { createSessionManager, type SessionManager } from './session/manager'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
+import { createWsMessageHandler } from './server/ws-handlers'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { createToolInstallStore } from './tools/store'
@@ -30,6 +33,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let opened: OpenedDb | null = null
   let adb: AdbClient | null = null
   let registry: DeviceRegistry | null = null
+  let sessions: SessionManager | null = null
   let stopped = false
   let adbState = 'provisioning'
 
@@ -107,7 +111,23 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        registry = createDeviceRegistry({ client: adb, db, hub, log: log.child('registry') })
+        // Sesi (display/input) + handler WS untuk stream/input/pairing.
+        sessions = createSessionManager({ client: adb, db, log: log.child('session') })
+        hub.setRouter(
+          createWsMessageHandler({
+            sessions,
+            pairing: createPairingService({ client: adb, log: log.child('pairing') }),
+            log: log.child('ws-handler'),
+          }),
+        )
+
+        registry = createDeviceRegistry({
+          client: adb,
+          db,
+          hub,
+          log: log.child('registry'),
+          onDeviceGone: (deviceId) => void sessions?.closeDevice(deviceId),
+        })
         await registry.start()
         adbState = 'ready'
         log.info(`subsistem adb siap (devices terdaftar: ${db.select().from(devices).all().length})`)
@@ -124,6 +144,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       log.info('stopping...')
       server?.stop(true)
       server = null
+      await sessions?.closeAll()
+      sessions = null
       await registry?.stop()
       registry = null
       await adb?.dispose()

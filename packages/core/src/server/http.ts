@@ -1,7 +1,10 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
+import { buildRegistryResponse } from '../registry/engines'
 import { createToolsRoutes } from '../tools/routes'
+import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 
@@ -28,6 +31,11 @@ const ERROR_STATUS: Record<string, number> = {
 export function createApp(deps: HttpDeps): Hono {
   const app = new Hono()
 
+  // Mode dev Studio (next dev di port lain) — hanya non-production.
+  if (process.env.NODE_ENV !== 'production') {
+    app.use('/api/*', cors({ origin: (origin) => (origin.startsWith('http://localhost:') ? origin : null) }))
+  }
+
   app.get('/api/health', async (c) => {
     return c.json({
       ok: true,
@@ -43,6 +51,16 @@ export function createApp(deps: HttpDeps): Hono {
   })
 
   app.route('/api/tools', createToolsRoutes(deps.toolchain))
+
+  app.get('/api/registry', async (c) => c.json(await buildRegistryResponse(deps.toolchain)))
+
+  // Studio static (mode prod satu-origin); /api/* & /ws sudah ditangani di atas.
+  const serveStudio = createStudioServer(deps.log.child('studio'))
+  app.get('*', async (c) => {
+    const path = new URL(c.req.url).pathname
+    if (path.startsWith('/api/')) return c.json({ error: { code: 'E_NOT_FOUND', message: 'route tidak ada' } }, 404)
+    return serveStudio(path)
+  })
 
   app.notFound((c) => c.json({ error: { code: 'E_NOT_FOUND', message: 'route tidak ada' } }, 404))
 

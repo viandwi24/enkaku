@@ -6,6 +6,7 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@enkaku/adb": "workspace:*",
+    "@enkaku/drivers": "workspace:*",
     "@enkaku/protocol": "workspace:*",
     "@enkaku/toolchain": "workspace:*",
     "drizzle-orm": "^0.44.0",

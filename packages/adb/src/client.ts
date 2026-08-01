@@ -93,6 +93,51 @@ export class AdbClient {
     })
   }
 
+  /** Seperti exec, tapi stdout binary mentah (screencap dsb) via exec-out. */
+  execOut(serial: string, cmd: string): Promise<Uint8Array> {
+    return this.queue.run(serial, async () => {
+      const socket = await AdbSocket.connect(this.host, this.port)
+      try {
+        socket.send(`host:transport:${serial}`)
+        await socket.readStatus()
+        socket.send(`exec:${cmd}`)
+        await socket.readStatus()
+        return await socket.readUntilClose()
+      } finally {
+        socket.close()
+      }
+    })
+  }
+
+  /** `adb connect <host:port>` via host service (wireless / adb-tcp). */
+  async connectDevice(hostPort: string): Promise<string> {
+    const socket = await AdbSocket.connect(this.host, this.port)
+    try {
+      socket.send(`host:connect:${hostPort}`)
+      await socket.readStatus()
+      return await socket.readBlock()
+    } finally {
+      socket.close()
+    }
+  }
+
+  /** `adb disconnect <host:port>` via host service. */
+  async disconnectDevice(hostPort: string): Promise<string> {
+    const socket = await AdbSocket.connect(this.host, this.port)
+    try {
+      socket.send(`host:disconnect:${hostPort}`)
+      await socket.readStatus()
+      return await socket.readBlock()
+    } finally {
+      socket.close()
+    }
+  }
+
+  /** Path binary adb aktif (untuk spawn CLI khusus, mis. `adb pair`). */
+  get binaryPath(): string {
+    return this.adbPath
+  }
+
   /** Jumlah task antri untuk satu serial (debugging). */
   pending(serial: string): number {
     return this.queue.pending(serial)

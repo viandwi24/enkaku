@@ -12,6 +12,8 @@ export interface DeviceRegistryDeps {
   db: Db
   hub: WsHub
   log: Logger
+  /** Device hilang/offline → tutup sesi yang masih terbuka (Plan 03). */
+  onDeviceGone?: (deviceId: string) => void
 }
 
 export interface DeviceRegistry {
@@ -137,6 +139,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       type: 'device.status',
       payload: { id: row.id, stableId: row.stableId, status: 'offline' },
     })
+    deps.onDeviceGone?.(row.id)
     log.info(`device offline: ${row.label} (${row.stableId})`)
   }
 
@@ -148,7 +151,8 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     if (ev.state === 'device') {
       void onOnline(ev.serial)
     } else if (ev.state === 'unauthorized') {
-      log.warn(`device ${ev.serial} unauthorized — terima dialog USB debugging di layar HP (wizard: Plan 03)`)
+      log.warn(`device ${ev.serial} unauthorized — terima dialog USB debugging di layar HP`)
+      hub.broadcast({ type: 'device.unauthorized', payload: { serial: ev.serial } })
     } else {
       log.debug(`device ${ev.serial} state=${ev.state} — diabaikan di M0`)
     }
