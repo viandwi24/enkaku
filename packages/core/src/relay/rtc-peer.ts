@@ -1,20 +1,20 @@
 import type { RtpPacket } from './rtp-h264'
 
 /**
- * Abstraksi peer WebRTC sisi server (plan 11 §4.4).
+ * The server-side WebRTC peer abstraction (plan 11 §4.4).
  *
- * Library WebRTC server-side sengaja TIDAK di-hardcode: rekomendasi awal
- * adalah `werift` (pure TypeScript, selaras dengan prinsip self-contained),
- * dengan sidecar GStreamer sebagai rencana cadangan bila verifikasi di Bun
- * gagal. Interface ini menjaga biaya penggantian tetap murah.
+ * The server-side WebRTC library is deliberately NOT hardcoded: the initial recommendation
+ * is `werift` (pure TypeScript, in keeping with the self-contained principle),
+ * with a GStreamer sidecar as the backup plan should Bun verification fail.
+ * This interface keeps the cost of swapping it low.
  */
 export interface RtcPeer {
   createOffer(): Promise<string>
   setRemoteAnswer(sdp: string): Promise<void>
   addIceCandidate(candidate: unknown): Promise<void>
-  /** Kirim paket RTP hasil packetizer H.264. */
+  /** Send an RTP packet produced by the H.264 packetizer. */
   sendRtp(packet: RtpPacket): void
-  /** RTCP PLI/NACK dari browser → relay minta IDR baru ke device. */
+  /** RTCP PLI/NACK from the browser → the relay asks the device for a fresh IDR. */
   onKeyframeRequest(cb: () => void): void
   onIceCandidate(cb: (candidate: unknown) => void): void
   onStateChange(cb: (state: 'connecting' | 'connected' | 'failed' | 'closed') => void): void
@@ -28,23 +28,23 @@ export interface RtcPeerFactory {
 }
 
 /**
- * Factory default: belum ada backend WebRTC yang terpasang.
+ * The default factory: no WebRTC backend is installed.
  *
- * Ini bukan kegagalan diam-diam — `available: false` membuat control plane
- * langsung menjawab `video.webrtc.failed`, dan Studio jatuh ke jalur
- * WS+WebCodecs yang sudah bekerja (dengan badge "degraded", karena TCP
+ * This is not a silent failure — `available: false` makes the control plane
+ * answers `video.webrtc.failed` immediately, and Studio falls back to the
+ * WS + WebCodecs path that already works (with a "degraded" badge, because TCP
  * rentan head-of-line blocking di internet).
  */
 export const unavailableRtcFactory: RtcPeerFactory = {
   available: false,
   reason:
-    'backend WebRTC belum dipasang di build ini — pilih library (rekomendasi: werift) dan implement RtcPeerFactory',
+    'no WebRTC backend is installed in this build — pick a library (werift is recommended) and implement RtcPeerFactory',
   create() {
     return Promise.reject(new Error(unavailableRtcFactory.reason))
   },
 }
 
-/** Konfigurasi ICE untuk browser & peer server (coturn self-host di deployment cloud). */
+/** ICE configuration for the browser and the server peer (self-hosted coturn in cloud deployments). */
 export function iceConfigFromEnv(): { iceServers: unknown[] } {
   const stun = process.env.ENKAKU_STUN_URL ?? 'stun:stun.l.google.com:19302'
   const turnUrl = process.env.ENKAKU_TURN_URL

@@ -23,9 +23,9 @@ export interface TunnelRouterHooks {
 export interface TunnelRouter {
   handleAgentMessage(ws: ServerWebSocket<unknown>, agentId: string, raw: string): void
   handleAgentFrame(agentId: string, buf: Uint8Array): void
-  /** Kirim perintah control-plane → agent pemilik device. */
+  /** Send a control-plane command to the agent that owns the device. */
   sendToDevice(deviceId: string, msg: ControlToAgent): boolean
-  /** Daftar viewer yang menerima frame video device tertentu. */
+  /** The viewers receiving video frames for a given device. */
   subscribeVideo(deviceId: string, cb: (payload: Uint8Array) => void): () => void
   openChannel(deviceId: string, kind: 'video' | 'audio' | 'control-raw'): number | null
 }
@@ -33,9 +33,9 @@ export interface TunnelRouter {
 /**
  * Router tunnel di control plane (plan 11 §4.3).
  *
- * Keputusan otoritatif (lease, busy-reject, validasi locks) tetap di control
- * plane SEBELUM pesan diteruskan ke agent — agent memvalidasi ulang secara
- * lokal hanya sebagai defense in depth.
+ * Authoritative decisions (leases, busy rejection, lock validation) stay in the
+ * control plane BEFORE a message is forwarded to an agent — the agent's local
+ * re-validation is defence in depth, nothing more.
  */
 export function createTunnelRouter(deps: {
   registry: TunnelRegistry
@@ -59,7 +59,7 @@ export function createTunnelRouter(deps: {
         return
       }
       const parsed = AgentToControlSchema.safeParse(json)
-      if (!parsed.success) return // message tak dikenal → abaikan (forward-compat)
+      if (!parsed.success) return // unknown message → ignore it (forward-compatible)
       const msg = parsed.data
 
       if (msg.type === 'agent.hello') {
@@ -108,7 +108,7 @@ export function createTunnelRouter(deps: {
     sendToDevice(deviceId, msg) {
       const conn = deps.registry.forDevice(deviceId)
       if (!conn) {
-        deps.log.warn(`tidak ada agent online untuk device ${deviceId}`)
+        deps.log.warn(`no agent online for device ${deviceId}`)
         return false
       }
       conn.ws.send(JSON.stringify(msg))
@@ -137,7 +137,7 @@ export function createTunnelRouter(deps: {
       return () => {
         const ch = channels.get(channelId!)
         ch?.subscribers.delete(cb)
-        // Channel tanpa viewer → tutup di agent (hemat encoder & bandwidth).
+        // A channel with no viewers is closed on the agent (saves encoder and bandwidth).
         if (ch && ch.subscribers.size === 0) {
           const conn = deps.registry.forDevice(deviceId)
           conn?.ws.send(JSON.stringify({ type: 'tunnel.channel.close', payload: { channelId } }))

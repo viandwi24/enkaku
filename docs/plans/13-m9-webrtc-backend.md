@@ -1,113 +1,113 @@
-# Plan 13 — M9b : Backend WebRTC (video cloud tanpa freeze)
+# Plan 13 — M9b : The WebRTC backend (cloud video without freezing)
 
-> **Status:** siap dikerjakan. **Depends on:** Plan 12 (mode cloud berfungsi) — WebRTC menggantikan jalur video-nya, bukan menambahkannya dari nol.
-> **Referensi spec:** §5.3 (video cloud butuh transport lain), §16 (NFR latensi & fps).
+> **Status:** ready to work on. **Depends on:** Plan 12 (cloud mode working) — WebRTC replaces its video path rather than adding one from scratch.
+> **Spec references:** §5.3 (cloud video needs a different transport), §16 (latency and fps NFRs).
 
 ---
 
 ## 1. Goals
 
-- Video device di mode cloud mengalir lewat **WebRTC (UDP)**, sehingga kehilangan paket **tidak lagi membekukan layar**.
-- Pemilihan jalur otomatis dan jujur: WebRTC bila bisa, WebSocket bila tidak, dengan indikator jelas di Studio — pengguna tahu sedang di jalur mana.
-- Keyframe pulih otomatis saat paket hilang (browser mengirim PLI → relay meminta IDR baru ke device).
-- Mode LAN/lokal **tidak berubah sama sekali** — tetap WS + WebCodecs yang sudah terbukti dan lebih sederhana.
+- Device video in cloud mode flows over **WebRTC (UDP)**, so packet loss **no longer freezes the screen**.
+- Path selection is automatic and honest: WebRTC when possible, WebSocket otherwise, with a clear indicator in Studio — the user always knows which path they are on.
+- Keyframes recover automatically after packet loss (the browser sends a PLI → the relay asks the device for a fresh IDR).
+- LAN and local mode are **completely unchanged** — they stay on the proven, simpler WS + WebCodecs.
 
-Demo akhir: agent + HP di balik NAT rumah, control plane di VPS, browser di jaringan ketiga. Dengan `tc netem` mensimulasikan 3% packet loss, jalur WS terlihat membeku berulang sementara jalur WebRTC tetap mengalir.
+The closing demo: an agent and a phone behind home NAT, a control plane on a VPS, a browser on a third network. With `tc netem` simulating 3% packet loss, the WS path visibly freezes repeatedly while the WebRTC path keeps flowing.
 
 ## 2. Non-goals
 
-- **Audio** — scrcpy mendukungnya, tapi farm QA tidak membutuhkannya. Channel `audio` sudah dicadangkan di protokol.
-- **Video dua arah / kamera** — tidak relevan.
-- **SFU multi-viewer** — satu device satu penonton (kebijakan Plan 08 §3.7) masih berlaku.
-- **Mengganti jalur LAN** — WS+WebCodecs tetap default di LAN; menambah WebRTC di sana hanya menambah TURN/STUN tanpa manfaat.
+- **Audio** — scrcpy supports it, but a QA farm does not need it. The `audio` channel is already reserved in the protocol.
+- **Two-way video / camera** — not relevant.
+- **A multi-viewer SFU** — one device, one viewer (the Plan 08 §3.7 policy) still applies.
+- **Replacing the LAN path** — WS + WebCodecs stays the LAN default; adding WebRTC there only adds TURN/STUN with no benefit.
 
-## 3. Konteks & keputusan desain
+## 3. Context and design decisions
 
-### 3.1 Kenapa WebSocket tidak cukup di internet
+### 3.1 Why WebSocket is not enough on the internet
 
-WebSocket berjalan di atas TCP, yang menjamin **urutan**. Ketika satu paket hilang, semua data setelahnya ditahan di buffer penerima sampai paket itu berhasil dikirim ulang — *head-of-line blocking*. Untuk transfer file itu benar; untuk video langsung itu bencana: layar membeku 1–2 detik lalu melompat.
+WebSocket runs over TCP, which guarantees **ordering**. When one packet is lost, everything after it is held in the receiver's buffer until that packet is successfully retransmitted — *head-of-line blocking*. For a file transfer that is correct; for live video it is a disaster: the screen freezes for 1–2 seconds, then jumps.
 
-WebRTC memakai UDP: frame yang hilang ya hilang, aliran lanjut. Untuk remote control, frame basi memang tidak ada gunanya.
+WebRTC uses UDP: a lost frame is simply lost and the stream continues. For remote control, a stale frame is worthless anyway.
 
-Di LAN kehilangan paket praktis nol, jadi WS baik-baik saja — dan jauh lebih sederhana (tanpa STUN/TURN, tanpa DTLS). Itulah kenapa keduanya tetap ada.
+On a LAN packet loss is effectively zero, so WS is perfectly fine — and far simpler (no STUN/TURN, no DTLS). That is why both exist.
 
-### 3.2 Keputusan library: **werift** — sudah diverifikasi jalan di Bun
+### 3.2 Library decision: **werift** — already verified to run on Bun
 
-Plan 11 menandai pilihan library sebagai pertanyaan terbuka karena kompatibilitas dengan Bun belum terbukti. **Pertanyaan itu sudah dijawab dengan pengujian nyata** (werift 0.24.2, Bun 1.3.14, macOS arm64):
+Plan 11 flagged the library choice as an open question because Bun compatibility was unproven. **That question has now been answered with a real test** (werift 0.24.2, Bun 1.3.14, macOS arm64):
 
-| Yang diuji | Hasil |
+| What was tested | Result |
 |---|---|
-| `new RTCPeerConnection` + `createOffer` + `setLocalDescription` | ✅ berhasil |
-| SDP berisi `m=video` dengan codec H.264 | ✅ |
-| DTLS fingerprint dihasilkan (artinya `node:crypto` memadai) | ✅ |
-| Pengumpulan kandidat ICE | ✅ 9 kandidat (artinya `node:dgram`/UDP berfungsi) |
-| Umpan balik `nack`/`pli` ternegosiasi | ✅ |
-| `MediaStreamTrack.writeRtp` untuk injeksi RTP mentah | ✅ tersedia |
-| `RtpPacket.serialize()` | ✅ 12 byte header + payload |
+| `new RTCPeerConnection` plus `createOffer` plus `setLocalDescription` | ✅ works |
+| SDP contains `m=video` with the H.264 codec | ✅ |
+| A DTLS fingerprint is produced (meaning `node:crypto` is sufficient) | ✅ |
+| ICE candidate gathering | ✅ 9 candidates (meaning `node:dgram`/UDP works) |
+| `nack`/`pli` feedback negotiated | ✅ |
+| `MediaStreamTrack.writeRtp` for raw RTP injection | ✅ available |
+| `RtpPacket.serialize()` | ✅ a 12-byte header plus payload |
 
-Ini penting karena dua primitif paling berisiko — **UDP socket** dan **kriptografi DTLS** — justru yang terbukti bekerja.
+This matters because the two riskiest primitives — **UDP sockets** and **DTLS cryptography** — are exactly the ones proven to work.
 
-Yang **belum** terverifikasi dan harus dibuktikan di plan ini: handshake DTLS lengkap dengan browser sungguhan, aliran SRTP berkelanjutan, dan konsumsi CPU untuk beberapa stream sekaligus.
+What is **not** yet verified and must be proven in this plan: a complete DTLS handshake with a real browser, a sustained SRTP flow, and CPU use across several simultaneous streams.
 
-### 3.3 Soal "Bun kan kompatibel Node, tidak bisakah otomatis lari ke Node?"
+### 3.3 On "Bun is Node-compatible, can it not just fall back to Node?"
 
-Pertanyaan yang wajar, dan jawabannya menentukan rencana cadangan.
+A fair question, and the answer determines the backup plan.
 
-**Bun tidak mendelegasikan apa pun ke Node.** Bun **menulis ulang** API Node (`fs`, `net`, `dgram`, `crypto`, …) dalam Zig di dalam runtime-nya sendiri. Node tidak perlu terpasang, dan tidak ada mekanisme "kalau gagal, jalankan di Node". Kalau sebuah API belum diimplementasikan Bun, kode itu gagal — tidak ada jaring pengaman otomatis.
+**Bun delegates nothing to Node.** Bun **reimplements** Node's APIs (`fs`, `net`, `dgram`, `crypto`, …) in Zig inside its own runtime. Node does not need to be installed, and there is no "if it fails, run it under Node" mechanism. If Bun has not implemented an API, that code fails — there is no automatic safety net.
 
-Untuk modul **native** (seperti `node-webrtc`/`wrtc` yang membungkus libwebrtc C++), Bun mendukung N-API tapi cakupannya belum penuh — karena itu kandidat native lebih berisiko daripada werift yang TypeScript murni.
+For **native** modules (like `node-webrtc`/`wrtc`, which wraps libwebrtc C++), Bun supports N-API but not completely — which is why a native candidate carries more risk than pure-TypeScript werift.
 
-**Tapi ide Anda tetap bisa dipakai — sebagai sidecar eksplisit.** Kalau werift ternyata gagal pada tahap DTLS/SRTP dengan browser sungguhan, relay video dijalankan sebagai **proses terpisah di bawah Node**, dan core (Bun) berkomunikasi dengannya lewat unix socket. Bentuk arsitekturnya sama persis dengan rencana cadangan GStreamer yang sudah ada di Plan 11, hanya isinya berbeda. Yang membuatnya murah: `RtcPeerFactory` sudah menjadi antarmuka, jadi menukar implementasi tidak menyentuh kode relay.
+**But the idea still works — as an explicit sidecar.** If werift turns out to fail at the DTLS/SRTP stage with a real browser, the video relay runs as a **separate process under Node**, with the core (Bun) talking to it over a unix socket. The architecture is exactly the shape of the GStreamer backup already in Plan 11, only the contents differ. What makes it cheap: `RtcPeerFactory` is already an interface, so swapping the implementation never touches the relay code.
 
-Urutan rencana:
+The plan order:
 
-| Urutan | Pendekatan | Kapan dipakai |
+| Order | Approach | When it is used |
 |---|---|---|
-| 1 | werift in-process (Bun) | Default — sudah terbukti sampai tahap SDP/ICE |
-| 2 | werift sebagai sidecar Node | Bila DTLS/SRTP gagal khusus di Bun |
-| 3 | GStreamer `webrtcbin` sidecar | Bila werift kurang kuat untuk skala banyak stream |
+| 1 | werift in-process (Bun) | The default — already proven through SDP and ICE |
+| 2 | werift as a Node sidecar | If DTLS/SRTP fails specifically on Bun |
+| 3 | A GStreamer `webrtcbin` sidecar | If werift is not strong enough for many streams |
 
-### 3.4 Yang sudah selesai dan tidak perlu diulang
+### 3.4 What is already done and need not be redone
 
-Bagian yang **tidak bergantung library** sudah ada dan terverifikasi logikanya:
+The library-independent parts exist and their logic is verified:
 
-- Pemecahan Annex-B → NAL unit.
-- Fragmentasi FU-A untuk NAL besar (diuji: 3000 byte → paket-paket ≤ 1200 byte dengan bit S/E benar).
-- Penyisipan SPS/PPS otomatis sebelum setiap IDR.
-- Konversi timestamp ke clock 90 kHz (1 detik → 90000).
-- Marker bit hanya pada paket terakhir tiap access unit.
-- Message signaling, endpoint konfigurasi ICE, dan klien Studio dengan fallback.
+- Splitting Annex-B into NAL units.
+- FU-A fragmentation for large NALs (tested: 3000 bytes → packets ≤ 1200 bytes with correct S/E bits).
+- Automatic SPS/PPS insertion before every IDR.
+- Timestamp conversion to the 90 kHz clock (1 second → 90000).
+- The marker bit only on the last packet of each access unit.
+- Signalling messages, the ICE configuration endpoint, and the Studio client with fallback.
 
-Plan ini menyambungkan hasil packetizer itu ke peer WebRTC yang sesungguhnya.
+This plan connects that packetizer's output to a real WebRTC peer.
 
-### 3.5 STUN & TURN
+### 3.5 STUN and TURN
 
-STUN saja cukup untuk sebagian besar NAT rumahan. Untuk NAT simetris dan jaringan kantor yang memblokir UDP, **TURN wajib** — tanpa itu koneksi gagal dan pengguna jatuh ke WS.
+STUN alone is enough for most home NATs. For symmetric NAT and office networks that block UDP, **TURN is mandatory** — without it the connection fails and the user drops to WS.
 
-Keputusan: **coturn self-host** sebagai container di sebelah control plane, dengan kredensial berjangka waktu (bukan kredensial statis yang bocor selamanya). Ini sejalan dengan prinsip self-hosted spec §5.3.
+Decision: **self-hosted coturn** as a container alongside the control plane, with time-limited credentials (not static credentials that leak forever). That fits the self-hosted principle of spec §5.3.
 
-## 4. Desain teknis
+## 4. Technical design
 
-### 4.1 Struktur file
+### 4.1 File structure
 
 ```
 packages/core/src/relay/
-  rtp-h264.ts              # SUDAH ADA — packetizer (tidak berubah)
-  rtc-peer.ts              # SUDAH ADA — interface RtcPeer (tidak berubah)
-  werift-peer.ts           # BARU — implementasi RtcPeerFactory memakai werift
-  webrtc-relay.ts          # BARU — orkestrasi: sumber frame → packetizer → peer
-  ice-credentials.ts       # BARU — kredensial TURN berjangka waktu
-  sidecar/                 # BARU (hanya bila rencana 2 dipakai)
-    protocol.ts            # message unix-socket core ⇄ sidecar
-    server.mjs             # relay Node yang dijalankan terpisah
+  rtp-h264.ts              # EXISTS — the packetizer (unchanged)
+  rtc-peer.ts              # EXISTS — the RtcPeer interface (unchanged)
+  werift-peer.ts           # NEW — an RtcPeerFactory implementation using werift
+  webrtc-relay.ts          # NEW — orchestration: frame source → packetizer → peer
+  ice-credentials.ts       # NEW — time-limited TURN credentials
+  sidecar/                 # NEW (only if plan 2 is used)
+    protocol.ts            # unix-socket messages between core and sidecar
+    server.mjs             # the Node relay running separately
 deploy/
-  coturn/turnserver.conf   # BARU — konfigurasi TURN
-  docker-compose.cloud.yml # BARU — control plane + coturn
+  coturn/turnserver.conf   # NEW — TURN configuration
+  docker-compose.cloud.yml # NEW — control plane plus coturn
 packages/studio/src/lib/
-  webrtc-player.ts         # SUDAH ADA — tambah indikator jalur & statistik
+  webrtc-player.ts         # EXISTS — add a path indicator and statistics
 ```
 
-### 4.2 Implementasi peer
+### 4.2 Peer implementation
 
 ```ts
 // packages/core/src/relay/werift-peer.ts
@@ -117,18 +117,18 @@ export function createWeriftFactory(): RtcPeerFactory {
     async create({ iceServers }) {
       const pc = new RTCPeerConnection({
         iceServers,
-        codecs: { video: [ /* H.264 packetization-mode=1, feedback nack + pli */ ] },
+        codecs: { video: [ /* H.264 packetization-mode=1, nack + pli feedback */ ] },
       })
       const track = new MediaStreamTrack({ kind: 'video' })
       pc.addTransceiver(track, { direction: 'sendonly' })
       let seq = 0
       return {
-        // Paket dari packetizer kita dibungkus RtpPacket lalu ditulis ke track.
+        // Packets from our packetizer are wrapped in an RtpPacket and written to the track.
         sendRtp: (p) => track.writeRtp(new RtpPacket(
           new RtpHeader({ payloadType: 96, sequenceNumber: seq++ & 0xffff,
                           timestamp: p.timestamp, marker: p.marker, ssrc }),
           Buffer.from(p.payload))),
-        onKeyframeRequest: (cb) => { /* RTCP PLI/NACK dari browser */ },
+        onKeyframeRequest: (cb) => { /* RTCP PLI/NACK from the browser */ },
         // createOffer / setRemoteAnswer / addIceCandidate / onIceCandidate / close
       }
     },
@@ -136,124 +136,124 @@ export function createWeriftFactory(): RtcPeerFactory {
 }
 ```
 
-Nomor urut RTP dipegang relay (bukan packetizer) karena satu peer punya satu ruang nomor urut.
+The RTP sequence number lives in the relay (not the packetizer) because one peer has one sequence-number space.
 
-### 4.3 Alur relay
+### 4.3 Relay flow
 
 ```
-agent → tunnel channel video (H.264 Annex-B)
+agent → the tunnel's video channel (H.264 Annex-B)
   → WebRtcRelay.push(chunk, ptsUs)
-      → createH264Packetizer().push()   # sudah ada, teruji
-      → peer.sendRtp(paket)             # werift → SRTP/UDP → browser
+      → createH264Packetizer().push()   # already exists, tested
+      → peer.sendRtp(packet)            # werift → SRTP/UDP → browser
 browser <video>  ← ontrack
 
-Browser kehilangan frame → RTCP PLI
+The browser loses frames → RTCP PLI
   → peer.onKeyframeRequest()
-  → relay minta IDR: control message scrcpy ke agent
-     (TODO-verify mekanisme persis di scrcpy 3.3.1; fallback: restart stream)
+  → the relay asks for an IDR: a scrcpy control message to the agent
+     (TODO-verify the exact mechanism in scrcpy 3.3.1; fallback: restart the stream)
 ```
 
-### 4.4 Pemilihan jalur di Studio
+### 4.4 Path selection in Studio
 
 ```
-mulai → mode lokal/LAN?  ─ya→  WS + WebCodecs (selesai, tidak ada perubahan)
-                          └tidak→ minta WebRTC
-                                   ├ sukses  → badge "WebRTC"
-                                   └ gagal   → WS + WebCodecs, badge "degraded" + alasan
+start → local/LAN mode?  ─yes→  WS + WebCodecs (done, nothing changes)
+                          └no→  request WebRTC
+                                  ├ success → "WebRTC" badge
+                                  └ failure → WS + WebCodecs, "degraded" badge plus the reason
 ```
 
-Pemicu fallback: `video.webrtc.failed` dari server, status ICE `failed`, atau tidak ada frame selama 10 detik. Semuanya sudah diimplementasikan di klien; plan ini menambahkan **indikator jalur yang terlihat** supaya pengguna tidak menebak kenapa videonya tersendat.
+Fallback triggers: `video.webrtc.failed` from the server, an ICE state of `failed`, or no frames for 10 seconds. All of them are already implemented in the client; this plan adds a **visible path indicator** so nobody has to guess why the video is stuttering.
 
-### 4.5 Kredensial TURN berjangka waktu
+### 4.5 Time-limited TURN credentials
 
 ```ts
 // username = "<expiry-unix>:<userId>", password = base64(HMAC-SHA1(secret, username))
 ```
 
-Berlaku 12 jam. Kredensial bocor hanya berguna sampai kedaluwarsa, dan tidak membocorkan rahasia server.
+Valid for 12 hours. A leaked credential is only useful until it expires, and it never exposes the server's secret.
 
-## 5. Langkah implementasi
+## 5. Implementation steps
 
-### Tahap 1 — Peer werift & bukti ujung-ke-ujung
+### Stage 1 — The werift peer and end-to-end proof
 
-- [ ] Tambah `werift` sebagai dependensi core; tulis `werift-peer.ts` (§4.2).
-- [ ] Uji tulang punggung: peer server ↔ browser sungguhan, kirim RTP dari pola uji sintetis (bukan device), pastikan `<video>` menampilkan gambar.
-- **Verifikasi:** ini **gerbang keputusan**. Kalau DTLS/SRTP gagal di Bun, hentikan dan lanjut ke Tahap 1b sebelum menulis kode lain.
+- [ ] Add `werift` as a core dependency; write `werift-peer.ts` (§4.2).
+- [ ] Test the backbone: server peer ↔ a real browser, sending RTP from a synthetic test pattern (not a device), and confirm `<video>` shows a picture.
+- **Verification:** this is the **decision gate**. If DTLS/SRTP fails on Bun, stop and move to Stage 1b before writing any other code.
 
-### Tahap 1b — (bersyarat) sidecar Node
+### Stage 1b — (conditional) the Node sidecar
 
-- [ ] Hanya bila Tahap 1 gagal: pindahkan `werift-peer.ts` ke proses Node terpisah, komunikasi lewat unix socket (`sidecar/protocol.ts`).
-- [ ] Sidecar dikelola Toolchain Manager sebagai tool opsional (pola yang sama dengan tool lain).
-- **Verifikasi:** hasil akhir dari sudut pandang core identik — `RtcPeerFactory` tidak berubah.
+- [ ] Only if Stage 1 fails: move `werift-peer.ts` into a separate Node process, communicating over a unix socket (`sidecar/protocol.ts`).
+- [ ] The sidecar is managed by the Toolchain Manager as an optional tool (the same pattern as every other tool).
+- **Verification:** the end result is identical from the core's point of view — `RtcPeerFactory` does not change.
 
-### Tahap 2 — Relay & signaling
+### Stage 2 — Relay and signalling
 
-- [ ] `webrtc-relay.ts`: sambungkan channel video tunnel → packetizer → `peer.sendRtp`.
-- [ ] Handler signaling di control plane: `video.webrtc.request` → buat peer → kirim offer; terima answer & kandidat ICE.
-- [ ] `video.webrtc.failed` untuk setiap kegagalan (termasuk saat `RtcPeerFactory.available === false`).
-- **Verifikasi:** video device agent tampil di browser lewat WebRTC.
+- [ ] `webrtc-relay.ts`: connect the tunnel's video channel → packetizer → `peer.sendRtp`.
+- [ ] Signalling handlers in the control plane: `video.webrtc.request` → create a peer → send the offer; receive the answer and ICE candidates.
+- [ ] `video.webrtc.failed` for every failure (including when `RtcPeerFactory.available === false`).
+- **Verification:** an agent device's video appears in the browser over WebRTC.
 
-### Tahap 3 — Pemulihan keyframe
+### Stage 3 — Keyframe recovery
 
-- [ ] Terjemahkan RTCP PLI menjadi permintaan IDR ke device lewat tunnel.
-- [ ] Verifikasi mekanisme permintaan IDR di scrcpy 3.3.1; bila tidak ada, mulai ulang stream sebagai gantinya (dan catat itu di kode).
-- **Verifikasi:** sengaja buang paket dengan `tc netem` 5%; gambar pulih sendiri dalam < 2 detik, tidak macet permanen.
+- [ ] Translate RTCP PLI into an IDR request to the device through the tunnel.
+- [ ] Verify the IDR request mechanism in scrcpy 3.3.1; if there is none, restart the stream instead (and note that in the code).
+- **Verification:** deliberately drop packets with `tc netem` at 5%; the picture recovers on its own within 2 seconds and does not stay stuck.
 
-### Tahap 4 — TURN & deployment
+### Stage 4 — TURN and deployment
 
-- [ ] `deploy/coturn/turnserver.conf` + `docker-compose.cloud.yml`.
-- [ ] `ice-credentials.ts` (§4.5); `GET /api/agents/ice-config` mengembalikan kredensial berjangka waktu.
-- **Verifikasi:** browser di jaringan yang memblokir UDP langsung (hanya TCP/443) tetap tersambung lewat TURN.
+- [ ] `deploy/coturn/turnserver.conf` plus `docker-compose.cloud.yml`.
+- [ ] `ice-credentials.ts` (§4.5); `GET /api/agents/ice-config` returns time-limited credentials.
+- **Verification:** a browser on a network that blocks direct UDP (only TCP/443) still connects through TURN.
 
-### Tahap 5 — Indikator & statistik di Studio
+### Stage 5 — Indicators and statistics in Studio
 
-- [ ] Badge jalur: `WebRTC` / `WS (degraded)` + alasan fallback.
-- [ ] Panel statistik: fps, bitrate, paket hilang, RTT (dari `getStats()`).
-- **Verifikasi:** saat jaringan diganggu, angka di panel berubah sesuai kenyataan.
+- [ ] A path badge: `WebRTC` / `WS (degraded)` plus the fallback reason.
+- [ ] A statistics panel: fps, bitrate, packet loss, RTT (from `getStats()`).
+- **Verification:** when the network is disrupted, the numbers in the panel change to match reality.
 
-### Tahap 6 — Pengukuran NFR
+### Stage 6 — NFR measurement
 
-- [ ] Ukur glass-to-glass dan fps di tiga kondisi: LAN, internet bersih, internet 3% loss.
-- [ ] Bandingkan WS vs WebRTC pada kondisi ketiga — ini bukti klaim spec §5.3.
-- **Verifikasi:** angka tercatat di `docs/benchmarks/webrtc.md`.
+- [ ] Measure glass-to-glass and fps under three conditions: LAN, clean internet, internet with 3% loss.
+- [ ] Compare WS against WebRTC under the third condition — this is the evidence for the spec §5.3 claim.
+- **Verification:** the numbers are recorded in `docs/benchmarks/webrtc.md`.
 
 ## 6. Acceptance criteria
 
-1. [ ] Video device agent tampil lewat WebRTC di browser Chromium.
-2. [ ] Pada 3% packet loss, WebRTC tetap mengalir sementara WS terbukti membeku — dengan angka pembanding.
-3. [ ] Kehilangan keyframe pulih otomatis < 2 detik.
-4. [ ] Jaringan tanpa UDP langsung tetap tersambung lewat TURN.
-5. [ ] Setiap kegagalan jatuh ke WS **dengan alasan yang terlihat pengguna** — tidak pernah layar hitam tanpa penjelasan.
-6. [ ] Mode LAN/lokal tidak berubah sama sekali (diuji ulang).
-7. [ ] Konsumsi CPU control plane untuk 5 stream simultan tercatat.
-8. [ ] `RtcPeerFactory` tetap satu-satunya titik sentuh library — mengganti backend tidak menyentuh relay.
+1. [ ] An agent device's video appears over WebRTC in a Chromium browser.
+2. [ ] At 3% packet loss, WebRTC keeps flowing while WS demonstrably freezes — with comparative numbers.
+3. [ ] A lost keyframe recovers automatically in under 2 seconds.
+4. [ ] A network without direct UDP still connects through TURN.
+5. [ ] Every failure falls back to WS **with a reason the user can see** — never a black screen with no explanation.
+6. [ ] LAN and local mode are completely unchanged (retested).
+7. [ ] Control plane CPU use for 5 simultaneous streams is recorded.
+8. [ ] `RtcPeerFactory` remains the only place the library is touched — swapping the backend does not touch the relay.
 
 ## 7. Test plan
 
-**Tanpa jaringan nyata:** packetizer sudah punya kasus uji (Annex-B, FU-A, SPS/PPS, timestamp). Tambah: nomor urut RTP berputar di 65535, PLI memicu permintaan IDR.
+**Without a real network:** the packetizer already has test cases (Annex-B, FU-A, SPS/PPS, timestamps). Add: RTP sequence numbers wrapping at 65535, and a PLI triggering an IDR request.
 
-**Dengan browser, satu mesin:** peer server + Chrome lokal, sumber pola uji sintetis. Membuktikan DTLS/SRTP tanpa variabel device.
+**With a browser, one machine:** the server peer plus local Chrome, fed by a synthetic test pattern. This proves DTLS/SRTP without device variables.
 
-**Ujung ke ujung:** device → agent → control plane → browser, tiga jaringan berbeda.
+**End to end:** device → agent → control plane → browser, across three different networks.
 
-**Degradasi terkendali:** `tc netem` 1%/3%/5% loss dan delay 50/150 ms; catat fps, freeze, dan RTT untuk WS dan WebRTC berdampingan.
+**Controlled degradation:** `tc netem` at 1%/3%/5% loss and 50/150 ms delay; record fps, freezes, and RTT for WS and WebRTC side by side.
 
-**Kegagalan yang disengaja:** matikan coturn saat sesi berjalan; blokir UDP di klien; hentikan agent di tengah stream.
+**Deliberate failures:** stop coturn mid-session; block UDP on the client; stop the agent mid-stream.
 
-## 8. Risiko & mitigasi
+## 8. Risks and mitigations
 
-| Risiko | Dampak | Mitigasi |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| DTLS/SRTP werift gagal khusus di Bun | Rencana utama batal | Gerbang keputusan di Tahap 1 sebelum kode lain ditulis; sidecar Node sudah dirancang |
-| CPU tinggi untuk banyak stream | Control plane jadi hambatan | Ukur sejak awal; SFU/relay terpisah bila perlu (di luar lingkup, tapi tidak dihalangi desain) |
-| Nomor urut/timestamp RTP salah | Video patah-patah tanpa error jelas | Uji unit + `getStats()` di browser sebagai pembanding |
-| Operasional TURN (port, bandwidth) | Biaya & kerumitan | Dokumentasikan; TURN hanya dipakai saat jalur langsung gagal |
-| scrcpy tidak punya permintaan IDR eksplisit | Pemulihan keyframe lambat | Fallback restart stream, didokumentasikan sebagai batasan |
+| werift DTLS/SRTP fails specifically on Bun | The main plan collapses | A decision gate in Stage 1 before other code is written; the Node sidecar is already designed |
+| High CPU across many streams | The control plane becomes the bottleneck | Measure early; a separate SFU or relay if needed (out of scope, but the design does not block it) |
+| Wrong RTP sequence numbers or timestamps | Choppy video with no clear error | Unit tests plus browser `getStats()` as a cross-check |
+| TURN operations (ports, bandwidth) | Cost and complexity | Document it; TURN is only used when the direct path fails |
+| scrcpy has no explicit IDR request | Slow keyframe recovery | Fall back to restarting the stream, documented as a limitation |
 
 ## 9. Open questions
 
-1. **Sidecar Node bila diperlukan**: dikelola Toolchain Manager atau dianggap prasyarat sistem?
-2. **Multi-viewer** kembali relevan bila WebRTC dipakai (SFU) — masih ditunda atau dibuka sekarang?
-3. **Ambang fallback**: 10 detik tanpa frame terasa lama; apakah 5 detik lebih baik?
-4. **Menyimpan rekaman sesi** (spec §22) lebih murah dilakukan di jalur RTP — apakah dimasukkan sekarang?
-5. **Codec**: scrcpy mendukung H.265/AV1 yang lebih efisien, tapi dukungan WebCodecs/WebRTC-nya tidak merata. Tetap H.264 saja?
+1. **The Node sidecar, if needed**: managed by the Toolchain Manager, or treated as a system prerequisite?
+2. **Multi-viewer** becomes relevant again with WebRTC (an SFU) — still deferred, or opened now?
+3. **The fallback threshold**: 10 seconds without frames feels long; would 5 seconds be better?
+4. **Session recording** (spec §22) is cheaper on the RTP path — include it now?
+5. **Codec**: scrcpy supports the more efficient H.265 and AV1, but their WebCodecs and WebRTC support is uneven. Stay on H.264 only?

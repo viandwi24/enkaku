@@ -5,7 +5,7 @@ export type ResolvedInputEngine = 'scrcpy-uhid' | 'scrcpy-sdk' | 'adb-input'
 
 export interface InputSelectionResult {
   engine: ResolvedInputEngine
-  /** Alasan degrade — di-log & ditampilkan Studio saat mode bukan pilihan user. */
+  /** Why it degraded — logged and shown in Studio when the mode is not what was chosen. */
   degradedReason?: string
 }
 
@@ -21,17 +21,17 @@ export function selectInputEngine(opts: {
   if (!opts.scrcpyAvailable) {
     return {
       engine: 'adb-input',
-      degradedReason: 'session scrcpy tidak aktif — memakai fallback adb-input',
+      degradedReason: 'no active scrcpy session — using the adb-input fallback',
     }
   }
   if (opts.preferred === 'aoa') {
-    return { engine: 'scrcpy-uhid', degradedReason: 'mode AOA belum tersedia (M8) — memakai UHID' }
+    return { engine: 'scrcpy-uhid', degradedReason: 'AOA mode is not available yet (M8) — using UHID' }
   }
   if (opts.preferred === 'sdk') return { engine: 'scrcpy-sdk' }
   if (opts.apiLevel !== null && opts.apiLevel < UHID_MIN_API) {
     return {
       engine: 'scrcpy-sdk',
-      degradedReason: `UHID butuh API ≥ ${UHID_MIN_API}, device ini API ${opts.apiLevel}`,
+      degradedReason: `UHID needs API ≥ ${UHID_MIN_API}, this device is API ${opts.apiLevel}`,
     }
   }
   return { engine: 'scrcpy-uhid' }

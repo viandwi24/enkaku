@@ -1,4 +1,4 @@
-/** Error ber-kode untuk lapisan session (dipakai core & agent). */
+/** Coded errors for the session layer (used by both core and agent). */
 export class SessionError extends Error {
   constructor(
     public code:

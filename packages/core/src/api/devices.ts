@@ -45,7 +45,7 @@ export function createDeviceRoutes(deps: {
 
   const mustGet = (id: string) => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
-    if (!row) throw new EnkakuError('device_not_found', `device tidak ada: ${id}`)
+    if (!row) throw new EnkakuError('device_not_found', `no such device: ${id}`)
     return row
   }
 
@@ -71,7 +71,7 @@ export function createDeviceRoutes(deps: {
   app.patch('/:id', async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = PatchBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'body tidak valid')
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'invalid body')
     const patch: Record<string, unknown> = {}
     if (body.data.label !== undefined) patch.label = body.data.label
     if (body.data.ownerId !== undefined) patch.ownerId = body.data.ownerId
@@ -83,17 +83,27 @@ export function createDeviceRoutes(deps: {
           parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
         )
       }
+      // Engines live in their own columns because the session builder and the
+      // scheduler query them. They are still validated and written from the
+      // settings object, so the column and the JSON can never disagree.
+      const engines = parsed.data.engines
+      const result = validateEngineSelection(await deps.registry(), engines)
+      if (!result.ok) throw new EnkakuError(result.code, result.message)
       patch.settings = parsed.data
+      patch.transport = engines.transport
+      patch.display = engines.display
+      patch.input = engines.input
+      patch.inspection = engines.inspection
     }
     if (Object.keys(patch).length > 0) db.update(devices).set(patch).where(eq(devices.id, row.id)).run()
     return c.json({ device: rowToDeviceInfo(mustGet(row.id)) })
   })
 
-  /** Pilih engine per device — divalidasi server (capability + locks, spec §8). */
+  /** Per-device engine choice — validated server-side (capabilities and locks, spec §8). */
   app.patch('/:id/drivers', async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = DriversBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'body { transport, display, input, inspection } wajib')
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { transport, display, input, inspection } is required')
     const result = validateEngineSelection(await deps.registry(), body.data)
     if (!result.ok) throw new EnkakuError(result.code, result.message)
     db.update(devices).set(body.data).where(eq(devices.id, row.id)).run()
@@ -104,7 +114,7 @@ export function createDeviceRoutes(deps: {
     const row = mustGet(c.req.param('id'))
     const monitor = deps.battery()
     if (!monitor || !monitor.unquarantine(row.id)) {
-      throw new EnkakuError('not_quarantined', `device ${row.label} tidak dalam status quarantined`)
+      throw new EnkakuError('not_quarantined', `device ${row.label} is not quarantined`)
     }
     return c.json({ device: rowToDeviceInfo(mustGet(row.id)) })
   })

@@ -9,9 +9,9 @@ export interface PairingSession {
 }
 
 export interface PairingService {
-  /** Validasi host:port reachable → buat pairingId. */
+  /** Check host:port is reachable, then mint a pairingId. */
   request(host: string, port: number): Promise<{ pairingId: string }>
-  /** `adb pair` + opsional `adb connect`. */
+  /** `adb pair` plus an optional `adb connect`. */
   submitCode(
     pairingId: string,
     code: string,
@@ -20,16 +20,16 @@ export interface PairingService {
 }
 
 /**
- * Pairing wireless ADB Android 11+ (spec §15.1). `adb pair` tidak tersedia
- * sebagai host service smartsocket → satu-satunya tempat kita spawn adb CLI
- * selain start/kill-server. Binary dari Toolchain (bukan PATH sistem).
+ * Wireless ADB pairing for Android 11+ (spec §15.1). `adb pair` is not available
+ * as a smartsocket host service → the one place we spawn the adb CLI
+ * besides start/kill-server. The binary comes from the Toolchain, never the system PATH.
  */
 export function createPairingService(deps: { client: AdbClient; log: Logger }): PairingService {
   const sessions = new Map<string, PairingSession>()
 
   return {
     async request(host, port) {
-      // Dial TCP singkat: gagal cepat kalau host/port salah ketik.
+      // A short TCP dial: fails fast on a mistyped host or port.
       try {
         const socket = await Promise.race([
           Bun.connect({ hostname: host, port, socket: { data() {} } }),
@@ -37,7 +37,7 @@ export function createPairingService(deps: { client: AdbClient; log: Logger }): 
         ])
         socket.end()
       } catch (err) {
-        throw new Error(`tidak bisa menghubungi ${host}:${port} — pastikan Wireless debugging aktif (${String(err)})`)
+        throw new Error(`could not reach ${host}:${port} — make sure Wireless debugging is on (${String(err)})`)
       }
       const pairingId = crypto.randomUUID()
       sessions.set(pairingId, { pairingId, host, port, createdAt: Date.now() })
@@ -46,7 +46,7 @@ export function createPairingService(deps: { client: AdbClient; log: Logger }): 
 
     async submitCode(pairingId, code, connectPort) {
       const session = sessions.get(pairingId)
-      if (!session) return { success: false, message: 'sesi pairing tidak ditemukan / kedaluwarsa' }
+      if (!session) return { success: false, message: 'the pairing session was not found or has expired' }
 
       const proc = Bun.spawn([deps.client.binaryPath, 'pair', `${session.host}:${session.port}`, code], {
         stdout: 'pipe',
@@ -60,8 +60,8 @@ export function createPairingService(deps: { client: AdbClient; log: Logger }): 
       const output = `${stdout}${stderr}`.trim()
 
       if (exit !== 0 || !output.includes('Successfully paired')) {
-        deps.log.warn(`adb pair gagal: ${output}`)
-        // Pesan adb diteruskan apa adanya supaya wizard bisa menampilkannya.
+        deps.log.warn(`adb pair failed: ${output}`)
+        // adb's message is passed through verbatim so the wizard can show it.
         return { success: false, message: output || `adb pair exit ${exit}` }
       }
       sessions.delete(pairingId)

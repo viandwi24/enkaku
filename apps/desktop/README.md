@@ -1,39 +1,39 @@
-# apps/desktop — aplikasi desktop (Tauri)
+# apps/desktop — the desktop app (Tauri)
 
-Membungkus core + Studio menjadi aplikasi desktop: jendela native, ikon tray, dan core yang dijalankan sebagai proses anak.
+Wraps the core and Studio into a desktop application: a native window, a tray icon, and the core running as a child process.
 
-## Yang sudah terverifikasi
+## Verified
 
-| Hal | Hasil |
+| Item | Result |
 |---|---|
-| Build Rust (`cargo build`) | ✅ |
-| Jendela terbuka & memuat halaman dari core | ✅ |
-| Core dijalankan sebagai proses anak dengan bind `127.0.0.1` | ✅ |
-| Pencarian port bebas otomatis (mulai 7700) | ✅ |
-| Menunggu `/api/health` sebelum memuat UI; gagal → layar error, bukan jendela putih | ✅ |
-| **WebCodecs di WKWebView macOS** | ✅ `VideoDecoder` ada, H.264 baseline didukung |
-| Pembersihan proses core yatim setelah aplikasi crash | ✅ diuji: PID lama dimatikan saat start berikutnya |
-| Menutup jendela → mengecil ke tray, core tetap hidup | ✅ (perilaku by design) |
+| Rust build (`cargo build`) | ✅ |
+| Window opens and loads the page from the core | ✅ |
+| Core runs as a child process bound to `127.0.0.1` | ✅ |
+| Automatic free-port search (starting at 7700) | ✅ |
+| Waits for `/api/health` before loading the UI; on failure shows an error screen rather than a white window | ✅ |
+| **WebCodecs in macOS WKWebView** | ✅ `VideoDecoder` is present, H.264 baseline is supported |
+| Cleans up orphaned core processes after an app crash | ✅ tested: the stale PID is killed on the next start |
+| Closing the window minimises to the tray, the core stays alive | ✅ (by design) |
 
-Hasil WebCodecs itu penting: aplikasi desktop memakai jalur video scrcpy H.264 yang sama dengan browser — tidak turun ke `screencap-loop` yang hanya 2–3 fps.
+The WebCodecs result matters: the desktop app uses the same scrcpy H.264 video path as the browser — it does not drop to `screencap-loop` at 2–3 fps.
 
-## Yang belum
+## Not done yet
 
-- **Bundling installer** (`.dmg`/`.msi`/`.AppImage`) — perlu ikon asli (sekarang placeholder) dan sertifikat penandatanganan: Apple Developer ID untuk notarization macOS, Authenticode untuk Windows. Keduanya berbiaya tahunan dan butuh keputusan Anda.
-- **Auto-update** — konfigurasinya sengaja dilepas dulu karena `pubkey` updater harus dibuat saat rilis pertama. Alur "tunggu job selesai sebelum memasang update" sudah dirancang di plan 14 §4.4.
-- **Uji di Windows & Linux** — perlu mesinnya.
+- **Installer bundling** (`.dmg`/`.msi`/`.AppImage`) — needs real icons (currently placeholders) and signing certificates: an Apple Developer ID for macOS notarization, Authenticode for Windows. Both carry annual costs and are your call.
+- **Auto-update** — configuration is deliberately left out for now, because the updater's `pubkey` has to be created at the first release. The "wait for jobs to finish before installing an update" flow is already designed in plan 14 §4.4.
+- **Testing on Windows and Linux** — needs the machines.
 
-## Menjalankan saat pengembangan
+## Running during development
 
 ```bash
-# core dijalankan aplikasi; arahkan ke pembungkus bun bila belum di-compile
-ENKAKU_CORE_BIN=/path/ke/enkaku-core bun run --cwd apps/desktop dev
+# the app starts the core; point this at the bun wrapper if it is not compiled yet
+ENKAKU_CORE_BIN=/path/to/enkaku-core bun run --cwd apps/desktop dev
 ```
 
-## Rilis
+## Release
 
 ```bash
 ./scripts/build-desktop.sh
 ```
 
-Skrip ini mem-build Studio, meng-compile core jadi binary tunggal, menaruhnya sebagai sidecar, lalu membundel aplikasi.
+That script builds Studio, compiles the core into a single binary, drops it in as a sidecar, then bundles the app.

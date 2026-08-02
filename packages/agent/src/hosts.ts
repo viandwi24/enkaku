@@ -16,24 +16,24 @@ import { startScrcpySession } from '@enkaku/scrcpy'
 import type { ToolchainManager } from '@enkaku/toolchain'
 import type { Tunnel } from './tunnel'
 
-/** Batas artifact yang boleh dikirim inline sebagai base64 di JSON. */
+/** Size limit for artifacts sent inline as base64 inside JSON. */
 const INLINE_ARTIFACT_LIMIT = 256 * 1024
 
 export interface AgentHosts {
   handle(msg: ControlToAgent): Promise<void>
-  /** Device yang terlihat agent — sumber data untuk session. */
+  /** The devices the agent can see — the data source for sessions. */
   updateDevices(list: DeviceSnapshot[]): void
   closeAll(): Promise<void>
 }
 
 /**
- * Penanganan perintah control plane di sisi agent (plan 12 §4.3):
+ * Handling control-plane commands on the agent side (plan 12 §4.3):
  * `session.start/stop`, `input.forward`, `job.dispatch`, `job.cancel.forward`.
  *
- * Semua keputusan kebijakan (lease, status busy, prioritas antrian) sudah
- * diambil control plane sebelum pesan sampai ke sini. Agent memvalidasi ulang
- * hal-hal yang hanya dia ketahui — device masih ada, sesi masih hidup —
- * sebagai lapis kedua, bukan sebagai kebijakan tandingan.
+ * Every policy decision (leases, busy status, queue priority) was already made
+ * by the control plane before a message reaches here. The agent re-checks only
+ * what it alone knows — the device is still present, the session still alive —
+ * as a second layer, never as a competing policy.
  */
 export function createAgentHosts(deps: {
   client: AdbClient
@@ -45,7 +45,7 @@ export function createAgentHosts(deps: {
   const devices = new Map<string, DeviceSnapshot>()
   const source: DeviceSnapshotSource = { get: (id) => devices.get(id) ?? null }
   const ports = new PortAllocator(parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE))
-  /** deviceId → channelId video yang dibuka control plane. */
+  /** deviceId → the video channelId the control plane opened. */
   const videoChannels = new Map<string, number>()
   /** deviceId → pelepas subscriber frame. */
   const frameUnsubs = new Map<string, () => void>()
@@ -80,16 +80,16 @@ export function createAgentHosts(deps: {
 
   const send = (msg: Parameters<NonNullable<ReturnType<typeof deps.tunnel>>['send']>[0]) => deps.tunnel()?.send(msg)
 
-  /** Artifact dikirim ke control plane, bukan disimpan di agent. */
+  /** Artifacts are sent to the control plane, not stored on the agent. */
   const artifactSink = (jobId: string): ArtifactSink => ({
     async save({ kind, label, data, ext }) {
       if (data.length > INLINE_ARTIFACT_LIMIT) {
-        // Artifact besar lewat channel biner supaya tidak menyumbat JSON.
+        // Large artifacts take the binary channel so they do not clog the JSON.
         const channel = videoChannels.get(`artifact:${jobId}`)
         if (channel !== undefined) {
           deps.tunnel()?.sendFrame(channel, data)
         } else {
-          deps.log.warn(`artifact "${label}" (${data.length}B) melebihi batas inline dan channel biner belum dibuka`)
+          deps.log.warn(`artifact "${label}" (${data.length}B) exceeds the inline limit and no binary channel is open`)
         }
       } else {
         send({
@@ -106,7 +106,7 @@ export function createAgentHosts(deps: {
           },
         })
       }
-      // Path sesungguhnya ditentukan control plane saat menyimpan.
+      // The real path is decided by the control plane when it stores the file.
       return { path: `remote/${jobId}/${label}`, sizeBytes: data.length }
     },
   })
@@ -126,12 +126,12 @@ export function createAgentHosts(deps: {
         },
       }),
     onArtifact: () => {
-      // Sudah dikirim oleh artifactSink saat menyimpan.
+      // Already sent by artifactSink at save time.
     },
     onPhase: (jobId, attempt, phase) =>
       send({ type: 'job.progress', payload: { jobId, kind: 'phase', phase, attempt } }),
     heartbeat: () => {
-      // Lease dipegang control plane; setiap job.progress berfungsi sebagai heartbeat.
+      // The control plane holds the lease; every job.progress doubles as a heartbeat.
     },
   })
 
@@ -151,7 +151,7 @@ export function createAgentHosts(deps: {
           inspectorEngine: session.inspectorEngineId,
         },
       })
-      // Alirkan frame ke channel video yang dibuka control plane.
+      // Stream frames into the video channel the control plane opened.
       const onFrame = (chunk: Uint8Array) => {
         const channel = videoChannels.get(deviceId)
         const tunnel = deps.tunnel()
@@ -165,7 +165,7 @@ export function createAgentHosts(deps: {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'session_failed'
-      deps.log.warn(`session.start ${deviceId} gagal: ${message}`)
+      deps.log.warn(`session.start failed for ${deviceId}: ${message}`)
       send({ type: 'session.failed', payload: { deviceId, code, message } })
     }
   }
@@ -205,7 +205,7 @@ export function createAgentHosts(deps: {
           if (!session) {
             send({
               type: 'session.failed',
-              payload: { deviceId: msg.payload.deviceId, code: 'no_session', message: 'tidak ada sesi aktif' },
+              payload: { deviceId: msg.payload.deviceId, code: 'no_session', message: 'no active session' },
             })
             return
           }
@@ -231,8 +231,8 @@ export function createAgentHosts(deps: {
         case 'job.dispatch': {
           const { jobId, deviceId, bundle, params } = msg.payload
           try {
-            if (!bundle) throw new Error('bundle tidak disertakan (bundleUrl belum didukung)')
-            // Bundle ditulis ke disk agent supaya child process bisa mengimpornya.
+            if (!bundle) throw new Error('no bundle was included (bundleUrl is not supported yet)')
+            // The bundle is written to the agent's disk so the child process can import it.
             const bundlePath = `${deps.dataDir}/cache/job-${jobId}.mjs`
             await Bun.write(bundlePath, bundle)
             const result = await runner.execute({ id: jobId, deviceId, bundlePath, params })

@@ -1,8 +1,8 @@
-import { CONTROL_MSG, KEY_ACTION, MOTION_ACTION, POINTER_ID_MOUSE } from '../version'
+import { CONTROL_MSG, KEY_ACTION, MOTION_ACTION, POINTER_ID_GENERIC_FINGER } from '../version'
 
 /**
  * Encoder control message host→device (plan 08 §4.2).
- * Layout byte TODO-verify terhadap source versi pinned.
+ * Byte layout is TODO-verify against the pinned version's source.
  */
 
 const enc = new TextEncoder()
@@ -29,8 +29,14 @@ export function encodeInjectText(text: string): Uint8Array {
 }
 
 /**
- * Touch absolut: koordinat dikirim bersama ukuran layar saat itu supaya
- * device bisa memetakan ulang kalau resolusi berubah (rotasi).
+ * Absolute touch: coordinates travel with the screen size at that moment, so
+ * the device can remap them if the resolution changes (rotation).
+ *
+ * The pointer id decides what kind of input device Android thinks this is. The
+ * default used to be POINTER_ID_MOUSE (-1), which makes the server build a
+ * SOURCE_MOUSE event — and a mouse event with no button held is a hover, so
+ * every tap was delivered and every tap did nothing. A finger id gives
+ * SOURCE_TOUCHSCREEN, which is what a device farm actually wants to simulate.
  */
 export function encodeInjectTouch(opts: {
   action: 'down' | 'up' | 'move'
@@ -49,7 +55,7 @@ export function encodeInjectTouch(opts: {
     opts.action === 'down' ? MOTION_ACTION.DOWN : opts.action === 'up' ? MOTION_ACTION.UP : MOTION_ACTION.MOVE
   dv.setUint8(0, CONTROL_MSG.INJECT_TOUCH_EVENT)
   dv.setUint8(1, action)
-  dv.setBigUint64(2, BigInt.asUintN(64, opts.pointerId ?? POINTER_ID_MOUSE), false)
+  dv.setBigUint64(2, BigInt.asUintN(64, opts.pointerId ?? POINTER_ID_GENERIC_FINGER), false)
   dv.setUint32(10, Math.round(opts.x), false)
   dv.setUint32(14, Math.round(opts.y), false)
   dv.setUint16(18, opts.screenWidth, false)
@@ -62,17 +68,27 @@ export function encodeInjectTouch(opts: {
   return buf
 }
 
+/**
+ * Register a virtual HID device.
+ *
+ * `vendorId` and `productId` are two separate u16 fields. Sending one u16 for
+ * the pair left every following field off by two bytes: the server read the
+ * name length from the wrong offset, the create was rejected, and — because
+ * the message is fire-and-forget — nothing surfaced. Input simply did nothing,
+ * with no virtual pointer ever appearing in `dumpsys input`.
+ */
 export function encodeUhidCreate(id: number, name: string, reportDesc: Uint8Array): Uint8Array {
   const nameBytes = enc.encode(name).subarray(0, 255)
-  const buf = new Uint8Array(1 + 2 + 2 + 1 + nameBytes.length + 2 + reportDesc.length)
+  const buf = new Uint8Array(1 + 2 + 2 + 2 + 1 + nameBytes.length + 2 + reportDesc.length)
   const dv = new DataView(buf.buffer)
   let off = 0
   dv.setUint8(off, CONTROL_MSG.UHID_CREATE)
   off += 1
   dv.setUint16(off, id, false)
   off += 2
-  // vendorId & productId (0 = tidak spesifik) — TODO-verify field ini ada di versi pinned.
-  dv.setUint16(off, 0, false)
+  dv.setUint16(off, 0, false) // vendorId — 0 = unspecified
+  off += 2
+  dv.setUint16(off, 0, false) // productId — 0 = unspecified
   off += 2
   dv.setUint8(off, nameBytes.length)
   off += 1

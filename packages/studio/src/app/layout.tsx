@@ -1,24 +1,23 @@
 import type { ReactNode } from 'react'
-import Link from 'next/link'
-import { Nav } from '@/components/Nav'
+import { Toaster } from '@/components/ui/sonner'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { AppShell } from '@/components/layout/AppShell'
+import { archivo, plexMono } from './fonts'
 import './globals.css'
 
 export const metadata = {
   title: 'Enkaku Studio',
-  description: 'Device farm — remote control & automation Android',
+  description: 'Android device farm — remote control and automation',
 }
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="id">
+    <html lang="en" className={`${archivo.variable} ${plexMono.variable}`}>
       <body>
-        <header className="topbar">
-          <Link href="/" className="brand">
-            Enkaku <span className="brand-sub">Studio</span>
-          </Link>
-          <Nav />
-        </header>
-        <main>{children}</main>
+        <TooltipProvider delayDuration={200}>
+          <AppShell>{children}</AppShell>
+        </TooltipProvider>
+        <Toaster position="bottom-right" richColors closeButton />
       </body>
     </html>
   )

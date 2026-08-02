@@ -1,18 +1,18 @@
 import { z } from 'zod'
 
-/** Descriptor engine untuk GET /api/registry (spec §8). */
+/** Engine descriptor for GET /api/registry (spec §8). */
 export const EngineDescriptorSchema = z.object({
   id: z.string(),
   displayName: z.string(),
   kind: z.enum(['transport', 'display', 'input', 'inspector']),
   capabilities: z.array(z.string()).default([]),
-  /** Resource lock (spec §9.5) — dua engine dgn lock sama tidak boleh aktif bersamaan. */
+  /** Resource lock (spec §9.5) — two engines holding the same lock cannot both be active. */
   locks: z.array(z.string()).default([]),
-  /** Capability yang wajib disediakan engine lain dalam kombinasi yang sama. */
+  /** A capability another engine in the same combination must provide. */
   requires: z.array(z.string()).default([]),
-  /** JSON Schema config engine (di-render schema-driven form). */
+  /** The engine's config JSON Schema (rendered by the schema-driven form). */
   configSchema: z.record(z.string(), z.unknown()).default({}),
-  /** false = terdaftar tapi belum diimplementasi (UI future-proof). */
+  /** false = declared but not implemented yet (keeps the UI future-proof). */
   available: z.boolean().default(true),
   unavailableReason: z.string().optional(),
 })
@@ -43,21 +43,21 @@ export type EngineSelectionResult =
     }
 
 /**
- * Validator kombinasi engine — dipakai Studio (disable opsi mustahil) DAN
- * core (server-authoritative saat PATCH driver device). Satu implementasi,
- * dua konsumen (spec §8).
+ * Engine-combination validator — used by Studio (to disable impossible options) AND by
+ * the core (server-authoritative on PATCH device drivers). One implementation,
+ * two consumers (spec §8).
  */
 export function validateEngineSelection(registry: RegistryResponse, sel: EngineSelection): EngineSelectionResult {
   const pick = (list: EngineDescriptor[], id: string, kind: string): EngineDescriptor | EngineSelectionResult => {
     const found = list.find((e) => e.id === id)
     if (!found) {
-      return { ok: false, code: 'UNKNOWN_ENGINE', message: `${kind} '${id}' tidak ada di registry` }
+      return { ok: false, code: 'UNKNOWN_ENGINE', message: `${kind} '${id}' is not in the registry` }
     }
     if (!found.available) {
       return {
         ok: false,
         code: 'ENGINE_UNAVAILABLE',
-        message: found.unavailableReason ?? `${kind} '${id}' belum tersedia`,
+        message: found.unavailableReason ?? `${kind} '${id}' is not available yet`,
       }
     }
     return found
@@ -75,7 +75,7 @@ export function validateEngineSelection(registry: RegistryResponse, sel: EngineS
     chosen.push(res)
   }
 
-  // Lock bentrok: dua engine BERBEDA meminta resource yang sama.
+  // Lock conflict: two DIFFERENT engines claim the same resource.
   const lockOwner = new Map<string, string>()
   for (const engine of chosen) {
     for (const lock of engine.locks) {
@@ -84,7 +84,7 @@ export function validateEngineSelection(registry: RegistryResponse, sel: EngineS
         return {
           ok: false,
           code: 'LOCK_CONFLICT',
-          message: `'${engine.id}' dan '${owner}' sama-sama mengunci resource '${lock}'`,
+          message: `'${engine.id}' and '${owner}' both lock the resource '${lock}'`,
         }
       }
       lockOwner.set(lock, engine.id)
@@ -98,7 +98,7 @@ export function validateEngineSelection(registry: RegistryResponse, sel: EngineS
         return {
           ok: false,
           code: 'REQUIREMENT_MISSING',
-          message: `'${engine.id}' butuh capability '${need}' yang tidak disediakan engine terpilih`,
+          message: `'${engine.id}' needs the capability '${need}', which no selected engine provides`,
         }
       }
     }

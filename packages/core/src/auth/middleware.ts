@@ -8,12 +8,12 @@ export const SESSION_COOKIE = 'enkaku_session'
 
 export type AuthEnv = { Variables: { user: AuthUser } }
 
-/** Route yang boleh diakses tanpa login (halaman login butuh ini). */
+/** Routes reachable without logging in (the login page needs them). */
 const PUBLIC_PATHS = new Set([
   '/api/health',
   '/api/auth/login',
   '/api/auth/setup',
-  // Autentikasinya adalah enrollment token sekali-pakai di body.
+  // The single-use enrollment token in the body IS the authentication.
   '/api/agents/enroll',
 ])
 
@@ -22,7 +22,7 @@ export function authMiddleware(deps: {
   mode: AuthMode
 }): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
-    // Mode local (bind loopback): satu admin implisit, tanpa login.
+    // Local mode (loopback bind): one implicit admin, no login.
     if (deps.mode === 'local') {
       c.set('user', deps.auth.ensureLocalAdmin())
       return next()
@@ -36,7 +36,7 @@ export function authMiddleware(deps: {
     if (!user) {
       return c.json(
         {
-          error: { code: 'auth.required', message: 'login dibutuhkan' },
+          error: { code: 'auth.required', message: 'login required' },
           setupNeeded: !deps.auth.hasAnyAdmin(),
         },
         401,
@@ -47,12 +47,12 @@ export function authMiddleware(deps: {
   }
 }
 
-/** Guard per-permission (dipasang di route yang butuh hak khusus). */
+/** Per-permission guard (attached to routes needing specific rights). */
 export function requirePermission(permission: Permission): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
     const user = c.get('user')
     if (!user || !can(user.role, permission)) {
-      return c.json({ error: { code: 'auth.forbidden', message: `butuh izin ${permission}` } }, 403)
+      return c.json({ error: { code: 'auth.forbidden', message: `requires the ${permission} permission` } }, 403)
     }
     await next()
   }

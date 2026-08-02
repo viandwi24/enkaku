@@ -4,9 +4,9 @@ import type { Logger } from '../util/logger'
 import { limitsFor, type Edition, type EditionLimits } from './editions'
 
 /**
- * Verifikasi lisensi offline (plan 10 §4.3): file lisensi berisi payload
- * JSON + signature Ed25519. Core hanya memegang public key, jadi verifikasi
- * tidak butuh server aktivasi (no phone-home).
+ * Offline licence verification (plan 10 §4.3): the licence file holds a payload of
+ * JSON plus an Ed25519 signature. The core only holds the public key, so
+ * verification needs no activation server (no phone-home).
  */
 
 export const LicensePayloadSchema = z.object({
@@ -15,14 +15,14 @@ export const LicensePayloadSchema = z.object({
   licensedTo: z.string(),
   seats: z.number().int().min(1).nullable(),
   issuedAt: z.number().int(),
-  /** Unix detik; null = perpetual. */
+  /** Unix seconds; null means perpetual. */
   expiresAt: z.number().int().nullable(),
 })
 export type LicensePayload = z.infer<typeof LicensePayloadSchema>
 
 export const LicenseFileSchema = z.object({
   payload: LicensePayloadSchema,
-  /** base64 signature Ed25519 atas JSON.stringify(payload). */
+  /** base64 Ed25519 signature over JSON.stringify(payload). */
   signature: z.string(),
 })
 
@@ -38,12 +38,12 @@ const COMMUNITY: LicenseStatus = {
   edition: 'community',
   limits: limitsFor('community'),
   valid: true,
-  reason: 'tanpa file lisensi — edisi community',
+  reason: 'no licence file — community edition',
 }
 
 /**
- * Public key rilis (base64 SPKI). Diisi saat rilis pertama; sampai itu
- * lisensi apa pun dianggap tidak terverifikasi dan core jatuh ke community.
+ * The release public key (base64 SPKI). Filled in at the first release; until
+ * then any licence counts as unverified and the core falls back to community.
  */
 const LICENSE_PUBLIC_KEY_B64 = process.env.ENKAKU_LICENSE_PUBKEY ?? ''
 
@@ -54,28 +54,28 @@ export async function loadLicense(dataDir: string, log: Logger): Promise<License
 
   const parsed = LicenseFileSchema.safeParse(await file.json().catch(() => null))
   if (!parsed.success) {
-    log.warn(`file lisensi tidak terbaca/format salah — jatuh ke community (${path})`)
-    return { ...COMMUNITY, reason: 'file lisensi tidak valid' }
+    log.warn(`the licence file is unreadable or malformed — falling back to community (${path})`)
+    return { ...COMMUNITY, reason: 'invalid licence file' }
   }
 
   if (!LICENSE_PUBLIC_KEY_B64) {
-    log.warn('public key lisensi belum di-set — lisensi tidak bisa diverifikasi, memakai community')
-    return { ...COMMUNITY, reason: 'public key lisensi belum tersedia di build ini' }
+    log.warn('the licence public key is not set — licences cannot be verified, using community')
+    return { ...COMMUNITY, reason: 'no licence public key in this build' }
   }
 
   const verified = await verifySignature(parsed.data.payload, parsed.data.signature)
   if (!verified) {
-    log.warn('signature lisensi tidak cocok — file mungkin diubah; memakai community')
-    return { ...COMMUNITY, reason: 'signature lisensi tidak valid' }
+    log.warn('the licence signature does not match — the file may have been altered; using community')
+    return { ...COMMUNITY, reason: 'invalid licence signature' }
   }
 
   const { payload } = parsed.data
   if (payload.expiresAt !== null && payload.expiresAt * 1000 < Date.now()) {
-    log.warn(`lisensi kedaluwarsa (${new Date(payload.expiresAt * 1000).toISOString()}) — memakai community`)
-    return { ...COMMUNITY, reason: 'lisensi kedaluwarsa', payload }
+    log.warn(`the licence expired (${new Date(payload.expiresAt * 1000).toISOString()}) — using community`)
+    return { ...COMMUNITY, reason: 'the licence has expired', payload }
   }
 
-  log.info(`lisensi ${payload.edition} untuk ${payload.licensedTo} terverifikasi`)
+  log.info(`verified ${payload.edition} licence for ${payload.licensedTo}`)
   return { edition: payload.edition, limits: limitsFor(payload.edition), valid: true, payload }
 }
 

@@ -15,13 +15,13 @@ const CONTENT_TYPES: Record<string, string> = {
   mp4: 'video/mp4',
 }
 
-/** Artifact per job: list + download (spec §11.2, §19 job detail). */
+/** Per-job artifacts: list and download (spec §11.2, §19 job detail). */
 export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
   const app = new Hono()
 
   app.get('/', (c) => {
     const jobId = c.req.query('jobId')
-    if (!jobId) throw new EnkakuError('E_BAD_REQUEST', 'query ?jobId= wajib')
+    if (!jobId) throw new EnkakuError('E_BAD_REQUEST', 'the ?jobId= query parameter is required')
     const rows = deps.db
       .select()
       .from(artifacts)
@@ -43,13 +43,13 @@ export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
 
   app.get('/:id/content', async (c) => {
     const row = deps.db.select().from(artifacts).where(eq(artifacts.id, c.req.param('id'))).get()
-    if (!row) throw new EnkakuError('artifact_not_found', 'artifact tidak ada')
-    // path di DB relatif terhadap app-data; tolak traversal.
+    if (!row) throw new EnkakuError('artifact_not_found', 'no such artifact')
+    // The DB path is relative to app-data; reject traversal.
     const rel = normalize(row.path)
-    if (rel.startsWith('..')) throw new EnkakuError('E_BAD_REQUEST', 'path artifact tidak valid')
+    if (rel.startsWith('..')) throw new EnkakuError('E_BAD_REQUEST', 'invalid artifact path')
     const abs = join(deps.dataDir, rel)
     const file = Bun.file(abs)
-    if (!(await file.exists())) throw new EnkakuError('artifact_not_found', 'file artifact sudah tidak ada di disk')
+    if (!(await file.exists())) throw new EnkakuError('artifact_not_found', 'the artifact file is no longer on disk')
     const ext = rel.split('.').pop() ?? ''
     return new Response(file, {
       headers: { 'content-type': CONTENT_TYPES[ext] ?? 'application/octet-stream' },

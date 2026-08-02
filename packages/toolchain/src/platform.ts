@@ -11,10 +11,10 @@ export function currentPlatformKey(
   if (platform === 'linux' && arch === 'x64') return 'linux-x64'
   if (platform === 'linux' && arch === 'arm64') return 'linux-arm64'
   if (platform === 'win32' && arch === 'x64') return 'win32-x64'
-  throw new ToolchainError('E_PLATFORM_UNSUPPORTED', `platform tidak didukung: ${platform}-${arch}`)
+  throw new ToolchainError('E_PLATFORM_UNSUPPORTED', `unsupported platform: ${platform}-${arch}`)
 }
 
-/** Artifact untuk platform host: entry spesifik menang, '*' fallback. */
+/** Artifact for the host platform: a specific entry wins, '*' is the fallback. */
 export function pickPlatformKey(
   available: string[],
   host: Exclude<PlatformKey, '*'>,

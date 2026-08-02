@@ -8,9 +8,10 @@ export interface AdbTransportOpts {
 }
 
 /**
- * Transport `adb-usb`: wrapper tipis di atas @enkaku/adb — semua perintah
- * lewat per-device queue + semaphore Plan 01, binary adb dari Toolchain.
- * TIDAK pernah memanggil `adb kill-server` (spec §10.4).
+ * The `adb-usb` transport: a thin wrapper over @enkaku/adb — every command
+ * goes through the Plan 01 per-device queue and semaphore, with the adb binary
+ * coming from the Toolchain.
+ * It NEVER calls `adb kill-server` (spec §10.4).
  */
 export class AdbUsbTransport implements Transport {
   readonly id: string = 'adb-usb'
@@ -29,7 +30,7 @@ export class AdbUsbTransport implements Transport {
   }
 
   async disconnect(): Promise<void> {
-    // no-op untuk USB.
+    // no-op for USB.
   }
 
   exec(cmd: string): Promise<string> {

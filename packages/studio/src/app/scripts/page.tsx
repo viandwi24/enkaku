@@ -1,172 +1,178 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { FileCode2, Play } from 'lucide-react'
 import type { DeviceInfo } from '@enkaku/protocol'
-import { SchemaForm } from '@/components/schema-form/SchemaForm'
-import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { fetchDevices } from '@/lib/api'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { api, useAction } from '@/lib/actions'
+import { relativeTime } from '@/lib/format'
 import { coreBase } from '@/lib/ws'
 
-interface ScriptRow {
-  id: string
-  name: string
-  version: string
-  paramsSchema: JsonSchemaNode | null
-  enabled: boolean
-  createdAt: number | null
-}
-
-export default function ScriptsPage() {
-  const [scripts, setScripts] = useState<ScriptRow[]>([])
+function ScriptsView() {
+  const initialDevice = useSearchParams().get('device')
+  const [scripts, setScripts] = useState<ScriptRow[] | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [selected, setSelected] = useState<ScriptRow | null>(null)
-  const [params, setParams] = useState<unknown>(undefined)
-  const [deviceId, setDeviceId] = useState('')
+  const [runTarget, setRunTarget] = useState<ScriptRow | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const { run, isPending } = useAction()
 
-  async function load() {
-    const res = await fetch(`${coreBase()}/api/scripts`)
-    const body = (await res.json()) as { scripts: ScriptRow[] }
-    setScripts(body.scripts)
+  const load = async () => {
+    setError(null)
+    try {
+      const [s, d] = await Promise.all([
+        api<{ scripts: ScriptRow[] }>('/api/scripts'),
+        api<{ devices: DeviceInfo[] }>('/api/devices'),
+      ])
+      setScripts(s.scripts)
+      setDevices(d.devices)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   useEffect(() => {
-    void load().catch((e) => setError(String(e)))
-    void fetchDevices()
-      .then((d) => {
-        setDevices(d)
-        setDeviceId((prev) => prev || (d[0]?.id ?? ''))
-      })
-      .catch((e) => setError(String(e)))
+    void load()
   }, [])
 
-  async function toggle(script: ScriptRow) {
-    await fetch(`${coreBase()}/api/scripts/${script.id}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: !script.enabled }),
-    })
-    await load()
-  }
+  // Arriving from the "Run" button on a device card: open the dialog as soon
+  // as the script list is ready, so the flow is not interrupted.
+  useEffect(() => {
+    if (initialDevice && scripts && scripts.length > 0 && !runTarget) setRunTarget(scripts[0]!)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDevice, scripts])
 
-  async function remove(script: ScriptRow) {
-    const res = await fetch(`${coreBase()}/api/scripts/${script.id}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const body = (await res.json()) as { error?: { message: string } }
-      setError(body.error?.message ?? `HTTP ${res.status}`)
-      return
-    }
-    if (selected?.id === script.id) setSelected(null)
-    await load()
-  }
+  const toggleEnabled = (s: ScriptRow) =>
+    run(
+      'toggle-' + s.id,
+      () => api(`/api/scripts/${s.id}`, { method: 'PATCH', json: { enabled: !s.enabled } }),
+      {
+        success: s.enabled ? `${s.name} disabled` : `${s.name} enabled`,
+        failure: 'Could not change the script status',
+        onSuccess: load,
+      },
+    )
 
-  async function run() {
-    if (!selected) return
-    setError(null)
-    setNotice(null)
-    const res = await fetch(`${coreBase()}/api/jobs`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scriptId: selected.id, deviceId, params: params ?? {} }),
+  const remove = (s: ScriptRow) =>
+    run('del-' + s.id, () => api(`/api/scripts/${s.id}`, { method: 'DELETE' }), {
+      success: `${s.name}@${s.version} deleted`,
+      failure: 'Could not delete the script',
+      onSuccess: load,
     })
-    const body = (await res.json()) as { job?: { jobId: string }; error?: { message: string } }
-    if (!res.ok) {
-      setError(body.error?.message ?? `HTTP ${res.status}`)
-      return
-    }
-    setNotice(`Job dibuat: ${body.job?.jobId.slice(0, 8)} — lihat halaman Jobs.`)
-  }
 
   return (
     <>
-      <h1>Scripts</h1>
-      <p className="hint">
-        Publish dari mesin sendiri: <code>bunx enkaku publish ./script.ts --farm {coreBase()}</code>
-      </p>
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="hint">{notice}</p>}
+      <PageHeader title="Scripts" description="Automation scripts published to this farm" />
 
-      {scripts.length === 0 ? (
-        <p className="hint">Belum ada script ter-publish.</p>
-      ) : (
-        <div className="panel" style={{ padding: 0 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--muted)', fontSize: 12 }}>
-                <th style={{ padding: '0.6rem' }}>Nama</th>
-                <th>Versi</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {scripts.map((s) => (
-                <tr key={s.id} style={{ borderTop: '1px solid var(--border)' }}>
-                  <td style={{ padding: '0.6rem' }}>{s.name}</td>
-                  <td className="meta">{s.version}</td>
-                  <td>
-                    <span className={`badge ${s.enabled ? 'idle' : 'offline'}`}>
-                      {s.enabled ? 'enabled' : 'disabled'}
-                    </span>
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <span className="row" style={{ justifyContent: 'flex-end' }}>
-                      <button
-                        onClick={() => {
-                          setSelected(s)
-                          setParams(undefined)
-                        }}
-                      >
-                        Run…
-                      </button>
-                      <button onClick={() => void toggle(s)}>{s.enabled ? 'Disable' : 'Enable'}</button>
-                      <button onClick={() => void remove(s)}>Hapus</button>
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {selected && (
-        <div className="panel">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <b>
-              Run {selected.name}@{selected.version}
-            </b>
-            <button onClick={() => setSelected(null)}>Tutup</button>
+      <div className="space-y-4 px-5 py-4">
+        {error ? (
+          <ErrorState message={error} onRetry={load} />
+        ) : scripts === null ? (
+          <LoadingRows rows={3} />
+        ) : scripts.length === 0 ? (
+          <EmptyState
+            icon={<FileCode2 className="size-4" aria-hidden />}
+            title="No scripts yet"
+            description={
+              <>
+                Write a script in your own editor using <code className="readout">@enkaku/sdk</code>, then publish it
+                to this farm:
+                <code className="readout mt-2 block rounded bg-surface-2 px-2 py-1.5 text-[11.5px]">
+                  bunx enkaku publish ./script.ts --farm {coreBase()}
+                </code>
+              </>
+            }
+          />
+        ) : (
+          <div className="overflow-hidden rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[40%]">Name</TableHead>
+                  <TableHead>Version</TableHead>
+                  <TableHead>Published</TableHead>
+                  <TableHead>Enabled</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {scripts.map((s) => (
+                  <TableRow key={s.id}>
+                    <TableCell>
+                      <Link href={`/scripts/detail?id=${s.id}`} className="font-medium hover:text-accent">
+                        {s.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="readout text-[12px] text-fg-muted">{s.version}</TableCell>
+                    <TableCell className="readout text-[11.5px] text-fg-muted">
+                      {relativeTime(s.createdAt)}
+                    </TableCell>
+                    <TableCell>
+                      <Switch
+                        checked={s.enabled}
+                        disabled={isPending('toggle-' + s.id)}
+                        onCheckedChange={() => void toggleEnabled(s)}
+                        aria-label={`Enable ${s.name}`}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 text-[12px]"
+                          disabled={!s.enabled}
+                          onClick={() => setRunTarget(s)}
+                        >
+                          <Play className="size-3.5" aria-hidden />
+                          Run
+                        </Button>
+                        <ConfirmDialog
+                          trigger={
+                            <Button size="sm" variant="ghost" className="h-7 text-[12px]">
+                              Delete
+                            </Button>
+                          }
+                          title={`Delete ${s.name}@${s.version}?`}
+                          description={
+                            <>
+                              The script disappears from this farm and can no longer be run. Jobs that already ran
+                              keep their history.
+                            </>
+                          }
+                          onConfirm={() => remove(s)}
+                        />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
-          <label style={{ margin: '0.5rem 0' }}>
-            Device
-            <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
-              {devices.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label} — {d.status}
-                </option>
-              ))}
-            </select>
-          </label>
-          {selected.paramsSchema ? (
-            <SchemaForm
-              schema={selected.paramsSchema}
-              value={params}
-              onChange={setParams}
-              onSubmit={() => void run()}
-              submitLabel="Jalankan"
-            />
-          ) : (
-            <>
-              <p className="hint">Script ini tidak menyertakan schema params.</p>
-              <button className="primary" onClick={() => void run()}>
-                Jalankan
-              </button>
-            </>
-          )}
-        </div>
-      )}
+        )}
+      </div>
+
+      <RunScriptDialog
+        script={runTarget}
+        devices={devices}
+        initialDevice={initialDevice}
+        onClose={() => setRunTarget(null)}
+      />
     </>
+  )
+}
+
+export default function ScriptsPage() {
+  return (
+    <Suspense fallback={<div className="px-5 py-4"><LoadingRows rows={3} /></div>}>
+      <ScriptsView />
+    </Suspense>
   )
 }

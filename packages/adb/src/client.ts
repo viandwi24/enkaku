@@ -4,7 +4,7 @@ import { AdbSocket } from './socket'
 import { DeviceTracker } from './tracker'
 
 export interface AdbClientOptions {
-  /** Path binary adb — dari resolveToolPath('adb'); client TIDAK baca env sendiri. */
+  /** Path to the adb binary — from resolveToolPath('adb'); the client NEVER reads env itself. */
   adbPath: string
   host?: string
   port?: number
@@ -14,10 +14,10 @@ export interface AdbClientOptions {
 }
 
 /**
- * Client tipis ke adb server via smartsocket (127.0.0.1:5037).
- * Satu-satunya spawn CLI yang diizinkan: `adb start-server` saat koneksi
- * ditolak. `adb kill-server` DILARANG di seluruh codebase (spec §10.4) —
- * satu-satunya pengecualian kelak: Toolchain Manager saat swap versi adb.
+ * A thin client for the adb server over its smartsocket (127.0.0.1:5037).
+ * The only CLI spawn allowed here is `adb start-server` when the connection
+ * is refused. `adb kill-server` is FORBIDDEN across the codebase (spec §10.4)
+ * — the single exception is the Toolchain Manager swapping adb versions.
  */
 export class AdbClient {
   private host: string
@@ -36,7 +36,7 @@ export class AdbClient {
     this.onLog = opts.onLog
   }
 
-  /** Connect ke adb server; kalau belum jalan → spawn `adb start-server` + retry. */
+  /** Connect to the adb server; if it is not running, spawn `adb start-server` and retry. */
   async ensureServer(): Promise<void> {
     const maxAttempts = 3
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -48,11 +48,11 @@ export class AdbClient {
         if (attempt === maxAttempts) {
           throw new AdbError(
             'E_ADB_UNAVAILABLE',
-            `adb server tidak bisa dihubungi di ${this.host}:${this.port} setelah ${maxAttempts} percobaan`,
+            `could not reach the adb server at ${this.host}:${this.port} after ${maxAttempts} attempts`,
             err,
           )
         }
-        this.onLog?.('debug', `adb server belum jalan, mencoba start-server (attempt ${attempt})`)
+        this.onLog?.('debug', `adb server is not running, trying start-server (attempt ${attempt})`)
         const proc = Bun.spawn([this.adbPath, 'start-server'], { stdout: 'ignore', stderr: 'ignore' })
         await proc.exited
         await Bun.sleep(500 * attempt)
@@ -60,7 +60,7 @@ export class AdbClient {
     }
   }
 
-  /** host:version → string versi (hex) dari adb server. */
+  /** host:version → the adb server's version string (hex). */
   async version(): Promise<string> {
     const socket = await AdbSocket.connect(this.host, this.port)
     try {
@@ -73,9 +73,9 @@ export class AdbClient {
   }
 
   /**
-   * Shell one-shot per device: koneksi baru → host:transport:<serial> →
-   * shell:<cmd> → baca sampai socket ditutup. Selalu lewat per-device queue
-   * + semaphore — tidak ada jalur pintas.
+   * One-shot shell per device: new connection → host:transport:<serial> →
+   * shell:<cmd> → read until the socket closes. Always through the per-device queue
+   * plus the semaphore — there is no shortcut around it.
    */
   exec(serial: string, cmd: string): Promise<string> {
     return this.queue.run(serial, async () => {
@@ -93,7 +93,7 @@ export class AdbClient {
     })
   }
 
-  /** Seperti exec, tapi stdout binary mentah (screencap dsb) via exec-out. */
+  /** Like exec, but returns raw binary stdout (screencap and friends) via exec-out. */
   execOut(serial: string, cmd: string): Promise<Uint8Array> {
     return this.queue.run(serial, async () => {
       const socket = await AdbSocket.connect(this.host, this.port)
@@ -133,19 +133,19 @@ export class AdbClient {
     }
   }
 
-  /** Path binary adb aktif (untuk spawn CLI khusus, mis. `adb pair`). */
+  /** Path to the active adb binary (for the few CLI spawns needed, e.g. `adb pair`). */
   get binaryPath(): string {
     return this.adbPath
   }
 
-  /** Jumlah task antri untuk satu serial (debugging). */
+  /** Number of queued tasks for one serial (debugging aid). */
   pending(serial: string): number {
     return this.queue.pending(serial)
   }
 
   /**
-   * Dipakai Toolchain Manager saat swap versi adb (plan 02 §4.11):
-   * pause → waitIdle (drain) → [kill/start-server di core] → resume.
+   * Used by the Toolchain Manager when swapping adb versions (plan 02 §4.11):
+   * pause → waitIdle (drain) → [kill/start-server in the core] → resume.
    */
   pauseQueue(): void {
     this.queue.pause()
@@ -159,7 +159,7 @@ export class AdbClient {
     return this.queue.waitIdle(timeoutMs)
   }
 
-  /** Ganti binary adb setelah swap versi (path baru dari Toolchain Manager). */
+  /** Point at a new adb binary after a version swap (path from the Toolchain Manager). */
   setAdbPath(path: string): void {
     this.adbPath = path
   }

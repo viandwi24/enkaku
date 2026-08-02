@@ -12,10 +12,10 @@ import type { SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
 import type { Logger } from '../util/logger'
 
-/** Batas backpressure: lewat ini frame di-skip (frame terbaru saja yang penting). */
+/** Backpressure limit: past this, frames are dropped (only the newest one matters). */
 const MAX_BUFFERED = 4 * 1024 * 1024
 
-/** Normalisasi 0..1 → pixel device, pakai dimensi frame TERBARU (rotasi). */
+/** Normalised 0..1 → device pixels, using the LATEST frame dimensions (rotation). */
 export function mapNormToDevice(pos: { x: number; y: number }, frame: { width: number; height: number }): Point {
   const clamp = (v: number, max: number) => Math.min(Math.max(max, 0), Math.max(0, v))
   return {
@@ -32,7 +32,7 @@ interface StreamBinding {
   lastSize: { width: number; height: number }
 }
 
-/** State per koneksi WS: clientId + stream yang dimiliki koneksi ini. */
+/** Per-connection WS state: the clientId and the streams this connection owns. */
 interface ConnState {
   clientId: string
   streams: Map<number, StreamBinding>
@@ -58,15 +58,17 @@ export interface WebRtcSignaling {
 }
 
 export interface WsHandlerDeps {
-  /** Jalur video WebRTC (mode cloud); tidak dipakai di LAN. */
+  /** The WebRTC video path (cloud mode); unused on a LAN. */
   webrtc?: WebRtcSignaling
-  /** null di mode orchestrator: control plane tidak memegang device lokal. */
+  /** null under the orchestrator: the control plane holds no local devices. */
   sessions: SessionManager | null
-  /** Sesi device milik agent (mode cloud); null di mode lokal murni. */
+  /** Sessions for agent-owned devices (cloud mode); null in pure local mode. */
   remote?: RemoteSessions
   pairing: PairingService
   leases: LeaseManager
   jobs: JobService
+  /** Fan a message out to every connected client, not just the sender. */
+  broadcast: (msg: ServerMessage) => void
   log: Logger
 }
 
@@ -92,7 +94,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       try {
         json = JSON.parse(raw)
       } catch {
-        sendError(ws, 'E_BAD_MESSAGE', 'payload bukan JSON')
+        sendError(ws, 'E_BAD_MESSAGE', 'the payload is not JSON')
         return
       }
       const parsed = ClientMessageSchema.safeParse(json)
@@ -122,8 +124,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 ws.send(encodeVideoFrame(streamId, meta, chunk))
               },
             }
-            // Video tetap jalan walau device `busy` (spec §10.1) — hanya
-            // input yang di-reject.
+            // Video keeps running even while a device is `busy` (spec §10.1) —
+            // only input is rejected.
             const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
@@ -137,15 +139,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'
               frameSize = session.frameSize
             } else {
-              // Device tidak dimiliki agent mana pun DAN tidak ada sesi lokal.
+              // The device belongs to no agent AND there is no local session.
               sendError(
                 ws,
                 'device_not_reachable',
-                'device tidak terhubung ke control plane ini maupun ke agent mana pun',
+                'the device is connected neither to this control plane nor to any agent',
                 msg.id,
               )
               return
             }
+            // Recorded AFTER acquire succeeds: if acquire throws, no binding is
+            // left behind with no session under it. Without this line,
+            // stream.stop and the disconnect cleanup do nothing at all — the
+            // capture loop keeps running on the device forever.
+            state.streams.set(streamId, binding)
             send(ws, {
               type: 'stream.started',
               id: msg.id,
@@ -157,18 +164,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 height: frameSize.height,
               },
             })
-            // Viewer baru butuh SPS/PPS sebelum frame pertama bisa di-decode.
+            // A new viewer needs SPS/PPS to configure its decoder, and then a
+            // keyframe to actually paint something. Sending only the config
+            // leaves the canvas black until the encoder's next IDR — seconds
+            // later — and the browser rejects the deltas that arrive meanwhile
+            // ("a key frame is required after configure()").
             const localSession = remoteAgent ? null : (deps.sessions?.get(msg.payload.deviceId) ?? null)
-            const config = localSession?.videoConfig?.()
-            if (config) {
-              ws.send(
-                encodeVideoFrame(
-                  streamId,
-                  { width: frameSize.width, height: frameSize.height, codec: 'h264', seq: 0, capturedAt: Date.now() },
-                  config,
-                ),
-              )
+            const primer: FrameMeta = {
+              width: frameSize.width,
+              height: frameSize.height,
+              codec: 'h264',
+              seq: 0,
+              capturedAt: Date.now(),
+              keyframe: true,
             }
+            const config = localSession?.videoConfig?.()
+            if (config) ws.send(encodeVideoFrame(streamId, primer, config))
+            const keyframe = localSession?.videoKeyframe?.()
+            if (keyframe) ws.send(encodeVideoFrame(streamId, primer, keyframe))
             return
           }
 
@@ -188,16 +201,28 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               ...(msgId ? { id: msgId } : {}),
               payload: { deviceId: lease.deviceId, expiresAt: lease.expiresAt },
             })
+            // Everyone else watching this device needs to know it is being
+            // driven now, so their page stops offering control it cannot get.
+            deps.broadcast({
+              type: 'lease.changed',
+              payload: { deviceId: lease.deviceId, held: true, expiresAt: lease.expiresAt },
+            })
             return
           }
 
           case 'lease.release': {
-            deps.leases.releaseManual(msg.payload.deviceId, state.clientId)
+            const released = deps.leases.releaseManual(msg.payload.deviceId, state.clientId)
             send(ws, {
               type: 'lease.released',
               ...(msgId ? { id: msgId } : {}),
               payload: { deviceId: msg.payload.deviceId },
             })
+            if (released) {
+              deps.broadcast({
+                type: 'lease.changed',
+                payload: { deviceId: msg.payload.deviceId, held: false, expiresAt: null },
+              })
+            }
             return
           }
 
@@ -205,8 +230,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           case 'input.swipe':
           case 'input.key':
           case 'input.text': {
-            // Server-authoritative: lease & status divalidasi di sini,
-            // bukan sekadar UI di-disable (spec §10.1).
+            // Server-authoritative: the lease and status are validated here,
+            // not merely disabled in the UI (spec §10.1).
             const allowed = deps.leases.checkInputAllowed(msg.payload.deviceId, state.clientId)
             if (!allowed.ok) {
               sendError(ws, allowed.code, allowed.message, msgId)
@@ -221,8 +246,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 ws,
                 remoteAgent ? 'agent_offline' : 'E_DEVICE_NOT_READY',
                 remoteAgent
-                  ? 'device dipegang agent yang sedang tidak terhubung'
-                  : 'tidak ada sesi aktif untuk device ini (mulai stream dulu)',
+                  ? 'the device belongs to an agent that is currently disconnected'
+                  : 'no active session for this device (start the stream first)',
                 msgId,
               )
               return
@@ -265,7 +290,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             if (!deps.webrtc) {
               send(ws, {
                 type: 'video.webrtc.failed',
-                payload: { deviceId: msg.payload.deviceId, reason: 'jalur WebRTC tidak aktif di mode ini' },
+                payload: { deviceId: msg.payload.deviceId, reason: 'the WebRTC path is not active in this mode' },
               })
               return
             }
@@ -303,12 +328,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'E_INTERNAL'
-        deps.log.warn(`handler ${msg.type} gagal: ${message}`)
+        deps.log.warn(`handler ${msg.type} failed: ${message}`)
         sendError(ws, code, message, msgId)
       }
     },
 
-    /** WS putus → stream & lease manual milik koneksi itu auto-release. */
+    /** WS dropped → this connection's streams and manual leases auto-release. */
     handleClose(ws: ServerWebSocket<unknown>): void {
       const state = conns.get(ws)
       if (!state) return

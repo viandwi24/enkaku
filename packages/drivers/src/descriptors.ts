@@ -1,9 +1,9 @@
 import type { EngineDescriptor } from '@enkaku/protocol'
 
 /**
- * Descriptor engine yang benar-benar terimplementasi di package ini
- * (spec §8; locks mengikuti pola spec §9.5). Engine yang masih rencana
- * didaftarkan core dengan `available: false`.
+ * Descriptors for the engines actually implemented in this package (spec §8;
+ * locks follow the spec §9.5 pattern). Engines that are still only planned
+ * are registered by the core with `available: false`.
  */
 export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'available'>> = [
   {
@@ -48,7 +48,7 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'scrcpy',
-    displayName: 'scrcpy (H.264, latency rendah)',
+    displayName: 'scrcpy (H.264, low latency)',
     kind: 'display',
     capabilities: ['video-h264'],
     locks: ['video-encoder'],
@@ -64,7 +64,7 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'scrcpy-sdk',
-    displayName: 'scrcpy SDK (InputManager, kompatibilitas luas)',
+    displayName: 'scrcpy SDK (InputManager, broad compatibility)',
     kind: 'input',
     capabilities: ['tap', 'swipe', 'key', 'text'],
     locks: ['input-injection'],
@@ -72,10 +72,10 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'uiautomator-dump',
-    displayName: 'UiAutomator dump (jembatan, 0,5–2 dtk per query)',
+    displayName: 'UiAutomator dump (bridge, 0.5–2 s per query)',
     kind: 'inspector',
     capabilities: ['dump', 'find', 'screenshot'],
-    // Merebut UiAutomation juga — tidak boleh barengan ui-server/appium.
+    // It seizes UiAutomation too — it cannot run alongside ui-server or appium.
     locks: ['instrumentation'],
     configSchema: {},
   },

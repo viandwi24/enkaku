@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Typecheck seluruh workspace. Keluar dengan kode != 0 bila ada yang gagal,
-# supaya bisa dipakai di CI apa adanya.
+# Typecheck the whole workspace. Exits non-zero if anything fails,
+# so it can be dropped into CI as-is.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 fail=0
@@ -9,7 +9,7 @@ for p in protocol adb toolchain drivers scrcpy sdk session core agent studio; do
   if bunx tsc --noEmit -p "packages/$p" >/tmp/tc-$p.log 2>&1; then
     echo "OK"
   else
-    echo "GAGAL"
+    echo "FAILED"
     sed 's/^/    /' "/tmp/tc-$p.log" | head -10
     fail=1
   fi

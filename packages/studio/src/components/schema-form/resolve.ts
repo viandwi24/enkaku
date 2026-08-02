@@ -1,6 +1,6 @@
 import type { FieldKind, JsonSchemaNode } from './types'
 
-/** Resolve `$ref` lokal (`#/$defs/Nama`) terhadap root schema. */
+/** Resolve a local `$ref` (`#/$defs/Name`) against the root schema. */
 export function deref(node: JsonSchemaNode, root: JsonSchemaNode): JsonSchemaNode {
   if (!node.$ref) return node
   const path = node.$ref.replace(/^#\//, '').split('/')
@@ -18,7 +18,7 @@ const typeOf = (node: JsonSchemaNode): string | undefined =>
 export function getNodeKind(node: JsonSchemaNode, root: JsonSchemaNode): FieldKind {
   const n = deref(node, root)
   if (n.enum && n.enum.length > 0) return 'enum'
-  // Tuple [min, max] → satu field rentang.
+  // Tuple [min, max] renders as a single range field.
   if (n.prefixItems?.length === 2 && n.prefixItems.every((p) => typeOf(deref(p, root)) === 'number')) {
     return 'range-tuple'
   }
@@ -35,7 +35,7 @@ export function getNodeKind(node: JsonSchemaNode, root: JsonSchemaNode): FieldKi
   return 'unsupported'
 }
 
-/** Isi nilai awal dari `default` schema secara rekursif saat value undefined. */
+/** Recursively fill in the schema's `default` wherever the value is undefined. */
 export function applyDefaults(node: JsonSchemaNode, value: unknown, root: JsonSchemaNode): unknown {
   const n = deref(node, root)
   if (value === undefined) {

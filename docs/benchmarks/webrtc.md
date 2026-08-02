@@ -1,31 +1,31 @@
-# Catatan pengukuran WebRTC
+# WebRTC measurement notes
 
-## Verifikasi kompatibilitas (selesai)
+## Compatibility verification (done)
 
-Diuji pada Bun 1.3.14, macOS arm64, werift 0.24.2:
+Tested on Bun 1.3.14, macOS arm64, werift 0.24.2:
 
-| Yang diuji | Hasil |
+| What was tested | Result |
 |---|---|
-| `RTCPeerConnection` + `createOffer` + `setLocalDescription` | ✅ |
+| `RTCPeerConnection` plus `createOffer` plus `setLocalDescription` | ✅ |
 | SDP: `m=video`, H.264, `packetization-mode=1`, `a=sendonly` | ✅ |
-| DTLS fingerprint (kriptografi runtime memadai) | ✅ |
-| Pengumpulan kandidat ICE, termasuk server-reflexive via STUN | ✅ 9+ kandidat |
-| Umpan balik `nack` / `pli` ternegosiasi | ✅ |
-| Injeksi RTP mentah (`track.writeRtp`) | ✅ |
-| Packetizer H.264 → peer, satu access unit 4 KB | ✅ 6 paket, tanpa error |
-| Signaling end-to-end lewat WS control plane | ✅ offer + trickle ICE sampai ke klien |
+| DTLS fingerprint (runtime cryptography is sufficient) | ✅ |
+| ICE candidate gathering, including server-reflexive via STUN | ✅ 9+ candidates |
+| `nack` / `pli` feedback negotiated | ✅ |
+| Raw RTP injection (`track.writeRtp`) | ✅ |
+| H.264 packetizer → peer, one 4 KB access unit | ✅ 6 packets, no errors |
+| End-to-end signalling through the control plane's WS | ✅ offer plus trickle ICE reach the client |
 
-**Kesimpulan:** rencana cadangan sidecar Node **tidak diperlukan**. Bun menjalankan werift secara langsung.
+**Conclusion:** the Node sidecar backup plan is **not needed**. Bun runs werift directly.
 
-## Yang belum diukur
+## Not measured yet
 
-Butuh perangkat dan jaringan sungguhan:
+These need real devices and a real network:
 
-- [ ] Handshake DTLS lengkap dengan browser (uji sampai `<video>` menampilkan gambar)
-- [ ] Glass-to-glass di LAN, internet bersih, dan internet dengan 3% kehilangan paket
-- [ ] Perbandingan WS vs WebRTC pada kondisi kehilangan paket — ini bukti klaim spec §5.3
-- [ ] Pemulihan keyframe setelah paket hilang (PLI → IDR)
-- [ ] Konsumsi CPU control plane untuk 5 stream simultan
-- [ ] Koneksi lewat TURN dari jaringan yang memblokir UDP langsung
+- [ ] A complete DTLS handshake with a browser (test through to `<video>` showing a picture)
+- [ ] Glass-to-glass on a LAN, on clean internet, and on internet with 3% packet loss
+- [ ] WS versus WebRTC under packet loss — this is the evidence for the spec §5.3 claim
+- [ ] Keyframe recovery after packet loss (PLI → IDR)
+- [ ] Control plane CPU use for 5 simultaneous streams
+- [ ] Connecting through TURN from a network that blocks direct UDP
 
-Prosedur: `tc netem` untuk mensimulasikan kehilangan paket, stopwatch di layar perangkat difoto bersama layar browser untuk glass-to-glass.
+Procedure: `tc netem` to simulate packet loss, and a stopwatch on the device screen photographed alongside the browser screen for glass-to-glass.

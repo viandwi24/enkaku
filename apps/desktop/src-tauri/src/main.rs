@@ -1,7 +1,7 @@
-// Shell desktop Enkaku (plan 14).
+// The Enkaku desktop shell (plan 14).
 //
-// Tujuannya satu: pengguna cukup double-click. Tidak ada terminal, tidak ada
-// alamat yang harus diketik, tidak ada adb yang harus dipasang.
+// One goal: the user just double-clicks. No terminal,
+// no address to type, and no adb to install.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod core_process;
@@ -30,14 +30,14 @@ fn data_dir() -> PathBuf {
     })
 }
 
-/// Halaman yang ditampilkan bila core gagal start — berisi keterangan, bukan
-/// jendela putih yang menyisakan pengguna menebak-nebak.
+/// The page shown when the core fails to start — an explanation rather than
+/// a white window that leaves the user guessing.
 fn error_page(message: &str) -> String {
     format!(
         r#"data:text/html,<html><body style="font-family:system-ui;padding:2rem;background:#0b0c0e;color:#e7e9ee">
-<h2>Enkaku gagal dijalankan</h2>
+<h2>Enkaku failed to start</h2>
 <p>{message}</p>
-<p style="color:#9aa1ad">Periksa apakah binary core tersedia. Setel <code>ENKAKU_CORE_BIN</code> bila core dipasang di lokasi lain.</p>
+<p style="color:#9aa1ad">Check that the core binary is present. Set <code>ENKAKU_CORE_BIN</code> if the core lives somewhere else.</p>
 </body></html>"#
     )
 }
@@ -66,14 +66,14 @@ fn main() {
                         )
                     } else {
                         WebviewUrl::External(
-                            error_page("Core berjalan tetapi tidak merespons dalam 30 detik.")
+                            error_page("The core started but did not respond within 30 seconds.")
                                 .parse()
                                 .expect("URL data valid"),
                         )
                     }
                 }
                 Err(err) => WebviewUrl::External(
-                    error_page(&format!("Tidak bisa menjalankan core: {err}"))
+                    error_page(&format!("Could not start the core: {err}"))
                         .parse()
                         .expect("URL data valid"),
                 ),
@@ -84,9 +84,9 @@ fn main() {
                 .inner_size(1280.0, 860.0)
                 .build()?;
 
-            // Tray: menutup jendela mengecilkan ke tray, core tetap hidup.
-            let open = MenuItem::with_id(app, "open", "Buka Enkaku", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Keluar", true, None::<&str>)?;
+            // Tray: closing the window minimises to the tray, the core stays alive.
+            let open = MenuItem::with_id(app, "open", "Open Enkaku", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::new()
                 .menu(&menu)
@@ -98,7 +98,7 @@ fn main() {
                         }
                     }
                     "quit" => {
-                        // Beri tahu UI dulu supaya bisa memperingatkan job berjalan.
+                        // Tell the UI first so it can warn about running jobs.
                         let _ = app.emit("enkaku://quit-requested", ());
                         app.exit(0);
                     }
@@ -110,16 +110,16 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Mengecil ke tray, bukan keluar — core tetap melayani job.
+                // Minimise to the tray rather than exiting — the core keeps serving jobs.
                 api.prevent_close();
                 let _ = window.hide();
             }
         })
         .build(tauri::generate_context!())
-        .expect("gagal membangun aplikasi Enkaku")
+        .expect("failed to build the Enkaku application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Core tidak boleh menjadi proses yatim tanpa UI.
+                // The core must never be left orphaned with no UI.
                 let state = app.state::<AppState>();
                 let mut guard = state.core.lock().unwrap();
                 if let Some(handle) = guard.as_mut() {

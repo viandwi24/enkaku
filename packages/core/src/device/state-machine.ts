@@ -15,9 +15,9 @@ export type DeviceEvent =
   | 'UNQUARANTINE'
 
 /**
- * Tabel transisi (plan 04 §4.1). Event di luar tabel = transisi ilegal →
- * ditolak (CAS gagal) + log warn. `manual` dan `busy` mutually exclusive
- * secara struktural: keduanya hanya bisa dicapai dari `idle`.
+ * The transition table (plan 04 §4.1). An event outside the table is an illegal
+ * transition → rejected (the CAS fails) and logged as a warning. `manual` and
+ * `busy` are structurally mutually exclusive: both are only reachable from `idle`.
  */
 const TRANSITIONS: Record<DeviceEvent, Partial<Record<DeviceStatus, DeviceStatus>>> = {
   DEVICE_CONNECTED: { offline: 'idle', quarantined: 'quarantined' },
@@ -35,7 +35,7 @@ export function nextStatus(event: DeviceEvent, from: DeviceStatus): DeviceStatus
 }
 
 export interface DeviceStateMachine {
-  /** Terapkan transisi via CAS (compare-and-set status lama). */
+  /** Apply a transition by CAS (compare-and-set against the previous status). */
   apply(deviceId: string, event: DeviceEvent): { changed: boolean; from: DeviceStatus; to: DeviceStatus } | null
   current(deviceId: string): DeviceStatus | null
 }
@@ -56,18 +56,18 @@ export function createDeviceStateMachine(deps: {
     apply(deviceId, event) {
       const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
       if (!row) {
-        log.warn(`transisi ${event} untuk device tidak dikenal: ${deviceId}`)
+        log.warn(`transition ${event} for an unknown device: ${deviceId}`)
         return null
       }
       const from = (row.status ?? 'offline') as DeviceStatus
       const to = nextStatus(event, from)
       if (to === null) {
-        log.warn(`transisi ilegal ditolak: ${event} dari status '${from}' (device ${deviceId})`)
+        log.warn(`illegal transition rejected: ${event} from status '${from}' (device ${deviceId})`)
         return null
       }
       if (to === from) return { changed: false, from, to }
 
-      // CAS: hanya update kalau status masih sama seperti yang dibaca.
+      // CAS: only update while the status still matches what was read.
       const changed = changedRows(
         db
           .update(devices)
@@ -76,7 +76,7 @@ export function createDeviceStateMachine(deps: {
           .run(),
       )
       if (changed === 0) {
-        log.debug(`CAS gagal untuk ${event} (${from}→${to}) device ${deviceId} — status keburu berubah`)
+        log.debug(`CAS failed for ${event} (${from}→${to}) on device ${deviceId} — the status changed first`)
         return null
       }
       deps.onChange?.(deviceId, to)

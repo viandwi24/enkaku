@@ -6,7 +6,7 @@ export function centerOf(b: Bounds): Point {
 
 function matches(node: UiNode, sel: Selector): boolean {
   if ('id' in sel) {
-    // Android memakai format "com.app:id/nama" — terima nama pendek juga.
+    // Android uses the "com.app:id/name" form — accept a short name too.
     return node.resourceId === sel.id || node.resourceId.endsWith(`:id/${sel.id}`)
   }
   if ('desc' in sel) return node.desc.trim() === sel.desc.trim()
@@ -14,7 +14,7 @@ function matches(node: UiNode, sel: Selector): boolean {
   return false
 }
 
-/** Traversal depth-first, kembalikan match pertama. */
+/** Depth-first traversal, returning the first match. */
 export function matchSelector(root: UiNode, sel: Selector): UiNode | null {
   if ('point' in sel) {
     // { point } bypass inspector: node sintetis 1×1 di koordinat tsb.

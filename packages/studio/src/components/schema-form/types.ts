@@ -15,6 +15,8 @@ export interface JsonSchemaNode {
   pattern?: string
   additionalProperties?: unknown
   anyOf?: JsonSchemaNode[]
+  /** From .meta({ enumSource }) in Zod — tells the UI where engine labels come from. */
+  enumSource?: string
   $ref?: string
   $defs?: Record<string, JsonSchemaNode>
 }
@@ -31,7 +33,7 @@ export type FieldKind =
 
 export interface FieldProps {
   schema: JsonSchemaNode
-  /** Path titik-notasi, dipakai untuk error server & test. */
+  /** Dot-notation path, used for server errors and tests. */
   path: string
   label: string
   value: unknown

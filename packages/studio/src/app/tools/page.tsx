@@ -1,7 +1,16 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { coreBase, ws } from '@/lib/ws'
+import { Lock, RefreshCw } from 'lucide-react'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { ErrorState, LoadingRows } from '@/components/states'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import { api, useAction } from '@/lib/actions'
+import { fileSize } from '@/lib/format'
+import { ws } from '@/lib/ws'
+import { cn } from '@/lib/utils'
 
 interface ToolEntry {
   id: string
@@ -10,154 +19,258 @@ interface ToolEntry {
   managedByCore: boolean
   activeVersion: string | null
   installed: Array<{ version: string; active: boolean; sha256: string | null; installedAt: number | null }>
-  available: Array<{ version: string; knownGood: boolean; installable: boolean; compatibleWithThisCore?: boolean }>
+  available: Array<{ version: string; knownGood: boolean; installable: boolean }>
   health: { ok: boolean; checkedAt: number; detail: string } | null
 }
 
-interface Progress {
+interface InstallProgress {
   phase: string
   percent: number | null
+  bytes?: number
+  total?: number | null
 }
 
 export default function ToolsPage() {
-  const [tools, setTools] = useState<ToolEntry[]>([])
-  const [progress, setProgress] = useState<Record<string, Progress>>({})
-  const [busy, setBusy] = useState<string | null>(null)
+  const [tools, setTools] = useState<ToolEntry[] | null>(null)
+  const [progress, setProgress] = useState<Record<string, InstallProgress>>({})
   const [error, setError] = useState<string | null>(null)
+  const { run, isPending } = useAction()
 
-  async function load() {
-    const res = await fetch(`${coreBase()}/api/tools`)
-    const body = (await res.json()) as { tools: ToolEntry[] }
-    setTools(body.tools)
+  const load = () => {
+    setError(null)
+    api<{ tools: ToolEntry[] }>('/api/tools')
+      .then((b) => setTools(b.tools))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   useEffect(() => {
-    void load().catch((e) => setError(String(e)))
-    const off = ws.on((msg) => {
-      if (msg.type === 'tool.install.progress') {
+    load()
+    const off = ws.on((m) => {
+      if (m.type === 'tool.install.progress') {
         setProgress((p) => ({
           ...p,
-          [msg.payload.toolId]: { phase: msg.payload.phase, percent: msg.payload.percent ?? null },
+          [m.payload.toolId]: {
+            phase: m.payload.phase,
+            percent: m.payload.percent ?? null,
+            ...(m.payload.bytesReceived !== undefined ? { bytes: m.payload.bytesReceived } : {}),
+            ...(m.payload.totalBytes !== undefined ? { total: m.payload.totalBytes } : {}),
+          },
         }))
-        if (msg.payload.phase === 'done' || msg.payload.phase === 'error') void load()
-      } else if (msg.type === 'tool.changed') {
-        void load()
-      }
+        if (m.payload.phase === 'done' || m.payload.phase === 'error') {
+          setProgress((p) => {
+            const { [m.payload.toolId]: _, ...rest } = p
+            return rest
+          })
+          load()
+        }
+      } else if (m.type === 'tool.changed') load()
     })
     return off
   }, [])
 
-  async function call(path: string, init?: RequestInit) {
-    setError(null)
-    setBusy(path)
-    try {
-      const res = await fetch(`${coreBase()}${path}`, init)
-      const body = (await res.json()) as { error?: { message: string } }
-      if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`)
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-    }
-  }
+  const act = (key: string, path: string, init: RequestInit & { json?: unknown }, success: string) =>
+    run(key, () => api(path, init), { success, failure: 'Tool action failed', onSuccess: load })
 
-  const jsonPost = (version: string): RequestInit => ({
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ version }),
-  })
+  const swappable = tools?.filter((t) => t.swappable) ?? []
+  const pinned = tools?.filter((t) => !t.swappable) ?? []
 
   return (
     <>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: '1rem' }}>
-        <h1 style={{ margin: 0 }}>Tools</h1>
-        <button onClick={() => void call('/api/tools/manifest/refresh', { method: 'POST' })} disabled={busy !== null}>
-          Refresh manifest
-        </button>
-      </div>
-      {error && <p className="error">{error}</p>}
+      <PageHeader
+        title="Tools"
+        description="Binaries the core uses to talk to devices"
+        actions={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending('refresh')}
+            onClick={() => void act('refresh', '/api/tools/manifest/refresh', { method: 'POST' }, 'Manifest refreshed')}
+          >
+            <RefreshCw className={cn('size-4', isPending('refresh') && 'animate-spin')} aria-hidden />
+            Refresh manifest
+          </Button>
+        }
+      />
 
-      {tools.map((tool) => {
-        const prog = progress[tool.id]
-        return (
-          <div className="panel" key={tool.id}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <div>
-                <b>{tool.displayName}</b>{' '}
-                {tool.managedByCore && <span className="badge">managed by core</span>}
-                <div className="meta">
-                  aktif: {tool.activeVersion ?? '—'}
-                  {tool.health && ` · health: ${tool.health.ok ? 'ok' : 'gagal'} (${tool.health.detail})`}
+      <div className="space-y-3 px-5 py-4">
+        {error ? (
+          <ErrorState message={error} onRetry={load} />
+        ) : tools === null ? (
+          <LoadingRows rows={3} />
+        ) : (
+          swappable.map((tool) => {
+            const p = progress[tool.id]
+            return (
+              <div key={tool.id} className="rounded-lg border bg-surface p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="flex items-center gap-2 text-[14px] font-semibold tracking-tight">
+                      {tool.displayName}
+                      {tool.managedByCore && (
+                        <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-normal text-fg-muted">
+                          <Lock className="size-3" aria-hidden />
+                          pinned to the core version
+                        </span>
+                      )}
+                    </h2>
+                    <p className="readout mt-0.5 text-[11.5px] text-fg-muted">
+                      active: {tool.activeVersion ?? 'not installed'}
+                      {tool.health && (
+                        <span className={tool.health.ok ? 'text-led-ok' : 'text-led-danger'}>
+                          {' · '}
+                          {tool.health.ok ? 'healthy' : 'unhealthy'}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  {tool.swappable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[12px]"
+                      disabled={isPending('check-' + tool.id)}
+                      onClick={() =>
+                        void act('check-' + tool.id, `/api/tools/${tool.id}/check`, { method: 'POST' }, 'Health check finished')
+                      }
+                    >
+                      Check
+                    </Button>
+                  )}
                 </div>
-              </div>
-              {tool.swappable && (
-                <button onClick={() => void call(`/api/tools/${tool.id}/check`, { method: 'POST' })}>
-                  Health check
-                </button>
-              )}
-            </div>
 
-            {prog && prog.phase !== 'done' && (
-              <div className="hint">
-                {prog.phase} {prog.percent !== null ? `${prog.percent}%` : ''}
-              </div>
-            )}
+                {p && (
+                  <div className="mt-3 space-y-1.5">
+                    <div className="flex justify-between text-[11.5px] text-fg-muted">
+                      <span>{phaseLabel(p.phase)}</span>
+                      <span className="readout">
+                        {p.percent !== null ? `${p.percent}%` : ''}
+                        {p.bytes !== undefined && p.total ? ` · ${fileSize(p.bytes)} / ${fileSize(p.total)}` : ''}
+                      </span>
+                    </div>
+                    <Progress value={p.percent ?? 0} />
+                  </div>
+                )}
 
-            {!tool.swappable ? (
-              <p className="hint" style={{ marginBottom: 0 }}>
-                Versi dikunci ke rilis core — protokol client↔server tool ini berubah antar versi, jadi tidak bisa
-                dipilih bebas (spec §7.6).
-              </p>
-            ) : (
-              <table style={{ width: '100%', marginTop: '0.5rem', borderCollapse: 'collapse' }}>
-                <tbody>
-                  {tool.available.map((v) => {
-                    const installed = tool.installed.find((i) => i.version === v.version)
-                    const active = tool.activeVersion === v.version
-                    return (
-                      <tr key={v.version} style={{ borderTop: '1px solid var(--border)' }}>
-                        <td style={{ padding: '0.45rem 0' }}>
-                          {v.version} {v.knownGood && <span className="hint">(known good)</span>}
-                        </td>
-                        <td>{active ? <span className="badge idle">aktif</span> : installed ? 'terpasang' : ''}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <span className="row" style={{ justifyContent: 'flex-end' }}>
+                {(
+                  <div className="mt-3 divide-y overflow-hidden rounded border">
+                    {tool.available.map((v) => {
+                      const installed = tool.installed.find((i) => i.version === v.version)
+                      const active = tool.activeVersion === v.version
+                      return (
+                        <div key={v.version} className="flex items-center gap-3 px-3 py-2">
+                          <span className="readout text-[12.5px]">{v.version}</span>
+                          {v.knownGood && <span className="rack-label">tested</span>}
+                          {active && (
+                            <span className="rounded-full border border-led-ok/35 bg-led-ok/10 px-2 py-0.5 text-[10.5px] text-led-ok">
+                              active
+                            </span>
+                          )}
+                          <div className="ml-auto flex gap-1">
                             {!installed && (
-                              <button
-                                disabled={!v.installable || busy !== null}
-                                onClick={() => void call(`/api/tools/${tool.id}/install`, jsonPost(v.version))}
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                className="h-7 text-[12px]"
+                                disabled={!v.installable || isPending('inst-' + v.version)}
+                                onClick={() =>
+                                  void act(
+                                    'inst-' + v.version,
+                                    `/api/tools/${tool.id}/install`,
+                                    { method: 'POST', json: { version: v.version } },
+                                    `${tool.id} ${v.version} installed`,
+                                  )
+                                }
                               >
                                 Install
-                              </button>
+                              </Button>
                             )}
                             {installed && !active && (
                               <>
-                                <button
-                                  disabled={busy !== null}
-                                  onClick={() => void call(`/api/tools/${tool.id}/activate`, jsonPost(v.version))}
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  className="h-7 text-[12px]"
+                                  disabled={isPending('act-' + v.version)}
+                                  onClick={() =>
+                                    void act(
+                                      'act-' + v.version,
+                                      `/api/tools/${tool.id}/activate`,
+                                      { method: 'POST', json: { version: v.version } },
+                                      `${tool.id} ${v.version} activated`,
+                                    )
+                                  }
                                 >
-                                  Aktifkan
-                                </button>
-                                <button
-                                  disabled={busy !== null}
-                                  onClick={() => void call(`/api/tools/${tool.id}/${v.version}`, { method: 'DELETE' })}
-                                >
-                                  Hapus
-                                </button>
+                                  Activate
+                                </Button>
+                                <ConfirmDialog
+                                  trigger={
+                                    <Button size="sm" variant="ghost" className="h-7 text-[12px]">
+                                      Delete
+                                    </Button>
+                                  }
+                                  title={`Delete ${tool.id} ${v.version}?`}
+                                  description="The files are removed from disk. This version can be installed again at any time."
+                                  onConfirm={() =>
+                                    act(
+                                      'del-' + v.version,
+                                      `/api/tools/${tool.id}/${v.version}`,
+                                      { method: 'DELETE' },
+                                      'Version deleted',
+                                    )
+                                  }
+                                />
                               </>
                             )}
-                          </span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+
+        {/* Version-pinned tools are grouped together: the explanation is the
+            same for all of them, and repeating it per card only adds reading. */}
+        {pinned.length > 0 && (
+          <div className="rounded-lg border bg-surface p-4">
+            <h2 className="flex items-center gap-2 text-[14px] font-semibold tracking-tight">
+              <Lock className="size-3.5 text-fg-subtle" aria-hidden />
+              Pinned to the core version
+            </h2>
+            <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+              The protocol between these tools and the core changes between versions with no compatibility guarantee.
+              Their version follows the core release — raising one means raising the other.
+            </p>
+            <dl className="mt-3 divide-y overflow-hidden rounded border">
+              {pinned.map((tool) => (
+                <div key={tool.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+                  <dt className="min-w-0 flex-1 truncate text-[12.5px]">{tool.displayName}</dt>
+                  <dd className="readout text-[12px] text-fg-muted">{tool.activeVersion ?? 'not installed'}</dd>
+                  {tool.health && (
+                    <dd className={cn('text-[11.5px]', tool.health.ok ? 'text-led-ok' : 'text-led-danger')}>
+                      {tool.health.ok ? 'healthy' : 'unhealthy'}
+                    </dd>
+                  )}
+                </div>
+              ))}
+            </dl>
           </div>
-        )
-      })}
+        )}
+      </div>
     </>
   )
+}
+
+function phaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    download: 'Downloading',
+    verify: 'Verifying checksum',
+    extract: 'Extracting',
+    done: 'Done',
+    error: 'Failed',
+  }
+  return labels[phase] ?? phase
 }

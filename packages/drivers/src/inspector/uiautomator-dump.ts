@@ -12,14 +12,14 @@ export class InspectorError extends Error {
 }
 
 /**
- * Inspector M4 (spec §7.4) — JEMBATAN, bukan solusi akhir:
- * satu dump 0,5–2 detik, gagal saat UI terus berubah ("could not get idle
- * state"), tanpa aksi per-elemen. Diganti `ui-server` di Plan 06 tanpa
- * mengubah interface ini.
+ * The M4 inspector (spec §7.4) — a BRIDGE, not the final answer:
+ * one dump takes 0.5–2 seconds and fails while the UI keeps changing ("could not get idle
+ * state"), and offers no per-element actions. Plan 06 replaces it with
+ * `ui-server` without changing this interface.
  */
 export class UiautomatorDumpInspector implements Inspector {
   readonly id = 'uiautomator-dump'
-  /** Jalur dump di-probe sekali per device lalu di-cache. */
+  /** The dump path is probed once per device and then cached. */
   private useTty: boolean | null = null
 
   constructor(
@@ -35,13 +35,13 @@ export class UiautomatorDumpInspector implements Inspector {
         return out
       }
       if (this.useTty === null) {
-        this.onLog?.('debug', 'dump via /dev/tty tidak didukung — pakai jalur file')
+        this.onLog?.('debug', 'dump via /dev/tty is unsupported — falling back to the file path')
         this.useTty = false
       } else {
         return out
       }
     }
-    // Fallback: dump ke file lalu cat.
+    // Fallback: dump to a file, then cat it.
     const path = '/sdcard/enkaku-dump.xml'
     await this.transport.exec(`uiautomator dump ${path}`)
     const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`))
@@ -61,17 +61,17 @@ export class UiautomatorDumpInspector implements Inspector {
         continue
       }
       if (raw.includes('could not get idle state')) {
-        lastError = 'uiautomator: could not get idle state (UI terus berubah)'
+        lastError = 'uiautomator: could not get idle state (the UI keeps changing)'
         this.onLog?.('debug', `${lastError} — retry ${attempt + 1}/3`)
         continue
       }
       try {
         return parseUiDump(raw)
       } catch (err) {
-        lastError = `parse dump gagal: ${String(err)}`
+        lastError = `failed to parse the dump: ${String(err)}`
       }
     }
-    throw new InspectorError('INSPECTOR_DUMP_FAILED', lastError || 'dump gagal tanpa keterangan')
+    throw new InspectorError('INSPECTOR_DUMP_FAILED', lastError || 'the dump failed with no detail')
   }
 
   async find(sel: Selector): Promise<UiNode | null> {

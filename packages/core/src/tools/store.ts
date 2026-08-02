@@ -12,7 +12,7 @@ const rowToRecord = (r: ToolInstallRow): ToolInstallRecord => ({
   installedAt: r.installedAt ? Math.floor(r.installedAt.getTime() / 1000) : null,
 })
 
-/** Implementasi ToolInstallStore di atas tabel tool_installs (Drizzle). */
+/** ToolInstallStore implemented over the tool_installs table (Drizzle). */
 export function createToolInstallStore(db: Db): ToolInstallStore {
   return {
     list() {
@@ -39,7 +39,7 @@ export function createToolInstallStore(db: Db): ToolInstallStore {
         .run()
     },
     setActive(toolId, version) {
-      // Invariant: maksimal satu baris active=true per toolId.
+      // Invariant: at most one row with active=true per toolId.
       db.update(toolInstalls).set({ active: false }).where(eq(toolInstalls.toolId, toolId)).run()
       if (version !== null) {
         db.update(toolInstalls)

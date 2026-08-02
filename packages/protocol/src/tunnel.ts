@@ -5,17 +5,17 @@ import { PointSchema } from './ui-node'
 /**
  * Protokol tunnel agent ⇄ control plane (plan 11 §4.2).
  *
- * Envelope diperluas dengan field routing; message lokal tanpa field ini
- * tetap valid, jadi mode local (Plan 01–09) tidak berubah sama sekali.
+ * The envelope gains routing fields; local messages without them stay valid,
+ * so local mode (Plans 01–09) is completely unchanged.
  */
 export const RoutedEnvelopeSchema = z.object({
   v: z.literal(1),
   type: z.string(),
   id: z.string().optional(),
-  /** Diisi control plane saat merutekan ke/dari agent. */
+  /** Filled in by the control plane when routing to or from an agent. */
   agentId: z.string().optional(),
   deviceId: z.string().optional(),
-  /** Server-side only — agent/browser tidak boleh menetapkannya. */
+  /** Server-side only — agents and browsers must never set it. */
   tenantId: z.string().optional(),
   payload: z.unknown(),
 })
@@ -71,14 +71,14 @@ export const JobDispatchMessage = z.object({
   payload: z.object({
     jobId: z.string(),
     deviceId: z.string(),
-    /** Bundle dikirim inline atau via URL (control plane yang menentukan). */
+    /** The bundle travels inline or by URL — the control plane decides. */
     bundle: z.string().optional(),
     bundleUrl: z.string().optional(),
     params: z.unknown(),
   }),
 })
 
-// ---- dua arah ----
+// ---- bidirectional ----
 
 export const TunnelPingMessage = z.object({
   type: z.literal('tunnel.ping'),
@@ -90,7 +90,7 @@ export const TunnelPongMessage = z.object({
   payload: z.object({ t: z.number() }),
 })
 
-/** Alokasi channel binary dinamis: satu tunnel membawa banyak device. */
+/** Dynamic binary channel allocation: one tunnel carries many devices. */
 export const TunnelChannelOpenMessage = z.object({
   type: z.literal('tunnel.channel.open'),
   payload: z.object({
@@ -107,8 +107,8 @@ export const TunnelChannelCloseMessage = z.object({
 
 /**
  * Frame binary tunnel: `[0x02][channelId u16BE][payload]`.
- * Byte 0 = 0x02 menandai "tunnel frame" (berbeda dari channel VIDEO 0x01
- * pada koneksi browser langsung — lihat binary.ts).
+ * Byte 0 = 0x02 marks a "tunnel frame" (distinct from the VIDEO channel 0x01
+ * on a direct browser connection — see binary.ts).
  */
 export const TUNNEL_FRAME_MARKER = 0x02
 
@@ -122,7 +122,7 @@ export function encodeTunnelFrame(channelId: number, payload: Uint8Array): Uint8
 
 export function decodeTunnelFrame(buf: Uint8Array): { channelId: number; payload: Uint8Array } {
   if (buf.length < 3 || buf[0] !== TUNNEL_FRAME_MARKER) {
-    throw new Error('bukan tunnel frame yang valid')
+    throw new Error('not a valid tunnel frame')
   }
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   return { channelId: dv.getUint16(1, false), payload: buf.subarray(3) }
@@ -151,7 +151,7 @@ export const WebRtcIceMessage = z.object({
   payload: z.object({ deviceId: z.string(), candidate: z.unknown() }),
 })
 
-/** Gagal negosiasi → Studio jatuh ke WS+WebCodecs (degraded, bukan mati). */
+/** Negotiation failed → Studio falls back to WS + WebCodecs (degraded, not dead). */
 export const WebRtcFailedMessage = z.object({
   type: z.literal('video.webrtc.failed'),
   payload: z.object({ deviceId: z.string(), reason: z.string() }),
@@ -165,9 +165,9 @@ export const WebRtcStopMessage = z.object({
 // ---- session & job jarak jauh (M9a) ----
 
 /**
- * CP → agent: teruskan input. Koordinat sudah dalam PIXEL device — control
- * plane yang memetakannya dari 0..1 memakai dimensi frame terakhir, supaya
- * agent tidak perlu tahu ukuran tampilan di browser.
+ * CP → agent: forward input. Coordinates are already in device PIXELS — the
+ * control plane maps them from 0..1 using the latest frame dimensions, so the
+ * agent never needs to know the browser's display size.
  */
 export const InputForwardMessage = z.object({
   type: z.literal('input.forward'),
@@ -187,7 +187,7 @@ export const JobCancelForwardMessage = z.object({
   payload: z.object({ jobId: z.string() }),
 })
 
-/** agent → CP: sesi berhasil dibuat, termasuk engine efektif hasil degrade. */
+/** agent → CP: the session came up, including any degraded effective engines. */
 export const SessionStartedMessage = z.object({
   type: z.literal('session.started'),
   payload: z.object({
@@ -207,7 +207,7 @@ export const SessionFailedMessage = z.object({
   payload: z.object({ deviceId: z.string(), code: z.string(), message: z.string() }),
 })
 
-/** agent → CP: kemajuan job (fase, log, artifact kecil, hasil akhir). */
+/** agent → CP: job progress (phase, logs, small artifacts, final result). */
 export const JobProgressMessage = z.object({
   type: z.literal('job.progress'),
   payload: z.object({
@@ -231,7 +231,7 @@ export const JobProgressMessage = z.object({
   }),
 })
 
-// ---- union (harus di akhir: semua message sudah terdefinisi) ----
+// ---- union (must come last: every message is defined by now) ----
 
 export const AgentToControlSchema = z.discriminatedUnion('type', [
   AgentHelloMessage,

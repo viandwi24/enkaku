@@ -1,32 +1,32 @@
 /**
- * SATU-SATUNYA sumber versi scrcpy-server yang didukung client ini.
+ * The ONLY source of the scrcpy-server version this client supports.
  *
- * Protokol client↔server scrcpy bersifat internal dan **berubah antar versi
- * tanpa jaminan kompatibilitas** (dokumentasi Genymobile). Karena itu:
- * - versi jar di-pin ke konstanta ini (Toolchain: `swappable: false`),
- * - menaikkan versi = pekerjaan rilis core, bukan sekadar ganti angka:
- *   seluruh asumsi ber-tanda TODO-verify di package ini wajib dicek ulang
- *   terhadap source rilis yang baru.
+ * The scrcpy client↔server protocol is internal and **changes between
+ * versions with no compatibility guarantee** (Genymobile's own docs). Therefore:
+ * - the jar version is pinned to this constant (Toolchain: `swappable: false`),
+ * - raising the version is core-release work, not just editing a number:
+ *   every TODO-verify assumption in this package must be re-checked against
+ *   the new release's source.
  */
 export const SCRCPY_VERSION = '3.3.1'
 
-/** Path jar di device (konvensi scrcpy). */
+/** Path of the jar on the device (scrcpy convention). */
 export const DEVICE_JAR_PATH = '/data/local/tmp/scrcpy-server.jar'
 
 /**
- * API level minimum untuk UHID (virtual HID lewat kernel UHID).
- * TODO-verify terhadap batasan versi pinned saat uji device.
+ * Minimum API level for UHID (virtual HID through the kernel's UHID).
+ * TODO-verify against the pinned version's limits during device testing.
  */
 export const UHID_MIN_API = 29
 
-/** Codec id 4-char di metadata video scrcpy. */
+/** The 4-character codec id in scrcpy's video metadata. */
 export const CODEC_ID = {
   H264: 0x68323634, // 'h264'
   H265: 0x68323635, // 'h265'
   AV1: 0x00617631, // 'av1'
 } as const
 
-/** Tipe control message host→device (TODO-verify urutan terhadap versi pinned). */
+/** host→device control message types (TODO-verify the ordering against the pinned version). */
 export const CONTROL_MSG = {
   INJECT_KEYCODE: 0,
   INJECT_TEXT: 1,
@@ -53,6 +53,6 @@ export const MOTION_ACTION = { DOWN: 0, UP: 1, MOVE: 2 } as const
 /** KeyEvent action Android. */
 export const KEY_ACTION = { DOWN: 0, UP: 1 } as const
 
-/** Pointer id khusus untuk "mouse" virtual (scrcpy memakai -1 sbg pointer mouse). */
+/** The special pointer id for the virtual "mouse" (scrcpy uses -1 for it). */
 export const POINTER_ID_MOUSE = -1n
 export const POINTER_ID_GENERIC_FINGER = -2n

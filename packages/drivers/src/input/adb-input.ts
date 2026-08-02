@@ -3,9 +3,9 @@ import { escapeInputText } from './escape'
 
 /**
  * InputSink `adb-input` — mode 'sdk' (spec §9.1: inject via InputManager,
- * terdeteksi sebagai non-hardware; fallback kasar spec §7.1). Lambat
- * (~50–200ms per perintah), timing kaku, tanpa multi-touch. Default input
- * berpindah ke scrcpy-uhid di Plan 08.
+ * detectable as non-hardware; the crude fallback of spec §7.1). Slow
+ * (~50–200ms per command), rigid timing, no multi-touch. The default input
+ * moves to scrcpy-uhid in Plan 08.
  */
 export class AdbInput implements InputSink {
   readonly id = 'adb-input'

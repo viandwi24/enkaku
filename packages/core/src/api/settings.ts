@@ -5,8 +5,8 @@ import type { FarmSettingsStore } from '../settings/farm-settings'
 import { EnkakuError } from '../util/errors'
 
 /**
- * Settings farm-wide + JSON Schema untuk schema-driven form renderer
- * (spec §8, §19) — Studio tidak hardcode form.
+ * Farm-wide settings plus the JSON Schema for the schema-driven form renderer
+ * (spec §8, §19) — Studio hardcodes no forms.
  */
 export function createSettingsRoutes(store: FarmSettingsStore): Hono {
   const app = new Hono()
@@ -15,6 +15,9 @@ export function createSettingsRoutes(store: FarmSettingsStore): Hono {
     c.json({
       settings: store.get(),
       schema: z.toJSONSchema(FarmSettingsSchema),
+      // The per-device schema ships alongside, because the device screen renders
+      // the exact same fields the farm defaults do (spec §12).
+      deviceSchema: z.toJSONSchema(DeviceSettingsSchema),
     }),
   )
 
@@ -23,7 +26,7 @@ export function createSettingsRoutes(store: FarmSettingsStore): Hono {
     return c.json({ settings: store.update(body) })
   })
 
-  /** Schema DeviceSettings untuk form per-device. */
+  /** The DeviceSettings schema for per-device forms. */
   app.get('/device-schema', (c) => c.json({ schema: z.toJSONSchema(DeviceSettingsSchema) }))
 
   app.onError((err, c) => {

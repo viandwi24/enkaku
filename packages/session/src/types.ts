@@ -1,15 +1,15 @@
 import type { DeviceStatus } from '@enkaku/protocol'
 
 /**
- * Kontrak data yang dibutuhkan session, **tanpa mengenal database**.
+ * The data contract the session needs, **with no knowledge of any database**.
  *
- * Core menyediakan implementasi berbasis Drizzle/SQLite; agent menyediakan
- * versi in-memory. Satu implementasi session dipakai keduanya (plan 12 §3.2).
+ * The core supplies a Drizzle/SQLite implementation; the agent supplies
+ * an in-memory one. One session implementation serves both (plan 12 §3.2).
  */
 export interface DeviceSnapshot {
   id: string
   stableId: string
-  /** Alamat transport adb saat ini. */
+  /** The current adb transport address. */
   serial: string
   label: string
   status: DeviceStatus
@@ -22,6 +22,8 @@ export interface DeviceSnapshot {
   input: string | null
   inspection: string | null
   preferredInputMode: 'uhid' | 'sdk' | 'aoa'
+  /** DeviceSettings.prep.stayAwake. */
+  stayAwake?: boolean
 }
 
 export interface DeviceSnapshotSource {
@@ -29,14 +31,14 @@ export interface DeviceSnapshotSource {
 }
 
 export interface SavedArtifact {
-  /** Path relatif terhadap root artifact host. */
+  /** Path relative to the host's artifact root. */
   path: string
   sizeBytes: number
 }
 
 /**
  * Tujuan penyimpanan artifact. Core menulis ke disk + baris DB; agent
- * mengunggahnya ke control plane lewat tunnel.
+ * uploads them to the control plane over the tunnel.
  */
 export interface ArtifactSink {
   save(input: {

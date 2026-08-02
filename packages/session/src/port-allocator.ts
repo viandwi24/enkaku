@@ -7,15 +7,15 @@ export interface PortAllocatorOptions {
 }
 
 /**
- * Alokasi port host untuk `adb forward` per device (plan 06 §4.3).
- * Satu instance singleton di core; claim/release hanya dari session manager.
+ * Allocates host ports for per-device `adb forward` (plan 06 §4.3).
+ * A single instance in the core; only the session manager claims and releases.
  */
 export class PortAllocator {
   private inUse = new Map<number, string>()
 
   constructor(private opts: PortAllocatorOptions) {}
 
-  /** Port bebas di registry DAN benar-benar bebas di OS (bind-test). */
+  /** Free in the registry AND genuinely free on the OS (bind-tested). */
   async claim(deviceId: string): Promise<number> {
     for (let port = this.opts.rangeStart; port <= this.opts.rangeEnd; port++) {
       if (this.inUse.has(port)) continue
@@ -25,11 +25,11 @@ export class PortAllocator {
     }
     throw new SessionError(
       'port_range_exhausted',
-      `tidak ada port bebas di ${this.opts.rangeStart}–${this.opts.rangeEnd}`,
+      `no free port in ${this.opts.rangeStart}–${this.opts.rangeEnd}`,
     )
   }
 
-  /** Idempotent — dipanggil saat session release & crash-recovery boot. */
+  /** Idempotent — called on session release and during crash-recovery boot. */
   release(port: number): void {
     this.inUse.delete(port)
   }

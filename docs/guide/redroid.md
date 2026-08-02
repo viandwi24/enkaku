@@ -1,6 +1,6 @@
-# Device cloud tanpa HP fisik (redroid)
+# Cloud devices without physical phones (redroid)
 
-[redroid](https://github.com/remote-android/redroid-doc) menjalankan Android di dalam container. Enkaku memperlakukannya persis seperti device fisik lewat transport `adb-tcp` — tidak ada kode khusus.
+[redroid](https://github.com/remote-android/redroid-doc) runs Android inside a container. Enkaku treats it exactly like a physical device over the `adb-tcp` transport — there is no special-case code.
 
 ```bash
 docker run -itd --rm --privileged \
@@ -8,13 +8,13 @@ docker run -itd --rm --privileged \
   -p 5555:5555 \
   redroid/redroid:14.0.0-latest
 
-# daftarkan ke farm: Studio → Tambah device → wireless, host 127.0.0.1 port 5555
+# register it with the farm: Studio → Add device → wireless, host 127.0.0.1, port 5555
 ```
 
-## Kapan ini masuk akal — dan kapan tidak
+## When this makes sense — and when it does not
 
-**Cocok untuk:** throughput test, uji alur yang tidak menyentuh sensor, dan menambah kapasitas antrian tanpa membeli perangkat.
+**Good for:** throughput testing, exercising flows that never touch a sensor, and adding queue capacity without buying hardware.
 
-**Tidak cocok untuk:** apa pun yang bergantung pada karakteristik perangkat nyata. redroid adalah emulator, jadi banyak deteksi otomasi sederhana langsung menandainya: tidak ada sensor asli (accelerometer/gyro), IMEI/serial bukan hardware, properti emulator terbaca, dan sentuhan tidak berasal dari driver input fisik.
+**Not good for:** anything that depends on the characteristics of a real device. redroid is an emulator, so plenty of simple automation detection flags it immediately: no real sensors (accelerometer, gyroscope), an IMEI and serial that are not hardware, readable emulator properties, and touches that do not come from a physical input driver.
 
-Untuk pengujian yang butuh "perangkat asli" — termasuk menguji detektor otomasi Anda sendiri — gunakan HP fisik. Itu justru keunggulan struktural farm perangkat nyata dibanding emulator.
+For testing that needs a genuine device — including testing your own automation detectors — use physical phones. That is exactly the structural advantage a real device farm has over emulators.

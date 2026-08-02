@@ -18,8 +18,8 @@ function currentLevel(): LogLevel {
 const useJson = (): boolean => process.env.ENKAKU_LOG_JSON === '1'
 
 /**
- * Satu-satunya pintu logging core (00-overview §4.2) — tidak ada
- * console.log liar di luar file ini.
+ * The core's only logging entry point (00-overview §4.2) — no stray
+ * console.log anywhere outside this file.
  */
 export function createLogger(subsystem: string): Logger {
   const emit = (level: LogLevel, msg: string, extra?: Record<string, unknown>) => {

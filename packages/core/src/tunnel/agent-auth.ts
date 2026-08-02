@@ -4,11 +4,11 @@ import { agents } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 
 export interface AgentAuth {
-  /** Admin membuat record + token sekali pakai (token mentah hanya tampil sekali). */
+  /** An admin creates the record and a single-use token (shown in the clear only once). */
   createEnrollment(name: string, tenantId?: string): { agentId: string; token: string }
-  /** Agent menukar token dengan credential jangka panjang. */
+  /** The agent exchanges the token for a long-lived credential. */
   redeem(token: string, meta: { name: string; platform: string }): { agentId: string; credential: string }
-  /** Verifikasi header `Bearer <agentId>.<credential>`. */
+  /** Verify the `Bearer <agentId>.<credential>` header. */
   verify(authHeader: string | null): Promise<string | null>
   list(): Array<{ id: string; name: string; status: string; platform: string | null; lastSeen: number | null }>
   disable(agentId: string): void
@@ -36,14 +36,14 @@ export function createAgentAuth(db: Db): AgentAuth {
     },
 
     redeem(token, meta) {
-      // Token tidak membawa agentId, jadi cari di antara enrollment pending.
+      // The token carries no agentId, so search the pending enrollments.
       const pending = db.select().from(agents).where(eq(agents.status, 'pending')).all()
       const match = pending.find((row) => row.tokenHash && Bun.password.verifySync(token, row.tokenHash))
-      if (!match) throw new EnkakuError('agent.invalid_token', 'enrollment token tidak valid atau sudah dipakai')
+      if (!match) throw new EnkakuError('agent.invalid_token', 'the enrollment token is invalid or already used')
       const credential = randomToken()
       db.update(agents)
         .set({
-          // Token sekali pakai: dihapus setelah ditukar.
+          // Single-use token: cleared once exchanged.
           tokenHash: null,
           credentialHash: hash(credential),
           status: 'offline',

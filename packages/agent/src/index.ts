@@ -12,10 +12,10 @@ export { enroll, loadState, saveState, type AgentState } from './state'
 const AGENT_VERSION = '0.0.1'
 
 /**
- * Mini-core untuk mode cloud (plan 11 §4.1): adb + toolchain + driver +
- * sesi lokal, TANPA Studio, queue/scheduler, users, atau script storage.
- * Keputusan scheduling & lease tetap milik control plane; agent yang
- * memegang device dan menjalankan runner (dekat device = inspector cepat).
+ * A mini-core for cloud mode (plan 11 §4.1): adb, toolchain, drivers, and
+ * local sessions — with NO Studio, queue/scheduler, users, or script storage.
+ * Scheduling and lease decisions stay with the control plane; the agent holds
+ * the devices and runs the runner (close to the device means a fast inspector).
  */
 export interface AgentOptions {
   dataDir: string
@@ -30,7 +30,7 @@ export interface Agent {
   stop(): Promise<void>
 }
 
-/** Store in-memory: agent tidak punya DB (state tool tetap di disk). */
+/** In-memory store: the agent has no DB (tool state still lives on disk). */
 function createMemoryToolStore(): ToolInstallStore {
   const rows: ToolInstallRecord[] = []
   return {
@@ -61,7 +61,7 @@ export function createAgent(opts: AgentOptions): Agent {
       let state: AgentState | null = await loadState(opts.dataDir)
       if (!state) {
         if (!opts.enrollToken) {
-          throw new Error('agent belum ter-enroll: jalankan dengan ENKAKU_ENROLL_TOKEN sekali')
+          throw new Error('the agent is not enrolled: run it once with ENKAKU_ENROLL_TOKEN')
         }
         state = await enroll({
           controlPlaneUrl: opts.controlPlaneUrl,
@@ -69,11 +69,11 @@ export function createAgent(opts: AgentOptions): Agent {
           name: opts.name ?? `agent-${process.platform}`,
         })
         await saveState(opts.dataDir, state)
-        log(`ter-enroll sebagai ${state.agentId}`)
+        log(`enrolled as ${state.agentId}`)
       }
 
-      // Toolchain sama persis dengan core: adb & scrcpy-server ter-provision
-      // otomatis dengan verifikasi sha256.
+      // The toolchain matches the core exactly: adb and scrcpy-server are
+      // provisioned automatically with sha256 verification.
       const toolchain = new ToolchainManager({
         dataDir: opts.dataDir,
         coreVersion: AGENT_VERSION,
@@ -86,7 +86,7 @@ export function createAgent(opts: AgentOptions): Agent {
       adb = new AdbClient({ adbPath: await toolchain.resolveToolPath('adb'), onLog: (_l, m) => log(m) })
       await adb.ensureServer()
       await toolchain.ensureRequiredTools(['ui-server', 'ui-server-test', 'scrcpy-server']).catch((err) => {
-        log(`tool opsional gagal di-provision: ${String(err)} — sebagian engine akan turun ke fallback`)
+        log(`optional tool failed to provision: ${String(err)} — some engines will fall back`)
       })
 
       const agentLogger = {
@@ -114,12 +114,12 @@ export function createAgent(opts: AgentOptions): Agent {
               type: 'agent.hello',
               payload: { agentVersion: AGENT_VERSION, platform: `${process.platform}-${process.arch}`, toolVersions: {} },
             })
-            // Snapshot penuh tiap reconnect: control plane tidak perlu
-            // menebak apa yang terlewat saat tunnel putus.
+            // A full snapshot on every reconnect: the control plane never has
+            // to guess what it missed while the tunnel was down.
             tunnel?.send({ type: 'agent.devices', payload: { devices: [...devices.values()] } })
           },
-          onDisconnected: (reason) => log(`tunnel terputus: ${reason}`),
-          onMessage: (msg) => void hosts?.handle(msg).catch((err) => log(`handle ${msg.type} gagal: ${String(err)}`)),
+          onDisconnected: (reason) => log(`tunnel disconnected: ${reason}`),
+          onMessage: (msg) => void hosts?.handle(msg).catch((err) => log(`handling ${msg.type} failed: ${String(err)}`)),
         },
         log,
       )
@@ -136,7 +136,7 @@ export function createAgent(opts: AgentOptions): Agent {
               devices.delete(gone.id)
             }
           } else if (ev.state === 'device') {
-            // Probe identitas stabil di agent: control plane tidak punya adb.
+            // Stable identity is probed on the agent: the control plane has no adb.
             const probe = await probeDeviceIdentity(client, ev.serial).catch(() => null)
             if (!probe) return
             const snapshot: DeviceSnapshot = {
@@ -168,6 +168,10 @@ export function createAgent(opts: AgentOptions): Agent {
               density: null,
               status: 'idle',
               lastSeen: Math.floor(Date.now() / 1000),
+              // Battery and quarantine are tracked by the core, not the agent —
+              // the agent only reports the identity of devices attached to it.
+              battery: null,
+              quarantineReason: null,
             })
           }
           hosts?.updateDevices([...snapshots.values()])
@@ -175,7 +179,7 @@ export function createAgent(opts: AgentOptions): Agent {
         })()
       })
       await tracker.start()
-      log('agent siap')
+      log('agent ready')
     },
 
     async stop() {

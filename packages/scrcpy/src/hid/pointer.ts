@@ -1,10 +1,10 @@
 /**
  * HID descriptor pointer ABSOLUT (digitizer) — bukan mouse relatif.
  *
- * Farm butuh "tap di (x,y)", sedangkan mouse UHID bawaan scrcpy bersifat
- * relatif (delta). UHID_CREATE menerima report descriptor arbitrer, jadi
- * kita mendaftarkan digitizer dengan sumbu X/Y absolut logical 0..32767.
- * Dukungan aktual di kernel/ROM device diverifikasi saat uji device.
+ * A farm needs "tap at (x,y)", while scrcpy's built-in UHID mouse is relative
+ * (deltas). UHID_CREATE accepts an arbitrary report descriptor, so we register
+ * a digitizer with absolute X/Y axes over logical 0..32767. Whether a given
+ * kernel or ROM supports it is verified during device testing.
  */
 export const POINTER_LOGICAL_MAX = 32767
 

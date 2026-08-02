@@ -7,12 +7,12 @@ import { EnkakuError } from '../../util/errors'
 import type { ExecutorContext, JobExecutor } from '../executor'
 
 /**
- * Executor script sungguhan (M4): mendelegasikan ke JobRunner (child
- * process + IPC). Menggantikan dummy `internal:sleep` sebagai jalur utama;
- * dummy tetap terdaftar untuk menguji queue tanpa device.
+ * The real script executor (M4): delegates to JobRunner (a child
+ * process plus IPC). It replaces the `internal:sleep` dummy as the main path;
+ * dummy executor stays registered for exercising the queue without a device.
  *
- * Validasi params otoritatif terjadi DI CHILD (`def.params.parse` dari
- * bundle) — di sini params hanya diteruskan apa adanya.
+ * Authoritative param validation happens IN THE CHILD (`def.params.parse` from
+ * the bundle) — here the params are just passed straight through.
  */
 export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: JobRunner }): JobExecutor {
   return {
@@ -22,13 +22,13 @@ export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: Jo
 
     async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
       const script = deps.db.select().from(scripts).where(eq(scripts.id, job.scriptId)).get()
-      if (!script) throw new EnkakuError('unknown_script', `script tidak ada: ${job.scriptId}`)
-      if (!script.enabled) throw new EnkakuError('script_disabled', `script ${script.name} dinonaktifkan`)
+      if (!script) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
+      if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${script.name} is disabled`)
 
-      // Cancel dari core → abort child (grace → SIGTERM → SIGKILL).
+      // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
       ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
 
-      // Bundle dimaterialkan di core (punya akses DB); runner hanya menerima path.
+      // The bundle is materialised in the core (which has DB access); the runner only gets a path.
       const bundlePath = await materializeBundle(deps.dataDir, script)
       const result = await deps.runner.execute({
         id: job.id,
@@ -37,7 +37,7 @@ export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: Jo
         params: job.params ?? {},
       })
       if (!result.ok) {
-        const err = result.error ?? { code: 'SCRIPT_FAILED', message: 'script gagal', phase: 'run' }
+        const err = result.error ?? { code: 'SCRIPT_FAILED', message: 'the script failed', phase: 'run' }
         throw Object.assign(new EnkakuError(err.code, err.message), {
           code: err.code === 'CANCELLED' ? 'job_cancelled' : err.code,
         })

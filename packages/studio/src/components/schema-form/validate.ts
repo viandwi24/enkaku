@@ -2,8 +2,8 @@ import { deref, getNodeKind } from './resolve'
 import type { JsonSchemaNode } from './types'
 
 /**
- * Validasi client-side dari JSON Schema (subset yang dipakai form ini).
- * Server tetap otoritatif — ini hanya untuk feedback cepat.
+ * Client-side validation from JSON Schema (the subset this form uses).
+ * The server stays authoritative — this only exists for fast feedback.
  */
 export function validateAgainstSchema(
   node: JsonSchemaNode,
@@ -19,7 +19,7 @@ export function validateAgainstSchema(
     const obj = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
     for (const key of n.required ?? []) {
       if (obj[key] === undefined || obj[key] === '') {
-        errors[path ? `${path}.${key}` : key] = 'wajib diisi'
+        errors[path ? `${path}.${key}` : key] = 'required'
       }
     }
     for (const [key, child] of Object.entries(n.properties)) {
@@ -32,21 +32,21 @@ export function validateAgainstSchema(
 
   if (kind === 'number') {
     const num = typeof value === 'number' ? value : Number(value)
-    if (Number.isNaN(num)) errors[path] = 'harus angka'
-    else if (n.minimum !== undefined && num < n.minimum) errors[path] = `minimal ${n.minimum}`
-    else if (n.maximum !== undefined && num > n.maximum) errors[path] = `maksimal ${n.maximum}`
+    if (Number.isNaN(num)) errors[path] = 'must be a number'
+    else if (n.minimum !== undefined && num < n.minimum) errors[path] = `must be at least ${n.minimum}`
+    else if (n.maximum !== undefined && num > n.maximum) errors[path] = `must be at most ${n.maximum}`
   } else if (kind === 'string') {
     const str = String(value)
-    if (n.minLength !== undefined && str.length < n.minLength) errors[path] = `minimal ${n.minLength} karakter`
-    else if (n.maxLength !== undefined && str.length > n.maxLength) errors[path] = `maksimal ${n.maxLength} karakter`
-    else if (n.pattern && !new RegExp(n.pattern).test(str)) errors[path] = `tidak cocok pola ${n.pattern}`
+    if (n.minLength !== undefined && str.length < n.minLength) errors[path] = `must be at least ${n.minLength} characters`
+    else if (n.maxLength !== undefined && str.length > n.maxLength) errors[path] = `must be at most ${n.maxLength} characters`
+    else if (n.pattern && !new RegExp(n.pattern).test(str)) errors[path] = `does not match ${n.pattern}`
   } else if (kind === 'enum' && n.enum && !n.enum.includes(value)) {
-    errors[path] = `harus salah satu dari: ${n.enum.join(', ')}`
+    errors[path] = `must be one of: ${n.enum.join(', ')}`
   } else if (kind === 'range-tuple') {
     const arr = Array.isArray(value) ? value : []
     const [lo, hi] = [Number(arr[0]), Number(arr[1])]
-    if (Number.isNaN(lo) || Number.isNaN(hi)) errors[path] = 'kedua nilai harus angka'
-    else if (lo > hi) errors[path] = 'nilai minimum tidak boleh lebih besar dari maksimum'
+    if (Number.isNaN(lo) || Number.isNaN(hi)) errors[path] = 'both values must be numbers'
+    else if (lo > hi) errors[path] = 'the minimum cannot be greater than the maximum'
   }
   return errors
 }

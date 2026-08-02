@@ -13,8 +13,9 @@ type MessageHandler = (msg: ServerMessage) => void
 type BinaryHandler = (buf: Uint8Array) => void
 
 /**
- * WS client tunggal: auto-reconnect exponential backoff + resubscribe,
- * request/reply berkorelasi `id`, semua message masuk di-safeParse.
+ * A single WS client: auto-reconnect with exponential backoff plus
+ * resubscribe, request/reply correlated by `id`, every inbound message
+ * safeParse'd.
  */
 class WsClient {
   private ws: WebSocket | null = null
@@ -134,7 +135,7 @@ class WsClient {
     return () => this.statusHandlers.delete(cb)
   }
 
-  /** Dipanggil tiap koneksi (re)established — untuk resubscribe stream. */
+  /** Fires whenever the connection is (re)established — used to resubscribe streams. */
   onReconnected(cb: () => void): () => void {
     this.onReconnect.add(cb)
     return () => this.onReconnect.delete(cb)

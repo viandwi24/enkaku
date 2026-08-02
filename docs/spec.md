@@ -1,206 +1,206 @@
 # Enkaku — Product Spec
 
-> **Codename: Enkaku** (遠隔 — "jarak jauh / remote"). Nama placeholder, bebas diganti.
-> Platform device farm untuk remote control + automation smartphone Android, self-hosted & zero-config, dengan opsi cloud.
-> Status dokumen: **draft v0.2** — living document.
+> **Codename: Enkaku** (遠隔 — "remote, at a distance"). A placeholder name, free to change.
+> A device farm platform for remote control and automation of Android phones: self-hosted, zero-config, with a cloud option.
+> Document status: **draft v0.2** — a living document.
 >
-> **Changelog v0.1 → v0.2:** revisi setelah riset prior-art & verifikasi klaim teknis. Perubahan besar: (1) scrcpy-server di-pin ke versi core, bukan user-swappable; (2) adb mutex diganti per-device queue + semaphore longgar; (3) inspector pakai persistent on-device server (pola uiautomator2), bukan `uiautomator dump` naif; (4) klaim "sandbox" dikoreksi jadi jujur soal trust model; (5) device identity pakai ID stabil, bukan serial adb; (6) cloud mode kemungkinan butuh WebRTC, bukan WS+WebCodecs mentah; (7) tambah §6 perbandingan kompetitor, §9 input injection modes (buat QA detection-testing), enrollment flow, battery/thermal, NFR, retention/lisensi. Ringkasan sumber di §21.
+> **Changelog v0.1 → v0.2:** revised after prior-art research and verification of technical claims. The big changes: (1) scrcpy-server is pinned to the core version rather than user-swappable; (2) the adb mutex is replaced by a per-device queue plus a loose semaphore; (3) the inspector uses a persistent on-device server (the uiautomator2 pattern) rather than a naive `uiautomator dump`; (4) the "sandbox" claim is corrected to be honest about the trust model; (5) device identity uses a stable ID rather than the adb serial; (6) cloud mode likely needs WebRTC rather than raw WS + WebCodecs; (7) added §6 competitor comparison, §9 input injection modes (for QA detection testing), the enrollment flow, battery/thermal, NFRs, retention, and licensing. Sources are summarised in §21.
 
 ---
 
-## 1. Ringkasan & visi
+## 1. Summary and vision
 
-Enkaku adalah **device farm platform** end-to-end: sistem yang membuat sekumpulan smartphone Android bisa di-*remote control* (lihat layar + klik dari browser) dan di-*automation* (script berjalan otomatis dalam antrian yang aman) melalui satu web UI.
+Enkaku is an end-to-end **device farm platform**: a system that makes a set of Android phones *remotely controllable* (see the screen and click from a browser) and *automatable* (scripts run on their own in a safe queue) through one web UI.
 
-Target pengalaman akhir:
+The target experience:
 
-> **User tinggal install → running → langsung jalan.** Tidak perlu install adb manual, tidak perlu config PATH, tidak perlu ngerti terminal. Semua dependency (adb, scrcpy, dsb) di-manage oleh aplikasi sendiri lewat UI.
+> **Install → run → it works.** No manual adb install, no PATH configuration, no terminal knowledge required. Every dependency (adb, scrcpy, and so on) is managed by the application itself through the UI.
 
-Dua audiens:
+Two audiences:
 
-1. **Internal** — tim programmer di kantor butuh alat untuk remote + test app di banyak device fisik sekaligus.
-2. **Produk jual** — dijual sebagai QA/test-automation device farm (positioning ala BrowserStack / AWS Device Farm, tapi self-hostable dan murah).
+1. **Internal** — a team of programmers who need a tool to remotely control and test apps on many physical devices at once.
+2. **A product to sell** — sold as a QA/test-automation device farm (positioned like BrowserStack or AWS Device Farm, but self-hostable and cheap).
 
-**Kenapa ini masih relevan padahal open source udah banyak?** Lihat §6 — TL;DR: yang ada sekarang (STF/DeviceFarmer) arsitekturnya tua & mentok Android 9, dan yang modern (ws-scrcpy-web) cuma *mirroring*, tanpa lease/queue/script-framework/multi-user. Enkaku = gabungan remote-modern + orchestration + automation dalam satu paket zero-config. Belum ada yang isi celah itu sebagai produk matang.
+**Why is this still relevant when there is so much open source already?** See §6 — the short version: what exists today (STF/DeviceFarmer) has an ageing architecture capped at Android 9, and the modern option (ws-scrcpy-web) is *mirroring only*, with no lease, queue, script framework, or multi-user support. Enkaku combines modern remote control, orchestration, and automation into one zero-config package. Nobody has filled that gap as a mature product.
 
 ---
 
-## 2. Prinsip desain (non-negotiable)
+## 2. Design principles (non-negotiable)
 
-| Prinsip | Artinya secara konkret |
+| Principle | What it means concretely |
 |---|---|
-| **Zero-config** | First run auto-provision semua tool, auto-detect device, buka browser. Tidak ada langkah manual wajib. |
-| **Self-contained** | Tidak bergantung pada tool yang ada di sistem user. adb/scrcpy/dsb di-download & di-manage sendiri oleh app ke folder app-local, bukan system PATH. |
-| **Schema-driven UI** | Setiap komponen (tool, driver engine, script) mendeskripsikan config-nya sebagai schema. Studio me-*render* UI manajemen dari schema itu secara dinamis. Nambah komponen baru = otomatis dapat panel setting, tanpa nulis UI baru. |
-| **Pluggable & swappable** | Transport, display, input, inspection, dan tool semuanya modular. Ganti/update satu bagian tanpa menyentuh yang lain — **kecuali pasangan yang memang coupled ketat** (lihat aturan scrcpy §7.6). |
-| **Server-authoritative** | Semua aturan (lease, konflik resource, ACL) di-enforce di core, bukan di UI. Client tidak pernah dipercaya. |
-| **Portable runtime** | Core adalah daemon yang bisa jalan di macOS, Linux x64/arm64, dalam container, atau di SBC kecil. |
+| **Zero-config** | First run auto-provisions every tool, auto-detects devices, and opens the browser. No mandatory manual step. |
+| **Self-contained** | Never depends on tools already on the user's system. adb, scrcpy, and the rest are downloaded and managed by the app into an app-local folder, not the system PATH. |
+| **Schema-driven UI** | Every component (tool, driver engine, script) describes its config as a schema. Studio *renders* the management UI from that schema dynamically. Adding a component automatically gets it a settings panel, with no new UI code. |
+| **Pluggable and swappable** | Transport, display, input, inspection, and tools are all modular. Replace or update one part without touching the others — **except for pairs that are genuinely tightly coupled** (see the scrcpy rule in §7.6). |
+| **Server-authoritative** | Every rule (leases, resource conflicts, ACL) is enforced in the core, never in the UI. The client is never trusted. |
+| **Portable runtime** | The core is a daemon that runs on macOS, Linux x64/arm64, in a container, or on a small SBC. |
 
 ---
 
-## 3. Persona & use case
+## 3. Personas and use cases
 
-- **Programmer (operator).** Register device, remote control manual buat debug, jalanin script test, lihat log & artifact.
-- **Admin / owner.** Manage user, atur device, atur tool version, atur ACL, monitor farm.
-- **Script author.** Nulis script automation pakai SDK (type-safe, di editor sendiri), publish ke farm.
-- **End customer (mode jual).** Install appliance/binary, colok device, langsung pakai lewat browser tanpa ngerti isinya.
+- **Programmer (operator).** Registers devices, controls them manually for debugging, runs test scripts, reads logs and artifacts.
+- **Admin / owner.** Manages users, devices, tool versions, ACLs; monitors the farm.
+- **Script author.** Writes automation scripts with the SDK (type-safe, in their own editor) and publishes them to the farm.
+- **End customer (product mode).** Installs an appliance or binary, plugs in devices, and uses it through a browser without knowing what is inside.
 
-Use case utama:
+Primary use cases:
 
-1. Remote lihat + klik satu device dari browser (low latency).
-2. Jalanin automation script di banyak device dalam antrian, bergantian & aman.
-3. Manage library script (CRUD, versioning, run dengan parameter).
-4. Manage device (nama, owner, driver config, per-device settings).
-5. Manage toolchain (adb/scrcpy: install, update, pin, delete versi) lewat UI.
-6. **Testing app sendiri terhadap deteksi automation** (red-team detektor sendiri) — lihat §9 & §17.
+1. Remotely view and click one device from a browser (low latency).
+2. Run automation scripts across many devices in a queue, one at a time and safely.
+3. Manage a script library (CRUD, versioning, running with parameters).
+4. Manage devices (name, owner, driver config, per-device settings).
+5. Manage the toolchain (adb/scrcpy: install, update, pin, delete versions) through the UI.
+6. **Test your own app against automation detection** (red-teaming your own detectors) — see §9 and §17.
 
 ---
 
-## 4. Arsitektur tingkat tinggi
+## 4. High-level architecture
 
-Tiga artifact utama:
+Three main artifacts:
 
-- **Core** — daemon (Bun + Hono). Orkestrator: device registry, driver, session/lease, queue, script runner, toolchain manager, API + WebSocket. Jalan dekat device (butuh USB/LAN).
-- **Studio** — web UI (Next.js). Dashboard, remote control, script manager, toolchain manager, settings. Bisa di-serve oleh core sendiri (lokal) atau hosted (cloud).
-- **SDK** — package npm (`@enkaku/sdk`). `defineScript`, tipe, `DeviceDriver` interface. Dipublish supaya script author nulis di editor sendiri dengan autocomplete penuh.
+- **Core** — the daemon (Bun + Hono). The orchestrator: device registry, drivers, session/lease, queue, script runner, toolchain manager, API and WebSocket. It runs near the devices (it needs USB or LAN).
+- **Studio** — the web UI (Next.js). Dashboard, remote control, script manager, toolchain manager, settings. Served by the core itself (local) or hosted (cloud).
+- **SDK** — an npm package (`@enkaku/sdk`). `defineScript`, types, the `DeviceDriver` interface. Published so script authors can write in their own editor with full autocomplete.
 
-Komunikasi **Core ⇄ Studio** = message-based over WebSocket (bukan REST-first), supaya transport gampang dipindah ke model relay/tunnel saat pindah ke cloud tanpa mengubah kontrak message.
+**Core ⇄ Studio** communication is message-based over WebSocket (not REST-first), so the transport can move to a relay/tunnel model for cloud without changing the message contract.
 
 ```
 packages/
-  core/        # Bun + Hono daemon (orkestrator)
-  studio/      # Next.js web UI
-  sdk/         # defineScript, DeviceDriver, tipe — dipublish ke npm
-  protocol/    # schema message Core⇄Studio (Zod), shared types
-  adb/         # adb client + track-devices + scrcpy-server manager
-  scrcpy/      # scrcpy protocol client (demux socket, decode meta) — versi-locked ke core
-  toolchain/   # runtime/tool provisioning (download, version, checksum)
-  drivers/     # implementasi transport/display/input/inspection
-  agent/       # mini-core buat cloud tunnel (M8)
+  core/        # the Bun + Hono daemon (orchestrator)
+  studio/      # the Next.js web UI
+  sdk/         # defineScript, DeviceDriver, types — published to npm
+  protocol/    # Core⇄Studio message schemas (Zod), shared types
+  adb/         # adb client, track-devices, scrcpy-server manager
+  scrcpy/      # the scrcpy protocol client (socket demux, meta decode) — version-locked to the core
+  toolchain/   # runtime and tool provisioning (download, version, checksum)
+  drivers/     # transport/display/input/inspection implementations
+  agent/       # the cloud tunnel mini-core (M8)
 apps/
-  desktop/     # shell Tauri (native window + tray + auto-update)
+  desktop/     # the Tauri shell (native window, tray, auto-update)
 ```
 
-> **Catatan arsitektur (dari riset ws-scrcpy):** ada dua mazhab bikin scrcpy jalan di browser. (a) **Modified scrcpy-server** — build ulang scrcpy-server dengan WebSocket server tertanam (dipakai NetrisTV/ws-scrcpy lama). (b) **Vanilla scrcpy-server** — pakai .jar resmi Genymobile apa adanya, host yang multiplex socket TCP-nya jadi satu WebSocket, browser yang demux + decode (dipakai ws-scrcpy-web baru). **Enkaku pilih (b)** karena: pakai .jar resmi = ikut rilis upstream, tidak perlu maintain fork Java, dan checksum-nya bisa diverifikasi ke rilis resmi. Konsekuensinya `packages/scrcpy` (protokol client di sisi host+browser) yang harus di-maintain dan di-pin (lihat §7.6).
+> **Architecture note (from the ws-scrcpy research):** there are two schools of running scrcpy in a browser. (a) **Modified scrcpy-server** — rebuild scrcpy-server with an embedded WebSocket server (used by the older NetrisTV/ws-scrcpy). (b) **Vanilla scrcpy-server** — use Genymobile's official .jar as-is, with the host multiplexing its TCP sockets into one WebSocket and the browser demuxing and decoding (used by the newer ws-scrcpy-web). **Enkaku picks (b)** because: using the official .jar means following upstream releases, no Java fork to maintain, and a checksum that can be verified against the official release. The consequence is that `packages/scrcpy` (the protocol client on both host and browser) is ours to maintain and pin (see §7.6).
 
 ---
 
-## 5. Mode deployment
+## 5. Deployment modes
 
-Topologi penting: **core harus dekat device** (USB/LAN). Yang boleh pindah ke cloud adalah *control plane* (Studio + orchestrator + relay), sementara core yang nempel device tetap di lokasi device.
+The key topology constraint: **the core must be near the devices** (USB or LAN). What can move to the cloud is the *control plane* (Studio, orchestrator, relay), while the core attached to the devices stays where they are.
 
-### 5.1 Local self-host (default, paling gampang)
+### 5.1 Local self-host (default, easiest)
 
-Satu binary (hasil `bun build --compile`). Double-click → core nyala → serve Studio di `localhost` → buka browser otomatis. SQLite dibuat di app data dir. Device di-colok/konek WiFi, auto-detect. **Ini mode "orang awam tinggal install".**
+One binary (from `bun build --compile`). Double-click → the core starts → Studio is served on `localhost` → the browser opens automatically. SQLite is created in the app data dir. Devices are plugged in or connected over WiFi and auto-detected. **This is the "anyone can install it" mode.**
 
-Varian UX lebih rapi: shell **Tauri** (native window + system tray + auto-update) yang membungkus core + Studio.
+A tidier UX variant: a **Tauri** shell (native window, system tray, auto-update) wrapping the core and Studio.
 
 ### 5.2 Headless server / homelab
 
-Core jalan sebagai service (systemd) di mini-PC / SBC / Proxmox. Studio diakses dari browser device manapun di jaringan. Cocok buat 10 device di kantor. Tersedia Docker image.
+The core runs as a service (systemd) on a mini-PC, SBC, or Proxmox VM. Studio is reachable from a browser on any machine on the network. A good fit for 10 devices in an office. A Docker image is available.
 
 ### 5.3 Cloud (split control plane)
 
-Studio + orchestrator + relay di cloud (container image, tinggal deploy). Device tetap di kantor, di-handle oleh **agent** ringan (mini-core) yang membuka **outbound WebSocket tunnel** ke control plane — jadi tanpa port-forward, tembus NAT.
+Studio, orchestrator, and relay live in the cloud (a container image, ready to deploy). Devices stay in the office, handled by a lightweight **agent** (a mini-core) that opens an **outbound WebSocket tunnel** to the control plane — so no port forwarding, and NAT is a non-issue.
 
-Ini juga jalur monetisasi SaaS: customer jalanin agent kecil di dekat device mereka, kamu host control plane.
+This is also the SaaS monetisation path: customers run a small agent next to their devices while you host the control plane.
 
-> **⚠️ Revisi v0.2 — video di cloud butuh transport lain.** WS+WebCodecs bagus buat LAN. Tapi WebSocket = TCP; di internet, sekali ada packet loss, TCP head-of-line blocking bikin **seluruh video freeze** sampai retransmit selesai (kerasa banget di remote control real-time). Untuk cloud, jalur video harus dievaluasi ulang: opsi realistis = **WebRTC** (`RTCPeerConnection`, UDP, congestion control + partial reliability), atau minimal WebTransport (HTTP/3, QUIC). Kontrol/queue tetap boleh lewat WS (loss di situ tidak sepenting video). **Konsekuensi arsitektur:** relay di control plane harus bisa terminate WebRTC + repackage H.264 dari scrcpy jadi RTP. Ini bukan flag — masukkan sebagai kerjaan nyata di M8. LAN tetap pakai WS+WebCodecs (lebih simpel, no TURN/STUN).
+> **⚠️ v0.2 revision — cloud video needs a different transport.** WS + WebCodecs is fine on a LAN. But WebSocket is TCP; on the internet, one lost packet triggers TCP head-of-line blocking and **the whole video freezes** until the retransmit completes (very noticeable during real-time remote control). For cloud, the video path has to be reconsidered: the realistic option is **WebRTC** (`RTCPeerConnection`, UDP, congestion control plus partial reliability), or at minimum WebTransport (HTTP/3, QUIC). Control and queueing may stay on WS (loss there matters far less). **Architectural consequence:** the control plane's relay must be able to terminate WebRTC and repackage scrcpy's H.264 as RTP. This is not a flag — it is real work in M8. LANs stay on WS + WebCodecs (simpler, no TURN/STUN).
 
-### 5.4 Cloud device (opsional, tanpa HP fisik)
+### 5.4 Cloud devices (optional, no physical phones)
 
-Untuk kasus yang tidak butuh device fisik: **redroid** (Android dalam container) di cloud. Core memperlakukannya sama seperti device fisik lewat transport `adb-tcp`. (Catatan: redroid = emulator, jadi banyak deteksi automation naif otomatis ke-flag — bagus buat throughput test, kurang buat test yang butuh "device asli".)
+For cases that do not need physical hardware: **redroid** (Android in a container) in the cloud. The core treats it exactly like a physical device over the `adb-tcp` transport. (Note: redroid is an emulator, so plenty of naive automation detection flags it immediately — good for throughput testing, poor for testing that needs a "real device".)
 
-| Mode | Core lokasi | Device | Video transport | Untuk siapa |
+| Mode | Core location | Devices | Video transport | Who it is for |
 |---|---|---|---|---|
-| Local self-host | Mesin user | USB/WiFi lokal | WS + WebCodecs | Orang awam, dev tunggal |
-| Headless server | Box di jaringan | USB/WiFi lokal | WS + WebCodecs | Kantor 10 device |
-| Cloud split | Agent lokal + control plane cloud | Lokal, tunneled | **WebRTC** | Produk SaaS |
-| Cloud device | Cloud | redroid | WebRTC | Testing tanpa HP fisik |
+| Local self-host | The user's machine | Local USB/WiFi | WS + WebCodecs | Non-experts, solo devs |
+| Headless server | A box on the network | Local USB/WiFi | WS + WebCodecs | An office with 10 devices |
+| Cloud split | Local agent plus a cloud control plane | Local, tunnelled | **WebRTC** | A SaaS product |
+| Cloud devices | Cloud | redroid | WebRTC | Testing without physical phones |
 
 ---
 
-## 6. Analisis kompetitor / prior art (BARU di v0.2)
+## 6. Competitor and prior-art analysis (NEW in v0.2)
 
-Riset menunjukkan kategori ini sudah ramai. Tapi tidak ada satu pun yang mengisi celah Enkaku (remote modern + orchestration + automation, zero-config, jual-able). Ini penting buat pitch **dan** buat nyontek bagian yang sudah proven.
+Research shows this category is crowded. But nothing fills Enkaku's gap (modern remote control plus orchestration plus automation, zero-config, sellable). This matters for the pitch **and** for borrowing the parts that are already proven.
 
 ### 6.1 STF / DeviceFarmer (OpenSTF)
 
-Ini "gajah di ruangan" — persis kategori ini, open source (Apache-2.0), dan sudah 9 tahun.
+The elephant in the room — exactly this category, open source (Apache-2.0), and nine years old.
 
-- **Yang bagus & bisa dicontek:** model UI (grid device, live control browser, drag-drop APK, shell, reverse port forward, battery monitoring), konsep *device booking/lease*, dan `adbkit` (Node adb client — worth dilihat sbg referensi walau kita pakai Bun).
-- **Kelemahan yang jadi peluang kita:**
-  - **OpenSTF mentok Android 9.** Rilis resmi terakhir v3.4.1 tidak jalan di Android 10–15. DeviceFarmer (fork komunitas) "development lambat, dana dari waktu luang volunteer" (pengakuan mereka sendiri).
-  - **Screen capture pakai `minicap`/`minitouch`** — teknologi lama, keteteran di Android baru, butuh prebuilt binary per-ABI. Kita pakai scrcpy (encode H.264 di HP, jauh lebih efisien & modern).
-  - **Setup nightmare** — butuh orchestrate RethinkDB + banyak service + Docker ambassador. "Setting up took days." Ini persis anti-thesis zero-config kita.
-  - **Trust model longgar** — dokumen mereka mengakui "little to no security between processes, devices tidak di-reset antar-pakai." Kita bisa positioning lebih rapi (lease bersih, `finish` clean-state).
-- **Ambil pelajaran:** device farm itu "money sink" (hardware berat). Positioning appliance murah (§16) = pembeda nyata.
+- **What is good and worth borrowing:** the UI model (device grid, live browser control, drag-and-drop APK, shell, reverse port forwarding, battery monitoring), the *device booking/lease* concept, and `adbkit` (a Node adb client — worth studying as a reference even though we use Bun).
+- **Weaknesses that become our opportunity:**
+  - **OpenSTF is capped at Android 9.** The last official release, v3.4.1, does not run on Android 10–15. DeviceFarmer (a community fork) describes its own development as "slow, funded by volunteers' spare time".
+  - **Screen capture uses `minicap`/`minitouch`** — old technology that struggles on newer Android and needs a prebuilt binary per ABI. We use scrcpy (H.264 encoded on the phone, far more efficient and modern).
+  - **Setup is a nightmare** — it requires orchestrating RethinkDB plus many services plus a Docker ambassador. "Setting up took days." That is precisely the antithesis of our zero-config goal.
+  - **A loose trust model** — their own documentation admits "little to no security between processes, devices are not reset between uses." We can position more carefully (clean leases, `finish` clean-state).
+- **The lesson:** a device farm is a money sink (hardware is expensive). Positioning around a cheap appliance (§16) is a real differentiator.
 
-### 6.2 ws-scrcpy & ws-scrcpy-web (prior art PALING dekat)
+### 6.2 ws-scrcpy and ws-scrcpy-web (the CLOSEST prior art)
 
-`NetrisTV/ws-scrcpy` (dan penerusnya `bilbospocketses/ws-scrcpy-web`) = persis pola teknis inti Enkaku: server Node push scrcpy-server ke device, multiplex socket video/audio/control jadi **satu WebSocket** (prefix 1-byte channel), browser demux + decode H.264/H.265/AV1 lewat **WebCodecs**.
+`NetrisTV/ws-scrcpy` (and its successor `bilbospocketses/ws-scrcpy-web`) is exactly Enkaku's core technical pattern: a Node server pushes scrcpy-server to the device and multiplexes the video/audio/control sockets into **one WebSocket** (a 1-byte channel prefix), and the browser demuxes and decodes H.264/H.265/AV1 through **WebCodecs**.
 
-- **Yang mengejutkan (dan memvalidasi arsitektur kita):** ws-scrcpy-web **sudah** punya: bundled Node+ADB, **in-app updater buat Node/ADB/scrcpy-server**, SQLite store, device labels, mDNS scan, embed lib (`WsScrcpy.startStream()`). Artinya toolchain-manager-in-UI kita memang jalur yang benar — sudah ada yang buktikan.
-- **Ambil pelajaran teknis:** pakai **vanilla scrcpy-server** + demux client-side (bukan fork Java), multiplex 1-byte prefix, WebCodecs sebagai decoder utama dengan fallback (MSE/Broadway/TinyH264 buat browser non-Chromium).
-- **Celah yang kita isi (kenapa bukan sekadar pakai ws-scrcpy):** ws-scrcpy = **mirroring tool**, bukan farm platform. Tidak ada: lease/queue, script framework, multi-user/ACL, capability-based driver selection, job/artifact, schema-driven management. Enkaku = ws-scrcpy-nya kepakai sebagai **satu lapisan display/input**, dibungkus orchestration + automation.
-- **Peringatan keamanan mereka (kita jangan ulangi):** semua varian ws-scrcpy nyala "no encryption, no authorization by default, listen on all interfaces." Untuk produk jual ini tidak boleh. Auth + TLS wajib di mode server/cloud (§14).
+- **The surprise (which validates our architecture):** ws-scrcpy-web **already** has bundled Node and ADB, an **in-app updater for Node/ADB/scrcpy-server**, a SQLite store, device labels, mDNS scanning, and an embeddable library (`WsScrcpy.startStream()`). That means our toolchain-manager-in-the-UI is the right path — somebody has already proven it.
+- **Technical lessons to take:** use **vanilla scrcpy-server** with client-side demuxing (not a Java fork), multiplex with a 1-byte prefix, and use WebCodecs as the primary decoder with fallbacks (MSE/Broadway/TinyH264 for non-Chromium browsers).
+- **The gap we fill (why not just use ws-scrcpy):** ws-scrcpy is a **mirroring tool**, not a farm platform. It has no lease/queue, no script framework, no multi-user or ACL, no capability-based driver selection, no jobs or artifacts, no schema-driven management. In Enkaku, ws-scrcpy's approach becomes **one display/input layer**, wrapped in orchestration and automation.
+- **Their security warning (which we must not repeat):** every ws-scrcpy variant starts up with "no encryption, no authorization by default, listening on all interfaces." That is unacceptable in a product. Auth and TLS are mandatory in server and cloud modes (§14).
 
-### 6.3 Appium (+ uiautomator2 driver)
+### 6.3 Appium (plus the uiautomator2 driver)
 
-Bukan device farm, tapi **standar de-facto automation** Android. Relevan sebagai *inspiration* inspector & sebagai engine opt-in.
+Not a device farm, but the **de-facto standard for Android automation**. Relevant as inspector inspiration and as an opt-in engine.
 
-- **Ambil pelajaran:** UiAutomator2 (Google-supported, dipakai Appium sebagai default engine) = cara paling matang baca UI tree + inject aksi. Tapi Appium berat (~500MB/sesi, JVM), jadi **opt-in engine** aja (§7), jangan default di box kecil.
-- **Yang kita tiru lebih ringan:** pola **openatx/uiautomator2** — persistent server APK (JSONRPC over HTTP) di device, query cepat. Lihat §7.4.
+- **The lesson:** UiAutomator2 (Google-supported, Appium's default engine) is the most mature way to read a UI tree and inject actions. But Appium is heavy (~500 MB per session, a JVM), so it should be an **opt-in engine** (§7), never the default on a small box.
+- **What we imitate more lightly:** the **openatx/uiautomator2** pattern — a persistent server APK (JSONRPC over HTTP) on the device, with fast queries. See §7.4.
 
 ### 6.4 Cloud services (BrowserStack, AWS Device Farm, HeadSpin, LambdaTest, DeviceLab)
 
-- **Positioning kita:** self-hostable + murah + data tidak keluar (privacy pre-release build). Ini justru alasan orang cari alternatif OpenSTF (privacy + biaya cloud).
-- **Yang mereka punya & kita butuh niru sebagai fitur jual:** parallel run, device selector by capability, video recording per-session, integrasi CI (BrowserStack punya "Verified Step" di Bitrise — kita bisa target integrasi CI serupa nanti).
+- **Our positioning:** self-hostable, cheap, and the data never leaves (privacy for pre-release builds). That is exactly why people look for OpenSTF alternatives (privacy plus cloud cost).
+- **What they have that we should imitate as sellable features:** parallel runs, device selection by capability, per-session video recording, CI integration (BrowserStack has a "Verified Step" on Bitrise — we can target similar CI integration later).
 
-### 6.5 Ringkasan tabel
+### 6.5 Summary table
 
-| Kapabilitas | OpenSTF/DeviceFarmer | ws-scrcpy(-web) | Appium | Cloud SaaS | **Enkaku (target)** |
+| Capability | OpenSTF/DeviceFarmer | ws-scrcpy(-web) | Appium | Cloud SaaS | **Enkaku (target)** |
 |---|---|---|---|---|---|
-| Remote view+control browser | ✅ (minicap, tua) | ✅ (scrcpy modern) | ❌ | ✅ | ✅ (scrcpy modern) |
-| Android 14/15 support | ❌ (mentok 9) | ✅ | ✅ | ✅ | ✅ |
-| Lease/queue/scheduler | ⚠️ (booking dasar) | ❌ | ❌ | ✅ | ✅ |
-| Script/automation framework | ❌ | ❌ | ✅ (kode) | ⚠️ | ✅ (`defineScript`) |
-| Multi-user + ACL | ⚠️ | ❌ | ❌ | ✅ | ✅ |
-| Zero-config install | ❌ (days) | ⚠️ (dekat) | ❌ | n/a | ✅ (target) |
-| Toolchain manager in-UI | ❌ | ✅ (updater) | ❌ | n/a | ✅ |
-| Self-host & murah | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Input hardware-like (UHID) | ❌ | ⚠️ | ❌ | ❌ | ✅ (§9) |
+| Browser view and control | ✅ (minicap, old) | ✅ (modern scrcpy) | ❌ | ✅ | ✅ (modern scrcpy) |
+| Android 14/15 support | ❌ (capped at 9) | ✅ | ✅ | ✅ | ✅ |
+| Lease/queue/scheduler | ⚠️ (basic booking) | ❌ | ❌ | ✅ | ✅ |
+| Script/automation framework | ❌ | ❌ | ✅ (code) | ⚠️ | ✅ (`defineScript`) |
+| Multi-user plus ACL | ⚠️ | ❌ | ❌ | ✅ | ✅ |
+| Zero-config install | ❌ (days) | ⚠️ (close) | ❌ | n/a | ✅ (target) |
+| Toolchain manager in the UI | ❌ | ✅ (updater) | ❌ | n/a | ✅ |
+| Self-hosted and cheap | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Hardware-like input (UHID) | ❌ | ⚠️ | ❌ | ❌ | ✅ (§9) |
 
 ---
 
-## 7. Subsistem: driver (4 lapisan ortogonal) + toolchain
+## 7. Subsystem: drivers (four orthogonal layers) plus the toolchain
 
-"Driver" dipecah jadi empat abstraksi terpisah supaya tiap lapisan bisa di-swap sendiri. Kombinasi terbaik biasanya campuran.
+A "driver" is split into four separate abstractions so each layer can be swapped on its own. The best combination is usually a mix.
 
 ```ts
-interface Transport {                         // 1. cara nyambung
+interface Transport {                         // 1. how to connect
   id: string
   connect(): Promise<void>
   disconnect(): Promise<void>
-  serial: string                              // alamat transport (bisa berubah!)
-  stableId: string                            // identity device stabil (lihat §7.5)
+  serial: string                              // the transport address (it can change!)
+  stableId: string                            // stable device identity (see §7.5)
   exec(cmd: string): Promise<string>
 }
-interface DisplaySource {                     // 2. cara lihat layar
+interface DisplaySource {                     // 2. how to see the screen
   id: string
   start(): Promise<void>
   onFrame(cb: (chunk: Uint8Array, meta: FrameMeta) => void): void
   stop(): Promise<void>
 }
-interface InputSink {                         // 3. cara kirim sentuhan
+interface InputSink {                         // 3. how to send touches
   id: string
-  mode: 'sdk' | 'uhid' | 'aoa'                // lihat §9
+  mode: 'sdk' | 'uhid' | 'aoa'                // see §9
   tap(p: Point): Promise<void>
   swipe(from: Point, to: Point, ms: number): Promise<void>
   key(code: KeyCode): Promise<void>
   text(s: string): Promise<void>
 }
-interface Inspector {                         // 4. cara baca isi UI
+interface Inspector {                         // 4. how to read the UI
   id: string
   dump(): Promise<UiNode>
   find(sel: Selector): Promise<UiNode | null>
@@ -208,50 +208,50 @@ interface Inspector {                         // 4. cara baca isi UI
 }
 ```
 
-Factory ngerakit → satu `DeviceSession`. Script hanya tahu handle ini, bukan engine di baliknya.
+A factory assembles them into one `DeviceSession`. A script only ever sees that handle, never the engines behind it.
 
 ```ts
 const session = await createSession({
   deviceId,
-  transport:  'adb-usb',        // ← dipilih dari dropdown Studio
+  transport:  'adb-usb',        // ← chosen from a Studio dropdown
   display:    'scrcpy',
-  input:      'scrcpy-uhid',    // default baru: hardware-like (§9)
-  inspection: 'ui-server',      // persistent on-device server (§7.4)
+  input:      'scrcpy-uhid',    // the new default: hardware-like (§9)
+  inspection: 'ui-server',      // a persistent on-device server (§7.4)
 })
 ```
 
-### 7.1 Engine yang direncanakan (REVISI v0.2)
+### 7.1 Planned engines (REVISED in v0.2)
 
-| Lapisan | Engine | Catatan |
+| Layer | Engines | Notes |
 |---|---|---|
-| Transport | `adb-usb`, `adb-tcp` (wireless / redroid), `cloud-tunnel` | tunnel = agent outbound WS |
-| Display | `scrcpy` (H.264/H.265, default), `screencap-loop` (MVP/fallback, ~3fps) | scrcpy encode di HP, host relay saja |
-| Input | `scrcpy-uhid` (**default baru**, hardware-like), `scrcpy-sdk` (InputManager, kompat luas), `scrcpy-aoa` (OTG, tanpa adb), `adb-input` (fallback kasar), `appium` (opt-in) | detail §9 |
-| Inspection | `ui-server` (persistent on-device, default), `appium` (WebView/hybrid, opt-in), `ocr-pixel` (last resort) | ganti `uiautomator dump` naif |
+| Transport | `adb-usb`, `adb-tcp` (wireless / redroid), `cloud-tunnel` | the tunnel is the agent's outbound WS |
+| Display | `scrcpy` (H.264/H.265, default), `screencap-loop` (MVP/fallback, ~3 fps) | scrcpy encodes on the phone, the host only relays |
+| Input | `scrcpy-uhid` (**the new default**, hardware-like), `scrcpy-sdk` (InputManager, broad compatibility), `scrcpy-aoa` (OTG, no adb), `adb-input` (crude fallback), `appium` (opt-in) | details in §9 |
+| Inspection | `ui-server` (persistent on-device, default), `appium` (WebView/hybrid, opt-in), `ocr-pixel` (last resort) | replaces the naive `uiautomator dump` |
 
-### 7.2 Toolchain Manager (runtime provisioning) — konsep
+### 7.2 Toolchain Manager (runtime provisioning) — the concept
 
-Ini yang mewujudkan "user ga perlu install apa-apa". Polanya seperti Playwright yang manage browser binary-nya sendiri, **dan sudah terbukti** di ws-scrcpy-web (in-app updater Node/ADB/scrcpy).
+This is what delivers "the user installs nothing". The pattern is Playwright's, which manages its own browser binaries, **and it is already proven** in ws-scrcpy-web (its in-app Node/ADB/scrcpy updater).
 
-Core **tidak** mengharapkan adb/scrcpy ada di sistem. Semua tool di-download ke folder app-local ber-versi, dan driver me-resolve path binary dari sini — **tidak pernah dari system PATH**.
+The core does **not** expect adb or scrcpy to exist on the system. Every tool is downloaded into a versioned app-local folder, and drivers resolve binary paths from there — **never from the system PATH**.
 
 ```
 <app-data>/
   enkaku.db                         # SQLite
   tools/
     adb/
-      35.0.1/adb                    # versi terpasang (user boleh swap)
+      35.0.1/adb                    # an installed version (users may swap)
       34.0.5/adb
-      active -> 35.0.1              # pointer versi aktif
+      active -> 35.0.1              # the active-version pointer
     scrcpy-server/
-      <locked>/scrcpy-server.jar    # DIKUNCI ke versi core, bukan user-swappable (§7.6)
+      <locked>/scrcpy-server.jar    # PINNED to the core version, not user-swappable (§7.6)
     ui-server/
-      <bundled>/ui-server.apk       # on-device inspector server (§7.4)
-    appium/                         # opsional, opt-in
+      <bundled>/ui-server.apk       # the on-device inspector server (§7.4)
+    appium/                         # optional, opt-in
   artifacts/<job-id>/...
 ```
 
-App-data dir per platform: `~/Library/Application Support/Enkaku` (macOS), `%APPDATA%\Enkaku` (Windows), `~/.local/share/enkaku` atau `/var/lib/enkaku` (Linux/server).
+App-data dir per platform: `~/Library/Application Support/Enkaku` (macOS), `%APPDATA%\Enkaku` (Windows), `~/.local/share/enkaku` or `/var/lib/enkaku` (Linux/server).
 
 ### 7.3 Tool registry manifest
 
@@ -259,13 +259,13 @@ App-data dir per platform: `~/Library/Application Support/Enkaku` (macOS), `%APP
 interface ToolManifest {
   id: 'adb' | 'scrcpy-server' | 'ui-server' | 'appium' | string
   displayName: string
-  swappable: boolean            // BARU: false → user tak bisa pilih versi (mis. scrcpy-server)
+  swappable: boolean            // NEW: false → users cannot pick a version (scrcpy-server, say)
   versions: ToolVersion[]
 }
 interface ToolVersion {
   version: string
   releasedAt: string
-  compatibleCoreRange?: string  // BARU: semver range core yang cocok (buat tool coupled)
+  compatibleCoreRange?: string  // NEW: the semver range of matching core versions (for coupled tools)
   platforms: {
     [platform: string]: { url: string; sha256: string; sizeBytes: number }
   }
@@ -273,61 +273,61 @@ interface ToolVersion {
 }
 ```
 
-**Source abstraction** — tiap tool bisa datang dari: URL resmi (Google platform-tools, GitHub releases scrcpy), mirror self-host (air-gapped), atau **pre-baked di image** (cloud/container). Default = resmi.
+**Source abstraction** — each tool can come from: an official URL (Google platform-tools, scrcpy GitHub releases), a self-hosted mirror (air-gapped), or **pre-baked into an image** (cloud/container). The default is official.
 
-### 7.4 Inspector: persistent on-device server (REVISI besar v0.2)
+### 7.4 Inspector: a persistent on-device server (major v0.2 revision)
 
-**Masalah `uiautomator dump` (v0.1):** satu dump 0.5–2 detik, gagal saat UI terus berubah ("could not get idle state"), hang di app tertentu. `waitFor` yang polling di atasnya bikin script merayap — waitFor 15 detik mungkin cuma 8–10 kali cek. Ini bottleneck kecepatan seluruh script framework.
+**The problem with `uiautomator dump` (v0.1):** one dump takes 0.5–2 seconds, fails while the UI keeps changing ("could not get idle state"), and hangs in certain apps. A `waitFor` polling on top of that makes scripts crawl — a 15-second waitFor might only manage 8–10 checks. This is the speed bottleneck for the entire script framework.
 
-**Solusi (pola openatx/uiautomator2):** deploy **server instrumentation persistent** di device (APK/`app_process`), expose query lewat HTTP lokal yang di-*forward* via adb. Sekali start, dipakai berkali-kali (device connect sekali, bukan reconnect tiap command). Query selector dieksekusi **di sisi device** → jauh lebih cepat, lebih tahan UI berubah, bisa `set_text`/`long_click`/`double_click` langsung ke elemen (lebih reliable buat WebView).
+**The solution (the openatx/uiautomator2 pattern):** deploy a **persistent instrumentation server** on the device (an APK or `app_process`) that exposes queries over local HTTP *forwarded* through adb. Start it once and use it many times (the device connects once rather than reconnecting per command). Selector queries execute **on the device** → far faster, far more tolerant of a changing UI, and capable of `set_text`/`long_click`/`double_click` directly on an element (much more reliable for WebViews).
 
-- MVP tetap boleh pakai `uiautomator dump` (M4) supaya cepat jadi, tapi `ui-server` masuk sebagai upgrade path prioritas karena **kecepatan inspector = kecepatan farm**.
-- `ui-server.apk` di-bundle & di-manage Toolchain Manager (checksum, versi ikut core).
+- The MVP may still use `uiautomator dump` (M4) to get moving quickly, but `ui-server` is a priority upgrade path, because **inspector speed is farm speed**.
+- `ui-server.apk` is bundled and managed by the Toolchain Manager (checksum, version follows the core).
 
-### 7.5 Device identity stabil (BARU v0.2)
+### 7.5 Stable device identity (NEW in v0.2)
 
-**Masalah:** serial adb untuk wireless = `ip:port` yang berubah-ubah; HP yang sama via USB vs WiFi kedaftar sebagai **dua device** kalau identity cuma dari serial adb.
+**The problem:** for wireless, the adb serial is an `ip:port` that keeps changing; the same phone over USB and over WiFi registers as **two devices** if identity comes only from the adb serial.
 
-**Solusi:** saat connect, probe identity stabil sekali dan cache:
-- Utama: `adb shell getprop ro.serialno` (serial hardware).
-- Fallback: `Settings.Secure.ANDROID_ID` (per-app-signing tapi stabil per factory-reset).
-- Serial adb → cuma **alamat transport**, bukan identity.
+**The solution:** on connect, probe a stable identity once and cache it:
+- Primary: `adb shell getprop ro.serialno` (the hardware serial).
+- Fallback: `Settings.Secure.ANDROID_ID` (per-app-signing but stable across everything short of a factory reset).
+- The adb serial is only a **transport address**, never an identity.
 
-Efek: use case "colok USB buat enroll, lepas ke WiFi buat operasional" tidak bikin record duplikat. `devices.stableId` jadi primary identity (lihat §12).
+The effect: the "plug in over USB to enroll, then move to WiFi for daily use" flow produces no duplicate records. `devices.stableId` becomes the primary identity (see §12).
 
-### 7.6 Aturan scrcpy-server: DIKUNCI ke core (REVISI kritis v0.2)
+### 7.6 The scrcpy-server rule: PINNED to the core (critical v0.2 revision)
 
-**Kenapa beda dari adb:** protokol antara scrcpy-server.jar dan client **tidak stabil antar versi** dan sengaja "internal" oleh Genymobile — dokumen resmi mereka: *protokol bisa (dan akan) berubah kapan saja, tanpa backward/forward compatibility, client harus selalu dijalankan dengan versi server yang cocok*. Contoh nyata: v3.1 kemarin butuh **perubahan kode client** buat coordinate mapping, bukan cuma ganti nomor versi. Kalau UI Tools ngasih user bebas pilih versi scrcpy-server, satu update = **video/kontrol mati total**.
+**Why this differs from adb:** the protocol between scrcpy-server.jar and the client is **not stable between versions** and is deliberately "internal" per Genymobile — their own documentation states the protocol *may (and will) change at any time, with no backward or forward compatibility, and the client must always run against a matching server version*. A concrete example: v3.1 required **client code changes** for coordinate mapping, not just a version bump. If the Tools UI let users freely pick a scrcpy-server version, one update would mean **video and control stop working entirely**.
 
-Aturan:
-- `scrcpy-server` `swappable: false` → di UI Tools tampil sebagai **"managed by core"** (info versi + health, tanpa tombol pilih versi bebas).
-- Satu versi core = satu versi scrcpy-server yang sudah ditest bareng `packages/scrcpy` client kita. Naik versi scrcpy = bagian dari rilis core (via `compatibleCoreRange`).
-- **adb boleh bebas** (protokol adb stabil lintas versi). scrcpy jangan.
+The rule:
+- `scrcpy-server` is `swappable: false` → in the Tools UI it appears as **"managed by core"** (version info and health, with no free version picker).
+- One core version means one scrcpy-server version, tested together with our `packages/scrcpy` client. Raising the scrcpy version is part of a core release (via `compatibleCoreRange`).
+- **adb may be swapped freely** (the adb protocol is stable across versions). scrcpy may not.
 
-### 7.7 API + UI manajemen tool
+### 7.7 Tool management API and UI
 
 ```
-GET  /api/tools                      → daftar tool + versi + aktif + swappable + status health
-POST /api/tools/:id/install          → { version } download + verify (tolak kalau !swappable)
-POST /api/tools/:id/activate         → { version } pindah pointer active (tolak kalau !swappable)
-DELETE /api/tools/:id/:version       → hapus versi (tolak kalau aktif/dipakai)
-POST /api/tools/:id/check            → health check (mis. `adb version`)
-POST /api/tools/manifest/refresh     → fetch manifest terbaru
+GET  /api/tools                      → tools plus versions, active, swappable, health status
+POST /api/tools/:id/install          → { version } download and verify (rejected when !swappable)
+POST /api/tools/:id/activate         → { version } move the active pointer (rejected when !swappable)
+DELETE /api/tools/:id/:version       → delete a version (rejected when active or in use)
+POST /api/tools/:id/check            → health check (`adb version`, for instance)
+POST /api/tools/manifest/refresh     → fetch the latest manifest
 ```
 
-### 7.8 Aturan keamanan tool
+### 7.8 Tool security rules
 
-- Verifikasi **sha256** wajib sebelum tool dipakai (checksum dari rilis resmi).
-- Tolak delete versi yang sedang aktif / dipakai session hidup.
-- Health check sebelum set active.
-- Path binary di-resolve lewat Toolchain Manager; driver dilarang panggil PATH sistem.
-- **Lisensi:** audit sebelum jual — adb (platform-tools, Google ToS soal redistribusi), scrcpy (Apache-2.0, OK), redroid, dsb. Lihat §18.
+- **sha256** verification is mandatory before a tool is used (checksums from the official release).
+- Refuse to delete a version that is active or in use by a live session.
+- Health check before setting a version active.
+- Binary paths are resolved through the Toolchain Manager; drivers must never call the system PATH.
+- **Licensing:** audit before selling — adb (platform-tools, Google's ToS on redistribution), scrcpy (Apache-2.0, fine), redroid, and so on. See §18.
 
 ---
 
-## 8. Registry & schema-driven UI
+## 8. Registry and schema-driven UI
 
-Semua komponen pluggable **self-describe** lewat schema, Studio render UI dari situ.
+Every pluggable component **describes itself** through a schema, and Studio renders the UI from it.
 
 ```
 GET /api/registry
@@ -340,73 +340,73 @@ GET /api/registry
   }
 ```
 
-`configSchema` = JSON Schema (di-generate dari Zod). Studio pakai schema-driven form renderer → tiap engine/tool otomatis punya panel setting tanpa UI hardcode. **Capability + locks** dipakai buat validasi kombinasi: Studio disable pilihan yang mustahil/tabrakan (mis. inspector Appium butuh transport Appium; `appium` input & `scrcpy-uhid` sama-sama kunci `input-injection`) sebelum user salah pilih.
+`configSchema` is a JSON Schema (generated from Zod). Studio uses a schema-driven form renderer, so every engine and tool automatically gets a settings panel with no hardcoded UI. **Capabilities and locks** validate combinations: Studio disables impossible or conflicting choices (an Appium inspector needs an Appium transport; `appium` input and `scrcpy-uhid` both claim `input-injection`) before anyone can pick wrongly.
 
 ---
 
-## 9. Input injection modes & testing deteksi (BARU + REVISI v0.2)
+## 9. Input injection modes and detection testing (NEW and REVISED in v0.2)
 
-Bagian ini menjawab kebutuhan "automation-nya jangan gampang ketebak sistem HP" — **dalam framing yang benar: menguji detektor app buatan sendiri (red-team), bukan bikin bot siluman**. Positioning tetap QA (§17). Pengetahuan di bawah ini adalah pengetahuan QA legit: memahami *permukaan deteksi* supaya bisa menguji app kamu sendiri.
+This section answers the need for "automation the phone's systems cannot trivially spot" — **framed correctly: testing your own app's detectors (red-teaming), not building a stealth bot**. The positioning stays QA (§17). What follows is legitimate QA knowledge: understanding the *detection surface* so you can test your own app.
 
-### 9.1 Kenapa automation bisa "ketebak" — permukaan deteksi
+### 9.1 Why automation is detectable — the detection surface
 
-App bisa membedakan input asli vs injeksi lewat beberapa sinyal. Yang paling utama: **dari mana event masuk & flag-nya.**
+An app can distinguish real input from injected input through several signals. The most important: **where the event came from, and its flags.**
 
-- **Mode SDK (default banyak tool, termasuk `adb shell input` & scrcpy `--mouse=sdk`):** event di-inject lewat `InputManager.injectInputEvent` di level API Android. Event ini bisa membawa penanda yang membedakannya dari sentuhan hardware (mis. atribut source/flag event, tidak melewati driver input kernel). Detektor bisa cek ini. Juga: `adb shell input` lambat & jelas berpola (timing kaku).
-- **Mode UHID (scrcpy 2.4+, `--keyboard=uhid`/`--mouse=uhid`):** scrcpy bikin **virtual HID device lewat kernel UHID module**. Dari sisi Android, ini muncul sebagai *physical input device* betulan (lewat driver input kernel), bukan event yang di-inject via API. Bekerja **wireless** (tak perlu kabel OTG). Ini jauh lebih menyerupai hardware asli.
-- **Mode AOA/OTG (scrcpy `--otg`):** scrcpy jadi **physical HID peripheral** lewat protokol Android Open Accessory, **bypass total input stack Android OS** — bahkan tak butuh USB debugging. Paling "hardware-murni", tapi butuh kabel USB & tak ada video (khusus OTG).
+- **SDK mode (the default for many tools, including `adb shell input` and scrcpy `--mouse=sdk`):** events are injected through `InputManager.injectInputEvent` at the Android API level. These events can carry markers that distinguish them from a hardware touch (event source attributes and flags, and never passing through the kernel input driver). A detector can check for this. Also: `adb shell input` is slow and obviously patterned (rigid timing).
+- **UHID mode (scrcpy 2.4+, `--keyboard=uhid`/`--mouse=uhid`):** scrcpy creates a **virtual HID device through the kernel's UHID module**. From Android's side this appears as a genuine *physical input device* (through the kernel input driver), not an API-injected event. It works **wirelessly** (no OTG cable needed). This is far closer to real hardware.
+- **AOA/OTG mode (scrcpy `--otg`):** scrcpy becomes a **physical HID peripheral** through the Android Open Accessory protocol, **bypassing Android's input stack entirely** — it does not even need USB debugging. The most "pure hardware" option, but it needs a USB cable and carries no video (OTG only).
 
-**Implikasi buat Enkaku:** default input diubah ke **`scrcpy-uhid`** (hardware-like, wireless-friendly), dengan `scrcpy-sdk` sebagai fallback kompatibilitas (UHID butuh layout dikonfigurasi sekali & Android version tertentu buat fitur tertentu). Buat kasus ekstrem (nguji app yang cek sangat dalam), sediakan `scrcpy-aoa` opt-in. Ini memberi *device-under-test* input yang menyerupai hardware — **berguna buat QA: menguji jalur app yang sebenarnya**, bukan jalur "ini pasti bot".
+**The implication for Enkaku:** the default input becomes **`scrcpy-uhid`** (hardware-like, wireless-friendly), with `scrcpy-sdk` as a compatibility fallback (UHID needs its layout configured once, and certain features need certain Android versions). For extreme cases (testing an app that checks very deeply), `scrcpy-aoa` is available opt-in. This gives the device under test input that resembles hardware — **useful for QA: it exercises the app's real code path**, rather than its "this is definitely a bot" path.
 
-### 9.2 Kelebihan real device (dibanding emulator)
+### 9.2 The advantage of real devices (over emulators)
 
-HP fisik otomatis lolos banyak deteksi naif: sensor asli (accelerometer/gyro), IMEI/serial asli, tidak ada properti emulator (`ro.kernel.qemu`, dll), touch dari driver asli. Ini keunggulan struktural dibanding redroid/emulator — dan alasan real-device farm masih relevan.
+A physical phone automatically passes a lot of naive detection: real sensors (accelerometer, gyroscope), a real IMEI and serial, no emulator properties (`ro.kernel.qemu` and friends), and touches from a real driver. That is a structural advantage over redroid and emulators — and the reason a real-device farm is still relevant.
 
-### 9.3 Realistic input profile (timing) — praktik QA standar
+### 9.3 Realistic input profiles (timing) — standard QA practice
 
-Fitur timing jitter (`DeviceSettings.timing`) = bikin test traffic menyerupai manusia supaya **menguji jalur app yang sebenarnya** (banyak app punya path berbeda buat interaksi cepat-robotik vs manusiawi). Ini praktik QA, bukan "semoga gak ketahuan". Jitter tap + jeda antar-aksi + variasi kecil koordinat.
+The timing jitter feature (`DeviceSettings.timing`) makes test traffic resemble a human so tests **exercise the app's real code path** (many apps have separate paths for fast robotic interaction and human interaction). This is QA practice, not "hopefully nobody notices". Tap jitter, pauses between actions, and small coordinate variation.
 
-### 9.4 Instrumentasi, bukan evasi buta (inti positioning)
+### 9.4 Instrumentation, not blind evasion (the core of the positioning)
 
-Karena kamu pegang **dua sisi** (detektor + farm), pendekatan yang benar & lebih presisi:
-1. **Tag semua trafik dari farm** (header/marker internal) — *on by default*.
-2. Jalankan skenario, lihat mana yang ke-flag detektor mana yang lolos.
-3. Yang lolos = celah detektor → perbaiki detektor. Yang ke-flag padahal manusiawi = false positive → tune.
-4. Bangun **feedback loop farm ⇄ detektor** yang bisa di-iterate.
+Because you hold **both sides** (the detector and the farm), the correct and far more precise approach is:
+1. **Tag all traffic from the farm** (an internal header or marker) — *on by default*.
+2. Run scenarios and see which the detector flags and which slip through.
+3. What slips through is a detector gap → fix the detector. What gets flagged despite being human-like is a false positive → tune it.
+4. Build a **farm ⇄ detector feedback loop** you can iterate on.
 
-Ini engineering yang bisa dijual ("anti-fraud test harness") dan secara hukum/ToS aman karena diarahkan ke *app milik sendiri*.
+This is engineering you can sell ("an anti-fraud test harness") and is legally and ToS-safe because it is aimed at *your own app*.
 
-### 9.5 Capability locks (biar engine ga tabrakan)
+### 9.5 Capability locks (so engines cannot collide)
 
 ```ts
 scrcpyDisplay.locks   = ['video-encoder']
 scrcpyUhidInput.locks = ['input-injection']
 scrcpySdkInput.locks  = ['input-injection']
 uiServer.locks        = ['instrumentation']
-appiumInspector.locks = ['instrumentation', 'input-injection']  // konflik dgn scrcpy input
+appiumInspector.locks = ['instrumentation', 'input-injection']  // conflicts with scrcpy input
 ```
 
-Session manager tolak aktivasi engine kedua yang minta resource sama → user **tidak pernah bisa** memilih dua engine yang saling injak.
+The session manager refuses to activate a second engine that claims the same resource → a user **can never** select two engines that would tread on each other.
 
 ---
 
 ## 10. Session, lease, queue, scheduler
 
-### 10.1 State machine device
+### 10.1 Device state machine
 
 ```
 offline → idle → { manual | busy }
 ```
 
-`manual` (remote touch aktif) & `busy` (automation jalan) **mutually exclusive**. Saat `busy`, control message dari client **di-reject** oleh core (bukan cuma UI di-disable). Video stream tetap jalan → client tetap bisa nonton automation.
+`manual` (remote touch active) and `busy` (automation running) are **mutually exclusive**. While `busy`, control messages from a client are **rejected by the core** (not merely disabled in the UI). The video stream keeps running, so a client can still watch the automation.
 
-### 10.2 Lease + heartbeat
+### 10.2 Lease plus heartbeat
 
-Runner heartbeat tiap ~15s memperpanjang lease. Lease expired → job ditandai failed, device force-release. Tanpa ini, satu script nyangkut (ANR/freeze/disconnect) = device mati sampai restart.
+The runner heartbeats every ~15 seconds to extend the lease. An expired lease fails the job and force-releases the device. Without this, one stuck script (ANR, freeze, disconnect) means a dead device until a restart.
 
-### 10.3 Queue di SQLite
+### 10.3 The queue in SQLite
 
-Queue **per-device** (constraint-nya device). Transaksi single-writer:
+The queue is **per device** (the device is the constraint). A single-writer transaction:
 
 ```sql
 BEGIN IMMEDIATE;
@@ -423,26 +423,26 @@ RETURNING *;
 COMMIT;
 ```
 
-SQLite dipilih karena zero-setup (**tetap dipertahankan** — sesuai instruksi, ini keputusan yang tidak diubah). ORM = Drizzle. Driver DB tetap di-abstract kalau nanti butuh Postgres, tapi default = SQLite.
+SQLite was chosen for zero setup (**and is retained** — per instruction, this decision does not change). The ORM is Drizzle. The DB driver stays abstracted in case Postgres is needed later, but the default is SQLite.
 
-### 10.4 Serialisasi akses adb (REVISI v0.2 — bukan mutex tunggal)
+### 10.4 Serialising adb access (v0.2 revision — not a single mutex)
 
-**Masalah v0.1:** "satu mutex global di depan semua exec adb" terlalu kasar. Kalau device A lagi `adb install app.apk` (30–60 detik), device B–J semua nunggu — termasuk heartbeat & input manual user lain. Fatal di 10 device.
+**The v0.1 problem:** "one global mutex in front of every adb exec" is far too coarse. If device A is running `adb install app.apk` (30–60 seconds), devices B through J all wait — including heartbeats and other users' manual input. Fatal at 10 devices.
 
-**Revisi:** adb server sebenarnya cukup aman untuk banyak client dengan `-s <serial>` berbeda. Masalah klasiknya bukan concurrency exec, tapi **device-discovery race** & `adb kill-server` liar.
+**The revision:** the adb server is in fact reasonably safe for many clients using different `-s <serial>` values. The classic problem is not exec concurrency but **device-discovery races** and stray `adb kill-server` calls.
 
-- **Per-device command queue** (serialize command *dalam satu device*).
-- **Global semaphore longgar** (mis. max 6–8 concurrent exec) buat jaga adb server tidak kebanjiran, bukan mutex tunggal.
-- **`adb kill-server` DILARANG** di mana pun kecuali Toolchain Manager saat swap versi adb (dan itu pun harus drain semua session dulu).
-- Operasi berat (install/uninstall/push besar) dijalankan tanpa memblok heartbeat/kontrol device lain.
+- A **per-device command queue** (serialising commands *within* one device).
+- A **loose global semaphore** (max 6–8 concurrent execs, say) to keep the adb server from being flooded — not a single mutex.
+- **`adb kill-server` is FORBIDDEN** anywhere except the Toolchain Manager during an adb version swap (and even then, only after draining every session).
+- Heavy operations (install, uninstall, large pushes) run without blocking heartbeats or control of other devices.
 
 ---
 
 ## 11. Script framework
 
-### 11.1 Bentuk script (`defineScript`)
+### 11.1 Script shape (`defineScript`)
 
-Tiga fase: `prepare` (siapin device, boleh gagal & retry), `run` (kerjaan inti), `finish` (**selalu** jalan, bersihin state).
+Three phases: `prepare` (get the device ready, may fail and retry), `run` (the real work), `finish` (**always** runs, cleans up state).
 
 ```ts
 export default defineScript({
@@ -455,53 +455,53 @@ export default defineScript({
   async prepare(ctx) {
     await ctx.device.app.forceStop('com.myapp')
     await ctx.device.app.launch('com.myapp')
-    await ctx.device.waitFor({ text: 'Beranda' }, { timeout: 15_000 })
+    await ctx.device.waitFor({ text: 'Home' }, { timeout: 15_000 })
   },
 
   async run(ctx) {
     const { device, params, artifact } = ctx
-    await device.tap({ desc: 'Buat postingan' })
+    await device.tap({ desc: 'New post' })
     await device.waitFor({ id: 'caption_input' })
     await device.type(params.caption)
-    await artifact.screenshot('sebelum-post')
-    await device.tap({ text: 'Bagikan' })
-    await device.waitFor({ text: 'Terkirim' }, { timeout: 30_000 })
+    await artifact.screenshot('before-post')
+    await device.tap({ text: 'Share' })
+    await device.waitFor({ text: 'Sent' }, { timeout: 30_000 })
     return { ok: true }
   },
 
   async finish(ctx) {
-    if (ctx.error) await ctx.artifact.screenshot('gagal')
+    if (ctx.error) await ctx.artifact.screenshot('failed')
     await ctx.device.app.forceStop('com.myapp')
   },
 })
 ```
 
-### 11.2 Aturan matang
+### 11.2 Rules that make it solid
 
-- **`finish` selalu jalan** → device balik clean → queue aman lanjut.
-- **Tiap job = child process** (`Bun.spawn`). Timeout = kill paksa. Crash terisolasi. Log & artifact per job.
-- **`params` = Zod schema** → Studio auto-generate form input.
-- **`waitFor` = polling inspector** (`ui-server`, cepat), bukan sleep.
-- **Selector berlapis** (stabil → rapuh): `{ id }` → `{ desc }` → `{ text }` → `{ point }`.
-- **Artifact per job**: screenshot, log, hasil, disimpan dengan job id → auditable.
+- **`finish` always runs** → the device comes back clean → the queue can safely continue.
+- **Every job is a child process** (`Bun.spawn`). A timeout means a forced kill. Crashes are isolated. Logs and artifacts are per job.
+- **`params` is a Zod schema** → Studio auto-generates the input form.
+- **`waitFor` polls the inspector** (`ui-server`, fast), it is not a sleep.
+- **Selectors are layered** (stable → fragile): `{ id }` → `{ desc }` → `{ text }` → `{ point }`.
+- **Artifacts per job**: screenshots, logs, results, stored against the job id → auditable.
 
-### 11.3 Trust model & isolasi (KOREKSI JUJUR v0.2)
+### 11.3 Trust model and isolation (HONEST CORRECTION in v0.2)
 
-**v0.1 bilang "sandbox: limit akses fs/network child process". Itu overclaim.** Bun **tidak** punya permission model seperti Deno; `Bun.spawn` child process punya akses fs/network penuh sesuai OS user-nya.
+**v0.1 said "sandbox: limits child process fs/network access". That was an overclaim.** Bun does **not** have a permission model like Deno's; a `Bun.spawn` child process has full fs and network access as its OS user.
 
-Yang benar:
-- **Isolasi yang ADA = crash containment**, bukan security boundary: child process + hard-timeout kill = script user tak bisa nge-crash core & tak bikin core hang. Itu saja yang dijanjikan di local/single-tenant.
-- **Trust model local/self-host = "script author itu operator tepercaya."** Jangan tulis "sandbox aman" di marketing.
-- **Kalau butuh security boundary betulan** (wajib buat cloud multi-tenant nanti): butuh **container/gVisor/microVM per job** atau minimal user OS terpisah. Ini perubahan arsitektur (masuk §18/M8), bukan flag.
-- Hanya API `device`/`artifact`/`log` yang di-expose ke script sebagai *convenience*, bukan sebagai jaminan keamanan.
+What is actually true:
+- **The isolation that EXISTS is crash containment**, not a security boundary: a child process plus a hard-timeout kill means a user's script cannot crash the core or hang it. That is the entire promise in local/single-tenant mode.
+- **The local/self-host trust model is "the script author is a trusted operator."** Do not write "secure sandbox" in marketing.
+- **If a real security boundary is needed** (mandatory for multi-tenant cloud later): that requires **a container, gVisor, or a microVM per job**, or at minimum a separate OS user. This is an architectural change (part of §18/M8), not a flag.
+- Only the `device`, `artifact`, and `log` APIs are exposed to a script as a *convenience*, not as a security guarantee.
 
-### 11.4 Dependency & publish (BARU v0.2)
+### 11.4 Dependencies and publishing (NEW in v0.2)
 
-Script disimpan sebagai source di DB — tapi bagaimana kalau butuh npm package? Alur: SDK CLI `enkaku publish` mem-*bundle* script + deps jadi satu file (esbuild/bun build), farm cuma terima **bundle jadi**. Menyederhanakan runner & bikin dependency deterministik.
+Scripts are stored as source in the DB — but what about npm packages? The flow: the SDK CLI `enkaku publish` *bundles* the script plus its dependencies into a single file (esbuild/bun build), and the farm only ever accepts a **finished bundle**. This simplifies the runner and makes dependencies deterministic.
 
-### 11.5 Lifecycle & manajemen
+### 11.5 Lifecycle and management
 
-CRUD via Studio: buat, edit, versioning, aktif/nonaktif, hapus, run dengan parameter. Script author nulis di editor sendiri pakai `@enkaku/sdk`, lalu publish ke farm.
+CRUD through Studio: create, edit, version, enable/disable, delete, run with parameters. Script authors write in their own editor with `@enkaku/sdk`, then publish to the farm.
 
 ---
 
@@ -511,22 +511,22 @@ CRUD via Studio: buat, edit, versioning, aktif/nonaktif, hapus, run dengan param
 export const devices = sqliteTable('devices', {
   id:        text('id').primaryKey(),          // internal id
   stableId:  text('stable_id').notNull().unique(), // ro.serialno / ANDROID_ID (§7.5)
-  serial:    text('serial').notNull(),         // alamat transport adb (bisa berubah)
+  serial:    text('serial').notNull(),         // the adb transport address (can change)
   label:     text('label').notNull(),
   ownerId:   text('owner_id'),
 
   androidVersion: text('android_version'),
-  apiLevel:  integer('api_level'),             // BARU: buat gating fitur (UHID dll)
+  apiLevel:  integer('api_level'),             // NEW: for feature gating (UHID and so on)
   screenW:   integer('screen_w'),
   screenH:   integer('screen_h'),
-  density:   integer('density'),               // wajib buat coordinate mapping
+  density:   integer('density'),               // required for coordinate mapping
 
   transport:  text('transport').default('adb-usb'),
   display:    text('display').default('scrcpy'),
-  input:      text('input').default('scrcpy-uhid'),   // default baru
+  input:      text('input').default('scrcpy-uhid'),   // the new default
   inspection: text('inspection').default('ui-server'),
 
-  battery:   text('battery', { mode: 'json' }).$type<BatteryState>(), // BARU (§15)
+  battery:   text('battery', { mode: 'json' }).$type<BatteryState>(), // NEW (§15)
   settings:  text('settings', { mode: 'json' }).$type<DeviceSettings>(),
   status:    text('status').default('offline'),   // offline|idle|manual|busy|quarantined
   lastSeen:  integer('last_seen', { mode: 'timestamp' }),
@@ -536,7 +536,7 @@ export const scripts = sqliteTable('scripts', {
   id:        text('id').primaryKey(),
   name:      text('name').notNull(),
   version:   text('version').notNull(),
-  bundle:    text('bundle').notNull(),         // hasil publish (bundle jadi, §11.4)
+  bundle:    text('bundle').notNull(),         // the publish output (a finished bundle, §11.4)
   paramsSchema: text('params_schema', { mode: 'json' }),
   enabled:   integer('enabled', { mode: 'boolean' }).default(true),
   createdBy: text('created_by'),
@@ -564,7 +564,7 @@ export const artifacts = sqliteTable('artifacts', {
   kind:    text('kind').notNull(),             // screenshot|log|file|video
   label:   text('label'),
   path:    text('path').notNull(),
-  sizeBytes: integer('size_bytes'),            // BARU: buat retention/GC (§18)
+  sizeBytes: integer('size_bytes'),            // NEW: for retention and GC (§18)
   createdAt: integer('created_at', { mode: 'timestamp' }),
 })
 
@@ -585,7 +585,7 @@ export const toolInstalls = sqliteTable('tool_installs', {
   installedAt: integer('installed_at', { mode: 'timestamp' }),
 })
 
-export const auditLog = sqliteTable('audit_log', {   // BARU (§14)
+export const auditLog = sqliteTable('audit_log', {   // NEW (§14)
   id:     text('id').primaryKey(),
   userId: text('user_id'),
   action: text('action').notNull(),            // job.run|device.enroll|tool.activate|...
@@ -595,178 +595,178 @@ export const auditLog = sqliteTable('audit_log', {   // BARU (§14)
 })
 ```
 
-`DeviceSettings` (JSON, divalidasi Zod):
+`DeviceSettings` (JSON, validated by Zod):
 
 ```ts
 const DeviceSettings = z.object({
   timing: z.object({
     tapJitterMs:     z.tuple([z.number(), z.number()]).default([40, 120]),
     betweenActionMs: z.tuple([z.number(), z.number()]).default([300, 900]),
-    coordJitterPx:   z.number().default(2),    // BARU (§9.3)
+    coordJitterPx:   z.number().default(2),    // NEW (§9.3)
   }),
   prep: z.object({
     disableAnimations: z.boolean().default(true),
     stayAwake:         z.boolean().default(true),
   }),
   input: z.object({
-    preferredMode: z.enum(['uhid', 'sdk', 'aoa']).default('uhid'),  // BARU (§9)
+    preferredMode: z.enum(['uhid', 'sdk', 'aoa']).default('uhid'),  // NEW (§9)
   }),
   autoReconnect: z.boolean().default(true),
 })
 ```
 
-Screen dimension + density + apiLevel **wajib** di-probe sekali saat connect & di-cache — coordinate mapping & gating fitur (UHID butuh Android version tertentu) bergantung ke sini.
+Screen dimensions, density, and apiLevel **must** be probed once on connect and cached — coordinate mapping and feature gating (UHID needs a particular Android version) depend on them.
 
 ---
 
-## 13. Protokol Core ⇄ Studio
+## 13. The Core ⇄ Studio protocol
 
-Message-based over WebSocket. Kategori:
+Message-based over WebSocket. Categories:
 
-- **Device events**: `device.added`, `device.removed`, `device.status` (dari `adb track-devices`, bukan polling).
+- **Device events**: `device.added`, `device.removed`, `device.status` (from `adb track-devices`, not polling).
 - **Enrollment**: `device.unauthorized`, `device.pairing.request`, `device.pairing.code` (§15.1).
-- **Control** (manual): `input.tap`, `input.swipe`, `input.key`, `input.text` → core validasi lease, reject kalau `busy`.
-- **Video**: LAN = stream byte H.264 (scrcpy) → browser WebCodecs `VideoDecoder`. Cloud = negosiasi WebRTC (§5.3).
+- **Control** (manual): `input.tap`, `input.swipe`, `input.key`, `input.text` → the core validates the lease and rejects while `busy`.
+- **Video**: on a LAN, a stream of H.264 bytes (scrcpy) → the browser's WebCodecs `VideoDecoder`. In the cloud, WebRTC negotiation (§5.3).
 - **Queue/job**: `job.enqueue`, `job.status`, `job.log`, `job.artifact`.
-- **Registry/tools**: introspeksi + operasi tool.
+- **Registry/tools**: introspection plus tool operations.
 
-REST buat request-response biasa (CRUD script, tools). WebSocket buat streaming/realtime. Kontrak di `packages/protocol` (Zod), shared & type-safe.
-
----
-
-## 14. Keamanan & isolasi
-
-- **Server-authoritative**: lease, konflik resource, ACL di core.
-- **Auth (REVISI v0.2):**
-  - Local single-user (mode awam): boleh **auto-create admin** / skip login demi zero-config — TAPI hanya kalau bind ke `localhost` saja.
-  - Mode server/cloud: login **wajib** (argon2 hash), session token. Tunnel agent pakai token.
-  - **TLS wajib** di mode server/cloud (jangan ulangi kesalahan ws-scrcpy: "no encryption, no auth, listen all interfaces").
-- **Crash containment (bukan sandbox)**: tiap job child process + hard-timeout kill (§11.3). Security boundary sungguhan (container/microVM) = pekerjaan cloud multi-tenant (§18).
-- **Tool integrity**: sha256 wajib.
-- **adb access**: per-device queue + semaphore longgar, larang `kill-server` liar (§10.4).
-- **Audit**: siapa jalanin apa, enroll device apa, aktifkan tool apa → tercatat (`audit_log`).
-- **Data hygiene (dari pelajaran STF):** opsi *reset device antar-lease* (clear app data / logout) supaya akun/credential tak bocor antar-user — penting buat multi-user.
+REST handles ordinary request-response (script and tool CRUD). WebSocket handles streaming and realtime. The contract lives in `packages/protocol` (Zod), shared and type-safe.
 
 ---
 
-## 15. Device lifecycle: enrollment, battery, thermal (BARU v0.2)
+## 14. Security and isolation
 
-### 15.1 Enrollment flow (jangan diremehkan)
-
-"Colok device, auto-detect" melewati langkah nyata yang jadi *first impression* buruk kalau tidak ditangani:
-
-- **USB debugging authorization**: dialog RSA fingerprint harus di-*accept di layar HP*. Core deteksi device state `unauthorized` → Studio tampilkan wizard: "cek layar HP, tap Allow, centang Always."
-- **Wireless ADB (Android 11+)**: butuh **pairing code flow** (`adb pair host:port` + 6-digit code dari HP). Studio sediakan input pairing code + instruksi visual.
-- Setelah authorized → probe stableId/dimensi/apiLevel → daftar.
-
-Buat 10 device internal ini sepele; buat produk jual ini momen krusial. Wizard enrollment = fitur, bukan afterthought.
-
-### 15.2 Battery & thermal (naikkan dari "future" ke fitur awal)
-
-Farm HP dicolok charger 24/7 = risiko **baterai kembung** (safety + biaya support). Minimal sejak M-awal:
-- Baca `dumpsys battery` (level, suhu, status charging) → tampil di dashboard.
-- **Auto-quarantine** device kalau suhu lewat threshold (status `quarantined`, keluar dari pool schedule).
-- Backlog: charge limiting (banyak HP support via `dumpsys`/vendor API — misal batasi charge ke 80%).
+- **Server-authoritative**: leases, resource conflicts, and ACL live in the core.
+- **Auth (REVISED in v0.2):**
+  - Local single-user (the non-expert mode): may **auto-create an admin** and skip login for zero-config — BUT only when bound to `localhost`.
+  - Server/cloud mode: login is **mandatory** (argon2 hashes), with session tokens. The agent tunnel uses a token.
+  - **TLS is mandatory** in server and cloud modes (do not repeat the ws-scrcpy mistake: "no encryption, no auth, listening on all interfaces").
+- **Crash containment (not a sandbox)**: every job is a child process with a hard-timeout kill (§11.3). A real security boundary (container or microVM) is multi-tenant cloud work (§18).
+- **Tool integrity**: sha256 is mandatory.
+- **adb access**: a per-device queue plus a loose semaphore, and no stray `kill-server` (§10.4).
+- **Audit**: who ran what, enrolled which device, activated which tool → recorded (`audit_log`).
+- **Data hygiene (a lesson from STF):** an option to *reset devices between leases* (clear app data, log out) so accounts and credentials do not leak between users — important for multi-user farms.
 
 ---
 
-## 16. Non-functional requirements (BARU v0.2 — kasih angka)
+## 15. Device lifecycle: enrollment, battery, thermal (NEW in v0.2)
 
-v0.1 bilang "low latency" tanpa target. Definisikan supaya M2/M6 punya "definition of done" & jadi bahan marketing:
+### 15.1 The enrollment flow (do not underestimate it)
 
-| Metrik | Target (LAN) | Catatan |
+"Plug in a device, it is auto-detected" glosses over real steps that make a bad *first impression* when they are ignored:
+
+- **USB debugging authorization**: the RSA fingerprint dialog has to be *accepted on the phone's screen*. The core detects the `unauthorized` device state → Studio shows a wizard: "check the phone's screen, tap Allow, tick Always."
+- **Wireless ADB (Android 11+)**: needs the **pairing code flow** (`adb pair host:port` plus a 6-digit code from the phone). Studio provides a pairing code input with visual instructions.
+- Once authorized → probe stableId, dimensions, and apiLevel → register.
+
+For 10 internal devices this is trivial; for a product being sold it is a make-or-break moment. The enrollment wizard is a feature, not an afterthought.
+
+### 15.2 Battery and thermal (promoted from "future" to an early feature)
+
+A farm of phones on chargers 24/7 risks **swollen batteries** (a safety and support-cost problem). From the early milestones at minimum:
+- Read `dumpsys battery` (level, temperature, charging status) → show it on the dashboard.
+- **Auto-quarantine** a device once its temperature passes a threshold (status `quarantined`, out of the scheduling pool).
+- Backlog: charge limiting (many phones support it via `dumpsys` or vendor APIs — capping charge at 80%, for instance).
+
+---
+
+## 16. Non-functional requirements (NEW in v0.2 — with numbers)
+
+v0.1 said "low latency" with no target. Define them so M2 and M6 have a definition of done, and so there is something to market:
+
+| Metric | Target (LAN) | Notes |
 |---|---|---|
-| Glass-to-glass latency (manual control) | < 150 ms | scrcpy H.264 + WebCodecs |
-| Video FPS | ≥ 24 fps (idle bisa turun) | tergantung HP & Android |
-| Inspector query (`ui-server`) | < 200 ms per find | vs 0.5–2s `uiautomator dump` |
-| First-run provisioning | < 90 detik | download adb+scrcpy+ui-server |
-| Max device / host (Intel N100, 4GB) | 10–15 | I/O-bound, scrcpy encode di HP |
-| Max device / host (SBC 1–2GB) | 4–6 | adb-only edition, wireless ADB |
-| Job overhead (spawn→prepare) | < 3 detik | child process + attach ui-server |
+| Glass-to-glass latency (manual control) | < 150 ms | scrcpy H.264 plus WebCodecs |
+| Video FPS | ≥ 24 fps (may drop while idle) | depends on the phone and Android version |
+| Inspector query (`ui-server`) | < 200 ms per find | versus 0.5–2 s for `uiautomator dump` |
+| First-run provisioning | < 90 seconds | downloading adb, scrcpy, ui-server |
+| Max devices per host (Intel N100, 4 GB) | 10–15 | I/O-bound; scrcpy encodes on the phone |
+| Max devices per host (SBC, 1–2 GB) | 4–6 | adb-only edition, wireless ADB |
+| Job overhead (spawn → prepare) | < 3 seconds | child process plus attaching ui-server |
 
 Marketing angle: *"10 devices on a ~$150 mini-PC."*
 
 ---
 
-## 17. Positioning & acceptable use (QA framing)
+## 17. Positioning and acceptable use (the QA framing)
 
-- **Positioning = QA / test-automation device farm** (ala BrowserStack), bukan "bot sosmed tak terdeteksi." Framing QA lebih aman hukum/ToS, pasar lebih besar, customer = developer yang menguji app *mereka sendiri*.
-- **Acceptable-use policy = default produk, bukan cuma dokumen.** Fitur instrumentation/tagging trafik farm **on by default** (§9.4). Fitur timing-jitter & input UHID didokumentasikan dalam konteks *test realism* (menguji jalur app sebenarnya), bukan evasi.
-- **Testing detektor sendiri**: instrumentasi > evasi buta. Feedback loop farm ⇄ detektor (§9.4).
-- **Saat dijual**: sertakan AUP; default fitur diarahkan ke pengujian app milik sendiri; real-device advantage (§9.2) jadi selling point QA yang sah.
-
----
-
-## 18. Housekeeping & business plumbing (BARU v0.2)
-
-Hal yang pasti kejadian tapi sering bikin produk indie mandek:
-
-- **Artifact retention/GC**: screenshot/video per job numpuk cepat. Butuh policy: quota per device/global, TTL, atau max-size dengan LRU eviction. `artifacts.sizeBytes` sudah disiapkan.
-- **Lisensi & redistribusi**: audit sebelum jual — adb/platform-tools (ToS Google), scrcpy (Apache-2.0 ✅), redroid, dependency npm. Bikin `LICENSES.md`.
-- **Business plumbing (kalau serius jual)**: docs/onboarding, license key/activation, telemetry opt-in, support channel, update channel. Ini milestone nyata (M7.5).
-- **Security boundary cloud**: multi-tenant butuh isolasi antar-customer + container/microVM per job (§11.3). Jangan janjikan multi-tenant aman sebelum ini ada.
+- **The positioning is a QA / test-automation device farm** (BrowserStack-style), not "undetectable social media bots". The QA framing is safer legally and in ToS terms, the market is larger, and the customer is a developer testing *their own* app.
+- **The acceptable-use policy is a product default, not just a document.** Farm traffic instrumentation and tagging is **on by default** (§9.4). Timing jitter and UHID input are documented in the context of *test realism* (exercising the app's real path), not evasion.
+- **Testing your own detectors**: instrumentation beats blind evasion. A farm ⇄ detector feedback loop (§9.4).
+- **When sold**: include the AUP; default features are aimed at testing your own apps; the real-device advantage (§9.2) becomes a legitimate QA selling point.
 
 ---
 
-## 19. Studio — spec layar
+## 18. Housekeeping and business plumbing (NEW in v0.2)
 
-| Layar | Isi |
+Things that will certainly happen and that often stall indie products:
+
+- **Artifact retention and GC**: per-job screenshots and video pile up fast. This needs a policy: a per-device or global quota, a TTL, or a max size with LRU eviction. `artifacts.sizeBytes` is already in place.
+- **Licensing and redistribution**: audit before selling — adb/platform-tools (Google's ToS), scrcpy (Apache-2.0 ✅), redroid, npm dependencies. Write a `LICENSES.md`.
+- **Business plumbing (if selling seriously)**: docs and onboarding, licence keys and activation, opt-in telemetry, a support channel, an update channel. This is a real milestone (M7.5).
+- **A cloud security boundary**: multi-tenancy needs isolation between customers plus a container or microVM per job (§11.3). Do not promise safe multi-tenancy before that exists.
+
+---
+
+## 19. Studio — screen spec
+
+| Screen | Contents |
 |---|---|
-| **Dashboard** | Grid device (thumbnail live opsional), status (idle/manual/busy/offline/quarantined), owner, **badge baterai/suhu**. Quick action: control / run. |
-| **Enrollment wizard** | Deteksi `unauthorized`/wireless-pairing, instruksi visual, input pairing code (§15.1). |
-| **Device detail / live control** | Video stream + input klik, panel pilih driver (dropdown, divalidasi capability+locks), **pilihan input mode uhid/sdk/aoa**, per-device settings (schema-driven), tombol prep. Saat `busy`: input disable, video tetap jalan, badge "automation running". |
-| **Scripts** | List, editor, versioning, enable/disable, run (form param auto dari Zod), riwayat job, tombol publish. |
-| **Job / run detail** | Status, log realtime, artifact (screenshot/video per step), hasil/error. |
-| **Tools (Toolchain)** | Per tool: versi terpasang (badge aktif) + tersedia, install/update/activate/delete, progress, health check, refresh manifest. **scrcpy-server tampil "managed by core" (read-only).** |
-| **Settings** | Farm-wide defaults (driver/timing/input mode default), user & ACL (admin), retention policy, backup/restore DB. |
+| **Dashboard** | A device grid (optional live thumbnails), status (idle/manual/busy/offline/quarantined), owner, **battery and temperature badges**. Quick actions: control / run. |
+| **Enrollment wizard** | Detects `unauthorized` and wireless pairing, visual instructions, pairing code input (§15.1). |
+| **Device detail / live control** | Video stream plus click input, a driver selection panel (dropdowns, validated by capabilities and locks), **input mode choice uhid/sdk/aoa**, per-device settings (schema-driven), a prep button. While `busy`: input disabled, video still running, an "automation running" badge. |
+| **Scripts** | List, editor, versioning, enable/disable, run (parameter form generated from Zod), job history, publish button. |
+| **Job / run detail** | Status, realtime logs, artifacts (screenshots and video per step), result or error. |
+| **Tools (Toolchain)** | Per tool: installed versions (with an active badge) plus available ones, install/update/activate/delete, progress, health check, manifest refresh. **scrcpy-server appears as "managed by core" (read-only).** |
+| **Settings** | Farm-wide defaults (driver, timing, default input mode), users and ACL (admin), retention policy, DB backup and restore. |
 
-Prinsip render: semua panel config di-render dari schema via schema-driven form renderer — tidak ada UI hardcode per komponen.
+The rendering principle: every config panel is rendered from a schema through the schema-driven form renderer — no hardcoded UI per component.
 
 ---
 
-## 20. Roadmap / milestone (REVISI v0.2)
+## 20. Roadmap / milestones (REVISED in v0.2)
 
-| Fase | Deliverable | Fokus |
+| Phase | Deliverable | Focus |
 |---|---|---|
-| **M0 — Fondasi** | Monorepo, core daemon, `packages/adb` (client + `track-devices`), device registry (**stableId probe**) → SQLite → WS broadcast, **per-device queue + adb semaphore**. | Device kelihatan di API realtime, identity stabil. |
-| **M1 — Toolchain** | Manifest, download+checksum, versi, active pointer, **swappable flag**, API + first-run auto-provision. | "Install & run" zero-config beneran. |
-| **M2 — Kontrol dasar** | `screencap-loop` + `adb-input`, validasi coordinate mapping end-to-end, Studio live view + klik, **enrollment wizard**. | Remote manual jalan (kasar) + device masuk dengan benar. |
-| **M3 — Session/lease/queue** | State machine, lease + heartbeat, queue per-device (dummy `sleep` job dulu). | Antrian & keamanan device benar dulu. |
-| **M4 — Script framework** | `defineScript`, runner subprocess, artifact/log, `@enkaku/sdk`, inspector (mulai `uiautomator dump`, siapkan `ui-server`). | Automation matang & terisolasi. |
-| **M4.5 — ui-server** | Persistent on-device inspector (pola uiautomator2), fast `find`/`waitFor`, `set_text`. | Kecepatan inspector = kecepatan farm. |
-| **M5 — Studio lengkap** | Scripts CRUD + run form + publish, job detail, Tools UI, settings, schema-driven renderer, registry, **battery/thermal + auto-quarantine**. | UI dinamis penuh + device health. |
-| **M6 — scrcpy** | `scrcpy` display (H.264 relay, **versi-locked**) + **`scrcpy-uhid` input** + WebCodecs decode + fallback decoder. | Latency rendah, input hardware-like, kualitas produksi. |
-| **M7 — Multi-user & packaging** | Auth/ACL + TLS, single-binary, Docker image, Tauri shell, auto-update, retention/GC. | Siap self-host. |
-| **M7.5 — Business plumbing** | Docs, license/activation, telemetry opt-in, AUP, support/update channel, `LICENSES.md`. | Siap jual. |
-| **M8 — Cloud & driver tambahan** | Cloud tunnel agent, split control plane, **WebRTC video**, security boundary per-job (container/microVM), `appium` opt-in, redroid, `scrcpy-aoa`. | Skala, fleksibilitas, multi-tenant aman. |
+| **M0 — Foundations** | Monorepo, core daemon, `packages/adb` (client plus `track-devices`), device registry (**stableId probing**) → SQLite → WS broadcast, **per-device queue plus adb semaphore**. | Devices visible in the API in realtime, with a stable identity. |
+| **M1 — Toolchain** | Manifest, download plus checksum, versions, active pointer, the **swappable flag**, API plus first-run auto-provisioning. | Genuinely zero-config "install and run". |
+| **M2 — Basic control** | `screencap-loop` plus `adb-input`, end-to-end coordinate mapping validation, Studio live view and click, the **enrollment wizard**. | Manual remote control works (roughly) and devices enroll correctly. |
+| **M3 — Session/lease/queue** | State machine, lease plus heartbeat, per-device queue (with a dummy `sleep` job at first). | Get queueing and device safety right first. |
+| **M4 — Script framework** | `defineScript`, the subprocess runner, artifacts and logs, `@enkaku/sdk`, the inspector (starting with `uiautomator dump`, preparing `ui-server`). | Mature, isolated automation. |
+| **M4.5 — ui-server** | A persistent on-device inspector (the uiautomator2 pattern), fast `find`/`waitFor`, `set_text`. | Inspector speed is farm speed. |
+| **M5 — Studio complete** | Script CRUD plus run form and publish, job detail, the Tools UI, settings, the schema-driven renderer, the registry, **battery/thermal plus auto-quarantine**. | A fully dynamic UI plus device health. |
+| **M6 — scrcpy** | The `scrcpy` display (H.264 relay, **version-locked**) plus **`scrcpy-uhid` input** plus WebCodecs decoding plus a fallback decoder. | Low latency, hardware-like input, production quality. |
+| **M7 — Multi-user and packaging** | Auth/ACL plus TLS, a single binary, a Docker image, the Tauri shell, auto-update, retention and GC. | Ready to self-host. |
+| **M7.5 — Business plumbing** | Docs, licence/activation, opt-in telemetry, the AUP, support and update channels, `LICENSES.md`. | Ready to sell. |
+| **M8 — Cloud and extra drivers** | The cloud tunnel agent, a split control plane, **WebRTC video**, a per-job security boundary (container or microVM), opt-in `appium`, redroid, `scrcpy-aoa`. | Scale, flexibility, safe multi-tenancy. |
 
-Catatan urutan: **M3 sebelum M4** disengaja (queue/lease benar pakai job palsu > debug queue sambil debug automation). **M4.5 & M6-input** ditambah karena inspector-speed & input-realism adalah dua sumbu diferensiasi utama dari kompetitor.
-
----
-
-## 21. Sumber riset (verifikasi v0.2)
-
-Klaim teknis di v0.2 diverifikasi ke sumber primer (diakses 2026):
-
-- **scrcpy protokol tidak stabil antar versi** — dokumentasi developer resmi Genymobile/scrcpy (`doc/develop.md`): protokol client↔server "internal, may (and will) change at any time, no backward/forward compatibility." Contoh perubahan client v3.1 (issue #5733), mismatch versi (issues #4276, #3421). → dasar aturan §7.6.
-- **Input modes (SDK/UHID/AOA)** — scrcpy DeepWiki "Advanced Topics", release notes v2.4 (UHID keyboard/mouse), v3.3 (UHID mouse virtual display), issues #4034/#5473. → dasar §9.
-- **STF/DeviceFarmer status** — repo DeviceFarmer/stf & openstf/stf (README: development lambat, trust model longgar), analisis alternatif (OpenSTF mentok Android 9). → dasar §6.1.
-- **ws-scrcpy / ws-scrcpy-web** — repo NetrisTV/ws-scrcpy & bilbospocketses/ws-scrcpy-web (vanilla scrcpy-server, multiplex 1-byte prefix, WebCodecs, in-app updater, SQLite, no-auth-by-default warning). → dasar §4 & §6.2.
-- **uiautomator2 (openatx)** — repo openatx/uiautomator2 & android-uiautomator-server (persistent JSONRPC server APK, `dump_hierarchy` cepat tapi lag di UI berubah — issue #116). → dasar §7.4.
-- **Appium UiAutomator2 driver** — repo appium/appium-uiautomator2-driver (Google-supported engine, berat). → dasar §6.3.
+A note on ordering: **M3 before M4** is deliberate (getting queue and lease right with a fake job beats debugging the queue and the automation at the same time). **M4.5 and the M6 input work** were added because inspector speed and input realism are the two main axes of differentiation from competitors.
 
 ---
 
-## 22. Pertanyaan terbuka / future
+## 21. Research sources (v0.2 verification)
 
-- Multi-tenant penuh di cloud (isolasi + security boundary per-job).
-- Marketplace script (jual/beli script automation).
-- Recording → script generator (rekam aksi manual jadi draft `defineScript`).
-- Parallel run lintas device dengan capability-based routing ("jalankan di device Android 15 manapun").
-- Integrasi CI (GitHub Actions / Bitrise verified step) — kompetitor sudah punya.
-- Video recording per-session sebagai artifact standar (buat audit & QA report).
-- iOS support (jauh lebih rumit — WDA/Appium, butuh macOS host).
+The technical claims in v0.2 were verified against primary sources (accessed 2026):
+
+- **The scrcpy protocol is not stable between versions** — Genymobile/scrcpy's official developer documentation (`doc/develop.md`): the client↔server protocol is "internal, may (and will) change at any time, no backward/forward compatibility." Example client changes in v3.1 (issue #5733), version mismatches (issues #4276, #3421). → the basis for the §7.6 rule.
+- **Input modes (SDK/UHID/AOA)** — the scrcpy DeepWiki "Advanced Topics", release notes for v2.4 (UHID keyboard/mouse) and v3.3 (UHID mouse virtual display), issues #4034 and #5473. → the basis for §9.
+- **STF/DeviceFarmer status** — the DeviceFarmer/stf and openstf/stf repos (README: slow development, a loose trust model), plus alternative analyses (OpenSTF capped at Android 9). → the basis for §6.1.
+- **ws-scrcpy / ws-scrcpy-web** — the NetrisTV/ws-scrcpy and bilbospocketses/ws-scrcpy-web repos (vanilla scrcpy-server, 1-byte prefix multiplexing, WebCodecs, in-app updater, SQLite, the no-auth-by-default warning). → the basis for §4 and §6.2.
+- **uiautomator2 (openatx)** — the openatx/uiautomator2 and android-uiautomator-server repos (a persistent JSONRPC server APK, fast `dump_hierarchy` but laggy on a changing UI — issue #116). → the basis for §7.4.
+- **The Appium UiAutomator2 driver** — the appium/appium-uiautomator2-driver repo (a Google-supported engine, heavy). → the basis for §6.3.
 
 ---
 
-*Enkaku — draft v0.2. Semua nama & angka bisa berubah. Perubahan v0.2 berbasis riset prior-art & verifikasi sumber primer; keputusan default (SQLite, Bun/Hono, Next.js, monorepo) dipertahankan sesuai arahan.*
+## 22. Open questions / future
+
+- Full multi-tenancy in the cloud (isolation plus a per-job security boundary).
+- A script marketplace (buying and selling automation scripts).
+- Recording → script generation (record manual actions into a draft `defineScript`).
+- Parallel runs across devices with capability-based routing ("run on any Android 15 device").
+- CI integration (GitHub Actions, a Bitrise verified step) — competitors already have this.
+- Per-session video recording as a standard artifact (for audit and QA reports).
+- iOS support (far more complicated — WDA/Appium, needs a macOS host).
+
+---
+
+*Enkaku — draft v0.2. All names and numbers may change. The v0.2 changes are based on prior-art research and primary-source verification; the default decisions (SQLite, Bun/Hono, Next.js, monorepo) are retained as directed.*

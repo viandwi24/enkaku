@@ -25,8 +25,8 @@ export interface ArtifactStore {
 }
 
 /**
- * Artifact per job (spec §11.2, §7.2): `<app-data>/artifacts/<job-id>/`.
- * `path` disimpan RELATIF terhadap app-data supaya folder bisa dipindah.
+ * Per-job artifacts (spec §11.2, §7.2): `<app-data>/artifacts/<job-id>/`.
+ * `path` is stored RELATIVE to app-data so the folder can be moved.
  */
 export function createArtifactStore(deps: {
   db: Db

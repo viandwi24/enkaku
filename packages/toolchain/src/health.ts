@@ -4,9 +4,9 @@ const nowSec = (): number => Math.floor(Date.now() / 1000)
 
 /**
  * Health check per tool (plan 02 §4.9):
- * - adb: spawn `<path> version`, exit 0 + stdout mengandung
- *   'Android Debug Bridge' (timeout 10 detik).
- * - file-based (jar/apk): file ada + sha256 cocok dengan yang tercatat.
+ * - adb: spawn `<path> version`, expect exit 0 and stdout containing
+ *   'Android Debug Bridge' (a 10-second timeout).
+ * - file-based (jar/apk): the file exists and its sha256 matches the record.
  */
 export async function checkAdbBinary(path: string): Promise<HealthResult> {
   try {
@@ -29,10 +29,10 @@ export async function checkFileHash(path: string, expectedSha256: string | null)
   try {
     const file = Bun.file(path)
     if (!(await file.exists())) {
-      return { ok: false, checkedAt: nowSec(), detail: `file tidak ada: ${path}` }
+      return { ok: false, checkedAt: nowSec(), detail: `file missing: ${path}` }
     }
     if (!expectedSha256) {
-      return { ok: true, checkedAt: nowSec(), detail: 'file ada (tanpa hash tercatat)' }
+      return { ok: true, checkedAt: nowSec(), detail: 'file present (no hash on record)' }
     }
     const hasher = new Bun.CryptoHasher('sha256')
     hasher.update(await file.arrayBuffer())

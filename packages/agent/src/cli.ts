@@ -2,26 +2,26 @@
 /**
  * Entry point agent (mode cloud).
  *
- * Enrollment cukup sekali: token ditukar dengan credential jangka panjang
- * yang disimpan di `<data-dir>/agent.json`. Setelah itu jalankan tanpa token.
+ * Enrollment happens once: the token is exchanged for a long-lived credential
+ * stored in `<data-dir>/agent.json`. After that, run it without a token.
  */
 import { createAgent } from './index'
 
-const USAGE = `enkaku-agent — agent device farm untuk mode cloud
+const USAGE = `enkaku-agent — the device farm agent for cloud mode
 
 Env:
-  ENKAKU_CP_URL         URL control plane (wajib), mis. https://farm.example.com
-  ENKAKU_ENROLL_TOKEN   token sekali pakai dari Studio (hanya saat pertama)
+  ENKAKU_CP_URL         Control plane URL (required), e.g. https://farm.example.com
+  ENKAKU_ENROLL_TOKEN   Single-use token from Studio (first run only)
   ENKAKU_DATA_DIR       lokasi state & tool (default: ./.agent-data)
-  ENKAKU_AGENT_NAME     nama agent yang tampil di Studio
+  ENKAKU_AGENT_NAME     Agent name shown in Studio
 
-Contoh:
+Example:
   ENKAKU_CP_URL=http://localhost:7700 ENKAKU_ENROLL_TOKEN=abc123 bun run packages/agent/src/cli.ts
 `
 
 const controlPlaneUrl = process.env.ENKAKU_CP_URL
 if (!controlPlaneUrl) {
-  console.error('error: ENKAKU_CP_URL wajib diisi\n')
+  console.error('error: ENKAKU_CP_URL is required\n')
   console.log(USAGE)
   process.exit(1)
 }
@@ -37,7 +37,7 @@ let stopping = false
 const shutdown = async (signal: string) => {
   if (stopping) return
   stopping = true
-  console.error(`[agent] terima ${signal}, berhenti...`)
+  console.error(`[agent] received ${signal}, shutting down…`)
   await agent.stop()
   process.exit(0)
 }
@@ -47,6 +47,6 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 try {
   await agent.start()
 } catch (err) {
-  console.error(`[agent] gagal start: ${err instanceof Error ? err.message : String(err)}`)
+  console.error(`[agent] failed to start: ${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
 }

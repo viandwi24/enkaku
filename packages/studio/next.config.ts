@@ -1,10 +1,11 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  // Static export → di-serve core di satu origin (jalur single-binary Plan 09).
+  // Static export → served by the core on a single origin (the single-binary
+  // path from Plan 09).
   output: 'export',
   reactStrictMode: true,
-  // Package workspace diekspor sebagai source TypeScript, jadi harus di-transpile.
+  // Workspace packages are exported as TypeScript source, so they need transpiling.
   transpilePackages: ['@enkaku/protocol'],
 }
 

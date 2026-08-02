@@ -2,12 +2,13 @@ import { z } from 'zod'
 import type { Logger } from '../util/logger'
 
 /**
- * Telemetry opt-in (plan 10 §4.4, spec §18) — **default OFF**. Tidak ada
- * data yang dikirim sebelum user menyalakannya secara eksplisit di Settings.
+ * Opt-in telemetry (plan 10 §4.4, spec §18) — **off by default**. No
+ * data leaves before someone explicitly turns it on in Settings.
  *
- * Yang dikirim saat aktif sengaja minimal & tidak mengandung identitas:
- * versi core, OS/arch, jumlah device, jumlah job (agregat), kode error crash.
- * Tidak ada: serial device, nama script, isi log, alamat IP yang kita simpan.
+ * What it sends when enabled is deliberately minimal and carries no identity:
+ * core version, OS/arch, device count, job counts (aggregated), crash error
+ * codes. Never: device serials, script names, log contents, or any IP address
+ * we keep.
  */
 export const TelemetryPayloadSchema = z.object({
   installId: z.string(),
@@ -22,9 +23,9 @@ export const TelemetryPayloadSchema = z.object({
 export type TelemetryPayload = z.infer<typeof TelemetryPayloadSchema>
 
 export interface Telemetry {
-  /** Kirim sekali kalau opt-in aktif; no-op kalau tidak. */
+  /** Sends once when opted in; a no-op otherwise. */
   report(snapshot: { deviceCount: number; jobCount24h: number; errorCodes: string[] }): Promise<void>
-  /** Ringkasan yang akan dikirim — Studio menampilkannya sebelum user setuju. */
+  /** A preview of exactly what would be sent — Studio shows it before anyone agrees. */
   preview(snapshot: { deviceCount: number; jobCount24h: number; errorCodes: string[] }): TelemetryPayload
 }
 
@@ -52,7 +53,7 @@ export function createTelemetry(deps: {
       if (!deps.enabled()) return
       const endpoint = deps.endpoint ?? process.env.ENKAKU_TELEMETRY_URL
       if (!endpoint) {
-        deps.log.debug('telemetry aktif tapi endpoint belum di-set — dilewati')
+        deps.log.debug('telemetry is enabled but no endpoint is set — skipping')
         return
       }
       try {
@@ -63,8 +64,8 @@ export function createTelemetry(deps: {
           signal: AbortSignal.timeout(5000),
         })
       } catch (err) {
-        // Telemetry tidak boleh mengganggu operasi farm.
-        deps.log.debug(`telemetry gagal dikirim: ${String(err)}`)
+        // Telemetry must never disturb farm operations.
+        deps.log.debug(`telemetry failed to send: ${String(err)}`)
       }
     },
   }

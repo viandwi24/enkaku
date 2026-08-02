@@ -1,16 +1,18 @@
 import type { JobInfo, JobStatus } from '@enkaku/protocol'
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
-import { devices, jobs, type JobRow } from '../db/schema'
+import { devices, jobs, scripts, type JobRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 
 const toSec = (d: Date | null): number | null => (d ? Math.floor(d.getTime() / 1000) : null)
 
-export function rowToJobInfo(row: JobRow): JobInfo {
+export function rowToJobInfo(row: JobRow, script?: { name: string; version: string } | null): JobInfo {
   return {
     jobId: row.id,
     deviceId: row.deviceId,
     scriptId: row.scriptId,
+    scriptName: script?.name ?? null,
+    scriptVersion: script?.version ?? null,
     status: (row.status ?? 'queued') as JobStatus,
     error: row.error,
     priority: row.priority ?? 0,
@@ -29,7 +31,9 @@ export interface JobStore {
   enqueue(input: { scriptId: string; deviceId: string; params: unknown; priority: number }): JobRow
   get(jobId: string): JobRow | null
   list(filter: { deviceId?: string; status?: JobStatus; limit: number; offset: number }): { rows: JobRow[]; total: number }
-  /** Transaksi single-writer: claim job queued untuk device idle (spec §10.3). */
+  /** Script names for a batch of jobs — one query, not one per row. */
+  scriptNames(scriptIds: string[]): Map<string, { name: string; version: string }>
+  /** Single-writer transaction: claim a queued job for an idle device (spec §10.3). */
   claimNext(jobTtlSec: number): ClaimedJob | null
   finish(jobId: string, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string }): JobRow | null
   cancelQueued(jobId: string): JobRow | null
@@ -44,9 +48,9 @@ export function createJobStore(db: Db): JobStore {
   return {
     enqueue(input) {
       const device = db.select().from(devices).where(eq(devices.id, input.deviceId)).get()
-      if (!device) throw new EnkakuError('device_not_found', `device tidak ada: ${input.deviceId}`)
+      if (!device) throw new EnkakuError('device_not_found', `no such device: ${input.deviceId}`)
       if (device.status === 'quarantined') {
-        throw new EnkakuError('device_unavailable', `device ${device.label} sedang quarantined`)
+        throw new EnkakuError('device_unavailable', `device ${device.label} is quarantined`)
       }
       const row: JobRow = {
         id: crypto.randomUUID(),
@@ -87,8 +91,15 @@ export function createJobStore(db: Db): JobStore {
       return { rows, total }
     },
 
+    scriptNames(scriptIds) {
+      const unik = [...new Set(scriptIds)]
+      if (unik.length === 0) return new Map()
+      const rows = db.select().from(scripts).where(inArray(scripts.id, unik)).all()
+      return new Map(rows.map((r) => [r.id, { name: r.name, version: r.version }]))
+    },
+
     claimNext(jobTtlSec) {
-      // BEGIN IMMEDIATE: write-lock dipegang sejak awal transaksi supaya
+      // BEGIN IMMEDIATE: the write lock is held from the start of the transaction so
       // claim + perubahan status device atomik (spec §10.3).
       return db.transaction(
         (tx) => {
@@ -115,7 +126,7 @@ export function createJobStore(db: Db): JobStore {
             tx.run(sql`UPDATE devices SET status = 'busy' WHERE id = ${deviceId} AND status = 'idle'`),
           )
           if (deviceUpdated === 0) {
-            // Device keburu diambil manual → batalkan claim.
+            // Someone took the device manually first → abandon the claim.
             tx.rollback()
           }
           const row = tx.select().from(jobs).where(eq(jobs.id, claimed.id)).get()

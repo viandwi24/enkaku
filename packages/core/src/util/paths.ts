@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 /**
  * App-data dir per platform (00-overview §5, spec §7.2).
- * `ENKAKU_DATA_DIR` override untuk dev/test.
+ * `ENKAKU_DATA_DIR` overrides it for dev and test.
  */
 export function resolveDataDir(): string {
   const override = process.env.ENKAKU_DATA_DIR

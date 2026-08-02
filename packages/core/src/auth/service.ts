@@ -33,9 +33,9 @@ export interface AuthService {
   revokeSession(token: string): void
   revokeAllForUser(userId: string): void
   sweepExpired(): number
-  /** Mode local: satu admin implisit, tanpa password (bind loopback saja). */
+  /** Local mode: one implicit admin, no password (loopback bind only). */
   ensureLocalAdmin(): AuthUser
-  /** Ticket sekali-pakai untuk upgrade WS (cookie tidak selalu terkirim). */
+  /** Single-use ticket for the WS upgrade (cookies are not always sent). */
   issueWsTicket(userId: string): string
   consumeWsTicket(ticket: string): AuthUser | null
 }
@@ -60,7 +60,7 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
     createUser({ email, password, role }) {
       if (password.length < 8) throw new EnkakuError('auth.weak_password', 'password minimal 8 karakter')
       const existing = db.select().from(users).where(eq(users.email, email)).get()
-      if (existing) throw new EnkakuError('auth.email_taken', `email ${email} sudah dipakai`)
+      if (existing) throw new EnkakuError('auth.email_taken', `the email ${email} is already taken`)
       const row = {
         id: crypto.randomUUID(),
         email,
@@ -78,10 +78,10 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
 
     deleteUser(userId) {
       const row = findUser(userId)
-      if (!row) throw new EnkakuError('auth.user_not_found', 'user tidak ada')
+      if (!row) throw new EnkakuError('auth.user_not_found', 'no such user')
       const admins = db.select().from(users).where(eq(users.role, 'admin')).all()
       if (row.role === 'admin' && admins.length <= 1) {
-        throw new EnkakuError('auth.last_admin', 'tidak bisa menghapus admin terakhir')
+        throw new EnkakuError('auth.last_admin', 'cannot delete the last admin')
       }
       db.delete(sessions).where(eq(sessions.userId, userId)).run()
       db.delete(users).where(eq(users.id, userId)).run()
@@ -97,15 +97,15 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
     async changePassword(userId, current, next) {
       if (next.length < 8) throw new EnkakuError('auth.weak_password', 'password minimal 8 karakter')
       const row = findUser(userId)
-      if (!row?.passwordHash) throw new EnkakuError('auth.user_not_found', 'user tidak punya password')
+      if (!row?.passwordHash) throw new EnkakuError('auth.user_not_found', 'this user has no password')
       if (!(await Bun.password.verify(current, row.passwordHash))) {
-        throw new EnkakuError('auth.invalid_credentials', 'password saat ini salah')
+        throw new EnkakuError('auth.invalid_credentials', 'the current password is wrong')
       }
       db.update(users)
         .set({ passwordHash: Bun.password.hashSync(next, { algorithm: 'argon2id' }) })
         .where(eq(users.id, userId))
         .run()
-      // Ganti password = cabut semua session lain.
+      // Changing the password revokes every other session.
       db.delete(sessions).where(eq(sessions.userId, userId)).run()
     },
 
@@ -136,7 +136,7 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
       }
       const user = findUser(row.userId)
       if (!user) return null
-      // Throttle update lastUsedAt: cukup sekali per menit.
+      // Throttle the lastUsedAt update: once a minute is enough.
       if (!row.lastUsedAt || Date.now() - row.lastUsedAt.getTime() > 60_000) {
         db.update(sessions).set({ lastUsedAt: new Date() }).where(eq(sessions.id, row.id)).run()
       }
@@ -181,7 +181,7 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
       const key = sha256(ticket)
       const entry = wsTickets.get(key)
       if (!entry) return null
-      wsTickets.delete(key) // sekali pakai
+      wsTickets.delete(key) // single use
       if (entry.expiresAt < Date.now()) return null
       const user = findUser(entry.userId)
       return user ? toAuthUser(user) : null

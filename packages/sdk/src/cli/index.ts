@@ -8,7 +8,7 @@ Usage:
   enkaku publish <entry.ts> [--farm <url>] [--token <token>]
 
 Options:
-  --farm    URL core (default http://localhost:7700 atau env ENKAKU_FARM_URL)
+  --farm    Core URL (defaults to http://localhost:7700 or the ENKAKU_FARM_URL env var)
   --token   token publish (default env ENKAKU_TOKEN)
 `
 
@@ -27,7 +27,7 @@ if (command !== 'publish') {
 
 const entry = argv[1]
 if (!entry || entry.startsWith('--')) {
-  console.error('error: entry script wajib diisi\n')
+  console.error('error: an entry script is required\n')
   console.log(USAGE)
   process.exit(1)
 }
@@ -41,6 +41,6 @@ try {
       : {}),
   })
 } catch (err) {
-  console.error(`✗ publish gagal: ${err instanceof Error ? err.message : String(err)}`)
+  console.error(`✗ publish failed: ${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
 }

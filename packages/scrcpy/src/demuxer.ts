@@ -3,16 +3,16 @@ import { CODEC_ID } from './version'
 /**
  * Parser stream video scrcpy (plan 08 §4.3).
  *
- * Urutan byte pada socket video (mode tunnel_forward, TODO-verify terhadap
+ * Byte order on the video socket (tunnel_forward mode, TODO-verify against
  * source versi pinned):
- *   1. 1 byte dummy (hanya saat tunnel_forward) — penanda koneksi valid
+ *   1. 1 dummy byte (tunnel_forward only) — marks the connection as valid
  *   2. 64 byte device name (NUL-padded)
  *   3. metadata codec: u32BE codecId, u32BE width, u32BE height
- *   4. berulang: frame header 12 byte + payload
+ *   4. repeating: a 12-byte frame header plus payload
  *        - u64BE ptsAndFlags: bit63 = config packet, bit62 = keyframe,
- *          sisanya PTS mikrodetik
+ *          the rest is the PTS in microseconds
  *        - u32BE packetSize
- *        - payload H.264 Annex-B (SPS/PPS untuk config packet)
+ *        - H.264 Annex-B payload (SPS/PPS for the config packet)
  */
 
 export const PTS_FLAG_CONFIG = 1n << 63n
@@ -38,8 +38,9 @@ const codecName = (id: number): VideoMeta['codec'] => {
 }
 
 /**
- * Demuxer inkremental: `push()` byte apa adanya dari socket, callback
- * dipanggil saat unit lengkap tersedia. Tidak mengasumsikan batas chunk TCP.
+ * Incremental demuxer: `push()` bytes straight from the socket and the
+ * callback fires once a complete unit is available. It assumes nothing about
+ * TCP chunk boundaries.
  */
 export class VideoDemuxer {
   private buf = new Uint8Array(0)
@@ -48,7 +49,7 @@ export class VideoDemuxer {
 
   constructor(
     private opts: {
-      /** tunnel_forward mengirim 1 byte dummy di awal. */
+      /** tunnel_forward sends one dummy byte up front. */
       expectDummyByte: boolean
       onMeta: (meta: VideoMeta) => void
       onPacket: (packet: ScrcpyPacket) => void
@@ -115,7 +116,7 @@ export class VideoDemuxer {
       this.buf = this.buf.subarray(12)
       const data = this.take(size)
       if (!data) return
-      const copy = new Uint8Array(data) // lepas dari buffer bersama
+      const copy = new Uint8Array(data) // detach from the shared buffer
       if ((ptsAndFlags & PTS_FLAG_CONFIG) !== 0n) {
         this.opts.onPacket({ kind: 'config', data: copy })
       } else {

@@ -18,14 +18,14 @@ export interface DownloadOptions {
   /** Di-throttle max 1 event / 200ms. */
   onProgress?: (p: DownloadProgress) => void
   signal?: AbortSignal
-  /** Idle timeout ms (tidak ada byte masuk) — default 60_000. */
+  /** Idle timeout in ms (no bytes arriving) — defaults to 60_000. */
   idleTimeoutMs?: number
 }
 
 /**
- * Download streaming + sha256 sekali jalan (hash dihitung per-chunk saat
- * menulis .part — tanpa baca ulang). Mismatch → hapus file, throw
- * E_CHECKSUM_MISMATCH. Retry otomatis 1× hanya untuk error network.
+ * Streaming download with sha256 in a single pass (hashed per chunk as it
+ * the .part file is written — no second read). A mismatch deletes the file and throws
+ * E_CHECKSUM_MISMATCH. Retries once automatically, and only on network errors.
  */
 export async function downloadVerified(opts: DownloadOptions): Promise<{ sha256: string }> {
   try {
@@ -59,7 +59,7 @@ async function attempt(opts: DownloadOptions): Promise<{ sha256: string }> {
   try {
     res = await fetch(artifact.url, { signal: opts.signal })
   } catch (err) {
-    throw new ToolchainError('E_DOWNLOAD_FAILED', `fetch ${artifact.url} gagal: ${String(err)}`, err)
+    throw new ToolchainError('E_DOWNLOAD_FAILED', `fetch failed for ${artifact.url}: ${String(err)}`, err)
   }
   if (!res.ok || !res.body) {
     throw new ToolchainError('E_DOWNLOAD_FAILED', `fetch ${artifact.url} → HTTP ${res.status}`)
@@ -99,7 +99,7 @@ async function attempt(opts: DownloadOptions): Promise<{ sha256: string }> {
     await Promise.resolve(writer.end()).catch(() => {})
     rmSync(dest, { force: true })
     if (err instanceof ToolchainError) throw err
-    throw new ToolchainError('E_DOWNLOAD_FAILED', `stream ${artifact.url} gagal: ${String(err)}`, err)
+    throw new ToolchainError('E_DOWNLOAD_FAILED', `stream failed for ${artifact.url}: ${String(err)}`, err)
   }
 
   onProgress?.({ toolId, version, phase: 'verify', bytesReceived: received, totalBytes: totalFromHeader ?? total })
@@ -108,7 +108,7 @@ async function attempt(opts: DownloadOptions): Promise<{ sha256: string }> {
     rmSync(dest, { force: true })
     throw new ToolchainError(
       'E_CHECKSUM_MISMATCH',
-      `sha256 mismatch untuk ${artifact.url}: expected ${artifact.sha256}, actual ${actual}`,
+      `sha256 mismatch for ${artifact.url}: expected ${artifact.sha256}, actual ${actual}`,
     )
   }
   return { sha256: actual }

@@ -2,9 +2,9 @@ import { AdbError } from './errors'
 
 /**
  * Framing smartsocket adb server (plan 01 §4.2):
- * - request: 4 hex digit lowercase (panjang payload dalam byte) + payload ASCII
- * - status:  4 byte 'OKAY' | 'FAIL' (FAIL diikuti blok 4-hex-length + pesan)
- * - blok data: 4-hex-length + data
+ * - request: 4 lowercase hex digits (payload length in bytes) + ASCII payload
+ * - status:  4 bytes 'OKAY' | 'FAIL' (FAIL is followed by a 4-hex-length block plus a message)
+ * - data block: 4-hex-length plus data
  */
 export function encodeRequest(payload: string): Uint8Array {
   const body = new TextEncoder().encode(payload)
@@ -16,8 +16,9 @@ export function encodeRequest(payload: string): Uint8Array {
 }
 
 /**
- * Buffer akumulatif — TCP tidak menjamin chunk boundary, jadi semua read
- * dilakukan terhadap buffer ini, di-resolve begitu byte yang diminta lengkap.
+ * An accumulating buffer — TCP makes no promises about chunk boundaries, so
+ * every read works against this buffer and resolves once the requested bytes
+ * have arrived.
  */
 class ByteQueue {
   private chunks: Uint8Array[] = []
@@ -38,7 +39,7 @@ class ByteQueue {
     this.flush()
   }
 
-  /** Ambil tepat `n` byte; reject kalau socket berakhir sebelum lengkap. */
+  /** Take exactly `n` bytes; rejects if the socket ends first. */
   take(n: number): Promise<Uint8Array> {
     if (this.waiter) throw new AdbError('E_ADB_PROTOCOL', 'concurrent read on adb socket')
     return new Promise((resolve, reject) => {
@@ -47,7 +48,7 @@ class ByteQueue {
     })
   }
 
-  /** Semua byte yang tersisa sampai socket ditutup. */
+  /** Every remaining byte until the socket closes. */
   takeUntilEnd(): Promise<Uint8Array> {
     if (this.waiter) throw new AdbError('E_ADB_PROTOCOL', 'concurrent read on adb socket')
     return new Promise((resolve, reject) => {
@@ -132,7 +133,7 @@ export class AdbSocket {
     this.socket.write(encodeRequest(payload))
   }
 
-  /** Baca 4 byte status; throw E_ADB_FAIL (dengan pesan server) pada FAIL. */
+  /** Read the 4-byte status; throws E_ADB_FAIL (with the server's message) on FAIL. */
   async readStatus(): Promise<'OKAY'> {
     const status = td.decode(await this.queue.take(4))
     if (status === 'OKAY') return 'OKAY'
@@ -143,7 +144,7 @@ export class AdbSocket {
     throw new AdbError('E_ADB_PROTOCOL', `unexpected adb status: ${JSON.stringify(status)}`)
   }
 
-  /** Baca satu blok 4-hex-length + data → string utf8. */
+  /** Read one 4-hex-length block plus its data → a utf8 string. */
   async readBlock(): Promise<string> {
     const lenHex = td.decode(await this.queue.take(4))
     const len = Number.parseInt(lenHex, 16)
@@ -152,7 +153,7 @@ export class AdbSocket {
     return td.decode(await this.queue.take(len))
   }
 
-  /** Raw output sampai server menutup socket (dipakai shell:). */
+  /** Raw output until the server closes the socket (used by shell:). */
   async readUntilClose(): Promise<Uint8Array> {
     return this.queue.takeUntilEnd()
   }

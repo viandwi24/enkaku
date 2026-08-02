@@ -4,9 +4,9 @@ import { unzipSync } from 'fflate'
 import { ToolchainError } from './errors'
 
 /**
- * Extract zip pakai fflate (JS murni — self-contained, tanpa `unzip`
- * sistem). Entry ber-path traversal ditolak. fflate tidak membawa unix
- * mode → blanket chmod 0755 di POSIX (folder tool kecil; deterministik).
+ * Extracts zips with fflate (pure JS — self-contained, no `unzip`
+ * system tar). Entries with path traversal are rejected. fflate does not carry unix
+ * modes → a blanket chmod 0755 on POSIX (tool folders are small; deterministic).
  */
 export async function extractZip(srcZip: string, destDir: string): Promise<void> {
   const data = new Uint8Array(await Bun.file(srcZip).arrayBuffer())
@@ -14,7 +14,7 @@ export async function extractZip(srcZip: string, destDir: string): Promise<void>
   for (const [name, content] of Object.entries(entries)) {
     const normalized = normalize(name)
     if (normalized.startsWith('..') || isAbsolute(normalized)) {
-      throw new ToolchainError('E_EXTRACT_UNSAFE_PATH', `entry zip tidak aman: ${name}`)
+      throw new ToolchainError('E_EXTRACT_UNSAFE_PATH', `unsafe zip entry: ${name}`)
     }
     const target = join(destDir, normalized)
     if (name.endsWith('/')) {
@@ -39,7 +39,7 @@ function chmodTreeExec(dir: string): void {
   }
 }
 
-/** Raw artifact (jar/apk): pindahkan ke destDir dengan nama kanonik. */
+/** Raw artifact (jar/apk): move it into destDir under its canonical name. */
 export function placeRaw(srcFile: string, destDir: string, canonicalName: string): void {
   mkdirSync(destDir, { recursive: true })
   renameSync(srcFile, join(destDir, canonicalName))

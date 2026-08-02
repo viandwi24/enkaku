@@ -5,11 +5,11 @@ import type { LogLevel } from './util/logger'
 
 /**
  * Config core (plan 09 §4.1). Precedence: env > file > default.
- * Config invalid = boot gagal dengan pesan jelas, bukan diam-diam jalan.
+ * An invalid config fails the boot with a clear message rather than quietly running.
  */
 
 export const AuthConfigSchema = z.object({
-  /** auto = local kalau bind loopback, server kalau tidak. */
+  /** auto = local when bound to loopback, server otherwise. */
   mode: z.enum(['auto', 'local', 'server']).default('auto'),
   sessionTtlHours: z.number().int().min(1).default(24 * 14),
   loginMaxAttempts: z.number().int().min(1).default(10),
@@ -17,7 +17,7 @@ export const AuthConfigSchema = z.object({
 })
 
 export const TlsConfigSchema = z.object({
-  /** off | self (cert sendiri) | external (reverse proxy yang terminate TLS). */
+  /** off | self (own certificate) | external (a reverse proxy terminates TLS). */
   mode: z.enum(['off', 'self', 'external']).default('off'),
   certPath: z.string().optional(),
   keyPath: z.string().optional(),
@@ -59,8 +59,9 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
 export const isLoopback = (host: string): boolean => LOOPBACK.has(host)
 
 /**
- * Mode auth efektif (plan 09 §4.1). `local` hanya sah saat bind loopback —
- * skip-login di alamat publik akan menyerahkan farm ke siapa pun (spec §14).
+ * The effective auth mode (plan 09 §4.1). `local` is only legitimate on a
+ * loopback bind — skipping login on a public address hands the farm to anyone
+ * who finds it (spec §14).
  */
 export function resolveAuthMode(cfg: CoreConfig): AuthMode {
   const loopback = isLoopback(cfg.host)
@@ -69,7 +70,7 @@ export function resolveAuthMode(cfg: CoreConfig): AuthMode {
     if (!loopback) {
       throw new EnkakuError(
         'E_INSECURE_BIND',
-        `auth.mode 'local' hanya boleh saat bind loopback; bind saat ini ${cfg.host}`,
+        `auth.mode 'local' is only allowed on a loopback bind; the current bind is ${cfg.host}`,
       )
     }
     return 'local'
@@ -77,25 +78,25 @@ export function resolveAuthMode(cfg: CoreConfig): AuthMode {
   return loopback ? 'local' : 'server'
 }
 
-/** TLS wajib di mode server (spec §14) kecuali ada opt-out eksplisit. */
+/** TLS is mandatory in server mode (spec §14) unless explicitly opted out of. */
 export function assertTlsPolicy(cfg: CoreConfig, mode: AuthMode): void {
   if (mode !== 'server') return
   if (cfg.tls.mode === 'off') {
     if (process.env.ENKAKU_ALLOW_INSECURE === '1') {
-      // Peringatan besar: ini persis kesalahan ws-scrcpy (spec §6.2).
+      // A loud warning: this is exactly the ws-scrcpy mistake (spec §6.2).
       console.error(
-        '\n!!! ENKAKU_ALLOW_INSECURE=1 — mode server tanpa TLS. Password dan token dikirim polos.\n' +
-          '    Pakai hanya di jaringan tepercaya untuk pengujian.\n',
+        '\n!!! ENKAKU_ALLOW_INSECURE=1 — server mode without TLS. Passwords and tokens travel in the clear.\n' +
+          '    Use this only on a trusted network, for testing.\n',
       )
       return
     }
     throw new EnkakuError(
       'E_TLS_REQUIRED',
-      'mode server wajib TLS: set tls.mode "self" (+certPath/keyPath) atau "external" (reverse proxy)',
+      'server mode requires TLS: set tls.mode to "self" (with certPath/keyPath) or "external" (reverse proxy)',
     )
   }
   if (cfg.tls.mode === 'self' && (!cfg.tls.certPath || !cfg.tls.keyPath)) {
-    throw new EnkakuError('E_TLS_REQUIRED', 'tls.mode "self" butuh certPath dan keyPath')
+    throw new EnkakuError('E_TLS_REQUIRED', 'tls.mode "self" needs certPath and keyPath')
   }
 }
 
@@ -138,7 +139,7 @@ export function loadConfig(): CoreConfig {
   if (!parsed.success) {
     throw new EnkakuError(
       'E_BAD_CONFIG',
-      `config tidak valid: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+      `invalid config: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
     )
   }
   return parsed.data
@@ -151,6 +152,6 @@ function readConfigFile(dataDir: string): Record<string, unknown> {
     if (!existsSync(path)) return {}
     return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
   } catch (err) {
-    throw new EnkakuError('E_BAD_CONFIG', `gagal membaca ${path}: ${String(err)}`)
+    throw new EnkakuError('E_BAD_CONFIG', `failed to read ${path}: ${String(err)}`)
   }
 }

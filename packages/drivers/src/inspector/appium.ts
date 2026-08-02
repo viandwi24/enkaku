@@ -5,28 +5,28 @@ import { parseUiDump } from './xml-parser'
 /**
  * Inspector `appium` — OPT-IN (spec §6.3, §7.1).
  *
- * Kenapa opt-in, bukan default: Appium memakai ~500 MB per sesi dan
- * menjalankan JVM; di box kecil (target NFR spec §16: Intel N100 4 GB, SBC
- * 1–2 GB) itu tidak masuk akal untuk pemakaian sehari-hari.
+ * Why it is opt-in rather than default: Appium uses roughly 500 MB per session
+ * runs a JVM; on a small box (the spec §16 NFR target: Intel N100 4 GB, SBCs at
+ * 1–2 GB) that does not add up for everyday use.
  *
- * Kapan berguna: aplikasi hybrid/WebView yang butuh context switching
- * NATIVE ⇄ WEBVIEW dan inspeksi DOM — hal yang tidak bisa dilakukan
+ * When it earns its keep: hybrid/WebView apps that need NATIVE ⇄ WEBVIEW
+ * context switching and DOM inspection — things that cannot be done
  * accessibility tree (`ui-server`).
  *
- * Lock `instrumentation` + `input-injection` membuatnya tidak bisa aktif
- * bersamaan dengan ui-server maupun input scrcpy (spec §9.5).
+ * The `instrumentation` and `input-injection` locks stop it running alongside
+ * ui-server or scrcpy input (spec §9.5).
  */
 export interface AppiumInspectorOptions {
   /** Base URL server Appium (mis. http://127.0.0.1:4723). */
   serverUrl: string
-  /** Kapabilitas W3C untuk membuat sesi. */
+  /** W3C capabilities used to create the session. */
   capabilities: Record<string, unknown>
   onLog?: (level: 'debug' | 'warn', msg: string) => void
 }
 
 export class AppiumInspector implements Inspector {
   readonly id = 'appium'
-  /** Query Appium relatif mahal (HTTP + JVM) — jangan poll serapat ui-server. */
+  /** An Appium query is relatively expensive (HTTP plus JVM) — do not poll as tightly as ui-server. */
   readonly recommendedPollIntervalMs = 300
   private sessionId: string | null = null
 
@@ -45,10 +45,10 @@ export class AppiumInspector implements Inspector {
     })
     const body = (await res.json()) as { value?: { sessionId?: string; error?: string; message?: string } }
     if (!res.ok || !body.value?.sessionId) {
-      throw new Error(`gagal membuat sesi Appium: ${body.value?.message ?? `HTTP ${res.status}`}`)
+      throw new Error(`failed to create the Appium session: ${body.value?.message ?? `HTTP ${res.status}`}`)
     }
     this.sessionId = body.value.sessionId
-    this.opts.onLog?.('debug', `sesi Appium dibuat: ${this.sessionId}`)
+    this.opts.onLog?.('debug', `Appium session created: ${this.sessionId}`)
   }
 
   async stop(): Promise<void> {
@@ -61,13 +61,13 @@ export class AppiumInspector implements Inspector {
     if (!this.sessionId) await this.start()
     const res = await fetch(`${this.base}/session/${this.sessionId}${path}`)
     const body = (await res.json()) as { value?: T }
-    if (!res.ok) throw new Error(`Appium ${path} gagal: HTTP ${res.status}`)
+    if (!res.ok) throw new Error(`Appium ${path} failed: HTTP ${res.status}`)
     return body.value as T
   }
 
   async dump(): Promise<UiNode> {
-    // Appium mengembalikan XML hierarchy dengan format yang sama dengan
-    // uiautomator dump → parser Plan 05 dipakai ulang.
+    // Appium returns an XML hierarchy in the same format as uiautomator dump,
+    // so the Plan 05 parser is reused.
     const xml = await this.request<string>('/source')
     return parseUiDump(xml)
   }

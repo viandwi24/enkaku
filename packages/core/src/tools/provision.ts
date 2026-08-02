@@ -23,10 +23,10 @@ export function toolchainEventToMessage(ev: ToolchainEvent): ServerMessage {
 }
 
 /**
- * First-run auto-provision (plan 02 §4.10). Dipanggil SETELAH HTTP/WS naik
- * supaya client bisa melihat progress. Gagal → core tetap hidup (retry via
- * POST /api/tools/:id/install atau restart); promise reject supaya caller
- * tahu subsistem adb tidak bisa start.
+ * First-run auto-provisioning (plan 02 §4.10). Called AFTER HTTP and WS are up
+ * so clients can watch the progress. On failure the core stays up (retry via
+ * POST /api/tools/:id/install or a restart); the promise rejects so the caller
+ * knows the adb subsystem cannot start.
  */
 export async function provisionRequiredTools(opts: {
   manager: ToolchainManager
@@ -47,7 +47,7 @@ export async function provisionRequiredTools(opts: {
       type: 'tool.provision.progress',
       payload: { step: 'error', error: { code, message } },
     })
-    log.error(`provision gagal: ${message}`)
+    log.error(`provisioning failed: ${message}`)
     throw err
   }
 }

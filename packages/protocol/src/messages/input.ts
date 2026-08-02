@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
 /**
- * Input manual (spec §13) — koordinat SELALU dinormalisasi 0..1 di client;
- * core yang map ke pixel device (server-authoritative).
+ * Manual input (spec §13) — coordinates are ALWAYS normalised 0..1 on the
+ * client; the core maps them to device pixels (server-authoritative).
  */
 export const NormPointSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
 export type NormPoint = z.infer<typeof NormPointSchema>

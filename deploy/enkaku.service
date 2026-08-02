@@ -7,20 +7,20 @@ Wants=network-online.target
 Type=simple
 User=enkaku
 Group=enkaku
-# Device USB butuh akses ke /dev/bus/usb — tambahkan user ke grup plugdev
-# dan pasang aturan udev untuk vendor device yang dipakai.
+# USB devices need access to /dev/bus/usb — add the user to the plugdev group
+# and install a udev rule for the device vendors you use.
 SupplementaryGroups=plugdev
 Environment=ENKAKU_DATA_DIR=/var/lib/enkaku
 Environment=ENKAKU_BIND=0.0.0.0
 Environment=ENKAKU_PORT=7700
-# Mode server wajib TLS: pakai reverse proxy (external) atau cert sendiri.
+# Server mode requires TLS: use a reverse proxy (external) or your own certificate.
 Environment=ENKAKU_TLS_MODE=external
 WorkingDirectory=/opt/enkaku
 ExecStart=/usr/local/bin/bun run packages/core/src/index.ts
 Restart=on-failure
 RestartSec=5
 
-# Hardening dasar — core tetap butuh tulis ke data dir & akses USB.
+# Basic hardening — the core still needs to write to the data dir and reach USB.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full

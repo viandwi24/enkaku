@@ -1,23 +1,23 @@
 /**
- * Packetizer H.264 → RTP (RFC 6184) untuk jalur WebRTC (plan 11 §4.4).
+ * H.264 → RTP packetizer (RFC 6184) for the WebRTC path (plan 11 §4.4).
  *
- * Kode ini murni transformasi byte — bisa diuji tanpa WebRTC stack sama
- * sekali, dan tidak terikat library apa pun (lihat `RtcPeer`).
+ * This is pure byte transformation — testable with no WebRTC stack at all, and
+ * tied to no particular library (see `RtcPeer`).
  */
 
-/** MTU aman untuk payload RTP di internet (1200 = konvensi WebRTC). */
+/** A safe MTU for RTP payloads on the internet (1200 is the WebRTC convention). */
 export const MAX_PAYLOAD = 1200
-/** Clock RTP untuk video = 90 kHz. */
+/** The RTP clock for video is 90 kHz. */
 export const RTP_CLOCK_HZ = 90_000
 
 export interface RtpPacket {
   payload: Uint8Array
   timestamp: number
-  /** Marker bit = paket terakhir dalam satu access unit. */
+  /** The marker bit flags the last packet of an access unit. */
   marker: boolean
 }
 
-/** Pecah Annex-B (start code 3/4 byte) menjadi NAL unit tanpa start code. */
+/** Split Annex-B (3- or 4-byte start codes) into NAL units without start codes. */
 export function splitAnnexB(data: Uint8Array): Uint8Array[] {
   const nals: Uint8Array[] = []
   let start = -1
@@ -41,9 +41,9 @@ export const nalType = (nal: Uint8Array): number => (nal[0] ?? 0) & 0x1f
 export const NAL_TYPE = { SPS: 7, PPS: 8, IDR: 5 } as const
 
 /**
- * Satu access unit H.264 → daftar paket RTP.
- * - NAL ≤ MTU → Single NAL Unit Packet (dikirim apa adanya)
- * - NAL > MTU → FU-A: indicator + header dengan bit S (start) dan E (end)
+ * One H.264 access unit → a list of RTP packets.
+ * - NAL ≤ MTU → Single NAL Unit Packet (sent as-is)
+ * - NAL > MTU → FU-A: an indicator plus a header with the S (start) and E (end) bits
  */
 export function packetizeAccessUnit(nals: Uint8Array[], timestampUs: bigint): RtpPacket[] {
   const timestamp = Number((timestampUs * BigInt(RTP_CLOCK_HZ)) / 1_000_000n) >>> 0
@@ -58,7 +58,7 @@ export function packetizeAccessUnit(nals: Uint8Array[], timestampUs: bigint): Rt
     const nri = header & 0x60
     const type = header & 0x1f
     const body = nal.subarray(1)
-    const chunkSize = MAX_PAYLOAD - 2 // ruang untuk FU indicator + FU header
+    const chunkSize = MAX_PAYLOAD - 2 // room for the FU indicator and FU header
     for (let offset = 0; offset < body.length; offset += chunkSize) {
       const chunk = body.subarray(offset, offset + chunkSize)
       const isFirst = offset === 0
@@ -71,16 +71,16 @@ export function packetizeAccessUnit(nals: Uint8Array[], timestampUs: bigint): Rt
     }
   }
 
-  // Marker bit hanya di paket terakhir access unit.
+  // The marker bit goes on the last packet of the access unit only.
   const last = packets[packets.length - 1]
   if (last) last.marker = true
   return packets
 }
 
 /**
- * Stream H.264 → RTP dengan penyisipan SPS/PPS sebelum tiap IDR.
- * Decoder yang baru bergabung tidak punya parameter set, jadi mengirimnya
- * in-band membuat keyframe berikutnya selalu bisa di-decode.
+ * H.264 stream → RTP with SPS/PPS inserted before every IDR.
+ * A decoder that just joined has no parameter sets, so sending them in-band
+ * means the next keyframe is always decodable.
  */
 export function createH264Packetizer(): {
   push(annexB: Uint8Array, timestampUs: bigint): RtpPacket[]

@@ -1,6 +1,6 @@
 /**
- * Serialisasi akses adb (spec §10.4): per-device queue + semaphore global
- * longgar — BUKAN mutex tunggal. Semua exec wajib lewat sini.
+ * Serialising adb access (spec §10.4): a per-device queue plus a loose global
+ * cap — NOT a single mutex. Every exec must pass through here.
  */
 export class Semaphore {
   private inFlight = 0
@@ -33,18 +33,18 @@ export class Semaphore {
 }
 
 export class PerDeviceQueue {
-  /** Chain promise per serial; entry dibersihkan saat chain kosong. */
+  /** One promise chain per serial; the entry is cleared when its chain empties. */
   private chains = new Map<string, { tail: Promise<unknown>; pending: number }>()
-  /** Gate pause: task baru menunggu di sini saat queue di-pause (adb swap). */
+  /** Pause gate: new tasks wait here while the queue is paused (adb swap). */
   private gate: Promise<void> = Promise.resolve()
   private openGate: (() => void) | null = null
-  /** Jumlah task yang benar-benar sedang eksekusi (untuk drain). */
+  /** How many tasks are actually executing (used by drain). */
   private inFlight = 0
   private idleWaiters: Array<() => void> = []
 
   constructor(private sem: Semaphore) {}
 
-  /** Stop menerima eksekusi task baru (task antri tetap antri). */
+  /** Stop starting new tasks (queued ones stay queued). */
   pause(): void {
     if (this.openGate) return
     this.gate = new Promise((resolve) => {
@@ -57,7 +57,7 @@ export class PerDeviceQueue {
     this.openGate = null
   }
 
-  /** Resolve saat tidak ada task in-flight (dipanggil setelah pause()). */
+  /** Resolves once nothing is in flight (called after pause()). */
   waitIdle(timeoutMs: number): Promise<boolean> {
     if (this.inFlight === 0) return Promise.resolve(true)
     return new Promise((resolve) => {
@@ -73,7 +73,7 @@ export class PerDeviceQueue {
     const entry = this.chains.get(serial) ?? { tail: Promise.resolve(), pending: 0 }
     entry.pending++
     const result = entry.tail
-      .catch(() => {}) // error task sebelumnya tidak menular ke task berikut
+      .catch(() => {}) // a failed task must not poison the next one
       .then(async () => {
         await this.gate
         const release = await this.sem.acquire()

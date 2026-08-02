@@ -3,15 +3,15 @@
 import { newId, ws } from './ws'
 
 /**
- * Klien WebRTC untuk video device di mode cloud (plan 11 §4.4).
+ * WebRTC client for device video in cloud mode (plan 11 §4.4).
  *
- * Kenapa ada: tunnel WebSocket berjalan di atas TCP. Di internet, satu paket
- * hilang menahan seluruh aliran sampai retransmisi selesai — pada remote
- * control efeknya video membeku. WebRTC (UDP) menghindarinya.
+ * Why it exists: the WebSocket tunnel runs over TCP. On the open internet a
+ * single lost packet holds up the whole stream until it is retransmitted —
+ * during remote control that shows up as frozen video. WebRTC (UDP) avoids it.
  *
- * Kalau negosiasi gagal (tidak ada TURN, backend WebRTC belum terpasang,
- * ICE gagal, atau tidak ada frame dalam 10 detik), player **jatuh ke jalur
- * WS+WebCodecs** yang sudah bekerja — degraded, bukan mati.
+ * If negotiation fails (no TURN, no WebRTC backend installed, ICE failure, or
+ * no frame within 10 seconds) the player **falls back to the WS + WebCodecs
+ * path** that already works — degraded, not dead.
  */
 export type PlayerState = 'connecting' | 'webrtc' | 'ws-fallback' | 'failed'
 
@@ -27,7 +27,7 @@ export function createWebRtcPlayer(opts: {
   deviceId: string
   video: HTMLVideoElement
   onState: (state: PlayerState, reason?: string) => void
-  /** Dipanggil saat WebRTC menyerah — caller menyalakan jalur WS. */
+  /** Fires when WebRTC gives up — the caller switches on the WS path. */
   onFallback: (reason: string) => void
 }): WebRtcPlayer {
   let pc: RTCPeerConnection | null = null
@@ -66,7 +66,7 @@ export function createWebRtcPlayer(opts: {
         const res = await fetch('/api/agents/ice-config')
         iceServers = ((await res.json()) as { iceServers: RTCIceServer[] }).iceServers
       } catch {
-        // Tanpa STUN/TURN, koneksi hanya berhasil di jaringan yang sama.
+        // Without STUN/TURN the connection only succeeds on the same network.
       }
 
       pc = new RTCPeerConnection({ iceServers })
@@ -84,7 +84,7 @@ export function createWebRtcPlayer(opts: {
         }
       }
       pc.onconnectionstatechange = () => {
-        if (pc?.connectionState === 'failed') fallback('koneksi ICE gagal')
+        if (pc?.connectionState === 'failed') fallback('the ICE connection failed')
       }
 
       offMessage = ws.on((msg) => {
@@ -107,7 +107,7 @@ export function createWebRtcPlayer(opts: {
       })
 
       ws.send({ type: 'video.webrtc.request', id: newId(), payload: { deviceId: opts.deviceId } } as never)
-      frameTimer = setTimeout(() => fallback('tidak ada frame dalam 10 detik'), NO_FRAME_TIMEOUT_MS)
+      frameTimer = setTimeout(() => fallback('no frames within 10 seconds'), NO_FRAME_TIMEOUT_MS)
     },
 
     stop() {

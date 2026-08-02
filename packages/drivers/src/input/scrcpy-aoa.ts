@@ -1,23 +1,23 @@
 import type { InputSink, Point } from '@enkaku/protocol'
 
 /**
- * InputSink `scrcpy-aoa` — OPT-IN, butuh kabel USB (spec §9.1).
+ * The `scrcpy-aoa` InputSink — OPT-IN, requires a USB cable (spec §9.1).
  *
- * AOA (Android Open Accessory) membuat host tampil sebagai **HID peripheral
- * fisik**, melewati seluruh input stack Android — bahkan tidak butuh USB
- * debugging. Ini mode paling menyerupai perangkat keras, dan berguna untuk
- * menguji aplikasi yang memeriksa asal input sangat dalam.
+ * AOA (Android Open Accessory) makes the host appear as a **physical HID
+ * device**, bypassing the entire Android input stack — it does not even need
+ * USB debugging. This is the closest thing to real hardware, and it is useful
+ * for testing apps that inspect input provenance very deeply.
  *
- * Batasan yang membuatnya tidak jadi default:
- * - **wajib kabel USB** (tidak bisa wireless) — bertabrakan dengan pola
- *   operasional farm yang mayoritas WiFi;
- * - **tidak membawa video** — display tetap harus lewat jalur lain;
- * - butuh akses USB level libusb di host, yang di container/VM merepotkan.
+ * What keeps it from being the default:
+ * - **a USB cable is mandatory** (no wireless) — which clashes with how most
+ *   farms operate, largely over WiFi;
+ * - **it carries no video** — the display still needs another path;
+ * - it needs libusb-level USB access on the host, which is awkward in containers and VMs.
  *
- * Implementasi transport USB-nya belum ada: engine ini terdaftar di registry
- * dengan `available: false` supaya UI bisa menjelaskan keberadaannya, dan
- * pemilihan mode `aoa` di DeviceSettings otomatis turun ke UHID (lihat
- * `selectInputEngine`) alih-alih gagal diam-diam.
+ * The USB transport is not implemented: the engine is listed in the registry
+ * with `available: false` so the UI can explain that it exists, and
+ * selecting `aoa` mode in DeviceSettings automatically falls back to UHID (see
+ * `selectInputEngine`) rather than failing silently.
  */
 export class ScrcpyAoaInput implements InputSink {
   readonly id = 'scrcpy-aoa'
@@ -25,7 +25,7 @@ export class ScrcpyAoaInput implements InputSink {
 
   private unavailable(): never {
     throw new Error(
-      'engine scrcpy-aoa belum tersedia: butuh transport USB AOA (libusb) — pakai scrcpy-uhid untuk input hardware-like tanpa kabel',
+      'the scrcpy-aoa engine is not available yet: it needs an AOA USB transport (libusb) — use scrcpy-uhid for hardware-like input without a cable',
     )
   }
 

@@ -32,7 +32,7 @@ export function createAuthRoutes(deps: {
   lockoutSeconds: number
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
-  /** Rate limit login in-memory per ip+email (cukup untuk LAN). */
+  /** In-memory login rate limit per ip+email (enough for a LAN). */
   const attempts = new Map<string, { count: number; until: number }>()
 
   const setSessionCookie = (c: Context, token: string, expiresAt: Date) => {
@@ -48,9 +48,9 @@ export function createAuthRoutes(deps: {
   app.get('/setup', (c) => c.json({ needed: deps.mode === 'server' && !deps.auth.hasAnyAdmin() }))
 
   app.post('/setup', async (c) => {
-    if (deps.auth.hasAnyAdmin()) throw new EnkakuError('auth.setup_done', 'admin sudah ada')
+    if (deps.auth.hasAnyAdmin()) throw new EnkakuError('auth.setup_done', 'an admin already exists')
     const body = Credentials.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('auth.weak_password', 'email & password (min 8) wajib')
+    if (!body.success) throw new EnkakuError('auth.weak_password', 'email and password (min 8 characters) are required')
     const user = deps.auth.createUser({ ...body.data, role: 'admin' })
     deps.audit.record({ userId: user.id, action: 'user.setup', target: user.email })
     const { token, expiresAt } = deps.auth.createSession(user.id, {})
@@ -60,12 +60,12 @@ export function createAuthRoutes(deps: {
 
   app.post('/login', async (c) => {
     const body = Credentials.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('auth.invalid_credentials', 'email/password tidak valid')
+    if (!body.success) throw new EnkakuError('auth.invalid_credentials', 'invalid email or password')
     const ip = c.req.header('x-forwarded-for') ?? 'local'
     const key = `${ip}|${body.data.email}`
     const entry = attempts.get(key)
     if (entry && entry.until > Date.now()) {
-      throw new EnkakuError('auth.rate_limited', 'terlalu banyak percobaan — coba lagi nanti')
+      throw new EnkakuError('auth.rate_limited', 'too many attempts — try again later')
     }
 
     const user = await deps.auth.verifyLogin(body.data.email, body.data.password)
@@ -75,7 +75,7 @@ export function createAuthRoutes(deps: {
         count,
         until: count >= deps.maxAttempts ? Date.now() + deps.lockoutSeconds * 1000 : 0,
       })
-      throw new EnkakuError('auth.invalid_credentials', 'email atau password salah')
+      throw new EnkakuError('auth.invalid_credentials', 'wrong email or password')
     }
     attempts.delete(key)
     const { token, expiresAt } = deps.auth.createSession(user.id, {
@@ -98,12 +98,12 @@ export function createAuthRoutes(deps: {
 
   app.get('/me', (c) => c.json({ user: c.get('user'), authMode: deps.mode }))
 
-  /** Ticket sekali-pakai untuk upgrade WS. */
+  /** Single-use ticket for the WS upgrade. */
   app.post('/ws-ticket', (c) => c.json({ ticket: deps.auth.issueWsTicket(c.get('user').id) }))
 
   app.post('/password', async (c) => {
     const body = PasswordChange.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('auth.weak_password', 'password baru minimal 8 karakter')
+    if (!body.success) throw new EnkakuError('auth.weak_password', 'the new password must be at least 8 characters')
     const user = c.get('user')
     await deps.auth.changePassword(user.id, body.data.current, body.data.next)
     deps.audit.record({ userId: user.id, action: 'user.password_change' })
@@ -111,28 +111,28 @@ export function createAuthRoutes(deps: {
   })
 
   app.get('/users', (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'butuh role admin')
+    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     return c.json({ users: deps.auth.listUsers() })
   })
 
   app.post('/users', async (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'butuh role admin')
+    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     const body = NewUser.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('auth.weak_password', 'email, password (min 8), role wajib')
+    if (!body.success) throw new EnkakuError('auth.weak_password', 'email, password (min 8 characters), and role are required')
     const created = deps.auth.createUser(body.data)
     deps.audit.record({ userId: c.get('user').id, action: 'user.create', target: created.email })
     return c.json({ user: created }, 201)
   })
 
   app.delete('/users/:id', (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'butuh role admin')
+    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     deps.auth.deleteUser(c.req.param('id'))
     deps.audit.record({ userId: c.get('user').id, action: 'user.delete', target: c.req.param('id') })
     return c.json({ ok: true })
   })
 
   app.get('/audit', (c) => {
-    if (!can(c.get('user').role, 'audit.view')) throw new EnkakuError('auth.forbidden', 'butuh role admin')
+    if (!can(c.get('user').role, 'audit.view')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     const limit = Number.parseInt(c.req.query('limit') ?? '100', 10) || 100
     return c.json({ entries: deps.audit.list(Math.min(limit, 500)) })
   })

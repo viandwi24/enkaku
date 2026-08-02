@@ -9,11 +9,11 @@ export interface ScreencapLoopConfig {
 }
 
 /**
- * DisplaySource `screencap-loop` — MVP/fallback (spec §7.1), digantikan
- * scrcpy sebagai default di Plan 08. Loop serial per device: capture
- * berikutnya tidak dimulai sebelum yang sebelumnya selesai (tidak
- * menumpuk perintah di adb queue). Trade-off sadar: ~2–3 fps, latency
- * tinggi, PNG besar, CPU device per capture, tanpa audio.
+ * The `screencap-loop` DisplaySource — MVP and fallback (spec §7.1), superseded
+ * scrcpy as the default in Plan 08. A serial loop per device: a capture
+ * the next capture never starts before the previous one finishes (no
+ * piling commands up in the adb queue). A conscious trade-off: ~2–3 fps, high
+ * latency, large PNGs, device CPU per capture, and no audio.
  */
 export class ScreencapLoop implements DisplaySource {
   readonly id = 'screencap-loop'
@@ -54,7 +54,7 @@ export class ScreencapLoop implements DisplaySource {
         const png = await this.transport.execOut('screencap -p')
         consecutiveFailures = 0
         if (!isPng(png)) {
-          this.config.onLog?.('warn', `frame korup dari ${this.transport.serial} (${png.length} byte) — skip`)
+          this.config.onLog?.('warn', `corrupt frame from ${this.transport.serial} (${png.length} bytes) — skipping`)
         } else {
           const { width, height } = parsePngSize(png)
           this.cb?.(png, { width, height, codec: 'png', seq: this.seq++, capturedAt: t0 })
@@ -62,13 +62,13 @@ export class ScreencapLoop implements DisplaySource {
       } catch (err) {
         consecutiveFailures++
         if (consecutiveFailures >= 3) {
-          this.config.onLog?.('warn', `screencap ${this.transport.serial} gagal ${consecutiveFailures}x — loop berhenti`)
+          this.config.onLog?.('warn', `screencap on ${this.transport.serial} failed ${consecutiveFailures}× — stopping the loop`)
           this.running = false
           this.config.onError?.(err)
           return
         }
         const backoff = backoffs[consecutiveFailures - 1] ?? 5000
-        this.config.onLog?.('debug', `screencap gagal (${consecutiveFailures}x), retry dalam ${backoff}ms`)
+        this.config.onLog?.('debug', `screencap failed (${consecutiveFailures}×), retrying in ${backoff}ms`)
         await Bun.sleep(backoff)
         continue
       }

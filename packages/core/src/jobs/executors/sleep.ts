@@ -4,9 +4,9 @@ import { EnkakuError } from '../../util/errors'
 import type { ExecutorContext, JobExecutor } from '../executor'
 
 /**
- * Dummy executor `internal:sleep` (plan 04 §4.5) — memvalidasi seluruh alur
- * queue/lease tanpa menyentuh adb sama sekali. Diganti runner subprocess
- * di Plan 05, tapi tetap berguna untuk tes queue.
+ * The `internal:sleep` dummy executor (plan 04 §4.5) — exercises the whole
+ * queue and lease without touching adb at all. Plan 05 replaces it with the
+ * subprocess runner, but it stays useful for queue testing.
  */
 export const sleepExecutor: JobExecutor = {
   validateParams(params) {
@@ -26,13 +26,13 @@ export const sleepExecutor: JobExecutor = {
         ctx.signal.removeEventListener('abort', onAbort)
       }
       function onAbort() {
-        // ignoreCancel: job "bandel" — reaper/lease-expiry yang menyelesaikan.
+        // ignoreCancel makes a "stubborn" job — the reaper and lease-expiry settle it.
         if (params.ignoreCancel) {
-          ctx.log.warn(`job ${job.id} mengabaikan cancel (ignoreCancel) — menunggu lease expiry`)
+          ctx.log.warn(`job ${job.id} is ignoring the cancel (ignoreCancel) — waiting for lease expiry`)
           return
         }
         cleanup()
-        reject(new EnkakuError('job_cancelled', 'job dibatalkan'))
+        reject(new EnkakuError('job_cancelled', 'the job was cancelled'))
       }
       ctx.signal.addEventListener('abort', onAbort)
 
@@ -40,7 +40,7 @@ export const sleepExecutor: JobExecutor = {
         timers.push(
           setTimeout(() => {
             cleanup()
-            reject(new EnkakuError('job_failed_simulated', `gagal disimulasikan setelah ${params.failAfterMs}ms`))
+            reject(new EnkakuError('job_failed_simulated', `simulated failure after ${params.failAfterMs}ms`))
           }, params.failAfterMs),
         )
       }

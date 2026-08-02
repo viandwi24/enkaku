@@ -25,8 +25,18 @@ export const StreamStopMessage = z.object({
   payload: z.object({ streamId: z.number().int() }),
 })
 
-/** Rotasi/resize — dimensi frame berubah. */
+/** Rotation or resize — the frame dimensions changed. */
 export const StreamMetaMessage = z.object({
   type: z.literal('stream.meta'),
   payload: z.object({ streamId: z.number().int(), width: z.number(), height: z.number() }),
+})
+
+/**
+ * The session stopped server-side (device unplugged, capture failed
+ * repeatedly). Without this message a viewer just sees the last frame freeze
+ * and assumes the network is slow.
+ */
+export const StreamEndedMessage = z.object({
+  type: z.literal('stream.ended'),
+  payload: z.object({ deviceId: z.string(), reason: z.string() }),
 })

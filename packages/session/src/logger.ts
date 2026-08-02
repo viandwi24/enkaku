@@ -1,6 +1,6 @@
 /**
- * Kontrak logger minimal — host (core/agent) menyuntikkan implementasinya
- * sendiri, sehingga package ini tidak memaksakan format log.
+ * A minimal logger contract — the host (core or agent) injects its own
+ * its own, so this package imposes no log format.
  */
 export interface Logger {
   debug(msg: string, extra?: Record<string, unknown>): void

@@ -6,7 +6,7 @@ import type { UiServerLauncher } from './launcher'
 import { toUiSelector } from './selector'
 import { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
 
-/** Aksi elemen langsung — capability opsional di atas Inspector (spec §7.4). */
+/** Direct element actions — an optional capability layered on Inspector (spec §7.4). */
 export interface InspectorElementActions {
   setText(sel: Selector, text: string): Promise<void>
   longClick(sel: Selector): Promise<void>
@@ -28,15 +28,15 @@ export interface UiServerInspectorOptions {
 
 /**
  * Inspector persistent on-device (spec §7.4, pola openatx/uiautomator2):
- * server hidup sekali, query selector dieksekusi DI DEVICE → jauh lebih
- * cepat & tahan UI berubah dibanding `uiautomator dump` (0,5–2 detik).
+ * the server starts once and selector queries run ON THE DEVICE → far faster
+ * and far more tolerant of a changing UI than `uiautomator dump` (0.5–2s).
  *
- * Interface `Inspector` identik dengan engine dump → swap engine
- * transparan untuk script (bukti abstraksi §7 benar).
+ * The `Inspector` interface is identical to the dump engine, so swapping
+ * engines is transparent to scripts (proof the §7 abstraction holds).
  */
 export class UiServerInspector implements Inspector, InspectorElementActions {
   readonly id = 'ui-server'
-  /** Query murah → runner boleh poll rapat saat waitFor. */
+  /** Queries are cheap → the runner may poll tightly during waitFor. */
   readonly recommendedPollIntervalMs = 80
 
   private client: UiServerClient
@@ -64,7 +64,7 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
     return this.watchdog.stop()
   }
 
-  /** Watchdog menyerah → session manager memindahkan ke uiautomator-dump. */
+  /** The watchdog gave up → the session manager moves to uiautomator-dump. */
   isDead(): boolean {
     return this.watchdog.isDead()
   }
@@ -109,7 +109,7 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
   }
 }
 
-/** objInfo → UiNode (bentuk respons diverifikasi terhadap APK yang di-pin). */
+/** objInfo → UiNode (response shape verified against the pinned APK). */
 function infoToUiNode(info: unknown): UiNode {
   const o = info as {
     resourceName?: string

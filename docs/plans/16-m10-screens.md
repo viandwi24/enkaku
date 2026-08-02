@@ -1,6 +1,6 @@
 # Plan 16 — M10b : Perombakan tiap layar & alur pengguna
 
-> **Status:** siap dikerjakan setelah Plan 15. **Depends on:** Plan 15 (token, komponen, kerangka layout).
+> **Status:** SELESAI. Seluruh layar dirombak dan diperiksa langsung di 1440/1024/768 px; static export lolos build.
 > **Referensi spec:** §19 (spec layar), §3 (persona), §10.1 (status device), §15.2 (baterai/termal).
 
 ---

@@ -22,7 +22,7 @@ export function createPaths(dataDir: string): ToolchainPaths {
   }
 }
 
-/** Buat layout + bersihkan .staging (sisa crash) saat boot. */
+/** Create the layout and clear .staging (crash leftovers) at boot. */
 export function ensureLayout(paths: ToolchainPaths): void {
   mkdirSync(paths.toolsDir, { recursive: true })
   rmSync(paths.stagingDir, { recursive: true, force: true })
@@ -30,9 +30,9 @@ export function ensureLayout(paths: ToolchainPaths): void {
 }
 
 /**
- * Pointer versi aktif = file active.json (bukan symlink — Windows butuh
- * privilege untuk symlink; plan 02 §3.2). Tulis temp+rename (atomik),
- * cache in-memory + invalidate saat write/clear.
+ * The active-version pointer is an active.json file (not a symlink — Windows needs
+ * privileges for symlinks; plan 02 §3.2). Written temp-then-rename (atomic),
+ * cached in memory and invalidated on write/clear.
  */
 export class ActivePointerStore {
   private cache = new Map<string, ActivePointer | null>()
@@ -50,10 +50,10 @@ export class ActivePointerStore {
       if (await file.exists()) {
         const parsed = ActivePointerSchema.safeParse(await file.json())
         if (parsed.success) ptr = parsed.data
-        else this.onWarn?.(`active.json ${toolId} korup — dianggap tidak ada pointer`)
+        else this.onWarn?.(`active.json for ${toolId} is corrupt — treating it as no pointer`)
       }
     } catch {
-      this.onWarn?.(`active.json ${toolId} tidak terbaca — dianggap tidak ada pointer`)
+      this.onWarn?.(`active.json for ${toolId} is unreadable — treating it as no pointer`)
     }
     this.cache.set(toolId, ptr)
     return ptr

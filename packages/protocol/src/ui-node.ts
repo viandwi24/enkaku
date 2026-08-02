@@ -1,13 +1,13 @@
 import { z } from 'zod'
 
-/** Tipe inspeksi UI (spec §7, §11.2) — dipakai SDK, drivers, dan runner. */
+/** UI inspection types (spec §7, §11.2) — used by the SDK, drivers, and runner. */
 
 export const PointSchema = z.object({ x: z.number(), y: z.number() })
 
 /**
- * Selector berlapis (stabil → rapuh): { id } → { desc } → { text } → { point }.
- * Tepat satu kunci per selector (strict) — kombinasi multi-kriteria belum
- * didukung di M4.
+ * Layered selectors (stable → fragile): { id } → { desc } → { text } → { point }.
+ * Exactly one key per selector (strict) — multi-criteria combinations are not
+ * supported in M4.
  */
 export const SelectorSchema = z.union([
   z.object({ id: z.string() }).strict(),
@@ -38,7 +38,7 @@ export interface UiNode {
   children: UiNode[]
 }
 
-/** Keycode Android umum (nama → angka) supaya script tidak hafal angka. */
+/** Common Android keycodes (name → number) so scripts never memorise numbers. */
 export const KEYCODES = {
   HOME: 3,
   BACK: 4,
@@ -47,12 +47,17 @@ export const KEYCODES = {
   DPAD_LEFT: 21,
   DPAD_RIGHT: 22,
   DPAD_CENTER: 23,
+  VOLUME_UP: 24,
+  VOLUME_DOWN: 25,
   POWER: 26,
   TAB: 61,
   ENTER: 66,
   DEL: 67,
   ESCAPE: 111,
+  MENU: 82,
+  VOLUME_MUTE: 164,
   APP_SWITCH: 187,
+  SLEEP: 223,
   WAKEUP: 224,
 } as const
 

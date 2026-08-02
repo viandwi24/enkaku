@@ -1,30 +1,43 @@
-import { loadConfig } from './config'
-import { createDaemon } from './daemon'
-import { EnkakuError } from './util/errors'
-import { createLogger } from './util/logger'
+// werift (via tsyringe) needs the Reflect polyfill before its module
+// initialisers run; in a compiled binary the bundler's module order no longer
+// guarantees that, so the entrypoint imports it first.
+import 'reflect-metadata'
 
-const log = createLogger('main')
-const daemon = createDaemon(loadConfig())
+// Job-child mode: a compiled binary cannot spawn `bun child-entry.ts`, so the
+// job runner re-executes this same binary with `--job-child <bundlePath>` and
+// the dispatch happens here, before any daemon code runs (see
+// @enkaku/session isolation.ts).
+if (process.argv.includes('--job-child')) {
+  await import('@enkaku/session/child-entry')
+} else {
+  const { loadConfig } = await import('./config')
+  const { createDaemon } = await import('./daemon')
+  const { EnkakuError } = await import('./util/errors')
+  const { createLogger } = await import('./util/logger')
 
-let shuttingDown = false
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return
-  shuttingDown = true
-  log.info(`terima ${signal}, shutdown...`)
-  await daemon.stop()
-  process.exit(0)
-}
+  const log = createLogger('main')
+  const daemon = createDaemon(loadConfig())
 
-process.on('SIGINT', () => void shutdown('SIGINT'))
-process.on('SIGTERM', () => void shutdown('SIGTERM'))
-
-try {
-  await daemon.start()
-} catch (err) {
-  if (err instanceof EnkakuError) {
-    log.error(`gagal start [${err.code}]: ${err.message}`)
-  } else {
-    log.error(`gagal start: ${String(err)}`)
+  let shuttingDown = false
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
+    log.info(`received ${signal}, shutting down…`)
+    await daemon.stop()
+    process.exit(0)
   }
-  process.exit(1)
+
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+
+  try {
+    await daemon.start()
+  } catch (err) {
+    if (err instanceof EnkakuError) {
+      log.error(`failed to start [${err.code}]: ${err.message}`)
+    } else {
+      log.error(`failed to start: ${String(err)}`)
+    }
+    process.exit(1)
+  }
 }

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Contoh script automation — mencerminkan project milik script author sendiri",
+  "description": "Example automation scripts — mirroring a script author's own project",
   "dependencies": {
     "@enkaku/sdk": "workspace:*",
     "zod": "^4.0.0"

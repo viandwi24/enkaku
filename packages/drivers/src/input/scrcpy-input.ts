@@ -2,18 +2,20 @@ import type { InputSink, Point } from '@enkaku/protocol'
 import { ABSOLUTE_POINTER_DESCRIPTOR, buildPointerReport, type ScrcpySession } from '@enkaku/scrcpy'
 
 const UHID_POINTER_ID = 1
+/** How long the kernel and InputReader need before the pointer accepts reports. */
+const UHID_SETTLE_MS = 1500
 
 export interface ScrcpyInputDeps {
   session: ScrcpySession
-  /** Ukuran layar terkini — dipakai untuk koordinat absolut & normalisasi. */
+  /** Current screen size — used for absolute coordinates and normalisation. */
   screenSize: () => { width: number; height: number }
   onLog?: (level: 'debug' | 'warn', msg: string) => void
 }
 
 /**
- * InputSink `scrcpy-sdk` (spec §9.1): inject lewat InputManager. Kompatibel
- * paling luas, tapi event membawa penanda injeksi — detektor app bisa
- * membedakannya dari sentuhan hardware.
+ * The `scrcpy-sdk` InputSink (spec §9.1): injects via InputManager. Its compatibility is
+ * the broadest, but the events carry an injection marker — an app's detector
+ * can tell them apart from a hardware touch.
  */
 export class ScrcpySdkInput implements InputSink {
   readonly id: string = 'scrcpy-sdk'
@@ -58,24 +60,39 @@ export class ScrcpySdkInput implements InputSink {
 }
 
 /**
- * InputSink `scrcpy-uhid` (spec §9.1, default baru): membuat virtual HID
- * device lewat kernel UHID, sehingga dari sisi Android event datang dari
+ * The `scrcpy-uhid` InputSink (spec §9.1, the new default): creates a virtual HID
+ * device through the kernel's UHID, so from Android's side the events arrive
  * *physical input device* — bukan API injeksi. Bekerja wireless.
  *
- * `text()` sengaja tetap lewat jalur inject-text: HID keyboard bersifat
- * layout-dependent sehingga teks non-ASCII tidak andal (trade-off jujur,
+ * `text()` deliberately stays on the inject-text path: an HID keyboard is
+ * layout-dependent, so non-ASCII text is unreliable (an honest trade-off,
  * dicatat di plan 08 §3.8).
  */
 export class ScrcpyUhidInput extends ScrcpySdkInput {
   override readonly id: string = 'scrcpy-uhid'
   override readonly mode: InputSink['mode'] = 'uhid'
-  private ready = false
+  private ready: Promise<void> | null = null
 
-  async init(): Promise<void> {
-    if (this.ready) return
-    this.deps.session.control.uhidCreate(UHID_POINTER_ID, 'Enkaku Pointer', ABSOLUTE_POINTER_DESCRIPTOR)
-    this.ready = true
-    this.deps.onLog?.('debug', 'UHID pointer absolut terdaftar')
+  /**
+   * Register the virtual pointer, then give the device a moment to bring it up.
+   *
+   * UHID_CREATE is fire-and-forget: the kernel creates the input device and
+   * Android's InputReader has to notice it. A report sent in the same
+   * millisecond arrives before anything is listening and is dropped in
+   * silence, so the first tap of a session went missing — intermittently,
+   * which is worse than never working.
+   *
+   * The promise is cached rather than a boolean: a tap that lands while the
+   * pointer is still settling has to wait for it, not sail past a flag that
+   * was set before the wait even started.
+   */
+  init(): Promise<void> {
+    this.ready ??= (async () => {
+      this.deps.session.control.uhidCreate(UHID_POINTER_ID, 'Enkaku Pointer', ABSOLUTE_POINTER_DESCRIPTOR)
+      await Bun.sleep(UHID_SETTLE_MS)
+      this.deps.onLog?.('debug', 'absolute UHID pointer registered')
+    })()
+    return this.ready
   }
 
   private norm(p: Point): { xNorm: number; yNorm: number } {
@@ -86,6 +103,12 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
   override async tap(p: Point): Promise<void> {
     await this.init()
     const pos = this.norm(p)
+    // Move to the target before touching down. An absolute pointer whose first
+    // ever report already has the touch bit set gives Android a down with no
+    // prior position, and it is dropped — the tap is delivered and nothing
+    // happens. Landing the position first makes the down unambiguous.
+    this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...pos }))
+    await Bun.sleep(100)
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: true, ...pos }))
     await Bun.sleep(40 + Math.random() * 80)
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...pos }))
@@ -94,6 +117,9 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
   override async swipe(from: Point, to: Point, ms: number): Promise<void> {
     await this.init()
     const steps = Math.max(2, Math.round(ms / 16))
+    // Same as tap(): land the position before the touch bit goes up.
+    this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...this.norm(from) }))
+    await Bun.sleep(100)
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: true, ...this.norm(from) }))
     for (let i = 1; i <= steps; i++) {
       const t = i / steps

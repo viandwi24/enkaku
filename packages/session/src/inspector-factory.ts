@@ -12,7 +12,7 @@ import type { PortAllocator } from './port-allocator'
 export interface InspectorHandle {
   inspector: Inspector
   engineId: string
-  /** Interval polling waitFor yang cocok untuk engine ini. */
+  /** The waitFor polling interval that suits this engine. */
   pollIntervalMs: number
   release(): Promise<void>
 }
@@ -30,9 +30,10 @@ export interface InspectorFactoryDeps {
 const DUMP_POLL_MS = 500
 
 /**
- * Pilih engine inspector untuk satu session (plan 06 §3.5).
- * `ui-server` default; gagal start → session TETAP dibuat dengan
- * `uiautomator-dump` (fallback per-session, kolom DB tidak diubah).
+ * Picks the inspector engine for one session (plan 06 §3.5).
+ * `ui-server` is the default; if it fails to start the session is STILL
+ * created with `uiautomator-dump` (a per-session fallback that leaves the DB
+ * column untouched).
  */
 export async function createInspectorForSession(
   deps: InspectorFactoryDeps,
@@ -70,7 +71,7 @@ export async function createInspectorForSession(
       onLog: (level, msg) => deps.log[level](msg),
     })
     await inspector.start()
-    if (inspector.isDead()) throw new Error('watchdog menyerah saat start')
+    if (inspector.isDead()) throw new Error('the watchdog gave up during start')
 
     const claimedPort = port
     return {
@@ -85,7 +86,7 @@ export async function createInspectorForSession(
   } catch (err) {
     if (port !== null) deps.ports.release(port)
     const reason = err instanceof Error ? err.message : String(err)
-    deps.log.warn(`ui-server tidak bisa dipakai di ${opts.deviceId} (${reason}) — fallback ke uiautomator-dump`)
+    deps.log.warn(`ui-server cannot be used on ${opts.deviceId} (${reason}) — falling back to uiautomator-dump`)
     deps.onFallback?.(opts.deviceId, 'ui-server', 'uiautomator-dump', reason)
     return dumpHandle()
   }

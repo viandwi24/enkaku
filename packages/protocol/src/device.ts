@@ -1,8 +1,9 @@
 import { z } from 'zod'
+import { BatteryStateSchema } from './settings'
 
 /**
- * Status device (spec §12): M0 hanya menghasilkan 'offline' | 'idle';
- * enum lengkap dideklarasikan sekarang supaya tidak migrate schema di M3.
+ * Device status (spec §12): M0 only ever produces 'offline' | 'idle'; the
+ * full enum is declared now to avoid a schema migration in M3.
  */
 export const DeviceStatusSchema = z.enum(['offline', 'idle', 'manual', 'busy', 'quarantined'])
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>
@@ -10,7 +11,7 @@ export type DeviceStatus = z.infer<typeof DeviceStatusSchema>
 export const DeviceInfoSchema = z.object({
   id: z.string(),
   stableId: z.string(),
-  /** Alamat transport adb saat ini — BUKAN identitas (spec §7.5). */
+  /** The current adb transport address — NOT an identity (spec §7.5). */
   serial: z.string(),
   label: z.string(),
   androidVersion: z.string().nullable(),
@@ -19,8 +20,12 @@ export const DeviceInfoSchema = z.object({
   screenH: z.number().int().nullable(),
   density: z.number().int().nullable(),
   status: DeviceStatusSchema,
-  /** Unix epoch detik. */
+  /** Unix epoch seconds. */
   lastSeen: z.number().int().nullable(),
+  /** Last battery and temperature reading — carried in the payload so badges show on first load. */
+  battery: BatteryStateSchema.nullable().default(null),
+  /** Quarantine reason, e.g. 'thermal:49.8C'. */
+  quarantineReason: z.string().nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

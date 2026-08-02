@@ -3,13 +3,13 @@ import { BatteryStateSchema } from '../settings'
 
 /** Enrollment (spec §13, §15.1). */
 
-/** core → studio: device butuh authorize di layar HP. */
+/** core → studio: the device needs authorising on its own screen. */
 export const DeviceUnauthorizedMessage = z.object({
   type: z.literal('device.unauthorized'),
   payload: z.object({ serial: z.string() }),
 })
 
-/** studio → core: mulai pairing wireless (Android 11+). */
+/** studio → core: begin wireless pairing (Android 11+). */
 export const DevicePairingRequestMessage = z.object({
   type: z.literal('device.pairing.request'),
   id: z.string(),
@@ -23,7 +23,7 @@ export const DevicePairingRequestResultMessage = z.object({
   payload: z.object({ pairingId: z.string() }),
 })
 
-/** studio → core: submit 6-digit code (+ connect port opsional). */
+/** studio → core: submit the 6-digit code (plus an optional connect port). */
 export const DevicePairingCodeMessage = z.object({
   type: z.literal('device.pairing.code'),
   id: z.string(),
@@ -52,7 +52,7 @@ export const DeviceInspectorStatusMessage = z.object({
   }),
 })
 
-/** Engine inspector turun ke fallback untuk session ini (M4.5). */
+/** The inspector engine dropped to a fallback for this session (M4.5). */
 export const DeviceInspectorFallbackMessage = z.object({
   type: z.literal('device.inspector.fallback'),
   payload: z.object({
@@ -63,7 +63,7 @@ export const DeviceInspectorFallbackMessage = z.object({
   }),
 })
 
-/** Update baterai/suhu device (M5, spec §15.2). */
+/** A device battery and temperature update (M5, spec §15.2). */
 export const DeviceBatteryMessage = z.object({
   type: z.literal('device.battery'),
   payload: z.object({ deviceId: z.string(), battery: BatteryStateSchema }),

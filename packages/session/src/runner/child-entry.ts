@@ -1,10 +1,12 @@
 /**
- * Entry point child process job (plan 05 §4.5). Dijalankan:
- *   bun <child-entry.ts> <bundlePath>
+ * Entry point child process job (plan 05 §4.5). Two launch shapes:
+ *   dev:      bun <child-entry.ts> <bundlePath>
+ *   compiled: <enkaku-binary> --job-child <bundlePath>  (the core's entrypoint
+ *             dispatches on the flag and imports this module)
  *
- * Child hanya mengeksekusi bundle script; semua akses device lewat IPC ke
- * parent. Ini crash containment (spec §11.3) — BUKAN security sandbox:
- * bundle punya akses fs/network penuh sebagai OS user core.
+ * The child only executes the script bundle; every device access goes over IPC to
+ * parent. This is crash containment (spec §11.3) — NOT a security sandbox:
+ * the bundle has full fs and network access as the core's OS user.
  */
 import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type ParentToChild } from './ipc'
 
@@ -87,17 +89,17 @@ process.on('message', (raw: unknown) => {
     if (!waiter) return
     pendingDevice.delete(msg.callId)
     if (msg.ok) waiter.resolve(msg.value)
-    else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'device call gagal'), { code: msg.error?.code }))
+    else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'device call failed'), { code: msg.error?.code }))
   } else if (msg.t === 'artifact.result') {
     const waiter = pendingArtifact.get(msg.callId)
     if (!waiter) return
     pendingArtifact.delete(msg.callId)
     if (msg.ok) waiter.resolve()
-    else waiter.reject(new Error(msg.error?.message ?? 'artifact gagal disimpan'))
+    else waiter.reject(new Error(msg.error?.message ?? 'failed to save the artifact'))
   } else if (msg.t === 'abort') {
     aborted = msg.reason
     abortController.abort()
-    // Semua call device pending dibatalkan supaya fase aktif cepat berhenti.
+    // Every pending device call is cancelled so the active phase stops quickly.
     for (const [, waiter] of pendingDevice) waiter.reject(new Error(`job di-abort (${msg.reason})`))
     pendingDevice.clear()
   } else if (msg.t === 'init') {
@@ -106,9 +108,9 @@ process.on('message', (raw: unknown) => {
 })
 
 /**
- * Fase di-race dengan sinyal abort: script yang tidak memeriksa signal
- * (mis. `await sleep(60_000)`) tetap berhenti dihitung saat timeout —
- * hasilnya dibuang dan job ditandai TIMEOUT.
+ * Each phase races the abort signal: a script that never checks the signal
+ * (say `await sleep(60_000)`) still stops counting at the timeout — its result
+ * is discarded and the job is marked TIMEOUT.
  */
 function raceAbort<T>(promise: Promise<T>): Promise<T> {
   return Promise.race([
@@ -133,8 +135,14 @@ function toScriptError(err: unknown, phase: string): { code: string; message: st
   return { code: 'SCRIPT_ERROR', message: String(err), phase }
 }
 
+/** Dev shape: the bundle is argv[2]; compiled shape: it follows `--job-child`. */
+function resolveBundlePath(): string | undefined {
+  const flag = process.argv.indexOf('--job-child')
+  return flag >= 0 ? process.argv[flag + 1] : process.argv[2]
+}
+
 async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<void> {
-  const bundlePath = process.argv[2]
+  const bundlePath = resolveBundlePath()
   let finishRan = false
   let failure: { code: string; message: string; phase: string; stack?: string } | undefined
   let value: unknown
@@ -142,7 +150,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
   const heartbeat = setInterval(() => send({ t: 'heartbeat' }), HEARTBEAT_MS)
 
   try {
-    if (!bundlePath) throw new Error('bundlePath tidak diberikan ke child')
+    if (!bundlePath) throw new Error('no bundlePath was given to the child')
     const mod = (await import(bundlePath)) as { default?: unknown }
     const def = mod.default as
       | {
@@ -157,7 +165,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
         }
       | undefined
     if (!def || typeof def.run !== 'function') {
-      throw Object.assign(new Error('bundle tidak punya default export ScriptDefinition'), { code: 'BAD_BUNDLE' })
+      throw Object.assign(new Error('the bundle has no default ScriptDefinition export'), { code: 'BAD_BUNDLE' })
     }
     send({
       t: 'ready',
@@ -176,8 +184,8 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
     }
 
     if (init.mode === 'finish-only') {
-      // Process baru: `finish` HANYA boleh bergantung pada ctx (stateless).
-      ctx.error = init.priorError ?? { code: 'UNKNOWN', message: 'attempt sebelumnya mati', phase: 'run' }
+      // Fresh process: `finish` may depend on ctx and nothing else (stateless).
+      ctx.error = init.priorError ?? { code: 'UNKNOWN', message: 'the previous attempt died', phase: 'run' }
       try {
         ctx.params = def.params.parse(init.params)
       } catch {
@@ -219,9 +227,9 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       try {
         await def.finish(ctx)
       } catch (err) {
-        // Error pertama yang menang; kegagalan finish hanya di-log.
+        // The first error wins; a failure in finish is only logged.
         const finishErr = toScriptError(err, 'finish')
-        log('error')(`finish gagal: ${finishErr.message}`)
+        log('error')(`finish failed: ${finishErr.message}`)
         if (!failure) failure = finishErr
       }
     }
@@ -237,7 +245,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
     send({ t: 'result', ok: false, error: e, finishRan })
   } finally {
     clearInterval(heartbeat)
-    // Beri waktu message terakhir terkirim sebelum process keluar.
+    // Give the last message time to flush before the process exits.
     setTimeout(() => process.exit(0), 50)
   }
 }

@@ -6,14 +6,14 @@ import { ToolsManifestSchema, type ToolManifestEntry, type ToolsManifest } from 
 export interface ManifestStoreOptions {
   /** app-data dir; cache remote ditulis ke <dataDir>/manifest.cache.json */
   dataDir: string
-  /** URL manifest remote (ENKAKU_TOOLS_MANIFEST_URL) — opsional. */
+  /** Remote manifest URL (ENKAKU_TOOLS_MANIFEST_URL) — optional. */
   remoteUrl?: string
   onWarn?: (msg: string) => void
 }
 
 /**
  * Sumber manifest (spec §7.3 source abstraction): bundled default →
- * cache remote hasil refresh (kalau valid) menang.
+ * a refreshed remote cache wins when it is valid.
  */
 export class ManifestStore {
   private current: ToolsManifest
@@ -26,7 +26,7 @@ export class ManifestStore {
     return join(this.opts.dataDir, 'manifest.cache.json')
   }
 
-  /** Load cache remote saat boot (kalau ada & valid); korup → abaikan. */
+  /** Load the remote cache at boot when present and valid; ignore it if corrupt. */
   async loadCache(): Promise<void> {
     try {
       const file = Bun.file(this.cachePath)
@@ -38,13 +38,13 @@ export class ManifestStore {
         this.opts.onWarn?.('manifest.cache.json korup — pakai bundled')
       }
     } catch {
-      this.opts.onWarn?.('manifest.cache.json tidak terbaca — pakai bundled')
+      this.opts.onWarn?.('manifest.cache.json is unreadable — falling back to the bundled manifest')
     }
   }
 
   /**
-   * Refresh: fetch remoteUrl → validasi → tulis cache. Tanpa URL → reload
-   * bundled. Gagal parse/fetch → E_MANIFEST_FETCH_FAILED, cache lama utuh.
+   * Refresh: fetch remoteUrl → validate → write the cache. With no URL → reload
+   * bundled one. A parse or fetch failure raises E_MANIFEST_FETCH_FAILED and leaves the old cache intact.
    */
   async refresh(): Promise<ToolsManifest> {
     const url = this.opts.remoteUrl
@@ -58,11 +58,11 @@ export class ManifestStore {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       json = await res.json()
     } catch (err) {
-      throw new ToolchainError('E_MANIFEST_FETCH_FAILED', `gagal fetch manifest dari ${url}: ${String(err)}`, err)
+      throw new ToolchainError('E_MANIFEST_FETCH_FAILED', `failed to fetch the manifest from ${url}: ${String(err)}`, err)
     }
     const parsed = ToolsManifestSchema.safeParse(json)
     if (!parsed.success) {
-      throw new ToolchainError('E_MANIFEST_FETCH_FAILED', `manifest dari ${url} gagal validasi schema`)
+      throw new ToolchainError('E_MANIFEST_FETCH_FAILED', `the manifest from ${url} failed schema validation`)
     }
     const tmp = `${this.cachePath}.tmp`
     await Bun.write(tmp, JSON.stringify(parsed.data, null, 2))
@@ -81,9 +81,9 @@ export class ManifestStore {
   }
 
   /**
-   * Untuk tool locked (swappable:false): pilih versi yang
-   * compatibleCoreRange-nya memuat versi core berjalan. Range invalid /
-   * placeholder (TODO-*) dianggap tidak cocok.
+   * For locked tools (swappable:false): pick the version whose
+   * compatibleCoreRange covers the running core version. An invalid range or
+   * placeholders (TODO-*) never count as a match.
    */
   resolveLockedVersion(toolId: string, coreVersion: string): string | null {
     const tool = this.getTool(toolId)

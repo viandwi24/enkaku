@@ -2,7 +2,7 @@ import { desc } from 'drizzle-orm'
 import type { Db } from '../db'
 import { auditLog } from '../db/schema'
 
-/** Daftar action yang dicatat (spec §14). */
+/** The actions that get recorded (spec §14). */
 export type AuditAction =
   | 'user.login'
   | 'user.logout'

@@ -5,9 +5,9 @@ import type { DeviceCall } from './runner/ipc'
 import type { DeviceSession } from './session'
 
 export interface TimingSettings {
-  /** Jitter durasi tekan (ms). */
+  /** Jitter on how long a press is held (ms). */
   tapJitterMs: [number, number]
-  /** Jeda acak sebelum aksi (ms). */
+  /** A random pause before the action (ms). */
   betweenActionMs: [number, number]
   /** Offset acak koordinat (px). */
   coordJitterPx: number
@@ -22,17 +22,17 @@ export const DEFAULT_TIMING: TimingSettings = {
 const randBetween = (lo: number, hi: number): number => lo + Math.random() * Math.max(0, hi - lo)
 
 /**
- * Eksekusi device.call dari child (plan 05 §4.6). Semua aksi lewat
- * DeviceSession (InputSink + Inspector) → per-device queue Plan 01, jadi
- * script tidak pernah menyentuh adb langsung.
+ * Executes device.call from the child (plan 05 §4.6). Every action goes
+ * through DeviceSession (InputSink + Inspector) and therefore the Plan 01
+ * per-device queue, so scripts never touch adb directly.
  *
- * Timing realism (spec §9.3): jitter jeda antar-aksi + offset koordinat,
- * supaya test menempuh jalur app yang sebenarnya.
+ * Timing realism (spec §9.3): jittered pauses between actions plus coordinate offsets,
+ * so tests exercise the real application path.
  */
 export function createDeviceExecutor(deps: { session: DeviceSession; timing?: TimingSettings }) {
   const timing = deps.timing ?? DEFAULT_TIMING
-  // Inspector milik session (ui-server / uiautomator-dump). Kalau session
-  // dibuat tanpa inspector (mode kontrol manual), pakai engine dump ad-hoc.
+  // The session's own inspector (ui-server / uiautomator-dump). When a session
+  // is created without one (manual control mode), fall back to an ad-hoc dump engine.
   const inspector: Inspector = deps.session.inspector ?? new UiautomatorDumpInspector(deps.session.transport)
 
   const jitterPoint = (p: Point): Point => ({
@@ -45,11 +45,11 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
   async function resolveTarget(sel: Selector): Promise<Point> {
     if ('point' in sel) return sel.point
     const node = await inspector.find(sel)
-    if (!node) throw new SessionError('element_not_found', `elemen tidak ditemukan: ${JSON.stringify(sel)}`)
+    if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
     return centerOf(node.bounds)
   }
 
-  /** Selector terakhir yang di-tap — target implisit untuk `type`. */
+  /** The last selector tapped — the implicit target for `type`. */
   let lastTarget: Selector | null = null
 
   return async function execute(call: DeviceCall): Promise<unknown> {
@@ -68,8 +68,8 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
       }
       case 'type': {
         await pause()
-        // Engine dengan aksi elemen (ui-server) memakai setText pada elemen
-        // yang sedang fokus — jauh lebih reliable, termasuk di WebView.
+        // Engines with element actions (ui-server) use setText on the focused
+        // element — far more reliable, WebViews included.
         if (supportsElementActions(inspector) && lastTarget) {
           await inspector.setText(lastTarget, call.args.text)
           return undefined
@@ -86,8 +86,9 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
         return inspector.find(call.args.sel)
       }
       case 'waitFor': {
-        // Loop polling di parent — satu call = satu semantik, pacing terpusat.
-        // Interval mengikuti engine aktif: ui-server murah (~80ms), dump mahal.
+        // The polling loop lives in the parent — one call, one meaning, pacing in
+        // one place. The interval follows the active engine: ui-server is cheap
+        // (~80ms), a dump is expensive.
         const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         const deadline = Date.now() + call.args.timeout
         for (;;) {

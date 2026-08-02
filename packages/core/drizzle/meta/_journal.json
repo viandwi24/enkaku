@@ -50,6 +50,13 @@
       "when": 1785570143957,
       "tag": "0006_steady_yellow_claw",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785637897538,
+      "tag": "0007_tiny_kat_farrell",
+      "breakpoints": true
     }
   ]
 }

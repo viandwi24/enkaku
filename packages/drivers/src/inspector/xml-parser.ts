@@ -51,13 +51,13 @@ function toUiNode(raw: RawNode): UiNode {
   }
 }
 
-/** XML `uiautomator dump` → UiNode tree (root sintetis dari <hierarchy>). */
+/** `uiautomator dump` XML → UiNode tree (synthetic root from <hierarchy>). */
 export function parseUiDump(xml: string): UiNode {
-  // Output uiautomator sering diawali noise ("UI hierchary dumped to: ...").
+  // uiautomator output often starts with noise ("UI hierchary dumped to: ...").
   const start = xml.indexOf('<?xml')
   const cleaned = start >= 0 ? xml.slice(start) : xml
   const doc = parser.parse(cleaned) as { hierarchy?: RawNode }
-  if (!doc.hierarchy) throw new Error('dump XML tidak punya elemen <hierarchy>')
+  if (!doc.hierarchy) throw new Error('the XML dump has no <hierarchy> element')
   return {
     resourceId: '',
     text: '',

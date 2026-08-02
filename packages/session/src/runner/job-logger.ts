@@ -15,13 +15,13 @@ export interface JobLogEntry {
 
 export interface JobLogger {
   append(level: LogLevel, source: LogSource, msg: string, fields?: Record<string, unknown>): void
-  /** Tutup file & kembalikan isi log untuk didaftarkan sebagai artifact. */
+  /** Close the file and return the log contents to register as an artifact. */
   close(): Promise<{ path: string; bytes: Uint8Array }>
 }
 
 /**
- * Log per job: JSON-lines ke `<app-data>/artifacts/<job-id>/job.log`
- * + fan-out WS realtime (plan 05 §4.8).
+ * Per-job log: JSON-lines written to `<app-data>/artifacts/<job-id>/job.log`
+ * plus a realtime WS fan-out (plan 05 §4.8).
  */
 export function createJobLogger(deps: {
   dataDir: string

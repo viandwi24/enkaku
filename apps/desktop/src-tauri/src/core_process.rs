@@ -1,9 +1,9 @@
-//! Siklus hidup proses core (plan 14 §4.2).
+//! The core process lifecycle (plan 14 §4.2).
 //!
-//! Core dijalankan sebagai proses anak dengan bind loopback, sehingga mode
-//! auth `local` sah dipakai: tanpa login, tapi juga tidak terjangkau dari
-//! jaringan. PID ditulis ke berkas supaya proses yatim akibat crash bisa
-//! dibersihkan saat aplikasi dibuka lagi.
+//! The core runs as a child process bound to loopback, which is what makes
+//! `local` auth mode legitimate: no login, but also unreachable from the
+//! network. The PID is written to a file so a process orphaned by a crash can
+//! be cleaned up the next time the app opens.
 
 use std::fs;
 use std::net::TcpListener;
@@ -16,8 +16,8 @@ pub struct CoreHandle {
     pub port: u16,
 }
 
-/// Cari port bebas mulai dari 7700 supaya tidak bentrok dengan core lain
-/// yang mungkin sedang berjalan.
+/// Find a free port starting at 7700, so it never collides with another core
+/// that may already be running.
 fn find_free_port(start: u16) -> u16 {
     for port in start..start + 100 {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
@@ -31,14 +31,14 @@ fn pid_file(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("core.pid")
 }
 
-/// Bersihkan proses core yatim dari sesi sebelumnya (aplikasi crash).
+/// Clean up an orphaned core process from a previous session (an app crash).
 pub fn cleanup_orphan(data_dir: &PathBuf) {
     let path = pid_file(data_dir);
     let Ok(content) = fs::read_to_string(&path) else {
         return;
     };
     if let Ok(pid) = content.trim().parse::<i32>() {
-        // Kill lunak; kalau prosesnya sudah tidak ada, ini tidak berefek.
+        // A soft kill; if the process is already gone this does nothing.
         let _ = Command::new("kill").arg(pid.to_string()).status();
     }
     let _ = fs::remove_file(&path);
@@ -56,8 +56,8 @@ pub fn spawn(data_dir: &PathBuf, binary: &str) -> std::io::Result<CoreHandle> {
     Ok(CoreHandle { child, port })
 }
 
-/// Tunggu core siap sebelum memuat Studio — jendela putih tanpa penjelasan
-/// adalah pengalaman terburuk saat sesuatu gagal.
+/// Wait for the core to be ready before loading Studio — a white window with
+/// no explanation is the worst thing to show when something fails.
 pub fn wait_healthy(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {

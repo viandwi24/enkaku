@@ -2,14 +2,14 @@ import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqli
 
 /**
  * Tabel devices (spec §12, subset M0). Tabel lain (jobs, scripts, artifacts,
- * users, tool_installs, audit_log) menyusul di plan yang membutuhkannya —
- * jangan dibuat "sekalian" (plan 01 §2).
+ * users, tool_installs, audit_log) arrive in the plans that need them —
+ * are not created "while we are here" (plan 01 §2).
  */
 export const devices = sqliteTable('devices', {
   id: text('id').primaryKey(),
   /** Identitas stabil: ro.serialno / ANDROID_ID (spec §7.5). */
   stableId: text('stable_id').notNull().unique(),
-  /** Alamat transport adb saat ini — bisa berubah (USB ↔ ip:port). */
+  /** The current adb transport address — it can change (USB ↔ ip:port). */
   serial: text('serial').notNull(),
   label: text('label').notNull(),
   ownerId: text('owner_id'),
@@ -28,7 +28,7 @@ export const devices = sqliteTable('devices', {
   battery: text('battery', { mode: 'json' }),
   settings: text('settings', { mode: 'json' }),
   status: text('status').default('offline'),
-  /** Alasan quarantine (mis. 'thermal:47.3C') — null saat tidak quarantined. */
+  /** Quarantine reason (e.g. 'thermal:47.3C') — null when not quarantined. */
   quarantineReason: text('quarantine_reason'),
   /** Agent pemilik device (mode cloud); null = device lokal. */
   agentId: text('agent_id'),
@@ -39,7 +39,7 @@ export const devices = sqliteTable('devices', {
 export type DeviceRow = typeof devices.$inferSelect
 export type DeviceInsert = typeof devices.$inferInsert
 
-/** Katalog install tool (spec §12) — kebenaran fisik tetap di disk. */
+/** The tool install catalogue (spec §12) — physical truth still lives on disk. */
 export const toolInstalls = sqliteTable('tool_installs', {
   id: text('id').primaryKey(),
   toolId: text('tool_id').notNull(),
@@ -51,7 +51,7 @@ export const toolInstalls = sqliteTable('tool_installs', {
 
 export type ToolInstallRow = typeof toolInstalls.$inferSelect
 
-/** Antrian job per-device (spec §12, §10.3). */
+/** The per-device job queue (spec §12, §10.3). */
 export const jobs = sqliteTable(
   'jobs',
   {
@@ -61,7 +61,7 @@ export const jobs = sqliteTable(
     params: text('params', { mode: 'json' }),
     priority: integer('priority').default(0),
     status: text('status').default('queued'), // queued|running|success|failed|cancelled
-    /** Epoch detik — lease job, diperpanjang heartbeat runner (spec §10.2). */
+    /** Epoch seconds — the job lease, extended by the runner's heartbeat (spec §10.2). */
     leaseExpiresAt: integer('lease_expires_at'),
     result: text('result', { mode: 'json' }),
     error: text('error'),
@@ -77,15 +77,22 @@ export const jobs = sqliteTable(
 
 export type JobRow = typeof jobs.$inferSelect
 
-/** Script hasil publish (spec §12, §11.4 — bundle jadi, bukan source mentah). */
+/** Published scripts (spec §12, §11.4 — finished bundles, not raw source). */
 export const scripts = sqliteTable(
   'scripts',
   {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
     version: text('version').notNull(),
-    /** Hasil `enkaku publish` (bundle esm satu file). */
+    /** The output of `enkaku publish` (a single-file ESM bundle). */
     bundle: text('bundle').notNull(),
+    /**
+     * The entry file's original source, kept purely so a human can read what a
+     * job actually ran. The bundle is ~500 KB of inlined dependencies and is
+     * useless to look at. Nullable because scripts published before this
+     * column existed have none.
+     */
+    source: text('source'),
     paramsSchema: text('params_schema', { mode: 'json' }),
     enabled: integer('enabled', { mode: 'boolean' }).default(true),
     createdBy: text('created_by'),
@@ -96,7 +103,7 @@ export const scripts = sqliteTable(
 
 export type ScriptRow = typeof scripts.$inferSelect
 
-/** Artifact per job (spec §12). `path` relatif terhadap app-data. */
+/** Per-job artifacts (spec §12). `path` is relative to app-data. */
 export const artifacts = sqliteTable(
   'artifacts',
   {
@@ -113,7 +120,7 @@ export const artifacts = sqliteTable(
 
 export type ArtifactRow = typeof artifacts.$inferSelect
 
-/** Setting farm-wide — selalu satu baris (id = 1). */
+/** Farm-wide settings — always exactly one row (id = 1). */
 export const farmSettings = sqliteTable('farm_settings', {
   id: integer('id').primaryKey(),
   value: text('value', { mode: 'json' }).notNull(),
@@ -123,7 +130,7 @@ export const farmSettings = sqliteTable('farm_settings', {
 export type FarmSettingsRow = typeof farmSettings.$inferSelect
 
 
-/** User (spec §12) — password argon2, dipakai mulai M7. */
+/** Users (spec §12) — argon2 passwords, in use from M7. */
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
@@ -134,7 +141,7 @@ export const users = sqliteTable('users', {
 
 export type UserRow = typeof users.$inferSelect
 
-/** Session login — token mentah TIDAK disimpan, hanya sha256-nya. */
+/** Login sessions — the raw token is NEVER stored, only its sha256. */
 export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
   tokenHash: text('token_hash').notNull().unique(),
@@ -148,7 +155,7 @@ export const sessions = sqliteTable('sessions', {
 
 export type SessionRow = typeof sessions.$inferSelect
 
-/** Audit trail (spec §14): siapa melakukan apa. */
+/** Audit trail (spec §14): who did what. */
 export const auditLog = sqliteTable(
   'audit_log',
   {
@@ -164,13 +171,13 @@ export const auditLog = sqliteTable(
 
 export type AuditRow = typeof auditLog.$inferSelect
 
-/** Agent cloud (plan 11 §4.3) — satu agent memegang banyak device. */
+/** Cloud agents (plan 11 §4.3) — one agent holds many devices. */
 export const agents = sqliteTable('agents', {
   id: text('id').primaryKey(),
   /** Multi-tenant (M8c) — null di single-tenant. */
   tenantId: text('tenant_id'),
   name: text('name').notNull(),
-  /** Enrollment token sekali pakai (null setelah ditukar credential). */
+  /** A single-use enrollment token (null once exchanged for a credential). */
   tokenHash: text('token_hash'),
   credentialHash: text('credential_hash'),
   status: text('status').default('pending'), // pending|online|offline|disabled

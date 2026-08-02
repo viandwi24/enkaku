@@ -14,8 +14,8 @@ export interface RetentionGc {
 
 /**
  * Retention artifact (spec §18): screenshot/log/video menumpuk cepat.
- * Kebijakan: hapus yang melewati TTL, lalu—kalau total masih di atas
- * kuota—hapus paling lama dulu (LRU by createdAt) sampai muat.
+ * The policy: delete anything past its TTL, then — if the total is still over
+ * quota — delete oldest-first (LRU by createdAt) until it fits.
  */
 export function createRetentionGc(deps: {
   db: Db
@@ -36,7 +36,7 @@ export function createRetentionGc(deps: {
         rmSync(join(deps.dataDir, row.path), { force: true })
         freed += row.sizeBytes ?? 0
       } catch (err) {
-        deps.log.warn(`gagal hapus artifact ${row.path}: ${String(err)}`)
+        deps.log.warn(`failed to delete artifact ${row.path}: ${String(err)}`)
       }
     }
     deps.db.delete(artifacts).where(inArray(artifacts.id, ids)).run()
@@ -53,7 +53,7 @@ export function createRetentionGc(deps: {
     let freed = removeRows(expired)
     let deleted = expired.length
 
-    // Sisa: kalau total masih di atas kuota, buang paling lama dulu.
+    // Then: if the total is still over quota, drop the oldest first.
     const remaining = rows.filter((r) => !expired.includes(r.id))
     const quotaBytes = policy.maxTotalGb * 1024 ** 3
     let total = remaining.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
@@ -67,7 +67,7 @@ export function createRetentionGc(deps: {
     deleted += overflow.length
 
     if (deleted > 0) {
-      deps.log.info(`retention GC: ${deleted} artifact dihapus (${(freed / 1024 ** 2).toFixed(1)} MB)`)
+      deps.log.info(`retention GC: deleted ${deleted} artifact(s) (${(freed / 1024 ** 2).toFixed(1)} MB)`)
       deps.onSwept?.({ deleted, freedBytes: freed })
     }
     return { deleted, freedBytes: freed }

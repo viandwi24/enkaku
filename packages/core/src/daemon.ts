@@ -52,9 +52,11 @@ import { provisionRequiredTools, toolchainEventToMessage } from './tools/provisi
 import { createToolInstallStore } from './tools/store'
 import { createLogger } from './util/logger'
 
-export const CORE_VERSION = '0.0.1'
+import pkg from '../package.json'
 
-/** Tool wajib: adb (M1) + APK inspector on-device (M4.5). M6 += scrcpy-server. */
+export const CORE_VERSION = pkg.version
+
+/** Required tools: adb (M1) and the on-device inspector APKs (M4.5). M6 adds scrcpy-server. */
 const REQUIRED_TOOLS = ['adb', 'ui-server', 'ui-server-test', 'scrcpy-server']
 
 export interface Daemon {
@@ -89,7 +91,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // 1. DB + migrasi
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
       runMigrations(opened.db)
-      log.info('db siap (migrasi ter-apply)')
+      log.info('db ready (migrations applied)')
       const db = opened.db
 
       // 2. WS hub + Toolchain Manager (emit → broadcast)
@@ -109,7 +111,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           startTracker: async () => {
             await registry?.start()
           },
-          // drainSessions: no-op di M1 — diisi Plan 04 (drain lease/session hidup)
+          // drainSessions: a no-op in M1 — filled in by Plan 04 (draining live leases and sessions)
           log: log.child('adb-swap'),
         }),
       })
@@ -117,20 +119,20 @@ export function createDaemon(cfg: CoreConfig): Daemon {
 
       const settingsStore = createFarmSettingsStore(db)
 
-      // Auth & audit (M7). Mode efektif ditentukan bind address (spec §14).
+      // Auth and audit (M7). The effective mode follows the bind address (spec §14).
       const authMode = resolveAuthMode(cfg)
       assertTlsPolicy(cfg, authMode)
       const auth = createAuthService({ db, sessionTtlHours: cfg.auth.sessionTtlHours })
       const agentAuth = createAgentAuth(db)
 
-      // Mode cloud (spec §5.3): orchestrator tidak memegang device lokal;
-      // device datang dari agent lewat tunnel outbound.
+      // Cloud mode (spec §5.3): the orchestrator holds no local devices;
+      // devices arrive from agents over their outbound tunnels.
       const isOrchestrator = process.env.ENKAKU_MODE === 'orchestrator'
       const tunnelRegistry = createTunnelRegistry({
         db,
         log: log.child('tunnel'),
         onDevicesChanged: () => scheduler?.kick(),
-        // Tunnel putus → sesi remote milik agent itu tidak lagi sah.
+        // The tunnel dropped → that agent's remote sessions are no longer valid.
         onAgentGone: (agentId) => remoteSessions?.dropAgent(agentId),
       })
       // Hook di-set setelah remote manager & job bridge dibuat (siklus wiring).
@@ -146,13 +148,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         onJobProgress: (p) => onJobProgress?.(p as never),
       })
 
-      // Pairing butuh adb; di mode orchestrator enrollment dilakukan di agent.
+      // Pairing needs adb; in orchestrator mode enrollment happens on the agent.
       let pairingService: PairingService = {
         async request() {
-          throw new EnkakuError('not_supported_in_mode', 'pairing wireless dilakukan di agent, bukan control plane')
+          throw new EnkakuError('not_supported_in_mode', 'wireless pairing happens on the agent, not the control plane')
         },
         async submitCode() {
-          return { success: false, message: 'pairing wireless dilakukan di agent, bukan control plane' }
+          return { success: false, message: 'wireless pairing happens on the agent, not the control plane' }
         },
       }
 
@@ -167,7 +169,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const audit = createAuditLogger(db)
       if (authMode === 'local') auth.ensureLocalAdmin()
       log.info(
-        `auth mode: ${authMode}${authMode === 'server' && !auth.hasAnyAdmin() ? ' (setup admin dibutuhkan)' : ''}`,
+        `auth mode: ${authMode}${authMode === 'server' && !auth.hasAnyAdmin() ? ' (admin setup required)' : ''}`,
       )
 
       // 3. Queue / lease / scheduler (M3)
@@ -217,7 +219,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         log: log.child('lease'),
         onJobLeaseExpired: (jobId, reason) => host.finishExternally(jobId, 'failed', reason),
-        onManualRevoked: (deviceId, reason) => hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason } }),
+        onManualRevoked: (deviceId, reason) => {
+          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason } })
+          // The holder learns why from lease.revoked; everyone else just needs
+          // to know the device is free again.
+          hub.broadcast({ type: 'lease.changed', payload: { deviceId, held: false, expiresAt: null } })
+        },
         onDeviceFreed: () => scheduler?.kick(),
       })
       leaseManager = leases
@@ -245,7 +252,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
       })
 
-      // Job jarak jauh: device milik agent dieksekusi di agent (plan 12 §4.5).
+      // Remote jobs: a device owned by an agent runs on that agent (plan 12 §4.5).
       const remoteBridge = createRemoteJobBridge({
         db,
         router: tunnelRouter,
@@ -294,19 +301,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
       })
       onJobProgress = (p) => remoteBridge.handleProgress(p)
-      // Device milik agent memakai executor jarak jauh; device lokal memakai
-      // runner in-process (didaftarkan setelah adb siap).
+      // Agent-owned devices use the remote executor; local devices use the
+      // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
 
-      // Relay WebRTC: dipakai untuk device milik agent (mode cloud). Di LAN,
-      // Studio tetap memakai WS+WebCodecs yang lebih sederhana.
+      // The WebRTC relay serves agent-owned devices (cloud mode). On a LAN,
+      // Studio stays on the simpler WS + WebCodecs path.
       const webrtcRelay = createWebRtcRelay({
         factory: createWeriftFactory(),
         log: log.child('webrtc'),
         subscribeVideo: (deviceId, cb) =>
           tunnelRouter.subscribeVideo(deviceId, (payload) => cb(payload, BigInt(Date.now()) * 1000n)),
         requestKeyframe: (deviceId) => {
-          // scrcpy 3.3.1: minta IDR baru lewat control message reset-video.
+          // scrcpy 3.3.1: request a fresh IDR through the reset-video control message.
           tunnelRouter.sendToDevice(deviceId, {
             type: 'session.start',
             payload: { deviceId, engines: {} },
@@ -316,7 +323,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
 
       webrtcRelayRef = webrtcRelay
 
-      // 4. HTTP + WS server naik DULU supaya client bisa lihat progress provision
+      // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         listDevices: () => db.select().from(devices).all().map(rowToDeviceInfo),
         deviceCount: () => db.select().from(devices).all().length,
@@ -361,15 +368,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         ...tlsOptions,
         async fetch(req, srv) {
           const url = new URL(req.url)
-          // Tunnel agent: auth pakai credential hasil enrollment.
+          // The agent tunnel authenticates with the credential from enrollment.
           if (url.pathname === '/agent/ws') {
             const agentId = await agentAuth.verify(req.headers.get('authorization'))
             if (!agentId) return new Response('unauthorized', { status: 401 })
             if (srv.upgrade(req, { data: { agentId } })) return undefined
-            return new Response('upgrade gagal', { status: 400 })
+            return new Response('upgrade failed', { status: 400 })
           }
           if (url.pathname === '/ws') {
-            // WS tidak selalu membawa cookie → dukung ticket sekali-pakai.
+            // A WS handshake does not always carry cookies → support single-use tickets.
             if (authMode === 'server') {
               const ticket = url.searchParams.get('ticket')
               const cookie = req.headers.get('cookie')?.match(/enkaku_session=([^;]+)/)?.[1]
@@ -377,7 +384,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
               if (!user) return new Response('unauthorized', { status: 401 })
             }
             if (srv.upgrade(req, { data: null })) return undefined
-            return new Response('upgrade gagal', { status: 400 })
+            return new Response('upgrade failed', { status: 400 })
           }
           return app.fetch(req, srv)
         },
@@ -412,7 +419,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
       log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
 
-      // Retention artifact (spec §18) — kebijakan dari farm settings.
+      // Artifact retention (spec §18) — the policy comes from farm settings.
       retention = createRetentionGc({
         db,
         dataDir: cfg.dataDir,
@@ -429,9 +436,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const sched = scheduler
       stopScheduler = () => sched.stop()
 
-      // Router WS dipasang untuk SEMUA mode. Di orchestrator, `sessions`
-      // null dan seluruh operasi device dilayani lewat agent — tanpa ini,
-      // permintaan browser diabaikan diam-diam (bug yang diperbaiki Plan 12).
+      // The WS router is attached in EVERY mode. Under the orchestrator,
+      // `sessions` is null and all device work is served through agents —
+      // without this, browser requests were silently ignored (the bug Plan 12 fixed).
       const attachWsRouter = (localSessions: SessionManager | null) =>
         hub.setRouter(
           createWsMessageHandler({
@@ -441,19 +448,20 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             pairing: pairingService,
             leases,
             jobs: jobService,
+            broadcast: (msg) => hub.broadcast(msg),
             log: log.child('ws-handler'),
           }),
         )
 
       if (isOrchestrator) {
-        // Orchestrator tidak menyentuh adb/device lokal sama sekali.
+        // The orchestrator never touches adb or a local device.
         adbState = 'orchestrator'
         attachWsRouter(null)
         log.info('mode orchestrator: menunggu agent connect di /agent/ws')
         return
       }
 
-      // 5. Provision tool wajib → baru subsistem adb boleh start (gate)
+      // 5. Provision the required tools → only then may the adb subsystem start (a gate)
       try {
         await provisionRequiredTools({ manager: toolchain, hub, log: log.child('provision'), required: REQUIRED_TOOLS })
         const adbPath = await toolchain.resolveToolPath('adb')
@@ -462,7 +470,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        // Port pool bersama: ui-server (M4.5) & scrcpy (M6).
+        // A shared port pool: ui-server (M4.5) and scrcpy (M6).
         const ports = new PortAllocator(parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE))
         const adbClient = adb
         const inspectorLog = log.child('inspector')
@@ -479,17 +487,22 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           client: adb,
           devices: createDbDeviceSource(db),
           log: log.child('session'),
+          onSessionEnded: (deviceId, reason) =>
+            hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } }),
           makeScrcpy: async (deviceId, transport) => {
             // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
             const jarPath = await toolchain.resolveToolPath('scrcpy-server').catch(() => null)
             if (!jarPath) {
-              scrcpyLog.info('scrcpy-server belum ter-provision — memakai fallback screencap-loop')
+              scrcpyLog.info('scrcpy-server is not provisioned — using the screencap-loop fallback')
               return null
             }
-            const port = await ports.claim(`scrcpy:${deviceId}`)
+            // No port is claimed here on purpose: adb picks one (tcp:0) and the
+            // scrcpy session verifies the binding belongs to this serial. The
+            // old path claimed a port from the shared allocator and leaked it,
+            // which is how a port could end up bound to the other device.
             return startScrcpySession(
               { serial: transport.serial, exec: (cmd) => transport.exec(cmd), hostAdb },
-              { jarPath, port, onLog: (level, msg) => scrcpyLog[level](msg) },
+              { jarPath, onLog: (level, msg) => scrcpyLog[level](msg) },
             )
           },
           makeInspector: (deviceId, transport, requested) =>
@@ -522,7 +535,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             ),
         })
 
-        // Script executor (M4) butuh SessionManager → didaftarkan setelah adb siap.
+        // The script executor (M4) needs SessionManager → registered once adb is ready.
         const runner = createJobRunner({
           logDir: cfg.dataDir,
           sessions,
@@ -547,7 +560,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
               },
             }),
           onArtifact: () => {
-            // Broadcast sudah dilakukan oleh sink saat menulis baris DB.
+            // The sink already broadcast this when it wrote the DB row.
           },
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
@@ -559,7 +572,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         executors.setFallback({
           validateParams: (params) => localExecutor.validateParams(params),
           run: (job, ctx) => {
-            // Device milik agent → jalankan di agent; selain itu lokal.
+            // Agent-owned device → run it on the agent; otherwise run locally.
             const owner = remoteSessions?.agentIdFor(job.deviceId) ?? null
             return owner ? remoteBridge.executor.run(job, ctx) : localExecutor.run(job, ctx)
           },
@@ -585,9 +598,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           hub,
           log: log.child('registry'),
           states,
+          // A newly enrolled device inherits the farm defaults (spec §12).
+          deviceDefaults: () => settingsStore.get().defaults,
           onDeviceGone: (deviceId) => {
             void sessions?.closeDevice(deviceId)
-            // Job yang sedang jalan di device itu → failed (spec §10.1).
+            // Any job running on that device → failed (spec §10.1).
             const running = jobStore.runningByDevice(deviceId)
             if (running) host.finishExternally(running.id, 'failed', 'device disconnected')
           },
@@ -595,11 +610,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         })
         await registry.start()
         adbState = 'ready'
-        log.info(`subsistem adb siap (devices terdaftar: ${db.select().from(devices).all().length})`)
+        log.info(`adb subsystem ready (devices registered: ${db.select().from(devices).all().length})`)
       } catch (err) {
         adbState = 'error'
-        // Core tetap hidup: API tools masih bisa dipakai untuk retry install.
-        log.error(`subsistem adb gagal start: ${String(err)} — core tetap hidup, retry via /api/tools`)
+        // The core stays up: the tools API can still be used to retry the install.
+        log.error(`adb subsystem failed to start: ${String(err)} — the core stays up, retry via /api/tools`)
       }
     },
 

@@ -3,9 +3,9 @@ import { join } from 'node:path'
 import type { ScriptRow } from '../db/schema'
 
 /**
- * Materialisasi bundle dari kolom `scripts.bundle` ke file supaya child
- * process bisa `import()`. Content-addressed per (id, version) + hash isi,
- * jadi publish baru otomatis memakai file baru.
+ * Materialises the bundle from the `scripts.bundle` column into a file so the
+ * child process can `import()` it. Content-addressed by (id, version) plus a
+ * content hash, so a fresh publish automatically lands in a fresh file.
  */
 export async function materializeBundle(dataDir: string, script: ScriptRow): Promise<string> {
   const dir = join(dataDir, 'cache', 'bundles')

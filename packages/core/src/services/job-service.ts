@@ -16,7 +16,7 @@ export interface JobService {
   }
 }
 
-/** Satu jalur kode untuk REST & WS (plan 04 §4.7). */
+/** One code path for both REST and WS (plan 04 §4.7). */
 export function createJobService(deps: {
   jobStore: JobStore
   registry: ExecutorRegistry
@@ -24,18 +24,18 @@ export function createJobService(deps: {
   host: ExecutorHost
   log: Logger
   onJobStatus: (info: JobInfo) => void
-  /** Cek row tabel `scripts` untuk scriptId non-built-in (M4). */
+  /** Check the `scripts` table for a non-built-in scriptId (M4). */
   findScript?: (scriptId: string) => { enabled: boolean } | null
 }): JobService {
   return {
     enqueue(input) {
       if (!deps.registry.isBuiltIn(input.scriptId)) {
         const script = deps.findScript?.(input.scriptId) ?? null
-        if (!script) throw new EnkakuError('unknown_script', `script tidak dikenal: ${input.scriptId}`)
-        if (!script.enabled) throw new EnkakuError('script_disabled', `script ${input.scriptId} dinonaktifkan`)
+        if (!script) throw new EnkakuError('unknown_script', `unknown script: ${input.scriptId}`)
+        if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${input.scriptId} is disabled`)
       }
       const executor = deps.registry.get(input.scriptId)
-      if (!executor) throw new EnkakuError('unknown_script', `script tidak dikenal: ${input.scriptId}`)
+      if (!executor) throw new EnkakuError('unknown_script', `unknown script: ${input.scriptId}`)
       const params = executor.validateParams(input.params)
       const row = deps.jobStore.enqueue({
         scriptId: input.scriptId,
@@ -43,7 +43,7 @@ export function createJobService(deps: {
         params,
         priority: input.priority ?? 0,
       })
-      const info = rowToJobInfo(row)
+      const info = rowToJobInfo(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
       deps.onJobStatus(info)
       deps.scheduler.kick()
       return info
@@ -51,27 +51,28 @@ export function createJobService(deps: {
 
     cancel(jobId) {
       const job = deps.jobStore.get(jobId)
-      if (!job) throw new EnkakuError('job_not_found', `job tidak ada: ${jobId}`)
+      if (!job) throw new EnkakuError('job_not_found', `no such job: ${jobId}`)
       if (job.status === 'queued') {
         const cancelled = deps.jobStore.cancelQueued(jobId)
-        if (!cancelled) throw new EnkakuError('job_not_cancellable', 'job keburu berubah status')
+        if (!cancelled) throw new EnkakuError('job_not_cancellable', 'the job changed status first')
         const info = rowToJobInfo(cancelled)
         deps.onJobStatus(info)
         return info
       }
       if (job.status === 'running') {
         if (!deps.host.abort(jobId)) {
-          // Tidak ada executor hidup (mis. setelah restart) → tutup langsung.
-          deps.host.finishExternally(jobId, 'cancelled', 'dibatalkan (executor tidak aktif)')
+          // No live executor (after a restart, say) → close it immediately.
+          deps.host.finishExternally(jobId, 'cancelled', 'cancelled (no executor was running)')
         }
         return rowToJobInfo(deps.jobStore.get(jobId) ?? job)
       }
-      throw new EnkakuError('job_not_cancellable', `job berstatus ${job.status}`)
+      throw new EnkakuError('job_not_cancellable', `the job is ${job.status}`)
     },
 
     get(jobId) {
       const row = deps.jobStore.get(jobId)
-      return row ? rowToJobInfo(row) : null
+      if (!row) return null
+      return rowToJobInfo(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
     },
 
     list(filter) {
@@ -81,7 +82,8 @@ export function createJobService(deps: {
         limit: filter.limit ?? 50,
         offset: filter.offset ?? 0,
       })
-      return { jobs: rows.map(rowToJobInfo), total }
+      const names = deps.jobStore.scriptNames(rows.map((r) => r.scriptId))
+      return { jobs: rows.map((r) => rowToJobInfo(r, names.get(r.scriptId) ?? null)), total }
     },
   }
 }

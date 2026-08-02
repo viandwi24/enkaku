@@ -4,21 +4,21 @@ import type { KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
 export interface WaitForOptions {
   /** Default 10_000 ms. */
   timeout?: number
-  /** Default 1_000 ms — realistis untuk uiautomator-dump; ui-server (Plan 06) bisa jauh lebih pendek. */
+  /** Defaults to 1_000 ms — realistic for uiautomator-dump; ui-server (Plan 06) can be far shorter. */
   intervalMs?: number
 }
 
 export interface DeviceApi {
-  /** Selector → find → tap titik tengah; { point } → tap langsung. */
+  /** Selector → find → tap its centre point; { point } → tap directly. */
   tap(target: Selector): Promise<void>
   swipe(from: Point, to: Point, ms?: number): Promise<void>
   /** M4: `input text` (ASCII-safe); set_text per-elemen = Plan 06. */
   type(text: string): Promise<void>
   key(code: KeyCode): Promise<void>
   find(sel: Selector): Promise<UiNode | null>
-  /** Polling inspector — reject ScriptError('WAITFOR_TIMEOUT') bila habis waktu. */
+  /** Polls the inspector — rejects with ScriptError('WAITFOR_TIMEOUT') when time runs out. */
   waitFor(sel: Selector, opts?: WaitForOptions): Promise<UiNode>
-  /** PNG mentah (tanpa menyimpan artifact). */
+  /** Raw PNG (without saving an artifact). */
   screenshot(): Promise<Uint8Array>
   app: {
     launch(pkg: string, opts?: { activity?: string }): Promise<void>
@@ -27,7 +27,7 @@ export interface DeviceApi {
 }
 
 export interface ArtifactApi {
-  /** Screenshot diambil DI CORE, disimpan sebagai artifact job. */
+  /** The screenshot is taken IN THE CORE and stored as a job artifact. */
   screenshot(label: string): Promise<void>
   file(label: string, data: Uint8Array | string, opts?: { ext?: string }): Promise<void>
 }
@@ -47,12 +47,12 @@ export interface ScriptError {
 
 export interface ScriptContext<P = unknown> {
   device: DeviceApi
-  /** Sudah lolos params.parse(). */
+  /** Already through params.parse(). */
   params: P
   artifact: ArtifactApi
   log: ScriptLogger
   job: { id: string; attempt: number; deviceId: string }
-  /** HANYA terisi saat finish dipanggil setelah kegagalan. */
+  /** Only set when finish runs after a failure. */
   error?: ScriptError
 }
 
@@ -63,11 +63,11 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
   params: S
   /** ms per attempt; default 300_000. */
   timeout?: number
-  /** Attempt tambahan setelah gagal; default 0. */
+  /** Extra attempts after a failure; defaults to 0. */
   retries?: number
   prepare?(ctx: ScriptContext<z.infer<S>>): Promise<void>
   /** Return value → jobs.result. */
   run(ctx: ScriptContext<z.infer<S>>): Promise<unknown>
-  /** SELALU dijalankan — harus stateless & idempotent (lihat README). */
+  /** ALWAYS runs — must be stateless and idempotent (see the README). */
   finish?(ctx: ScriptContext<z.infer<S>>): Promise<void>
 }

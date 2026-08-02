@@ -1,15 +1,16 @@
+import { isH264Keyframe } from '@enkaku/protocol'
 import type { FrameMeta, Point } from '@enkaku/protocol'
 import type { DeviceSession } from '@enkaku/session'
 import { EnkakuError } from '../util/errors'
 import type { TunnelRouter } from './router'
 
 /**
- * Sesi device milik agent, dibungkus agar **berbentuk sama** dengan
- * `DeviceSession` lokal (plan 12 §4.4). Dengan begitu handler WS tidak perlu
- * bercabang "lokal atau remote" di setiap tempat.
+ * A session for an agent-owned device, wrapped to have **the same shape** as a
+ * local `DeviceSession` (plan 12 §4.4). That way the WS handler never has to
+ * branch on "local or remote" in a dozen places.
  *
- * Input dikirim sebagai koordinat pixel: pemetaan dari 0..1 tetap dilakukan
- * control plane memakai dimensi frame terakhir, persis seperti mode lokal.
+ * Input is sent as pixel coordinates: the mapping from 0..1 still happens
+ * in the control plane using the latest frame dimensions, exactly as local mode does.
  */
 export interface RemoteSession extends Pick<DeviceSession, 'deviceId' | 'frameSize'> {
   input: {
@@ -22,8 +23,9 @@ export interface RemoteSession extends Pick<DeviceSession, 'deviceId' | 'frameSi
   inputEngineId: string
   inspectorEngineId: string
   videoConfig: null
+  videoKeyframe: null
   close(): Promise<void>
-  /** Dipanggil router saat agent mengabarkan sesi siap. */
+  /** Called by the router when an agent reports its session is ready. */
   applyStarted(info: { codec: 'png' | 'h264'; width: number; height: number }): void
   onFrame(cb: (chunk: Uint8Array, meta: FrameMeta) => void): () => void
   codec: 'png' | 'h264'
@@ -39,7 +41,7 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
       type: 'input.forward',
       payload: { deviceId: deps.deviceId, action },
     } as never)
-    if (!ok) throw new EnkakuError('agent_offline', 'agent pemilik device sedang tidak terhubung')
+    if (!ok) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
   }
 
   const proxy: RemoteSession = {
@@ -50,6 +52,7 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
     inputEngineId: 'remote',
     inspectorEngineId: 'remote',
     videoConfig: null,
+    videoKeyframe: null,
 
     input: {
       async tap(p) {
@@ -73,7 +76,7 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
 
     onFrame(cb) {
       subscribers.add(cb)
-      // Channel video dibuka sekali, dibagi ke semua pelanggan.
+      // The video channel is opened once and shared by every subscriber.
       unsubscribeVideo ??= deps.router.subscribeVideo(deps.deviceId, (payload) => {
         const meta: FrameMeta = {
           width: proxy.frameSize.width,
@@ -81,6 +84,7 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
           codec: proxy.codec,
           seq: seq++,
           capturedAt: Date.now(),
+          keyframe: proxy.codec === 'png' ? true : isH264Keyframe(payload),
         }
         for (const sub of subscribers) sub(payload, meta)
       })

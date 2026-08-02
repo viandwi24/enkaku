@@ -9,8 +9,8 @@ export interface WsMessageRouter {
 
 /**
  * Hub WebSocket /ws: broadcast event server→client + routing message
- * client→server ke handler (stream/input/pairing). Client baru TIDAK
- * dikirimi replay snapshot: konsumen GET /api/devices dulu, baru subscribe.
+ * client→server messages to the handler (stream/input/pairing). A new client
+ * gets NO snapshot replay: consumers GET /api/devices first, then subscribe.
  */
 export class WsHub {
   private clients = new Set<ServerWebSocket<unknown>>()
@@ -23,7 +23,7 @@ export class WsHub {
   }
 
   broadcast(msg: ServerMessage): void {
-    // Validasi sebelum kirim — tidak ada message liar keluar dari core.
+    // Validate before sending — no stray message ever leaves the core.
     const parsed = ServerMessageSchema.parse(msg)
     const data = JSON.stringify(parsed)
     for (const ws of this.clients) {
@@ -48,7 +48,7 @@ export class WsHub {
       },
       message: (ws, message) => {
         if (!this.router) {
-          this.log.debug('ws message masuk tapi router belum siap — diabaikan')
+          this.log.debug('a ws message arrived before the router was ready — ignoring it')
           return
         }
         void this.router.handleMessage(ws, typeof message === 'string' ? message : message.toString())

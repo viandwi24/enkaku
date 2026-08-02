@@ -6,7 +6,7 @@ import { EnkakuError } from '../util/errors'
 
 export interface FarmSettingsStore {
   get(): FarmSettings
-  /** Merge parsial + validasi Zod; nilai invalid ditolak. */
+  /** Partial merge plus Zod validation; invalid values are rejected. */
   update(patch: unknown): FarmSettings
   onChange(cb: (settings: FarmSettings) => void): () => void
 }
@@ -29,9 +29,9 @@ export function createFarmSettingsStore(db: Db): FarmSettingsStore {
 
     update(patch) {
       if (typeof patch !== 'object' || patch === null) {
-        throw new EnkakuError('E_BAD_REQUEST', 'body settings harus object')
+        throw new EnkakuError('E_BAD_REQUEST', 'the settings body must be an object')
       }
-      // Merge dangkal per-section supaya PATCH sebagian tidak menghapus sisanya.
+      // A shallow per-section merge, so a partial PATCH does not wipe the rest.
       const merged: Record<string, unknown> = { ...cached }
       for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
         const current = (cached as unknown as Record<string, unknown>)[key]

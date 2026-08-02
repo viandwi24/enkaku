@@ -5,7 +5,7 @@ export type UiServerStatus =
   | { state: 'starting' }
   | { state: 'healthy' }
   | { state: 'restarting'; attempt: number; reason: string }
-  /** Watchdog menyerah → session manager menjalankan fallback. */
+  /** The watchdog gave up → the session manager runs the fallback. */
   | { state: 'dead'; reason: string }
 
 export interface WatchdogOptions {
@@ -14,9 +14,9 @@ export interface WatchdogOptions {
   localPort: number
   onStatus?: (s: UiServerStatus) => void
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
-  /** Ping berkala saat idle (default 5000ms). */
+  /** Periodic ping while idle (defaults to 5000ms). */
   idlePingMs?: number
-  /** Timeout menunggu server siap (default 15000ms). */
+  /** How long to wait for the server to become ready (defaults to 15000ms). */
   startTimeoutMs?: number
   maxRestartAttempts?: number
 }
@@ -24,7 +24,7 @@ export interface WatchdogOptions {
 export interface Watchdog {
   start(): Promise<void>
   stop(): Promise<void>
-  /** Dipanggil saat call gagal — memicu restart lebih cepat dari ping. */
+  /** Called when a call fails — triggers a restart sooner than the ping would. */
   reportFailure(reason: string): void
   isHealthy(): boolean
   isDead(): boolean
@@ -32,8 +32,8 @@ export interface Watchdog {
 
 /**
  * State machine: idle → starting → healthy ⇄ restarting(n) → dead.
- * Instrumentation gampang mati (low-memory killer, battery optimization,
- * atau tool lain yang merebut UiAutomation — termasuk `uiautomator dump`).
+ * Instrumentation dies easily (the low-memory killer, battery optimisation,
+ * or another tool seizing UiAutomation — `uiautomator dump` included).
  */
 export function createWatchdog(opts: WatchdogOptions): Watchdog {
   const idlePingMs = opts.idlePingMs ?? 5000
@@ -76,12 +76,12 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
             return
           }
         } catch (err) {
-          opts.onLog?.('warn', `restart gagal: ${String(err)}`)
+          opts.onLog?.('warn', `restart failed: ${String(err)}`)
         }
       }
       dead = true
       setStatus({ state: 'dead', reason })
-      opts.onLog?.('warn', `ui-server menyerah setelah ${maxAttempts} attempt — fallback ke uiautomator-dump`)
+      opts.onLog?.('warn', `ui-server gave up after ${maxAttempts} attempts — falling back to uiautomator-dump`)
     } finally {
       restarting = false
     }
@@ -95,7 +95,7 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
         healthy = true
         setStatus({ state: 'healthy' })
       } else {
-        await restart('server tidak siap dalam batas waktu start')
+        await restart('the server was not ready within the start timeout')
       }
       if (!timer) {
         timer = setInterval(() => {
@@ -106,8 +106,8 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
               return
             }
             consecutiveFailures += 1
-            // Dua kegagalan beruntun = bukan sekadar hiccup.
-            if (consecutiveFailures >= 2) void restart('ping gagal 2× beruntun')
+            // Two failures in a row is more than a hiccup.
+            if (consecutiveFailures >= 2) void restart('two consecutive ping failures')
           })
         }, idlePingMs)
       }

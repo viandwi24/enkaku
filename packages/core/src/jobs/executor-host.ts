@@ -10,7 +10,7 @@ export interface ExecutorHostDeps {
   registry: ExecutorRegistry
   jobStore: JobStore
   states: DeviceStateMachine
-  /** Lazy: LeaseManager dan host saling merujuk saat wiring. */
+  /** Lazy: LeaseManager and the host reference each other during wiring. */
   leases: () => LeaseManager
   log: Logger
   jobTtlSec: number
@@ -22,7 +22,7 @@ export interface ExecutorHostDeps {
 
 export interface ExecutorHost {
   start(job: JobRow): void
-  /** Abort executor yang sedang jalan (cancel / force-release). */
+  /** Abort a running executor (cancel or force-release). */
   abort(jobId: string): boolean
   isRunning(jobId: string): boolean
   finishExternally(jobId: string, status: 'failed' | 'cancelled', error: string): void
@@ -32,8 +32,8 @@ export interface ExecutorHost {
 const CANCEL_GRACE_MS = 5000
 
 /**
- * Membungkus tiap run: heartbeat lease (spec §10.2), tulis status final,
- * lepas device (JOB_FINISHED), broadcast job.status, kick scheduler.
+ * Wraps every run: the lease heartbeat (spec §10.2), writing the final status,
+ * releasing the device (JOB_FINISHED), broadcasting job.status, kicking the scheduler.
  */
 export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
   const running = new Map<string, { controller: AbortController; heartbeat: ReturnType<typeof setInterval> }>()
@@ -48,7 +48,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
     deps.leases().clearJobLease(job.deviceId)
     deps.states.apply(job.deviceId, 'JOB_FINISHED')
     if (updated) deps.onJobStatus(rowToJobInfo(updated))
-    deps.log.info(`job ${job.id} selesai: ${status}${data.error ? ` (${data.error})` : ''}`)
+    deps.log.info(`job ${job.id} finished: ${status}${data.error ? ` (${data.error})` : ''}`)
     deps.onFinished()
   }
 
@@ -62,7 +62,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       const controller = new AbortController()
       const heartbeat = setInterval(() => {
         if (!deps.jobStore.renewLease(job.id, deps.jobTtlSec)) {
-          deps.log.warn(`heartbeat job ${job.id} gagal (job tidak lagi running)`)
+          deps.log.warn(`heartbeat for job ${job.id} failed (it is no longer running)`)
         }
       }, deps.heartbeatMs)
       running.set(job.id, { controller, heartbeat })
@@ -77,7 +77,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       executor
         .run(job, ctx)
         .then((result) => {
-          if (!running.has(job.id)) return // sudah di-settle pihak lain (reaper/cancel)
+          if (!running.has(job.id)) return // already settled elsewhere (reaper or cancel)
           settle(job, 'success', { result })
         })
         .catch((err: unknown) => {
@@ -92,13 +92,13 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       const entry = running.get(jobId)
       if (!entry) return false
       entry.controller.abort()
-      // Executor bandel (tidak settle dalam grace) → hentikan heartbeat,
-      // biarkan reaper yang meng-expire lease-nya (batasan in-process M3).
+      // A stubborn executor (no settle within the grace period) → stop the
+      // heartbeat and let the reaper expire its lease (an in-process M3 limit).
       setTimeout(() => {
         const still = running.get(jobId)
         if (still) {
           clearInterval(still.heartbeat)
-          deps.log.warn(`job ${jobId} tidak settle dalam ${CANCEL_GRACE_MS}ms — heartbeat dihentikan, menunggu reaper`)
+          deps.log.warn(`job ${jobId} did not settle within ${CANCEL_GRACE_MS}ms — heartbeat stopped, waiting for the reaper`)
         }
       }, CANCEL_GRACE_MS)
       return true

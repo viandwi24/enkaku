@@ -8,15 +8,15 @@ import {
 import type { RtcPeer, RtcPeerFactory } from './rtc-peer'
 
 /**
- * Backend WebRTC berbasis werift (plan 13 §3.2).
+ * The werift-based WebRTC backend (plan 13 §3.2).
  *
- * werift dipilih karena TypeScript murni — tidak ada binding native yang
- * harus cocok dengan ABI runtime. Kompatibilitasnya dengan Bun sudah diuji:
- * pembuatan offer, fingerprint DTLS, pengumpulan kandidat ICE, dan injeksi
- * RTP mentah semuanya berfungsi.
+ * werift was chosen because it is pure TypeScript — no native bindings that
+ * must match the runtime ABI. Its Bun compatibility is already tested: offer
+ * creation, DTLS fingerprint, ICE candidate gathering, and injecting
+ * raw RTP all work.
  *
- * Bila di kemudian hari werift gagal pada beban nyata, penggantiannya murah:
- * seluruh sisa kode hanya mengenal antarmuka `RtcPeer`.
+ * If werift ever falls over under real load, replacing it is cheap: the rest of
+ * the code only ever sees the `RtcPeer` interface.
  */
 const H264_PAYLOAD_TYPE = 96
 
@@ -26,7 +26,7 @@ function h264Codec(): RTCRtpCodecParameters {
     clockRate: 90_000,
     payloadType: H264_PAYLOAD_TYPE,
     rtcpFeedback: [{ type: 'nack' }, { type: 'nack', parameter: 'pli' }, { type: 'goog-remb' }],
-    // packetization-mode=1 wajib: kita mengirim FU-A untuk NAL besar.
+    // packetization-mode=1 is required: we send FU-A for large NALs.
     parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
   })
 }
@@ -63,7 +63,7 @@ export function createWeriftFactory(): RtcPeerFactory {
                 : 'connecting'
         for (const cb of stateHandlers) cb(mapped)
       })
-      // PLI/NACK dari browser = permintaan keyframe baru.
+      // PLI/NACK from the browser is a request for a fresh keyframe.
       transceiver.sender.onRtcp.subscribe(() => {
         for (const cb of keyframeHandlers) cb()
       })
@@ -84,7 +84,7 @@ export function createWeriftFactory(): RtcPeerFactory {
         },
 
         sendRtp(packet) {
-          // Nomor urut dipegang peer: satu koneksi = satu ruang nomor urut.
+          // The peer owns the sequence number: one connection, one sequence space.
           const header = new RtpHeader({
             payloadType: H264_PAYLOAD_TYPE,
             sequenceNumber: sequenceNumber++ & 0xffff,

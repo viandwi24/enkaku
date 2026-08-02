@@ -7,7 +7,7 @@ export function isPng(buf: Uint8Array): boolean {
 
 /** Parse IHDR: width = u32BE offset 16, height = u32BE offset 20. */
 export function parsePngSize(buf: Uint8Array): { width: number; height: number } {
-  if (!isPng(buf)) throw new Error('bukan PNG valid (signature salah / terlalu pendek)')
+  if (!isPng(buf)) throw new Error('not a valid PNG (bad signature or too short)')
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   return { width: dv.getUint32(16, false), height: dv.getUint32(20, false) }
 }

@@ -1,30 +1,30 @@
-# Engine inspector `ui-server`
+# The `ui-server` inspector engine
 
-Server instrumentation persistent di device (pola [openatx/uiautomator2](https://github.com/openatx/android-uiautomator-server)): hidup sekali per session, query selector dieksekusi **di device** lewat JSONRPC lokal yang di-forward `adb forward`.
+A persistent instrumentation server on the device (the [openatx/uiautomator2](https://github.com/openatx/android-uiautomator-server) pattern): it starts once per session, and selector queries execute **on the device** over a local JSONRPC endpoint reached through `adb forward`.
 
-Kenapa ada: `uiautomator dump` butuh 0,5–2 detik per query dan gagal saat UI terus berubah ("could not get idle state"). Karena `waitFor` = polling inspector, kecepatan inspector menentukan kecepatan seluruh script framework.
+Why it exists: `uiautomator dump` takes 0.5–2 seconds per query and fails while the UI keeps changing ("could not get idle state"). Since `waitFor` is inspector polling, the inspector's speed sets the speed of the entire scripting framework.
 
-## Bentuk
+## Shape
 
-| Bagian | File | Isi |
+| Part | File | Contents |
 |---|---|---|
-| Client | `client.ts` | HTTP/JSONRPC ke `127.0.0.1:<localPort>`; **subset method dibatasi sengaja** supaya migrasi ke APK sendiri murah |
-| Launcher | `launcher.ts` | install APK (app + test), `am instrument`, `adb forward` |
+| Client | `client.ts` | HTTP/JSONRPC to `127.0.0.1:<localPort>`; the **method subset is deliberately narrow** so moving to our own APK stays cheap |
+| Launcher | `launcher.ts` | installs the APKs (app + test), `am instrument`, `adb forward` |
 | Watchdog | `watchdog.ts` | `starting → healthy ⇄ restarting(n) → dead` |
-| Selector | `selector.ts` | Selector Enkaku → UiSelector uiautomator |
-| Inspector | `index.ts` | implement `Inspector` + `InspectorElementActions` |
+| Selector | `selector.ts` | Enkaku selector → uiautomator UiSelector |
+| Inspector | `index.ts` | implements `Inspector` and `InspectorElementActions` |
 
-APK di-pin ke versi tertentu dan dikelola Toolchain Manager (`swappable: false`, checksum wajib) — protokol client↔server coupled, sama seperti perlakuan scrcpy-server.
+The APK is pinned to a specific version and managed by the Toolchain Manager (`swappable: false`, checksum required) — the client↔server protocol is coupled, exactly as scrcpy-server is treated.
 
-## Kenapa watchdog wajib
+## Why the watchdog is mandatory
 
-Instrumentation gampang mati: low-memory killer, battery optimization vendor (Xiaomi/Oppo agresif), user force-stop, atau **tool lain yang merebut UiAutomation — termasuk `uiautomator dump` itu sendiri**. Karena itu `ui-server` dan `uiautomator-dump` tidak boleh aktif bersamaan dalam satu session; lock `instrumentation` di descriptor engine yang menegakkannya.
+Instrumentation dies easily: the low-memory killer, vendor battery optimisation (Xiaomi and Oppo are aggressive), a user force-stop, or **another tool seizing UiAutomation — `uiautomator dump` itself included**. That is why `ui-server` and `uiautomator-dump` must never be active in the same session; the `instrumentation` lock in the engine descriptor enforces it.
 
 ## Fallback
 
-Gagal start / watchdog menyerah → session **tetap dibuat** dengan `uiautomator-dump`, plus event WS `device.inspector.fallback`. Kolom `devices.inspection` tidak diubah (fallback per-session, bukan permanen), jadi session berikutnya mencoba `ui-server` lagi.
+If startup fails or the watchdog gives up, the session is **still created** with `uiautomator-dump`, along with a `device.inspector.fallback` WS event. The `devices.inspection` column is left untouched (the fallback is per-session, not permanent), so the next session tries `ui-server` again.
 
-## Batas yang perlu diketahui
+## Limits worth knowing
 
-- **WebView/hybrid**: elemen terlihat sebatas yang diekspos accessibility tree; banyak muncul sebagai node generic. `setText` ke input WebView jauh lebih reliable daripada inject keystroke — itu keuntungan nyata engine ini. Inspeksi WebView penuh (DOM, context switching) butuh Appium (opt-in, M8).
-- **Nama method JSONRPC** di `client.ts` mengikuti APK yang di-pin; verifikasi ulang terhadap device fisik saat menaikkan versi APK.
+- **WebView and hybrid apps**: elements are only visible as far as the accessibility tree exposes them, and many surface as generic nodes. `setText` into a WebView input is far more reliable than injecting keystrokes — that is this engine's real advantage. Full WebView inspection (DOM, context switching) needs Appium (opt-in, M8).
+- **The JSONRPC method names** in `client.ts` follow the pinned APK; re-verify them against a physical device whenever the APK version moves.

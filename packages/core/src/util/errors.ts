@@ -1,5 +1,5 @@
 /**
- * Error ber-kode seragam (00-overview §4.2). API mengembalikan
+ * Uniform coded errors (00-overview §4.2). The API returns
  * { error: { code, message } } konsisten via error handler Hono.
  *
  * Kode M0: E_ADB_FAIL, E_ADB_UNAVAILABLE, E_TOOL_NOT_FOUND, E_DB,

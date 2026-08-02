@@ -1,5 +1,5 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
-import { DeviceInfoSchema, type DeviceInfo } from '@enkaku/protocol'
+import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceSettings } from '@enkaku/protocol'
 import { and, eq, ne } from 'drizzle-orm'
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
@@ -13,12 +13,18 @@ export interface DeviceRegistryDeps {
   db: Db
   hub: WsHub
   log: Logger
-  /** State machine device (Plan 04) — transisi status hanya lewat sini. */
+  /** The device state machine (Plan 04) — every status transition goes through it. */
   states: DeviceStateMachine
-  /** Device hilang/offline → tutup sesi yang masih terbuka (Plan 03). */
+  /** Device gone or offline → close any session still open (Plan 03). */
   onDeviceGone?: (deviceId: string) => void
-  /** Device siap dipakai → kick scheduler (Plan 04). */
+  /** Device became usable → kick the scheduler (Plan 04). */
   onDeviceReady?: () => void
+  /**
+   * Farm defaults, applied to a device the first time it is enrolled.
+   * Without this the Settings page would be decorative: the defaults were
+   * never read, and new devices silently took the DB column defaults instead.
+   */
+  deviceDefaults?: () => DeviceSettings
 }
 
 export interface DeviceRegistry {
@@ -41,6 +47,8 @@ export function rowToDeviceInfo(row: DeviceRow): DeviceInfo {
     density: row.density,
     status: row.status ?? 'offline',
     lastSeen: row.lastSeen ? Math.floor(row.lastSeen.getTime() / 1000) : null,
+    battery: row.battery ?? null,
+    quarantineReason: row.quarantineReason ?? null,
   })
 }
 
@@ -52,9 +60,24 @@ export function rowToDeviceInfo(row: DeviceRow): DeviceInfo {
  */
 export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   const { client, db, hub, log } = deps
-  /** serial → stableId, untuk resolve event remove tanpa query. */
+  /** serial → stableId, so a remove event resolves without a query. */
+  /**
+   * Farm defaults → the columns the session builder reads, plus the settings
+   * JSON. Both are written from ONE source so they cannot disagree.
+   */
+  const defaultsForNewDevice = () => {
+    const s = deps.deviceDefaults?.() ?? defaultDeviceSettings()
+    return {
+      transport: s.engines.transport,
+      display: s.engines.display,
+      input: s.engines.input,
+      inspection: s.engines.inspection,
+      settings: s,
+    }
+  }
+
   const serialToStableId = new Map<string, string>()
-  /** Dedupe probe per serial (device wireless flap → badai event). */
+  /** Dedupe probes per serial (a flapping wireless device causes an event storm). */
   const probesInFlight = new Set<string>()
   let unsubscribe: (() => void) | null = null
 
@@ -66,13 +89,13 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       try {
         probe = await probeDeviceIdentity(client, serial)
       } catch (err) {
-        // Retry sekali dengan delay — device kadang belum siap shell saat baru muncul.
-        log.debug(`probe ${serial} gagal, retry 1x dalam 1s`, { err: String(err) })
+        // Retry once after a delay — a device is sometimes not shell-ready the instant it appears.
+        log.debug(`probe of ${serial} failed, retrying once in 1s`, { err: String(err) })
         await Bun.sleep(1000)
         probe = await probeDeviceIdentity(client, serial)
       }
       if (probe.stableId.startsWith('serial:')) {
-        log.warn(`stableId fallback tertiary dipakai untuk ${serial} (ro.serialno & android_id invalid)`)
+        log.warn(`using the tertiary stableId fallback for ${serial} (ro.serialno and android_id are both invalid)`)
       }
       const now = new Date()
       const existing = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()
@@ -89,11 +112,14 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
           density: probe.density,
           status: 'idle',
           lastSeen: now,
+          // First enrollment copies the farm defaults; the conflict branch below
+          // deliberately leaves them alone so a device keeps its own settings.
+          ...(existing ? {} : defaultsForNewDevice()),
         })
         .onConflictDoUpdate({
           target: devices.stableId,
-          // id, label, dan status TIDAK diubah di sini — status hanya lewat
-          // state machine (DEVICE_CONNECTED), supaya `quarantined` sticky.
+          // id, label, and status are NOT touched here — status only moves via
+          // the state machine (DEVICE_CONNECTED), which keeps `quarantined` sticky.
           set: {
             serial,
             androidVersion: probe.androidVersion,
@@ -109,16 +135,16 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       const row = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()
       if (!row) return
       if (existing) {
-        // Transisi resmi (offline→idle; quarantined tetap quarantined).
+        // The official transition (offline→idle; quarantined stays quarantined).
         deps.states.apply(row.id, 'DEVICE_CONNECTED')
         log.info(`device online: ${row.label} (${probe.stableId}) via ${serial}`)
       } else {
         hub.broadcast({ type: 'device.added', payload: rowToDeviceInfo(row) })
-        log.info(`device baru terdaftar: ${row.label} (${probe.stableId}) via ${serial}`)
+        log.info(`new device registered: ${row.label} (${probe.stableId}) via ${serial}`)
       }
       deps.onDeviceReady?.()
     } catch (err) {
-      log.warn(`probe ${serial} gagal total — menunggu event berikutnya`, { err: String(err) })
+      log.warn(`probe of ${serial} failed outright — waiting for the next event`, { err: String(err) })
     } finally {
       probesInFlight.delete(serial)
     }
@@ -131,15 +157,15 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       ? db.select().from(devices).where(eq(devices.stableId, stableId)).get()
       : db.select().from(devices).where(eq(devices.serial, serial)).get()
     if (!row || row.status === 'offline') return
-    // Device yang sama mungkin masih online lewat transport lain (USB + WiFi).
+    // The same device may still be online over another transport (USB plus WiFi).
     for (const [s, sid] of serialToStableId) {
       if (sid === row.stableId && s !== serial) {
-        log.debug(`device ${row.stableId} masih online via ${s} — skip offline`)
+        log.debug(`device ${row.stableId} is still online via ${s} — not marking it offline`)
         return
       }
     }
     db.update(devices).set({ lastSeen: new Date() }).where(eq(devices.id, row.id)).run()
-    // Job running di device ini di-fail & sesi ditutup oleh caller.
+    // Any running job on this device is failed and its session closed by the caller.
     deps.onDeviceGone?.(row.id)
     deps.states.apply(row.id, 'DEVICE_DISCONNECTED')
     log.info(`device offline: ${row.label} (${row.stableId})`)
@@ -153,17 +179,17 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     if (ev.state === 'device') {
       void onOnline(ev.serial)
     } else if (ev.state === 'unauthorized') {
-      log.warn(`device ${ev.serial} unauthorized — terima dialog USB debugging di layar HP`)
+      log.warn(`device ${ev.serial} is unauthorized — accept the USB debugging dialog on the phone's screen`)
       hub.broadcast({ type: 'device.unauthorized', payload: { serial: ev.serial } })
     } else {
-      log.debug(`device ${ev.serial} state=${ev.state} — diabaikan di M0`)
+      log.debug(`device ${ev.serial} state=${ev.state} — ignored in M0`)
     }
   }
 
   return {
     async start() {
-      // Recovery dari crash: idle|manual|busy → offline (quarantined sticky);
-      // snapshot awal tracker meng-online-kan yang benar-benar ada.
+      // Crash recovery: idle|manual|busy → offline (quarantined stays sticky);
+      // the tracker's first snapshot brings back whatever is really there.
       db
         .update(devices)
         .set({ status: 'offline' })

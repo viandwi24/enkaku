@@ -21,9 +21,10 @@ import {
   LeaseAcquireMessage,
   LeaseReleasedMessage,
   LeaseReleaseMessage,
+  LeaseChangedMessage,
   LeaseRevokedMessage,
 } from './messages/job'
-import { StreamMetaMessage, StreamStartedMessage, StreamStartMessage, StreamStopMessage } from './messages/stream'
+import { StreamEndedMessage, StreamMetaMessage, StreamStartedMessage, StreamStartMessage, StreamStopMessage } from './messages/stream'
 import {
   WebRtcAnswerMessage,
   WebRtcFailedMessage,
@@ -81,7 +82,7 @@ export {
   type ToolChanged,
 } from './messages/tool'
 export { NormPointSchema, InputTapMessage, InputSwipeMessage, InputKeyMessage, InputTextMessage, type NormPoint } from './messages/input'
-export { StreamStartMessage, StreamStartedMessage, StreamStopMessage, StreamMetaMessage } from './messages/stream'
+export { StreamStartMessage, StreamStartedMessage, StreamStopMessage, StreamMetaMessage, StreamEndedMessage } from './messages/stream'
 export {
   DeviceUnauthorizedMessage,
   DevicePairingRequestMessage,
@@ -92,7 +93,15 @@ export {
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
 } from './messages/enroll'
-export { CHANNEL, VIDEO_CODEC, encodeVideoFrame, decodeVideoFrame, type DecodedVideoFrame } from './binary'
+export {
+  CHANNEL,
+  VIDEO_CODEC,
+  VIDEO_FLAG_KEYFRAME,
+  encodeVideoFrame,
+  decodeVideoFrame,
+  isH264Keyframe,
+  type DecodedVideoFrame,
+} from './binary'
 export {
   JobStatusSchema,
   SleepJobParamsSchema,
@@ -107,6 +116,7 @@ export {
   LeaseReleaseMessage,
   LeaseAcquiredMessage,
   LeaseReleasedMessage,
+  LeaseChangedMessage,
   LeaseRevokedMessage,
   type JobStatus,
   type JobInfo,
@@ -159,14 +169,14 @@ export {
   type ControlToAgent,
 } from './tunnel'
 
-/** Error generik server→client (reply gagal, message invalid). */
+/** Generic server→client error (a failed reply, an invalid message). */
 export const ErrorMessage = z.object({
   type: z.literal('error'),
   id: z.string().optional(),
   payload: z.object({ code: z.string(), message: z.string() }),
 })
 
-/** Semua message server→client. */
+/** Every server→client message. */
 export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceAddedMessage,
   DeviceRemovedMessage,
@@ -180,6 +190,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ToolChangedMessage,
   StreamStartedMessage,
   StreamMetaMessage,
+  StreamEndedMessage,
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
   JobStatusEventMessage,
@@ -187,6 +198,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   JobArtifactMessage,
   LeaseAcquiredMessage,
   LeaseReleasedMessage,
+  LeaseChangedMessage,
   LeaseRevokedMessage,
   WebRtcOfferMessage,
   WebRtcFailedMessage,
@@ -195,7 +207,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
 
-/** Semua message client→server (M2: input, stream, pairing). */
+/** Every client→server message (M2: input, stream, pairing). */
 export const ClientMessageSchema = z.discriminatedUnion('type', [
   InputTapMessage,
   InputSwipeMessage,
@@ -212,7 +224,7 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   WebRtcRequestMessage,
   WebRtcAnswerMessage,
   WebRtcStopMessage,
-  // ICE dua arah: browser juga mengirim kandidatnya.
+  // ICE is bidirectional: the browser sends its candidates too.
   WebRtcIceMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

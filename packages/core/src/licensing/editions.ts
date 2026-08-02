@@ -1,14 +1,15 @@
 /**
- * Batas per-edisi terpusat (plan 10 §4.3) — SATU tempat, tidak tersebar di
- * kode. Tanpa lisensi = edisi community.
+ * Per-edition limits in one place (plan 10 §4.3) — ONE location, not scattered across
+ * the code. No licence means the community edition.
  *
- * Threat model jujur: ini pagar untuk *customer jujur* (kejelasan hak pakai),
- * bukan DRM anti-crack. Tidak ada obfuscation, tidak ada phone-home wajib.
+ * An honest threat model: this is a fence for *honest customers* (clarity about
+ * what they are entitled to), not anti-crack DRM. No obfuscation, no mandatory
+ * phone-home.
  */
 export type Edition = 'community' | 'pro' | 'enterprise'
 
 export interface EditionLimits {
-  /** null = tanpa batas. */
+  /** null means no limit. */
   maxDevices: number | null
   maxUsers: number | null
   cloudTunnel: boolean

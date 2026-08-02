@@ -1,0 +1,57 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+**Enkaku** (repo codename: `openpf`) — a self-hosted Android device farm platform: remote control plus script automation through one web UI. A Bun workspaces monorepo (`packages/*`, `apps/*`, `examples`).
+
+## Reference documents (read as needed; do not duplicate their contents here)
+
+- `docs/spec.md` — the product spec, the **single source of truth**. If a plan or the code contradicts the spec, the spec wins.
+- `docs/plans/00-overview.md` — **required reading before touching any plan**: immutable stack decisions (§3), repo/TS/API/test/commit conventions (§4), Definition of Done (§7).
+- `docs/plans/01..16-*.md` — milestone plans M0–M10 (a nine-section template, with acceptance criteria per plan).
+- `docs/design.md` — the Studio design system: tokens, screen patterns, writing rules, quality floor.
+- `docs/guide/` — user guides: `install.md`, `cloud.md`, `enrollment.md`, `redroid.md`.
+- `docs/acceptable-use.md` and `LICENSES.md` — the AUP and the redistribution audit (adb is NOT redistributed; it is downloaded on first run and sha256-verified).
+
+## Language
+
+All documentation, code comments, identifiers, UI copy, and commit messages are written in **English**. Commit style: conventional (`feat(m8): ...`, `fix(studio): ...`).
+
+## Commands
+
+Runtime and package manager: **Bun** (not Node/npm). From the root:
+
+```bash
+bun run dev            # local core on :7700 (data in .dev-data/)
+bun run dev:studio     # Next dev on :3001, pointing at the core on :7700
+bun run dev:cloud      # control plane (ENKAKU_MODE=orchestrator, data in .dev-cloud/)
+bun run dev:agent      # cloud agent (needs ENKAKU_CP_URL; plus ENKAKU_ENROLL_TOKEN on first run)
+bun run dev:desktop    # Tauri (needs Rust; usually ENKAKU_CORE_BIN=<path>)
+bun run typecheck      # every package — do NOT run scripts/typecheck.sh via `bun run <file.sh>` (Bun misreads the shebang); use this root script or `bash scripts/typecheck.sh`
+bun run build:studio   # static export to packages/studio/out (served by the core = single origin)
+bun run reset          # delete .dev-data/.dev-cloud/.dev-agent
+bun run --cwd packages/core db:generate   # generate a Drizzle migration after changing src/db/schema.ts
+```
+
+There is no test runner, linter, or formatter configured yet. Test conventions (when writing them): `bun test`, `*.test.ts` files colocated in `src/`, and tests needing a physical device gated behind `ENKAKU_TEST_DEVICE=1`. Observed code style: no semicolons, single quotes, two-space indent.
+
+## Rules that get broken when you do not know them
+
+- **Immutable stack decisions** (detail in `docs/plans/00-overview.md` §3): Bun + Hono core, Next.js Studio, SQLite + Drizzle, Zod 4 at every boundary, version-locked scrcpy-server (`packages/scrcpy/src/version.ts` is the only source of that version — never fork the Java side).
+- **Two TypeScripts — do not merge them**: the root uses TypeScript 7 with `tsconfig.base.json` (bun types, verbatimModuleSyntax); `packages/studio` is deliberately standalone with a local TypeScript 5 and a tsconfig that does NOT extend the base (Next needs the TS 5 compiler API). Both must coexist.
+- **`adb kill-server` is forbidden** except inside the Toolchain Manager's adb swap flow (port 5037 is shared with Android Studio).
+- Cross-package imports always go through the package name (`@enkaku/...`), never a relative path across packages. WS message types and strings come only from `@enkaku/protocol` — never hardcode them elsewhere.
+- Validate external input (WS, HTTP bodies, JSON DB columns, config files) through Zod; never `as`-cast. DB timestamps are integer unix **seconds** (Drizzle `mode: 'timestamp'`).
+- Device identity is `stableId` (ro.serialno → ANDROID_ID fallback); the adb serial is only a transport address.
+- Job isolation is **crash containment** — never call it a "sandbox". A script's `finish()` must be stateless and idempotent (after a timeout kill, the core runs it again in a fresh process).
+- Studio: static export (`output: 'export'`) — the device page uses `/device?id=...` (not a dynamic route), internal links must use `next/link` (a plain `<a>` remounts React and kills the WS and video), and workspace packages go in `transpilePackages`.
+- Tailwind v4 colour classes: write `bg-surface` and `text-fg-muted`, never `bg-[--color-surface]`. The v3 bracket form compiles to nothing in v4 and fails silently. See `docs/design.md`.
+- The `/ws` protocol has no snapshot replay: a client must `GET /api/devices` first, then subscribe.
+- Config precedence is env > file > default; an invalid config fails the boot (`E_BAD_CONFIG`) and must never silently fall back. Auth mode derives from the bind address (non-loopback ⇒ server mode ⇒ TLS required unless `ENKAKU_ALLOW_INSECURE=1`).
+
+## Dev environment notes
+
+- Local dev works with no env vars at all (`bun run dev`). The full env list is in `docs/guide/install.md`.
+- First run downloads the tools (adb, scrcpy-server, ui-server) in under a minute; the system adb on PATH is never used.
+- CORS for `localhost:*` is only active when `NODE_ENV !== 'production'` — that is what lets Studio dev on :3001 talk to the core on :7700.
+- There is no CI yet; `scripts/typecheck.sh` is designed to drop into one (non-zero exit on failure).

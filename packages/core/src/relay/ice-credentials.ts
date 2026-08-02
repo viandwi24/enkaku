@@ -1,10 +1,10 @@
 /**
- * Kredensial TURN berjangka waktu (plan 13 §4.5).
+ * Time-limited TURN credentials (plan 13 §4.5).
  *
- * Skema long-term credential coturn: username berisi waktu kedaluwarsa,
- * password adalah HMAC-SHA1 dari username memakai rahasia bersama. Efeknya,
- * kredensial yang bocor hanya berguna sampai kedaluwarsa dan tidak pernah
- * membocorkan rahasia servernya.
+ * The coturn long-term credential scheme: the username carries an expiry time,
+ * the password is an HMAC-SHA1 of the username using a shared secret. A leaked
+ * credential is therefore only useful until it expires, and never
+ * exposes the server's secret.
  */
 const TTL_SECONDS = 12 * 3600
 
@@ -26,7 +26,7 @@ export function buildIceServers(userId: string): IceServerConfig[] {
     const credential = new Bun.CryptoHasher('sha1', secret).update(username).digest('base64')
     servers.push({ urls: turnUrl, username, credential })
   } else {
-    // Kredensial statis: hanya untuk uji coba, tidak untuk produksi.
+    // Static credentials: for trials only, never production.
     servers.push({
       urls: turnUrl,
       ...(process.env.ENKAKU_TURN_USER ? { username: process.env.ENKAKU_TURN_USER } : {}),

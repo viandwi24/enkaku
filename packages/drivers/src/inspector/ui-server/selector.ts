@@ -4,7 +4,7 @@ export class SelectorUnsupportedError extends Error {
   code = 'SELECTOR_UNSUPPORTED'
 }
 
-/** UiSelector uiautomator (subset yang dipakai — plan 06 §4.5). */
+/** uiautomator UiSelector (the subset in use — plan 06 §4.5). */
 export interface UiSelector {
   resourceId?: string
   resourceIdMatches?: string
@@ -14,18 +14,18 @@ export interface UiSelector {
 
 /**
  * Mapping Selector Enkaku → UiSelector. `{ point }` BUKAN selector server
- * (di-handle pemanggil sebagai node sintetis).
+ * (the caller handles it as a synthetic node).
  */
 export function toUiSelector(sel: Selector): UiSelector {
   if ('id' in sel) {
-    // Sudah full resource-id ("pkg:id/nama") → pakai apa adanya.
+    // Already a full resource-id ("pkg:id/name") → use it as-is.
     return sel.id.includes(':id/') || sel.id.includes('/')
       ? { resourceId: sel.id }
       : { resourceIdMatches: `.*:id/${escapeRegex(sel.id)}` }
   }
   if ('desc' in sel) return { description: sel.desc }
   if ('text' in sel) return { text: sel.text }
-  throw new SelectorUnsupportedError(`selector tidak didukung ui-server: ${JSON.stringify(sel)}`)
+  throw new SelectorUnsupportedError(`selector not supported by ui-server: ${JSON.stringify(sel)}`)
 }
 
 const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

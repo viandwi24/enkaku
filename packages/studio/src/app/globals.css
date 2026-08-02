@@ -1,238 +1,179 @@
-* {
-  box-sizing: border-box;
+@import 'tailwindcss';
+
+/*
+ * Enkaku Studio — an instrument panel, not a SaaS dashboard.
+ *
+ * The subject is physical hardware: phones on a rack, cables, heat, batteries.
+ * So the base is cool graphite (not near-black), measurements are set in
+ * monospace, and saturated colour is used ONLY for status — which is what
+ * makes one red dot among a dozen devices catch the eye immediately.
+ */
+@theme {
+  /* Surfaces: graphite with a blue cast, like anodised aluminium. */
+  --color-bg: oklch(0.185 0.012 245);
+  --color-surface: oklch(0.225 0.014 245);
+  --color-surface-2: oklch(0.265 0.015 245);
+  --color-surface-3: oklch(0.31 0.016 245);
+  --color-line: oklch(0.32 0.014 245);
+  --color-line-strong: oklch(0.42 0.016 245);
+
+  --color-fg: oklch(0.94 0.004 245);
+  --color-fg-muted: oklch(0.72 0.012 245);
+  --color-fg-subtle: oklch(0.58 0.012 245);
+
+  /* Interactive: a muted blue-cyan, like a backlit button. Deliberately not
+     the "acid" accent that dark themes default to. */
+  --color-accent: oklch(0.70 0.11 225);
+  --color-accent-strong: oklch(0.78 0.13 225);
+  --color-accent-fg: oklch(0.16 0.02 245);
+
+  /* Status = an equipment indicator LED. Brightness is matched perceptually
+     so no status "shouts" without cause. */
+  --color-led-ok: oklch(0.74 0.15 152);
+  --color-led-active: oklch(0.72 0.13 245);
+  --color-led-warn: oklch(0.80 0.14 72);
+  --color-led-danger: oklch(0.64 0.19 25);
+  --color-led-off: oklch(0.48 0.010 245);
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --radius-card: 0.5rem;
 }
 
-:root {
-  --bg: #0b0c0e;
-  --surface: #16181d;
-  --surface-2: #1e2127;
-  --border: #2a2e37;
-  --text: #e7e9ee;
-  --muted: #9aa1ad;
-  --accent: #4f8cff;
-  --ok: #3ecf8e;
-  --warn: #f5a524;
-  --danger: #f2555a;
-  color-scheme: dark;
+
+/*
+ * Bridge to shadcn/ui: its components use their own token names. They map onto
+ * the instrument palette above so the whole interface draws from one palette
+ * rather than two that fight each other.
+ */
+@theme {
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-fg);
+
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-fg);
+  --color-popover: var(--color-surface-2);
+  --color-popover-foreground: var(--color-fg);
+
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-accent-fg);
+  --color-secondary: var(--color-surface-2);
+  --color-secondary-foreground: var(--color-fg);
+
+  --color-muted: var(--color-surface-2);
+  --color-muted-foreground: var(--color-fg-muted);
+
+  --color-accent-foreground: var(--color-fg);
+
+  --color-destructive: var(--color-led-danger);
+  --color-destructive-foreground: oklch(0.98 0 0);
+
+  --color-border: var(--color-line);
+  --color-input: var(--color-line-strong);
+  --color-ring: var(--color-accent);
+
+  --radius: 0.5rem;
+  --radius-sm: 0.3rem;
+  --radius-md: 0.45rem;
+  --radius-lg: 0.6rem;
+  --radius-xl: 0.85rem;
 }
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  font-size: 14px;
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Focus is always visible — a working tool has to be usable without a mouse. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.85rem 1.25rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
+@layer components {
+  /*
+   * Status rail: this Studio's signature. A bar of colour down the left edge
+   * of each device — exactly like the indicator lamp on a rack unit. Scanning
+   * a column of rails is far faster than reading status text one by one.
+   */
+  .status-rail {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+  }
+  .status-rail[data-status='idle'] {
+    background: var(--color-led-ok);
+  }
+  .status-rail[data-status='manual'],
+  .status-rail[data-status='busy'] {
+    background: var(--color-led-active);
+  }
+  .status-rail[data-status='quarantined'] {
+    background: var(--color-led-danger);
+  }
+  .status-rail[data-status='offline'] {
+    background: var(--color-led-off);
+  }
 
-.brand {
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  text-decoration: none;
-}
-.brand-sub {
-  color: var(--muted);
-  font-weight: 400;
-}
+  /* Only a device that is actually working pulses — motion marks real
+     activity, never decoration. */
+  .status-rail[data-live='true'] {
+    animation: rail-pulse 2s ease-in-out infinite;
+  }
 
-.navlink {
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 13px;
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-}
-.navlink:hover {
-  color: var(--text);
-  background: var(--surface-2);
-}
-.navlink.active {
-  color: var(--text);
-  background: var(--surface-2);
-  font-weight: 600;
-}
+  @keyframes rail-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
 
-main {
-  padding: 1.25rem;
-  max-width: 1200px;
-  margin: 0 auto;
-}
+  /* Small labels styled like rack-unit markings. */
+  .rack-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-fg-subtle);
+  }
 
-h1 {
-  font-size: 1.15rem;
-  margin: 0 0 1rem;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 0.85rem;
-}
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.9rem;
-  text-decoration: none;
-  color: inherit;
-  display: block;
-}
-.card:hover {
-  border-color: var(--accent);
-}
-
-.card-title {
-  font-weight: 600;
-  margin-bottom: 0.35rem;
-}
-
-.meta {
-  color: var(--muted);
-  font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  word-break: break-all;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-}
-.badge.idle {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-}
-.badge.offline {
-  color: var(--muted);
-}
-.badge.unauthorized {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-}
-.badge.busy,
-.badge.manual {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.badge.quarantined {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-}
-
-button,
-.btn {
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.4rem 0.75rem;
-  cursor: pointer;
-}
-button:hover,
-.btn:hover {
-  border-color: var(--accent);
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #06101f;
-  font-weight: 600;
-}
-
-input,
-select {
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.4rem 0.6rem;
-}
-
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 12.5px;
-  color: var(--muted);
-}
-
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-
-.live-canvas {
-  max-width: 100%;
-  max-height: 78vh;
-  background: #000;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  touch-action: none;
-  cursor: crosshair;
-}
-
-.hint {
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.error {
-  color: var(--danger);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  background: var(--muted);
-}
-.dot.on {
-  background: var(--ok);
-}
-.dot.off {
-  background: var(--danger);
-}
-
-pre.out {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem;
-  white-space: pre-wrap;
-  font-size: 12px;
-  max-height: 180px;
-  overflow: auto;
+  /* Measurements: every instrument readout is monospaced so digits line up
+     and a changing value never shifts the layout. */
+  .readout {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
 }

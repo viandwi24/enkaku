@@ -40,15 +40,43 @@ const ERROR_STATUS: Record<string, number> = {
   E_DB: 500,
 }
 
+/**
+ * Any loopback origin counts as "the Studio dev server on this machine".
+ *
+ * Only `localhost` used to be accepted, which broke the moment anyone opened
+ * `127.0.0.1:3001` — a different origin to the browser even though it is the
+ * same machine. Next's own dev output advertises a `127.0.x.x` address, so
+ * this was easy to hit and the error it produced (a CORS block) said nothing
+ * about the real cause.
+ *
+ * This stays dev-only: in production the check never runs, and the core is
+ * single-origin.
+ */
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(origin)
+    if (protocol !== 'http:' && protocol !== 'https:') return false
+    return (
+      hostname === 'localhost' ||
+      hostname === '::1' ||
+      hostname === '[::1]' ||
+      // The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1.
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
 export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
-  // Mode dev Studio (next dev di port lain) — hanya non-production.
+  // Studio dev mode (next dev on another port) — non-production only.
   if (process.env.NODE_ENV !== 'production') {
-    app.use('/api/*', cors({ origin: (origin) => (origin.startsWith('http://localhost:') ? origin : null) }))
+    app.use('/api/*', cors({ origin: (origin) => (isLoopbackOrigin(origin) ? origin : null) }))
   }
 
-  // Auth: mode local (loopback) inject admin implisit; mode server wajib login.
+  // Auth: local mode (loopback) injects an implicit admin; server mode requires login.
   app.use('/api/*', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
 
   app.route('/api/auth', deps.authRoutes)
@@ -60,6 +88,8 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
       ok: true,
       version: deps.version,
       adb: { state: deps.adbState(), serverVersion: await deps.adbServerVersion() },
+      // Studio hides cloud-only screens (Agents) outside orchestrator mode.
+      mode: process.env.ENKAKU_MODE === 'orchestrator' ? 'orchestrator' : 'local',
       deviceCount: deps.deviceCount(),
       uptimeMs: Date.now() - deps.startedAt,
     })
@@ -79,15 +109,15 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/scripts', deps.scriptRoutes)
 
-  // Studio static (mode prod satu-origin); /api/* & /ws sudah ditangani di atas.
+  // Static Studio (single-origin prod); /api/* and /ws are handled above.
   const serveStudio = createStudioServer(deps.log.child('studio'))
   app.get('*', async (c) => {
     const path = new URL(c.req.url).pathname
-    if (path.startsWith('/api/')) return c.json({ error: { code: 'E_NOT_FOUND', message: 'route tidak ada' } }, 404)
+    if (path.startsWith('/api/')) return c.json({ error: { code: 'E_NOT_FOUND', message: 'no such route' } }, 404)
     return serveStudio(path)
   })
 
-  app.notFound((c) => c.json({ error: { code: 'E_NOT_FOUND', message: 'route tidak ada' } }, 404))
+  app.notFound((c) => c.json({ error: { code: 'E_NOT_FOUND', message: 'no such route' } }, 404))
 
   app.onError((err, c) => {
     if (err instanceof ToolchainError) {
@@ -99,7 +129,7 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
       deps.log.warn(`api error ${err.code}: ${err.message}`)
       return c.json(err.toJSON(), status as 400)
     }
-    deps.log.error(`api error tak terduga: ${String(err)}`)
+    deps.log.error(`unexpected api error: ${String(err)}`)
     return c.json({ error: { code: 'E_INTERNAL', message: 'internal error' } }, 500)
   })
 

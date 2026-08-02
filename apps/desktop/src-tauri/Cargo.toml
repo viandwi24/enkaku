@@ -9,12 +9,12 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# webview-data-url: dipakai untuk halaman error saat core gagal start.
+# webview-data-url: used for the error page when the core fails to start.
 tauri = { version = "2", features = ["tray-icon", "webview-data-url"] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [features]
-# Dipakai `tauri dev` untuk mengaktifkan devtools.
+# Used by `tauri dev` to enable devtools.
 custom-protocol = ["tauri/custom-protocol"]

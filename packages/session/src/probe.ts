@@ -10,7 +10,7 @@ export interface DeviceProbeResult {
   density: number | null
 }
 
-/** `wm size` → {w,h}; `Override size:` menang atas `Physical size:`. */
+/** `wm size` → {w,h}; `Override size:` beats `Physical size:`. */
 export function parseWmSize(raw: string): { w: number; h: number } | null {
   const override = raw.match(/Override size:\s*(\d+)x(\d+)/)
   const physical = raw.match(/Physical size:\s*(\d+)x(\d+)/)
@@ -34,8 +34,8 @@ const isInvalidSerialno = (s: string): boolean =>
 const isInvalidAndroidId = (s: string): boolean => s.length === 0 || s === 'null'
 
 /**
- * stableId (spec §7.5): ro.serialno → fallback ANDROID_ID → tertiary
- * 'serial:<serial-adb>' (edge case, caller wajib log.warn — Open questions Q2).
+ * stableId (spec §7.5): ro.serialno → ANDROID_ID fallback → tertiary
+ * 'serial:<adb-serial>' (an edge case the caller must log.warn about — Open questions Q2).
  */
 export function pickStableId(serialno: string, androidId: string, serial: string): string {
   const sn = serialno.trim()
@@ -51,8 +51,8 @@ const intOrNull = (s: string): number | null => {
 }
 
 /**
- * Probe identity + props device (plan 01 §4.5). Semua via client.exec —
- * otomatis terserialisasi per-device queue.
+ * Probe device identity and props (plan 01 §4.5). Everything goes through client.exec —
+ * automatically serialised by the per-device queue.
  */
 export async function probeDeviceIdentity(client: AdbClient, serial: string): Promise<DeviceProbeResult> {
   const [serialno, androidId, model, version, sdk, wmSize, wmDensity] = await Promise.all([

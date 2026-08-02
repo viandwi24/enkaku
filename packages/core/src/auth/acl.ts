@@ -1,8 +1,8 @@
 import type { Role } from './service'
 
 /**
- * Matrix ACL (plan 09 §4.4). `admin` boleh semua; `operator` dibatasi pada
- * operasi harian. Server-authoritative — UI hanya menyembunyikan tombol.
+ * The ACL matrix (plan 09 §4.4). `admin` may do everything; `operator` is
+ * limited to day-to-day work. Server-authoritative — the UI only hides buttons.
  */
 export type Permission =
   | 'device.view'
@@ -41,9 +41,9 @@ export function can(role: Role, permission: Permission): boolean {
 }
 
 /**
- * Kepemilikan device (spec §12 `ownerId`): device tanpa owner bebas dipakai
- * semua operator; device ber-owner hanya owner + admin.
- * (Kebijakan default — lihat Open questions plan 09.)
+ * Device ownership (spec §12 `ownerId`): a device with no owner is free for
+ * any operator; an owned device is for its owner and admins only.
+ * (The default policy — see the Open questions in plan 09.)
  */
 export function canUseDevice(user: { id: string; role: Role }, device: { ownerId: string | null }): boolean {
   if (user.role === 'admin') return true

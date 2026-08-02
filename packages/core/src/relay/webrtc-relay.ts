@@ -4,12 +4,12 @@ import { iceConfigFromEnv, type RtcPeer, type RtcPeerFactory } from './rtc-peer'
 import type { Logger } from '../util/logger'
 
 export interface WebRtcRelay {
-  /** Browser meminta jalur WebRTC untuk sebuah device. */
+  /** The browser requests a WebRTC path for a device. */
   request(ws: ServerWebSocket<unknown>, deviceId: string): Promise<void>
   answer(deviceId: string, sdp: string): Promise<void>
   ice(deviceId: string, candidate: unknown): Promise<void>
   stop(deviceId: string): Promise<void>
-  /** Umpan frame H.264 dari sumber (agent/lokal) ke peer yang aktif. */
+  /** Feeds H.264 frames from the source (agent or local) into the active peer. */
   push(deviceId: string, annexB: Uint8Array, ptsUs: bigint): void
   hasPeer(deviceId: string): boolean
   closeAll(): Promise<void>
@@ -25,17 +25,17 @@ interface PeerEntry {
 /**
  * Relay video WebRTC di control plane (plan 13 §4.3).
  *
- * Aliran: H.264 dari device → packetizer (RFC 6184) → peer → SRTP/UDP ke
- * browser. Kalau apa pun gagal, control plane mengirim `video.webrtc.failed`
- * dan Studio kembali ke jalur WebSocket — pengguna tetap bisa bekerja,
- * hanya dengan risiko freeze yang sudah dijelaskan.
+ * The flow: H.264 from the device → packetizer (RFC 6184) → peer → SRTP/UDP to
+ * the browser. If anything fails the control plane sends `video.webrtc.failed`
+ * and Studio returns to the WebSocket path — people keep working, just with the
+ * freeze risk already described.
  */
 export function createWebRtcRelay(deps: {
   factory: RtcPeerFactory
   log: Logger
-  /** Berlangganan frame device (dari agent maupun sesi lokal). */
+  /** Subscribe to a device's frames (from an agent or a local session). */
   subscribeVideo: (deviceId: string, cb: (chunk: Uint8Array, ptsUs: bigint) => void) => () => void
-  /** Minta keyframe baru ke device (PLI dari browser). */
+  /** Ask the device for a fresh keyframe (a PLI from the browser). */
   requestKeyframe: (deviceId: string) => void
 }): WebRtcRelay {
   const peers = new Map<string, PeerEntry>()
@@ -45,7 +45,7 @@ export function createWebRtcRelay(deps: {
   }
 
   const fail = (ws: ServerWebSocket<unknown>, deviceId: string, reason: string) => {
-    deps.log.warn(`webrtc gagal untuk ${deviceId}: ${reason}`)
+    deps.log.warn(`webrtc failed for ${deviceId}: ${reason}`)
     send(ws, { type: 'video.webrtc.failed', payload: { deviceId, reason } })
   }
 
@@ -62,7 +62,7 @@ export function createWebRtcRelay(deps: {
 
     async request(ws, deviceId) {
       if (!deps.factory.available) {
-        fail(ws, deviceId, deps.factory.reason ?? 'backend WebRTC tidak tersedia')
+        fail(ws, deviceId, deps.factory.reason ?? 'no WebRTC backend available')
         return
       }
       await teardown(deviceId)
@@ -76,11 +76,11 @@ export function createWebRtcRelay(deps: {
         )
         peer.onStateChange((state) => {
           if (state === 'failed') {
-            fail(ws, deviceId, 'negosiasi ICE gagal')
+            fail(ws, deviceId, 'ICE negotiation failed')
             void teardown(deviceId)
           }
         })
-        // Browser kehilangan frame → minta IDR baru ke device.
+        // The browser lost frames → ask the device for a fresh IDR.
         peer.onKeyframeRequest(() => deps.requestKeyframe(deviceId))
 
         const releaseSource = deps.subscribeVideo(deviceId, (chunk, ptsUs) => {
@@ -102,7 +102,7 @@ export function createWebRtcRelay(deps: {
       try {
         await entry.peer.setRemoteAnswer(sdp)
       } catch (err) {
-        fail(entry.ws, deviceId, `answer ditolak: ${String(err)}`)
+        fail(entry.ws, deviceId, `the answer was rejected: ${String(err)}`)
         await teardown(deviceId)
       }
     },

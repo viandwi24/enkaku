@@ -22,7 +22,7 @@ const ERROR_STATUS: Record<string, number> = {
   E_DOWNLOAD_STALLED: 502,
 }
 
-/** Routes /api/tools — persis spec §7.7, guard §7.8 di ToolchainManager. */
+/** The /api/tools routes — exactly spec §7.7, with the §7.8 guards in ToolchainManager. */
 export function createToolsRoutes(manager: ToolchainManager): Hono {
   const app = new Hono()
 
@@ -35,14 +35,14 @@ export function createToolsRoutes(manager: ToolchainManager): Hono {
 
   app.post('/:id/install', async (c) => {
     const body = VersionBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'body { version } wajib' } }, 400)
+    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { version } is required' } }, 400)
     await manager.install(c.req.param('id'), body.data.version)
     return c.json({ ok: true })
   })
 
   app.post('/:id/activate', async (c) => {
     const body = VersionBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'body { version } wajib' } }, 400)
+    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { version } is required' } }, 400)
     await manager.activate(c.req.param('id'), body.data.version)
     return c.json({ ok: true })
   })

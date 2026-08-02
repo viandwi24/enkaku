@@ -1,202 +1,202 @@
-# Plan 14 — M9c : Aplikasi desktop (Tauri)
+# Plan 14 — M9c : The desktop application (Tauri)
 
-> **Status:** siap dikerjakan. **Depends on:** Plan 09 (single-binary core, Studio static export). Tidak bergantung Plan 12/13.
-> **Referensi spec:** §2 (zero-config), §5.1 (shell Tauri), §3 (persona end customer).
+> **Status:** ready to work on. **Depends on:** Plan 09 (single-binary core, Studio static export). Independent of Plans 12 and 13.
+> **Spec references:** §2 (zero-config), §5.1 (the Tauri shell), §3 (the end customer persona).
 
 ---
 
 ## 1. Goals
 
-- **Double-click → jalan.** Pengguna tidak membuka terminal, tidak mengetik alamat di browser, tidak menghafal port.
-- Jendela native berisi Studio, ikon tray, dan core yang hidup-mati mengikuti aplikasi.
-- Auto-update: aplikasi memberi tahu ada versi baru dan memasangnya sendiri.
-- Aman secara default: core hanya mendengarkan `127.0.0.1`, sehingga mode auth `local` sah dipakai (tidak ada login, tapi juga tidak terjangkau dari jaringan).
+- **Double-click and it runs.** The user opens no terminal, types no address into a browser, and memorises no port.
+- A native window containing Studio, a tray icon, and a core whose lifetime follows the application.
+- Auto-update: the application tells you a new version exists and installs it itself.
+- Safe by default: the core listens only on `127.0.0.1`, which is what makes `local` auth mode legitimate (no login, but also unreachable from the network).
 
-Demo akhir: di mesin bersih tanpa Bun, tanpa adb, tanpa Node — pasang satu file, buka, colok HP, layar tampil.
+The closing demo: on a clean machine with no Bun, no adb, and no Node — install one file, open it, plug in a phone, see the screen.
 
 ## 2. Non-goals
 
-- **Mengganti mode server/Docker** — desktop adalah kemasan tambahan untuk pengguna tunggal, bukan pengganti deployment tim.
-- **UI khusus desktop** — Studio dipakai apa adanya; tidak ada halaman yang hanya ada di desktop.
-- **Auto-update core mode server** — punya jalur sendiri (Docker pull / systemd), di luar lingkup.
-- **Distribusi ke App Store** — hanya installer langsung (dmg/msi/AppImage).
+- **Replacing server or Docker mode** — desktop is extra packaging for a single user, not a replacement for team deployment.
+- **A desktop-specific UI** — Studio is used as-is; no page exists only on desktop.
+- **Auto-updating the core in server mode** — that has its own path (Docker pull, systemd) and is out of scope.
+- **App Store distribution** — direct installers only (dmg, msi, AppImage).
 
-## 3. Konteks & keputusan desain
+## 3. Context and design decisions
 
-### 3.1 Kenapa Tauri, bukan Electron
+### 3.1 Why Tauri rather than Electron
 
-Tauri memakai webview bawaan sistem operasi, sementara Electron membawa Chromium sendiri (~150 MB per aplikasi). Untuk aplikasi yang isinya hanya membungkus Studio, ukuran itu tidak masuk akal. Tauri juga memakai Rust, yang berarti binary kecil dan tanpa runtime tambahan.
+Tauri uses the operating system's own webview, while Electron ships its own Chromium (~150 MB per application). For an application that only wraps Studio, that size makes no sense. Tauri also uses Rust, which means a small binary with no extra runtime.
 
-Konsekuensi yang harus diterima: webview berbeda per OS (WebKit di macOS, WebView2 di Windows, WebKitGTK di Linux). **Ini penting untuk kita** karena Studio memakai WebCodecs untuk decode H.264 — dukungannya tidak merata (lihat §3.4).
+The consequence we accept: the webview differs per OS (WebKit on macOS, WebView2 on Windows, WebKitGTK on Linux). **That matters here** because Studio uses WebCodecs to decode H.264, and support is uneven (see §3.4).
 
-### 3.2 Core sebagai proses anak, bukan sidecar ter-bundle
+### 3.2 The core as a child process, not a separately installed binary
 
-Dua pilihan: (a) core ikut di-bundle sebagai *sidecar binary* di dalam aplikasi, atau (b) aplikasi menjalankan binary core yang dipasang terpisah.
+Two options: (a) the core is bundled as a *sidecar binary* inside the application, or (b) the application runs a core binary installed separately.
 
-**Keputusan: (a) sidecar ter-bundle.** Alasannya justru tujuan utama plan ini — pengguna cukup memasang satu file. Kalau core harus dipasang terpisah, kita kembali ke masalah yang ingin dihilangkan.
+**Decision: (a), a bundled sidecar.** The reason is this plan's whole point — the user installs one file. If the core had to be installed separately we would be back to the problem we are trying to remove.
 
-Implikasi: proses rilis desktop harus menjalankan `bun build --compile` untuk tiap platform lebih dulu, lalu menaruh hasilnya di `src-tauri/binaries/` dengan akhiran target (`enkaku-core-aarch64-apple-darwin`, dst.) sesuai konvensi Tauri.
+The implication: the desktop release process must run `bun build --compile` for each platform first, then place the results in `src-tauri/binaries/` with a target suffix (`enkaku-core-aarch64-apple-darwin`, and so on) following Tauri's convention.
 
-### 3.3 Siklus hidup: aplikasi tutup, core ikut mati
+### 3.3 Lifecycle: when the app closes, the core goes with it
 
-Farm yang menggantung sebagai proses yatim tanpa UI adalah jebakan: pengguna mengira sudah menutup aplikasi, padahal device masih dikuasai. Aturan:
+A farm left running as an orphan process with no UI is a trap: the user believes they closed the application while the devices are still held. The rules:
 
-- Jendela ditutup → core dimatikan (SIGTERM, tunggu 5 detik, lalu paksa).
-- Menutup jendela **tidak** langsung keluar bila tray aktif — aplikasi mengecil ke tray, core tetap hidup. Keluar hanya lewat menu tray "Quit".
-- Aplikasi crash → core yatim. Ditangani dengan menuliskan PID core ke berkas di data dir; saat start berikutnya, PID lama diperiksa dan dimatikan bila masih hidup.
+- Window closed → the core is stopped (SIGTERM, wait 5 seconds, then force).
+- Closing the window does **not** exit immediately while the tray is active — the app minimises to the tray and the core stays alive. Exiting happens only through the tray's "Quit".
+- If the app crashes the core is orphaned. That is handled by writing the core's PID to a file in the data dir; on the next start the old PID is checked and killed if it is still alive.
 
-### 3.4 WebCodecs di webview — **sudah diuji, hasilnya lolos**
+### 3.4 WebCodecs in the webview — **tested, and it passes**
 
-Studio memakai `VideoDecoder` (WebCodecs) untuk stream scrcpy H.264. Dukungannya:
+Studio uses `VideoDecoder` (WebCodecs) for the scrcpy H.264 stream. Support:
 
 | Platform | Webview | WebCodecs | Status |
 |---|---|---|---|
-| macOS | WKWebView (Safari 26.4) | ✅ `VideoDecoder` ada, H.264 baseline didukung | **terverifikasi di aplikasi Tauri sungguhan** |
-| Windows | WebView2 (Chromium) | ✅ ada | belum diuji langsung |
-| Linux | WebKitGTK | ⚠️ bergantung versi | belum diuji |
+| macOS | WKWebView (Safari 26.4) | ✅ `VideoDecoder` present, H.264 baseline supported | **verified in a real Tauri app** |
+| Windows | WebView2 (Chromium) | ✅ present | not tested directly |
+| Linux | WebKitGTK | ⚠️ version-dependent | not tested |
 
-Diuji dengan menjalankan aplikasi Tauri hasil build dan memuat halaman probe: `'VideoDecoder' in window` → true, `VideoDecoder.isConfigSupported({codec:'avc1.42e01e'})` → supported.
+Tested by running a built Tauri application and loading a probe page: `'VideoDecoder' in window` → true, `VideoDecoder.isConfigSupported({codec:'avc1.42e01e'})` → supported.
 
-**Artinya:** jalur video desktop memakai scrcpy H.264 penuh, sama seperti di browser. Tidak perlu decoder wasm maupun membatasi platform.
+**Which means:** the desktop video path uses full scrcpy H.264, exactly as the browser does. No wasm decoder and no platform restrictions are needed.
 
 ### 3.5 Auto-update
 
-Tauri updater memeriksa endpoint JSON, mengunduh, memverifikasi tanda tangan, lalu memasang. Yang dibutuhkan: sepasang kunci (dibuat sekali, kunci privat disimpan di CI), endpoint rilis, dan `pubkey` di konfigurasi.
+The Tauri updater checks a JSON endpoint, downloads, verifies the signature, then installs. What it needs: a key pair (generated once, with the private key kept in CI), a release endpoint, and a `pubkey` in the configuration.
 
-Penting: **auto-update memasang core baru sekaligus** karena core ikut di-bundle. Jadi update harus menunggu tidak ada job berjalan — memutus job di tengah jalan akan meninggalkan device dalam keadaan kotor (melanggar janji `finish` selalu jalan, spec §11.2).
+Important: **an auto-update installs a new core too**, because the core is bundled. So an update has to wait until no job is running — cutting a job off mid-flight would leave the device dirty (breaking the promise that `finish` always runs, spec §11.2).
 
-## 4. Desain teknis
+## 4. Technical design
 
-### 4.1 Struktur
+### 4.1 Structure
 
 ```
 apps/desktop/
-  package.json                 # skrip dev/build; devDep @tauri-apps/cli
+  package.json                 # dev/build scripts; devDep @tauri-apps/cli
   src-tauri/
-    Cargo.toml                 # BARU — dependensi Rust
-    tauri.conf.json            # ADA — perlu dilengkapi (sidecar, updater, tray)
-    build.rs                   # BARU
-    icons/                     # BARU — ikon aplikasi & tray
-    binaries/                  # BARU — core hasil compile per target (tidak di-commit)
+    Cargo.toml                 # NEW — Rust dependencies
+    tauri.conf.json            # EXISTS — needs completing (sidecar, updater, tray)
+    build.rs                   # NEW
+    icons/                     # NEW — application and tray icons
+    binaries/                  # NEW — the compiled core per target (not committed)
     src/
-      main.rs                  # ADA — perlu diperluas: sidecar, tray, health-wait, PID
-      core_process.rs          # BARU — spawn/stop/health-check core
-      tray.rs                  # BARU — menu tray
+      main.rs                  # EXISTS — needs extending: sidecar, tray, health-wait, PID
+      core_process.rs          # NEW — spawn, stop, health-check the core
+      tray.rs                  # NEW — the tray menu
 scripts/
-  build-desktop.sh             # BARU — compile core → salin ke binaries/ → tauri build
+  build-desktop.sh             # NEW — compile the core → copy into binaries/ → tauri build
 ```
 
-### 4.2 Urutan start
+### 4.2 Start sequence
 
 ```
-Aplikasi dibuka
-  → baca <data-dir>/core.pid; kalau prosesnya masih hidup, matikan (sisa crash)
-  → jalankan sidecar core: ENKAKU_BIND=127.0.0.1, port dari pencarian port bebas
-  → tulis PID baru
-  → tunggu GET /api/health mengembalikan ok (timeout 30 detik, poll 250 ms)
-      ├ sukses → muat Studio di jendela
-      └ gagal  → tampilkan layar error berisi log core (bukan jendela putih)
+The app opens
+  → read <data-dir>/core.pid; if that process is still alive, kill it (crash leftovers)
+  → start the core sidecar: ENKAKU_BIND=127.0.0.1, with a port from the free-port search
+  → write the new PID
+  → wait for GET /api/health to return ok (30-second timeout, polling every 250 ms)
+      ├ success → load Studio in the window
+      └ failure → show an error screen containing the core's log (not a white window)
 ```
 
-Port dicari secara dinamis (mulai 7700, naik bila terpakai) supaya tidak bentrok dengan core lain yang mungkin sedang berjalan. Port yang terpilih diteruskan ke frontend lewat argumen jendela.
+The port is found dynamically (starting at 7700, incrementing when taken) so it does not collide with another core that may already be running. The chosen port is passed to the frontend as a window argument.
 
 ### 4.3 Tray
 
-| Menu | Aksi |
+| Menu item | Action |
 |---|---|
-| Buka Enkaku | tampilkan/fokuskan jendela |
-| Status | jumlah device online (dari `/api/health`), read-only |
-| Buka folder data | membuka data dir di file manager |
-| Cek pembaruan | memicu pemeriksaan updater |
-| Keluar | konfirmasi bila ada job berjalan, lalu matikan core & keluar |
+| Open Enkaku | Show and focus the window |
+| Status | Number of online devices (from `/api/health`), read-only |
+| Open data folder | Opens the data dir in the file manager |
+| Check for updates | Triggers an updater check |
+| Quit | Confirms if a job is running, then stops the core and exits |
 
-### 4.4 Update saat ada job berjalan
+### 4.4 Updating while a job is running
 
 ```
-updater menemukan versi baru
+the updater finds a new version
   → GET /api/jobs?status=running
-      ├ kosong  → pasang sekarang, restart aplikasi
-      └ ada job → tampilkan "Update siap, akan dipasang setelah job selesai"
-                  → pasang otomatis saat job terakhir selesai, atau saat pengguna memilih "Pasang sekarang"
-                    (dengan peringatan bahwa job berjalan akan dibatalkan)
+      ├ empty     → install now, restart the app
+      └ jobs run  → show "Update ready, it will install once jobs finish"
+                    → install automatically when the last job finishes, or when the user picks
+                      "Install now" (with a warning that running jobs will be cancelled)
 ```
 
-## 5. Langkah implementasi
+## 5. Implementation steps
 
-### Tahap 1 — Gerbang: WebCodecs di webview
+### Stage 1 — The gate: WebCodecs in the webview
 
-- [ ] Buat aplikasi Tauri minimal yang memuat halaman uji: laporkan `'VideoDecoder' in window` dan coba `VideoDecoder.isConfigSupported({codec:'avc1.42e01e'})`.
-- [ ] Jalankan di macOS (mesin ini) — catat hasilnya. Windows/Linux menyusul bila ada aksesnya.
-- **Verifikasi:** hasil tercatat di plan ini sebagai keputusan. Bila tidak didukung, tentukan lebih dulu: decoder wasm atau batasi platform. **Jangan lanjut sebelum ini jelas.**
+- [ ] Build a minimal Tauri app that loads a test page reporting `'VideoDecoder' in window` and trying `VideoDecoder.isConfigSupported({codec:'avc1.42e01e'})`.
+- [ ] Run it on macOS (this machine) and record the result. Windows and Linux follow when there is access to them.
+- **Verification:** the result is recorded in this plan as a decision. If it is unsupported, decide first: a wasm decoder or a platform restriction. **Do not continue until this is settled.**
 
-### Tahap 2 — Scaffold Rust
+### Stage 2 — Rust scaffold
 
-- [ ] `Cargo.toml`, `build.rs`, ikon; `bunx tauri dev` bisa membuka jendela kosong.
-- **Verifikasi:** jendela terbuka di macOS.
+- [ ] `Cargo.toml`, `build.rs`, icons; `bunx tauri dev` opens an empty window.
+- **Verification:** the window opens on macOS.
 
-### Tahap 3 — Core sebagai sidecar
+### Stage 3 — The core as a sidecar
 
-- [ ] `scripts/build-desktop.sh`: `bun build --compile` core → salin ke `src-tauri/binaries/enkaku-core-<target-triple>`.
-- [ ] `core_process.rs`: cari port bebas, jalankan sidecar, tulis PID, tunggu health, matikan saat keluar, bersihkan PID yatim.
-- [ ] Layar error yang menampilkan log core bila gagal start.
-- **Verifikasi:** `tauri dev` → Studio tampil, `/api/health` hijau, tutup aplikasi → proses core hilang dari `ps`.
+- [ ] `scripts/build-desktop.sh`: `bun build --compile` the core → copy into `src-tauri/binaries/enkaku-core-<target-triple>`.
+- [ ] `core_process.rs`: find a free port, start the sidecar, write the PID, wait for health, stop on exit, clean up an orphaned PID.
+- [ ] An error screen showing the core's log if it fails to start.
+- **Verification:** `tauri dev` → Studio appears, `/api/health` is green, close the app → the core process is gone from `ps`.
 
-### Tahap 4 — Tray & siklus hidup
+### Stage 4 — Tray and lifecycle
 
-- [ ] `tray.rs` (§4.3); tutup jendela → mengecil ke tray; Keluar → konfirmasi bila ada job.
-- **Verifikasi:** job berjalan lalu tekan Keluar → muncul konfirmasi, bukan langsung mati.
+- [ ] `tray.rs` (§4.3); closing the window minimises to the tray; Quit confirms if a job is running.
+- **Verification:** with a job running, press Quit → a confirmation appears rather than an immediate exit.
 
-### Tahap 5 — Updater
+### Stage 5 — Updater
 
-- [ ] Buat sepasang kunci; simpan privat di luar repo; isi `pubkey` di konfigurasi (mengganti `TODO-verify` yang ada sekarang).
-- [ ] Endpoint rilis + alur update-menunggu-job (§4.4).
-- **Verifikasi:** dari versi lama ke versi baru di mesin uji.
+- [ ] Generate a key pair; keep the private key outside the repo; fill in `pubkey` in the configuration (replacing the current `TODO-verify`).
+- [ ] The release endpoint plus the wait-for-jobs update flow (§4.4).
+- **Verification:** update from an old version to a new one on a test machine.
 
-### Tahap 6 — Packaging & tanda tangan
+### Stage 6 — Packaging and signing
 
-- [ ] macOS: `.dmg`, penandatanganan + notarization.
-- [ ] Windows: `.msi`, sertifikat Authenticode.
+- [ ] macOS: `.dmg`, signing plus notarization.
+- [ ] Windows: `.msi`, an Authenticode certificate.
 - [ ] Linux: `.AppImage`.
-- **Verifikasi:** pasang di mesin bersih (tanpa Bun/adb/Node) → farm berfungsi.
+- **Verification:** install on a clean machine (no Bun, adb, or Node) → the farm works.
 
-### Tahap 7 — Dokumentasi
+### Stage 7 — Documentation
 
-- [ ] `docs/guide/desktop.md` + perbarui `apps/desktop/README.md`.
-- [ ] Catat batasan platform yang ditemukan di Tahap 1.
+- [ ] `docs/guide/desktop.md` plus an update to `apps/desktop/README.md`.
+- [ ] Record whatever platform limits Stage 1 turned up.
 
 ## 6. Acceptance criteria
 
-1. [ ] Hasil uji WebCodecs per platform tercatat, dan keputusan jalur video desktop diambil berdasarkan itu.
-2. [ ] Di mesin bersih: pasang → buka → colok HP → layar tampil, tanpa terminal sama sekali.
-3. [ ] Menutup aplikasi mematikan core; tidak ada proses yatim (diuji juga setelah crash paksa).
-4. [ ] Port bentrok tertangani otomatis.
-5. [ ] Core gagal start → layar error informatif berisi log, bukan jendela putih.
-6. [ ] Tray berfungsi; Keluar saat ada job meminta konfirmasi.
-7. [ ] Auto-update berhasil dan menunggu job selesai.
-8. [ ] Core tetap bind `127.0.0.1` (diperiksa: `lsof` tidak menunjukkan alamat lain).
+1. [ ] The WebCodecs test results per platform are recorded, and the desktop video path decision follows from them.
+2. [ ] On a clean machine: install → open → plug in a phone → the screen appears, with no terminal at all.
+3. [ ] Closing the app stops the core; no orphan processes (tested after a forced crash too).
+4. [ ] Port collisions are handled automatically.
+5. [ ] If the core fails to start → an informative error screen with the log, not a white window.
+6. [ ] The tray works; Quit while a job is running asks for confirmation.
+7. [ ] Auto-update succeeds and waits for jobs to finish.
+8. [ ] The core still binds `127.0.0.1` (verified: `lsof` shows no other address).
 
 ## 7. Test plan
 
-**Manual di macOS (mesin ini):** seluruh Tahap 1–5.
+**Manual on macOS (this machine):** all of Stages 1–5.
 
-**Mesin bersih (VM):** tanpa Bun/Node/adb — membuktikan klaim zero-config yang jadi alasan keberadaan plan ini.
+**A clean machine (VM):** no Bun, Node, or adb — this is what proves the zero-config claim that justifies this plan.
 
-**Chaos:** bunuh proses core dari luar (aplikasi harus menampilkan status, bukan diam); bunuh aplikasi dengan `kill -9` lalu buka lagi (PID yatim harus dibersihkan); jalankan dua instans aplikasi.
+**Chaos:** kill the core process from outside (the app must show a status, not sit silent); kill the app with `kill -9` then reopen it (the orphaned PID must be cleaned up); run two instances of the app.
 
-## 8. Risiko & mitigasi
+## 8. Risks and mitigations
 
-| Risiko | Dampak | Mitigasi |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| WebCodecs tidak ada di WKWebView/WebKitGTK | Video desktop 2–3 fps | Gerbang Tahap 1; siapkan decoder wasm atau batasi platform |
-| Notarization/signing macet | Aplikasi tidak bisa dibuka pengguna | Kerjakan lebih awal; sediakan panduan "buka paksa" sementara |
-| Binary core besar (Bun ~50–90 MB) | Installer gemuk | Terima; masih jauh di bawah Electron. Ukur & catat |
-| Update memutus job | Device tertinggal kotor | Alur §4.4 |
-| Proses core yatim | Device dikuasai tanpa UI | Berkas PID + pembersihan saat start |
+| No WebCodecs in WKWebView/WebKitGTK | Desktop video at 2–3 fps | The Stage 1 gate; prepare a wasm decoder or restrict platforms |
+| Notarization or signing stalls | Users cannot open the app | Start early; ship a temporary "force open" guide |
+| A large core binary (Bun ~50–90 MB) | A fat installer | Accept it; still far below Electron. Measure and record |
+| An update cutting off a job | A device left dirty | The §4.4 flow |
+| Orphaned core processes | Devices held with no UI | A PID file plus cleanup at start |
 
 ## 9. Open questions
 
-1. **Ikon & merek** — belum ada aset desain.
-2. **Sertifikat penandatanganan**: Apple Developer ID dan sertifikat Windows berbiaya tahunan. Siapa yang mengurus?
-3. **Endpoint rilis**: hosting sendiri atau GitHub Releases?
-4. **Linux**: AppImage saja, atau `.deb`/Flatpak juga?
-5. **Mode desktop untuk tim kecil**: bolehkah desktop membuka bind ke LAN (dengan peringatan bahwa login jadi wajib), atau tetap loopback saja?
+1. **Icons and branding** — no design assets yet.
+2. **Signing certificates**: an Apple Developer ID and a Windows certificate both carry annual costs. Who handles that?
+3. **The release endpoint**: self-hosted or GitHub Releases?
+4. **Linux**: AppImage only, or `.deb` and Flatpak too?
+5. **Desktop mode for a small team**: may desktop bind to the LAN (with a warning that login becomes mandatory), or should it stay loopback only?

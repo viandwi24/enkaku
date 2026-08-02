@@ -1,63 +1,63 @@
-# Plan 00 — Overview, Konvensi, & Peta Jalan Eksekusi
+# Plan 00 — Overview, Conventions, and the Execution Roadmap
 
-> Dokumen induk untuk seluruh plan di `docs/plans/`. Baca dokumen ini **sebelum** mengerjakan plan manapun.
-> Sumber kebenaran produk: `docs/spec.md` (Enkaku draft v0.2). Jika plan bertentangan dengan spec, spec menang — lalu update plan-nya.
+> The parent document for every plan in `docs/plans/`. Read this **before** working on any plan.
+> The product source of truth is `docs/spec.md` (Enkaku draft v0.2). If a plan contradicts the spec, the spec wins — then update the plan.
 
 ---
 
-## 1. Cara memakai plan series ini
+## 1. How to use this plan series
 
-- Setiap plan = satu milestone dari spec §20, dikerjakan **berurutan** (01 → 11). Plan N mengasumsikan semua plan < N sudah selesai dan acceptance criteria-nya terpenuhi.
-- Setiap plan bersifat **self-contained untuk konteks kerja**: berisi goals, non-goals, desain teknis, langkah implementasi bernomor, acceptance criteria, dan test plan. AI agent builder cukup membaca `00-overview.md` + plan yang sedang dikerjakan (+ bagian spec yang direferensikan).
-- Jangan mengerjakan fitur dari plan berikutnya "sekalian lewat". Kalau menemukan kebutuhan yang belum ter-cover, catat di bagian **Open questions** plan terkait, jangan improvisasi arsitektur.
-- Setiap plan selesai → jalankan seluruh acceptance criteria → commit dengan pesan `feat(mX): ...` → baru lanjut plan berikutnya.
+- Each plan is one milestone from spec §20, worked **in order** (01 → 11). Plan N assumes every plan below N is finished and its acceptance criteria are met.
+- Each plan is **self-contained as a working context**: it carries goals, non-goals, technical design, numbered implementation steps, acceptance criteria, and a test plan. An AI agent builder needs only `00-overview.md` plus the plan being worked on (plus the spec sections it references).
+- Do not pull features forward from a later plan "while you are in there". If you find a need that is not covered, record it under **Open questions** in the relevant plan; do not improvise architecture.
+- When a plan is finished → run every acceptance criterion → commit with `feat(mX): ...` → only then move to the next plan.
 
-## 2. Daftar plan
+## 2. The plans
 
-| # | File | Milestone | Isi singkat |
+| # | File | Milestone | Summary |
 |---|---|---|---|
-| 00 | `00-overview.md` | — | Dokumen ini: konvensi, stack, struktur repo, template. |
-| 01 | `01-m0-foundation.md` | M0 | Monorepo, core daemon, `packages/adb` (client + track-devices), device registry + stableId, SQLite, WS broadcast, per-device queue + semaphore. |
-| 02 | `02-m1-toolchain.md` | M1 | Toolchain Manager: manifest, download + sha256, versioning, active pointer, swappable flag, first-run auto-provision. |
-| 03 | `03-m2-basic-control.md` | M2 | Kontrol dasar: `screencap-loop` + `adb-input`, coordinate mapping, Studio live view + klik, enrollment wizard. |
-| 04 | `04-m3-session-lease-queue.md` | M3 | State machine device, lease + heartbeat, queue per-device di SQLite (dummy job). |
-| 05 | `05-m4-script-framework.md` | M4 | `defineScript`, runner subprocess, artifact/log, `@enkaku/sdk`, inspector awal (`uiautomator dump`). |
-| 06 | `06-m4.5-ui-server.md` | M4.5 | Persistent on-device inspector (pola uiautomator2): fast `find`/`waitFor`, `set_text`. |
-| 07 | `07-m5-studio-complete.md` | M5 | Studio lengkap: Scripts CRUD + run form + publish, job detail, Tools UI, settings, schema-driven renderer, registry, battery/thermal + auto-quarantine. |
-| 08 | `08-m6-scrcpy.md` | M6 | scrcpy display (H.264 relay, versi-locked) + `scrcpy-uhid` input + WebCodecs decode + fallback decoder. |
-| 09 | `09-m7-multiuser-packaging.md` | M7 | Auth/ACL + TLS, single-binary, Docker image, Tauri shell, auto-update, artifact retention/GC. |
-| 10 | `10-m7.5-business-plumbing.md` | M7.5 | Docs, license/activation, telemetry opt-in, AUP, support/update channel, `LICENSES.md`. |
-| 11 | `11-m8-cloud.md` | M8 | Cloud tunnel agent, split control plane, WebRTC video, security boundary per-job, appium opt-in, redroid, `scrcpy-aoa`. |
-| 12 | `12-m9-cloud-session.md` | M9a | Mode cloud berfungsi penuh: `@enkaku/session`, session/input/job jarak jauh. |
-| 13 | `13-m9-webrtc-backend.md` | M9b | Backend WebRTC (werift), relay RTP, TURN. |
-| 14 | `14-m9-desktop-tauri.md` | M9c | Aplikasi desktop Tauri. |
-| 15 | `15-m10-design-system.md` | M10a | **Fondasi desain**: Tailwind + shadcn/ui, token, kerangka layout, perbaikan cacat fungsional UI. |
-| 16 | `16-m10-screens.md` | M10b | **Perombakan tiap layar** & alur pengguna. |
+| 00 | `00-overview.md` | — | This document: conventions, stack, repo structure, template. |
+| 01 | `01-m0-foundation.md` | M0 | Monorepo, core daemon, `packages/adb` (client plus track-devices), device registry plus stableId, SQLite, WS broadcast, per-device queue plus semaphore. |
+| 02 | `02-m1-toolchain.md` | M1 | Toolchain Manager: manifest, download plus sha256, versioning, active pointer, swappable flag, first-run auto-provisioning. |
+| 03 | `03-m2-basic-control.md` | M2 | Basic control: `screencap-loop` plus `adb-input`, coordinate mapping, Studio live view and click, the enrollment wizard. |
+| 04 | `04-m3-session-lease-queue.md` | M3 | The device state machine, lease plus heartbeat, a per-device queue in SQLite (with a dummy job). |
+| 05 | `05-m4-script-framework.md` | M4 | `defineScript`, the subprocess runner, artifacts and logs, `@enkaku/sdk`, the first inspector (`uiautomator dump`). |
+| 06 | `06-m4.5-ui-server.md` | M4.5 | A persistent on-device inspector (the uiautomator2 pattern): fast `find`/`waitFor`, `set_text`. |
+| 07 | `07-m5-studio-complete.md` | M5 | Studio complete: script CRUD plus run form and publish, job detail, the Tools UI, settings, the schema-driven renderer, the registry, battery/thermal plus auto-quarantine. |
+| 08 | `08-m6-scrcpy.md` | M6 | The scrcpy display (H.264 relay, version-locked) plus `scrcpy-uhid` input plus WebCodecs decoding plus a fallback decoder. |
+| 09 | `09-m7-multiuser-packaging.md` | M7 | Auth/ACL plus TLS, a single binary, a Docker image, the Tauri shell, auto-update, artifact retention and GC. |
+| 10 | `10-m7.5-business-plumbing.md` | M7.5 | Docs, licence/activation, opt-in telemetry, the AUP, support and update channels, `LICENSES.md`. |
+| 11 | `11-m8-cloud.md` | M8 | The cloud tunnel agent, a split control plane, WebRTC video, a per-job security boundary, opt-in appium, redroid, `scrcpy-aoa`. |
+| 12 | `12-m9-cloud-session.md` | M9a | Cloud mode fully working: `@enkaku/session`, remote sessions, input, and jobs. |
+| 13 | `13-m9-webrtc-backend.md` | M9b | The WebRTC backend (werift), the RTP relay, TURN. |
+| 14 | `14-m9-desktop-tauri.md` | M9c | The Tauri desktop application. |
+| 15 | `15-m10-design-system.md` | M10a | **Design foundations**: Tailwind plus shadcn/ui, tokens, the layout frame, fixing functional UI defects. |
+| 16 | `16-m10-screens.md` | M10b | **Rebuilding every screen** and user flow. |
 
-Dependensi linier: `01 → … → 11 → 12 → 13 → 14`, lalu `15 → 16` untuk lapisan antarmuka. (07 dan 06 sebagian bisa paralel, tapi default: urut.)
+Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
 
-## 3. Stack & keputusan yang TIDAK boleh diubah
+## 3. Stack and decisions that must NOT change
 
-Keputusan ini sudah final di spec (§4, §10.3, §21 catatan akhir). Plan manapun tidak boleh menggantinya tanpa revisi spec:
+These are settled in the spec (§4, §10.3, and the §21 closing note). No plan may change them without revising the spec:
 
-| Area | Keputusan |
+| Area | Decision |
 |---|---|
-| Runtime core | **Bun** (bukan Node). Core daemon = Bun + **Hono**. |
-| Web UI | **Next.js** (Studio), diakses via browser; bisa di-serve core (static export) atau hosted. |
-| DB | **SQLite** (zero-setup) + **Drizzle ORM**. Driver DB di-abstract, tapi default SQLite. |
-| Validasi/schema | **Zod** di semua boundary (protocol message, params script, config engine, DeviceSettings). JSON Schema untuk UI form di-generate dari Zod. |
-| Monorepo | Bun workspaces, layout persis spec §4 (`packages/core|studio|sdk|protocol|adb|scrcpy|toolchain|drivers|agent`, `apps/desktop`). |
-| scrcpy-server | **Vanilla .jar resmi Genymobile**, di-pin ke versi core (`swappable: false`). Tidak pernah fork Java. (spec §7.6) |
-| Input default | `scrcpy-uhid`; fallback `scrcpy-sdk`; `adb-input` hanya fallback kasar/MVP. (spec §9) |
-| Inspector default (akhir) | `ui-server` persistent on-device; `uiautomator dump` hanya jembatan di M4. (spec §7.4) |
-| Komunikasi Core⇄Studio | Message-based over **WebSocket** untuk realtime/stream; REST untuk CRUD. Kontrak di `packages/protocol` (Zod). (spec §13) |
-| Serialisasi adb | Per-device command queue + global semaphore longgar (6–8). **`adb kill-server` dilarang** kecuali Toolchain Manager swap versi adb. (spec §10.4) |
-| Trust model lokal | Crash containment (child process + hard-timeout kill), **bukan** sandbox keamanan. Jangan klaim "sandbox". (spec §11.3) |
-| Identity device | `stableId` (ro.serialno → fallback ANDROID_ID) = identitas; serial adb = alamat transport. (spec §7.5) |
+| Core runtime | **Bun** (not Node). The core daemon is Bun plus **Hono**. |
+| Web UI | **Next.js** (Studio), reached through a browser; either served by the core (static export) or hosted. |
+| DB | **SQLite** (zero setup) plus **Drizzle ORM**. The DB driver stays abstracted, but SQLite is the default. |
+| Validation/schema | **Zod** at every boundary (protocol messages, script params, engine config, DeviceSettings). The JSON Schema for UI forms is generated from Zod. |
+| Monorepo | Bun workspaces, laid out exactly as spec §4 (`packages/core|studio|sdk|protocol|adb|scrcpy|toolchain|drivers|agent`, `apps/desktop`). |
+| scrcpy-server | **Genymobile's official vanilla .jar**, pinned to the core version (`swappable: false`). Never fork the Java. (spec §7.6) |
+| Default input | `scrcpy-uhid`; falling back to `scrcpy-sdk`; `adb-input` is only a crude MVP fallback. (spec §9) |
+| Default inspector (final) | A persistent on-device `ui-server`; `uiautomator dump` is only a bridge in M4. (spec §7.4) |
+| Core⇄Studio communication | Message-based over **WebSocket** for realtime and streaming; REST for CRUD. The contract lives in `packages/protocol` (Zod). (spec §13) |
+| adb serialisation | A per-device command queue plus a loose global semaphore (6–8). **`adb kill-server` is forbidden** except in the Toolchain Manager's adb version swap. (spec §10.4) |
+| Local trust model | Crash containment (child process plus a hard-timeout kill), **not** a security sandbox. Never claim "sandbox". (spec §11.3) |
+| Device identity | `stableId` (ro.serialno → ANDROID_ID fallback) is the identity; the adb serial is a transport address. (spec §7.5) |
 
-## 4. Konvensi repo & kode
+## 4. Repo and code conventions
 
-### 4.1 Struktur monorepo (target akhir; dibuat bertahap mulai Plan 01)
+### 4.1 Monorepo structure (the final target; built up gradually from Plan 01)
 
 ```
 openpf/
@@ -65,101 +65,101 @@ openpf/
   bunfig.toml
   tsconfig.base.json
   packages/
-    core/                     # Bun + Hono daemon
-    studio/                   # Next.js web UI
-    sdk/                      # @enkaku/sdk — defineScript, tipe publik
-    protocol/                 # @enkaku/protocol — Zod message schema, shared types
+    core/                     # the Bun + Hono daemon
+    studio/                   # the Next.js web UI
+    sdk/                      # @enkaku/sdk — defineScript, public types
+    protocol/                 # @enkaku/protocol — Zod message schemas, shared types
     adb/                      # @enkaku/adb — adb client, track-devices, scrcpy-server push
-    scrcpy/                   # @enkaku/scrcpy — protocol client (demux, meta decode), versi-locked
-    toolchain/                # @enkaku/toolchain — provisioning tool (download, sha256, versi)
-    drivers/                  # @enkaku/drivers — implementasi Transport/DisplaySource/InputSink/Inspector
-    agent/                    # @enkaku/agent — mini-core cloud tunnel (Plan 11)
+    scrcpy/                   # @enkaku/scrcpy — the protocol client (demux, meta decode), version-locked
+    toolchain/                # @enkaku/toolchain — tool provisioning (download, sha256, versions)
+    drivers/                  # @enkaku/drivers — Transport/DisplaySource/InputSink/Inspector implementations
+    agent/                    # @enkaku/agent — the cloud tunnel mini-core (Plan 11)
   apps/
-    desktop/                  # Tauri shell (Plan 09)
+    desktop/                  # the Tauri shell (Plan 09)
   docs/
     spec.md
     plans/
 ```
 
-- Nama package npm internal: scope `@enkaku/*`. `sdk` dan `protocol` dirancang publishable; sisanya `"private": true`.
-- Path alias TS: import antar-package selalu via nama package (`@enkaku/protocol`), bukan relative path lintas package.
+- Internal npm package names use the `@enkaku/*` scope. `sdk` and `protocol` are designed to be publishable; everything else is `"private": true`.
+- TS path aliases: cross-package imports always go through the package name (`@enkaku/protocol`), never a relative path across packages.
 
-### 4.2 Konvensi TypeScript
+### 4.2 TypeScript conventions
 
-- `"strict": true`, `"noUncheckedIndexedAccess": true` di `tsconfig.base.json`.
-- Semua data lintas boundary (WS message, HTTP body, DB JSON column, config file) **wajib** lewat Zod `.parse()`/`.safeParse()` — tidak ada `as` casting terhadap input eksternal.
-- Error: gunakan class error ber-kode (`EnkakuError` dengan `code: string`) di core; API mengembalikan `{ error: { code, message } }` konsisten.
-- Logging: satu logger util di core (level: debug/info/warn/error, prefix subsistem, output JSON-lines opsional). Semua subsistem pakai ini, tidak ada `console.log` liar.
-- ID entitas: gunakan `nanoid()` / `crypto.randomUUID()` — konsisten satu pilihan sejak Plan 01 (pakai `crypto.randomUUID()`, built-in Bun).
-- Timestamp DB: integer unix epoch **detik** (Drizzle `{ mode: 'timestamp' }`), konsisten di semua tabel.
+- `"strict": true` and `"noUncheckedIndexedAccess": true` in `tsconfig.base.json`.
+- All data crossing a boundary (WS messages, HTTP bodies, JSON DB columns, config files) **must** pass through Zod `.parse()`/`.safeParse()` — no `as` casting of external input.
+- Errors: use coded error classes (`EnkakuError` with `code: string`) in the core; the API consistently returns `{ error: { code, message } }`.
+- Logging: one logger utility in the core (levels debug/info/warn/error, a subsystem prefix, optional JSON-lines output). Every subsystem uses it; no stray `console.log`.
+- Entity IDs: use `nanoid()` or `crypto.randomUUID()` — pick one consistently from Plan 01 onward (we use `crypto.randomUUID()`, built into Bun).
+- DB timestamps: integer unix epoch **seconds** (Drizzle `{ mode: 'timestamp' }`), consistently across every table.
 
-### 4.3 Konvensi API & protocol
+### 4.3 API and protocol conventions
 
-- REST: prefix `/api/...`, JSON, status code semantik. Endpoint tool mengikuti spec §7.7 persis.
-- WS: satu endpoint `/ws` untuk control-plane message (JSON envelope), binary stream video via message binary dengan channel-prefix (detil di Plan 03/08). Envelope JSON:
+- REST: the `/api/...` prefix, JSON, semantic status codes. Tool endpoints follow spec §7.7 exactly.
+- WS: one `/ws` endpoint for control-plane messages (a JSON envelope), with binary video streams as binary messages carrying a channel prefix (details in Plans 03 and 08). The JSON envelope:
   ```ts
-  { type: string; id?: string; payload: unknown }   // id untuk request-reply correlation
+  { type: string; id?: string; payload: unknown }   // id correlates request and reply
   ```
-- Semua tipe message dideklarasikan di `packages/protocol` sebagai Zod discriminated union; core dan studio import dari situ. **Tidak ada** string message type hardcode di luar protocol package.
+- Every message type is declared in `packages/protocol` as a Zod discriminated union; core and studio import from there. There are **no** hardcoded message type strings outside the protocol package.
 
-### 4.4 Konvensi testing
+### 4.4 Testing conventions
 
-- Test runner: `bun test`. File `*.test.ts` colocated di `src/`.
-- Tiap plan punya bagian **Test plan**; minimal: unit test untuk logika murni (queue, parser, checksum, state machine) + smoke test manual berskrip (dokumentasikan perintahnya di plan).
-- Test yang butuh device fisik ditandai dan bisa di-skip via env `ENKAKU_TEST_DEVICE=1`.
+- Test runner: `bun test`. `*.test.ts` files colocated in `src/`.
+- Every plan has a **Test plan** section; at minimum: unit tests for pure logic (queue, parsers, checksums, state machine) plus a scripted manual smoke test (with the exact commands written into the plan).
+- Tests needing a physical device are marked and skippable via the `ENKAKU_TEST_DEVICE=1` env var.
 
-### 4.5 Konvensi commit & branch
+### 4.5 Commit and branch conventions
 
-- Satu plan boleh banyak commit; pesan `feat(m0): ...`, `fix(m2): ...`, `chore: ...`.
-- Repo ini belum git — Plan 01 langkah pertama termasuk `git init`.
+- One plan may span many commits; messages read `feat(m0): ...`, `fix(m2): ...`, `chore: ...`.
+- This repo is not yet a git repo — Plan 01's first step includes `git init`.
 
-## 5. App-data & path runtime (dipakai lintas plan)
+## 5. App-data and runtime paths (used across plans)
 
-Sesuai spec §7.2:
+Per spec §7.2:
 
 - macOS: `~/Library/Application Support/Enkaku`
 - Windows: `%APPDATA%\Enkaku`
-- Linux: `~/.local/share/enkaku` (service: `/var/lib/enkaku`)
-- Override untuk dev/test: env `ENKAKU_DATA_DIR`.
+- Linux: `~/.local/share/enkaku` (as a service: `/var/lib/enkaku`)
+- Dev/test override: the `ENKAKU_DATA_DIR` env var.
 
-Isi: `enkaku.db`, `tools/<toolId>/<version>/...` + symlink/pointer `active`, `artifacts/<job-id>/...`, `logs/`.
+Contents: `enkaku.db`, `tools/<toolId>/<version>/...` plus an `active` pointer, `artifacts/<job-id>/...`, `logs/`.
 
-## 6. Template plan (struktur wajib tiap dokumen 01–11)
+## 6. Plan template (the required structure for documents 01–11)
 
-Setiap plan mengikuti struktur ini, dengan kedalaman "AI builder tinggal ikut":
+Every plan follows this structure, at a depth where "the AI builder just follows it":
 
 ```markdown
-# Plan XX — <Milestone> : <Judul>
+# Plan XX — <Milestone> : <Title>
 
-> Status / Depends on / Referensi spec (§...)
+> Status / Depends on / Spec references (§...)
 
-## 1. Goals            — apa yang harus TRUE setelah plan selesai (bullet terukur)
-## 2. Non-goals        — yang sengaja TIDAK dikerjakan di plan ini (dan dikerjakan di plan mana)
-## 3. Konteks & keputusan desain — ringkasan desain + alasan, merujuk spec
-## 4. Desain teknis    — interface TS, schema DB/Zod, endpoint, struktur file, flow/sequence
-## 5. Langkah implementasi — tahapan bernomor (X.1, X.2, ...) dengan sub-checklist konkret,
-##                       tiap tahap menyebut file yang dibuat/diubah & hasil yang bisa diverifikasi
-## 6. Acceptance criteria — daftar cek final, semua harus lulus
-## 7. Test plan        — unit test + smoke test manual (perintah eksplisit)
-## 8. Risiko & mitigasi
-## 9. Open questions   — ambiguitas spec yang butuh keputusan manusia (jangan diputuskan sepihak)
+## 1. Goals            — what must be TRUE once the plan is done (measurable bullets)
+## 2. Non-goals        — what is deliberately NOT done here (and which plan does it)
+## 3. Context and design decisions — a design summary plus reasoning, referencing the spec
+## 4. Technical design — TS interfaces, DB/Zod schemas, endpoints, file structure, flows and sequences
+## 5. Implementation steps — numbered stages (X.1, X.2, ...) with concrete sub-checklists,
+##                       each naming the files created or changed and a verifiable result
+## 6. Acceptance criteria — the final checklist; everything must pass
+## 7. Test plan         — unit tests plus a manual smoke test (with explicit commands)
+## 8. Risks and mitigations
+## 9. Open questions    — spec ambiguities needing a human decision (do not decide unilaterally)
 ```
 
-## 7. Definition of Done global (berlaku untuk semua plan)
+## 7. Global Definition of Done (applies to every plan)
 
-1. Semua acceptance criteria plan lulus.
-2. `bun test` hijau di seluruh workspace.
-3. Tidak ada TODO/`any` baru yang tak beralasan di kode yang disentuh.
-4. Perilaku baru terdokumentasi minimal di README package terkait.
-5. Target NFR spec §16 yang relevan dengan milestone tsb dicek (mis. Plan 06: inspector find < 200 ms; Plan 08: glass-to-glass < 150 ms LAN).
+1. Every acceptance criterion in the plan passes.
+2. `bun test` is green across the workspace.
+3. No new unjustified TODOs or `any` in the code you touched.
+4. New behaviour is documented at least in the relevant package README.
+5. The spec §16 NFR targets relevant to that milestone are checked (Plan 06: inspector find < 200 ms; Plan 08: glass-to-glass < 150 ms on a LAN).
 
-## 8. Glossary singkat
+## 8. Short glossary
 
-- **Core** — daemon Bun+Hono, orkestrator semuanya.
-- **Studio** — web UI Next.js.
-- **Engine** — implementasi salah satu dari 4 lapisan driver (Transport/DisplaySource/InputSink/Inspector).
-- **DeviceSession** — rakitan 4 engine untuk satu device (spec §7).
-- **Lease** — hak eksklusif memakai device (manual atau job), dengan heartbeat + expiry.
-- **stableId** — identitas device stabil (ro.serialno / ANDROID_ID), bukan serial adb.
-- **Toolchain Manager** — subsistem provisioning binary (adb, scrcpy-server, ui-server, ...).
-- **swappable** — flag tool: boleh/tidaknya user memilih versi bebas (scrcpy-server: `false`).
+- **Core** — the Bun + Hono daemon, orchestrator of everything.
+- **Studio** — the Next.js web UI.
+- **Engine** — an implementation of one of the four driver layers (Transport/DisplaySource/InputSink/Inspector).
+- **DeviceSession** — the four engines assembled for one device (spec §7).
+- **Lease** — the exclusive right to use a device (manual or job), with a heartbeat and an expiry.
+- **stableId** — the stable device identity (ro.serialno / ANDROID_ID), not the adb serial.
+- **Toolchain Manager** — the subsystem that provisions binaries (adb, scrcpy-server, ui-server, and so on).
+- **swappable** — a tool flag: whether users may freely pick a version (scrcpy-server: `false`).

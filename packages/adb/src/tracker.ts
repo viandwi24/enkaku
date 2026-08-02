@@ -12,7 +12,7 @@ export type TrackerEvent =
   | { kind: 'remove'; serial: string }
   | { kind: 'change'; serial: string; state: AdbDeviceState }
 
-/** Parse snapshot `host:track-devices`: baris "<serial>\t<state>\n". */
+/** Parse a `host:track-devices` snapshot: lines of "<serial>\t<state>\n". */
 export function parseSnapshot(raw: string): TrackedDevice[] {
   const out: TrackedDevice[] = []
   for (const line of raw.split('\n')) {
@@ -25,7 +25,7 @@ export function parseSnapshot(raw: string): TrackedDevice[] {
   return out
 }
 
-/** Diff snapshot lama vs baru → events add/change/remove. */
+/** Diff the old snapshot against the new one → add/change/remove events. */
 export function diffSnapshots(prev: TrackedDevice[], next: TrackedDevice[]): TrackerEvent[] {
   const events: TrackerEvent[] = []
   const prevMap = new Map(prev.map((d) => [d.serial, d.state]))
@@ -44,15 +44,15 @@ export function diffSnapshots(prev: TrackedDevice[], next: TrackedDevice[]): Tra
 export interface DeviceTrackerOptions {
   host: string
   port: number
-  /** Dipanggil untuk log internal (reconnect dsb) — injeksi dari core. */
+  /** Called for internal logging (reconnects and so on) — injected by the core. */
   onLog?: (level: 'debug' | 'warn', msg: string) => void
 }
 
 /**
- * Koneksi dedicated `host:track-devices` — adb server push snapshot tiap
- * perubahan (realtime, tanpa polling). Auto-reconnect dengan backoff saat
- * socket putus; setelah reconnect, snapshot baru di-diff terhadap snapshot
- * lama sehingga device yang hilang selama putus tetap menghasilkan `remove`.
+ * A dedicated `host:track-devices` connection — the adb server pushes a snapshot on
+ * on every change (realtime, no polling). Auto-reconnects with backoff when
+ * the socket drops; after reconnecting the new snapshot is diffed against the
+ * old one, so a device lost during the outage still produces a `remove`.
  */
 export class DeviceTracker {
   private listeners = new Set<(ev: TrackerEvent) => void>()
@@ -103,14 +103,14 @@ export class DeviceTracker {
         socket.send('host:track-devices')
         await socket.readStatus()
         backoffMs = 1000
-        // Stream tanpa akhir: tiap perubahan = satu blok snapshot.
+        // An endless stream: every change arrives as one snapshot block.
         while (!this.stopped) {
           const raw = await socket.readBlock()
           this.emitFromSnapshot(parseSnapshot(raw))
         }
       } catch (err) {
         if (this.stopped) return
-        this.opts.onLog?.('warn', `track-devices putus, reconnect dalam ${backoffMs}ms: ${String(err)}`)
+        this.opts.onLog?.('warn', `track-devices dropped, reconnecting in ${backoffMs}ms: ${String(err)}`)
       } finally {
         this.socket?.close()
         this.socket = null

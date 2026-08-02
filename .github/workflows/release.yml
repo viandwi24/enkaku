@@ -1,0 +1,107 @@
+name: release
+
+# Option B: cross-compile every target once on Linux, then boot the real
+# artifact on each OS (the binary must serve /api/health and the embedded
+# Studio) before anything is published. Tags `v*` publish a GitHub Release;
+# manual dispatch runs build + smoke only.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: VERSION="${{ github.ref_name }}" bash scripts/build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: linux-x64.tar.gz
+          - os: macos-latest
+            archive: darwin-arm64.tar.gz
+          - os: windows-latest
+            archive: windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Boot and probe (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar xzf release/enkaku-*-${{ matrix.archive }}
+          export ENKAKU_DATA_DIR="$PWD/smoke-data" ENKAKU_PORT=7700
+          ./enkaku > boot.log 2>&1 &
+          pid=$!
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:7700/api/health > health.json; then ok=1; break; fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { echo "core never became healthy"; cat boot.log; exit 1; }
+          cat health.json
+          curl -fs http://127.0.0.1:7700/ | grep -qi '<html' || { echo "Studio index not served"; exit 1; }
+          kill "$pid"
+      - name: Boot and probe (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Get-Item release/enkaku-*-windows-x64.zip
+          Expand-Archive -Path $archive.FullName -DestinationPath extracted
+          $env:ENKAKU_DATA_DIR = "$PWD\smoke-data"
+          $env:ENKAKU_PORT = "7700"
+          $proc = Start-Process -FilePath "$PWD\extracted\enkaku.exe" -PassThru -RedirectStandardOutput boot.log -RedirectStandardError boot.err
+          $ok = $false
+          foreach ($i in 1..30) {
+            try {
+              $health = Invoke-RestMethod -Uri http://127.0.0.1:7700/api/health -TimeoutSec 2
+              $ok = $true; break
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $ok) {
+            Write-Host "core never became healthy"
+            Get-Content boot.log, boot.err -ErrorAction SilentlyContinue
+            exit 1
+          }
+          $health | ConvertTo-Json
+          $index = Invoke-WebRequest -Uri http://127.0.0.1:7700/ -UseBasicParsing
+          if ($index.Content -notmatch '<html') { Write-Host "Studio index not served"; exit 1 }
+          Stop-Process -Id $proc.Id
+
+  publish:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/*.zip
+            release/SHA256SUMS.txt
+          generate_release_notes: true

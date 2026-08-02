@@ -22,3 +22,7 @@ apps/desktop/src-tauri/binaries/
 .dev-cloud/
 .dev-agent/
 .agent-data/
+
+# release build
+*.gen.ts
+release/

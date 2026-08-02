@@ -1,6 +1,6 @@
 /**
  * Interface 4 lapisan driver (spec §7) — lokasi kanonik shared types.
- * Implementasi engine di packages/drivers (mulai Plan 03).
+ * Engine implementations live in packages/drivers (from Plan 03 onward).
  */
 import type { Selector, UiNode } from './ui-node'
 
@@ -15,18 +15,24 @@ export interface FrameMeta {
   codec: 'png' | 'h264'
   seq: number
   capturedAt: number
+  /**
+   * Whether this chunk can start a decode. Left undefined it means "PNG, so
+   * yes"; H.264 sources must set it, because a decoder handed a delta frame
+   * right after `configure()` fails outright instead of catching up.
+   */
+  keyframe?: boolean
 }
 
 export interface Transport {
   id: string
-  /** Alamat transport adb — bisa berubah (USB ↔ ip:port). */
+  /** The adb transport address — it can change (USB ↔ ip:port). */
   serial: string
   /** Identitas device stabil (spec §7.5). */
   stableId: string
   connect(): Promise<void>
   disconnect(): Promise<void>
   exec(cmd: string): Promise<string>
-  /** Stdout binary (screencap dsb) — ekstensi M2 terhadap spec §7. */
+  /** Binary stdout (screencap and friends) — an M2 extension to spec §7. */
   execOut(cmd: string): Promise<Uint8Array>
 }
 

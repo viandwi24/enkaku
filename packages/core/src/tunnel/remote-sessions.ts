@@ -9,15 +9,15 @@ import type { TunnelRegistry } from './registry'
 import type { TunnelRouter } from './router'
 
 export interface RemoteSessionManager {
-  /** Device milik agent? (null = device lokal, tangani seperti biasa) */
+  /** Is this device owned by an agent? (null means local — handle it normally) */
   agentIdFor(deviceId: string): string | null
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<RemoteSession>
   release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
   get(deviceId: string): RemoteSession | null
-  /** Dipanggil router saat menerima session.started dari agent. */
+  /** Called by the router on receiving session.started from an agent. */
   onStarted(deviceId: string, info: { codec: 'png' | 'h264'; width: number; height: number }): void
   onFailed(deviceId: string, code: string, message: string): void
-  /** Tunnel agent putus → semua sesi device-nya tidak lagi sah. */
+  /** An agent's tunnel dropped → every session for its devices is void. */
   dropAgent(agentId: string): void
   closeAll(): Promise<void>
 }
@@ -25,9 +25,9 @@ export interface RemoteSessionManager {
 const START_TIMEOUT_MS = 20_000
 
 /**
- * Pengelola sesi device jarak jauh di control plane. Bentuk API-nya sengaja
- * mengikuti `SessionManager` lokal supaya pemanggil hanya perlu memilih
- * salah satu, bukan menulis dua alur berbeda.
+ * Manages remote device sessions in the control plane. Its API deliberately
+ * mirrors the local `SessionManager`, so callers pick one or the other rather
+ * than writing two different flows.
  */
 export function createRemoteSessionManager(deps: {
   db: Db
@@ -49,17 +49,17 @@ export function createRemoteSessionManager(deps: {
       let session = sessions.get(deviceId)
       if (!session) {
         if (!deps.registry.forDevice(deviceId)) {
-          throw new EnkakuError('agent_offline', 'agent pemilik device sedang tidak terhubung')
+          throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
         }
         session = createDeviceProxy({ router: deps.router, deviceId })
         sessions.set(deviceId, session)
 
-        // Tunggu agent mengabarkan sesi siap; tanpa ini kita tidak tahu
-        // codec & dimensi, dan viewer akan menerima frame yang tak terbaca.
+        // Wait for the agent to report readiness; without it we do not know the
+        // codec or dimensions, and the viewer would get undecodable frames.
         const started = new Promise<void>((resolve, reject) => {
           pending.set(deviceId, { resolve, reject })
           setTimeout(() => {
-            if (pending.delete(deviceId)) reject(new EnkakuError('session_failed', 'agent tidak merespons session.start'))
+            if (pending.delete(deviceId)) reject(new EnkakuError('session_failed', 'the agent did not respond to session.start'))
           }, START_TIMEOUT_MS)
         })
         deps.router.sendToDevice(deviceId, {
@@ -98,11 +98,11 @@ export function createRemoteSessionManager(deps: {
       sessions.get(deviceId)?.applyStarted(info)
       pending.get(deviceId)?.resolve()
       pending.delete(deviceId)
-      deps.log.info(`sesi remote siap: ${deviceId} (${info.codec} ${info.width}×${info.height})`)
+      deps.log.info(`remote session ready: ${deviceId} (${info.codec} ${info.width}×${info.height})`)
     },
 
     onFailed(deviceId, code, message) {
-      deps.log.warn(`sesi remote gagal: ${deviceId} — ${code}: ${message}`)
+      deps.log.warn(`remote session failed: ${deviceId} — ${code}: ${message}`)
       pending.get(deviceId)?.reject(new EnkakuError(code, message))
       pending.delete(deviceId)
       sessions.delete(deviceId)
@@ -112,10 +112,10 @@ export function createRemoteSessionManager(deps: {
       for (const deviceId of [...sessions.keys()]) {
         const row = deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
         if (row?.agentId !== agentId) continue
-        deps.log.info(`sesi remote dibatalkan karena agent ${agentId} terputus: ${deviceId}`)
+        deps.log.info(`remote session cancelled because agent ${agentId} disconnected: ${deviceId}`)
         sessions.delete(deviceId)
         unsubs.delete(deviceId)
-        pending.get(deviceId)?.reject(new EnkakuError('agent_offline', 'agent terputus saat sesi dibuat'))
+        pending.get(deviceId)?.reject(new EnkakuError('agent_offline', 'the agent disconnected while the session was being created'))
         pending.delete(deviceId)
       }
     },

@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 /**
  * Envelope message Core⇄Studio (00-overview §4.3, spec §13).
- * `id` dipakai untuk korelasi request-reply (belum dipakai di M0).
+ * `id` correlates request and reply (unused in M0).
  */
 export const EnvelopeSchema = z.object({
   type: z.string(),

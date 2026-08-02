@@ -2,13 +2,13 @@ import { join } from 'node:path'
 import { z } from 'zod'
 
 /**
- * State agent = satu file JSON (plan 11 §4.1). Tidak ada SQLite di agent:
- * device registry milik control plane; agent hanya melaporkan apa yang dia
- * lihat dari track-devices.
+ * Agent state is one JSON file (plan 11 §4.1). There is no SQLite on the agent:
+ * the device registry belongs to the control plane; the agent only reports
+ * what track-devices shows it.
  */
 export const AgentStateSchema = z.object({
   agentId: z.string(),
-  /** Secret jangka panjang hasil enrollment (hash-nya disimpan di CP). */
+  /** The long-lived secret from enrollment (the CP stores only its hash). */
   credential: z.string(),
   controlPlaneUrl: z.string(),
 })
@@ -26,7 +26,7 @@ export async function saveState(dataDir: string, state: AgentState): Promise<voi
 }
 
 /**
- * Enrollment sekali jalan: tukar token sekali-pakai dengan credential
+ * One-shot enrollment: exchange the single-use token for a long-lived
  * jangka panjang (spec §14 "tunnel agent pakai token").
  */
 export async function enroll(opts: {
@@ -41,7 +41,7 @@ export async function enroll(opts: {
   })
   const body = (await res.json()) as { agentId?: string; credential?: string; error?: { message: string } }
   if (!res.ok || !body.agentId || !body.credential) {
-    throw new Error(body.error?.message ?? `enrollment gagal: HTTP ${res.status}`)
+    throw new Error(body.error?.message ?? `enrollment failed: HTTP ${res.status}`)
   }
   return { agentId: body.agentId, credential: body.credential, controlPlaneUrl: opts.controlPlaneUrl }
 }

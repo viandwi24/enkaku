@@ -27,7 +27,7 @@ export function createJobRoutes(service: JobService): Hono {
   app.post('/', async (c) => {
     const body = EnqueueBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
-      return c.json({ error: { code: 'E_BAD_REQUEST', message: 'body { scriptId, deviceId, params } wajib' } }, 400)
+      return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { scriptId, deviceId, params } is required' } }, 400)
     }
     const job = service.enqueue(body.data)
     return c.json({ job }, 201)
@@ -46,7 +46,7 @@ export function createJobRoutes(service: JobService): Hono {
 
   app.get('/:id', (c) => {
     const job = service.get(c.req.param('id'))
-    if (!job) return c.json({ error: { code: 'job_not_found', message: 'job tidak ada' } }, 404)
+    if (!job) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
     return c.json({ job })
   })
 

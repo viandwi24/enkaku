@@ -2,11 +2,11 @@ import { PointSchema, SelectorSchema } from '@enkaku/protocol'
 import { z } from 'zod'
 
 /**
- * Protokol IPC parent ⇄ child (plan 05 §4.6). Semua message JSON,
- * di-safeParse di kedua sisi; message tak dikenal → abaikan (forward-compat).
+ * The parent ⇄ child IPC protocol (plan 05 §4.6). Every message is JSON,
+ * safeParse'd on both sides; unknown messages are ignored (forward-compatible).
  *
- * Child TIDAK pernah membuka adb sendiri — semua aksi device lewat
- * `device.call` ke parent, supaya per-device queue & lease tetap dihormati.
+ * The child NEVER opens adb itself — every device action travels as a
+ * `device.call` to the parent, so the per-device queue and lease still hold.
  */
 
 export const DeviceCallSchema = z.discriminatedUnion('method', [
@@ -44,7 +44,7 @@ export const ChildToParentSchema = z.union([
     t: z.literal('ready'),
     scriptId: z.string(),
     version: z.string(),
-    /** Meta dari ScriptDefinition — hanya child yang bisa membacanya. */
+    /** Metadata from ScriptDefinition — only the child can read it. */
     timeoutMs: z.number().int().positive().optional(),
     retries: z.number().int().min(0).max(10).optional(),
   }),
@@ -55,7 +55,7 @@ export const ChildToParentSchema = z.union([
     callId: z.string(),
     kind: z.enum(['screenshot', 'file']),
     label: z.string(),
-    /** Hanya kind 'file'; screenshot diambil core-side. */
+    /** Only kind 'file'; screenshots are taken core-side. */
     dataBase64: z.string().optional(),
     ext: z.string().optional(),
   }),
@@ -71,7 +71,7 @@ export const ChildToParentSchema = z.union([
     ok: z.boolean(),
     value: z.unknown().optional(),
     error: ScriptErrorSchema.optional(),
-    /** Parent tahu apakah masih perlu finish-only attempt. */
+    /** Lets the parent know whether a finish-only attempt is still needed. */
     finishRan: z.boolean(),
   }),
 ])

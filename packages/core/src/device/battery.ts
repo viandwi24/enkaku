@@ -51,15 +51,15 @@ export function parseDumpsysBattery(raw: string): BatteryState | null {
 export interface BatteryMonitor {
   start(): void
   stop(): void
-  /** Lepaskan quarantine manual (dari Studio). */
+  /** Manually release a quarantine (from Studio). */
   unquarantine(deviceId: string): boolean
   pollOnce(): Promise<void>
 }
 
 /**
  * Poll baterai + auto-quarantine termal (spec §15.2): farm HP di-charge
- * 24/7 = risiko baterai kembung, jadi device terlalu panas dikeluarkan dari
- * pool scheduler sampai dilepas manual.
+ * Running 24/7 risks swollen batteries, so an overheating device is pulled from
+ * the scheduler pool until it is released by hand.
  */
 export function createBatteryMonitor(deps: {
   db: Db
@@ -91,14 +91,14 @@ export function createBatteryMonitor(deps: {
           const applied = deps.states.apply(row.id, 'QUARANTINE')
           if (applied) {
             deps.db.update(devices).set({ quarantineReason: reason }).where(eq(devices.id, row.id)).run()
-            deps.log.warn(`device ${row.label} di-quarantine: suhu ${battery.temperatureC}°C > ${cfg.tempThresholdC}°C`)
+            deps.log.warn(`device ${row.label} quarantined: temperature ${battery.temperatureC}°C > ${cfg.tempThresholdC}°C`)
           } else {
-            // Device sedang busy/manual → tandai untuk dicoba lagi siklus berikutnya.
-            deps.log.warn(`device ${row.label} panas (${battery.temperatureC}°C) tapi belum bisa di-quarantine (${status})`)
+            // The device is busy or under manual control → flag it for the next cycle.
+            deps.log.warn(`device ${row.label} is hot (${battery.temperatureC}°C) but cannot be quarantined yet (${status})`)
           }
         }
       } catch (err) {
-        deps.log.debug(`poll baterai ${row.label} gagal: ${String(err)}`)
+        deps.log.debug(`battery poll for ${row.label} failed: ${String(err)}`)
       }
     }
   }

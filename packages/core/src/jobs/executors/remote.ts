@@ -21,7 +21,7 @@ interface PendingJob {
 
 export interface RemoteJobBridge {
   executor: JobExecutor
-  /** Dipanggil router saat menerima job.progress dari agent. */
+  /** Called by the router on receiving job.progress from an agent. */
   handleProgress(payload: {
     jobId: string
     kind: 'phase' | 'log' | 'artifact' | 'result'
@@ -34,16 +34,16 @@ export interface RemoteJobBridge {
 }
 
 /**
- * Executor untuk device milik agent (plan 12 §4.5).
+ * The executor for agent-owned devices (plan 12 §4.5).
  *
- * Bundle dikirim ke agent, dan **runner yang sama persis** dengan mode lokal
- * dijalankan di sana — termasuk timeout, retries, dan jaminan `finish` selalu
- * berjalan. Control plane hanya menunggu kabar dan menuliskannya ke DB, jadi
- * Studio tidak bisa membedakan job lokal dan job jarak jauh.
+ * The bundle is shipped to the agent and **the exact same runner** as local
+ * mode executes it there — timeouts, retries, and the guarantee that `finish`
+ * always runs included. The control plane only waits for word and writes it to
+ * the DB, so Studio cannot tell a local job from a remote one.
  *
- * Heartbeat lease: setiap `job.progress` memperpanjang lease. Tunnel putus →
- * tidak ada progress → lease kedaluwarsa → job gagal lewat mekanisme Plan 04.
- * Tidak ada jalur khusus yang bisa jadi sumber bug tersendiri.
+ * Lease heartbeat: every `job.progress` extends the lease. A dropped tunnel
+ * means no progress, which expires the lease, which fails the job through the
+ * Plan 04 mechanism. No special path that could become its own bug source.
  */
 export function createRemoteJobBridge(deps: {
   db: Db
@@ -60,14 +60,14 @@ export function createRemoteJobBridge(deps: {
 
       run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
         const script = deps.db.select().from(scripts).where(eq(scripts.id, job.scriptId)).get()
-        if (!script) throw new EnkakuError('unknown_script', `script tidak ada: ${job.scriptId}`)
-        if (!script.enabled) throw new EnkakuError('script_disabled', `script ${script.name} dinonaktifkan`)
+        if (!script) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
+        if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${script.name} is disabled`)
 
         const sent = deps.router.sendToDevice(job.deviceId, {
           type: 'job.dispatch',
           payload: { jobId: job.id, deviceId: job.deviceId, bundle: script.bundle, params: job.params ?? {} },
         } as never)
-        if (!sent) throw new EnkakuError('agent_offline', 'agent pemilik device sedang tidak terhubung')
+        if (!sent) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
 
         ctx.signal.addEventListener('abort', () => {
           deps.router.sendToDevice(job.deviceId, {
@@ -104,7 +104,7 @@ export function createRemoteJobBridge(deps: {
             data: Uint8Array.from(Buffer.from(a.dataBase64, 'base64')),
           })
           .then((info) => deps.hooks.onArtifact(jobId, info))
-          .catch((err) => deps.log.warn(`gagal menyimpan artifact remote ${a.label}: ${String(err)}`))
+          .catch((err) => deps.log.warn(`failed to store remote artifact ${a.label}: ${String(err)}`))
         return
       }
       if (payload.kind === 'result' && payload.result) {
@@ -114,7 +114,7 @@ export function createRemoteJobBridge(deps: {
         if (payload.result.ok) {
           waiter.resolve(payload.result.value ?? null)
         } else {
-          const err = payload.result.error ?? { code: 'SCRIPT_FAILED', message: 'job gagal di agent' }
+          const err = payload.result.error ?? { code: 'SCRIPT_FAILED', message: 'the job failed on the agent' }
           waiter.reject(
             Object.assign(new EnkakuError(err.code, err.message), {
               code: err.code === 'CANCELLED' ? 'job_cancelled' : err.code,

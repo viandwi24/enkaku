@@ -15,7 +15,7 @@ const DEFAULT_TIMEOUT_MS = 300_000
 const FINISH_GRACE_MS = 30_000
 const FINISH_ONLY_TIMEOUT_MS = 30_000
 const SIGKILL_DELAY_MS = 5_000
-/** Child dianggap hang kalau tidak ada message apa pun selama ini. */
+/** The child counts as hung after this long with no message at all. */
 const SILENCE_LIMIT_MS = 30_000
 
 export interface ScriptFailure {
@@ -32,30 +32,30 @@ export interface AttemptOutcome {
 }
 
 /**
- * Job yang siap dijalankan — bundle sudah dimaterialkan oleh host.
- * Runner tidak mengenal database maupun tabel `scripts`.
+ * A job ready to run — the host has already materialised the bundle.
+ * The runner knows nothing about the database or the `scripts` table.
  */
 export interface JobSpec {
   id: string
   deviceId: string
-  /** Path file bundle ESM yang akan di-import child. */
+  /** Path to the ESM bundle file the child will import. */
   bundlePath: string
   params: unknown
 }
 
 export interface JobRunnerDeps {
-  /** Isolasi eksekusi job — child process (local) atau container (cloud). */
+  /** Execution isolation — a child process (local) or a container (cloud). */
   isolation?: IsolationProvider
-  /** Root untuk file log job (host menentukan lokasinya). */
+  /** Root for job log files (the host decides where). */
   logDir: string
   sessions: SessionManager
-  /** Dibuat per job — penomoran urut artifact bersifat per-job. */
+  /** Created per job — artifact numbering is per-job. */
   artifacts: (jobId: string) => ArtifactSink
   log: Logger
   onLog: (entry: JobLogEntry) => void
   onArtifact: (jobId: string, artifact: { kind: string; label: string; path: string; sizeBytes: number }) => void
   onPhase: (jobId: string, attempt: number, phase: 'prepare' | 'run' | 'finish') => void
-  /** Perpanjang lease job (heartbeat child / aktivitas device). */
+  /** Extend the job lease (child heartbeat or device activity). */
   heartbeat: (jobId: string) => void
 }
 
@@ -85,7 +85,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: 'timeout' | 'cancelled' | 'hung') => void) | null }
-    /** Diisi dari message `ready` — timeout & retries milik ScriptDefinition. */
+    /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number }
   }): Promise<AttemptOutcome> {
     const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
@@ -111,7 +111,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         try {
           child.send(msg)
         } catch {
-          // child sudah mati — diselesaikan lewat jalur exit
+          // the child is already gone — handled by the exit path
         }
       }
 
@@ -123,7 +123,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         try {
           child.kill()
         } catch {
-          // sudah mati
+          // already gone
         }
         resolve(outcome)
       }
@@ -141,18 +141,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         abortReason = reason
         logger.append('warn', 'runner', `abort attempt ${attempt}: ${reason}`)
         send({ t: 'abort', reason })
-        // Beri kesempatan `finish` jalan; lewat grace → SIGTERM lalu SIGKILL.
+        // Give `finish` a chance to run; past the grace period → SIGTERM then SIGKILL.
         graceTimer = setTimeout(() => {
           try {
             child.kill('SIGTERM')
           } catch {
-            /* sudah mati */
+            /* already gone */
           }
           killTimer = setTimeout(() => {
             try {
               child.kill('SIGKILL')
             } catch {
-              /* sudah mati */
+              /* already gone */
             }
           }, SIGKILL_DELAY_MS)
         }, FINISH_GRACE_MS)
@@ -167,28 +167,28 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         deps.heartbeat(job.id)
 
         if (msg.t === 'ready') {
-          logger.append('debug', 'runner', `child siap: ${msg.scriptId}@${msg.version}`)
+          logger.append('debug', 'runner', `child ready: ${msg.scriptId}@${msg.version}`)
           if (opts.meta) {
             if (msg.timeoutMs !== undefined) opts.meta.timeoutMs = msg.timeoutMs
             if (msg.retries !== undefined) opts.meta.retries = msg.retries
           }
-          // Timeout efektif = def.timeout (kalau script menetapkannya).
+          // Effective timeout is def.timeout when the script sets one.
           if (mode === 'full' && msg.timeoutMs !== undefined && msg.timeoutMs !== timeoutMs) {
             if (timeoutTimer) clearTimeout(timeoutTimer)
             timeoutTimer = setTimeout(() => doAbort('timeout'), msg.timeoutMs)
           }
         } else if (msg.t === 'phase') {
-          logger.append('info', 'runner', `fase ${msg.phase} (attempt ${attempt})`)
+          logger.append('info', 'runner', `phase ${msg.phase} (attempt ${attempt})`)
           deps.onPhase(job.id, attempt, msg.phase)
           if (msg.phase === 'finish') finishRan = true
         } else if (msg.t === 'log') {
           logger.append(msg.level, 'script', msg.msg, msg.fields)
         } else if (msg.t === 'heartbeat') {
-          // sudah ditangani resetSilenceTimer + heartbeat lease
+          // already handled by resetSilenceTimer and the lease heartbeat
         } else if (msg.t === 'device.call') {
           const call = DeviceCallSchema.safeParse(msg)
           if (!call.success) {
-            send({ t: 'device.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'call tidak valid' } })
+            send({ t: 'device.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'invalid call' } })
             return
           }
           void execDevice(call.data)
@@ -203,7 +203,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             try {
               const data =
                 msg.kind === 'screenshot'
-                  ? // Screenshot diambil DI CORE → urutannya mengikuti per-device queue.
+                  ? // The screenshot is taken IN THE CORE → its ordering follows the per-device queue.
                     await (session.inspector ?? new UiautomatorDumpInspector(session.transport)).screenshot()
                   : Uint8Array.from(Buffer.from(msg.dataBase64 ?? '', 'base64'))
               const saved = await artifacts.save({
@@ -217,14 +217,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err)
               const code = err instanceof SessionError ? err.code : 'ARTIFACT_FAILED'
-              logger.append('error', 'runner', `artifact "${msg.label}" gagal: ${message}`)
+              logger.append('error', 'runner', `artifact "${msg.label}" failed: ${message}`)
               send({ t: 'artifact.result', callId: msg.callId, ok: false, error: { code, message } })
             }
           })()
         } else if (msg.t === 'result') {
           if (abortReason) {
-            // Parent yang memutuskan abort → parent juga yang menentukan
-            // alasannya; laporan child (sukses maupun gagal) diabaikan.
+            // The parent decides to abort → the parent also decides
+            // the reason; whatever the child reports, success or failure, is ignored.
             finish({
               ok: false,
               error: {
@@ -245,7 +245,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         }
       }
 
-      // stdout/stderr child → job log (script boleh console.log).
+      // The child's stdout/stderr goes to the job log (scripts may console.log).
       void pipeLines(child.stdout, (line) => logger.append('info', 'stdout', line))
       void pipeLines(child.stderr, (line) => logger.append('warn', 'stderr', line))
 
@@ -255,7 +255,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           ok: false,
           error: abortReason
             ? { code: abortReason === 'cancelled' ? 'CANCELLED' : 'TIMEOUT', message: `child di-abort (${abortReason})`, phase: 'timeout' }
-            : { code: 'CHILD_CRASHED', message: `child exit ${code} tanpa mengirim result`, phase: 'run' },
+            : { code: 'CHILD_CRASHED', message: `child exited ${code} without sending a result`, phase: 'run' },
           finishRan,
         })
       })
@@ -287,23 +287,27 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const aborter: { current: ((reason: 'timeout' | 'cancelled' | 'hung') => void) | null } = { current: null }
       active.set(job.id, { abort: (reason) => aborter.current?.(reason) })
 
-      let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'belum dijalankan', phase: 'run' } }
+      let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
       let session: DeviceSession | null = null
       const noopFrame = () => {}
 
       try {
         const bundlePath = job.bundlePath
         session = await deps.sessions.acquire(job.deviceId, noopFrame)
+        // Manual control does not wait for the inspector, but a script does:
+        // its very first waitFor should use the real engine rather than the
+        // slower ad-hoc dump fallback.
+        await session.whenInspectorReady()
 
-        // timeout/retries hanya diketahui setelah child mem-`import` bundle;
-        // child mengirimkannya lewat message `ready`, lalu dipakai untuk
-        // attempt berikutnya.
+        // timeout and retries are only known once the child has imported the
+        // bundle; it sends them in the `ready` message, and they are used for
+        // the next attempt.
         const meta: { timeoutMs?: number; retries?: number } = {}
         let attempt = 0
         for (;;) {
           attempt += 1
           const timeoutMs = meta.timeoutMs ?? DEFAULT_TIMEOUT_MS
-          logger.append('info', 'runner', `attempt ${attempt} mulai`)
+          logger.append('info', 'runner', `attempt ${attempt} starting`)
           outcome = await runAttempt({
             job,
             attempt,
@@ -318,10 +322,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           })
           if (outcome.ok) break
 
-          // `finish` WAJIB jalan (spec §11.2): child mati sebelum finish →
-          // attempt finish-only di process baru (ctx.error terisi).
+          // `finish` MUST run (spec §11.2): if the child died before it, run a
+          // finish-only attempt in a fresh process (with ctx.error populated).
           if (!outcome.finishRan) {
-            logger.append('warn', 'runner', 'finish belum jalan — menjalankan finish-only attempt')
+            logger.append('warn', 'runner', 'finish has not run — starting a finish-only attempt')
             await runAttempt({
               job,
               attempt,
@@ -336,14 +340,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             }).catch(() => undefined)
           }
 
-          // Cancel TIDAK di-retry (plan 05 §4.7).
+          // A cancel is NEVER retried (plan 05 §4.7).
           if (outcome.error?.code === 'CANCELLED') break
           if (attempt >= 1 + (meta.retries ?? 0)) break
-          logger.append('warn', 'runner', `attempt ${attempt} gagal — mencoba ulang`)
+          logger.append('warn', 'runner', `attempt ${attempt} failed — retrying`)
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        logger.append('error', 'runner', `runner gagal: ${message}`)
+        logger.append('error', 'runner', `runner failed: ${message}`)
         outcome = { ok: false, finishRan: false, error: { code: 'RUNNER_FAILED', message, phase: 'run' } }
       } finally {
         active.delete(job.id)
@@ -380,6 +384,6 @@ async function pipeLines(stream: ReadableStream<Uint8Array> | undefined, onLine:
     }
     if (buffer.trim().length > 0) onLine(buffer.trim())
   } catch {
-    // stream ditutup saat child mati — normal
+    // the stream closes when the child dies — expected
   }
 }

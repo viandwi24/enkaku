@@ -1,6 +1,6 @@
 # Plan 15 — M10a : Fondasi desain (Tailwind + shadcn/ui, token, komponen dasar)
 
-> **Status:** siap dikerjakan. **Prioritas tinggi** — UI saat ini tidak layak ditunjukkan ke calon pembeli.
+> **Status:** SELESAI. Fondasi terpasang (Tailwind v4 + shadcn/ui, token instrumen, komponen dasar), semua cacat F1–F7 dan U1–U10 tertutup. Catatan sistem desain: `docs/design.md`.
 > **Depends on:** Plan 07 (Studio lengkap). **Diikuti oleh:** Plan 16 (perombakan tiap layar).
 > **Referensi spec:** §2 (schema-driven UI), §3 (persona end customer), §19 (spec layar).
 

@@ -1,22 +1,29 @@
 import type { FrameMeta } from './driver'
 
 /**
- * Binary framing WS (plan 03 §4.8) — berlaku untuk SEMUA stream binary,
- * termasuk scrcpy Plan 08. Byte 0–1 TIDAK PERNAH berubah artinya:
+ * WS binary framing (plan 03 §4.8) — applies to EVERY binary stream,
+ * scrcpy in Plan 08 included. Bytes 0–1 NEVER change meaning:
  *
  *   byte 0    : u8  channel  — 0x01 VIDEO, 0x02 AUDIO (P08), 0x03 CONTROL (P08)
- *   byte 1    : u8  streamId — dialokasikan core saat stream.started
+ *   byte 1    : u8  streamId — allocated by the core at stream.started
  *   byte 2..  : payload per (channel, codec)
  *
  * Payload VIDEO codec PNG (M2):
- *   byte 2    : u8 codec (0x01 PNG; 0x02 H264 dipakai Plan 08)
+ *   byte 2    : u8 codec (0x01 PNG; 0x02 H264 from Plan 08)
  *   byte 3..4 : u16BE width
  *   byte 5..6 : u16BE height
  *   byte 7..10: u32BE seq
  *   byte 11.. : data PNG utuh
+ *
+ * Byte 2 carries the codec in its low bits and VIDEO_FLAG_KEYFRAME (0x80) in
+ * its high bit. A decoder must be handed a keyframe first — WebCodecs rejects
+ * anything else right after `configure()` — so the receiver has to be able to
+ * tell one from the other. Reusing the spare bit keeps the header at 11 bytes.
+ * PNG frames are all keyframes and set it too.
  */
 export const CHANNEL = { VIDEO: 0x01, AUDIO: 0x02, CONTROL: 0x03 } as const
 export const VIDEO_CODEC = { PNG: 0x01, H264: 0x02 } as const
+export const VIDEO_FLAG_KEYFRAME = 0x80
 
 const VIDEO_HEADER_LEN = 11
 
@@ -25,12 +32,34 @@ export function encodeVideoFrame(streamId: number, meta: FrameMeta, data: Uint8A
   const dv = new DataView(out.buffer)
   dv.setUint8(0, CHANNEL.VIDEO)
   dv.setUint8(1, streamId & 0xff)
-  dv.setUint8(2, meta.codec === 'png' ? VIDEO_CODEC.PNG : VIDEO_CODEC.H264)
+  const codec = meta.codec === 'png' ? VIDEO_CODEC.PNG : VIDEO_CODEC.H264
+  const isKeyframe = meta.keyframe ?? meta.codec === 'png'
+  dv.setUint8(2, codec | (isKeyframe ? VIDEO_FLAG_KEYFRAME : 0))
   dv.setUint16(3, meta.width, false)
   dv.setUint16(5, meta.height, false)
   dv.setUint32(7, meta.seq >>> 0, false)
   out.set(data, VIDEO_HEADER_LEN)
   return out
+}
+
+/**
+ * Whether an Annex-B H.264 chunk can start a decode, judged from the bitstream.
+ *
+ * Frames relayed from an agent arrive as bare bytes — the tunnel carries no
+ * frame metadata — so the flag has to be recovered here rather than trusted.
+ * An SPS (type 7) or IDR (type 5) is a valid entry point; anything else is a
+ * delta.
+ */
+export function isH264Keyframe(buf: Uint8Array): boolean {
+  for (let i = 0; i + 4 < buf.length; i++) {
+    const startCode3 = buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1
+    const startCode4 = buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1
+    if (!startCode3 && !startCode4) continue
+    const type = (buf[i + (startCode4 ? 4 : 3)] ?? 0) & 0x1f
+    if (type === 5 || type === 7) return true
+    i += startCode4 ? 4 : 3
+  }
+  return false
 }
 
 export interface DecodedVideoFrame {
@@ -40,17 +69,20 @@ export interface DecodedVideoFrame {
   width: number
   height: number
   seq: number
+  /** True for a PNG frame, an H.264 config packet (SPS/PPS), or an IDR. */
+  keyframe: boolean
   data: Uint8Array
 }
 
 export function decodeVideoFrame(buf: Uint8Array): DecodedVideoFrame {
-  if (buf.length < VIDEO_HEADER_LEN) throw new Error(`frame terlalu pendek: ${buf.length} byte`)
+  if (buf.length < VIDEO_HEADER_LEN) throw new Error(`frame too short: ${buf.length} bytes`)
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   const channel = dv.getUint8(0)
-  if (channel !== CHANNEL.VIDEO) throw new Error(`channel bukan VIDEO: 0x${channel.toString(16)}`)
-  const codec = dv.getUint8(2)
+  if (channel !== CHANNEL.VIDEO) throw new Error(`channel is not VIDEO: 0x${channel.toString(16)}`)
+  const codecByte = dv.getUint8(2)
+  const codec = codecByte & ~VIDEO_FLAG_KEYFRAME
   if (codec !== VIDEO_CODEC.PNG && codec !== VIDEO_CODEC.H264) {
-    throw new Error(`codec tidak dikenal: 0x${codec.toString(16)}`)
+    throw new Error(`unknown codec: 0x${codec.toString(16)}`)
   }
   return {
     channel,
@@ -59,6 +91,7 @@ export function decodeVideoFrame(buf: Uint8Array): DecodedVideoFrame {
     width: dv.getUint16(3, false),
     height: dv.getUint16(5, false),
     seq: dv.getUint32(7, false),
+    keyframe: (codecByte & VIDEO_FLAG_KEYFRAME) !== 0,
     data: buf.subarray(VIDEO_HEADER_LEN),
   }
 }

@@ -15,18 +15,18 @@ interface Entry {
 }
 
 export interface SessionManager {
-  /** Buat/ambil sesi tunggal per device + naikkan refcount. */
+  /** Create or fetch the single session for a device and bump its refcount. */
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<DeviceSession>
   release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
   get(deviceId: string): DeviceSession | null
-  /** Device hilang dari track-devices → tutup paksa. */
+  /** The device vanished from track-devices → force it closed. */
   closeDevice(deviceId: string): Promise<void>
   closeAll(): Promise<void>
 }
 
 /**
- * Satu DisplaySource per device di-share ke semua viewer; loop capture
- * hidup hanya saat subscriber > 0 (hemat baterai device).
+ * One DisplaySource per device is shared across every viewer; the capture
+ * loop only runs while there is at least one subscriber (saves device battery).
  */
 export function createSessionManager(deps: {
   client: AdbClient
@@ -34,6 +34,8 @@ export function createSessionManager(deps: {
   log: Logger
   makeInspector?: CreateSessionDeps['makeInspector']
   makeScrcpy?: CreateSessionDeps['makeScrcpy']
+  /** The session died on its own (device unplugged, capture failed) — viewers need to know. */
+  onSessionEnded?: (deviceId: string, reason: string) => void
 }): SessionManager {
   const entries = new Map<string, Entry>()
 
@@ -48,8 +50,8 @@ export function createSessionManager(deps: {
     if (!entry) return
     entries.delete(deviceId)
     if (entry.closeTimer) clearTimeout(entry.closeTimer)
-    await entry.session.close().catch((err) => deps.log.warn(`gagal menutup sesi ${deviceId}: ${String(err)}`))
-    deps.log.info(`sesi ditutup: ${deviceId}`)
+    await entry.session.close().catch((err) => deps.log.warn(`failed to close session ${deviceId}: ${String(err)}`))
+    deps.log.info(`session closed: ${deviceId}`)
   }
 
   return {
@@ -66,9 +68,9 @@ export function createSessionManager(deps: {
       }
 
       const row = deps.devices.get(deviceId)
-      if (!row) throw new SessionError('device_not_found', `device tidak ada: ${deviceId}`)
+      if (!row) throw new SessionError('device_not_found', `no such device: ${deviceId}`)
       if (row.status === 'offline') {
-        throw new SessionError('device_not_ready', `device ${row.label} sedang offline`)
+        throw new SessionError('device_not_ready', `device ${row.label} is offline`)
       }
 
       const session = await createSession(
@@ -82,6 +84,7 @@ export function createSessionManager(deps: {
           inspection: row.inspection,
           apiLevel: row.apiLevel,
           preferredInputMode: row.preferredInputMode,
+          ...(row.stayAwake !== undefined ? { stayAwake: row.stayAwake } : {}),
           screenW: row.screenW,
           screenH: row.screenH,
         },
@@ -90,7 +93,8 @@ export function createSessionManager(deps: {
           log: deps.log.child(`session:${row.label}`),
           onFrame: dispatchFrame(deviceId),
           onDisplayError: (err) => {
-            deps.log.warn(`display error ${deviceId}: ${String(err)} — menutup sesi`)
+            deps.log.warn(`display error on ${deviceId}: ${String(err)} — closing the session`)
+            deps.onSessionEnded?.(deviceId, err instanceof Error ? err.message : String(err))
             void closeEntry(deviceId)
           },
           ...(deps.makeInspector ? { makeInspector: deps.makeInspector } : {}),
@@ -100,7 +104,7 @@ export function createSessionManager(deps: {
       const entry: Entry = { session, refcount: 1, frameSubscribers: new Set([onFrame]), closeTimer: null }
       entries.set(deviceId, entry)
       await session.display.start()
-      deps.log.info(`sesi dibuka: ${row.label} (${deviceId})`)
+      deps.log.info(`session opened: ${row.label} (${deviceId})`)
       return session
     },
 
@@ -110,7 +114,7 @@ export function createSessionManager(deps: {
       entry.frameSubscribers.delete(onFrame)
       entry.refcount = Math.max(0, entry.refcount - 1)
       if (entry.refcount > 0) return
-      // Grace: viewer yang reconnect cepat tidak memicu restart loop.
+      // Grace period: a viewer that reconnects quickly does not restart the loop.
       entry.closeTimer = setTimeout(() => void closeEntry(deviceId), GRACE_MS)
     },
 

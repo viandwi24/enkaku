@@ -1,16 +1,16 @@
 import { z } from 'zod'
 
-/** Job & lease (spec §10, §13). */
+/** Jobs and leases (spec §10, §13). */
 
 export const JobStatusSchema = z.enum(['queued', 'running', 'success', 'failed', 'cancelled'])
 export type JobStatus = z.infer<typeof JobStatusSchema>
 
-/** Params dummy executor `internal:sleep` (M3 — validasi queue tanpa automation). */
+/** Params for the `internal:sleep` dummy executor (M3 — queue validation without automation). */
 export const SleepJobParamsSchema = z.object({
   durationMs: z.number().int().min(0).max(3_600_000),
-  /** Simulasi job gagal di tengah jalan. */
+  /** Simulate a job failing partway through. */
   failAfterMs: z.number().int().min(0).optional(),
-  /** Simulasi job bandel — untuk menguji jalur lease-expiry. */
+  /** Simulate a job that ignores cancellation — exercises the lease-expiry path. */
   ignoreCancel: z.boolean().default(false),
 })
 export type SleepJobParams = z.infer<typeof SleepJobParamsSchema>
@@ -52,6 +52,9 @@ export const JobInfoSchema = z.object({
   jobId: z.string(),
   deviceId: z.string(),
   scriptId: z.string(),
+  /** Script name and version, so the UI never has to show a raw UUID. */
+  scriptName: z.string().nullable().default(null),
+  scriptVersion: z.string().nullable().default(null),
   status: JobStatusSchema,
   error: z.string().nullable(),
   priority: z.number(),
@@ -64,13 +67,13 @@ export type JobInfo = z.infer<typeof JobInfoSchema>
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
   payload: JobInfoSchema.extend({
-    /** Attempt ke berapa (1-based) & fase script yang sedang jalan (M4). */
+    /** Attempt number (1-based) and the script phase currently running (M4). */
     attempt: z.number().int().optional(),
     phase: z.enum(['prepare', 'run', 'finish']).nullable().optional(),
   }),
 })
 
-/** Log realtime per job (M4). */
+/** Realtime per-job log (M4). */
 export const JobLogMessage = z.object({
   type: z.literal('job.log'),
   payload: z.object({
@@ -109,6 +112,24 @@ export const LeaseReleasedMessage = z.object({
   type: z.literal('lease.released'),
   id: z.string().optional(),
   payload: z.object({ deviceId: z.string() }),
+})
+
+/**
+ * Broadcast whenever manual control changes hands, to EVERY connected client.
+ *
+ * `lease.acquired` only reaches the client that asked, so a second person
+ * watching the same device saw nothing: their page kept offering "Take
+ * control", and the only feedback was an error after clicking. This carries no
+ * identity — a viewer already knows whether the lease is its own — just the
+ * fact that the device is being driven by someone.
+ */
+export const LeaseChangedMessage = z.object({
+  type: z.literal('lease.changed'),
+  payload: z.object({
+    deviceId: z.string(),
+    held: z.boolean(),
+    expiresAt: z.number().nullable(),
+  }),
 })
 
 export const LeaseRevokedMessage = z.object({

@@ -1,35 +1,35 @@
 # @enkaku/agent
 
-Mini-core untuk **mode cloud** (spec §5.3): agent ringan berjalan di dekat device, membuka **tunnel WebSocket keluar** ke control plane. Karena koneksi bersifat outbound, tidak perlu port-forward dan NAT tidak jadi masalah.
+The mini-core for **cloud mode** (spec §5.3): a lightweight agent runs next to the devices and opens an **outbound WebSocket tunnel** to the control plane. Because the connection is outbound, no port forwarding is needed and NAT is a non-issue.
 
-## Status implementasi
+## Implementation status
 
-| Sub-fase | Isi | Status |
+| Sub-phase | Contents | Status |
 |---|---|---|
-| **M8a** | State + enrollment token, tunnel outbound (auth, keepalive, backoff full-jitter), frame binary multi-device, laporan device dari `track-devices`; sisi control plane: registry agent, router, mode `orchestrator` | ✅ |
-| **M8b** | Signaling WebRTC (protocol + klien Studio dgn fallback otomatis), packetizer H.264 → RTP (RFC 6184), konfigurasi ICE | ⚠️ sebagian — backend WebRTC server-side belum dipilih |
-| **M8c** | `IsolationProvider`: child-process (local) & container (`--network=none`, cap-drop, opsi gVisor via `--runtime=runsc`); kolom `tenantId` di devices & agents | ✅ |
-| **M8d** | Engine Appium opt-in, `scrcpy-aoa` (terdaftar tapi `available: false`), redroid via transport `adb-tcp` | ✅ |
+| **M8a** | State plus enrollment token, outbound tunnel (auth, keepalive, full-jitter backoff), multi-device binary frames, device reporting from `track-devices`; on the control plane side: agent registry, router, `orchestrator` mode | ✅ |
+| **M8b** | WebRTC signalling (protocol plus a Studio client with automatic fallback), H.264 → RTP packetizer (RFC 6184), ICE configuration | ⚠️ partial — the server-side WebRTC backend is not chosen yet |
+| **M8c** | `IsolationProvider`: child-process (local) and container (`--network=none`, cap-drop, optional gVisor via `--runtime=runsc`); a `tenantId` column on devices and agents | ✅ |
+| **M8d** | Opt-in Appium engine, `scrcpy-aoa` (registered but `available: false`), redroid over the `adb-tcp` transport | ✅ |
 
-Message `session.start`, `session.stop`, dan `job.dispatch` sudah terdefinisi di protokol dan diterima tunnel, tapi handler sisi agent sengaja belum diimplement — dicatat di log, bukan gagal diam-diam.
+The `session.start`, `session.stop`, and `job.dispatch` messages are defined in the protocol and accepted by the tunnel, but their agent-side handlers are deliberately not implemented yet — they are logged rather than failing silently.
 
-## Yang tersisa di M8b
+## What is left in M8b
 
-`RtcPeerFactory` (di `packages/core/src/relay/rtc-peer.ts`) sengaja dibiarkan `available: false` sampai backend WebRTC server-side dipilih. Rekomendasi plan: **werift** (pure TypeScript, sejalan dengan prinsip self-contained), dengan sidecar GStreamer sebagai rencana cadangan bila verifikasi di Bun gagal. Selama backend belum ada, control plane menjawab `video.webrtc.failed` dan Studio otomatis memakai WS+WebCodecs — jalan, tapi rentan freeze di internet.
+`RtcPeerFactory` (in `packages/core/src/relay/rtc-peer.ts`) is deliberately left `available: false` until a server-side WebRTC backend is chosen. The plan recommends **werift** (pure TypeScript, in keeping with the self-contained principle), with a GStreamer sidecar as the backup if Bun verification fails. Until a backend exists the control plane answers `video.webrtc.failed` and Studio automatically uses WS + WebCodecs — workable, but prone to freezing over the internet.
 
-Bagian yang tidak bergantung library sudah selesai dan bisa diuji terpisah: pemecahan Annex-B, fragmentasi FU-A, penyisipan SPS/PPS sebelum IDR, dan konversi timestamp ke clock 90 kHz.
+The library-independent parts are finished and testable on their own: Annex-B splitting, FU-A fragmentation, SPS/PPS insertion before IDR, and timestamp conversion to the 90 kHz clock.
 
-## Jalankan
+## Running it
 
 ```bash
 ENKAKU_CP_URL=https://farm.example.com \
-ENKAKU_ENROLL_TOKEN=<token sekali pakai dari Studio> \
+ENKAKU_ENROLL_TOKEN=<single-use token from Studio> \
 ENKAKU_DATA_DIR=/var/lib/enkaku-agent \
 bun run packages/agent/src/index.ts
 ```
 
-Token hanya dibutuhkan sekali: hasilnya (`agentId` + credential jangka panjang) disimpan di `<data-dir>/agent.json`. Setelah itu agent cukup dijalankan tanpa token.
+The token is needed only once: the result (an `agentId` plus a long-lived credential) is stored in `<data-dir>/agent.json`. After that the agent runs without a token.
 
-## Kenapa video butuh WebRTC di cloud
+## Why video needs WebRTC in the cloud
 
-Tunnel WebSocket berjalan di atas TCP. Di internet, satu paket hilang membuat TCP menahan seluruh aliran sampai retransmisi selesai (head-of-line blocking) — pada remote control real-time efeknya video membeku. Karena itu jalur video cloud direncanakan pindah ke WebRTC (UDP, congestion control, partial reliability), sementara kontrol dan antrian tetap lewat WebSocket. Di LAN, WS + WebCodecs tetap dipakai karena lebih sederhana dan tidak butuh STUN/TURN.
+The WebSocket tunnel runs over TCP. On the open internet a single lost packet makes TCP hold up the entire stream until it is retransmitted (head-of-line blocking) — during real-time remote control that shows up as frozen video. So the cloud video path is planned to move to WebRTC (UDP, congestion control, partial reliability) while control and queueing stay on WebSocket. On a LAN, WS + WebCodecs remains the choice because it is simpler and needs no STUN/TURN.

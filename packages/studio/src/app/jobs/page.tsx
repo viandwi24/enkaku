@@ -1,176 +1,210 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
-import { JobStatusBadge } from '@/components/JobStatusBadge'
-import { fetchDevices } from '@/lib/api'
-import { coreBase, ws } from '@/lib/ws'
+import { ListChecks, Search } from 'lucide-react'
+import type { DeviceInfo, JobInfo, JobStatus } from '@enkaku/protocol'
+import { JobStatusBadge } from '@/components/StatusBadge'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { api, useAction } from '@/lib/actions'
+import { relativeTime } from '@/lib/format'
+import { ws } from '@/lib/ws'
 
-const fmtTime = (sec: number | null): string => (sec ? new Date(sec * 1000).toLocaleTimeString() : '—')
+type Job = JobInfo
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState<JobInfo[]>([])
+  const [jobs, setJobs] = useState<Job[] | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [deviceId, setDeviceId] = useState('')
-  const [durationMs, setDurationMs] = useState('3000')
-  const [priority, setPriority] = useState('0')
+  const [status, setStatus] = useState<JobStatus | 'all'>('all')
+  const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const { run, isPending } = useAction()
 
-  async function loadJobs() {
-    const res = await fetch(`${coreBase()}/api/jobs?limit=50`)
-    const body = (await res.json()) as { jobs: JobInfo[] }
-    setJobs(body.jobs)
+  const load = async () => {
+    setError(null)
+    try {
+      const [j, d] = await Promise.all([
+        api<{ jobs: Job[] }>('/api/jobs?limit=200'),
+        api<{ devices: DeviceInfo[] }>('/api/devices'),
+      ])
+      setJobs(j.jobs)
+      setDevices(d.devices)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   useEffect(() => {
-    void loadJobs().catch((err) => setError(String(err)))
-    void fetchDevices()
-      .then((d) => {
-        setDevices(d)
-        setDeviceId((prev) => prev || (d[0]?.id ?? ''))
-      })
-      .catch((err) => setError(String(err)))
-
-    // Realtime: update row in-place, tanpa polling.
-    const off = ws.on((msg) => {
-      if (msg.type !== 'job.status') return
+    void load()
+    // Rows update in place rather than reloading the whole list.
+    const off = ws.on((m) => {
+      if (m.type !== 'job.status') return
       setJobs((prev) => {
-        const idx = prev.findIndex((j) => j.jobId === msg.payload.jobId)
-        if (idx === -1) return [msg.payload, ...prev]
+        if (!prev) return prev
+        const i = prev.findIndex((j) => j.jobId === m.payload.jobId)
+        if (i === -1) return [m.payload as Job, ...prev]
         const next = [...prev]
-        next[idx] = msg.payload
+        next[i] = { ...next[i], ...m.payload } as Job
         return next
       })
     })
     return off
   }, [])
 
-  async function enqueue() {
-    setError(null)
-    try {
-      const res = await fetch(`${coreBase()}/api/jobs`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          scriptId: 'internal:sleep',
-          deviceId,
-          params: { durationMs: Number.parseInt(durationMs, 10) },
-          priority: Number.parseInt(priority, 10) || 0,
-        }),
-      })
-      const body = (await res.json()) as { job?: JobInfo; error?: { message: string } }
-      if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
+  const deviceName = (id: string) => devices.find((d) => d.id === id)?.label ?? id.slice(0, 8)
+  const scriptName = (j: Job) =>
+    j.scriptName ? `${j.scriptName}${j.scriptVersion ? `@${j.scriptVersion}` : ''}` : j.scriptId
 
-  async function cancel(jobId: string) {
-    const res = await fetch(`${coreBase()}/api/jobs/${jobId}/cancel`, { method: 'POST' })
-    if (!res.ok) {
-      const body = (await res.json()) as { error?: { message: string } }
-      setError(body.error?.message ?? `HTTP ${res.status}`)
+  const filtered = useMemo(() => {
+    let list = jobs ?? []
+    if (status !== 'all') list = list.filter((j) => j.status === status)
+    const q = query.trim().toLowerCase()
+    if (q) {
+      list = list.filter(
+        (j) => scriptName(j).toLowerCase().includes(q) || deviceName(j.deviceId).toLowerCase().includes(q),
+      )
     }
-  }
+    // Running and queued jobs sit on top — those are the ones being watched.
+    return [...list].sort((a, b) => {
+      const rank = (j: Job) => (j.status === 'running' ? 0 : j.status === 'queued' ? 1 : 2)
+      return rank(a) - rank(b) || b.createdAt - a.createdAt
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, devices, status, query])
 
-  const deviceLabel = (id: string) => devices.find((d) => d.id === id)?.label ?? id.slice(0, 8)
+  // The actions column only appears when something can be acted on. A history
+  // of finished jobs does not need an empty column eating table width.
+  const hasCancellable = filtered.some((j) => j.status === 'queued' || j.status === 'running')
+
+  const cancel = (j: Job) =>
+    run('cancel-' + j.jobId, () => api(`/api/jobs/${j.jobId}/cancel`, { method: 'POST' }), {
+      success: 'Job cancelled',
+      failure: 'Could not cancel the job',
+    })
 
   return (
     <>
-      <h1>Jobs</h1>
+      <PageHeader title="Jobs" description="Script execution queue and history" />
 
-      <div className="panel">
-        <div className="row" style={{ alignItems: 'flex-end' }}>
-          <label>
-            Device
-            <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
-              {devices.length === 0 && <option value="">(belum ada device)</option>}
-              {devices.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label} — {d.status}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            durationMs
-            <input value={durationMs} onChange={(e) => setDurationMs(e.target.value)} />
-          </label>
-          <label>
-            Priority
-            <input value={priority} onChange={(e) => setPriority(e.target.value)} />
-          </label>
-          <button className="primary" onClick={() => void enqueue()} disabled={!deviceId}>
-            Enqueue internal:sleep
-          </button>
+      <div className="space-y-4 px-5 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative max-w-xs flex-1">
+            <Search
+              className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle"
+              aria-hidden
+            />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search script or device…"
+              aria-label="Search jobs"
+              className="h-8 pl-8 text-[12.5px]"
+            />
+          </div>
+          <Select value={status} onValueChange={(v) => setStatus(v as JobStatus | 'all')}>
+            <SelectTrigger className="h-8 w-44 text-[12.5px]" aria-label="Filter by status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="running">Running</SelectItem>
+              <SelectItem value="queued">Queued</SelectItem>
+              <SelectItem value="success">Succeeded</SelectItem>
+              <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        <p className="hint" style={{ marginBottom: 0 }}>
-          Dummy job untuk memvalidasi antrian: job berjalan satu per satu per device, urut prioritas lalu waktu buat.
-        </p>
+
+        {error ? (
+          <ErrorState message={error} onRetry={load} />
+        ) : jobs === null ? (
+          <LoadingRows rows={5} />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<ListChecks className="size-4" aria-hidden />}
+            title={jobs.length === 0 ? 'No jobs yet' : 'Nothing matches'}
+            description={
+              jobs.length === 0
+                ? 'Run a script from the Scripts page, or with the Run button on a device card.'
+                : 'Change the search or pick a different status.'
+            }
+            action={
+              jobs.length === 0 ? (
+                <Button asChild>
+                  <Link href="/scripts">Open Scripts</Link>
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <div className="overflow-hidden rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[38%]">Script</TableHead>
+                  <TableHead>Device</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Created</TableHead>
+                  {hasCancellable && <TableHead className="text-right">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((j) => {
+                  const cancellable = j.status === 'queued' || j.status === 'running'
+                  return (
+                    <TableRow key={j.jobId}>
+                      <TableCell>
+                        <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                          {scriptName(j)}
+                        </Link>
+                        {j.status === 'failed' && j.error && (
+                          <p className="mt-0.5 line-clamp-1 text-[11.5px] text-led-danger">{j.error}</p>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-[12.5px]">{deviceName(j.deviceId)}</TableCell>
+                      <TableCell>
+                        <JobStatusBadge status={j.status} />
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="readout text-[11.5px] text-fg-muted">
+                              {relativeTime(j.createdAt)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>{new Date(j.createdAt * 1000).toLocaleString()}</TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      {hasCancellable && (
+                        <TableCell className="text-right">
+                          {cancellable && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-[12px]"
+                              disabled={isPending('cancel-' + j.jobId)}
+                              onClick={() => void cancel(j)}
+                            >
+                              Cancel
+                            </Button>
+                          )}
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </div>
-
-      {error && <p className="error">{error}</p>}
-
-      {jobs.length === 0 ? (
-        <p className="hint">Belum ada job.</p>
-      ) : (
-        <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--muted)', fontSize: 12 }}>
-                <th style={{ padding: '0.6rem' }}>Job</th>
-                <th>Script</th>
-                <th>Device</th>
-                <th>Status</th>
-                <th>Prio</th>
-                <th>Dibuat</th>
-                <th>Mulai</th>
-                <th>Selesai</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((j) => (
-                <tr
-                  key={j.jobId}
-                  style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }}
-                  onClick={() => setExpanded(expanded === j.jobId ? null : j.jobId)}
-                >
-                  <td style={{ padding: '0.6rem' }} className="meta">
-                    <Link href={`/jobs/detail?id=${j.jobId}`} onClick={(e) => e.stopPropagation()}>
-                      {j.jobId.slice(0, 8)}
-                    </Link>
-                  </td>
-                  <td className="meta">{j.scriptId}</td>
-                  <td>{deviceLabel(j.deviceId)}</td>
-                  <td>
-                    <JobStatusBadge status={j.status} />
-                    {expanded === j.jobId && j.error && <div className="error">{j.error}</div>}
-                  </td>
-                  <td>{j.priority}</td>
-                  <td className="meta">{fmtTime(j.createdAt)}</td>
-                  <td className="meta">{fmtTime(j.startedAt)}</td>
-                  <td className="meta">{fmtTime(j.finishedAt)}</td>
-                  <td>
-                    {(j.status === 'queued' || j.status === 'running') && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void cancel(j.jobId)
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </>
   )
 }

@@ -5,7 +5,7 @@ import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { createArtifactStore } from '../runner/artifact-store'
 
-/** Sumber data device untuk session, dibaca dari SQLite (mode lokal). */
+/** The device data source for sessions, read from SQLite (local mode). */
 export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
   return {
     get(deviceId): DeviceSnapshot | null {
@@ -28,12 +28,13 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         preferredInputMode:
           (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
           'uhid',
+        stayAwake: (row.settings as { prep?: { stayAwake?: boolean } } | null)?.prep?.stayAwake ?? true,
       }
     },
   }
 }
 
-/** Artifact ditulis ke disk + baris DB (mode lokal). */
+/** Artifacts written to disk plus a DB row (local mode). */
 export function createDbArtifactSink(deps: {
   db: Db
   dataDir: string

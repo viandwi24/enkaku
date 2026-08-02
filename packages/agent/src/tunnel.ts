@@ -25,16 +25,16 @@ export interface Tunnel {
 
 const PING_INTERVAL_MS = 20_000
 const BACKOFF_CAP_MS = 60_000
-/** Koneksi dianggap stabil setelah bertahan selama ini → reset backoff. */
+/** A connection counts as stable after surviving this long → reset the backoff. */
 const STABLE_AFTER_MS = 60_000
 
 /**
  * Tunnel outbound agent → control plane (plan 11 §4.2).
  *
- * Outbound berarti tidak perlu port-forward dan tembus NAT: agent yang
- * menghubungi control plane, bukan sebaliknya. Auth pakai credential hasil
- * enrollment; auth gagal TIDAK memicu retry cepat (backoff penuh) supaya
- * kredensial mati tidak membanjiri server.
+ * Outbound means no port forwarding and no trouble with NAT: the agent
+ * dials the control plane, never the other way round. Auth uses the credential from
+ * enrollment; an auth failure does NOT trigger a fast retry (it takes the full
+ * backoff) so a dead credential cannot flood the server.
  */
 export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (msg: string) => void): Tunnel {
   let ws: WebSocket | null = null
@@ -48,12 +48,12 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
   function scheduleReconnect(reason: string, authFailure = false): void {
     if (stopped) return
     handlers.onDisconnected?.(reason)
-    if (authFailure) attempt = Math.max(attempt, 5) // langsung backoff panjang
-    // Full jitter: hindari thundering herd saat control plane baru pulih.
+    if (authFailure) attempt = Math.max(attempt, 5) // jump straight to a long backoff
+    // Full jitter: avoids a thundering herd when the control plane recovers.
     const base = Math.min(BACKOFF_CAP_MS, 1000 * 2 ** attempt)
     const delay = Math.random() * base
     attempt += 1
-    log(`tunnel putus (${reason}) — reconnect dalam ${Math.round(delay / 1000)}s`)
+    log(`tunnel dropped (${reason}) — reconnecting in ${Math.round(delay / 1000)}s`)
     setTimeout(connect, delay)
   }
 
@@ -67,7 +67,7 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
 
     socket.onopen = () => {
       connectedAt = Date.now()
-      log('tunnel tersambung')
+      log('tunnel connected')
       handlers.onConnected?.()
       pingTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -82,7 +82,7 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
           const { channelId, payload } = decodeTunnelFrame(new Uint8Array(ev.data))
           handlers.onFrame?.(channelId, payload)
         } catch {
-          // frame rusak — abaikan, jangan jatuhkan tunnel
+          // a corrupt frame — ignore it, do not drop the tunnel
         }
         return
       }
@@ -93,7 +93,7 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
         return
       }
       const parsed = ControlToAgentSchema.safeParse(json)
-      if (!parsed.success) return // message tak dikenal → abaikan (forward-compat)
+      if (!parsed.success) return // unknown message → ignore it (forward-compatible)
       if (parsed.data.type === 'tunnel.ping') {
         socket.send(JSON.stringify({ type: 'tunnel.pong', payload: parsed.data.payload }))
         return
@@ -105,7 +105,7 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
       if (pingTimer) clearInterval(pingTimer)
       pingTimer = null
       ws = null
-      // Koneksi yang sempat stabil → mulai backoff dari awal lagi.
+      // A connection that had gone stable → start the backoff over.
       if (Date.now() - connectedAt > STABLE_AFTER_MS) attempt = 0
       scheduleReconnect(`close ${ev.code}`, ev.code === 4401)
     }
@@ -114,7 +114,7 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
       try {
         socket.close()
       } catch {
-        // sudah tertutup
+        // already closed
       }
     }
   }

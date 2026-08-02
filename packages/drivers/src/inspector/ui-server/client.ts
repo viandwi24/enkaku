@@ -4,9 +4,9 @@ import type { UiSelector } from './selector'
 /**
  * Client JSONRPC ke server on-device (pola openatx/uiautomator2).
  *
- * SUBSET method yang boleh dipakai sengaja dibatasi (plan 06 §4.4) supaya
- * permukaan migrasi ke APK sendiri kecil. Nama method di bawah HARUS
- * diverifikasi terhadap versi APK yang di-pin (TODO-verify saat ada device).
+ * The usable method SUBSET is deliberately narrow (plan 06 §4.4) so that
+ * moving to our own APK stays a small surface. The method names below MUST be
+ * verified against the pinned APK version (TODO-verify on a real device).
  */
 
 const JsonRpcResponse = z.object({
@@ -27,7 +27,7 @@ export class UiServerClientError extends Error {
 
 export interface UiServerClientOptions {
   localPort: number
-  /** Timeout satu call (ms) — default 3000. */
+  /** Per-call timeout in ms — defaults to 3000. */
   timeoutMs?: number
 }
 
@@ -45,11 +45,11 @@ export class UiServerClient {
     try {
       return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) })
     } catch (err) {
-      throw new UiServerClientError('UI_SERVER_UNREACHABLE', `${url} tidak merespons dalam ${ms}ms: ${String(err)}`)
+      throw new UiServerClientError('UI_SERVER_UNREACHABLE', `${url} did not respond within ${ms}ms: ${String(err)}`)
     }
   }
 
-  /** Health check — timeout pendek supaya watchdog responsif. */
+  /** Health check — short timeout so the watchdog stays responsive. */
   async ping(): Promise<boolean> {
     try {
       const res = await this.fetchWithTimeout(`${this.base}/ping`, undefined, 1000)
@@ -67,7 +67,7 @@ export class UiServerClient {
     })
     const parsed = JsonRpcResponse.safeParse(await res.json())
     if (!parsed.success) {
-      throw new UiServerClientError('UI_SERVER_RPC_ERROR', `response ${method} tidak sesuai schema JSONRPC`)
+      throw new UiServerClientError('UI_SERVER_RPC_ERROR', `the ${method} response does not match the JSONRPC schema`)
     }
     if (parsed.data.error) {
       throw new UiServerClientError('UI_SERVER_RPC_ERROR', `${method}: ${parsed.data.error.message ?? 'error'}`)
@@ -75,12 +75,12 @@ export class UiServerClient {
     return parsed.data.result as T
   }
 
-  /** XML hierarchy — di-parse pemanggil jadi UiNode. */
+  /** XML hierarchy — the caller parses it into UiNode. */
   dumpWindowHierarchy(compressed = false): Promise<string> {
     return this.rpc<string>('dumpWindowHierarchy', [compressed])
   }
 
-  /** Info elemen; null/error = tidak ketemu. Query dieksekusi DI DEVICE. */
+  /** Element info; null or an error means not found. The query runs ON THE DEVICE. */
   async objInfo(selector: UiSelector): Promise<unknown | null> {
     try {
       return await this.rpc('objInfo', [selector])
@@ -104,7 +104,7 @@ export class UiServerClient {
     return this.rpc<void>('longClick', [selector])
   }
 
-  /** Tidak ada method native double-click → dua click cepat. */
+  /** There is no native double-click method → two quick clicks. */
   async doubleClick(selector: UiSelector): Promise<void> {
     await this.rpc('click', [selector])
     await Bun.sleep(80)

@@ -17,18 +17,18 @@ export interface TunnelRegistry {
   attach(agentId: string, ws: ServerWebSocket<unknown>): AgentConn
   detach(ws: ServerWebSocket<unknown>): AgentConn | null
   byAgent(agentId: string): AgentConn | null
-  /** Agent yang memegang device tsb (routing pesan browser → agent). */
+  /** The agent holding that device (routes browser messages to the right agent). */
   forDevice(deviceId: string): AgentConn | null
-  /** Sinkronkan daftar device yang dilaporkan agent. */
+  /** Sync the device list an agent reports. */
   syncDevices(agentId: string, list: DeviceInfo[]): void
   onlineAgents(): AgentConn[]
 }
 
 /**
- * Registry koneksi agent + peta device→agent (plan 11 §4.3).
- * Tunnel putus = semua device agent itu ditandai offline; lease/job yang
- * sedang jalan diselesaikan oleh mekanisme lease-expiry Plan 04 — tidak ada
- * jalur khusus yang bisa jadi sumber bug tersendiri.
+ * A registry of agent connections plus a device→agent map (plan 11 §4.3).
+ * A dropped tunnel marks all of that agent's devices offline; any running lease
+ * or job is resolved by the Plan 04 lease-expiry mechanism — there is no special
+ * path that could become a bug source of its own.
  */
 export function createTunnelRegistry(deps: {
   db: Db
@@ -46,15 +46,15 @@ export function createTunnelRegistry(deps: {
 
   return {
     attach(agentId, ws) {
-      // Satu agent = satu koneksi; koneksi lama diputus supaya tidak ada
-      // dua sumber kebenaran untuk device yang sama.
+      // One agent, one connection; the old connection is dropped so a device
+      // never has two sources of truth.
       const previous = byAgentId.get(agentId)
       if (previous) {
-        deps.log.warn(`agent ${agentId} connect ulang — koneksi lama diputus`)
+        deps.log.warn(`agent ${agentId} reconnected — dropping the previous connection`)
         try {
-          previous.ws.close(4409, 'digantikan koneksi baru')
+          previous.ws.close(4409, 'replaced by a newer connection')
         } catch {
-          // sudah tertutup
+          // already closed
         }
       }
       const conn: AgentConn = { agentId, ws, connectedAt: Date.now() }
@@ -71,7 +71,7 @@ export function createTunnelRegistry(deps: {
       bySocket.delete(ws)
       if (byAgentId.get(conn.agentId) === conn) byAgentId.delete(conn.agentId)
       markAgent(conn.agentId, 'offline')
-      // Device milik agent ini tidak lagi terjangkau.
+      // This agent's devices are no longer reachable.
       deps.db.update(devices).set({ status: 'offline' }).where(eq(devices.agentId, conn.agentId)).run()
       for (const [deviceId, owner] of [...deviceOwner]) {
         if (owner === conn.agentId) deviceOwner.delete(deviceId)
@@ -87,7 +87,7 @@ export function createTunnelRegistry(deps: {
     forDevice(deviceId) {
       const agentId = deviceOwner.get(deviceId)
       if (agentId) return byAgentId.get(agentId) ?? null
-      // Fallback: kolom DB (agent baru connect, peta memori belum terisi).
+      // Fallback to the DB column (a freshly connected agent, memory map not filled yet).
       const row = deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
       return row?.agentId ? (byAgentId.get(row.agentId) ?? null) : null
     },
@@ -118,7 +118,7 @@ export function createTunnelRegistry(deps: {
             .run()
         }
       }
-      // Device yang hilang dari laporan agent → offline.
+      // Devices missing from the agent's report are marked offline.
       for (const row of deps.db.select().from(devices).where(eq(devices.agentId, agentId)).all()) {
         if (!seen.has(row.id) && row.status !== 'offline') {
           deps.db.update(devices).set({ status: 'offline' }).where(eq(devices.id, row.id)).run()

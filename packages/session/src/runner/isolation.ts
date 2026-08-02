@@ -3,11 +3,11 @@ import type { Subprocess } from 'bun'
 /**
  * Isolasi eksekusi job (plan 11 §4.5, spec §11.3).
  *
- * Mode local single-tenant memakai `child-process`: yang dijanjikan hanya
- * **crash containment** — script tidak bisa menjatuhkan core dan timeout
- * selalu membebaskan device. Itu BUKAN security boundary.
+ * Local single-tenant mode uses `child-process`: the only promise is **crash
+ * containment** — a script cannot take the core down, and a timeout
+ * always frees the device. That is NOT a security boundary.
  *
- * Multi-tenant cloud butuh batas sungguhan. Matriks pilihan:
+ * Multi-tenant cloud needs real boundaries. The options:
  *
  * | Mode           | Startup | Kekuatan isolasi                    | Ops        |
  * |----------------|---------|-------------------------------------|------------|
@@ -16,15 +16,15 @@ import type { Subprocess } from 'bun'
  * | gVisor         | +ratusan ms | ✅✅ syscall interception       | menengah   |
  * | microVM        | ~125 ms + rootfs | ✅✅✅ batas hardware       | tinggi     |
  *
- * gVisor cukup mengganti `--runtime=runsc` pada mode container, jadi desain
- * ini tidak menghalangi tahap berikutnya.
+ * gVisor is just `--runtime=runsc` on the container mode, so this design does
+ * not block that next step.
  */
 export type IsolationMode = 'child-process' | 'container'
 
 export interface SpawnRequest {
   /** Path entry runner (child-entry.ts). */
   entryPath: string
-  /** Path bundle script yang akan di-import child. */
+  /** Path to the script bundle the child will import. */
   bundlePath: string
   jobId: string
   env: Record<string, string>
@@ -37,13 +37,28 @@ export interface IsolationProvider {
   spawn(req: SpawnRequest, ipc: (raw: unknown) => void): Subprocess<'ignore', 'pipe', 'pipe'>
 }
 
-/** Default: child process biasa — dipakai mode local single-tenant. */
+/**
+ * True when running inside a `bun build --compile` executable. In that case the
+ * embedded modules live on a virtual filesystem (`/$bunfs/` on POSIX, `~BUN` on
+ * Windows) and `process.execPath` is the compiled binary itself.
+ */
+export function isCompiledBinary(): boolean {
+  return Bun.main.includes('$bunfs') || Bun.main.includes('~BUN')
+}
+
+/** Default: an ordinary child process — used by local single-tenant mode. */
 export function createChildProcessIsolation(): IsolationProvider {
   return {
     mode: 'child-process',
     available: true,
     spawn(req, ipc) {
-      return Bun.spawn([process.execPath, req.entryPath, req.bundlePath], {
+      // Dev: `bun <child-entry.ts> <bundle>`. Compiled: the binary re-executes
+      // itself with `--job-child` (child-entry.ts does not exist on disk there;
+      // the core's entrypoint dispatches on the flag).
+      const cmd = isCompiledBinary()
+        ? [process.execPath, '--job-child', req.bundlePath]
+        : [process.execPath, req.entryPath, req.bundlePath]
+      return Bun.spawn(cmd, {
         ipc(raw) {
           ipc(raw)
         },
@@ -56,26 +71,26 @@ export function createChildProcessIsolation(): IsolationProvider {
 }
 
 export interface ContainerIsolationOptions {
-  /** `docker` atau `podman`. */
+  /** `docker` or `podman`. */
   runtime: string
   image: string
-  /** `runsc` untuk gVisor; kosong = runtime default. */
+  /** `runsc` for gVisor; empty means the default runtime. */
   ociRuntime?: string
   /** Batas resource per job. */
   memoryMb?: number
   cpus?: number
-  /** Direktori host yang di-mount read-only (bundle & runner entry). */
+  /** Host directory mounted read-only (bundle and runner entry). */
   mounts?: Array<{ hostPath: string; containerPath: string }>
 }
 
 /**
- * Isolasi container per job. IPC lewat stdio (bukan Bun `ipc`), karena
- * container tidak berbagi file descriptor IPC dengan parent — child-entry
- * memakai transport yang sama bentuknya, hanya berpindah kanal.
+ * Per-job container isolation. IPC runs over stdio rather than Bun's `ipc`,
+ * because a container does not share the parent's IPC file descriptor —
+ * child-entry uses the same transport shape, just a different channel.
  *
- * Catatan penting: job yang butuh device tetap berkomunikasi lewat parent
- * (device call via IPC), jadi container TIDAK perlu akses adb maupun USB.
- * Itu justru yang membuat isolasi ini masuk akal.
+ * Worth noting: a job that needs a device still talks through the parent
+ * (device calls over IPC), so the container needs NO adb and NO USB access.
+ * That is exactly what makes this isolation practical.
  */
 export function createContainerIsolation(opts: ContainerIsolationOptions): IsolationProvider {
   return {
@@ -87,7 +102,7 @@ export function createContainerIsolation(opts: ContainerIsolationOptions): Isola
         'run',
         '--rm',
         '-i',
-        '--network=none', // script tidak butuh network sendiri; device diakses lewat parent
+        '--network=none', // scripts need no network of their own; devices are reached via the parent
         '--cap-drop=ALL',
         '--security-opt=no-new-privileges',
         ...(opts.ociRuntime ? [`--runtime=${opts.ociRuntime}`] : []),
@@ -101,8 +116,8 @@ export function createContainerIsolation(opts: ContainerIsolationOptions): Isola
         req.bundlePath,
       ]
       const proc = Bun.spawn(args, { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
-      // IPC via stdout JSON-lines: child-entry mengirim message di stdout
-      // ketika `process.send` tidak tersedia (mode container).
+      // IPC over JSON-lines on stdout: child-entry writes its messages there
+      // when `process.send` is unavailable (container mode).
       void readJsonLines(proc.stdout, ipc)
       return proc as unknown as Subprocess<'ignore', 'pipe', 'pipe'>
     },
@@ -124,12 +139,12 @@ async function readJsonLines(stream: ReadableStream<Uint8Array> | undefined, onM
         try {
           onMessage(JSON.parse(line))
         } catch {
-          // baris bukan message IPC (mis. console.log biasa) — abaikan
+          // not an IPC message (an ordinary console.log, say) — ignore it
         }
       }
     }
   } catch {
-    // stream tertutup saat container berhenti
+    // the stream closes when the container stops
   }
 }
 
