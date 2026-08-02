@@ -12,10 +12,12 @@ dist/
 .next/
 out/
 next-env.d.ts
+*.tsbuildinfo
 
 # rust / tauri
 target/
 apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/schemas/
 
 # data dev
 .dev-data/
