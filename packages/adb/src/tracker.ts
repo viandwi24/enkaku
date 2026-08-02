@@ -1,4 +1,5 @@
 import { AdbSocket } from './socket'
+import { DEFAULT_HANDSHAKE_TIMEOUT_MS } from './timeouts'
 
 export type AdbDeviceState = 'device' | 'offline' | 'unauthorized' | 'authorizing' | (string & {})
 
@@ -101,9 +102,14 @@ export class DeviceTracker {
         const socket = await AdbSocket.connect(this.opts.host, this.opts.port)
         this.socket = socket
         socket.send('host:track-devices')
-        await socket.readStatus()
+        // A real handshake — the adb server should ack this immediately.
+        await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
         backoffMs = 1000
-        // An endless stream: every change arrives as one snapshot block.
+        // An endless stream: every change arrives as one snapshot block, and
+        // there can legitimately be no change for a long time. Deliberately
+        // no timeoutMs here — this loop is bounded by stop() calling
+        // socket.close(), not by a deadline (plan 22.1 is about one-shot
+        // exec(); this pre-existing long-lived connection is out of scope).
         while (!this.stopped) {
           const raw = await socket.readBlock()
           this.emitFromSnapshot(parseSnapshot(raw))

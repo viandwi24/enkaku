@@ -1,86 +1,54 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ListChecks, Search } from 'lucide-react'
 import type { DeviceInfo, JobInfo, JobStatus } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
+import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TableCell, TableHead } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
+import { fetchDevices } from '@/lib/api'
+import { duration, relativeTime } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
 
 type Job = JobInfo
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState<Job[] | null>(null)
+  const tableRef = useRef<PaginatedTableHandle<Job>>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [status, setStatus] = useState<JobStatus | 'all'>('all')
   const [query, setQuery] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
-
-  const load = async () => {
-    setError(null)
-    try {
-      const [j, d] = await Promise.all([
-        api<{ jobs: Job[] }>('/api/jobs?limit=200'),
-        api<{ devices: DeviceInfo[] }>('/api/devices'),
-      ])
-      setJobs(j.jobs)
-      setDevices(d.devices)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
+  // A running job's duration ticks without a refresh (Plan 17 acceptance #1).
+  const now = useNow()
 
   useEffect(() => {
-    void load()
-    // Rows update in place rather than reloading the whole list.
+    void fetchDevices()
+      .then(setDevices)
+      .catch(() => undefined)
+
+    // `job.status` carries a full JobInfo (plan 30 §3.5) — a live row is
+    // prepended if new, or replaces its already-loaded row in place.
     const off = ws.on((m) => {
       if (m.type !== 'job.status') return
-      setJobs((prev) => {
-        if (!prev) return prev
-        const i = prev.findIndex((j) => j.jobId === m.payload.jobId)
-        if (i === -1) return [m.payload as Job, ...prev]
-        const next = [...prev]
-        next[i] = { ...next[i], ...m.payload } as Job
-        return next
-      })
+      tableRef.current?.pushLive(m.payload as Job)
     })
     return off
   }, [])
 
-  const deviceName = (id: string) => devices.find((d) => d.id === id)?.label ?? id.slice(0, 8)
+  const deviceOf = (id: string) => devices.find((d) => d.id === id) ?? null
+  const deviceName = (id: string) => deviceOf(id)?.label ?? id.slice(0, 8)
+  /** Two phones can carry the same label; the stableId is the real identity (spec §7.5). */
+  const deviceIdent = (id: string) => deviceOf(id)?.stableId ?? id
   const scriptName = (j: Job) =>
     j.scriptName ? `${j.scriptName}${j.scriptVersion ? `@${j.scriptVersion}` : ''}` : j.scriptId
-
-  const filtered = useMemo(() => {
-    let list = jobs ?? []
-    if (status !== 'all') list = list.filter((j) => j.status === status)
-    const q = query.trim().toLowerCase()
-    if (q) {
-      list = list.filter(
-        (j) => scriptName(j).toLowerCase().includes(q) || deviceName(j.deviceId).toLowerCase().includes(q),
-      )
-    }
-    // Running and queued jobs sit on top — those are the ones being watched.
-    return [...list].sort((a, b) => {
-      const rank = (j: Job) => (j.status === 'running' ? 0 : j.status === 'queued' ? 1 : 2)
-      return rank(a) - rank(b) || b.createdAt - a.createdAt
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs, devices, status, query])
-
-  // The actions column only appears when something can be acted on. A history
-  // of finished jobs does not need an empty column eating table width.
-  const hasCancellable = filtered.some((j) => j.status === 'queued' || j.status === 'running')
 
   const cancel = (j: Job) =>
     run('cancel-' + j.jobId, () => api(`/api/jobs/${j.jobId}/cancel`, { method: 'POST' }), {
@@ -118,92 +86,111 @@ export default function JobsPage() {
               <SelectItem value="success">Succeeded</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
               <SelectItem value="cancelled">Cancelled</SelectItem>
+              <SelectItem value="expired">Expired</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
-        {error ? (
-          <ErrorState message={error} onRetry={load} />
-        ) : jobs === null ? (
-          <LoadingRows rows={5} />
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            icon={<ListChecks className="size-4" aria-hidden />}
-            title={jobs.length === 0 ? 'No jobs yet' : 'Nothing matches'}
-            description={
-              jobs.length === 0
-                ? 'Run a script from the Scripts page, or with the Run button on a device card.'
-                : 'Change the search or pick a different status.'
+        <PaginatedTable<Job>
+          ref={tableRef}
+          fetchPage={(cursor) => api<Page<Job>>(`/api/jobs?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          rowKey={(j) => j.jobId}
+          sort={(list) => {
+            let filtered = list
+            if (status !== 'all') filtered = filtered.filter((j) => j.status === status)
+            const q = query.trim().toLowerCase()
+            if (q) {
+              filtered = filtered.filter(
+                (j) =>
+                  scriptName(j).toLowerCase().includes(q) ||
+                  deviceName(j.deviceId).toLowerCase().includes(q) ||
+                  deviceIdent(j.deviceId).toLowerCase().includes(q),
+              )
             }
-            action={
-              jobs.length === 0 ? (
-                <Button asChild>
-                  <Link href="/scripts">Open Scripts</Link>
-                </Button>
-              ) : undefined
-            }
-          />
-        ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[38%]">Script</TableHead>
-                  <TableHead>Device</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  {hasCancellable && <TableHead className="text-right">Actions</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map((j) => {
-                  const cancellable = j.status === 'queued' || j.status === 'running'
-                  return (
-                    <TableRow key={j.jobId}>
-                      <TableCell>
-                        <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                          {scriptName(j)}
-                        </Link>
-                        {j.status === 'failed' && j.error && (
-                          <p className="mt-0.5 line-clamp-1 text-[11.5px] text-led-danger">{j.error}</p>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-[12.5px]">{deviceName(j.deviceId)}</TableCell>
-                      <TableCell>
-                        <JobStatusBadge status={j.status} />
-                      </TableCell>
-                      <TableCell>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="readout text-[11.5px] text-fg-muted">
-                              {relativeTime(j.createdAt)}
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>{new Date(j.createdAt * 1000).toLocaleString()}</TooltipContent>
-                        </Tooltip>
-                      </TableCell>
-                      {hasCancellable && (
-                        <TableCell className="text-right">
-                          {cancellable && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-[12px]"
-                              disabled={isPending('cancel-' + j.jobId)}
-                              onClick={() => void cancel(j)}
-                            >
-                              Cancel
-                            </Button>
-                          )}
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+            // Running and queued jobs sit on top — those are the ones being watched.
+            return [...filtered].sort((a, b) => {
+              const rank = (j: Job) => (j.status === 'running' ? 0 : j.status === 'queued' ? 1 : 2)
+              return rank(a) - rank(b) || b.createdAt - a.createdAt
+            })
+          }}
+          header={
+            <>
+              <TableHead className="w-[32%]">Script</TableHead>
+              <TableHead>Device</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Duration</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </>
+          }
+          renderRow={(j) => {
+            const cancellable = j.status === 'queued' || j.status === 'running'
+            return (
+              <>
+                <TableCell>
+                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                    {scriptName(j)}
+                  </Link>
+                  {j.status === 'failed' && j.error && (
+                    <p className="mt-0.5 line-clamp-1 text-[11.5px] text-led-danger">{j.error}</p>
+                  )}
+                </TableCell>
+                <TableCell className="text-[12.5px]">
+                  <Link
+                    href={`/device?id=${encodeURIComponent(j.deviceId)}`}
+                    className="group inline-flex flex-col leading-tight hover:text-accent"
+                    title={`${deviceName(j.deviceId)} · ${deviceIdent(j.deviceId)}`}
+                  >
+                    <span className="group-hover:underline">{deviceName(j.deviceId)}</span>
+                    <span className="readout text-[10.5px] text-fg-subtle">{deviceIdent(j.deviceId)}</span>
+                  </Link>
+                </TableCell>
+                <TableCell>
+                  <JobStatusBadge status={j.status} />
+                </TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">
+                  {duration(j.startedAt, j.finishedAt, now)}
+                </TableCell>
+                <TableCell>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="readout text-[11.5px] text-fg-muted">{relativeTime(j.createdAt, now)}</span>
+                    </TooltipTrigger>
+                    <TooltipContent>{new Date(j.createdAt * 1000).toLocaleString()}</TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="text-right">
+                  {cancellable && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-[12px]"
+                      disabled={isPending('cancel-' + j.jobId)}
+                      onClick={() => void cancel(j)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </TableCell>
+              </>
+            )
+          }}
+          empty={{
+            icon: <ListChecks className="size-4" aria-hidden />,
+            title: 'No jobs yet',
+            description: 'Run a script from the Scripts page, or with the Run button on a device card.',
+            action: (
+              <Button asChild>
+                <Link href="/scripts">Open Scripts</Link>
+              </Button>
+            ),
+          }}
+          emptyFiltered={{
+            icon: <ListChecks className="size-4" aria-hidden />,
+            title: 'Nothing matches',
+            description: 'Change the search or pick a different status.',
+          }}
+        />
       </div>
     </>
   )

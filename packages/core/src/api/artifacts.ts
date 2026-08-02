@@ -1,9 +1,10 @@
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
-import { asc, eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import type { Db } from '../db'
 import { artifacts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 
 const CONTENT_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -21,24 +22,50 @@ export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
 
   app.get('/', (c) => {
     const jobId = c.req.query('jobId')
-    if (!jobId) throw new EnkakuError('E_BAD_REQUEST', 'the ?jobId= query parameter is required')
-    const rows = deps.db
+    const deviceId = c.req.query('deviceId')
+    if (!jobId && !deviceId) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    // The owner column (plan 24 §4.6 — exactly one of jobId/deviceId is set
+    // on any row, so this is never ambiguous).
+    const ownerColumn = jobId ? artifacts.jobId : artifacts.deviceId
+    const ownerValue = jobId ?? deviceId
+    if (!ownerValue) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    const { cursor: cursorParam, limit } = parsePageQuery(c)
+    const cursor = decodeCursor(cursorParam)
+    // Kept ascending (oldest first) — an artifact list reads as a timeline,
+    // and pagination changes only how a list is windowed, not its existing
+    // sort direction (plan 30 §2 non-goals).
+    const keyset = keysetWhere(
+      cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
+      artifacts.createdAt,
+      artifacts.id,
+      'asc',
+    )
+    const where = keyset ? and(eq(ownerColumn, ownerValue), keyset) : eq(ownerColumn, ownerValue)
+    const page = deps.db
       .select()
       .from(artifacts)
-      .where(eq(artifacts.jobId, jobId))
-      .orderBy(asc(artifacts.createdAt))
+      .where(where)
+      .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
+      .limit(limit + 1)
       .all()
-    return c.json({
-      artifacts: rows.map((r) => ({
-        id: r.id,
-        jobId: r.jobId,
-        kind: r.kind,
-        label: r.label,
-        path: r.path,
-        sizeBytes: r.sizeBytes,
-        createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
-      })),
-    })
+    const hasMore = page.length > limit
+    const rows = hasMore ? page.slice(0, limit) : page
+    const last = rows[rows.length - 1]
+    const nextCursor =
+      hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
+    const total = deps.db.select().from(artifacts).where(eq(ownerColumn, ownerValue)).all().length
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      jobId: r.jobId,
+      deviceId: r.deviceId,
+      kind: r.kind,
+      label: r.label,
+      path: r.path,
+      sizeBytes: r.sizeBytes,
+      createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+    }))
+    return c.json({ items, nextCursor, total, artifacts: items })
   })
 
   app.get('/:id/content', async (c) => {

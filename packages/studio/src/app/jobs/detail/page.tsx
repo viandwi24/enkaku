@@ -12,7 +12,9 @@ import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
+import { fetchAllPages } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
@@ -56,6 +58,8 @@ function JobDetail() {
   const [error, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const { run, isPending } = useAction()
+  // Run time and total-time tick without a refresh while a job is running.
+  const now = useNow()
 
   const load = () => {
     if (!jobId) return
@@ -69,8 +73,11 @@ function JobDetail() {
           .catch(() => setSource(null))
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-    void api<{ artifacts: ArtifactInfo[] }>(`/api/artifacts?jobId=${jobId}`)
-      .then((b) => setArtifacts(b.artifacts))
+    // A job's artifacts are usually a handful, but a script producing many
+    // screenshots is not unbounded here — this walks every page rather than
+    // trusting the endpoint's default limit (plan 30 §4.2).
+    void fetchAllPages<ArtifactInfo>('/api/artifacts', { jobId })
+      .then(setArtifacts)
       .catch(() => undefined)
   }
 
@@ -85,7 +92,7 @@ function JobDetail() {
         setArtifacts((p) => [...p.filter((a) => a.id !== m.payload.artifact.id), m.payload.artifact])
       } else if (m.type === 'job.status' && m.payload.jobId === jobId) {
         setJob((p) => ({ ...(p ?? {}), ...m.payload }) as JobWithPhase)
-        if (['success', 'failed', 'cancelled'].includes(m.payload.status)) load()
+        if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) load()
       }
     })
     return off
@@ -222,19 +229,19 @@ function JobDetail() {
             <div className="rounded-lg border bg-surface p-4">
               <h2 className="rack-label mb-3">timing</h2>
               <dl className="space-y-2.5">
-                <Row label="Queued" value={absolute(job.createdAt)} note={relativeTime(job.createdAt)} />
+                <Row label="Queued" value={absolute(job.createdAt)} note={relativeTime(job.createdAt, now)} />
                 <Row
                   label="Started"
                   value={absolute(job.startedAt)}
-                  note={waited !== null ? `waited ${duration(job.createdAt, job.startedAt)} for a device` : undefined}
+                  note={waited !== null ? `waited ${duration(job.createdAt, job.startedAt, now)} for a device` : undefined}
                 />
                 <Row label="Finished" value={absolute(job.finishedAt)} />
                 <Row
                   label="Run time"
-                  value={job.startedAt ? duration(job.startedAt, job.finishedAt) : '—'}
+                  value={job.startedAt ? duration(job.startedAt, job.finishedAt, now) : '—'}
                   note={job.status === 'running' ? 'still running' : undefined}
                 />
-                <Row label="Total, queue to finish" value={duration(job.createdAt, job.finishedAt)} />
+                <Row label="Total, queue to finish" value={duration(job.createdAt, job.finishedAt, now)} />
               </dl>
             </div>
           </div>

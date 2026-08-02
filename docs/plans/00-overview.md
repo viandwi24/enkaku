@@ -33,8 +33,56 @@
 | 14 | `14-m9-desktop-tauri.md` | M9c | The Tauri desktop application. |
 | 15 | `15-m10-design-system.md` | M10a | **Design foundations**: Tailwind plus shadcn/ui, tokens, the layout frame, fixing functional UI defects. |
 | 16 | `16-m10-screens.md` | M10b | **Rebuilding every screen** and user flow. |
+| 17 | `17-m11a-realtime-and-wake-ux.md` | M11a | **Realtime UI contract**: ticking durations, session wake-up progress, keep-awake modes, standby (screen off while mirroring), keyframe on join. |
+| 18 | `18-m11b-device-event-log.md` | M11b | **Device event log**: one `device_events` table with `main` and `input` streams, live tail, redaction, per-stream retention, the Logs tab. |
+| 19 | `19-m11c-tags-and-device-picker.md` | M11c | **Tags and the device picker**: `device_tags`, normalisation, tag filtering, a picker that shows stableId and unavailable devices with reasons. |
+| 20 | `20-m11d-clusters-and-batch-runs.md` | M11d | **Clusters and batches**: a cluster is a saved selector; batches with `(concurrency, order)`, an aggregate report, cancel and re-run failed. |
+| 21 | `21-m11e-schedules-and-queue-policy.md` | M11e | **Schedules**: croner, overlap policy, queue timeout (`expired`), catch-up, jitter, priority, run history. |
+| 22.0 | `22.0-clusters-as-device-field.md` | M11d-rev | **Clusters become a device field**: `devices.clusterId`, one device in at most one cluster (or none), a cluster is a container rather than a saved selector. Supersedes Plan 20 §3.1. |
+| 22.1 | `22.1-m12a-adb-deadlines-and-queue-safety.md` | M12a | **adb deadlines**: layered timeouts, forced socket termination, output caps, queue depth cap, `AbortSignal`, coded errors. No user-facing change. |
+| 23 | `23-m12b-adb-concurrency-and-device-health.md` | M12b | **Concurrency and health**: a semaphore that scales with fleet size (amends spec §10.4), parallel battery polling, auto-quarantine on adb failure with automatic recovery, `/api/adb/stats`. |
+| 24 | `24-m12c-adb-stream-lane-and-monitor.md` | M12c | **Streaming lane and Monitor tab**: `execStream` outside the per-device queue, fixed read-only monitors (logcat/top/thermal), one stream fanned out to all viewers, save-as-artifact. |
+| 25 | `25-m12d-shell-over-tunnel.md` | M12d | **Cloud parity**: correlated request/response over the tunnel, a `shell` binary channel, agent-side handlers, one `ShellPort` interface with local and remote implementations. |
+| 26 | `26-m12e-interactive-terminal.md` | M12e | **The device terminal**: free-form commands gated by lease plus the `device.shell` permission, full audit, emulated cwd, exit codes, all viewers watch and only the lease holder types. |
+| 27 | `27-m12f-local-adb-endpoint.md` | M12f | **Lease-scoped adb endpoint (local)**: an adbd-protocol shim so a user can `adb connect` to a farm device with their own tooling. Starts with a spike gate. |
+| 28 | `28-m12g-cloud-adb-endpoint.md` | M12g | **adb endpoint for cloud devices**: the same shim with ADB streams carried over tunnel channels, with delivery-acknowledged flow control. |
+| 29 | `29-m13-runtime-resilience.md` | M13 | ⚠️ **DRAFT — DO NOT EXECUTE.** Single-owner data-dir lock, stale `adb forward` sweep, bounded session auto-recovery, per-device reconnect. Design unsettled; §9 must be answered first. |
+| 30 | `30-m14a-server-side-pagination.md` | M14a | **Pagination**: one keyset envelope for every list endpoint, a shared `PaginatedTable`, no unbounded fetches. |
+| 31 | `31-m14b-viewer-presence-and-control.md` | M14b | **Presence**: who is watching a device and who holds control, live to every viewer. Starts by reproducing the reported two-browser symptom. |
+| 32 | `32-m14c-fleet-topology-view.md` | M14c | **Topology**: the whole farm as grouped tiles — status, battery, temperature, running job — live, no graph library. |
+| 33 | `33-m15-device-network.md` | M15 | **Network layer**: a fifth driver layer (spec §7.9). `adb-proxy` and `adb-reverse-proxy` engines, lease-scoped apply/revert, declared-vs-observed status, a Studio card, and `ctx.device.network.*` in the SDK. |
 
 Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
+
+The M11 series is **not** a single chain. `17` and `18` are independent of everything after 16 and of each other. `19 → 20 → 21` is a hard chain: clusters select devices by tag, and schedules trigger batches.
+
+```
+17 (realtime + wake UX)   ─┐
+18 (device event log)     ─┼─ independent, any order
+19 (tags) → 20 (clusters/batches) → 21 (schedules)
+```
+
+The M12 series (remote shell and adb access) is a chain with one branch. Plan 22.1 is a hard prerequisite for everything after it: until adb calls have deadlines, any long-running command can park a per-device queue slot permanently, which is the failure already recorded in `packages/scrcpy/src/session.ts:90-98`.
+
+Plan 22.0 is not part of that series — it revises the M11d cluster model — but it lands first because it changes `devices`, `clusters`, and every batch/schedule target path, and rebasing the M12 work onto it later would be wasteful.
+
+```
+22.0 (clusters as a device field)   ← independent; lands first to avoid a later rebase
+22.1 (adb deadlines)  ← hard prerequisite for 23–28
+ ├─ 23 (concurrency + health)   independent of 24–28; needed before a farm exceeds ~10 devices
+ └─ 24 (stream lane + monitor) → 25 (cloud parity) → 26 (terminal)
+                                              └────→ 27 (local adb endpoint) → 28 (cloud adb endpoint)
+```
+
+Plans 27 and 28 are the largest in the series and are gated: **Plan 27 opens with a throwaway spike against a real `adb` client, and the plan stops there if the spike fails.** Do not start 28 before 27's shim is proven.
+
+One plan is one working session. Do not start a later plan in the same session as an earlier one — the point of the split is that the context stays small enough to hold accurately.
+
+The M14 series is independent of M12 and M13. `30` and `31` do not depend on each other; `32` reads best after `31` (a device tile can then show its viewer count), but does not require it.
+
+Plan `33` is independent of M12–M14. It needs Plan 18 (the device event log it writes to), Plan 22.1 (adb deadlines, since a hung `adb reverse` would otherwise park a queue slot), and the permission-gating pattern established in Plan 26. Its §9 Q4 names a smaller bug fix — honouring `HTTPS_PROXY` for the core's own outbound requests — that should land **before** it and is not part of it.
+
+**Plan 29 is a draft, not a work item.** Its status line says `DRAFT — NEEDS DISCUSSION. DO NOT EXECUTE`, and it deliberately has no implementation steps or acceptance criteria. It becomes executable only when a human answers its §9 and changes the status line. "Work the plans in order" does not include it.
 
 ## 3. Stack and decisions that must NOT change
 
@@ -51,7 +99,7 @@ These are settled in the spec (§4, §10.3, and the §21 closing note). No plan 
 | Default input | `scrcpy-uhid`; falling back to `scrcpy-sdk`; `adb-input` is only a crude MVP fallback. (spec §9) |
 | Default inspector (final) | A persistent on-device `ui-server`; `uiautomator dump` is only a bridge in M4. (spec §7.4) |
 | Core⇄Studio communication | Message-based over **WebSocket** for realtime and streaming; REST for CRUD. The contract lives in `packages/protocol` (Zod). (spec §13) |
-| adb serialisation | A per-device command queue plus a loose global semaphore (6–8). **`adb kill-server` is forbidden** except in the Toolchain Manager's adb version swap. (spec §10.4) |
+| adb serialisation | A per-device command queue (unchanged: one device, one command at a time) plus a **global** semaphore that scales with fleet size — `min(24, max(6, ceil(nonOfflineDeviceCount * 0.75)))`, so 6 is the floor (≤4 devices, same as before Plan 23) and 24 is the ceiling; the farm setting `adb.maxConcurrent` (default `0` = auto) can pin it instead. **`adb kill-server` is forbidden** except in the Toolchain Manager's adb version swap. (spec §10.4, amended by plan 23) |
 | Local trust model | Crash containment (child process plus a hard-timeout kill), **not** a security sandbox. Never claim "sandbox". (spec §11.3) |
 | Device identity | `stableId` (ro.serialno → ANDROID_ID fallback) is the identity; the adb serial is a transport address. (spec §7.5) |
 

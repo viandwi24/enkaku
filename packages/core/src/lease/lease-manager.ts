@@ -11,6 +11,8 @@ export interface Lease {
   type: LeaseType
   /** manual: the WS connection's clientId; job: the jobId. */
   holder: string
+  /** manual: the authenticated user who holds it, when known (plan 18 §4.2 actor). */
+  holderUserId?: string | null
   acquiredAt: number
   expiresAt: number
 }
@@ -22,7 +24,7 @@ export interface LeaseConfig {
 }
 
 export interface LeaseManager {
-  acquireManual(deviceId: string, clientId: string): Lease
+  acquireManual(deviceId: string, clientId: string, userId?: string | null): Lease
   touchManual(deviceId: string, clientId: string): void
   releaseManual(deviceId: string, clientId: string, reason?: 'idle_timeout' | 'disconnected' | 'quarantined'): boolean
   releaseAllForClient(clientId: string): void
@@ -42,7 +44,7 @@ export interface LeaseManagerDeps {
   log: Logger
   /** An expired job lease fails the job and force-releases the device (spec §10.2). */
   onJobLeaseExpired: (jobId: string, reason: string) => void
-  onManualRevoked?: (deviceId: string, reason: 'idle_timeout' | 'disconnected' | 'quarantined') => void
+  onManualRevoked?: (deviceId: string, reason: 'idle_timeout' | 'disconnected' | 'quarantined', holderUserId: string | null) => void
   onDeviceFreed?: () => void
 }
 
@@ -58,13 +60,13 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
     if (!lease || lease.type !== 'manual') return false
     leases.delete(deviceId)
     states.apply(deviceId, 'MANUAL_RELEASED')
-    if (reason) deps.onManualRevoked?.(deviceId, reason)
+    if (reason) deps.onManualRevoked?.(deviceId, reason, lease.holderUserId ?? null)
     deps.onDeviceFreed?.()
     return true
   }
 
   return {
-    acquireManual(deviceId, clientId) {
+    acquireManual(deviceId, clientId, userId) {
       const existing = leases.get(deviceId)
       if (existing?.type === 'manual' && existing.holder === clientId) {
         existing.expiresAt = nowSec() + config.manualIdleTimeoutSec
@@ -87,6 +89,7 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
         deviceId,
         type: 'manual',
         holder: clientId,
+        holderUserId: userId ?? null,
         acquiredAt: nowSec(),
         expiresAt: nowSec() + config.manualIdleTimeoutSec,
       }

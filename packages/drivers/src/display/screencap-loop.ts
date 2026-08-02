@@ -51,7 +51,7 @@ export class ScreencapLoop implements DisplaySource {
     while (this.running) {
       const t0 = Date.now()
       try {
-        const png = await this.transport.execOut('screencap -p')
+        const png = await this.transport.execOut('screencap -p', { profile: 'screencap' })
         consecutiveFailures = 0
         if (!isPng(png)) {
           this.config.onLog?.('warn', `corrupt frame from ${this.transport.serial} (${png.length} bytes) — skipping`)

@@ -28,3 +28,6 @@ apps/desktop/src-tauri/gen/schemas/
 # release build
 *.gen.ts
 release/
+
+
+refs/

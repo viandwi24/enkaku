@@ -3,6 +3,8 @@ import { JobStatusSchema } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
+import type { Logger } from '../util/logger'
+import { decodeCursor, encodeCursor, parsePageQuery } from './pagination'
 
 const EnqueueBody = z.object({
   scriptId: z.string().min(1),
@@ -19,9 +21,10 @@ const ERROR_STATUS: Record<string, number> = {
   job_not_cancellable: 409,
   device_unavailable: 409,
   device_busy: 409,
+  E_BAD_REQUEST: 400,
 }
 
-export function createJobRoutes(service: JobService): Hono {
+export function createJobRoutes(service: JobService, deps?: { log?: Logger }): Hono {
   const app = new Hono()
 
   app.post('/', async (c) => {
@@ -35,13 +38,30 @@ export function createJobRoutes(service: JobService): Hono {
 
   app.get('/', (c) => {
     const status = JobStatusSchema.safeParse(c.req.query('status'))
+    const { cursor: cursorParam, limit } = parsePageQuery(c)
+    const offsetParam = c.req.query('offset')
+    let offset: number | undefined
+    if (offsetParam !== undefined) {
+      offset = Number.parseInt(offsetParam, 10) || 0
+      // Deprecated legacy alias (plan 30 §3.2) — kept for one release so
+      // nothing breaks mid-migration, but every use is logged.
+      deps?.log?.warn('GET /api/jobs?offset= is deprecated; use ?cursor= instead', { offset })
+    }
+    const cursor = offset === undefined ? decodeCursor(cursorParam) : null
     const result = service.list({
       deviceId: c.req.query('deviceId') ?? undefined,
       status: status.success ? status.data : undefined,
-      limit: Number.parseInt(c.req.query('limit') ?? '50', 10) || 50,
-      offset: Number.parseInt(c.req.query('offset') ?? '0', 10) || 0,
+      limit,
+      cursor,
+      offset,
     })
-    return c.json(result)
+    return c.json({
+      items: result.jobs,
+      nextCursor: result.nextCursor ? encodeCursor(result.nextCursor.sortValue, result.nextCursor.id) : null,
+      total: result.total,
+      // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
+      jobs: result.jobs,
+    })
   })
 
   app.get('/:id', (c) => {

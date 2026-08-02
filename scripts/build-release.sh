@@ -42,6 +42,14 @@ for target in $TARGETS; do
   bun build packages/core/src/entry-release.gen.ts \
     --compile --minify --sourcemap --target="bun-$target" --outfile "$bin"
 
+  # Bun's embedding step breaks the linker's ad-hoc signature; on a quarantined
+  # download Gatekeeper reports that as "damaged". Re-sign whenever we can
+  # (darwin targets, building on macOS — the CI darwin job runs there).
+  if [ "${target%%-*}" = "darwin" ] && [ "$(uname)" = "Darwin" ]; then
+    codesign --force --sign - --identifier dev.enkaku.core "$bin"
+    codesign --verify --strict "$bin"
+  fi
+
   echo "==> Packaging $name"
   if [ "${target%%-*}" = "windows" ]; then
     (cd "$stage" && zip -q -9 "../$name.zip" "$(basename "$bin")")
@@ -54,10 +62,13 @@ done
 echo "==> Checksums"
 (
   cd "$OUT_DIR"
+  archives=$(ls ./*.tar.gz ./*.zip 2>/dev/null || true)
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt 2>/dev/null || sha256sum ./* > SHA256SUMS.txt
+    # shellcheck disable=SC2086
+    sha256sum $archives > SHA256SUMS.txt
   else
-    shasum -a 256 ./*.tar.gz ./*.zip > SHA256SUMS.txt 2>/dev/null || shasum -a 256 ./* > SHA256SUMS.txt
+    # shellcheck disable=SC2086
+    shasum -a 256 $archives > SHA256SUMS.txt
   fi
   cat SHA256SUMS.txt
 )

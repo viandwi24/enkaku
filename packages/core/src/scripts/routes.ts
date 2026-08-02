@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { Db } from '../db'
 import { jobs, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from '../api/pagination'
 
 const PublishBody = z.object({
   name: z.string().min(1),
@@ -21,6 +22,7 @@ const ERROR_STATUS: Record<string, number> = {
   script_version_exists: 409,
   script_in_use: 409,
   unauthorized: 401,
+  E_BAD_REQUEST: 400,
 }
 
 /**
@@ -44,7 +46,14 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hon
   })
 
   app.get('/', (c) => {
-    const rows = db
+    const { cursor: cursorParam, limit } = parsePageQuery(c)
+    const cursor = decodeCursor(cursorParam)
+    const keyset = keysetWhere(
+      cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
+      scripts.createdAt,
+      scripts.id,
+    )
+    const page = db
       .select({
         id: scripts.id,
         name: scripts.name,
@@ -55,11 +64,19 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hon
         createdAt: scripts.createdAt,
       })
       .from(scripts)
-      .orderBy(desc(scripts.createdAt))
+      .where(keyset)
+      .orderBy(desc(scripts.createdAt), desc(scripts.id))
+      .limit(limit + 1)
       .all()
-    return c.json({
-      scripts: rows.map((r) => ({ ...r, createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : null })),
-    })
+    const hasMore = page.length > limit
+    const rows = hasMore ? page.slice(0, limit) : page
+    const last = rows[rows.length - 1]
+    const nextCursor =
+      hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
+    const total = db.select().from(scripts).all().length
+
+    const items = rows.map((r) => ({ ...r, createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : null }))
+    return c.json({ items, nextCursor, total, scripts: items })
   })
 
   app.get('/:id', (c) => {

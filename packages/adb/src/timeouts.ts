@@ -1,0 +1,57 @@
+import { AdbError } from './errors'
+
+/** Nothing may exceed this, whatever a caller asks for (plan 22.1 §3.4). */
+export const MAX_EXEC_TIMEOUT_MS = 120_000
+
+export const DEFAULT_QUEUE_TIMEOUT_MS = 30_000
+export const DEFAULT_CONNECT_TIMEOUT_MS = 2_000
+export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 3_000
+export const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
+/** Per-device queue depth cap (plan 22.1 §4.5). */
+export const DEFAULT_MAX_QUEUE_DEPTH = 32
+
+/**
+ * The streaming lane's three clocks (plan 24 §3.3) — deliberately separate
+ * from `ADB_TIMEOUTS`/`MAX_EXEC_TIMEOUT_MS` above: a stream is expected to
+ * stay open for minutes, which a one-shot `exec()` must never be allowed to
+ * do, so the two budgets do not share a ceiling.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 60_000
+export const DEFAULT_STREAM_ABSOLUTE_TIMEOUT_MS = 600_000
+export const DEFAULT_STREAM_MAX_BYTES = 5 * 1024 * 1024
+/** The lane's own budget (plan 24 §3.2) — never a slice of the exec semaphore above. */
+export const DEFAULT_MAX_STREAMS_PER_DEVICE = 1
+export const DEFAULT_MAX_STREAMS = 4
+
+/**
+ * Per-call-site execution budgets (plan 22.1 §3.3). Callers name a profile;
+ * the string of the command is never inspected to guess one.
+ */
+export const ADB_TIMEOUTS = {
+  /** getprop, wm size, settings get — instant or broken. */
+  probe: 5_000,
+  /** input tap/keyevent — must not lag behind manual control. */
+  input: 5_000,
+  /** dumpsys battery — runs periodically, must fail fast. */
+  battery: 8_000,
+  /** screencap -p — the fallback video path. */
+  screencap: 10_000,
+  /** am start / am force-stop / pm list. */
+  appLifecycle: 15_000,
+  /** uiautomator dump — genuinely slow on a loaded device. */
+  inspectorDump: 20_000,
+  default: 15_000,
+} as const
+
+export type AdbTimeoutProfile = keyof typeof ADB_TIMEOUTS
+
+/**
+ * Resolves the effective exec deadline: an explicit `timeoutMs` wins over a
+ * named profile, which wins over `default`. The result is always clamped to
+ * `MAX_EXEC_TIMEOUT_MS` — there is no way to ask for an unbounded wait.
+ */
+export function resolveExecTimeout(opts?: { timeoutMs?: number; profile?: AdbTimeoutProfile }): number {
+  const raw = opts?.timeoutMs ?? ADB_TIMEOUTS[opts?.profile ?? 'default']
+  if (!Number.isFinite(raw) || raw <= 0) throw new AdbError('E_ADB_BAD_TIMEOUT', `invalid execTimeoutMs: ${raw}`)
+  return Math.min(raw, MAX_EXEC_TIMEOUT_MS)
+}

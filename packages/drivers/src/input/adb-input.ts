@@ -14,13 +14,14 @@ export class AdbInput implements InputSink {
   constructor(private transport: Transport) {}
 
   async tap(p: Point): Promise<void> {
-    await this.transport.exec(`input tap ${Math.round(p.x)} ${Math.round(p.y)}`)
+    await this.transport.exec(`input tap ${Math.round(p.x)} ${Math.round(p.y)}`, { profile: 'input' })
   }
 
   async swipe(from: Point, to: Point, ms: number): Promise<void> {
     const dur = Math.min(10_000, Math.max(50, Math.round(ms)))
     await this.transport.exec(
       `input swipe ${Math.round(from.x)} ${Math.round(from.y)} ${Math.round(to.x)} ${Math.round(to.y)} ${dur}`,
+      { profile: 'input' },
     )
   }
 
@@ -28,10 +29,10 @@ export class AdbInput implements InputSink {
     if (!Number.isInteger(code) || code < 0 || code > 320) {
       throw new Error(`keycode invalid: ${code}`)
     }
-    await this.transport.exec(`input keyevent ${code}`)
+    await this.transport.exec(`input keyevent ${code}`, { profile: 'input' })
   }
 
   async text(s: string): Promise<void> {
-    await this.transport.exec(`input text ${escapeInputText(s)}`)
+    await this.transport.exec(`input text ${escapeInputText(s)}`, { profile: 'input' })
   }
 }

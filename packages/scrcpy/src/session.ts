@@ -3,6 +3,8 @@ import {
   encodeInjectKeycode,
   encodeInjectText,
   encodeInjectTouch,
+  encodeResetVideo,
+  encodeSetDisplayPower,
   encodeUhidCreate,
   encodeUhidDestroy,
   encodeUhidInput,
@@ -38,6 +40,10 @@ export interface ScrcpyControl {
   uhidCreate(id: number, name: string, reportDesc: Uint8Array): void
   uhidInput(id: number, report: Uint8Array): void
   uhidDestroy(id: number): void
+  /** Blank or restore the device's physical panel; the video stream is unaffected (Plan 17 §3.5). */
+  setDisplayPower(on: boolean): void
+  /** Force the encoder to emit a fresh keyframe, for a viewer that just joined (Plan 17 §3.6). */
+  resetVideo(): void
 }
 
 export interface ScrcpySession {
@@ -90,9 +96,12 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   // process that never exits. Volume keys did nothing, the ui-server inspector
   // timed out and fell back, and none of it reported an error: the commands
   // were not failing, they were never running.
+  // warn, not debug: a server that dies takes the whole stream with it, and
+  // when this was invisible the only symptom was a session that opened and
+  // produced nothing, with no explanation anywhere in the log.
   void adb
     .hostAdb(['-s', adb.serial, 'shell', cmd])
-    .catch((err) => log('debug', `the scrcpy server exited: ${String(err)}`))
+    .catch((err) => log('warn', `the scrcpy server exited: ${String(err)}`))
 
   // 3. Forward localabstract → host port, and prove it belongs to this device.
   const socketName = `localabstract:scrcpy_${scid}`
@@ -150,6 +159,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       uhidCreate: (id, name, desc) => write(encodeUhidCreate(id, name, desc)),
       uhidInput: (id, report) => write(encodeUhidInput(id, report)),
       uhidDestroy: (id) => write(encodeUhidDestroy(id)),
+      setDisplayPower: (on) => write(encodeSetDisplayPower(on)),
+      resetVideo: () => write(encodeResetVideo()),
     },
     async close() {
       try {

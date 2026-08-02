@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../db'
 import { farmSettings } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+import type { AuthMode } from '../config'
 
 export interface FarmSettingsStore {
   get(): FarmSettings
@@ -13,7 +14,12 @@ export interface FarmSettingsStore {
 
 const ROW_ID = 1
 
-export function createFarmSettingsStore(db: Db): FarmSettingsStore {
+/**
+ * `authMode` is optional so every existing call site (and test) that has no
+ * opinion about it keeps compiling unchanged — it only matters the ONE time
+ * a farm settings row is created from scratch.
+ */
+export function createFarmSettingsStore(db: Db, opts?: { authMode?: AuthMode }): FarmSettingsStore {
   const listeners = new Set<(s: FarmSettings) => void>()
   let cached: FarmSettings
 
@@ -21,6 +27,13 @@ export function createFarmSettingsStore(db: Db): FarmSettingsStore {
   const parsed = row ? FarmSettingsSchema.safeParse(row.value) : null
   cached = parsed?.success ? parsed.data : defaultFarmSettings()
   if (!row) {
+    // The server-mode `shell.mode: 'off'` default (plan 26 §3.2, §4.1) can
+    // only be applied HERE, not in the Zod schema: the schema has no way to
+    // see the bind address the auth mode is derived from (00-overview's
+    // config precedence rule — never a silent fallback, so this only ever
+    // touches a BRAND NEW row, never overwrites an operator's own choice on
+    // an existing farm).
+    if (opts?.authMode === 'server') cached = { ...cached, shell: { ...cached.shell, mode: 'off' } }
     db.insert(farmSettings).values({ id: ROW_ID, value: cached, updatedAt: new Date() }).run()
   }
 

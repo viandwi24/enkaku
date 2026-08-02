@@ -14,6 +14,8 @@ import {
 } from '@enkaku/session'
 import { startScrcpySession } from '@enkaku/scrcpy'
 import type { ToolchainManager } from '@enkaku/toolchain'
+import { createAdbRawHost } from './adb-raw'
+import { createShellHost } from './shell'
 import type { Tunnel } from './tunnel'
 
 /** Size limit for artifacts sent inline as base64 inside JSON. */
@@ -21,6 +23,8 @@ const INLINE_ARTIFACT_LIMIT = 256 * 1024
 
 export interface AgentHosts {
   handle(msg: ControlToAgent): Promise<void>
+  /** Inbound binary tunnel frame (plan 28 §4.1) — the cloud adb endpoint's `adb-raw` channels are the first thing on the agent side that needs core→agent frame data; video/shell channels only ever flow the other way. */
+  handleFrame(channelId: number, payload: Uint8Array): void
   /** The devices the agent can see — the data source for sessions. */
   updateDevices(list: DeviceSnapshot[]): void
   closeAll(): Promise<void>
@@ -72,13 +76,36 @@ export function createAgentHosts(deps: {
       if (!jarPath) return null
       const port = await ports.claim(`scrcpy:${deviceId}`)
       return startScrcpySession(
-        { serial: transport.serial, exec: (cmd) => transport.exec(cmd), hostAdb },
+        { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }), hostAdb },
         { jarPath, port, onLog: (level, msg) => deps.log.child('scrcpy')[level](msg) },
       )
     },
   })
 
   const send = (msg: Parameters<NonNullable<ReturnType<typeof deps.tunnel>>['send']>[0]) => deps.tunnel()?.send(msg)
+
+  // The Monitor tab's cloud parity (plan 25 §4.4): `shell.exec.request` and
+  // `shell.stream.request` run through the SAME `AdbClient` the local session
+  // work already uses — nothing adb-specific is different for a cloud device.
+  const shellHost = createShellHost({
+    client: deps.client,
+    devices: source,
+    send,
+    sendFrame: (channelId, payload) => deps.tunnel()?.sendFrame(channelId, payload),
+    bufferedAmount: () => deps.tunnel()?.bufferedAmount() ?? 0,
+    log: deps.log.child('shell'),
+  })
+
+  // The cloud adb endpoint's agent side (plan 28 §4.3): `AdbClient.openRaw`
+  // against the SAME `AdbClient` shell/session work already uses — nothing
+  // adb-specific differs for a cloud device here either.
+  const adbRawHost = createAdbRawHost({
+    client: deps.client,
+    devices: source,
+    send,
+    sendFrame: (channelId, payload) => deps.tunnel()?.sendFrame(channelId, payload),
+    log: deps.log.child('adb-raw'),
+  })
 
   /** Artifacts are sent to the control plane, not stored on the agent. */
   const artifactSink = (jobId: string): ArtifactSink => ({
@@ -197,8 +224,35 @@ export function createAgentHosts(deps: {
           for (const [deviceId, ch] of [...videoChannels]) {
             if (ch === msg.payload.channelId) videoChannels.delete(deviceId)
           }
+          // Defence in depth (plan 25 §4.5, plan 28 §4.3): if the control
+          // plane ever closes a `shell`/`adb-raw` channel without going
+          // through `shell.stream.stop`/`adb.close` first, the stream
+          // feeding it must not become an orphaned process — or an orphaned
+          // smartsocket connection — on the device.
+          shellHost.channelClosed(msg.payload.channelId)
+          adbRawHost.channelClosed(msg.payload.channelId)
           return
         }
+
+        case 'shell.exec.request':
+          await shellHost.execRequest(msg)
+          return
+
+        case 'shell.stream.request':
+          await shellHost.streamRequest(msg)
+          return
+
+        case 'shell.stream.stop':
+          shellHost.streamStop(msg.payload)
+          return
+
+        case 'adb.open.request':
+          await adbRawHost.openRequest(msg)
+          return
+
+        case 'adb.close':
+          adbRawHost.close(msg.payload)
+          return
 
         case 'input.forward': {
           const session = sessions.get(msg.payload.deviceId)
@@ -273,9 +327,18 @@ export function createAgentHosts(deps: {
       }
     },
 
+    handleFrame(channelId, payload) {
+      // Only `adb-raw` channels ever carry a core→agent frame today (plan 28
+      // §4.1) — video and shell channels are agent→core only, so there is
+      // nothing else to route this to.
+      adbRawHost.handleFrame(channelId, payload)
+    },
+
     async closeAll() {
       for (const unsub of frameUnsubs.values()) unsub()
       frameUnsubs.clear()
+      await shellHost.closeAll()
+      await adbRawHost.closeAll()
       await sessions.closeAll()
     },
   }

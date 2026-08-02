@@ -1,4 +1,4 @@
-import type { DeviceStatus } from '@enkaku/protocol'
+import type { DeviceStatus, KeepAwakeMode } from '@enkaku/protocol'
 
 /**
  * The data contract the session needs, **with no knowledge of any database**.
@@ -22,8 +22,10 @@ export interface DeviceSnapshot {
   input: string | null
   inspection: string | null
   preferredInputMode: 'uhid' | 'sdk' | 'aoa'
-  /** DeviceSettings.prep.stayAwake. */
-  stayAwake?: boolean
+  /** DeviceSettings.prep.keepAwake (Plan 17 §3.4). */
+  keepAwake?: KeepAwakeMode
+  /** DeviceSettings.prep.standbyScreenOff (Plan 17 §3.5). */
+  standbyScreenOff?: boolean
 }
 
 export interface DeviceSnapshotSource {

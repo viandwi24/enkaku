@@ -121,3 +121,12 @@ export function encodeUhidDestroy(id: number): Uint8Array {
 export function encodeResetVideo(): Uint8Array {
   return new Uint8Array([CONTROL_MSG.RESET_VIDEO])
 }
+
+/**
+ * Blank or restore the device's physical panel while the encoder keeps
+ * producing frames (Plan 17 §3.5, §4.4). Verified against scrcpy 3.3.1's
+ * `ControlMessageReader`: type 10 followed by exactly one boolean byte.
+ */
+export function encodeSetDisplayPower(on: boolean): Uint8Array {
+  return new Uint8Array([CONTROL_MSG.SET_DISPLAY_POWER, on ? 1 : 0])
+}

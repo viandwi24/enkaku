@@ -51,6 +51,24 @@ export function DeviceCard({
           <DeviceStatusBadge status={device.status} />
         </div>
 
+        <div className="flex flex-wrap items-center gap-1">
+          {/* The cluster is always shown, even when empty — "Unclustered" muted
+              rather than omitted, so the field reads as a field (plan 22.0 §4.5). */}
+          <span
+            className={cn(
+              'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+              device.cluster ? 'bg-accent/10 text-accent-strong' : 'text-fg-subtle',
+            )}
+          >
+            {device.cluster ? device.cluster.name : 'Unclustered'}
+          </span>
+          {device.tags.map((tag) => (
+            <span key={tag} className="readout rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted">
+              {tag}
+            </span>
+          ))}
+        </div>
+
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11.5px]">
           <div className="flex justify-between gap-2">
             <dt className="text-fg-subtle">Android</dt>

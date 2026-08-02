@@ -1,8 +1,14 @@
 import type { JobInfo, JobStatus } from '@enkaku/protocol'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
 import { devices, jobs, scripts, type JobRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+import { keysetWhere } from '../api/pagination'
+
+export interface JobCursor {
+  sortValue: number
+  id: string
+}
 
 const toSec = (d: Date | null): number | null => (d ? Math.floor(d.getTime() / 1000) : null)
 
@@ -19,6 +25,11 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
     createdAt: toSec(row.createdAt) ?? 0,
     startedAt: toSec(row.startedAt),
     finishedAt: toSec(row.finishedAt),
+    batchId: row.batchId,
+    batchSeq: row.batchSeq,
+    // Plan 21 §4.1 — a plain integer column (unix seconds), like leaseExpiresAt,
+    // not a Drizzle `timestamp` column, so no Date conversion here.
+    expiresAt: row.expiresAt ?? null,
   }
 }
 
@@ -28,17 +39,48 @@ export interface ClaimedJob {
 }
 
 export interface JobStore {
-  enqueue(input: { scriptId: string; deviceId: string; params: unknown; priority: number }): JobRow
+  enqueue(input: {
+    scriptId: string
+    deviceId: string
+    params: unknown
+    priority: number
+    /** Plan 20 §4.4 — set when this job is a member of a batch. */
+    batchId?: string
+    batchSeq?: number
+    /** Plan 21 §3.3 — unix seconds; the reaper expires the job if it has not started by then. */
+    expiresAt?: number | null
+  }): JobRow
   get(jobId: string): JobRow | null
-  list(filter: { deviceId?: string; status?: JobStatus; limit: number; offset: number }): { rows: JobRow[]; total: number }
+  /**
+   * Keyset by default — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2).
+   * `offset` is a deprecated legacy alias, kept for one release (plan 30
+   * §3.2): when present it takes over paging and `cursor` is ignored.
+   */
+  list(filter: { deviceId?: string; status?: JobStatus; limit: number; cursor?: JobCursor | null; offset?: number }): {
+    rows: JobRow[]
+    nextCursor: JobCursor | null
+    total: number
+  }
   /** Script names for a batch of jobs — one query, not one per row. */
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string }>
-  /** Single-writer transaction: claim a queued job for an idle device (spec §10.3). */
+  /** Single-writer transaction: claim a queued job for an idle device (spec §10.3, plan 20 §4.2). */
   claimNext(jobTtlSec: number): ClaimedJob | null
   finish(jobId: string, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string }): JobRow | null
   cancelQueued(jobId: string): JobRow | null
+  /** Every job belonging to a batch, ordered by batchSeq (plan 20 §4.5, §4.6). */
+  listByBatch(batchId: string): JobRow[]
+  /** Cancel every queued job in a batch in one statement — used by the batch cancel endpoint (plan 20 §4.6). */
+  cancelQueuedInBatch(batchId: string): number
   renewLease(jobId: string, ttlSec: number): boolean
   expiredRunning(): JobRow[]
+  /**
+   * The expiry reaper (plan 21 §4.3): flip every `queued` job past its
+   * `expiresAt` to `expired`, in one statement. Only ever touches `queued`
+   * jobs — a `running` job is governed by the job lease, which already has
+   * its own reaper (`expiredRunning`/`failOrphanRunning`), never this one.
+   * Returns the affected rows so the caller can recompute their batches.
+   */
+  expireQueued(): JobRow[]
   /** Recovery boot: job 'running' yatim → failed (plan 04 §4.6). */
   failOrphanRunning(): number
   runningByDevice(deviceId: string): JobRow | null
@@ -65,6 +107,9 @@ export function createJobStore(db: Db): JobStore {
         createdAt: new Date(),
         startedAt: null,
         finishedAt: null,
+        batchId: input.batchId ?? null,
+        batchSeq: input.batchSeq ?? null,
+        expiresAt: input.expiresAt ?? null,
       }
       db.insert(jobs).values(row).run()
       return row
@@ -78,17 +123,44 @@ export function createJobStore(db: Db): JobStore {
       const conds = []
       if (filter.deviceId) conds.push(eq(jobs.deviceId, filter.deviceId))
       if (filter.status) conds.push(eq(jobs.status, filter.status))
-      const where = conds.length > 0 ? and(...conds) : undefined
-      const rows = db
+      const countWhere = conds.length > 0 ? and(...conds) : undefined
+      const total = db.select().from(jobs).where(countWhere).all().length
+
+      if (filter.offset !== undefined) {
+        // Deprecated legacy alias (plan 30 §3.2) — OFFSET semantics kept verbatim.
+        const rows = db
+          .select()
+          .from(jobs)
+          .where(countWhere)
+          .orderBy(desc(jobs.createdAt), desc(jobs.id))
+          .limit(filter.limit)
+          .offset(filter.offset)
+          .all()
+        return { rows, nextCursor: null, total }
+      }
+
+      const keyset = keysetWhere(
+        filter.cursor ? { value: new Date(filter.cursor.sortValue * 1000), id: filter.cursor.id } : null,
+        jobs.createdAt,
+        jobs.id,
+      )
+      const pageConds = keyset ? [...conds, keyset] : conds
+      const where = pageConds.length > 0 ? and(...pageConds) : undefined
+      // Fetch one extra row to know whether there is a next page, without a
+      // second COUNT query.
+      const page = db
         .select()
         .from(jobs)
         .where(where)
-        .orderBy(desc(jobs.createdAt))
-        .limit(filter.limit)
-        .offset(filter.offset)
+        .orderBy(desc(jobs.createdAt), desc(jobs.id))
+        .limit(filter.limit + 1)
         .all()
-      const total = db.select().from(jobs).where(where).all().length
-      return { rows, total }
+      const hasMore = page.length > filter.limit
+      const rows = hasMore ? page.slice(0, filter.limit) : page
+      const last = rows[rows.length - 1]
+      const nextCursor: JobCursor | null =
+        hasMore && last ? { sortValue: Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), id: last.id } : null
+      return { rows, nextCursor, total }
     },
 
     scriptNames(scriptIds) {
@@ -101,6 +173,21 @@ export function createJobStore(db: Db): JobStore {
     claimNext(jobTtlSec) {
       // BEGIN IMMEDIATE: the write lock is held from the start of the transaction so
       // claim + perubahan status device atomik (spec §10.3).
+      //
+      // Plan 20 §4.2 adds a batch gate: a job whose batch already has
+      // `concurrency` jobs running is not claimable, and — within a batch —
+      // lower `batchSeq` is claimed first. Both live inside this ONE
+      // statement (the correlated COUNT(*) runs in the same transaction as
+      // the status flip), because anything enforced outside it can be raced
+      // (plan 20 §3.3, §8 risk table). Do not add a TypeScript pre-filter.
+      //
+      // Ordering: `priority DESC, created_at ASC` still decides between
+      // different batches and standalone jobs (plan 20 §3.3) — batchSeq is
+      // only a tiebreaker for jobs of the same batch, which share the same
+      // (integer-second) `created_at` from a single dispatch transaction.
+      // SQLite's default ASC ordering sorts NULL first, so a standalone job
+      // (batch_seq IS NULL) is never pushed behind a batched one at an
+      // equal priority/age tie (verified in job-store.test.ts).
       return db.transaction(
         (tx) => {
           const claimed = tx
@@ -112,8 +199,16 @@ export function createJobStore(db: Db): JobStore {
               WHERE id = (
                 SELECT j.id FROM jobs j
                 JOIN devices d ON d.id = j.device_id
-                WHERE j.status = 'queued' AND d.status = 'idle'
-                ORDER BY j.priority DESC, j.created_at
+                LEFT JOIN batches b ON b.id = j.batch_id
+                WHERE j.status = 'queued'
+                  AND d.status = 'idle'
+                  AND (
+                    j.batch_id IS NULL
+                    OR b.concurrency = 0
+                    OR (SELECT COUNT(*) FROM jobs r
+                        WHERE r.batch_id = j.batch_id AND r.status = 'running') < b.concurrency
+                  )
+                ORDER BY j.priority DESC, j.created_at ASC, j.batch_seq ASC
                 LIMIT 1
               )
               RETURNING *
@@ -166,6 +261,20 @@ export function createJobStore(db: Db): JobStore {
       return db.select().from(jobs).where(eq(jobs.id, jobId)).get() ?? null
     },
 
+    listByBatch(batchId) {
+      return db.select().from(jobs).where(eq(jobs.batchId, batchId)).orderBy(asc(jobs.batchSeq)).all()
+    },
+
+    cancelQueuedInBatch(batchId) {
+      return changedRows(
+        db
+          .update(jobs)
+          .set({ status: 'cancelled', finishedAt: new Date() })
+          .where(and(eq(jobs.batchId, batchId), eq(jobs.status, 'queued')))
+          .run(),
+      )
+    },
+
     renewLease(jobId, ttlSec) {
       return (
         changedRows(
@@ -184,6 +293,23 @@ export function createJobStore(db: Db): JobStore {
         .from(jobs)
         .where(and(eq(jobs.status, 'running'), sql`${jobs.leaseExpiresAt} < strftime('%s','now')`))
         .all()
+    },
+
+    expireQueued() {
+      // A single UPDATE...RETURNING is its own implicit transaction in SQLite,
+      // so this cannot race claimNext's transaction: whichever commits first
+      // wins the `status = 'queued'` guard for the other (plan 21 §4.3).
+      return db
+        .all<JobRow>(
+          sql`
+            UPDATE jobs
+            SET status = 'expired', finished_at = strftime('%s','now')
+            WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= strftime('%s','now')
+            RETURNING *
+          `,
+        )
+        .map((r) => db.select().from(jobs).where(eq(jobs.id, (r as unknown as { id: string }).id)).get())
+        .filter((r): r is JobRow => r != null)
     },
 
     failOrphanRunning() {

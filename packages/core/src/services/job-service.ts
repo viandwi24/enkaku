@@ -1,17 +1,19 @@
 import type { JobInfo, JobStatus } from '@enkaku/protocol'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { ExecutorHost } from '../jobs/executor-host'
-import { rowToJobInfo, type JobStore } from '../queue/job-store'
+import { rowToJobInfo, type JobCursor, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import { validateScriptForRun } from '../jobs/validate-script'
 
 export interface JobService {
   enqueue(input: { scriptId: string; deviceId: string; params: unknown; priority?: number }): JobInfo
   cancel(jobId: string): JobInfo
   get(jobId: string): JobInfo | null
-  list(filter: { deviceId?: string; status?: JobStatus; limit?: number; offset?: number }): {
+  list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null; offset?: number }): {
     jobs: JobInfo[]
+    nextCursor: JobCursor | null
     total: number
   }
 }
@@ -26,17 +28,12 @@ export function createJobService(deps: {
   onJobStatus: (info: JobInfo) => void
   /** Check the `scripts` table for a non-built-in scriptId (M4). */
   findScript?: (scriptId: string) => { enabled: boolean } | null
+  /** A batch member job was cancelled while still queued — recompute the batch (plan 20 §4.5). */
+  onBatchChanged?: (batchId: string) => void
 }): JobService {
   return {
     enqueue(input) {
-      if (!deps.registry.isBuiltIn(input.scriptId)) {
-        const script = deps.findScript?.(input.scriptId) ?? null
-        if (!script) throw new EnkakuError('unknown_script', `unknown script: ${input.scriptId}`)
-        if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${input.scriptId} is disabled`)
-      }
-      const executor = deps.registry.get(input.scriptId)
-      if (!executor) throw new EnkakuError('unknown_script', `unknown script: ${input.scriptId}`)
-      const params = executor.validateParams(input.params)
+      const params = validateScriptForRun(deps, input.scriptId, input.params)
       const row = deps.jobStore.enqueue({
         scriptId: input.scriptId,
         deviceId: input.deviceId,
@@ -57,6 +54,7 @@ export function createJobService(deps: {
         if (!cancelled) throw new EnkakuError('job_not_cancellable', 'the job changed status first')
         const info = rowToJobInfo(cancelled)
         deps.onJobStatus(info)
+        if (cancelled.batchId) deps.onBatchChanged?.(cancelled.batchId)
         return info
       }
       if (job.status === 'running') {
@@ -76,14 +74,15 @@ export function createJobService(deps: {
     },
 
     list(filter) {
-      const { rows, total } = deps.jobStore.list({
+      const { rows, nextCursor, total } = deps.jobStore.list({
         deviceId: filter.deviceId,
         status: filter.status,
         limit: filter.limit ?? 50,
-        offset: filter.offset ?? 0,
+        cursor: filter.cursor,
+        offset: filter.offset,
       })
       const names = deps.jobStore.scriptNames(rows.map((r) => r.scriptId))
-      return { jobs: rows.map((r) => rowToJobInfo(r, names.get(r.scriptId) ?? null)), total }
+      return { jobs: rows.map((r) => rowToJobInfo(r, names.get(r.scriptId) ?? null)), nextCursor, total }
     },
   }
 }

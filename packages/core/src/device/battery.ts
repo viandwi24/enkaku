@@ -2,10 +2,12 @@ import type { AdbClient } from '@enkaku/adb'
 import { BatteryStateSchema, type BatteryState, type DeviceStatus } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db'
-import { devices } from '../db/schema'
+import { devices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from './state-machine'
 import type { FarmSettingsStore } from '../settings/farm-settings'
+import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
+import { mapWithConcurrency } from '../util/concurrency'
 
 /** Parse output `dumpsys battery` (spec §15.2). */
 export function parseDumpsysBattery(raw: string): BatteryState | null {
@@ -68,25 +70,29 @@ export function createBatteryMonitor(deps: {
   settings: FarmSettingsStore
   log: Logger
   onBattery: (deviceId: string, battery: BatteryState) => void
+  /** Main-stream device event: battery.warning (plan 18 §4.2). */
+  record?: EventRecorder['record']
 }): BatteryMonitor {
   let timer: ReturnType<typeof setInterval> | null = null
 
-  async function pollOnce(): Promise<void> {
-    const client = deps.client()
-    if (!client) return
+  /** One device's poll body — unchanged from before plan 23, just no longer run in a sequential `for`. */
+  async function pollDevice(client: AdbClient, row: DeviceRow, status: DeviceStatus): Promise<void> {
     const cfg = deps.settings.get().battery
-    const rows = deps.db.select().from(devices).all()
-    for (const row of rows) {
-      const status = (row.status ?? 'offline') as DeviceStatus
-      if (status === 'offline') continue
-      try {
-        const raw = await client.exec(row.serial, 'dumpsys battery')
-        const battery = parseDumpsysBattery(raw)
-        if (!battery) continue
-        deps.db.update(devices).set({ battery }).where(eq(devices.id, row.id)).run()
-        deps.onBattery(row.id, battery)
+    try {
+      const raw = await client.exec(row.serial, 'dumpsys battery', { profile: 'battery' })
+      const battery = parseDumpsysBattery(raw)
+      if (!battery) return
+      deps.db.update(devices).set({ battery }).where(eq(devices.id, row.id)).run()
+      deps.onBattery(row.id, battery)
 
-        if (cfg.autoQuarantine && battery.temperatureC > cfg.tempThresholdC && status !== 'quarantined') {
+      if (battery.temperatureC > cfg.tempThresholdC && status !== 'quarantined') {
+        deps.record?.({
+          deviceId: row.id,
+          stream: 'main',
+          kind: 'battery.warning',
+          meta: { level: battery.level, temperatureC: battery.temperatureC },
+        })
+        if (cfg.autoQuarantine) {
           const reason = `thermal:${battery.temperatureC.toFixed(1)}C`
           const applied = deps.states.apply(row.id, 'QUARANTINE')
           if (applied) {
@@ -97,10 +103,30 @@ export function createBatteryMonitor(deps: {
             deps.log.warn(`device ${row.label} is hot (${battery.temperatureC}°C) but cannot be quarantined yet (${status})`)
           }
         }
-      } catch (err) {
-        deps.log.debug(`battery poll for ${row.label} failed: ${String(err)}`)
       }
+    } catch (err) {
+      deps.log.debug(`battery poll for ${row.label} failed: ${String(err)}`)
     }
+  }
+
+  /**
+   * Bounded parallelism (plan 23 §3.4, §4.5): the old `for` loop awaited each
+   * device in turn, so one device sitting at the full `battery` timeout (8s,
+   * plan 22.1) delayed the poll — and therefore the thermal check — of every
+   * device behind it. The cap never exceeds 8 regardless of how high the
+   * global adb semaphore has been auto-scaled, so a busy farm's battery poll
+   * cannot itself become the thing that saturates the semaphore.
+   */
+  async function pollOnce(): Promise<void> {
+    const client = deps.client()
+    if (!client) return
+    const rows = deps.db
+      .select()
+      .from(devices)
+      .all()
+      .filter((row) => ((row.status ?? 'offline') as DeviceStatus) !== 'offline')
+    const limit = Math.max(1, Math.min(8, client.stats().maxConcurrent))
+    await mapWithConcurrency(rows, limit, (row) => pollDevice(client, row, (row.status ?? 'offline') as DeviceStatus))
   }
 
   return {

@@ -1,9 +1,13 @@
 name: release
 
-# Option B: cross-compile every target once on Linux, then boot the real
-# artifact on each OS (the binary must serve /api/health and the embedded
-# Studio) before anything is published. Tags `v*` publish a GitHub Release;
-# manual dispatch runs build + smoke only.
+# Option B: build once per artifact family, boot the real artifact on each OS
+# (the binary must serve /api/health and the embedded Studio) before anything
+# is published. Tags `v*` publish a GitHub Release; manual dispatch runs
+# build + smoke only.
+#
+# Darwin binaries are built (and ad-hoc re-signed) on a macOS runner: Bun's
+# cross-compile from Linux leaves a broken linker signature, and Gatekeeper
+# reports a quarantined binary with a broken signature as "damaged".
 on:
   push:
     tags: ['v*']
@@ -13,22 +17,37 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-nix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: VERSION="${{ github.ref_name }}" bash scripts/build-release.sh
+      - run: VERSION="${{ github.ref_name }}" TARGETS="linux-x64 linux-arm64 windows-x64" bash scripts/build-release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: release
-          path: release/
+          name: archives-nix
+          path: |
+            release/*.tar.gz
+            release/*.zip
+          if-no-files-found: error
+
+  build-darwin:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: VERSION="${{ github.ref_name }}" TARGETS="darwin-arm64 darwin-x64" bash scripts/build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives-darwin
+          path: release/*.tar.gz
           if-no-files-found: error
 
   smoke:
-    needs: build
+    needs: [build-nix, build-darwin]
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +62,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release
+          pattern: archives-*
+          merge-multiple: true
           path: release
       - name: Boot and probe (unix)
         if: runner.os != 'Windows'
@@ -51,6 +71,9 @@ jobs:
         run: |
           set -euo pipefail
           tar xzf release/enkaku-*-${{ matrix.archive }}
+          if [ "$(uname)" = "Darwin" ]; then
+            codesign --verify --strict ./enkaku   # a broken signature must fail the release
+          fi
           export ENKAKU_DATA_DIR="$PWD/smoke-data" ENKAKU_PORT=7700
           ./enkaku > boot.log 2>&1 &
           pid=$!
@@ -96,8 +119,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release
+          pattern: archives-*
+          merge-multiple: true
           path: release
+      - name: Checksums over the full artifact set
+        run: cd release && sha256sum *.tar.gz *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -105,3 +131,11 @@ jobs:
             release/*.zip
             release/SHA256SUMS.txt
           generate_release_notes: true
+          body: |
+            Self-contained binaries — extract and run, no dependencies.
+
+            **macOS note:** if the browser-downloaded binary is reported as
+            "damaged", clear the quarantine flag once:
+            `xattr -d com.apple.quarantine ./enkaku`
+            (downloads via `curl -LO` are not quarantined). The binaries are
+            ad-hoc signed, not notarized.

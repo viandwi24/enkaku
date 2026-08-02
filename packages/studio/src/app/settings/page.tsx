@@ -48,15 +48,35 @@ function SettingsView() {
         tabs={[
           { key: 'defaults', label: 'Device defaults' },
           { key: 'battery', label: 'Battery' },
+          { key: 'adb', label: 'adb' },
           { key: 'storage', label: 'Storage' },
           { key: 'users', label: 'Users' },
           { key: 'audit', label: 'Audit log' },
         ]}
         hrefFor={(k) => `/settings${k === 'defaults' ? '' : `?tab=${k}`}`}
       />
-      {tab === 'users' ? <UsersSection /> : tab === 'audit' ? <AuditSection /> : <FarmForm section={tab} />}
+      {tab === 'users' ? (
+        <UsersSection />
+      ) : tab === 'audit' ? (
+        <AuditSection />
+      ) : tab === 'adb' ? (
+        <>
+          <FarmForm section={tab} />
+          <AdbDiagnosticsPanel />
+        </>
+      ) : (
+        <FarmForm section={tab} />
+      )}
     </>
   )
+}
+
+/** Which top-level FarmSettings keys a tab renders — most tabs are one section; `adb` groups two (plan 23 §4.1). */
+function keysForSection(section: string): string[] {
+  if (section === 'battery') return ['battery']
+  if (section === 'storage') return ['retention']
+  if (section === 'adb') return ['adb', 'health']
+  return ['defaults']
 }
 
 /** One schema, rendered a section at a time by trimming its properties. */
@@ -67,7 +87,7 @@ function FarmForm({ section }: { section: string }) {
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
 
-  const key = section === 'battery' ? 'battery' : section === 'storage' ? 'retention' : 'defaults'
+  const keys = keysForSection(section)
 
   const load = () => {
     setError(null)
@@ -93,11 +113,12 @@ function FarmForm({ section }: { section: string }) {
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={load} /></div>
   if (!schema || !draft) return <div className="px-5 py-4"><LoadingRows rows={4} /></div>
 
-  // Narrow the schema to this section, so the form renders one subject at a
-  // time while the value stays the whole settings object the API expects.
+  // Narrow the schema to this section's keys, so the form renders one
+  // subject at a time while the value stays the whole settings object the
+  // API expects.
   const sectionSchema: JsonSchemaNode = {
     ...schema,
-    properties: { [key]: schema.properties?.[key] as JsonSchemaNode },
+    properties: Object.fromEntries(keys.map((k) => [k, schema.properties?.[k] as JsonSchemaNode])),
   }
 
   return (
@@ -120,6 +141,122 @@ function FarmForm({ section }: { section: string }) {
         busy={isPending('save')}
         dirty={dirty}
       />
+    </div>
+  )
+}
+
+interface AdbStats {
+  global: { maxConcurrent: number; auto: boolean; inFlight: number; waiting: number }
+  devices: Array<{
+    deviceId: string
+    label: string
+    queueDepth: number
+    execMsP50: number | null
+    execMsP95: number | null
+    counts: { ok: number; timeout: number; busy: number; error: number }
+    consecutiveFailures: number
+  }>
+}
+
+/**
+ * Read-only adb diagnostics (plan 23 §4.6, §5.7) — collapsed by default since
+ * this is a debug aid, not something most visits to Settings need. Polled
+ * only while expanded, so it costs nothing when nobody is looking at it.
+ */
+function AdbDiagnosticsPanel() {
+  const [open, setOpen] = useState(false)
+  const [stats, setStats] = useState<AdbStats | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const load = () => {
+      api<AdbStats>('/api/adb/stats')
+        .then((b) => {
+          if (!cancelled) {
+            setStats(b)
+            setError(null)
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        })
+    }
+    load()
+    const id = setInterval(load, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [open])
+
+  return (
+    <div className="max-w-3xl px-5 pb-6">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[12.5px] font-medium text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+      >
+        {open ? 'Hide' : 'Show'} adb diagnostics
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-4">
+          {error ? (
+            <ErrorState message={error} onRetry={() => setError(null)} />
+          ) : !stats ? (
+            <LoadingRows rows={3} />
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-4 rounded-lg border p-3 text-[12.5px]">
+                <span>
+                  Max concurrent: <span className="readout font-medium">{stats.global.maxConcurrent}</span>{' '}
+                  {stats.global.auto ? '(auto)' : '(pinned)'}
+                </span>
+                <span>
+                  In flight: <span className="readout font-medium">{stats.global.inFlight}</span>
+                </span>
+                <span>
+                  Waiting: <span className="readout font-medium">{stats.global.waiting}</span>
+                </span>
+              </div>
+              {stats.devices.length === 0 ? (
+                <EmptyState title="No devices yet" description="Per-device figures appear once a device is enrolled." />
+              ) : (
+                <div className="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>Device</TableHead>
+                        <TableHead className="text-right">Queue depth</TableHead>
+                        <TableHead className="text-right">p50 (ms)</TableHead>
+                        <TableHead className="text-right">p95 (ms)</TableHead>
+                        <TableHead className="text-right">ok / timeout / busy / error</TableHead>
+                        <TableHead className="text-right">Consecutive failures</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {stats.devices.map((d) => (
+                        <TableRow key={d.deviceId}>
+                          <TableCell className="font-medium">{d.label}</TableCell>
+                          <TableCell className="readout text-right">{d.queueDepth}</TableCell>
+                          <TableCell className="readout text-right">{d.execMsP50 ?? '—'}</TableCell>
+                          <TableCell className="readout text-right">{d.execMsP95 ?? '—'}</TableCell>
+                          <TableCell className="readout text-right text-fg-muted">
+                            {d.counts.ok} / {d.counts.timeout} / {d.counts.busy} / {d.counts.error}
+                          </TableCell>
+                          <TableCell className="readout text-right">{d.consecutiveFailures}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }

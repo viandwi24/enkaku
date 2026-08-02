@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, FileCode2, ListChecks, Wrench, SlidersHorizontal, Server } from 'lucide-react'
+import { Menu, MonitorSmartphone, LayoutGrid, FileCode2, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { coreBase, ws } from '@/lib/ws'
@@ -11,8 +11,12 @@ import { cn } from '@/lib/utils'
 
 const NAV = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
+  { href: '/topology', label: 'Topology', icon: LayoutGrid, countKey: null },
   { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
+  { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
+  { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
+  { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },
   { href: '/tools', label: 'Tools', icon: Wrench, countKey: null },
   { href: '/agents', label: 'Agents', icon: Server, countKey: null },
   { href: '/settings', label: 'Settings', icon: SlidersHorizontal, countKey: null },
@@ -49,8 +53,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           fetch(`${coreBase()}/api/health`).then((r) => r.json()),
         ])
         setCounts({
-          devices: (d.devices ?? []).length,
-          scripts: (s.scripts ?? []).length,
+          // Both endpoints paginate now (plan 30 §4.2) — `total` is the true
+          // farm-wide count; `.devices`/`.scripts` would silently cap at the
+          // first page's size on a farm bigger than the default limit.
+          devices: d.total ?? (d.devices ?? []).length,
+          scripts: s.total ?? (s.scripts ?? []).length,
+          // No cheap "how many are active" total exists, so this still scans
+          // a bounded recent window (the system's own 200-row cap, not an
+          // unbounded fetch) rather than every job ever run.
           activeJobs: (j.jobs ?? []).filter((x: { status: string }) => x.status === 'queued' || x.status === 'running')
             .length,
         })

@@ -22,9 +22,15 @@ export interface HttpDeps {
   toolchain: ToolchainManager
   jobRoutes: Hono
   scriptRoutes: Hono
-  deviceRoutes: Hono
+  deviceRoutes: Hono<AuthEnv>
+  tagRoutes: Hono
+  clusterRoutes: Hono<AuthEnv>
+  topologyRoutes: Hono
+  batchRoutes: Hono<AuthEnv>
+  scheduleRoutes: Hono<AuthEnv>
   settingsRoutes: Hono
   artifactRoutes: Hono
+  adbStatsRoutes: Hono<AuthEnv>
   authRoutes: Hono<AuthEnv>
   agentRoutes: Hono<AuthEnv>
   auth: AuthService
@@ -97,9 +103,22 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/devices', deps.deviceRoutes)
 
+  app.route('/api/tags', deps.tagRoutes)
+
+  app.route('/api/clusters', deps.clusterRoutes)
+
+  app.route('/api/topology', deps.topologyRoutes)
+
+  app.route('/api/batches', deps.batchRoutes)
+
+  app.route('/api/schedules', deps.scheduleRoutes)
+
   app.route('/api/settings', deps.settingsRoutes)
 
   app.route('/api/artifacts', deps.artifactRoutes)
+
+  // adb concurrency and health diagnostics (plan 23 §4.6).
+  app.route('/api/adb/stats', deps.adbStatsRoutes)
 
   app.route('/api/tools', createToolsRoutes(deps.toolchain))
 

@@ -29,7 +29,9 @@ export class UiautomatorDumpInspector implements Inspector {
 
   private async rawDump(): Promise<string> {
     if (this.useTty !== false) {
-      const out = new TextDecoder().decode(await this.transport.execOut('uiautomator dump /dev/tty'))
+      const out = new TextDecoder().decode(
+        await this.transport.execOut('uiautomator dump /dev/tty', { profile: 'inspectorDump' }),
+      )
       if (out.includes('<?xml')) {
         this.useTty = true
         return out
@@ -43,9 +45,9 @@ export class UiautomatorDumpInspector implements Inspector {
     }
     // Fallback: dump to a file, then cat it.
     const path = '/sdcard/enkaku-dump.xml'
-    await this.transport.exec(`uiautomator dump ${path}`)
-    const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`))
-    await this.transport.exec(`rm -f ${path}`)
+    await this.transport.exec(`uiautomator dump ${path}`, { profile: 'inspectorDump' })
+    const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`, { profile: 'inspectorDump' }))
+    await this.transport.exec(`rm -f ${path}`, { profile: 'inspectorDump' })
     return xml
   }
 
@@ -81,6 +83,6 @@ export class UiautomatorDumpInspector implements Inspector {
   }
 
   screenshot(): Promise<Uint8Array> {
-    return this.transport.execOut('screencap -p')
+    return this.transport.execOut('screencap -p', { profile: 'screencap' })
   }
 }

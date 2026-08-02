@@ -120,6 +120,10 @@ export function createAgent(opts: AgentOptions): Agent {
           },
           onDisconnected: (reason) => log(`tunnel disconnected: ${reason}`),
           onMessage: (msg) => void hosts?.handle(msg).catch((err) => log(`handling ${msg.type} failed: ${String(err)}`)),
+          // The cloud adb endpoint's core→agent direction (plan 28 §4.1) —
+          // the first binary channel data to ever flow this way; video and
+          // shell channels only ever go agent→core.
+          onFrame: (channelId, payload) => hosts?.handleFrame(channelId, payload),
         },
         log,
       )
@@ -168,10 +172,14 @@ export function createAgent(opts: AgentOptions): Agent {
               density: null,
               status: 'idle',
               lastSeen: Math.floor(Date.now() / 1000),
-              // Battery and quarantine are tracked by the core, not the agent —
-              // the agent only reports the identity of devices attached to it.
+              // Battery, quarantine, tags, and cluster are tracked by the
+              // core, not the agent — the agent only reports the identity of
+              // devices attached to it (plan 19 §4.2, plan 22.0 §4.4: the
+              // control plane owns tags and cluster membership).
               battery: null,
               quarantineReason: null,
+              tags: [],
+              cluster: null,
             })
           }
           hosts?.updateDevices([...snapshots.values()])

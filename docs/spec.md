@@ -173,9 +173,11 @@ Not a device farm, but the **de-facto standard for Android automation**. Relevan
 
 ---
 
-## 7. Subsystem: drivers (four orthogonal layers) plus the toolchain
+## 7. Subsystem: drivers (five orthogonal layers) plus the toolchain
 
-A "driver" is split into four separate abstractions so each layer can be swapped on its own. The best combination is usually a mix.
+A "driver" is split into five separate abstractions so each layer can be swapped on its own. The best combination is usually a mix.
+
+> **v0.4 revision.** This section described four layers until the network layer was added (plan 33). The first four are unchanged; `NetworkRoute` is the fifth and is the only optional one — its default engine is `none`, and a device with `none` behaves exactly as it did before the layer existed.
 
 ```ts
 interface Transport {                         // 1. how to connect
@@ -206,6 +208,13 @@ interface Inspector {                         // 4. how to read the UI
   find(sel: Selector): Promise<UiNode | null>
   screenshot(): Promise<Uint8Array>
 }
+interface NetworkRoute {                      // 5. where the device's traffic goes (§7.9)
+  id: string
+  capabilities: NetworkCapabilities           // auth / enforcing / udp — declared, not assumed
+  apply(cfg: NetworkConfig): Promise<void>
+  observe(): Promise<NetworkObservation>       // what the DEVICE reports, not what we asked for
+  revert(): Promise<void>                      // must be idempotent — the lease reaper calls it
+}
 ```
 
 A factory assembles them into one `DeviceSession`. A script only ever sees that handle, never the engines behind it.
@@ -217,6 +226,7 @@ const session = await createSession({
   display:    'scrcpy',
   input:      'scrcpy-uhid',    // the new default: hardware-like (§9)
   inspection: 'ui-server',      // a persistent on-device server (§7.4)
+  network:    'none',           // the default: do not touch the device's routing (§7.9)
 })
 ```
 
@@ -228,6 +238,7 @@ const session = await createSession({
 | Display | `scrcpy` (H.264/H.265, default), `screencap-loop` (MVP/fallback, ~3 fps) | scrcpy encodes on the phone, the host only relays |
 | Input | `scrcpy-uhid` (**the new default**, hardware-like), `scrcpy-sdk` (InputManager, broad compatibility), `scrcpy-aoa` (OTG, no adb), `adb-input` (crude fallback), `appium` (opt-in) | details in §9 |
 | Inspection | `ui-server` (persistent on-device, default), `appium` (WebView/hybrid, opt-in), `ocr-pixel` (last resort) | replaces the naive `uiautomator dump` |
+| Network | `none` (**the default**, never touches routing), `adb-proxy` (`settings put global http_proxy`), `adb-reverse-proxy` (`adb reverse` to a proxy on the host/agent), `vpn-helper` (an on-device helper app driven by intents) | details in §7.9; all hold the `network-route` lock so two of them can never be active at once |
 
 ### 7.2 Toolchain Manager (runtime provisioning) — the concept
 
@@ -322,6 +333,34 @@ POST /api/tools/manifest/refresh     → fetch the latest manifest
 - Health check before setting a version active.
 - Binary paths are resolved through the Toolchain Manager; drivers must never call the system PATH.
 - **Licensing:** audit before selling — adb (platform-tools, Google's ToS on redistribution), scrcpy (Apache-2.0, fine), redroid, and so on. See §18.
+
+### 7.9 Network layer: routing a device's traffic (NEW in v0.4)
+
+The QA requirement is ordinary: point a device at a capture proxy to inspect **your own** app's traffic, test against a mocked backend, or check a regional catalogue. The layer exists so that requirement is met **without** a script gaining a raw shell.
+
+The three working engines are a capability ladder, and each rung buys something the one below it cannot do:
+
+| Engine | Auth | Enforcing | Needs an APK | Notes |
+|---|---|---|---|---|
+| `adb-proxy` | ✗ | ✗ (advisory) | ✗ | `settings put global http_proxy host:port`. `global` is Android's settings namespace — device-wide, **not** farm-wide. The value is world-readable by every app on the device, so credentials must never be placed in it. |
+| `adb-reverse-proxy` | ✓ | ✗ (advisory) | ✗ | `adb reverse` to a proxy on the host/agent, which holds the upstream credentials. Works over USB and needs no shared LAN; **the credentials never touch the device**. This is the default recommendation. |
+| `vpn-helper` | ✓ | ✓ | ✓ | An on-device helper app using `VpnService`. The only rung an app cannot ignore. The intent contract is **app-specific** — it is a per-app profile (§7.10), not an Android standard. |
+
+Rules that hold for every engine on this layer:
+
+1. **Configuration is bound to the lease, never to the device.** It is applied when the lease is acquired and reverted when the lease ends — including expiry via the reaper, client disconnect, and the device going offline. A sticky proxy inherited by the next tenant is a silent cross-tenant fault, and the layer exists partly to prevent it.
+2. **Declared intent and observed state are separate reads.** `getConfig()` returns what was requested; `observe()` returns what the device reports. They diverge (a VPN drops, a reboot clears the setting), and the drift must be visible rather than assumed away.
+3. **`apply()` is not a success signal.** An engine that can verify egress must offer `probe()`; without a probe, the status is reported as `unverified`, never as `ok`.
+4. **Credentials are referenced, never inlined.** Scripts and run configs name a stored credential; raw secrets never enter script params, the `jobs` table, artifacts, or the device event log.
+5. **Every change is recorded** to the device event log (`network.*` kinds) with the secret redacted.
+6. **HTTPS interception is out of scope and cannot be solved here.** Reading TLS payloads needs a trusted CA, which since Android 7 means a debug build of your own app with a matching network security config. The layer routes traffic; it does not decrypt it.
+
+### 7.10 VPN helper profiles
+
+`vpn-helper` does not hardcode any vendor. A profile declares how to drive one app — package, components, intent action, and the extras mapping — and is validated with Zod like any other config. A profile is only usable once its APK is provisioned through the Toolchain Manager (§7.2) with a pinned sha256, and installed with `adb install -r -g`, reusing the `ui-server` provisioning path (§7.4).
+
+Two consequences must be stated plainly rather than discovered later: many candidate apps export **no** receiver at all (SocksDroid's `AndroidManifest.xml` exports only its launcher activity, so it cannot be driven by broadcast), and `VpnService` requires a one-time consent dialog which is pre-granted with `appops set <pkg> ACTIVATE_VPN allow` or, failing that, tapped through the farm's own input engine. Any profile shipped in-tree must be verified against the real APK before it is written down; an invented intent contract is the exact failure mode `TODO-verify` exists to prevent.
+
 
 ---
 
@@ -425,14 +464,14 @@ COMMIT;
 
 SQLite was chosen for zero setup (**and is retained** — per instruction, this decision does not change). The ORM is Drizzle. The DB driver stays abstracted in case Postgres is needed later, but the default is SQLite.
 
-### 10.4 Serialising adb access (v0.2 revision — not a single mutex)
+### 10.4 Serialising adb access (v0.3 revision — a scaling global semaphore, not a fixed one)
 
 **The v0.1 problem:** "one global mutex in front of every adb exec" is far too coarse. If device A is running `adb install app.apk` (30–60 seconds), devices B through J all wait — including heartbeats and other users' manual input. Fatal at 10 devices.
 
-**The revision:** the adb server is in fact reasonably safe for many clients using different `-s <serial>` values. The classic problem is not exec concurrency but **device-discovery races** and stray `adb kill-server` calls.
+**The v0.2 revision:** the adb server is in fact reasonably safe for many clients using different `-s <serial>` values. The classic problem is not exec concurrency but **device-discovery races** and stray `adb kill-server` calls.
 
-- A **per-device command queue** (serialising commands *within* one device).
-- A **loose global semaphore** (max 6–8 concurrent execs, say) to keep the adb server from being flooded — not a single mutex.
+- A **per-device command queue** (serialising commands *within* one device) — unchanged by this revision; one device still runs one adb command at a time.
+- A **global semaphore that scales with fleet size** (plan 23 §3.2), not a fixed constant: `auto = min(24, max(6, ceil(nonOfflineDeviceCount * 0.75)))`. The floor of 6 keeps a small setup (≤4 devices) at the same concurrency as before this revision; the ceiling of 24 is deliberate — the adb server itself becomes the bottleneck above it on a typical host, and a farm that needs more should run a second core (the cloud agent model already provides this). `nonOfflineDeviceCount` excludes offline devices, so an unplugged phone does not reserve capacity. The farm setting `adb.maxConcurrent` (default `0` = auto) lets an operator pin a lower or higher value (up to the ceiling) instead of the formula, and it takes effect immediately, with no restart.
 - **`adb kill-server` is FORBIDDEN** anywhere except the Toolchain Manager during an adb version swap (and even then, only after draining every session).
 - Heavy operations (install, uninstall, large pushes) run without blocking heartbeats or control of other devices.
 
@@ -693,6 +732,7 @@ Marketing angle: *"10 devices on a ~$150 mini-PC."*
 - **The positioning is a QA / test-automation device farm** (BrowserStack-style), not "undetectable social media bots". The QA framing is safer legally and in ToS terms, the market is larger, and the customer is a developer testing *their own* app.
 - **The acceptable-use policy is a product default, not just a document.** Farm traffic instrumentation and tagging is **on by default** (§9.4). Timing jitter and UHID input are documented in the context of *test realism* (exercising the app's real path), not evasion.
 - **Testing your own detectors**: instrumentation beats blind evasion. A farm ⇄ detector feedback loop (§9.4).
+- **The network layer (§7.9) is a single operator-set route per lease, and deliberately nothing more.** There is no proxy pool, no rotation, and no binding of a route to an account or persona — the absence of those abstractions is a design decision, not a missing feature. A route that is explicit, lease-scoped, and written to the device event log serves every QA use case listed in §7.9; rotation serves only the goal of stopping a third-party platform from clustering accounts by network origin, which §17 and the AUP place outside the product.
 - **When sold**: include the AUP; default features are aimed at testing your own apps; the real-device advantage (§9.2) becomes a legitimate QA selling point.
 
 ---

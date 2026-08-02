@@ -1,11 +1,12 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, Circle, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
-import { decodeVideoFrame, KEYCODES, VIDEO_CODEC } from '@enkaku/protocol'
+import { ChevronLeft, Circle, Loader2, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
+import { decodeVideoFrame, KEYCODES, VIDEO_CODEC, type SessionPhase } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useNow } from '@/lib/useNow'
 import { newId, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
@@ -19,6 +20,27 @@ const DRAG_THRESHOLD_PX = 10
 const TEXT_DEBOUNCE_MS = 500
 /** Below this, a gap is just a static screen; above it, something is wrong. */
 const STALE_AFTER_SEC = 5
+/** Past this, staying quiet is no longer helpful — offer to wake the device. */
+const WAKE_OFFER_AFTER_SEC = 30
+/** Auto-recover fires at most once per this window (Plan 17 §4.8). */
+const AUTO_RECOVER_COOLDOWN_MS = 60_000
+/** A phase running longer than this looks slow, not merely in progress. */
+const SLOW_PHASE_AFTER_SEC = 10
+
+/** The static step list shown while a session wakes up (Plan 17 §4.7). No fake percentage — just where we are. */
+const PHASE_STEPS: { key: SessionPhase; label: string }[] = [
+  { key: 'connecting', label: 'Connecting' },
+  { key: 'waking', label: 'Waking' },
+  { key: 'starting-video', label: 'Starting video' },
+  { key: 'waiting-frame', label: 'Waiting for the first frame' },
+]
+const PHASE_HEADLINE: Record<SessionPhase, string> = {
+  connecting: 'Connecting to the device',
+  waking: 'Waking the device',
+  'starting-video': 'Starting video',
+  'waiting-frame': 'Waiting for the first frame',
+  ready: 'Loading the picture',
+}
 
 /** adb speaks to developers; turn its output into something actionable. */
 function explain(reason: string): string {
@@ -32,11 +54,14 @@ export function LiveView({
   deviceId,
   inputEnabled = true,
   onActivity,
+  autoReconnect = false,
 }: {
   deviceId: string
   inputEnabled?: boolean
   /** Called on every input sent — the caller uses it to refresh the lease countdown. */
   onActivity?: () => void
+  /** DeviceSettings.autoReconnect — one stream.stop + stream.start cycle when frames go stale (Plan 17 §4.8). */
+  autoReconnect?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamIdRef = useRef<number | null>(null)
@@ -58,6 +83,7 @@ export function LiveView({
    */
   const [staleSec, setStaleSec] = useState(0)
   const lastFrameRef = useRef(0)
+  const lastAutoRecoverRef = useRef(0)
   const [retryTick, setRetryTick] = useState(0)
   const [codec, setCodec] = useState<'png' | 'h264'>('png')
   const [transport, setTransport] = useState<'ws' | 'webrtc'>('ws')
@@ -66,11 +92,31 @@ export function LiveView({
   const [fps, setFps] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  // The wake-up progress panel (Plan 17 §4.7): the phase the core last
+  // reported, and whether a real frame has actually been painted yet — the
+  // panel goes away on the picture, not on the 'ready' message.
+  const [phase, setPhase] = useState<SessionPhase | null>(null)
+  const [painted, setPainted] = useState(false)
+  const paintedRef = useRef(false)
+  const phaseChangedAtRef = useRef(Date.now())
+  const now = useNow(1000)
+
+  const markPainted = () => {
+    if (paintedRef.current) return
+    paintedRef.current = true
+    setPainted(true)
+  }
 
   // stream.start on mount, plus automatic resubscribe after a reconnect.
   useEffect(() => {
     let disposed = false
     const frameTimes: number[] = []
+    // A fresh mount or a manual/auto retry is a new session from the viewer's
+    // side — start the wake-up panel over instead of carrying stale state.
+    paintedRef.current = false
+    setPainted(false)
+    setPhase(null)
+    phaseChangedAtRef.current = Date.now()
 
     async function startStream() {
       try {
@@ -103,6 +149,9 @@ export function LiveView({
     const offMsg = ws.on((msg) => {
       if (msg.type === 'stream.meta' && msg.payload.streamId === streamIdRef.current) {
         setSize({ width: msg.payload.width, height: msg.payload.height })
+      } else if (msg.type === 'session.progress' && msg.payload.deviceId === deviceId) {
+        setPhase(msg.payload.phase)
+        phaseChangedAtRef.current = Date.now()
       } else if (msg.type === 'video.webrtc.failed') {
         // The WebRTC path failed → stay on WS, but say why.
         setTransport('ws')
@@ -135,6 +184,7 @@ export function LiveView({
         // The keyframe flag rides in the header. It used to be inferred from
         // `seq === 0`, which only ever held for the very first packet.
         renderer.decode(frame.data, frame.keyframe, frame.width, frame.height)
+        markPainted()
         const now = performance.now()
         lastFrameRef.current = now
         frameTimes.push(now)
@@ -161,6 +211,7 @@ export function LiveView({
             canvas.height = frame.height
           }
           canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
+          markPainted()
           bitmap.close()
         },
       )
@@ -231,10 +282,25 @@ export function LiveView({
   useEffect(() => {
     const t = setInterval(() => {
       const last = lastFrameRef.current
-      setStaleSec(last === 0 ? 0 : Math.round((performance.now() - last) / 1000))
+      const sec = last === 0 ? 0 : Math.round((performance.now() - last) / 1000)
+      setStaleSec(sec)
+      // Opt-in auto-recover (§4.8): left off, nothing wakes a phone someone
+      // deliberately put to sleep. On, one stop+start cycle at most per minute.
+      if (autoReconnect && sec >= WAKE_OFFER_AFTER_SEC) {
+        const nowMs = Date.now()
+        if (nowMs - lastAutoRecoverRef.current >= AUTO_RECOVER_COOLDOWN_MS) {
+          lastAutoRecoverRef.current = nowMs
+          setRetryTick((n) => n + 1)
+        }
+      }
     }, 1000)
     return () => clearInterval(t)
-  }, [])
+  }, [autoReconnect])
+
+  const wakeDevice = () => {
+    ws.send({ type: 'input.key', payload: { deviceId, keycode: AKEYCODE.WAKEUP } })
+    onActivity?.()
+  }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLCanvasElement>) {
     if (!inputEnabled) return
@@ -307,6 +373,11 @@ export function LiveView({
     </Tooltip>
   )
 
+  // Shown while the session wakes up: any known phase before a real frame has
+  // been painted, not merely before the 'ready' message (§4.7).
+  const showWakePanel = phase !== null && !painted
+  const phaseElapsedSec = phase ? Math.max(0, Math.round((now - phaseChangedAtRef.current) / 1000)) : 0
+
   return (
     <div className="overflow-hidden rounded-lg border bg-surface">
       {/* Stream readouts: the numbers that describe the picture being watched. */}
@@ -324,17 +395,29 @@ export function LiveView({
         {streaming && (
           <>
             {staleSec >= STALE_AFTER_SEC ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="cursor-help border-b border-dotted border-led-warn text-led-warn">
-                    no new frames for {staleSec}s
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  The picture below is the last frame received. scrcpy sends nothing while the device screen is off, so
-                  this usually means the phone went to sleep.
-                </TooltipContent>
-              </Tooltip>
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-help border-b border-dotted border-led-warn text-led-warn">
+                      no new frames for {staleSec}s
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    The picture below is the last frame received. scrcpy sends nothing while the device screen is off, so
+                    this usually means the phone went to sleep.
+                  </TooltipContent>
+                </Tooltip>
+                {staleSec >= WAKE_OFFER_AFTER_SEC &&
+                  (inputEnabled ? (
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={wakeDevice}>
+                      The device screen looks off. Wake it
+                    </Button>
+                  ) : (
+                    <span className="text-[11px] text-fg-subtle">
+                      The device screen looks off — take control to wake it.
+                    </span>
+                  ))}
+              </>
             ) : (
               <span className="readout">{fps} fps</span>
             )}
@@ -401,6 +484,29 @@ export function LiveView({
             <Button size="sm" variant="outline" className="mt-1" onClick={() => setRetryTick((n) => n + 1)}>
               Try connecting again
             </Button>
+          </div>
+        )}
+
+        {/* Wake-up progress (Plan 17 §4.7): what the core is doing, instead of a
+            black rectangle, while a sleeping phone comes up. No fake percentage —
+            just the static step list with the current one highlighted. */}
+        {showWakePanel && !stopped && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-bg/95 px-6 text-center">
+            <Loader2 className="size-5 animate-spin text-fg-muted" aria-hidden />
+            <p className="text-[13px] font-medium">
+              {PHASE_HEADLINE[phase ?? 'connecting']}…
+              {phaseElapsedSec >= SLOW_PHASE_AFTER_SEC && (
+                <span className="readout ml-1.5 text-[11px] font-normal text-fg-subtle">{phaseElapsedSec}s</span>
+              )}
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] text-fg-subtle">
+              {PHASE_STEPS.map((s, i) => (
+                <span key={s.key} className="flex items-center gap-1.5">
+                  <span className={cn(s.key === phase && 'font-medium text-fg')}>{s.label}</span>
+                  {i < PHASE_STEPS.length - 1 && <span aria-hidden>→</span>}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>

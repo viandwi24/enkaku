@@ -28,6 +28,9 @@ const JOB_LABEL: Record<JobStatus, string> = {
   success: 'succeeded',
   failed: 'failed',
   cancelled: 'cancelled',
+  // Plan 21 §3.3 — distinct from `failed`: this job never got a device
+  // before its queue deadline, it did not run and fail.
+  expired: 'expired',
 }
 
 const JOB_TONE: Record<JobStatus, string> = {
@@ -36,6 +39,10 @@ const JOB_TONE: Record<JobStatus, string> = {
   success: 'text-led-ok border-led-ok/35 bg-led-ok/10',
   failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
   cancelled: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  // A visually distinct tone from `failed` (plan 21 §21.1) — a muted slate
+  // dot (`led-off`, otherwise unused by any status badge) rather than red,
+  // since this is a capacity outcome, not a script bug.
+  expired: 'text-led-off border-led-off/35 bg-led-off/10',
 }
 
 const base =

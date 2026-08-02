@@ -1,2 +1,10 @@
 # Enkaku monorepo — konfigurasi Bun.
 # Sengaja minimal; ada untuk konvensi (00-overview §4.1).
+
+[test]
+# Only our own workspace. `refs/` holds vendored reference projects (STF, GADS,
+# and friends) for study — they are git-ignored but still on disk, and their
+# browser tests fail under Bun with `document is not defined`. Without this a
+# bare `bun test` is red for reasons that have nothing to do with this codebase,
+# which makes the Definition of Done (00-overview §7.2) unverifiable.
+root = "packages"

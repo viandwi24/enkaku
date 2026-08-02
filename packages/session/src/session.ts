@@ -11,9 +11,20 @@ import {
   withAdbKeyFallback,
 } from '@enkaku/drivers'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import type { DisplaySource, FrameMeta, InputSink, Inspector, Transport } from '@enkaku/protocol'
+import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, SessionPhase, Transport } from '@enkaku/protocol'
 import { SessionError } from './errors'
 import type { Logger } from './logger'
+
+/**
+ * `svc power stayon` accepts `true|false|usb|ac|wireless`; `usb` only holds
+ * the screen while plugged into USB, which does nothing for a device attached
+ * over `adb-tcp` (Plan 17 §3.4).
+ */
+const STAYON: Record<KeepAwakeMode, string> = {
+  off: 'false',
+  'while-charging': 'usb',
+  always: 'true',
+}
 
 export interface DeviceSession {
   deviceId: string
@@ -27,6 +38,13 @@ export interface DeviceSession {
   videoConfig: (() => Uint8Array | null) | null
   /** The most recent IDR frame, so a joining viewer has something to decode. */
   videoKeyframe: (() => Uint8Array | null) | null
+  /**
+   * Ask the encoder for a fresh keyframe (Plan 17 §3.6, §4.5) — sent when a
+   * viewer subscribes, so the first thing they see is current rather than the
+   * cached IDR from seconds earlier. Only present when scrcpy is the display
+   * engine; the screencap-loop fallback has no such concept.
+   */
+  requestKeyframe?(): void
   /** This session's inspector engine (ui-server / uiautomator-dump). Null until it is ready. */
   inspector: Inspector | null
   /**
@@ -58,6 +76,10 @@ export interface CreateSessionDeps {
     pollIntervalMs: number
     release(): Promise<void>
   }>
+  /** Report which start-up phase this session is in (Plan 17 §3.3, §4.3). */
+  onPhase?: (phase: SessionPhase, detail?: string) => void
+  /** The input engine degraded from what was requested (Plan 18 §4.2, session.degraded). */
+  onInputDegraded?: (from: string, to: string, reason: string) => void
 }
 
 export interface CreateSessionOpts {
@@ -71,8 +93,10 @@ export interface CreateSessionOpts {
   apiLevel?: number | null
   /** DeviceSettings.input.preferredMode. */
   preferredInputMode?: 'uhid' | 'sdk' | 'aoa'
-  /** DeviceSettings.prep.stayAwake — keeps the screen on for the session's lifetime. */
-  stayAwake?: boolean
+  /** DeviceSettings.prep.keepAwake — replaces the old `stayAwake` boolean (Plan 17 §3.4). */
+  keepAwake?: KeepAwakeMode
+  /** DeviceSettings.prep.standbyScreenOff — dark panel, mirroring stays alive (Plan 17 §3.5). */
+  standbyScreenOff?: boolean
   /** The initial value before the first frame arrives (the Plan 01 probe). */
   screenW?: number | null
   screenH?: number | null
@@ -82,7 +106,9 @@ export interface CreateSessionOpts {
 
 export async function createSession(opts: CreateSessionOpts, deps: CreateSessionDeps): Promise<DeviceSession> {
   const { client, log } = deps
+  const onPhase = deps.onPhase ?? (() => {})
 
+  onPhase('connecting')
   const transportId = opts.transport ?? 'adb-usb'
   let transport: Transport
   if (transportId === 'adb-usb') {
@@ -125,34 +151,43 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     return inspectorPromise
   }
 
+  onPhase('waking')
   /**
    * Wake the screen and hold it awake for the session's lifetime.
    *
-   * `DeviceSettings.prep.stayAwake` existed in the schema but nothing read it.
-   * Without this the phone dozes on its normal timeout and screencap returns a
-   * black frame — the video looks broken when the display is merely off.
+   * `DeviceSettings.prep.keepAwake` (formerly a plain `stayAwake` boolean)
+   * existed in the schema but nothing read it. Without this the phone dozes
+   * on its normal timeout and screencap returns a black frame — the video
+   * looks broken when the display is merely off.
+   *
+   * `off` skips this whole block, same as the old `stayAwake: false` did — a
+   * legacy row that opted out keeps opting out unchanged (Plan 17 §4.2).
    *
    * The keyevent 82 dismisses a swipe-only lock screen. A device with a PIN,
    * pattern, or password cannot be unlocked from here, and will keep showing
    * its lock screen; that is a real limit, not a failure to handle.
    */
-  if (opts.stayAwake !== false) {
-    for (const cmd of ['input keyevent KEYCODE_WAKEUP', 'svc power stayon usb']) {
-      await transport.exec(cmd).catch((err) => log.debug(`${cmd} failed: ${String(err)}`))
+  const keepAwake: KeepAwakeMode = opts.keepAwake ?? 'while-charging'
+  if (keepAwake !== 'off') {
+    for (const cmd of ['input keyevent KEYCODE_WAKEUP', `svc power stayon ${STAYON[keepAwake]}`]) {
+      await transport.exec(cmd, { profile: 'probe' }).catch((err) => log.debug(`${cmd} failed: ${String(err)}`))
     }
     // Only nudge the lock screen when there is one. KEYCODE_MENU dismisses a
     // swipe-only keyguard, but on a phone that is already unlocked it opens the
     // launcher's wallpaper/widget menu — and the user's next tap just closes
     // that menu instead of hitting the app they aimed at.
     const locked = await transport
-      .exec('dumpsys window | grep -m1 isKeyguardShowing')
+      .exec('dumpsys window | grep -m1 isKeyguardShowing', { profile: 'probe' })
       .then((out) => /isKeyguardShowing=true/.test(out))
       .catch(() => false)
     if (locked) {
-      await transport.exec('input keyevent 82').catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))
+      await transport
+        .exec('input keyevent 82', { profile: 'probe' })
+        .catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))
     }
   }
 
+  onPhase('starting-video')
   // Display and input: scrcpy when the session comes up, otherwise the fallback
   // screencap-loop + adb-input (plan 08 §3.8 degrade chain).
   let scrcpy: ScrcpySession | null = null
@@ -162,6 +197,12 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       return null
     })
   }
+
+  // Standby (Plan 17 §3.5): the panel goes dark, the encoder keeps producing
+  // frames. Opt-in and off by default — a dark phone on a rack is confusing
+  // until you know why. Best-effort: some OEM panels wake on any input
+  // regardless, and the video stream never depends on this succeeding.
+  if (scrcpy && opts.standbyScreenOff) scrcpy.control.setDisplayPower(false)
 
   const scrcpyDisplay = scrcpy ? new ScrcpyDisplay(scrcpy) : null
   const screenSize = () =>
@@ -177,7 +218,10 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       apiLevel: opts.apiLevel ?? null,
       scrcpyAvailable: true,
     })
-    if (selection.degradedReason) log.info(`input degrade: ${selection.degradedReason}`)
+    if (selection.degradedReason) {
+      log.info(`input degrade: ${selection.degradedReason}`)
+      deps.onInputDegraded?.(opts.preferredInputMode ?? 'uhid', selection.engine, selection.degradedReason)
+    }
     const inputDeps = { session: scrcpy, screenSize, onLog: (l: 'debug' | 'warn', m: string) => log[l](m) }
     // The UHID pointer is registered on first use, not here. Sending
     // UHID_CREATE the instant the control socket opens is too early — the
@@ -203,15 +247,21 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inputEngineId,
     videoConfig: scrcpyDisplay ? () => scrcpyDisplay.configPacket : null,
     videoKeyframe: scrcpyDisplay ? () => scrcpyDisplay.keyframePacket : null,
+    ...(scrcpy ? { requestKeyframe: () => scrcpy!.control.resetVideo() } : {}),
     inspector: null,
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     async close() {
+      // Restore the panel before the control socket goes away with the rest
+      // of the session — leaving the phone dark for whoever uses it next
+      // would be a worse surprise than the standby mode itself.
+      if (scrcpy && opts.standbyScreenOff) scrcpy.control.setDisplayPower(true)
       await session.display.stop()
       // Hand the screen back to the device's own timeout.
-      if (opts.stayAwake !== false) await transport.exec('svc power stayon false').catch(() => undefined)
+      if (keepAwake !== 'off')
+        await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
       await inspectorHandle?.release()
       await transport.disconnect()
     },
@@ -233,6 +283,25 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     }
     if (scrcpy.meta) applySize(scrcpy.meta)
     scrcpy.onMetaChange(applySize)
+
+    /**
+     * Report the scrcpy session dying, so the manager drops it.
+     *
+     * `ScreencapLoop` has always reported its own failures through
+     * `onDisplayError`, and the manager reacts by closing the entry. The scrcpy
+     * path never did: `ScrcpySession.onClose` existed and nothing subscribed to
+     * it. When the server exited — a crash, a USB blip, `cleanup=true` firing —
+     * the dead session stayed in the manager's cache, and every later viewer
+     * was handed it. `stream.start` then returned in ~1 ms and delivered zero
+     * frames, for ever, with no error anywhere.
+     *
+     * Symptom: the wake-up panel sits on "Waiting for the first frame" while
+     * the phone is plainly awake, and `ps -A | grep app_process` on the device
+     * shows no server at all.
+     */
+    scrcpy.onClose((reason) => {
+      deps.onDisplayError?.(new Error(`the scrcpy session ended: ${reason}`))
+    })
   }
 
   session.display =
@@ -241,8 +310,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       onError: deps.onDisplayError,
       onLog: (level, msg) => log[level](msg),
     })
+  let firstFrameSeen = false
   session.display.onFrame((chunk, meta) => {
     session.frameSize = { width: meta.width, height: meta.height }
+    if (!firstFrameSeen) {
+      firstFrameSeen = true
+      onPhase('ready')
+    }
     deps.onFrame?.(chunk, meta)
   })
 

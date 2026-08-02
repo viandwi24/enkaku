@@ -58,7 +58,7 @@ export async function createInspectorForSession(
     port = await deps.ports.claim(opts.deviceId)
     const launcher = createUiServerLauncher({
       serial: opts.transport.serial,
-      exec: (cmd) => opts.transport.exec(cmd),
+      exec: (cmd) => opts.transport.exec(cmd, { profile: 'appLifecycle' }),
       hostAdb: deps.hostAdb,
       apkPaths,
       onLog: (level, msg) => deps.log[level](msg),

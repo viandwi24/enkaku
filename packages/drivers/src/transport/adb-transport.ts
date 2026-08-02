@@ -1,10 +1,27 @@
-import type { AdbClient } from '@enkaku/adb'
-import type { Transport } from '@enkaku/protocol'
+import { ADB_TIMEOUTS, type AdbClient, type AdbExecOptions, type AdbTimeoutProfile } from '@enkaku/adb'
+import type { Transport, TransportExecOptions } from '@enkaku/protocol'
 
 export interface AdbTransportOpts {
   client: AdbClient
   serial: string
   stableId: string
+}
+
+/** A profile is only forwarded to AdbClient when it names one of ADB_TIMEOUTS's own keys. */
+function toAdbProfile(profile: string | undefined): AdbTimeoutProfile | undefined {
+  if (profile === undefined) return undefined
+  return profile in ADB_TIMEOUTS ? (profile as AdbTimeoutProfile) : undefined
+}
+
+function toAdbExecOptions(opts: TransportExecOptions | undefined): AdbExecOptions | undefined {
+  if (!opts) return undefined
+  return {
+    profile: toAdbProfile(opts.profile),
+    timeoutMs: opts.timeoutMs,
+    queueTimeoutMs: opts.queueTimeoutMs,
+    maxOutputBytes: opts.maxOutputBytes,
+    signal: opts.signal,
+  }
 }
 
 /**
@@ -33,12 +50,12 @@ export class AdbUsbTransport implements Transport {
     // no-op for USB.
   }
 
-  exec(cmd: string): Promise<string> {
-    return this.client.exec(this.serial, cmd)
+  exec(cmd: string, opts?: TransportExecOptions): Promise<string> {
+    return this.client.exec(this.serial, cmd, toAdbExecOptions(opts))
   }
 
-  execOut(cmd: string): Promise<Uint8Array> {
-    return this.client.execOut(this.serial, cmd)
+  execOut(cmd: string, opts?: TransportExecOptions): Promise<Uint8Array> {
+    return this.client.execOut(this.serial, cmd, toAdbExecOptions(opts))
   }
 }
 

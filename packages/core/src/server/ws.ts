@@ -5,6 +5,8 @@ import type { Logger } from '../util/logger'
 export interface WsMessageRouter {
   handleMessage(ws: ServerWebSocket<unknown>, raw: string): Promise<void>
   handleClose(ws: ServerWebSocket<unknown>): void
+  /** Sends `hello` (plan 31 §4.2) — optional so a router set up before this plan still works. */
+  handleOpen?(ws: ServerWebSocket<unknown>): void
 }
 
 /**
@@ -39,6 +41,7 @@ export class WsHub {
     return {
       open: (ws) => {
         this.clients.add(ws)
+        this.router?.handleOpen?.(ws)
         this.log.debug(`ws client connect (total ${this.clients.size})`)
       },
       close: (ws) => {

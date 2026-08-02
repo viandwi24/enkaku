@@ -56,13 +56,13 @@ const intOrNull = (s: string): number | null => {
  */
 export async function probeDeviceIdentity(client: AdbClient, serial: string): Promise<DeviceProbeResult> {
   const [serialno, androidId, model, version, sdk, wmSize, wmDensity] = await Promise.all([
-    client.exec(serial, 'getprop ro.serialno'),
-    client.exec(serial, 'settings get secure android_id'),
-    client.exec(serial, 'getprop ro.product.model'),
-    client.exec(serial, 'getprop ro.build.version.release'),
-    client.exec(serial, 'getprop ro.build.version.sdk'),
-    client.exec(serial, 'wm size'),
-    client.exec(serial, 'wm density'),
+    client.exec(serial, 'getprop ro.serialno', { profile: 'probe' }),
+    client.exec(serial, 'settings get secure android_id', { profile: 'probe' }),
+    client.exec(serial, 'getprop ro.product.model', { profile: 'probe' }),
+    client.exec(serial, 'getprop ro.build.version.release', { profile: 'probe' }),
+    client.exec(serial, 'getprop ro.build.version.sdk', { profile: 'probe' }),
+    client.exec(serial, 'wm size', { profile: 'probe' }),
+    client.exec(serial, 'wm density', { profile: 'probe' }),
   ])
   const size = parseWmSize(wmSize)
   return {

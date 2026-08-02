@@ -40,3 +40,24 @@ export const StreamEndedMessage = z.object({
   type: z.literal('stream.ended'),
   payload: z.object({ deviceId: z.string(), reason: z.string() }),
 })
+
+/** Phases a session goes through before the first frame (Plan 17 §3.3). */
+export const SessionPhaseSchema = z.enum([
+  'connecting', // opening the adb transport
+  'waking', // wake + keyguard + keep-awake
+  'starting-video', // push jar, launch server, connect sockets
+  'waiting-frame', // sockets up, no picture yet
+  'ready', // first frame delivered
+])
+export type SessionPhase = z.infer<typeof SessionPhaseSchema>
+
+export const SessionProgressMessage = z.object({
+  type: z.literal('session.progress'),
+  payload: z.object({
+    deviceId: z.string(),
+    phase: SessionPhaseSchema,
+    /** Optional human-readable detail, e.g. 'ui-server fell back to dump'. */
+    detail: z.string().optional(),
+  }),
+})
+export type SessionProgress = z.infer<typeof SessionProgressMessage>

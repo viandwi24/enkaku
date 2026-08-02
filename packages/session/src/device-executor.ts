@@ -111,11 +111,11 @@ export function createDeviceExecutor(deps: { session: DeviceSession; timing?: Ti
         const cmd = call.args.activity
           ? `am start -n ${call.args.pkg}/${call.args.activity}`
           : `monkey -p ${call.args.pkg} -c android.intent.category.LAUNCHER 1`
-        await deps.session.transport.exec(cmd)
+        await deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
         return undefined
       }
       case 'app.forceStop': {
-        await deps.session.transport.exec(`am force-stop ${call.args.pkg}`)
+        await deps.session.transport.exec(`am force-stop ${call.args.pkg}`, { profile: 'appLifecycle' })
         return undefined
       }
     }

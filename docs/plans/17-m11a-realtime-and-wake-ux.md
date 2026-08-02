@@ -1,6 +1,6 @@
 # Plan 17 — M11a : Realtime UI Contract and Device Wake-up UX
 
-> Status: not started
+> Status: implemented (2026-08-02) — see the "Corrected during implementation" note in §4.2
 > Depends on: Plans 01–16 complete.
 > Spec references: §7.1 (display engines), §10.1 (device states), §13 (core⇄studio protocol), §16 (NFR).
 
@@ -117,7 +117,9 @@ prep: z.object({
 })
 ```
 
-Migration: a Drizzle migration is **not** required — `settings` is a JSON column. Reading code must tolerate the old boolean. Add to `packages/protocol/src/settings.ts` a `.transform()` on the prep object that maps a legacy `stayAwake: true` to `keepAwake: 'while-charging'` and `false` to `'off'`, so rows written before this plan keep working. Cover it with a unit test.
+Migration: a Drizzle migration is **not** required — `settings` is a JSON column. Reading code must tolerate the old boolean, mapping a legacy `stayAwake: true` to `keepAwake: 'while-charging'` and `false` to `'off'`, so rows written before this plan keep working. Cover it with a unit test.
+
+**Corrected during implementation.** An earlier draft said to use `.transform()`. Do not: Zod 4's `z.toJSONSchema()` throws `Transforms cannot be represented in JSON Schema`, and this very schema is what `GET /api/settings` generates the settings form from — so a transform here silently takes out both settings screens. Use `z.preprocess()`, which parses identically and leaves JSON Schema generation working. Verified directly against Zod 4.
 
 Because the farm defaults and per-device settings share one schema (§ Plan 07), both screens pick the new fields up with no extra UI work.
 

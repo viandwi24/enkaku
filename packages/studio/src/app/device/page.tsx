@@ -2,17 +2,26 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Hand, Play } from 'lucide-react'
-import type { BatteryState, DeviceInfo, DeviceStatus, JobInfo, RegistryResponse } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo, DeviceStatus, JobInfo, RegistryResponse, ShellMode, Viewer } from '@enkaku/protocol'
 import { LiveView } from '@/components/LiveView'
+import { DeviceLog } from '@/components/DeviceLog'
+import { MonitorPane } from '@/components/monitor/MonitorPane'
+import { TerminalPane } from '@/components/terminal/TerminalPane'
+import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
+import { ViewerList, labelFor } from '@/components/ViewerList'
 import { DEVICE_LABEL, DeviceStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { JobStatusBadge } from '@/components/StatusBadge'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { EmptyState } from '@/components/states'
+import { TagEditor } from '@/components/TagEditor'
+import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
+import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { TableCell, TableHead } from '@/components/ui/table'
 import { relativeTime, duration } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
@@ -20,6 +29,7 @@ import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
+import { fetchAllPages } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
@@ -30,13 +40,6 @@ interface DeviceDetailInfo extends DeviceInfo {
   input: string
   inspection: string
   settings: unknown
-}
-
-const UNAVAILABLE_REASON: Partial<Record<DeviceStatus, string>> = {
-  offline: 'The device is not connected to this farm',
-  busy: 'An automation job is running',
-  manual: 'Another client is controlling it',
-  quarantined: 'The device was pulled from the queue — return it from the Devices page first',
 }
 
 const ENGINE_ROWS = [
@@ -50,30 +53,62 @@ function DeviceDetail() {
   // A query param rather than a dynamic route, because a static export cannot
   // pre-render dynamic ids — see the studio README.
   const params = useSearchParams()
+  const router = useRouter()
   const deviceId = params.get('id')
   const tab = params.get('tab') ?? 'control'
   const [device, setDevice] = useState<DeviceDetailInfo | null>(null)
   const [registry, setRegistry] = useState<RegistryResponse | null>(null)
   const [status, setStatus] = useState<DeviceStatus | null>(null)
   const [expiresAt, setExpiresAt] = useState<number | null>(null)
-  const [leaseHeld, setLeaseHeld] = useState(false)
+  // Presence (plan 31): who is watching, and who — server-published, not
+  // inferred locally — actually holds control.
+  const [viewers, setViewers] = useState<Viewer[]>([])
+  const [mySessionId, setMySessionId] = useState<string | null>(() => ws.getSessionId())
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null)
   const [battery, setBattery] = useState<BatteryState | null>(null)
-  const [secondsLeft, setSecondsLeft] = useState<number | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [acquiring, setAcquiring] = useState(false)
-  const [jobs, setJobs] = useState<JobInfo[] | null>(null)
+  const [jobsCount, setJobsCount] = useState<number | null>(null)
+  const jobsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
+  const [scripts, setScripts] = useState<ScriptRow[]>([])
+  const [runScript, setRunScript] = useState<ScriptRow | null>(null)
+  const [runOpen, setRunOpen] = useState(false)
   const [schema, setSchema] = useState<JsonSchemaNode | null>(null)
+  // The terminal tab is hidden entirely when the farm switches it off (plan
+  // 26 §5, step 26.1) — defaults to 'admin' (the loopback default) until the
+  // real value loads, so the tab does not flash in and then disappear on a
+  // typical single-user install.
+  const [shellMode, setShellMode] = useState<ShellMode>('admin')
+  // The adb endpoint card (plan 27 §4.4) is a separate opt-in from the
+  // terminal — defaults to false (the feature's own safe default) until the
+  // real value loads, so a farm that never enabled it never sees a flash.
+  const [endpointEnabled, setEndpointEnabled] = useState(false)
   const [savedSettings, setSavedSettings] = useState<unknown>(undefined)
   const [draftSettings, setDraftSettings] = useState<unknown>(undefined)
   const idleTimeoutRef = useRef(300)
   const { run, isPending } = useAction()
+  // The lease countdown and the jobs tab tick without a refresh (Plan 17 §4.6).
+  const now = useNow()
 
-  const hasLease = expiresAt !== null
+  /**
+   * The published fact (plan 31 §4.3), not an inference from local state: the
+   * viewer list is the single thing both the button and the banner read, so
+   * there is no way for this tab to render "release control" for a lease it
+   * does not hold — the button reads what the server published.
+   */
+  const holder = viewers.find((v) => v.holdsControl) ?? null
+  const iHoldControl = holder !== null && holder.sessionId === mySessionId
+  /** Someone else is driving: a viewer holds control, and it is not us. */
+  const heldByOther = holder !== null && !iHoldControl
+  const holderLabel = holder ? labelFor(holder) : null
+  // Kept in sync every render (not just on the events that flip it) so the
+  // ws.on callback below — created once per deviceId, not per render — can
+  // still ask "was I the one who just lost control" without a stale closure.
+  const iHoldControlRef = useRef(iHoldControl)
+  iHoldControlRef.current = iHoldControl
   /** The battery readings the core has pushed since load, else the first fetch. */
   const liveBattery = battery ?? device?.battery ?? null
-  /** Someone else is driving: the lease is held, and it is not ours. */
-  const heldByOther = leaseHeld && !hasLease
 
   useEffect(() => {
     if (!deviceId) return
@@ -88,34 +123,48 @@ function DeviceDetail() {
     void fetchRegistry().then(setRegistry)
     // The very same schema the farm defaults are rendered from, so a field can
     // never exist in one place and be missing in the other.
-    void api<{ deviceSchema: JsonSchemaNode }>('/api/settings')
-      .then((b) => setSchema(b.deviceSchema))
+    void api<{ deviceSchema: JsonSchemaNode; settings: { shell: { mode: ShellMode; endpointEnabled: boolean } } }>('/api/settings')
+      .then((b) => {
+        setSchema(b.deviceSchema)
+        setShellMode(b.settings.shell.mode)
+        setEndpointEnabled(b.settings.shell.endpointEnabled)
+      })
       .catch(() => undefined)
-    // The jobs API already filters by device; the old page simply never asked.
-    void api<{ jobs: JobInfo[] }>(`/api/jobs?deviceId=${deviceId}&limit=100`)
-      .then((b) => setJobs(b.jobs))
-      .catch(() => setJobs([]))
+    void fetchAllPages<ScriptRow>('/api/scripts')
+      .then((scripts) => setScripts(scripts.filter((x) => x.enabled)))
+      .catch(() => setScripts([]))
+    // The presence snapshot (plan 31 §3.4): `/ws` has no replay, so the
+    // current viewer list is fetched once here and kept live by
+    // `device.viewers` below.
+    void api<{ viewers: Viewer[] }>(`/api/devices/${deviceId}/viewers`)
+      .then((b) => setViewers(b.viewers))
+      .catch(() => undefined)
 
     const off = ws.on((msg) => {
-      if (msg.type === 'device.status' && msg.payload.id === deviceId) {
+      if (msg.type === 'hello') {
+        setMySessionId(msg.payload.sessionId)
+      } else if (msg.type === 'device.viewers' && msg.payload.deviceId === deviceId) {
+        setViewers(msg.payload.viewers)
+      } else if (msg.type === 'device.status' && msg.payload.id === deviceId) {
         setStatus(msg.payload.status)
         if (msg.payload.status !== 'manual') setExpiresAt(null)
-      } else if (msg.type === 'lease.changed' && msg.payload.deviceId === deviceId) {
-        // Broadcast to everyone: this is how a second viewer finds out that
-        // control changed hands without having to click and get an error.
-        setLeaseHeld(msg.payload.held)
-        if (!msg.payload.held) setExpiresAt(null)
       } else if (msg.type === 'device.battery' && msg.payload.deviceId === deviceId) {
         // The panel used to show whatever the first fetch returned; a device
         // that heats up or drains while you watch it looked frozen.
         setBattery(msg.payload.battery)
       } else if (msg.type === 'lease.revoked' && msg.payload.deviceId === deviceId) {
         setExpiresAt(null)
-        setNotice(
-          msg.payload.reason === 'idle_timeout'
-            ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
-            : `Control was released automatically (${msg.payload.reason}).`,
-        )
+        // Scoped to the actual former holder (plan 31 §3.1): this broadcast
+        // itself carries no identity, but the ref tracks whether THIS tab was
+        // the one holding control the instant before the revoke arrived —
+        // a bystander tab no longer sees a notice about a lease it never had.
+        if (iHoldControlRef.current) {
+          setNotice(
+            msg.payload.reason === 'idle_timeout'
+              ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
+              : `Control was released automatically (${msg.payload.reason}).`,
+          )
+        }
       }
     })
     return off
@@ -123,16 +172,8 @@ function DeviceDetail() {
 
   // Idle-timeout countdown. The server drops the lease when no input arrives;
   // people deserve to see that coming rather than have the screen go dead.
-  useEffect(() => {
-    if (expiresAt === null) {
-      setSecondsLeft(null)
-      return
-    }
-    const tick = () => setSecondsLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000)))
-    tick()
-    const t = setInterval(tick, 1000)
-    return () => clearInterval(t)
-  }, [expiresAt])
+  // Derived from the shared `now` tick rather than its own interval (Plan 17 §4.6).
+  const secondsLeft = expiresAt === null ? null : Math.max(0, Math.round((expiresAt - now) / 1000))
 
   async function takeControl() {
     if (!deviceId) return
@@ -197,7 +238,7 @@ function DeviceDetail() {
   const currentStatus = status ?? device.status
   const busy = currentStatus === 'busy'
   const canTakeControl = currentStatus === 'idle'
-  const inputEnabled = hasLease && !busy
+  const inputEnabled = iHoldControl && !busy
 
   return (
     <>
@@ -219,17 +260,42 @@ function DeviceDetail() {
                 Run a script
               </Button>
             ) : (
-              <Button asChild variant="outline" size="sm">
-                <Link href={`/scripts?device=${device.id}`}>
-                  <Play className="size-4" aria-hidden />
-                  Run a script
-                </Link>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={scripts.length === 0}
+                onClick={() => {
+                  setRunScript(scripts[0] ?? null)
+                  setRunOpen(true)
+                }}
+              >
+                <Play className="size-4" aria-hidden />
+                Run a script
               </Button>
             )}
-            {hasLease ? (
+            {iHoldControl ? (
               <Button size="sm" variant="secondary" onClick={releaseControl}>
                 Release control
               </Button>
+            ) : heldByOther ? (
+              // Reads a fact the server published (the viewer list), not a
+              // local inference — this is what makes the reported two-browser
+              // symptom impossible by construction (plan 31 §4.3).
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    tabIndex={0}
+                    onMouseEnter={() => holder && setHoveredSessionId(holder.sessionId)}
+                    onMouseLeave={() => setHoveredSessionId(null)}
+                  >
+                    <Button size="sm" variant="outline" disabled>
+                      <Hand className="size-4" aria-hidden />
+                      Take control
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Held by {holderLabel}</TooltipContent>
+              </Tooltip>
             ) : canTakeControl ? (
               <Button size="sm" disabled={acquiring} onClick={() => void takeControl()}>
                 <Hand className="size-4" aria-hidden />
@@ -259,7 +325,14 @@ function DeviceDetail() {
         active={tab}
         tabs={[
           { key: 'control', label: 'Control' },
-          { key: 'jobs', label: 'Jobs', count: jobs?.length ?? null },
+          { key: 'jobs', label: 'Jobs', count: jobsCount },
+          { key: 'monitor', label: 'Monitor' },
+          // Hidden entirely when the farm switches the terminal off (plan 26
+          // §5, 26.1) — server-authoritative either way: even a forced
+          // `tab=terminal` in the address bar still gets refused by the WS
+          // handler, this is purely so the tab is not a dead end to click.
+          ...(shellMode === 'off' ? [] : [{ key: 'terminal', label: 'Terminal' }]),
+          { key: 'logs', label: 'Logs' },
           { key: 'settings', label: 'Settings' },
         ]}
         hrefFor={(k) => `/device?id=${encodeURIComponent(device.id)}${k === 'control' ? '' : `&tab=${k}`}`}
@@ -283,22 +356,34 @@ function DeviceDetail() {
                 same place so nobody has to hunt for it. */}
             <div
               className={cn(
-                'rounded-lg border px-3.5 py-2.5 text-[12.5px] leading-relaxed',
+                'rounded-lg border px-3.5 py-2.5 text-[12.5px] leading-relaxed transition-colors',
                 busy
                   ? 'border-led-active/40 bg-led-active/5 text-led-active'
-                  : hasLease
+                  : iHoldControl
                     ? 'border-led-ok/35 bg-led-ok/5'
-                    : 'bg-surface text-fg-muted',
+                    : heldByOther && holder && hoveredSessionId === holder.sessionId
+                      ? 'border-accent/40 bg-accent/5'
+                      : 'bg-surface text-fg-muted',
               )}
               role="status"
             >
               {busy ? (
                 <>An automation job is running. Video keeps streaming, but input stays off until the job finishes.</>
               ) : heldByOther ? (
-                // Arrives over lease.changed, so this flips the moment someone
-                // else takes the device — no reload, no click-then-error.
-                <>Someone else is controlling this device. You can keep watching; input stays off until they release it.</>
-              ) : hasLease ? (
+                // Derived from `device.viewers`, the same server-published fact
+                // the button reads (plan 31 §4.3) — no local inference, and the
+                // holder's name is hoverable so it lights up its row below too.
+                <span className="flex flex-wrap items-center gap-x-1">
+                  <span
+                    className="cursor-default rounded font-medium text-fg"
+                    onMouseEnter={() => holder && setHoveredSessionId(holder.sessionId)}
+                    onMouseLeave={() => setHoveredSessionId(null)}
+                  >
+                    {holderLabel}
+                  </span>
+                  <span>is controlling this device. You can keep watching; input stays off until they release it.</span>
+                </span>
+              ) : iHoldControl ? (
                 <span className="flex flex-wrap items-center gap-x-2">
                   You have control.
                   {secondsLeft !== null && (
@@ -314,7 +399,12 @@ function DeviceDetail() {
               )}
             </div>
 
-            <LiveView deviceId={device.id} inputEnabled={inputEnabled} onActivity={noteActivity} />
+            <LiveView
+              deviceId={device.id}
+              inputEnabled={inputEnabled}
+              onActivity={noteActivity}
+              autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
+            />
           </div>
 
           {/* Hardware facts sit beside the screen because they are read while
@@ -323,6 +413,8 @@ function DeviceDetail() {
           <aside>
             <Panel title="hardware">
               <dl className="space-y-1.5">
+                {/* Always shown, even unclustered — a field, not an omission (plan 22.0 §4.5). */}
+                <Row label="cluster" value={device.cluster ? device.cluster.name : 'Unclustered'} />
                 <Row label="stable id" value={device.stableId} />
                 <Row label="serial" value={device.serial} />
                 <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />
@@ -341,6 +433,14 @@ function DeviceDetail() {
                 )}
               </dl>
             </Panel>
+
+            <ViewerList
+              viewers={viewers}
+              now={now}
+              mySessionId={mySessionId}
+              hoveredSessionId={hoveredSessionId}
+              onHoverSession={setHoveredSessionId}
+            />
 
             <div className="mt-3 rounded-lg border bg-surface p-3.5">
               <h2 className="rack-label mb-2.5">active engines</h2>
@@ -362,57 +462,108 @@ function DeviceDetail() {
 
       {tab === 'jobs' && (
         <div className="px-5 py-4">
-          {jobs === null ? (
-            <LoadingRows rows={4} />
-          ) : jobs.length === 0 ? (
-            <EmptyState
-              title="No jobs on this device yet"
-              description="Runs started on this device appear here, newest first."
-              action={
-                <Button asChild>
-                  <Link href={`/scripts?device=${encodeURIComponent(device.id)}`}>Run a script</Link>
+          <PaginatedTable<JobInfo>
+            ref={jobsRef}
+            resetKey={deviceId}
+            fetchPage={(cursor) =>
+              api<Page<JobInfo>>(`/api/jobs?deviceId=${deviceId}&limit=50${cursor ? `&cursor=${cursor}` : ''}`).then(
+                (page) => {
+                  if (cursor === null) setJobsCount(page.total)
+                  return page
+                },
+              )
+            }
+            rowKey={(j) => j.jobId}
+            header={
+              <>
+                <TableHead className="w-[45%]">Script</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Duration</TableHead>
+                <TableHead>Started</TableHead>
+              </>
+            }
+            renderRow={(j) => (
+              <>
+                <TableCell>
+                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                    {j.scriptName ? `${j.scriptName}@${j.scriptVersion ?? '?'}` : j.scriptId}
+                  </Link>
+                </TableCell>
+                <TableCell>
+                  <JobStatusBadge status={j.status} />
+                </TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">
+                  {duration(j.startedAt, j.finishedAt, now)}
+                </TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">
+                  {relativeTime(j.startedAt ?? j.createdAt, now)}
+                </TableCell>
+              </>
+            )}
+            empty={{
+              title: 'No jobs on this device yet',
+              description: 'Runs started on this device appear here, newest first.',
+              action: (
+                <Button
+                  disabled={scripts.length === 0}
+                  onClick={() => {
+                    setRunScript(scripts[0] ?? null)
+                    setRunOpen(true)
+                  }}
+                >
+                  Run a script
                 </Button>
-              }
-            />
-          ) : (
-            <div className="overflow-hidden rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-[45%]">Script</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Duration</TableHead>
-                    <TableHead>Started</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {jobs.map((j) => (
-                    <TableRow key={j.jobId}>
-                      <TableCell>
-                        <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                          {j.scriptName ? `${j.scriptName}@${j.scriptVersion ?? '?'}` : j.scriptId}
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <JobStatusBadge status={j.status} />
-                      </TableCell>
-                      <TableCell className="readout text-[11.5px] text-fg-muted">
-                        {duration(j.startedAt, j.finishedAt)}
-                      </TableCell>
-                      <TableCell className="readout text-[11.5px] text-fg-muted">
-                        {relativeTime(j.startedAt ?? j.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
+              ),
+            }}
+          />
         </div>
       )}
 
+      {tab === 'monitor' && <MonitorPane deviceId={device.id} />}
+
+      {tab === 'terminal' && shellMode !== 'off' && (
+        <div className="px-5 pt-4">
+          {endpointEnabled && (
+            <AdbEndpointCard
+              deviceId={device.id}
+              clientId={mySessionId}
+              // Same gate as the terminal's own input box (plan 27 §3.4) —
+              // Studio hiding the card is a convenience, the server checks
+              // `device.adb` plus the lease itself on every request.
+              canOpen={iHoldControl && !busy}
+            />
+          )}
+        </div>
+      )}
+      {tab === 'terminal' && shellMode !== 'off' && (
+        <TerminalPane
+          deviceId={device.id}
+          // The SAME server-published fact the Control tab's button and
+          // banner read (plan 31 §4.3) — never a local inference. The
+          // server re-checks this itself on every `shell.exec` regardless
+          // (spec §10.1); this only decides whether Studio shows the input
+          // box at all.
+          canType={iHoldControl && !busy}
+          onRunAsStream={() => router.replace(`/device?id=${encodeURIComponent(device.id)}&tab=monitor`)}
+        />
+      )}
+
+      {tab === 'logs' && <DeviceLog deviceId={device.id} deviceOffline={currentStatus === 'offline'} />}
+
       {tab === 'settings' && (
         <div className="max-w-3xl px-5 py-4">
+          <section className="mb-5 rounded-lg border bg-surface p-5">
+            <h3 className="text-[14px] font-semibold tracking-tight">Tags</h3>
+            <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+              Used to filter and select this device elsewhere — the run dialog, the devices list, and ad-hoc batch
+              targeting. The cluster shown above is separate: a device belongs to at most one cluster, managed from
+              the Clusters page.
+            </p>
+            <div className="mt-3">
+              <TagEditor deviceId={device.id} tags={device.tags} />
+            </div>
+          </section>
+
           <p className="mb-4 text-[12.5px] leading-relaxed text-fg-muted">
             These start as the farm defaults and apply to this device alone. Changing the farm defaults later does not
             touch a device that is already enrolled.
@@ -432,6 +583,21 @@ function DeviceDetail() {
           )}
         </div>
       )}
+
+      <RunScriptDialog
+        script={runOpen ? runScript : null}
+        devices={device ? [device] : []}
+        initialDevice={device?.id ?? null}
+        lockedDevice={device}
+        onClose={() => setRunOpen(false)}
+        onLaunched={() => {
+          // Stay on the device. Running a script used to bounce the operator to
+          // /scripts and then to /jobs/detail — two screens away from the phone
+          // they were working on, with no way back but the device list.
+          router.replace(`/device?id=${encodeURIComponent(device.id)}&tab=jobs`)
+          jobsRef.current?.reload()
+        }}
+      />
 
     </>
   )

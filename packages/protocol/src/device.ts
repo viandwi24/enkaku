@@ -26,6 +26,14 @@ export const DeviceInfoSchema = z.object({
   battery: BatteryStateSchema.nullable().default(null),
   /** Quarantine reason, e.g. 'thermal:49.8C'. */
   quarantineReason: z.string().nullable().default(null),
+  /** Sorted, normalised. Empty array rather than null, so callers need no guard. */
+  tags: z.array(z.string()).default([]),
+  /**
+   * The owning cluster (plan 22.0 §4.2), or null when unclustered. An object
+   * rather than a bare id so every list and picker can render the name
+   * without a second lookup — the same reasoning that put `tags` inline.
+   */
+  cluster: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

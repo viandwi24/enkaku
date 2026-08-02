@@ -19,6 +19,8 @@ export interface SchedulerDeps {
   onJobStatus: (info: JobInfo) => void
   /** The claim flips the device to busy inside a SQL transaction; notify watchers. */
   onDeviceBusy: (deviceId: string) => void
+  /** Main-stream device event: job.started (plan 18 §4.2). */
+  onJobStarted?: (deviceId: string, jobId: string, scriptId: string) => void
 }
 
 /**
@@ -53,6 +55,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           deps.log.info(`job claimed: ${claimed.job.id} → device ${claimed.deviceId}`)
           deps.onDeviceBusy(claimed.deviceId)
           deps.onJobStatus(rowToJobInfo(claimed.job))
+          deps.onJobStarted?.(claimed.deviceId, claimed.job.id, claimed.job.scriptId)
           deps.host.start(claimed.job)
         }
       } while (dirty)

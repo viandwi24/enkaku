@@ -1,4 +1,4 @@
-import type { ArtifactInfo } from '@enkaku/protocol'
+import { DeviceSettingsSchema, defaultDeviceSettings, type ArtifactInfo } from '@enkaku/protocol'
 import type { ArtifactSink, DeviceSnapshot, DeviceSnapshotSource } from '@enkaku/session'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db'
@@ -11,6 +11,13 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
     get(deviceId): DeviceSnapshot | null {
       const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
       if (!row) return null
+      // Legacy rows may still hold `prep.stayAwake` as a plain boolean (Plan 17
+      // §4.2). Parsing the whole settings blob through the schema normalises
+      // it the same way a fresh save would — this is the one place session
+      // creation reads it, so it is the one place that needs to know about
+      // the old shape.
+      const settings = DeviceSettingsSchema.safeParse(row.settings ?? {})
+      const prep = settings.success ? settings.data.prep : defaultDeviceSettings().prep
       return {
         id: row.id,
         stableId: row.stableId,
@@ -28,7 +35,8 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         preferredInputMode:
           (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
           'uhid',
-        stayAwake: (row.settings as { prep?: { stayAwake?: boolean } } | null)?.prep?.stayAwake ?? true,
+        keepAwake: prep.keepAwake,
+        standbyScreenOff: prep.standbyScreenOff,
       }
     },
   }

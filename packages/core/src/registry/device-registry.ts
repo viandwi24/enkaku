@@ -2,11 +2,13 @@ import type { AdbClient, TrackerEvent } from '@enkaku/adb'
 import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceSettings } from '@enkaku/protocol'
 import { and, eq, ne } from 'drizzle-orm'
 import type { Db } from '../db'
-import { devices, type DeviceRow } from '../db/schema'
+import { clusters, devices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
+import { loadDeviceTags } from './device-tags'
+import type { EventRecorder } from '../events/recorder'
 
 export interface DeviceRegistryDeps {
   client: AdbClient
@@ -19,6 +21,8 @@ export interface DeviceRegistryDeps {
   onDeviceGone?: (deviceId: string) => void
   /** Device became usable → kick the scheduler (Plan 04). */
   onDeviceReady?: () => void
+  /** Main-stream device events: device.online / device.offline / device.unauthorized (Plan 18 §4.2). */
+  record?: EventRecorder['record']
   /**
    * Farm defaults, applied to a device the first time it is enrolled.
    * Without this the Settings page would be decorative: the defaults were
@@ -34,7 +38,28 @@ export interface DeviceRegistry {
   deviceCount(): number
 }
 
-export function rowToDeviceInfo(row: DeviceRow): DeviceInfo {
+/**
+ * Every device's owning cluster resolved by name, in one query total (plan
+ * 22.0 §4.4, acceptance #10 — never one query per device). A device with no
+ * cluster looks it up as `undefined` and `rowToDeviceInfo` renders that as
+ * `null`, same as an empty map would.
+ */
+export function loadClusterNames(db: Db): Map<string, string> {
+  return new Map(db.select({ id: clusters.id, name: clusters.name }).from(clusters).all().map((c) => [c.id, c.name]))
+}
+
+/** The single-device counterpart to `loadClusterNames` — one extra query, only when the device has a cluster. */
+export function clusterRefFor(db: Db, clusterId: string | null): { id: string; name: string } | null {
+  if (!clusterId) return null
+  const row = db.select({ name: clusters.name }).from(clusters).where(eq(clusters.id, clusterId)).get()
+  return row ? { id: clusterId, name: row.name } : null
+}
+
+export function rowToDeviceInfo(
+  row: DeviceRow,
+  tags: string[] = [],
+  cluster: { id: string; name: string } | null = null,
+): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
     stableId: row.stableId,
@@ -49,7 +74,23 @@ export function rowToDeviceInfo(row: DeviceRow): DeviceInfo {
     lastSeen: row.lastSeen ? Math.floor(row.lastSeen.getTime() / 1000) : null,
     battery: row.battery ?? null,
     quarantineReason: row.quarantineReason ?? null,
+    tags,
+    cluster,
   })
+}
+
+/**
+ * Every device plus its tags and its cluster, in exactly three queries
+ * regardless of how many devices there are (plan 19 §4.3 and plan 22.0
+ * §4.4, acceptance #7 and #10 — never N+1).
+ */
+export function listDevicesWithTags(db: Db): DeviceInfo[] {
+  const rows = db.select().from(devices).all()
+  const tagMap = loadDeviceTags(db)
+  const clusterNames = loadClusterNames(db)
+  return rows.map((r) =>
+    rowToDeviceInfo(r, tagMap.get(r.id) ?? [], r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null),
+  )
 }
 
 /**
@@ -142,6 +183,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         hub.broadcast({ type: 'device.added', payload: rowToDeviceInfo(row) })
         log.info(`new device registered: ${row.label} (${probe.stableId}) via ${serial}`)
       }
+      deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb' } })
       deps.onDeviceReady?.()
     } catch (err) {
       log.warn(`probe of ${serial} failed outright — waiting for the next event`, { err: String(err) })
@@ -168,6 +210,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     // Any running job on this device is failed and its session closed by the caller.
     deps.onDeviceGone?.(row.id)
     deps.states.apply(row.id, 'DEVICE_DISCONNECTED')
+    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.offline', meta: { reason: 'disconnected' } })
     log.info(`device offline: ${row.label} (${row.stableId})`)
   }
 
@@ -181,6 +224,11 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     } else if (ev.state === 'unauthorized') {
       log.warn(`device ${ev.serial} is unauthorized — accept the USB debugging dialog on the phone's screen`)
       hub.broadcast({ type: 'device.unauthorized', payload: { serial: ev.serial } })
+      // Only recorded if we already know this device (a previous session's
+      // stableId) — an unenrolled device has no row and no Logs tab to show it on.
+      const stableId = serialToStableId.get(ev.serial)
+      const knownRow = stableId ? db.select().from(devices).where(eq(devices.stableId, stableId)).get() : null
+      if (knownRow) deps.record?.({ deviceId: knownRow.id, stream: 'main', kind: 'device.unauthorized', meta: {} })
     } else {
       log.debug(`device ${ev.serial} state=${ev.state} — ignored in M0`)
     }
@@ -205,7 +253,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       await client.trackDevices().stop()
     },
     listDevices() {
-      return db.select().from(devices).all().map(rowToDeviceInfo)
+      return listDevicesWithTags(db)
     },
     deviceCount() {
       return db.select().from(devices).all().length

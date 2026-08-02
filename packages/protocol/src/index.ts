@@ -24,7 +24,14 @@ import {
   LeaseChangedMessage,
   LeaseRevokedMessage,
 } from './messages/job'
-import { StreamEndedMessage, StreamMetaMessage, StreamStartedMessage, StreamStartMessage, StreamStopMessage } from './messages/stream'
+import {
+  SessionProgressMessage,
+  StreamEndedMessage,
+  StreamMetaMessage,
+  StreamStartedMessage,
+  StreamStartMessage,
+  StreamStopMessage,
+} from './messages/stream'
 import {
   WebRtcAnswerMessage,
   WebRtcFailedMessage,
@@ -38,8 +45,26 @@ import {
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
 } from './messages/tool'
+import { BatchStatusMessage } from './messages/batch'
+import { ScheduleFiredMessage } from './messages/schedule'
+import { DeviceEventMessage, LogSubscribeMessage, LogUnsubscribeMessage } from './messages/device-event'
+import { DeviceViewersMessage, HelloMessage, ViewerSchema } from './messages/presence'
+import {
+  MonitorStartMessage,
+  MonitorStopMessage,
+  MonitorOneshotMessage,
+  MonitorStartedMessage,
+  MonitorDataMessage,
+  MonitorEndedMessage,
+  MonitorResultMessage,
+  MonitorSubscribersMessage,
+  ShellExecMessage,
+  ShellEchoMessage,
+  ShellResultMessage,
+} from './messages/shell'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
+export { normaliseTag, TagSchema } from './tags'
 export {
   DeviceStatusSchema,
   DeviceInfoSchema,
@@ -52,7 +77,7 @@ export {
   type DeviceRemoved,
   type DeviceStatusEvent,
 } from './device'
-export type { Transport, DisplaySource, InputSink, Inspector, Point, FrameMeta } from './driver'
+export type { Transport, TransportExecOptions, DisplaySource, InputSink, Inspector, Point, FrameMeta } from './driver'
 export {
   EngineDescriptorSchema,
   RegistryResponseSchema,
@@ -65,11 +90,15 @@ export {
 export {
   BatteryStateSchema,
   TimingSettingsSchema,
+  KeepAwakeModeSchema,
+  ShellModeSchema,
   DeviceSettingsSchema,
   FarmSettingsSchema,
   defaultFarmSettings,
   defaultDeviceSettings,
   type BatteryState,
+  type KeepAwakeMode,
+  type ShellMode,
   type DeviceSettings,
   type FarmSettings,
 } from './settings'
@@ -82,7 +111,17 @@ export {
   type ToolChanged,
 } from './messages/tool'
 export { NormPointSchema, InputTapMessage, InputSwipeMessage, InputKeyMessage, InputTextMessage, type NormPoint } from './messages/input'
-export { StreamStartMessage, StreamStartedMessage, StreamStopMessage, StreamMetaMessage, StreamEndedMessage } from './messages/stream'
+export {
+  StreamStartMessage,
+  StreamStartedMessage,
+  StreamStopMessage,
+  StreamMetaMessage,
+  StreamEndedMessage,
+  SessionPhaseSchema,
+  SessionProgressMessage,
+  type SessionPhase,
+  type SessionProgress,
+} from './messages/stream'
 export {
   DeviceUnauthorizedMessage,
   DevicePairingRequestMessage,
@@ -124,6 +163,82 @@ export {
   type SleepJobParams,
 } from './messages/job'
 export {
+  BatchOrderSchema,
+  BatchStatusSchema,
+  BatchCountsSchema,
+  ClusterInfoSchema,
+  ResolvedTargetSchema,
+  SkippedDeviceSchema,
+  ClusterPreviewSchema,
+  BatchInfoSchema,
+  BatchStatusMessage,
+  type BatchOrder,
+  type BatchStatusValue,
+  type BatchCounts,
+  type ClusterInfo,
+  type ClusterPreview,
+  type BatchInfo,
+  type BatchStatusEvent,
+} from './messages/batch'
+export {
+  OnOverlapSchema,
+  CatchUpSchema,
+  ScheduleRunOutcomeSchema,
+  ScheduleInfoSchema,
+  ScheduleRunInfoSchema,
+  ScheduleFiredMessage,
+  type OnOverlap,
+  type CatchUp,
+  type ScheduleRunOutcome,
+  type ScheduleInfo,
+  type ScheduleRunInfo,
+  type ScheduleFiredEvent,
+} from './messages/schedule'
+export {
+  DeviceEventStreamSchema,
+  MAIN_EVENT_KINDS,
+  INPUT_EVENT_KINDS,
+  DeviceEventSchema,
+  LogSubscribeMessage,
+  LogUnsubscribeMessage,
+  DeviceEventMessage,
+  type DeviceEventStream,
+  type DeviceEvent,
+} from './messages/device-event'
+export {
+  ViewerSchema,
+  DeviceViewersMessage,
+  HelloMessage,
+  type Viewer,
+  type DeviceViewersEvent,
+  type HelloEvent,
+} from './messages/presence'
+export {
+  MonitorKindSchema,
+  LogcatOptionsSchema,
+  EmptyMonitorOptionsSchema,
+  STREAMING_MONITOR_KINDS,
+  ONE_SHOT_MONITOR_KINDS,
+  optionsSchemaFor,
+  type MonitorKind,
+  type LogcatOptions,
+} from './messages/monitor'
+export {
+  MonitorEndReasonSchema,
+  MonitorStartMessage,
+  MonitorStopMessage,
+  MonitorOneshotMessage,
+  MonitorStartedMessage,
+  MonitorDataMessage,
+  MonitorEndedMessage,
+  MonitorResultMessage,
+  MonitorSubscribersMessage,
+  ShellExecMessage,
+  ShellEchoMessage,
+  ShellResultMessage,
+  type MonitorEndReason,
+} from './messages/shell'
+export {
   PointSchema,
   SelectorSchema,
   KeyCodeSchema,
@@ -164,6 +279,14 @@ export {
   WebRtcIceMessage,
   WebRtcFailedMessage,
   WebRtcStopMessage,
+  ShellReplyErrorSchema,
+  ShellExecRequestMessage,
+  ShellExecReplyMessage,
+  ShellStreamRequestMessage,
+  ShellStreamReplyMessage,
+  ShellStreamStopMessage,
+  ShellStreamEndedMessage,
+  type TunnelChannelKind,
   type RoutedEnvelope,
   type AgentToControl,
   type ControlToAgent,
@@ -178,6 +301,8 @@ export const ErrorMessage = z.object({
 
 /** Every server→client message. */
 export const ServerMessageSchema = z.discriminatedUnion('type', [
+  HelloMessage,
+  DeviceViewersMessage,
   DeviceAddedMessage,
   DeviceRemovedMessage,
   DeviceStatusMessage,
@@ -191,6 +316,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   StreamStartedMessage,
   StreamMetaMessage,
   StreamEndedMessage,
+  SessionProgressMessage,
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
   JobStatusEventMessage,
@@ -203,6 +329,16 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   WebRtcOfferMessage,
   WebRtcFailedMessage,
   WebRtcIceMessage,
+  BatchStatusMessage,
+  ScheduleFiredMessage,
+  DeviceEventMessage,
+  MonitorStartedMessage,
+  MonitorDataMessage,
+  MonitorEndedMessage,
+  MonitorResultMessage,
+  MonitorSubscribersMessage,
+  ShellEchoMessage,
+  ShellResultMessage,
   ErrorMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
@@ -226,5 +362,11 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   WebRtcStopMessage,
   // ICE is bidirectional: the browser sends its candidates too.
   WebRtcIceMessage,
+  LogSubscribeMessage,
+  LogUnsubscribeMessage,
+  MonitorStartMessage,
+  MonitorStopMessage,
+  MonitorOneshotMessage,
+  ShellExecMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Play } from 'lucide-react'
@@ -10,12 +10,15 @@ import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
+import { fetchDevices } from '@/lib/api'
 import { duration, relativeTime } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 
 /**
  * A published script is an object with real depth — its parameter contract, the
@@ -29,11 +32,14 @@ function ScriptDetail() {
   const router = useRouter()
 
   const [script, setScript] = useState<ScriptRow | null>(null)
-  const [runs, setRuns] = useState<JobInfo[] | null>(null)
+  const [runsCount, setRunsCount] = useState<number | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [runOpen, setRunOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
+  const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
+  // The runs table's durations tick while a run is still going (Plan 17 §4.6).
+  const now = useNow()
 
   const load = () => {
     if (!scriptId) return
@@ -41,16 +47,34 @@ function ScriptDetail() {
     void api<{ script: ScriptRow }>(`/api/scripts/${scriptId}`)
       .then((b) => setScript(b.script))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-    void api<{ devices: DeviceInfo[] }>('/api/devices')
-      .then((b) => setDevices(b.devices))
+    void fetchDevices()
+      .then(setDevices)
       .catch(() => undefined)
-    // No per-script filter server-side, so filter the recent window client-side.
-    void api<{ jobs: JobInfo[] }>('/api/jobs?limit=200')
-      .then((b) => setRuns(b.jobs.filter((j) => j.scriptId === scriptId)))
-      .catch(() => setRuns([]))
   }
 
   useEffect(load, [scriptId])
+
+  /**
+   * `/api/jobs` has no per-script filter (plan 30 non-goals — pagination
+   * only, no new filtering), so this walks the job feed page by page and
+   * keeps the ones matching this script, capped generously. Because the
+   * scan always drains fully before returning, there is no partial-page
+   * truncation to skip a row on — it just has no further "load more" once
+   * done, unlike every other converted table here.
+   */
+  const fetchRuns = async (): Promise<Page<JobInfo>> => {
+    if (!scriptId) return { items: [], nextCursor: null, total: 0 }
+    const matches: JobInfo[] = []
+    let cursor: string | null = null
+    for (let scan = 0; scan < 25; scan++) {
+      const jobsPage: Page<JobInfo> = await api(`/api/jobs?limit=200${cursor ? `&cursor=${cursor}` : ''}`)
+      matches.push(...jobsPage.items.filter((j) => j.scriptId === scriptId))
+      cursor = jobsPage.nextCursor
+      if (!cursor) break
+    }
+    setRunsCount(matches.length)
+    return { items: matches, nextCursor: null, total: matches.length }
+  }
 
   if (!scriptId) {
     return (
@@ -105,7 +129,7 @@ function ScriptDetail() {
         tabs={[
           { key: 'overview', label: 'Overview' },
           { key: 'source', label: 'Source' },
-          { key: 'runs', label: 'Runs', count: runs?.length ?? null },
+          { key: 'runs', label: 'Runs', count: runsCount },
           { key: 'settings', label: 'Settings' },
         ]}
         hrefFor={(k) => `/scripts/detail?id=${encodeURIComponent(script.id)}${k === 'overview' ? '' : `&tab=${k}`}`}
@@ -184,56 +208,51 @@ function ScriptDetail() {
 
       {tab === 'runs' && (
         <div className="px-5 py-4">
-          {runs === null ? (
-            <LoadingRows rows={4} />
-          ) : runs.length === 0 ? (
-            <EmptyState
-              title="No runs yet"
-              description="Jobs started from this script appear here."
-              action={
+          <PaginatedTable<JobInfo>
+            ref={runsRef}
+            resetKey={scriptId}
+            fetchPage={fetchRuns}
+            rowKey={(j) => j.jobId}
+            header={
+              <>
+                <TableHead className="w-[35%]">Job</TableHead>
+                <TableHead>Device</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Duration</TableHead>
+                <TableHead>Started</TableHead>
+              </>
+            }
+            renderRow={(j) => (
+              <>
+                <TableCell>
+                  <Link href={`/jobs/detail?id=${j.jobId}`} className="readout text-[12px] hover:text-accent">
+                    {j.jobId.slice(0, 8)}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-[12.5px]">
+                  {devices.find((d) => d.id === j.deviceId)?.label ?? j.deviceId.slice(0, 8)}
+                </TableCell>
+                <TableCell>
+                  <JobStatusBadge status={j.status} />
+                </TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">
+                  {duration(j.startedAt, j.finishedAt, now)}
+                </TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">
+                  {relativeTime(j.startedAt ?? j.createdAt, now)}
+                </TableCell>
+              </>
+            )}
+            empty={{
+              title: 'No runs yet',
+              description: 'Jobs started from this script appear here.',
+              action: (
                 <Button disabled={!script.enabled} onClick={() => setRunOpen(true)}>
                   Run it now
                 </Button>
-              }
-            />
-          ) : (
-            <div className="overflow-hidden rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-[35%]">Job</TableHead>
-                    <TableHead>Device</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Duration</TableHead>
-                    <TableHead>Started</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {runs.map((j) => (
-                    <TableRow key={j.jobId}>
-                      <TableCell>
-                        <Link href={`/jobs/detail?id=${j.jobId}`} className="readout text-[12px] hover:text-accent">
-                          {j.jobId.slice(0, 8)}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-[12.5px]">
-                        {devices.find((d) => d.id === j.deviceId)?.label ?? j.deviceId.slice(0, 8)}
-                      </TableCell>
-                      <TableCell>
-                        <JobStatusBadge status={j.status} />
-                      </TableCell>
-                      <TableCell className="readout text-[11.5px] text-fg-muted">
-                        {duration(j.startedAt, j.finishedAt)}
-                      </TableCell>
-                      <TableCell className="readout text-[11.5px] text-fg-muted">
-                        {relativeTime(j.startedAt ?? j.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
+              ),
+            }}
+          />
         </div>
       )}
 
@@ -286,6 +305,7 @@ function ScriptDetail() {
         script={runOpen ? script : null}
         devices={devices}
         onClose={() => setRunOpen(false)}
+        onLaunched={() => runsRef.current?.reload()}
       />
     </>
   )

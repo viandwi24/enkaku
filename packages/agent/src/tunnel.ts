@@ -21,6 +21,8 @@ export interface Tunnel {
   send(msg: AgentToControl): void
   sendFrame(channelId: number, payload: Uint8Array): void
   isConnected(): boolean
+  /** The underlying WS's own outbound backlog (bytes) — the agent-side half of backpressure (plan 25 §3.5, §4.4): a shell stream watches this before batching more data. 0 when disconnected. */
+  bufferedAmount(): number
 }
 
 const PING_INTERVAL_MS = 20_000
@@ -143,5 +145,6 @@ export function createTunnel(state: AgentState, handlers: TunnelHandlers, log: (
       ws.send(encodeTunnelFrame(channelId, payload))
     },
     isConnected: () => ws?.readyState === WebSocket.OPEN,
+    bufferedAmount: () => ws?.bufferedAmount ?? 0,
   }
 }

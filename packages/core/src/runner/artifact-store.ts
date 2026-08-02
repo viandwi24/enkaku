@@ -54,6 +54,7 @@ export function createArtifactStore(deps: {
       const info: ArtifactInfo = {
         id: crypto.randomUUID(),
         jobId: deps.jobId,
+        deviceId: null,
         kind,
         label,
         path: join('artifacts', deps.jobId, filename),
@@ -76,4 +77,52 @@ export function createArtifactStore(deps: {
       return info
     },
   }
+}
+
+/**
+ * Device-scoped artifacts (plan 24 §4.6) — no job to belong to, so they live
+ * under `<app-data>/artifacts/device-<device-id>/` instead of a job folder,
+ * and the DB row carries `deviceId` with `jobId` left null. Used today for
+ * "save last N lines" from the Monitor tab; kind is always `log`.
+ */
+export async function saveForDevice(
+  deps: { db: Db; dataDir: string },
+  deviceId: string,
+  label: string,
+  data: Uint8Array,
+  ext = 'log',
+): Promise<ArtifactInfo> {
+  if (data.length > MAX_FILE_BYTES) {
+    throw new EnkakuError('ARTIFACT_TOO_LARGE', `artifact "${label}" ${data.length} byte melebihi 8 MB`)
+  }
+  const relDir = join('artifacts', `device-${deviceId}`)
+  const dir = join(deps.dataDir, relDir)
+  mkdirSync(dir, { recursive: true })
+  const filename = `${Date.now()}-${slug(label)}.${ext}`
+  const abs = join(dir, filename)
+  await Bun.write(abs, data)
+  const size = data.length
+  const info: ArtifactInfo = {
+    id: crypto.randomUUID(),
+    jobId: null,
+    deviceId,
+    kind: 'log',
+    label,
+    path: join(relDir, filename),
+    sizeBytes: size,
+    createdAt: Math.floor(Date.now() / 1000),
+  }
+  deps.db
+    .insert(artifacts)
+    .values({
+      id: info.id,
+      deviceId: info.deviceId,
+      kind: info.kind,
+      label: info.label,
+      path: info.path,
+      sizeBytes: size,
+      createdAt: new Date(),
+    })
+    .run()
+  return info
 }

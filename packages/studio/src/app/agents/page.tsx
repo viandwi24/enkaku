@@ -1,17 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Copy, Plus, Server } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
 import { coreBase } from '@/lib/ws'
 import { relativeTime } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 import { cn } from '@/lib/utils'
 
 interface Agent {
@@ -32,22 +33,16 @@ interface Agent {
  * alongside the ones plugged in here.
  */
 export default function AgentsPage() {
-  const [agents, setAgents] = useState<Agent[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const tableRef = useRef<PaginatedTableHandle<Agent>>(null)
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [issued, setIssued] = useState<{ agentId: string; token: string } | null>(null)
   const [mode, setMode] = useState<string | null>(null)
   const { run, isPending } = useAction()
+  // "Last seen" ticks without a refresh (Plan 17 §4.6).
+  const now = useNow()
 
-  const load = () => {
-    setError(null)
-    api<{ agents: Agent[] }>('/api/agents')
-      .then((b) => setAgents(b.agents))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-  }
   useEffect(() => {
-    load()
     void api<{ mode?: string }>('/api/health')
       .then((h) => setMode(h.mode ?? 'local'))
       .catch(() => setMode('local'))
@@ -60,7 +55,7 @@ export default function AgentsPage() {
       onSuccess: (b) => {
         setIssued(b)
         setName('')
-        load()
+        tableRef.current?.reload()
       },
     })
 
@@ -86,58 +81,51 @@ export default function AgentsPage() {
             <code className="readout">ENKAKU_MODE=orchestrator</code>.
           </div>
         )}
-        {error ? (
-          <ErrorState message={error} onRetry={load} />
-        ) : agents === null ? (
-          <LoadingRows rows={3} />
-        ) : agents.length === 0 ? (
-          <EmptyState
-            icon={<Server className="size-4" aria-hidden />}
-            title="No agents yet"
-            description={
+
+        <PaginatedTable<Agent>
+          ref={tableRef}
+          fetchPage={(cursor) => api(`/api/agents?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          rowKey={(a) => a.id}
+          header={
+            <>
+              <TableHead className="w-[40%]">Name</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Platform</TableHead>
+              <TableHead>Last seen</TableHead>
+            </>
+          }
+          renderRow={(a) => (
+            <>
+              <TableCell className="font-medium">{a.name}</TableCell>
+              <TableCell>
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
+                    a.status === 'online'
+                      ? 'border-led-ok/35 bg-led-ok/10 text-led-ok'
+                      : 'border-line text-fg-subtle',
+                  )}
+                >
+                  <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                  {a.status}
+                </span>
+              </TableCell>
+              <TableCell className="readout text-[12px] text-fg-muted">{a.platform ?? '—'}</TableCell>
+              <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.lastSeen, now)}</TableCell>
+            </>
+          )}
+          empty={{
+            icon: <Server className="size-4" aria-hidden />,
+            title: 'No agents yet',
+            description: (
               <>
-                An agent runs next to your phones and opens an outbound tunnel here — no port forwarding, and NAT is not
-                a problem. Create one to get a single-use enrollment token.
+                An agent runs next to your phones and opens an outbound tunnel here — no port forwarding, and NAT is
+                not a problem. Create one to get a single-use enrollment token.
               </>
-            }
-            action={<Button onClick={() => setOpen(true)}>New agent</Button>}
-          />
-        ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[40%]">Name</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Platform</TableHead>
-                  <TableHead>Last seen</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {agents.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="font-medium">{a.name}</TableCell>
-                    <TableCell>
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
-                          a.status === 'online'
-                            ? 'border-led-ok/35 bg-led-ok/10 text-led-ok'
-                            : 'border-line text-fg-subtle',
-                        )}
-                      >
-                        <span className="size-1.5 rounded-full bg-current" aria-hidden />
-                        {a.status}
-                      </span>
-                    </TableCell>
-                    <TableCell className="readout text-[12px] text-fg-muted">{a.platform ?? '—'}</TableCell>
-                    <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.lastSeen)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+            ),
+            action: <Button onClick={() => setOpen(true)}>New agent</Button>,
+          }}
+        />
       </div>
 
       <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setIssued(null) }}>

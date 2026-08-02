@@ -96,9 +96,17 @@ export const TunnelChannelOpenMessage = z.object({
   payload: z.object({
     channelId: z.number().int().min(0).max(65535),
     deviceId: z.string(),
-    kind: z.enum(['video', 'audio', 'control-raw']),
+    /**
+     * `shell` (plan 25 §3.3, §4.2): a multiplexed byte stream for
+     * logcat/top/thermal on an agent-owned device — no new transport, just a
+     * new kind on the channel that already exists.
+     * `adb-raw` (plan 28 §4.1): one channel per ADB stream carried by the
+     * cloud adb endpoint's shim — see the `adb.*` messages below.
+     */
+    kind: z.enum(['video', 'audio', 'control-raw', 'shell', 'adb-raw']),
   }),
 })
+export type TunnelChannelKind = z.infer<typeof TunnelChannelOpenMessage>['payload']['kind']
 
 export const TunnelChannelCloseMessage = z.object({
   type: z.literal('tunnel.channel.close'),
@@ -231,6 +239,146 @@ export const JobProgressMessage = z.object({
   }),
 })
 
+// ---- correlated shell request/response (M12d, plan 25 §4.1, §4.2) ----
+
+/**
+ * The correlation layer the tunnel was missing (plan 25 §3.2): every request
+ * here carries `id` (a `crypto.randomUUID()`, matched to its reply by
+ * `TunnelRpc`), unlike the fire-and-forget messages above. `cmd` crossing the
+ * tunnel is deliberate (§4.2) — the agent is not a security boundary against
+ * its own control plane, and the monitor builders on the core side are the
+ * only producers of these strings in this plan.
+ */
+export const ShellReplyErrorSchema = z.object({ code: z.string(), message: z.string() })
+
+export const ShellExecRequestMessage = z.object({
+  type: z.literal('shell.exec.request'),
+  id: z.string(),
+  payload: z.object({
+    deviceId: z.string(),
+    cmd: z.string(),
+    /** An `AdbTimeoutProfile` name, mirrored as a plain string so this package
+     * never depends on `@enkaku/adb` (same reasoning as `MonitorEndReasonSchema`
+     * in `messages/shell.ts`). An agent that does not recognise the value
+     * falls back to its own default profile. */
+    profile: z.string().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+  }),
+})
+
+export const ShellExecReplyMessage = z.object({
+  type: z.literal('shell.exec.reply'),
+  id: z.string(),
+  payload: z.object({
+    ok: z.boolean(),
+    stdout: z.string().optional(),
+    exitCode: z.number().int().nullable().optional(),
+    truncated: z.boolean().optional(),
+    error: ShellReplyErrorSchema.optional(),
+  }),
+})
+
+export const ShellStreamRequestMessage = z.object({
+  type: z.literal('shell.stream.request'),
+  id: z.string(),
+  payload: z.object({
+    deviceId: z.string(),
+    cmd: z.string(),
+    /** The `shell` binary channel the core already opened for this stream (§4.5 step 1). */
+    channelId: z.number().int().min(0).max(65535),
+    idleTimeoutMs: z.number().int().positive().optional(),
+    absoluteTimeoutMs: z.number().int().positive().optional(),
+    maxBytes: z.number().int().positive().optional(),
+  }),
+})
+
+export const ShellStreamReplyMessage = z.object({
+  type: z.literal('shell.stream.reply'),
+  id: z.string(),
+  payload: z.object({
+    ok: z.boolean(),
+    streamId: z.string().optional(),
+    error: ShellReplyErrorSchema.optional(),
+  }),
+})
+
+/** CP → agent: stop a running stream (mirrors the local `AdbStreamHandle.stop()` path). */
+export const ShellStreamStopMessage = z.object({
+  type: z.literal('shell.stream.stop'),
+  payload: z.object({ streamId: z.string() }),
+})
+
+/**
+ * agent → CP: a push, not a reply — correlated by the stream's OWN id
+ * (assigned in `shell.stream.reply`), not by a pending request id, because
+ * nothing is "requesting" this; it can arrive at any time (idle/deadline/
+ * bytes/stopped/error/backpressure — plan 25 §3.5).
+ */
+export const ShellStreamEndedMessage = z.object({
+  type: z.literal('shell.stream.ended'),
+  payload: z.object({ streamId: z.string(), reason: z.string() }),
+})
+
+// ---- the cloud adb endpoint (M12g, plan 28 §4.1) ----
+
+/**
+ * `AdbdShimDeps.openService` (plan 27 §4.1) becomes, in cloud mode, a call
+ * across the tunnel: one `adb.open.request`/`adb.open.reply` pair per ADB
+ * stream (`OPEN` on the wire protocol), correlated by `id` exactly like the
+ * `shell.*` request/reply pairs above. Payload bytes then travel as tunnel
+ * frames on `channelId`, in both directions — no further JSON per byte.
+ */
+export const AdbOpenRequestMessage = z.object({
+  type: z.literal('adb.open.request'),
+  id: z.string(),
+  payload: z.object({
+    deviceId: z.string(),
+    service: z.string().max(1024),
+    channelId: z.number().int().min(0).max(65535),
+  }),
+})
+
+export const AdbOpenReplyMessage = z.object({
+  type: z.literal('adb.open.reply'),
+  id: z.string(),
+  payload: z.object({
+    ok: z.boolean(),
+    error: ShellReplyErrorSchema.optional(),
+  }),
+})
+
+/**
+ * Either side may end an ADB stream first (the host's `CLSE`, the device's
+ * end of the smartsocket stream, or the endpoint tearing down) — plan 28
+ * §4.2 point 5: "close on either side → adb.close → tunnel.channel.close →
+ * release the id in a finally." Not a reply to anything, so it carries no
+ * `id`; the receiving side correlates by `channelId`.
+ */
+export const AdbCloseMessage = z.object({
+  type: z.literal('adb.close'),
+  payload: z.object({
+    channelId: z.number().int().min(0).max(65535),
+    reason: z.string(),
+  }),
+})
+
+/**
+ * Delivery acknowledgement for §3.3: the agent reports how many bytes it has
+ * actually written downstream (to its own adb server) for `channelId`. The
+ * shim's WRTE/OKAY window to the user's adb client advances ONLY on this
+ * message — never merely because bytes were handed to the tunnel — so a
+ * large `push` cannot buffer without limit in the control plane. This is the
+ * single most important correctness detail in plan 28 (§3.3, acceptance #4).
+ */
+export const AdbAckMessage = z.object({
+  type: z.literal('adb.ack'),
+  payload: z.object({
+    channelId: z.number().int().min(0).max(65535),
+    bytes: z.number().int().nonnegative(),
+  }),
+})
+
 // ---- union (must come last: every message is defined by now) ----
 
 export const AgentToControlSchema = z.discriminatedUnion('type', [
@@ -242,6 +390,12 @@ export const AgentToControlSchema = z.discriminatedUnion('type', [
   TunnelPingMessage,
   TunnelPongMessage,
   TunnelChannelCloseMessage,
+  ShellExecReplyMessage,
+  ShellStreamReplyMessage,
+  ShellStreamEndedMessage,
+  AdbOpenReplyMessage,
+  AdbCloseMessage,
+  AdbAckMessage,
 ])
 export type AgentToControl = z.infer<typeof AgentToControlSchema>
 
@@ -256,6 +410,11 @@ export const ControlToAgentSchema = z.discriminatedUnion('type', [
   TunnelPongMessage,
   TunnelChannelOpenMessage,
   TunnelChannelCloseMessage,
+  ShellExecRequestMessage,
+  ShellStreamRequestMessage,
+  ShellStreamStopMessage,
+  AdbOpenRequestMessage,
+  AdbCloseMessage,
 ])
 export type ControlToAgent = z.infer<typeof ControlToAgentSchema>
 

@@ -23,6 +23,25 @@ export interface FrameMeta {
   keyframe?: boolean
 }
 
+/**
+ * Optional per-call execution budget, threaded through to whatever
+ * serialises access underneath (plan 22.1 §4.6) — e.g. @enkaku/adb's
+ * per-device queue. Every field is transport-specific: an adb transport
+ * looks `profile` up in `ADB_TIMEOUTS`; a transport with no such concept is
+ * free to ignore fields it does not support.
+ */
+export interface TransportExecOptions {
+  /** A named timeout profile (e.g. 'probe', 'input', 'appLifecycle'). */
+  profile?: string
+  /** Absolute execution budget in ms. */
+  timeoutMs?: number
+  /** How long the call may wait for its turn in a per-device queue. */
+  queueTimeoutMs?: number
+  /** Hard cap on returned bytes. */
+  maxOutputBytes?: number
+  signal?: AbortSignal
+}
+
 export interface Transport {
   id: string
   /** The adb transport address — it can change (USB ↔ ip:port). */
@@ -31,9 +50,9 @@ export interface Transport {
   stableId: string
   connect(): Promise<void>
   disconnect(): Promise<void>
-  exec(cmd: string): Promise<string>
+  exec(cmd: string, opts?: TransportExecOptions): Promise<string>
   /** Binary stdout (screencap and friends) — an M2 extension to spec §7. */
-  execOut(cmd: string): Promise<Uint8Array>
+  execOut(cmd: string, opts?: TransportExecOptions): Promise<Uint8Array>
 }
 
 export interface DisplaySource {

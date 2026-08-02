@@ -27,6 +27,13 @@ class WsClient {
   private backoffMs = 500
   private onReconnect = new Set<() => void>()
   private connected = false
+  /**
+   * This tab's WS connection id, from the `hello` message the core sends
+   * right after the socket opens (plan 31 §4.1) — cached here (not just
+   * re-dispatched to handlers) so a component mounted after the handshake
+   * already completed can still ask synchronously, instead of racing it.
+   */
+  private sessionId: string | null = null
 
   connect(): void {
     if (typeof window === 'undefined') return
@@ -65,6 +72,7 @@ class WsClient {
       const parsed = ServerMessageSchema.safeParse(json)
       if (!parsed.success) return
       const msg = parsed.data
+      if (msg.type === 'hello') this.sessionId = msg.payload.sessionId
       const id = 'id' in msg ? msg.id : undefined
       if (id) {
         const waiter = this.pending.get(id)
@@ -86,6 +94,11 @@ class WsClient {
 
   isConnected(): boolean {
     return this.connected
+  }
+
+  /** This tab's current session id, or null before the first `hello` arrives. */
+  getSessionId(): string | null {
+    return this.sessionId
   }
 
   send(msg: ClientMessage): void {

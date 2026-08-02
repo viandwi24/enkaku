@@ -18,6 +18,10 @@ export interface ExecutorHostDeps {
   onJobStatus: (info: JobInfo) => void
   /** Kick scheduler setelah device bebas. */
   onFinished: () => void
+  /** A batch member job reached a terminal state — recompute the batch's cached status (plan 20 §4.5). */
+  onBatchChanged?: (batchId: string) => void
+  /** Main-stream device event: job.finished (plan 18 §4.2). */
+  onJobFinished?: (deviceId: string, jobId: string, status: string, durationMs: number) => void
 }
 
 export interface ExecutorHost {
@@ -49,6 +53,9 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
     deps.states.apply(job.deviceId, 'JOB_FINISHED')
     if (updated) deps.onJobStatus(rowToJobInfo(updated))
     deps.log.info(`job ${job.id} finished: ${status}${data.error ? ` (${data.error})` : ''}`)
+    const durationMs = job.startedAt ? Date.now() - job.startedAt.getTime() : 0
+    deps.onJobFinished?.(job.deviceId, job.id, status, durationMs)
+    if (job.batchId) deps.onBatchChanged?.(job.batchId)
     deps.onFinished()
   }
 

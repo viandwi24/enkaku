@@ -2,7 +2,13 @@ import { z } from 'zod'
 
 /** Jobs and leases (spec §10, §13). */
 
-export const JobStatusSchema = z.enum(['queued', 'running', 'success', 'failed', 'cancelled'])
+/**
+ * `expired` (plan 21 §3.3, §4.1) is distinct from `failed`: `failed` says the
+ * script ran and did not work, `expired` says the job never got a device
+ * before its queue deadline. Collapsing them makes a farm capacity problem
+ * look like a script bug.
+ */
+export const JobStatusSchema = z.enum(['queued', 'running', 'success', 'failed', 'cancelled', 'expired'])
 export type JobStatus = z.infer<typeof JobStatusSchema>
 
 /** Params for the `internal:sleep` dummy executor (M3 — queue validation without automation). */
@@ -61,6 +67,12 @@ export const JobInfoSchema = z.object({
   createdAt: z.number(),
   startedAt: z.number().nullable(),
   finishedAt: z.number().nullable(),
+  /** Plan 20 §4.1 — null for a standalone job. */
+  batchId: z.string().nullable().default(null),
+  /** Position within the batch (the shuffle for `random` order is baked in here). */
+  batchSeq: z.number().int().nullable().default(null),
+  /** Plan 21 §3.3, §4.1 — unix seconds; null means "wait forever". */
+  expiresAt: z.number().nullable().default(null),
 })
 export type JobInfo = z.infer<typeof JobInfoSchema>
 
@@ -86,9 +98,18 @@ export const JobLogMessage = z.object({
   }),
 })
 
+/**
+ * Exactly one of `jobId` / `deviceId` is set (plan 24 §4.6): a job artifact
+ * (the pre-existing case) carries `jobId` and a null `deviceId`; a
+ * device-scoped artifact ("save last N lines" from the Monitor tab) is the
+ * reverse. Both fields are nullable rather than a discriminated union so
+ * every existing `job.artifact` payload — which always has `jobId` set —
+ * keeps parsing unchanged.
+ */
 export const ArtifactInfoSchema = z.object({
   id: z.string(),
-  jobId: z.string(),
+  jobId: z.string().nullable().default(null),
+  deviceId: z.string().nullable().default(null),
   kind: z.enum(['screenshot', 'log', 'file', 'video']),
   label: z.string().nullable(),
   path: z.string(),

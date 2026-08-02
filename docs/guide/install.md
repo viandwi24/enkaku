@@ -57,6 +57,40 @@ docker compose up -d
 
 USB access from a container is awkward (it needs `--device /dev/bus/usb`, udev rules, and can fight the host over the adb server). **In containers, use wireless ADB**: enroll devices with a pairing code from Studio.
 
+## adb endpoint (power users)
+
+While you hold a device's lease, Studio's Terminal tab can lend you a real
+`adb` endpoint for that device — not a re-implementation of `adb`, an actual
+impersonation of `adbd` that your own local `adb` connects to. That gets you
+everything a browser terminal cannot: `adb install`, `push`/`pull`, `logcat`
+piped into your own tools, and attaching a debugger.
+
+It is **off by default**, even on a loopback install — turn it on from
+Settings → Device terminal → "Allow adb endpoint". Once enabled and while you
+hold the lease, open the Terminal tab and use the "adb endpoint" card:
+
+```bash
+adb connect 127.0.0.1:<port>          # the exact command is copyable in Studio
+adb -s 127.0.0.1:<port> shell getprop ro.serialno
+adb -s 127.0.0.1:<port> install ./app.apk
+adb -s 127.0.0.1:<port> push ./f.txt /data/local/tmp/
+adb -s 127.0.0.1:<port> logcat        # Ctrl-C to stop
+```
+
+The endpoint exists only for the life of your lease: releasing control,
+going idle for `shell.endpointIdleSec` (default 300s) with no connection, or
+disconnecting closes it automatically, and every command it carries is
+recorded to that device's Logs tab.
+
+**`shell.endpointBind` defaults to `127.0.0.1` and that default is
+deliberate.** Anything else (`0.0.0.0`, a LAN address) hands out full,
+unauthenticated control of the device to anyone on that network who can
+reach the port — the endpoint skips `adbd`'s own RSA key challenge entirely
+(§3.4 of the plan explains why), relying instead on the lease, the
+permission, and the loopback binding to keep it safe. Only widen the bind
+address if you understand and accept that trade-off, on a network you
+already trust.
+
 ## Environment variables
 
 | Env | What it does |
