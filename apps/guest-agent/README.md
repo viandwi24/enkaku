@@ -66,6 +66,16 @@ bun scripts/guest-agent.ts uninstall --serial <SERIAL>
 
 It is a temporary developer tool, not part of the product — delete it once the Studio path is complete.
 
+## Smoke test
+
+`scripts/smoke-guest-agent.ts` is the real test suite for this app: install, permissions, pre-grant, bootstrap, token rotation, an ANR check, routing, egress, an error-frame check, interleaving, uninstall, and teardown — twelve stages, each asserting on what the device reports. It supersedes `scripts/guest-agent.ts` for anything beyond ad hoc debugging; see [`docs/plans/50-m24a-ci-and-device-smoke-test.md`](../../docs/plans/50-m24a-ci-and-device-smoke-test.md) for why each stage exists.
+
+```bash
+ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
+```
+
+Add `ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port` to also run the routing stages (7-10); without it they print a skip line rather than failing. `--serial` is mandatory — it never guesses which attached device to drive. Not run in CI: GitHub runners have no phone attached, so this stays a local (or eventually self-hosted-runner) command.
+
 ## Project layout
 
 Scaffolded with the official tool, not by hand:

@@ -69,6 +69,7 @@
 | 50 | `50-m24a-ci-and-device-smoke-test.md` | M24a | **CI plus a device smoke test**: typecheck and tests on every push, a path-conditional Android build job, and an `ENKAKU_TEST_DEVICE=1` runner whose stages map one-to-one onto the six defects the proxy bring-up could only find by hand. Prerequisite for 51 and 52. |
 | 51 | `51-m24b-verified-egress-and-fail-closed.md` | M24b | **Verified egress, fail-closed routing**: `health` becomes named checks instead of one enum; an egress probe measured from the device *through* the tunnel and outside it; DNS-leak detection against a self-hosted endpoint; explicit IPv6 blocking; opt-in lockdown so a dead tunnel stops traffic instead of silently leaking the real address. |
 | 52 | `52-m24c-device-scoped-routes-and-stable-identity.md` | M24c | **Routes belong to the device**: survive lease release, reboot and core restart; restore by probing rather than reapplying; a credential store replacing plaintext secrets; per-device sticky session identity; route and health on the devices list. **Supersedes Plan 44's lease-scoped lifetime.** |
+| 53 | `53-m25-framed-shell-transport.md` | M25 | **Framed shell**: `exec` returns `{ stdout, stderr, exitCode }`; deletes the exit-marker workaround. One shell path, 57 call sites migrated in one commit. |
 
 Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
 

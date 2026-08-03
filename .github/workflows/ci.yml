@@ -1,0 +1,65 @@
+name: ci
+
+# Plan 50 (M24a): every push and PR gets a green/red signal for the shared workspace — the class
+# of failure this catches is a file left red by someone else's in-flight work, which bit this
+# project twice in one session before this workflow existed.
+#
+# What a green run here does NOT prove: that the guest agent actually works on a phone. All six
+# defects that motivated this plan (a missing permission, an ANR, a dropped token, a self-undoing
+# uninstall, a wire-schema mismatch, a race between two host calls) only ever showed up on real
+# hardware — nothing in `check` touches a device. That proof is `bun run smoke:guest-agent`,
+# gated behind ENKAKU_TEST_DEVICE=1, run by hand against a real phone (never in CI: runners have
+# no phone attached). See docs/plans/50-m24a-ci-and-device-smoke-test.md §0 and §3.3.
+#
+# Separate from .github/workflows/release.yml, which only runs on a `v*` tag.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            android:
+              - 'apps/guest-agent/**'
+              - 'scripts/build-guest-agent.sh'
+
+  # Builds the guest agent APK only — it does not sign, publish, or run it against a device.
+  # Path-conditional because provisioning the Android SDK and NDK costs several hundred megabytes
+  # and would otherwise dominate every push that has nothing to do with the guest agent.
+  android:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: yes | sdkmanager --licenses > /dev/null || true
+      - run: sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      - run: bash scripts/build-guest-agent.sh --debug

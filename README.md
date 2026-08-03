@@ -36,6 +36,7 @@ JDK 17 is the minimum *and* the default for AGP 9; newer JDKs are not a drop-in 
 | `bun run dev:agent` | Cloud-mode agent (needs `ENKAKU_CP_URL`) |
 | `bun run dev:desktop` | The Tauri desktop app (needs Rust) |
 | `bun run build:guest-agent` | Build the on-device guest agent APK (needs JDK 17 plus the Android SDK) |
+| `bun run smoke:guest-agent -- --serial <S>` | Device smoke test for the guest agent (needs `ENKAKU_TEST_DEVICE=1` plus a real phone) |
 | `bun run publish:example` | Publish the example script to the local farm |
 | `bun run doctor` | Check the environment — toolchain integrity, adb reachability, egress |
 | `bun run typecheck` | Typecheck every package |
@@ -65,6 +66,20 @@ ENKAKU_CP_URL=http://localhost:7700 ENKAKU_ENROLL_TOKEN=<token> bun run dev:agen
 ```
 
 The token is needed only once; after that `bun run dev:agent` is enough. Full guide: [`docs/guide/cloud.md`](docs/guide/cloud.md).
+
+### CI
+
+`.github/workflows/ci.yml` runs `bun run typecheck` and `bun test` on every push and pull request, plus a path-conditional job that builds the guest agent APK when `apps/guest-agent/**` changes. It never touches a physical device — see below.
+
+### Guest agent smoke test
+
+`scripts/smoke-guest-agent.ts` drives one real phone through the guest agent's install, bootstrap, token-rotation, routing, and uninstall lifecycle over adb, asserting on what the device reports. It exists because the six defects it checks for were all found by hand on hardware and none of them showed up in `bun test` (docs/plans/50-m24a-ci-and-device-smoke-test.md).
+
+```bash
+ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
+```
+
+`--serial` is required — with more than one device attached, nothing is guessed. Set `ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port` to also exercise the routing stages (skipped with a clear message otherwise). Never run in CI: GitHub runners have no phone. See [`apps/guest-agent/README.md`](apps/guest-agent/README.md#driving-it-without-studio) for details.
 
 **Desktop app.** Needs Rust. `ENKAKU_CORE_BIN=<path to core> bun run dev:desktop`.
 

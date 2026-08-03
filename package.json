@@ -15,6 +15,7 @@
     "doctor": "bun run packages/core/src/index.ts doctor",
     "build:studio": "bash scripts/build-studio.sh",
     "build:guest-agent": "bash scripts/build-guest-agent.sh",
+    "smoke:guest-agent": "bun run scripts/smoke-guest-agent.ts",
     "publish:example": "bun run packages/sdk/src/cli/index.ts publish examples/hello-no-device.ts",
     "typecheck": "bash scripts/typecheck.sh",
     "reset": "rm -rf .dev-data .dev-cloud .dev-agent"
