@@ -1,6 +1,7 @@
 # Plan 24 — M12c : The adb Streaming Lane and the Device Monitor
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/core/src/device/monitors.ts
 > Depends on: **Plan 22.1** (deadlines, coded errors, forced socket termination). Plan 23 is recommended but not required.
 > Blocks: Plan 25 (cloud parity) and Plan 26 (the interactive terminal both build on the lane and the protocol defined here).
 > Spec references: §7.1 (display engines), §10.4 (adb serialisation), §13 (protocol), §15.2 (thermal).

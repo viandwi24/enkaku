@@ -1,6 +1,7 @@
 # Plan 41 — M17g : On-device Artifact Verification and `enkaku doctor`
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/drivers/src/inspector/ui-server/verify.ts
 > Depends on: Plan 02 (the Toolchain Manager and its sha256 verification) and Plan 22.1 (coded adb errors, which give `doctor` something precise to report).
 > Spec references: §7.2 (app data paths), §7.6 (version-locked scrcpy), §7.7 (tool endpoints), §10.4 (adb), §16 (NFR).
 

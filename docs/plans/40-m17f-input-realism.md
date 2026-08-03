@@ -1,6 +1,7 @@
 # Plan 40 — M17f : Input Realism — Gesture Kinematics and Typing Cadence
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/drivers/src/input/gesture.ts
 > Depends on: **Plan 34** (which reconnects the Timing settings that are currently saved and never read — building on top of a dead setting would be building on sand). Plan 08 for the scrcpy input engines.
 > Spec references: §9.3 (timing realism), §9 (script API), §13 (protocol).
 

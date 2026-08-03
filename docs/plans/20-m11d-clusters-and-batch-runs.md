@@ -1,6 +1,7 @@
 # Plan 20 — M11d : Clusters and Batch Runs
 
 > Status: implemented (2026-08-02) — see the "Corrected during implementation" note in §4.2
+> Ships: packages/core/src/clusters/dispatch.ts
 > Depends on: **Plan 19** (tags). Blocks Plan 21 (schedules trigger batches).
 > Spec references: §10.2 (leases and the queue), §10.3 (claim atomicity), §11 (job execution), §12 (entities).
 

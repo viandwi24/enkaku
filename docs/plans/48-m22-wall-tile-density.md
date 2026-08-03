@@ -1,6 +1,7 @@
 # Plan 48 — M22 : Wall Tile Density and Hover Actions
 
-> Status: draft — small, self-contained Studio work.
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/studio/src/components/TileChips.tsx
 > Depends on: Plan 42 (the Wall and `TileGrid`), Plan 45 (readiness badge and control), Plan 47 (the merged fleet view). All landed.
 > Spec references: `docs/design.md` (tokens, density, writing rules).
 

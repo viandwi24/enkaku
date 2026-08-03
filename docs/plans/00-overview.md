@@ -230,6 +230,12 @@ Every plan follows this structure, at a depth where "the AI builder just follows
 3. No new unjustified TODOs or `any` in the code you touched.
 4. New behaviour is documented at least in the relevant package README.
 5. The spec §16 NFR targets relevant to that milestone are checked (Plan 06: inspector find < 200 ms; Plan 08: glass-to-glass < 150 ms on a LAN).
+6. **The plan's status line is updated, and `bash scripts/check-plan-status.sh` passes.** Add a `> Ships: <path>` line naming one artefact that proves the plan shipped, so the check is mechanical rather than a memory exercise. Six of the first eight plans audited had shipped while still marked `draft` — and these documents are what an agent builder reads to decide what to work on next, so a stale status line makes it re-implement finished work.
+7. **Every process you started is dead, verified with `ps`, not `lsof`.**
+   ```bash
+   ps -Ao pid=,command= | grep -i "[o]penpf"   # nothing but your own shell
+   ```
+   `lsof -sTCP:LISTEN` only sees processes that opened a port, so it is structurally incapable of catching the ones that matter most. A debug script left behind by an automated run burned a full CPU core for 14 hours on the maintainer's machine and passed an `lsof` check the whole time, because it never listened on anything.
 
 ## 8. Short glossary
 

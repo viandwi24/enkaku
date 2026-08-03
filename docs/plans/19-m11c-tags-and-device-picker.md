@@ -1,6 +1,7 @@
 # Plan 19 — M11c : Tags, Labels, and the Device Picker
 
 > Status: implemented (2026-08-02)
+> Ships: packages/protocol/src/tags.ts
 > Depends on: Plans 01–16 complete. **Blocks Plan 20** (clusters target devices by tag).
 > Spec references: §7.5 (device identity), §12 (entities), §13 (protocol).
 

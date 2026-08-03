@@ -1,6 +1,7 @@
 # Plan 30 — M14a : Server-side Pagination for Every List
 
 > Status: implemented (2026-08-02) — keyset paging; legacy response keys kept for one release
+> Ships: packages/core/src/api/pagination.ts
 > Depends on: Plans 17–21 complete.
 > Spec references: §13 (API conventions), §15 (retention), §16 (NFR).
 

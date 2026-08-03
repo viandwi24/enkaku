@@ -1,6 +1,7 @@
 # Plan 18 — M11b : Device Event Log (main and input streams)
 
-> Status: not started
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/core/src/events/recorder.ts
 > Depends on: Plans 01–16 complete. Independent of Plan 17 — the two may be built in either order.
 > Spec references: §10.1 (device states), §13 (protocol), §14 (auth and audit), §15 (retention).
 

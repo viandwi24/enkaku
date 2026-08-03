@@ -1,6 +1,7 @@
 # Plan 21 — M11e : Schedules and Queue Policy
 
 > Status: implemented (2026-08-02) — see the "Corrected against croner" note in §3.1
+> Ships: packages/core/src/schedules/runner.ts
 > Depends on: **Plan 20** (batches). A schedule triggers a batch, not a bare job.
 > Spec references: §10.2 (leases and the queue), §10.3 (claim atomicity), §12 (entities), §15 (retention).
 

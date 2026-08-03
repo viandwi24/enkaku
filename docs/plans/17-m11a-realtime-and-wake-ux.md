@@ -1,6 +1,7 @@
 # Plan 17 — M11a : Realtime UI Contract and Device Wake-up UX
 
 > Status: implemented (2026-08-02) — see the "Corrected during implementation" note in §4.2
+> Ships: packages/studio/src/lib/useNow.ts
 > Depends on: Plans 01–16 complete.
 > Spec references: §7.1 (display engines), §10.1 (device states), §13 (core⇄studio protocol), §16 (NFR).
 

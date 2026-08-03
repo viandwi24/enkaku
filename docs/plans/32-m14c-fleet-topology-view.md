@@ -1,6 +1,7 @@
 # Plan 32 — M14c : Fleet Topology View
 
 > Status: implemented (2026-08-02) — viewer count on tiles deliberately omitted, see the report note in §9
+> Ships: packages/core/src/api/topology.ts
 > Depends on: Plans 19–21 complete (tags, clusters, batches). Best built after Plan 31 so a device tile can show who is watching it.
 > Spec references: §7.5 (device identity), §10.1 (device states), §16 (NFR), `docs/design.md`.
 

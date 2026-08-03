@@ -1,6 +1,7 @@
 # Plan 42 — M18 : View Lifecycle, Lease State, and the Fleet Wall
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/studio/src/components/wall/Wall.tsx
 > Depends on: Plans 24 (monitors), 26 (terminal), 31 (presence), 32 (topology), 39 (files) — all implemented. Independent of Plans 40 and 41.
 > Spec references: §7.1 (display engines), §10.1 (server-authoritative control), §10.2 (leases), §13 (protocol), §16 (NFR).
 

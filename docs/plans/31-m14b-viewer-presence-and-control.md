@@ -1,6 +1,7 @@
 # Plan 31 — M14b : Viewer Presence and Control Ownership
 
 > Status: implemented (2026-08-02) — see §3.1: the reported two-browser symptom did NOT reproduce; a distinct lease.revoked scoping bug was found and fixed instead
+> Ships: packages/protocol/src/messages/presence.ts
 > Depends on: Plans 17–21 complete. Independent of Plan 30.
 > Spec references: §10.1 (device states), §10.2 (leases), §13 (protocol), §14 (auth and audit).
 
