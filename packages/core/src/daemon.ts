@@ -88,6 +88,7 @@ import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { createToolInstallStore } from './tools/store'
 import { createLogger } from './util/logger'
+import { acquireDataDirLock, type DataDirLock } from './util/data-dir-lock'
 import { createEventRecorder, type EventRecorder } from './events/recorder'
 
 import pkg from '../package.json'
@@ -124,6 +125,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let stopReaper: (() => void) | null = null
   let stopExpiryReaper: (() => void) | null = null
   let stopScheduleRunner: (() => void) | null = null
+  let dataDirLock: DataDirLock | null = null
   let stopped = false
   let adbState = 'provisioning'
 
@@ -133,6 +135,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
     async start() {
       const startedAt = Date.now()
       log.info(`data dir: ${cfg.dataDir}`)
+
+      // Before anything opens the database or touches adb: one core per data
+      // directory. Two cores here would silently fight over the same phones
+      // (see `data-dir-lock.ts` for what that actually looked like).
+      dataDirLock = acquireDataDirLock(cfg.dataDir, log)
 
       // 1. DB + migrasi
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
@@ -1496,6 +1503,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       adb = null
       opened?.sqlite.close()
       opened = null
+      // Last, so nothing can claim this directory while we are still tearing
+      // sessions and the database down.
+      dataDirLock?.release()
+      dataDirLock = null
       log.info('stopped')
     },
   }
