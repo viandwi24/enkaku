@@ -27,6 +27,11 @@ export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: Jo
 
       // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
       ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
+      // A crash of a package the farm's crash policy cares about (plan 37
+      // §3.5, §4.4) — a SEPARATE abort path from `signal` above, so it
+      // settles as `APP_CRASHED` (script-class, never blames the device)
+      // rather than as a plain cancel.
+      ctx.onCrash?.((e) => deps.runner.abort(job.id, 'crashed', `${e.package} crashed: ${e.exception}`))
 
       // The bundle is materialised in the core (which has DB access); the runner only gets a path.
       const bundlePath = await materializeBundle(deps.dataDir, script)

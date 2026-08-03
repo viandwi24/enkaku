@@ -122,6 +122,19 @@ function assertPositive(name: string, value: number): void {
   }
 }
 
+/**
+ * Like `assertPositive`, but `0` is a legal value meaning "disabled" (plan 34
+ * §4.1, §8): a caller whose command is meant to outlive both stream clocks
+ * (the ui-server instrumentation) passes `0` for `idleTimeoutMs` and
+ * `absoluteTimeoutMs` deliberately, not by omission — omission still falls
+ * back to the lane's own defaults above.
+ */
+function assertNonNegative(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new AdbError('E_ADB_BAD_TIMEOUT', `invalid ${name}: ${value}`)
+  }
+}
+
 export interface AdbClientOptions {
   /** Path to the adb binary — from resolveToolPath('adb'); the client NEVER reads env itself. */
   adbPath: string
@@ -398,8 +411,8 @@ export class AdbClient {
     const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
     const absoluteTimeoutMs = opts.absoluteTimeoutMs ?? DEFAULT_STREAM_ABSOLUTE_TIMEOUT_MS
     const maxBytes = opts.maxBytes ?? DEFAULT_STREAM_MAX_BYTES
-    assertPositive('idleTimeoutMs', idleTimeoutMs)
-    assertPositive('absoluteTimeoutMs', absoluteTimeoutMs)
+    assertNonNegative('idleTimeoutMs', idleTimeoutMs)
+    assertNonNegative('absoluteTimeoutMs', absoluteTimeoutMs)
     assertPositive('maxBytes', maxBytes)
 
     const releaseLane = this.streamLane.acquire(serial)
@@ -450,10 +463,16 @@ export class AdbClient {
       opts.signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    // Idle clock: Bun's native per-socket timer (§3.3, §4.1). Absolute clock:
-    // a plain timer, since nothing in Bun's socket API expresses it directly.
-    socket.setIdleTimeout(Math.max(1, Math.ceil(idleTimeoutMs / 1000)))
-    absoluteTimer = setTimeout(() => finish('deadline'), absoluteTimeoutMs)
+    // Idle clock: Bun's native per-socket timer (§3.3, §4.1) — `0` disables
+    // it outright (`AdbSocket.setIdleTimeout`'s own contract), used by plan
+    // 34 §4.1 for a stream that is legitimately silent once healthy (the
+    // ui-server instrumentation). Absolute clock: a plain timer, since
+    // nothing in Bun's socket API expresses it directly — `0` means "never",
+    // so no timer is armed at all rather than one that fires immediately.
+    socket.setIdleTimeout(idleTimeoutMs === 0 ? 0 : Math.max(1, Math.ceil(idleTimeoutMs / 1000)))
+    if (absoluteTimeoutMs > 0) {
+      absoluteTimer = setTimeout(() => finish('deadline'), absoluteTimeoutMs)
+    }
 
     let pidChunks: Uint8Array[] = []
     let pidResolved = false

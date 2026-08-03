@@ -1,6 +1,14 @@
 @import 'tailwindcss';
 
 /*
+ * A coarse pointer (touch) reports `hover: none` — there is no mouse to
+ * reveal a `group-hover` overlay, so this variant gives those controls a
+ * permanently-visible fallback instead (Plan 48 §3.3 rule 2, `WallTile`'s
+ * action overlay).
+ */
+@custom-variant hover-none (@media (hover: none));
+
+/*
  * Enkaku Studio — an instrument panel, not a SaaS dashboard.
  *
  * The subject is physical hardware: phones on a rack, cables, heat, batteries.

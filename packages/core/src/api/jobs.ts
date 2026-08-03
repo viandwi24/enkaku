@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { JobStatusSchema } from '@enkaku/protocol'
 import { z } from 'zod'
+import type { AuthEnv } from '../auth/middleware'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -22,17 +23,20 @@ const ERROR_STATUS: Record<string, number> = {
   device_unavailable: 409,
   device_busy: 409,
   E_BAD_REQUEST: 400,
+  'auth.forbidden': 403,
 }
 
-export function createJobRoutes(service: JobService, deps?: { log?: Logger }): Hono {
-  const app = new Hono()
+export function createJobRoutes(service: JobService, deps?: { log?: Logger }): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>()
 
   app.post('/', async (c) => {
     const body = EnqueueBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
       return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { scriptId, deviceId, params } is required' } }, 400)
     }
-    const job = service.enqueue(body.data)
+    // `canUseDevice` (plan 34 §3.5, §4.4) — refused inside `service.enqueue`
+    // with `auth.forbidden` when the device belongs to another user.
+    const job = service.enqueue({ ...body.data, actor: c.get('user') })
     return c.json({ job }, 201)
   })
 

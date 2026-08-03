@@ -24,16 +24,24 @@ export const MAIN_EVENT_KINDS = [
   'session.degraded',
   'job.started',
   'job.finished',
+  /** The pre-job reset ran (plan 35 §3.5) — carries { policy, packages, warnings, durationMs }. */
+  'job.reset',
   'settings.changed',
   'battery.warning',
   /** A device stopped answering adb and was auto-quarantined (plan 23 §4.4). */
   'device.unhealthy',
   /** The same device answered again and was auto-released (plan 23 §4.4). */
   'device.recovered',
+  /** An application crash or ANR was detected (plan 37 §3.3) — carries { kind: 'crash'|'anr', package, process, exception, message, system, truncated, artifactId?, jobId? }. */
+  'app.crashed',
+  /** A one-shot uninstall/reinstall repair still left an on-device artifact (e.g. the ui-server APK) mismatched (plan 41 §3.3) — carries { package, reason: 'version_mismatch'|'signature_mismatch', observed? }. */
+  'device.artifact.mismatch',
+  /** `desired` readiness changed, by a human or a policy (plan 43 §4.5) — carries { from, to }. */
+  'device.readiness',
 ] as const
 
 /** Input-stream kinds (§4.2). */
-export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.key', 'input.text'] as const
+export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.gesture', 'input.key', 'input.text'] as const
 
 export const DeviceEventSchema = z.object({
   id: z.string(),

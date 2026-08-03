@@ -4,7 +4,7 @@ import { z } from 'zod'
 export const EngineDescriptorSchema = z.object({
   id: z.string(),
   displayName: z.string(),
-  kind: z.enum(['transport', 'display', 'input', 'inspector']),
+  kind: z.enum(['transport', 'display', 'input', 'inspector', 'network']),
   capabilities: z.array(z.string()).default([]),
   /** Resource lock (spec §9.5) — two engines holding the same lock cannot both be active. */
   locks: z.array(z.string()).default([]),
@@ -23,6 +23,7 @@ export const RegistryResponseSchema = z.object({
   displays: z.array(EngineDescriptorSchema),
   inputs: z.array(EngineDescriptorSchema),
   inspectors: z.array(EngineDescriptorSchema),
+  networks: z.array(EngineDescriptorSchema),
   tools: z.array(z.object({ id: z.string(), displayName: z.string(), swappable: z.boolean() })),
 })
 export type RegistryResponse = z.infer<typeof RegistryResponseSchema>
@@ -32,6 +33,7 @@ export interface EngineSelection {
   display: string
   input: string
   inspection: string
+  network: string
 }
 
 export type EngineSelectionResult =
@@ -69,6 +71,7 @@ export function validateEngineSelection(registry: RegistryResponse, sel: EngineS
     [registry.displays, sel.display, 'display'],
     [registry.inputs, sel.input, 'input'],
     [registry.inspectors, sel.inspection, 'inspector'],
+    [registry.networks, sel.network, 'network'],
   ] as const) {
     const res = pick(list, id, kind)
     if ('ok' in res) return res

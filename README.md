@@ -5,12 +5,25 @@ A device farm platform for remote control and automation of Android phones — s
 ## Running it (dev)
 
 ```bash
+git submodule update --init --recursive   # the guest agent vendors hev-socks5-tunnel
 bun install
 bun run dev
 # open http://localhost:7700
 ```
 
 You do not need to install adb: on first run the core downloads adb, scrcpy-server, and the inspector APKs, verifies their sha256, and activates them itself (about 15 seconds). Dev data lives in `.dev-data/` inside the project folder, so nothing leaks into your system.
+
+### Toolchains
+
+Bun is the only thing needed for the core, Studio, the SDK, and the cloud agent — which is nearly everything. Two apps carry their own toolchain, and you only need it if you are working on that app:
+
+| Toolchain | Needed for | Install |
+|---|---|---|
+| **Bun** ≥ 1.3 | everything under `packages/`, `examples/` | [bun.sh](https://bun.sh) |
+| **Rust** (stable) | `apps/desktop` — the Tauri shell | [rustup.rs](https://rustup.rs) |
+| **JDK 17** + **Android CLI** | `apps/guest-agent` — the on-device APK | `brew install openjdk@17`, then `brew tap android/tap && brew install --cask android-cli` |
+
+JDK 17 is the minimum *and* the default for AGP 9; newer JDKs are not a drop-in substitute. The Android SDK itself is installed by the Android CLI (`android sdk install`), which also owns the project scaffolding — see [`apps/guest-agent/README.md`](apps/guest-agent/README.md).
 
 ### Commands
 
@@ -22,9 +35,14 @@ You do not need to install adb: on first run the core downloads adb, scrcpy-serv
 | `bun run dev:cloud` | Core in orchestrator mode (control plane, no local devices) |
 | `bun run dev:agent` | Cloud-mode agent (needs `ENKAKU_CP_URL`) |
 | `bun run dev:desktop` | The Tauri desktop app (needs Rust) |
+| `bun run build:guest-agent` | Build the on-device guest agent APK (needs JDK 17 plus the Android SDK) |
 | `bun run publish:example` | Publish the example script to the local farm |
+| `bun run doctor` | Check the environment — toolchain integrity, adb reachability, egress |
 | `bun run typecheck` | Typecheck every package |
+| `bun test` | Run the test suite (`*.test.ts`, colocated in `src/`) |
 | `bun run reset` | Delete all dev data |
+
+Tests that need a physical device are gated behind `ENKAKU_TEST_DEVICE=1`, so `bun test` is safe with nothing plugged in.
 
 ### Trying each flow
 
@@ -50,6 +68,22 @@ The token is needed only once; after that `bun run dev:agent` is enough. Full gu
 
 **Desktop app.** Needs Rust. `ENKAKU_CORE_BIN=<path to core> bun run dev:desktop`.
 
+**Guest agent and the device proxy.** The guest agent is an APK the core installs on a farm device; its first capability is a SOCKS5 **full tunnel** that apps under test cannot bypass — which is what `settings put global http_proxy` can never give you.
+
+```bash
+bun run build:guest-agent      # once; needs JDK 17 and the Android SDK
+bun run dev                    # the local build is picked up automatically
+```
+
+Then take control of a device in Studio (install and routing are lease-gated) and open **Guest Agents**: install the agent, then set the upstream. There is also a CLI for driving it without Studio:
+
+```bash
+bun scripts/guest-agent.ts install --serial <SERIAL>
+bun scripts/guest-agent.ts route "socks5://user:pass@host:1337" --serial <SERIAL>
+bun scripts/guest-agent.ts status --serial <SERIAL>
+bun scripts/guest-agent.ts stop --serial <SERIAL>
+```
+
 Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/install.md).
 
 ## Package map
@@ -59,10 +93,32 @@ Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/ins
 | `packages/protocol` | Zod envelope and messages for Core⇄Studio, driver types, binary framing, the tunnel protocol |
 | `packages/adb` | adb smartsocket client, `track-devices`, per-device queue plus a semaphore |
 | `packages/toolchain` | Tool provisioning: manifest, download with mandatory sha256, versions, active pointer |
-| `packages/drivers` | Four engine layers: adb transport, screencap/scrcpy display, adb/UHID/SDK input, dump/ui-server inspector |
+| `packages/drivers` | Five engine layers: adb transport, screencap/scrcpy display, adb/UHID/SDK input, dump/ui-server inspector, guest-agent network route |
 | `packages/scrcpy` | The version-locked scrcpy protocol client: H.264 demuxer, control messages, absolute HID pointer |
 | `packages/sdk` | `@enkaku/sdk` — `defineScript` plus the `enkaku publish` CLI |
 | `packages/core` | The Bun + Hono daemon: registry, queue/lease, runner, auth/ACL, API and WS |
-| `packages/studio` | The Next.js web UI: dashboard, live control, scripts, jobs, tools, settings |
+| `packages/studio` | The Next.js web UI: dashboard, live control, scripts, jobs, clusters, schedules, topology, guest agents, tools, settings |
 | `packages/agent` | The cloud mini-core: enrollment plus an outbound tunnel (M8a) |
+| `apps/desktop` | The Tauri desktop shell (Rust): native window, tray, the core as a child process |
+| `apps/guest-agent` | The on-device helper APK (Kotlin): a `localabstract` control channel, and the SOCKS5 route the `vpn-helper` engine drives |
 | `examples/` | Example automation scripts (mirroring a script author's project) |
+
+## Developer notes
+
+The traps that cost the most time, in rough order of how often they bite. The full rule list is in [`CLAUDE.md`](CLAUDE.md).
+
+**After cloning, run `git submodule update --init --recursive`.** The guest agent vendors `hev-socks5-tunnel` (MIT) and its own nested submodules; without them the Android build fails with a confusing missing-`Android.mk` error.
+
+**Run `bun run typecheck`, never `bun run scripts/typecheck.sh`.** Bun misreads the shebang and tries to execute the shell script as JavaScript. `bash scripts/typecheck.sh` works too.
+
+**There are two TypeScript versions on purpose.** The root uses TypeScript 7 with `tsconfig.base.json`; `packages/studio` is deliberately standalone on TypeScript 5 with a tsconfig that does *not* extend the base, because Next needs the TS 5 compiler API. Do not "unify" them.
+
+**`adb kill-server` is forbidden** outside the Toolchain Manager's adb swap. Port 5037 is shared with Android Studio, and killing it takes their session down with yours.
+
+**The guest agent APK resolves in three tiers**, first match wins: `ENKAKU_GUEST_AGENT_PATH`, then a local Gradle build under `apps/guest-agent/app/build/outputs/apk/`, then the sha256-pinned artifact downloaded by the Toolchain Manager. Tier 2 is why `bun run dev` needs no configuration in a checkout, and it cannot fire on a deployed server, which has no `apps/` directory. It is never auto-built — Gradle needs a JDK and the Android SDK and takes minutes, so a missing APK fails with instructions instead.
+
+**In Studio, internal links must use `next/link`.** A plain `<a>` triggers a full document navigation that remounts React, drops the WebSocket, and kills the live video stream.
+
+**Tailwind v4 colour classes are written `bg-surface`, never `bg-[--color-surface]`.** The v3 bracket form compiles to nothing and fails silently. See [`docs/design.md`](docs/design.md).
+
+**Studio dev on `:3001` needs no build.** Do not run `bun run build:studio` while `next dev` is running — `next build` writes into `.next` regardless of `distDir` and corrupts the dev server. The build script refuses and says so.

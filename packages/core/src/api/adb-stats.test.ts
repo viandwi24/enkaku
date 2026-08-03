@@ -49,6 +49,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       metrics,
       health: () => ({ note: () => {}, consecutiveFailures: (id: string) => (id === 'd1' ? 2 : 0), start: () => {}, stop: () => {} }),
       auto: () => true,
+      sessions: () => null,
     })
     const app = withUser('operator', inner)
 
@@ -83,6 +84,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       metrics: createAdbMetricsStore(),
       health: () => null,
       auto: () => true,
+      sessions: () => null,
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
@@ -100,6 +102,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       metrics: createAdbMetricsStore(),
       health: () => null,
       auto: () => true,
+      sessions: () => null,
     })
     const app = withUser(null, inner)
     const res = await app.request('/')

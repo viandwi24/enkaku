@@ -1,4 +1,4 @@
-import type { AdbClient } from '@enkaku/adb'
+import { shellQuote, type AdbClient } from '@enkaku/adb'
 import {
   AdbInput,
   AdbTcpTransport,
@@ -11,19 +11,22 @@ import {
   withAdbKeyFallback,
 } from '@enkaku/drivers'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, SessionPhase, Transport } from '@enkaku/protocol'
+import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, Quality, SessionPhase, Transport } from '@enkaku/protocol'
 import { SessionError } from './errors'
 import type { Logger } from './logger'
+import { wakeDevice } from './wake'
 
 /**
- * `svc power stayon` accepts `true|false|usb|ac|wireless`; `usb` only holds
- * the screen while plugged into USB, which does nothing for a device attached
- * over `adb-tcp` (Plan 17 §3.4).
+ * Video quality profiles (Plan 42 §3.5): the numbers behind `Quality`. `control`
+ * is the device page's full-fidelity picture; `wall` is deliberately small —
+ * `wall.maxTiles` (default 8) decoders in one browser tab is the budget this
+ * was sized against, on a LAN. Exported so `daemon.ts`/`hosts.ts` can map a
+ * requested quality onto the `startScrcpySession` options without a second
+ * copy of these numbers.
  */
-const STAYON: Record<KeepAwakeMode, string> = {
-  off: 'false',
-  'while-charging': 'usb',
-  always: 'true',
+export const QUALITY_PROFILES: Record<Quality, { maxSize: number; maxFps: number; bitRate: number }> = {
+  control: { maxSize: 1600, maxFps: 30, bitRate: 4_000_000 },
+  wall: { maxSize: 480, maxFps: 5, bitRate: 800_000 },
 }
 
 export interface DeviceSession {
@@ -34,6 +37,8 @@ export interface DeviceSession {
   /** The effective display and input engines (possibly degraded). */
   displayEngineId: string
   inputEngineId: string
+  /** The quality profile this session is actually running at (Plan 42 §3.5, §4.5). */
+  quality: Quality
   /** The H.264 config packet (SPS/PPS) that initialises a new viewer's decoder. */
   videoConfig: (() => Uint8Array | null) | null
   /** The most recent IDR frame, so a joining viewer has something to decode. */
@@ -59,6 +64,17 @@ export interface DeviceSession {
   inspectorPollIntervalMs: number
   /** Always overwritten by the latest frame metadata (this is how rotation works). */
   frameSize: { width: number; height: number }
+  /**
+   * Device clipboard get/set (plan 38 §3.5, §4.4). `null` only when no engine
+   * could even be attempted for this session, which does not happen today
+   * (every session has EITHER scrcpy's real control-socket implementation OR
+   * the adb fallback shim below) — kept nullable so a future transport that
+   * genuinely cannot support it at all has somewhere honest to say so.
+   */
+  clipboard: {
+    get(): Promise<string>
+    set(text: string, opts?: { paste?: boolean }): Promise<void>
+  } | null
   close(): Promise<void>
 }
 
@@ -67,8 +83,12 @@ export interface CreateSessionDeps {
   log: Logger
   onFrame?: (chunk: Uint8Array, meta: FrameMeta) => void
   onDisplayError?: (err: unknown) => void
-  /** Start a scrcpy session (H.264 display plus control) — Plan 08. null means unavailable. */
-  makeScrcpy?: (deviceId: string, transport: Transport) => Promise<ScrcpySession | null>
+  /**
+   * Start a scrcpy session (H.264 display plus control) — Plan 08. null means
+   * unavailable. `quality` (Plan 42 §4.5) is the resolved profile the caller
+   * should map onto `max_size`/`max_fps`/`video_bit_rate` via `QUALITY_PROFILES`.
+   */
+  makeScrcpy?: (deviceId: string, transport: Transport, quality: Quality) => Promise<ScrcpySession | null>
   /** Rakit engine inspector (ui-server dgn fallback) — Plan 06. */
   makeInspector?: (deviceId: string, transport: Transport, requested: string | null) => Promise<{
     inspector: Inspector
@@ -100,6 +120,8 @@ export interface CreateSessionOpts {
   /** The initial value before the first frame arrives (the Plan 01 probe). */
   screenW?: number | null
   screenH?: number | null
+  /** Video quality profile (Plan 42 §3.5, §4.5). Defaults to `control` — every pre-plan-42 caller. */
+  quality?: Quality
 }
 
 
@@ -107,6 +129,7 @@ export interface CreateSessionOpts {
 export async function createSession(opts: CreateSessionOpts, deps: CreateSessionDeps): Promise<DeviceSession> {
   const { client, log } = deps
   const onPhase = deps.onPhase ?? (() => {})
+  const quality: Quality = opts.quality ?? 'control'
 
   onPhase('connecting')
   const transportId = opts.transport ?? 'adb-usb'
@@ -160,39 +183,20 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * on its normal timeout and screencap returns a black frame — the video
    * looks broken when the display is merely off.
    *
-   * `off` skips this whole block, same as the old `stayAwake: false` did — a
-   * legacy row that opted out keeps opting out unchanged (Plan 17 §4.2).
-   *
-   * The keyevent 82 dismisses a swipe-only lock screen. A device with a PIN,
-   * pattern, or password cannot be unlocked from here, and will keep showing
-   * its lock screen; that is a real limit, not a failure to handle.
+   * The actual sequence lives in `wakeDevice` (`./wake.ts`), extracted by
+   * Plan 43 §5 step 43.2 so the readiness manager can run the exact same
+   * commands to reconcile a device toward `desired: 'awake'` without opening
+   * a session at all — behaviour here is unchanged from before the extraction.
    */
   const keepAwake: KeepAwakeMode = opts.keepAwake ?? 'while-charging'
-  if (keepAwake !== 'off') {
-    for (const cmd of ['input keyevent KEYCODE_WAKEUP', `svc power stayon ${STAYON[keepAwake]}`]) {
-      await transport.exec(cmd, { profile: 'probe' }).catch((err) => log.debug(`${cmd} failed: ${String(err)}`))
-    }
-    // Only nudge the lock screen when there is one. KEYCODE_MENU dismisses a
-    // swipe-only keyguard, but on a phone that is already unlocked it opens the
-    // launcher's wallpaper/widget menu — and the user's next tap just closes
-    // that menu instead of hitting the app they aimed at.
-    const locked = await transport
-      .exec('dumpsys window | grep -m1 isKeyguardShowing', { profile: 'probe' })
-      .then((out) => /isKeyguardShowing=true/.test(out))
-      .catch(() => false)
-    if (locked) {
-      await transport
-        .exec('input keyevent 82', { profile: 'probe' })
-        .catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))
-    }
-  }
+  await wakeDevice(transport, { keepAwake, log })
 
   onPhase('starting-video')
   // Display and input: scrcpy when the session comes up, otherwise the fallback
   // screencap-loop + adb-input (plan 08 §3.8 degrade chain).
   let scrcpy: ScrcpySession | null = null
   if (opts.display !== 'screencap-loop' && deps.makeScrcpy) {
-    scrcpy = await deps.makeScrcpy(opts.deviceId, transport).catch((err) => {
+    scrcpy = await deps.makeScrcpy(opts.deviceId, transport, quality).catch((err) => {
       log.warn(`scrcpy cannot be used (${String(err)}) — falling back to screencap-loop + adb-input`)
       return null
     })
@@ -236,7 +240,45 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   } else {
     input = new AdbInput(transport)
     inputEngineId = 'adb-input'
+    // Plan 40 §3.6, §4.2, acceptance #8: `AdbInput` cannot curve a gesture
+    // (`input swipe` accepts only two points) or type per character with the
+    // full engine set scrcpy offers — reported once, right here at session
+    // creation, rather than pretending. This fires once per `DeviceSession`
+    // (this branch runs exactly once per `createSession` call), which is
+    // what "once per session" means: independent of whether a script or a
+    // manual drag ever actually asks for a curved gesture.
+    deps.onInputDegraded?.(
+      opts.preferredInputMode ?? 'uhid',
+      'adb-input',
+      'no scrcpy control socket available on this session — gestures fall back to a straight-line swipe (no curve, no release velocity)',
+    )
   }
+
+  /**
+   * Clipboard (plan 38 §3.5, §4.4): scrcpy's real GET_CLIPBOARD/SET_CLIPBOARD
+   * round trip when the control socket exists; otherwise an adb shim whose
+   * `set` best-effort attempts `cmd clipboard set-text` and whose `get`
+   * REFUSES with E_CLIPBOARD_UNAVAILABLE rather than returning "" — an empty
+   * string would be indistinguishable from "the clipboard genuinely is
+   * empty", which is a lie nobody asked for (§3.5). `paste` has no adb
+   * equivalent and is silently ignored on this path; scrcpy is required for it.
+   */
+  const clipboard: DeviceSession['clipboard'] = scrcpy
+    ? {
+        get: () => scrcpy!.control.getClipboard(),
+        set: (text, opts) => scrcpy!.control.setClipboard(text, opts),
+      }
+    : {
+        async get() {
+          throw Object.assign(
+            new Error('reading the clipboard requires an active scrcpy session (this device is on screencap-loop)'),
+            { code: 'E_CLIPBOARD_UNAVAILABLE' },
+          )
+        },
+        async set(text) {
+          await transport.exec(`cmd clipboard set-text ${shellQuote(text)}`, { profile: 'appLifecycle' })
+        },
+      }
 
   const session: DeviceSession = {
     deviceId: opts.deviceId,
@@ -245,6 +287,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     input,
     displayEngineId: scrcpyDisplay ? 'scrcpy' : 'screencap-loop',
     inputEngineId,
+    quality,
     videoConfig: scrcpyDisplay ? () => scrcpyDisplay.configPacket : null,
     videoKeyframe: scrcpyDisplay ? () => scrcpyDisplay.keyframePacket : null,
     ...(scrcpy ? { requestKeyframe: () => scrcpy!.control.resetVideo() } : {}),
@@ -253,6 +296,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
+    clipboard,
     async close() {
       // Restore the panel before the control socket goes away with the rest
       // of the session — leaving the phone dark for whoever uses it next

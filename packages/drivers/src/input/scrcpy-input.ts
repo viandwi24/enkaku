@@ -1,4 +1,4 @@
-import type { InputSink, Point } from '@enkaku/protocol'
+import type { GestureSample, InputSink, Point } from '@enkaku/protocol'
 import { ABSOLUTE_POINTER_DESCRIPTOR, buildPointerReport, type ScrcpySession } from '@enkaku/scrcpy'
 
 const UHID_POINTER_ID = 1
@@ -56,6 +56,48 @@ export class ScrcpySdkInput implements InputSink {
 
   async text(s: string): Promise<void> {
     this.deps.session.control.injectText(s)
+  }
+
+  /**
+   * Play a sampled gesture (plan 40 §4.1, §4.2): one touch-move control
+   * message per sample, paced by each sample's own `atMs` — the control
+   * socket handles this easily (§8: at most 60 samples per gesture, well
+   * under video-adjacent traffic).
+   */
+  async gesture(samples: GestureSample[]): Promise<void> {
+    const { width, height } = this.deps.screenSize()
+    const first = samples[0]
+    if (!first) return
+    this.deps.session.control.injectTouch('down', first.x, first.y, width, height)
+    let prevAtMs = first.atMs
+    for (let i = 1; i < samples.length - 1; i++) {
+      const s = samples[i]
+      if (!s) continue
+      const wait = s.atMs - prevAtMs
+      if (wait > 0) await Bun.sleep(wait)
+      this.deps.session.control.injectTouch('move', s.x, s.y, width, height)
+      prevAtMs = s.atMs
+    }
+    const last = samples[samples.length - 1]!
+    const wait = last.atMs - prevAtMs
+    if (samples.length > 1 && wait > 0) await Bun.sleep(wait)
+    this.deps.session.control.injectTouch('up', last.x, last.y, width, height)
+  }
+
+  /**
+   * Per-character typing (plan 40 §4.1, §4.2), so autocomplete, debounced
+   * validation, and per-keystroke listeners actually run. Iterates by
+   * Unicode code point (`for...of`), not index, so a surrogate pair is sent
+   * as one character rather than being split.
+   */
+  async typeText(text: string, opts: { perCharMs: [number, number]; rng?: () => number }): Promise<void> {
+    const rng = opts.rng ?? Math.random
+    const [lo, hi] = opts.perCharMs
+    for (const ch of text) {
+      this.deps.session.control.injectText(ch)
+      const delay = lo + rng() * Math.max(0, hi - lo)
+      if (delay > 0) await Bun.sleep(delay)
+    }
   }
 }
 
@@ -128,5 +170,34 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
       await Bun.sleep(ms / steps)
     }
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...this.norm(to) }))
+  }
+
+  /**
+   * Play a sampled gesture over the UHID pointer (plan 40 §4.1, §4.2) — one
+   * touch-move report per sample, paced by each sample's own `atMs`. Same
+   * "land the position before the touch bit goes up" quirk as `tap`/`swipe`
+   * above: an absolute pointer's first-ever report already carrying the
+   * touch bit gives Android a down with no prior position, and it is dropped.
+   */
+  override async gesture(samples: GestureSample[]): Promise<void> {
+    await this.init()
+    const first = samples[0]
+    if (!first) return
+    this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...this.norm(first) }))
+    await Bun.sleep(100)
+    this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: true, ...this.norm(first) }))
+    let prevAtMs = first.atMs
+    for (let i = 1; i < samples.length - 1; i++) {
+      const s = samples[i]
+      if (!s) continue
+      const wait = s.atMs - prevAtMs
+      if (wait > 0) await Bun.sleep(wait)
+      this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: true, ...this.norm(s) }))
+      prevAtMs = s.atMs
+    }
+    const last = samples[samples.length - 1]!
+    const wait = last.atMs - prevAtMs
+    if (samples.length > 1 && wait > 0) await Bun.sleep(wait)
+    this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...this.norm(last) }))
   }
 }

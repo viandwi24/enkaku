@@ -1,7 +1,19 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
+import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { scripts } from '../db/schema'
 import { createScriptRoutes } from './routes'
+
+function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', inner)
+  return wrapper
+}
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -81,5 +93,62 @@ describe('GET /api/scripts keyset pagination', () => {
     const body = (await res.json()) as { items: unknown[]; total: number | null }
     expect(body.items).toHaveLength(3)
     expect(body.total).toBe(3)
+  })
+})
+
+describe('requirePermission on /api/scripts mutations (plan 34 §4.4, §4.5, acceptance #7)', () => {
+  const publishBody = { name: 'my-script', version: '1.0.0', bundle: 'export {}' }
+
+  test('POST / (script.publish) is refused with no authenticated user', async () => {
+    const db = setUp()
+    const app = withUser(null, createScriptRoutes({ db }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publishBody) })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (script.publish is an OPERATOR permission) may publish — no lockout', async () => {
+    const db = setUp()
+    const app = withUser('operator', createScriptRoutes({ db }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publishBody) })
+    expect(res.status).toBe(201)
+  })
+
+  test('PATCH /:id (script.publish) is refused with no authenticated user', async () => {
+    const db = setUp()
+    const [id] = seed(db, 1)
+    const app = withUser(null, createScriptRoutes({ db }))
+    const res = await app.request(`/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) })
+    expect(res.status).toBe(403)
+  })
+
+  test('DELETE /:id (script.delete) refuses an operator — admin-only', async () => {
+    const db = setUp()
+    const [id] = seed(db, 1)
+    const app = withUser('operator', createScriptRoutes({ db }))
+    const res = await app.request(`/${id}`, { method: 'DELETE' })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+
+    // The script must still exist — a refused request changes nothing.
+    const still = await withUser('admin', createScriptRoutes({ db })).request(`/${id}`)
+    expect(still.status).toBe(200)
+  })
+
+  test('DELETE /:id (script.delete) admits an admin', async () => {
+    const db = setUp()
+    const [id] = seed(db, 1)
+    const app = withUser('admin', createScriptRoutes({ db }))
+    const res = await app.request(`/${id}`, { method: 'DELETE' })
+    expect(res.status).toBe(200)
+  })
+
+  test('GET / needs no permission at all — read routes stay open', async () => {
+    const db = setUp()
+    const app = withUser(null, createScriptRoutes({ db }))
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
   })
 })

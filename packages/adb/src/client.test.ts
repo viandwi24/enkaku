@@ -414,6 +414,52 @@ describe('AdbClient.execStream — the streaming lane, never PerDeviceQueue (pla
     }
   }, 10_000)
 
+  test('idleTimeoutMs: 0 and absoluteTimeoutMs: 0 disable both stream clocks (plan 34 §4.1, §8) — a silent, long-lived stream is never ended by either', async () => {
+    const listener = fakeStreamingServer({
+      onStream(s, cmd) {
+        if (cmd !== 'am instrument') return
+        s.write(Buffer.from('OKAY'))
+        s.write(Buffer.from('88\n')) // the PID line, then total silence — like the ui-server instrumentation
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const ended: Array<{ reason: string }> = []
+      const handle = await client.execStream('serial-off', 'am instrument', {
+        onData: () => {},
+        onEnd: (reason) => ended.push({ reason }),
+        idleTimeoutMs: 0,
+        absoluteTimeoutMs: 0,
+      })
+      // Long enough to have tripped either clock had it not been disabled —
+      // the idle test above needed only its coarse floor (~4s per that
+      // test's own comment) and the deadline test used 150ms.
+      await new Promise((r) => setTimeout(r, 500))
+      expect(ended).toEqual([])
+      await handle.stop()
+      expect(ended).toEqual([{ reason: 'stopped' }])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('idleTimeoutMs: -1 or absoluteTimeoutMs: -1 still reject E_ADB_BAD_TIMEOUT — only 0 means "off", not any non-positive value', async () => {
+    const listener = fakeStreamingServer({})
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(
+        client.execStream('serial-neg', 'logcat', { onData: () => {}, onEnd: () => {}, idleTimeoutMs: -1 }),
+        'E_ADB_BAD_TIMEOUT',
+      )
+      await expectAdbError(
+        client.execStream('serial-neg2', 'logcat', { onData: () => {}, onEnd: () => {}, absoluteTimeoutMs: -1 }),
+        'E_ADB_BAD_TIMEOUT',
+      )
+    } finally {
+      listener.stop(true)
+    }
+  })
+
   test('a PID split across multiple TCP writes is still parsed correctly, and data after it is never mistaken for the PID line', async () => {
     const listener = fakeStreamingServer({
       onStream(s, cmd) {

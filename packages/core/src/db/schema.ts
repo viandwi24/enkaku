@@ -44,6 +44,25 @@ export const devices = sqliteTable(
      * that necessarily clears any previous value.
      */
     clusterId: text('cluster_id'),
+    /**
+     * The operator's standing readiness intent (plan 43 §3.3, §4.2) — never
+     * changed by a hold (§3.6): a job or viewer can wake a device without
+     * ever writing this column. Null means "never set" — treated as
+     * 'asleep' everywhere it is read. `actual` readiness is derived from
+     * live session state and is NEVER stored (§3.3).
+     */
+    desiredReadiness: text('desired_readiness'),
+    /**
+     * The persisted `vpn-helper` route (plan 44 step 5.4, @enkaku/protocol's
+     * `PersistedNetworkRouteSchema`) — null when no route has ever been
+     * declared. Kept off `settings` deliberately, so it is queryable on its
+     * own and does not collide with that column's schema. This stores the
+     * upstream password in PLAINTEXT at rest in SQLite: there is no secret
+     * store yet (plan 33 §9 Q2 remains open), and this comment exists so
+     * that fact is never quietly assumed away. Never read this column into
+     * an API response without redacting it first.
+     */
+    networkRoute: text('network_route', { mode: 'json' }),
   },
   (t) => [
     // `/api/devices` sorts by label ASC, id ASC — the browse list, not a
@@ -78,6 +97,40 @@ export const deviceTags = sqliteTable(
 )
 
 export type DeviceTagRow = typeof deviceTags.$inferSelect
+
+/**
+ * A device deliberately excluded from the farm (plan 47 §3.2, §3.3), keyed
+ * by `stableId` rather than the adb serial or the `devices.id` row it once
+ * had — a block must survive exactly the things that would defeat a serial-
+ * or row-keyed one: a different USB port, a switch to `adb-tcp`, or being
+ * forgotten and re-enrolled. The registry consults this table before ever
+ * probing a newly seen serial (plan 47 §4.2).
+ */
+export const blockedDevices = sqliteTable('blocked_devices', {
+  stableId: text('stable_id').primaryKey(),
+  label: text('label'),
+  reason: text('reason'),
+  blockedAt: integer('blocked_at', { mode: 'timestamp' }).notNull(),
+  blockedBy: text('blocked_by'),
+})
+
+export type BlockedDeviceRow = typeof blockedDevices.$inferSelect
+
+/**
+ * Just enough to label a dangling reference (plan 47 §3.4): forgetting a
+ * device removes its `devices` row but deliberately keeps `jobs`,
+ * `artifacts`, and `device_events` pointing at the old `deviceId` — this
+ * table is what lets a UI render "deleted device (<stableId>)" instead of a
+ * blank or a crash, without resurrecting the row itself.
+ */
+export const deletedDevices = sqliteTable('deleted_devices', {
+  id: text('id').primaryKey(), // the old devices.id
+  stableId: text('stable_id').notNull(),
+  label: text('label'),
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }).notNull(),
+})
+
+export type DeletedDeviceRow = typeof deletedDevices.$inferSelect
 
 /**
  * One-shot data migrations that cannot be expressed as plain SQL — currently
@@ -127,6 +180,19 @@ export const jobs = sqliteTable(
     batchSeq: integer('batch_seq'),
     /** Unix seconds; the reaper expires the job if it has not started by then (plan 21 §3.3, §4.1). Null = wait forever. */
     expiresAt: integer('expires_at'),
+    /**
+     * Plan 36 §4.3 — set on the final settle of a `failed` job: 'infra' |
+     * 'script' | 'load' (see `jobs/failure-class.ts`). Nullable: a
+     * pre-existing row, or a job that never failed, has none.
+     */
+    failureClass: text('failure_class'),
+    /**
+     * Plan 36 §3.4, §3.6 — how many times this job has been requeued for an
+     * infrastructure failure (rebind on another eligible device for a batch
+     * member). Nullable/defaulted so existing rows keep reading; 0 for a job
+     * that has never rebound.
+     */
+    infraAttempts: integer('infra_attempts').default(0),
   },
   (t) => [
     index('idx_jobs_claim').on(t.status, t.deviceId, t.priority, t.createdAt),

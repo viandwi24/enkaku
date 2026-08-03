@@ -22,6 +22,12 @@ export async function api<T = unknown>(
 ): Promise<T> {
   const { json, ...rest } = init ?? {}
   const res = await fetch(`${coreBase()}${path}`, {
+    // Default to POST whenever a body is present — spread BEFORE `...rest` so
+    // a caller's own explicit `method` still wins (Plan 42 §4.3). Without
+    // this, `fetch` defaulted to GET, and a browser refuses a GET with a
+    // body ("Request with GET/HEAD method cannot have body") — the exact
+    // failure that blocked install/push/pull before this plan.
+    ...(json !== undefined ? { method: 'POST' } : {}),
     ...rest,
     ...(json !== undefined
       ? { body: JSON.stringify(json), headers: { 'content-type': 'application/json', ...(rest.headers ?? {}) } }

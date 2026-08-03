@@ -36,6 +36,7 @@ function fakeSession(deviceId: string): DeviceSession {
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
     displayEngineId: 'screencap-loop',
+    quality: 'control',
     inputEngineId: 'adb-input',
     videoConfig: () => null,
     videoKeyframe: () => null,
@@ -44,6 +45,7 @@ function fakeSession(deviceId: string): DeviceSession {
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
+    clipboard: null,
     close: async () => {},
   }
 }
@@ -64,6 +66,8 @@ function fakeSessionManager(): SessionManager {
       return sessions.get(deviceId) ?? null
     },
     async closeDevice() {},
+    async closeIfIdle() {},
+    idleSessions: () => [],
     async closeAll() {},
   }
 }
@@ -126,6 +130,10 @@ function setUpHandler(db: Db) {
     // Presence has nothing to do with the Monitor tab (plan 24); a null adb
     // accessor is exactly what the orchestrator/no-adb-yet state looks like.
     adb: () => null,
+    // Nor the crash watcher (plan 37) — exercised in its own suite.
+    crashPolicy: () => 'declared',
+    targetPackagesForJob: () => [],
+    saveCrashTrace: async () => ({ id: 'a', jobId: null, deviceId: null, kind: 'log', label: 'x', path: 'x', sizeBytes: 0, createdAt: 0 }),
     db,
     log,
   }
@@ -308,6 +316,9 @@ describe('viewersOf / device.viewers (plan 31 §31.5)', () => {
     // fake that never actually opens anything is enough for these tests.
     adbEndpoint: { open: async () => ({ host: '127.0.0.1', port: 0, expiresAt: 0 }), close: () => {}, get: () => null, closeAllForClient: () => {} },
       adb: () => null,
+      crashPolicy: () => 'declared',
+      targetPackagesForJob: () => [],
+      saveCrashTrace: async () => ({ id: 'a', jobId: null, deviceId: null, kind: 'log', label: 'x', path: 'x', sizeBytes: 0, createdAt: 0 }),
       db,
       log,
     }

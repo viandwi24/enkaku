@@ -16,6 +16,10 @@ export type AuditAction =
   | 'device.quarantine'
   | 'device.unquarantine'
   | 'device.control'
+  // Device lifecycle (plan 47 §3.5, §4.4) — Forget, Block, Unblock.
+  | 'device.forget'
+  | 'device.block'
+  | 'device.unblock'
   | 'script.publish'
   | 'script.delete'
   | 'script.toggle'
@@ -31,6 +35,7 @@ export type AuditAction =
   | 'schedule.update'
   | 'schedule.delete'
   | 'schedule.run-now'
+  | 'artifact.upload'
   | 'tool.install'
   | 'tool.activate'
   | 'tool.delete'

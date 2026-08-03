@@ -78,6 +78,15 @@ export interface MonitorHubDeps {
   onEnded: (streamId: string, reason: MonitorEndReason) => void
   /** Drives the shared-viewer badge (plan 24 §4.7). */
   onSubscribersChanged: (streamId: string, count: number) => void
+  /**
+   * Readiness hold (plan 43 §3.7 table, §5 step 43.7): a monitor stream keeps
+   * its device at least `awake` while it is open, released the instant the
+   * LAST subscriber leaves — one hold per underlying stream entry, not one
+   * per subscriber, matching "the last subscriber leaves" in the plan's
+   * table exactly. Optional so tests that do not wire readiness keep working
+   * unchanged.
+   */
+  holdFor?: (deviceId: string) => Promise<{ release(): void }>
 }
 
 /** The known reasons the WS protocol can carry (`MonitorEndReasonSchema`,
@@ -108,6 +117,8 @@ interface Entry {
   partial: string
   /** Set when `stopEntry` runs before `starting` has resolved — the handle must be stopped the instant it exists. */
   stopRequested: boolean
+  /** The readiness hold for this entry's lifetime (plan 43 §5 step 43.7), released exactly once. */
+  hold: { release(): void } | null
 }
 
 function hashCommand(cmd: string): string {
@@ -180,11 +191,24 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
     entry.handle = null
     entries.delete(entry.streamId)
     detachAllSubscribers(entry)
+    entry.hold?.release()
+    entry.hold = null
     deps.onEnded(entry.streamId, reason)
   }
 
   async function startStream(entry: Entry): Promise<void> {
     try {
+      // Readiness hold (plan 43 §5 step 43.7): taken before the adb stream
+      // itself opens, so a monitor on a sleeping device wakes it first —
+      // released once, either here (start failed / stopped mid-start) or in
+      // `handleEnded`/`stopEntry`, never both (`Hold.release()` is idempotent
+      // regardless, but this keeps the intent obvious).
+      entry.hold = (await deps.holdFor?.(entry.deviceId).catch(() => null)) ?? null
+      if (entry.stopRequested) {
+        entry.hold?.release()
+        entry.hold = null
+        return
+      }
       const port = deps.shellPort(entry.deviceId)
       const handle = await port.stream(entry.cmd, {
         onData: (chunk) => handleChunk(entry, chunk),
@@ -192,12 +216,16 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
       })
       if (entry.stopRequested) {
         void handle.stop().catch(() => {})
+        entry.hold?.release()
+        entry.hold = null
         return
       }
       entry.handle = handle
     } catch (err) {
       entries.delete(entry.streamId)
       detachAllSubscribers(entry)
+      entry.hold?.release()
+      entry.hold = null
       deps.log.warn(`monitor stream ${entry.streamId} (${entry.kind} on ${entry.deviceId}) failed to start: ${String(err)}`)
       throw err
     } finally {
@@ -217,6 +245,8 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
     // Best-effort: if the handle is not ready yet, `startStream`'s
     // `stopRequested` check stops it the instant it exists instead.
     if (handle) void handle.stop().catch(() => {})
+    entry.hold?.release()
+    entry.hold = null
   }
 
   return {
@@ -244,6 +274,7 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
           flushTimer: null,
           partial: '',
           stopRequested: false,
+          hold: null,
         }
         entries.set(streamId, entry)
         entry.starting = startStream(entry)

@@ -63,6 +63,8 @@ export const JobInfoSchema = z.object({
   scriptVersion: z.string().nullable().default(null),
   status: JobStatusSchema,
   error: z.string().nullable(),
+  /** Plan 36 §3.2, §4.1 — 'infra' | 'script' | 'load'; only ever set for `status: 'failed'`. */
+  failureClass: z.string().nullable().default(null),
   priority: z.number(),
   createdAt: z.number(),
   startedAt: z.number().nullable(),
@@ -79,9 +81,11 @@ export type JobInfo = z.infer<typeof JobInfoSchema>
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
   payload: JobInfoSchema.extend({
-    /** Attempt number (1-based) and the script phase currently running (M4). */
+    /** Attempt number (1-based) and the script phase currently running (M4).
+     * `reset` (plan 35 §3.5, §4.4) is the pre-job device reset — it always
+     * runs before `prepare`, and only for a 'full' attempt. */
     attempt: z.number().int().optional(),
-    phase: z.enum(['prepare', 'run', 'finish']).nullable().optional(),
+    phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable().optional(),
   }),
 })
 

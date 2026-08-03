@@ -2,12 +2,14 @@ import { Hono } from 'hono'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { BatchInfo, BatchOrder, BatchStatusEvent } from '@enkaku/protocol'
+import { canUseDevice } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { requirePermission } from '../auth/middleware'
 import { createBatch } from '../clusters/dispatch'
 import { computeBatchStatus, countJobs, recomputeBatchStatus } from '../clusters/status'
 import type { Db } from '../db'
-import { batches, type BatchRow } from '../db/schema'
+import { batches, devices, type BatchRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import { rowToJobInfo, type JobStore } from '../queue/job-store'
@@ -33,6 +35,7 @@ const ERROR_STATUS: Record<string, number> = {
   script_disabled: 409,
   invalid_job_params: 400,
   E_DB: 500,
+  'auth.forbidden': 403,
 }
 
 function toSec(d: Date | null): number | null {
@@ -120,7 +123,23 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     return row
   }
 
-  app.post('/', async (c) => {
+  // `canUseDevice` (plan 34 §3.5, §4.4) — an interactive request always has
+  // an acting user (`authMiddleware` guarantees one), so both dispatch
+  // routes below wire this; the schedule-fired path in `schedules/runner.ts`
+  // deliberately does not (no interactive "acting user" at cron time).
+  const assertDeviceAllowedFor = (user: { id: string; role: 'admin' | 'operator' } | undefined) => (deviceId: string): void => {
+    if (!user) return
+    const row = db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, deviceId)).get()
+    if (row && !canUseDevice(user, row)) {
+      throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
+    }
+  }
+
+  // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
+  // matrix; a batch (like a schedule in `api/schedules.ts`) is a way of
+  // causing jobs to run, so every route below takes the same permission an
+  // operator already has for running one job by hand.
+  app.post('/', requirePermission('job.run'), async (c) => {
     const body = CreateBatchBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
       throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
@@ -132,6 +151,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
         audit: deps.audit,
         onJobStatus: () => {},
         validateScript: (scriptId, params) => validateScriptForRun(deps, scriptId, params),
+        assertDeviceAllowed: assertDeviceAllowedFor(c.get('user')),
       },
       { ...body.data, createdBy: c.get('user')?.id ?? null },
     )
@@ -157,7 +177,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   })
 
   // Cancels queued jobs only — running ones are left to finish (plan 20 §4.6, acceptance #6).
-  app.post('/:id/cancel', (c) => {
+  app.post('/:id/cancel', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     const cancelled = deps.jobStore.cancelQueuedInBatch(row.id)
     recomputeBatchStatus({ db, jobStore: deps.jobStore, broadcast: deps.broadcastBatchStatus }, row.id)
@@ -168,7 +188,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   // A new batch over the failed devices — `params` is copied verbatim from
   // the original (plan 20 §9 open question #4: the common case is a flaky
   // device, not wrong parameters).
-  app.post('/:id/rerun-failed', (c) => {
+  app.post('/:id/rerun-failed', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     const jobRows = deps.jobStore.listByBatch(row.id)
     const failedDeviceIds = jobRows.filter((j) => j.status === 'failed').map((j) => j.deviceId)
@@ -182,6 +202,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
         audit: deps.audit,
         onJobStatus: () => {},
         validateScript: (scriptId, params) => validateScriptForRun(deps, scriptId, params),
+        assertDeviceAllowed: assertDeviceAllowedFor(c.get('user')),
       },
       {
         scriptId: row.scriptId,

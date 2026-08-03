@@ -1,27 +1,20 @@
 import { LogcatOptionsSchema, optionsSchemaFor, type LogcatOptions, type MonitorKind } from '@enkaku/protocol'
+import { shellQuote } from '@enkaku/adb'
 import { EnkakuError } from '../util/errors'
 
 /**
  * The ONLY place a monitor's adb command string is produced (plan 24 §4.3,
  * §3.7). Every interpolated value is either drawn from a Zod enum/regex
- * (`priority`, `buffer`, `tag`) or passed through `shellQuote()` below — this
- * is the structural guarantee behind "no free-form command entry": a caller
+ * (`priority`, `buffer`, `tag`) or passed through `shellQuote()` — this is
+ * the structural guarantee behind "no free-form command entry": a caller
  * gets a fixed builder with typed options, never a string it composes itself.
- */
-
-/**
- * POSIX single-quoting (works for adb's on-device `/system/bin/sh` the same
- * way it works for bash/dash): everything between single quotes is literal,
- * so `;`, backticks, `$(...)`, and double quotes cannot escape it. The only
- * character that needs special handling is a single quote itself — it ends
- * the quoted string, contributes an escaped `'`, and reopens a new one.
  *
- * `a"b;c$(id)\`` → `'a"b;c$(id)`'` — every one of those characters stays
- * inert inside the quotes.
+ * `shellQuote` itself now lives in `@enkaku/adb` (plan 34 §4.3, plan 35 §4.2)
+ * — `@enkaku/session` needed it too and must not import from `core` — and is
+ * re-exported here so this module's own call sites, and plan 24's existing
+ * tests (which import it from `./monitors`), are unaffected by the move.
  */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
+export { shellQuote }
 
 function buildLogcatCommand(options: LogcatOptions): string {
   // Tag filtering silences everything else (`*:S`), matching logcat's own
@@ -60,6 +53,14 @@ export function buildMonitorCommand(kind: MonitorKind, rawOptions: unknown): str
       // snapshots, so the "stream" is a plain shell loop with a 5s pace
       // (plan 24 §4.3 table).
       return 'while true; do dumpsys thermalservice; dumpsys battery; sleep 5; done'
+    case 'crash':
+      // The crash watcher's own feed (plan 37 §3.2, §4.1) — `logcat -b crash`
+      // is the dedicated crash-report buffer; ANRs land in `main` instead
+      // (they are reported by ActivityManager, not the crash reporter), so
+      // both buffers are read together and the parser (`crash-parser.ts`)
+      // filters on the FATAL EXCEPTION / ANR markers. `-T 1` starts from the
+      // tail so a fresh subscriber does not replay every crash since boot.
+      return 'logcat -b crash,main -v threadtime -T 1'
     case 'ps':
       return 'ps -A'
     case 'meminfo':

@@ -4,12 +4,31 @@ import type { Db } from '../db'
 import { batches, type JobRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
 
-/** Tally a batch's jobs by status (plan 20 §3.5; plan 21 §3.3 adds `expired`). */
+/**
+ * Tally a batch's jobs by status (plan 20 §3.5; plan 21 §3.3 adds `expired`;
+ * plan 36 §4.4 splits `failed` into `failedScript` / `failedInfra` from
+ * `jobs.failureClass` — a `load`-classified failure counts as infra here too,
+ * since it is still a farm-caused failure from the batch's point of view).
+ */
 export function countJobs(rows: JobRow[]): BatchCounts {
-  const counts: BatchCounts = { total: rows.length, queued: 0, running: 0, success: 0, failed: 0, cancelled: 0, expired: 0 }
+  const counts: BatchCounts = {
+    total: rows.length,
+    queued: 0,
+    running: 0,
+    success: 0,
+    failed: 0,
+    cancelled: 0,
+    expired: 0,
+    failedScript: 0,
+    failedInfra: 0,
+  }
   for (const r of rows) {
-    const status = (r.status ?? 'queued') as keyof Omit<BatchCounts, 'total'>
+    const status = (r.status ?? 'queued') as keyof Omit<BatchCounts, 'total' | 'failedScript' | 'failedInfra'>
     if (status in counts) counts[status] += 1
+    if (status === 'failed') {
+      if (r.failureClass === 'infra' || r.failureClass === 'load') counts.failedInfra += 1
+      else counts.failedScript += 1
+    }
   }
   return counts
 }

@@ -35,4 +35,29 @@ export class AdbInput implements InputSink {
   async text(s: string): Promise<void> {
     await this.transport.exec(`input text ${escapeInputText(s)}`, { profile: 'input' })
   }
+
+  /**
+   * Per-character typing (plan 40 §3.6, §4.2): `input text` per character
+   * works, just slowly — unlike a curved gesture, there is no protocol
+   * limitation here, so `AdbInput` implements this one.
+   */
+  async typeText(text: string, opts: { perCharMs: [number, number]; rng?: () => number }): Promise<void> {
+    const rng = opts.rng ?? Math.random
+    const [lo, hi] = opts.perCharMs
+    for (const ch of text) {
+      await this.transport.exec(`input text ${escapeInputText(ch)}`, { profile: 'input' })
+      const delay = lo + rng() * Math.max(0, hi - lo)
+      if (delay > 0) await Bun.sleep(delay)
+    }
+  }
+
+  // Deliberately no `gesture()` here (plan 40 §3.6, §4.2): `input swipe`
+  // accepts only two points, so a curved path cannot be honoured. Leaving
+  // the method absent — rather than defining it and quietly running a
+  // straight line — is what lets a caller detect the degradation instead of
+  // being lied to. The fallback (a plain `swipe()`) and its one-per-session
+  // report both live in `@enkaku/session`'s `createSession`, which is where
+  // the input engine is chosen and therefore the only place that knows
+  // whether this is a genuine degrade or the `instant` profile asking for a
+  // straight line on purpose.
 }

@@ -1,0 +1,9 @@
+{
+  "name": "@enkaku/guest-agent",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "../../scripts/build-guest-agent.sh",
+    "build:debug": "../../scripts/build-guest-agent.sh --debug"
+  }
+}

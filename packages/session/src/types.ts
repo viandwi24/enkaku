@@ -50,3 +50,24 @@ export interface ArtifactSink {
     ext?: string
   }): Promise<SavedArtifact>
 }
+
+/**
+ * The script API's `ctx.device.install`/`push`/`pull` (plan 39 §4.6) — the
+ * SAME shape as `@enkaku/core`'s `TransferService`, deliberately re-declared
+ * here rather than imported: `@enkaku/session` cannot depend on
+ * `@enkaku/core` (core already depends on session), so the host injects its
+ * real `TransferService` as an implementation of this narrower, deviceId-first
+ * interface, the same pattern `ArtifactSink` above already establishes for
+ * `ctx.artifact`. `remotePath` validation (absolute, no `..`, no
+ * metacharacters — plan §4.6) happens inside the host's real implementation,
+ * which is the one place it needs to happen: every caller of this interface,
+ * local or remote, ends up there.
+ */
+export interface TransferPort {
+  install(
+    deviceId: string,
+    opts: { artifactId: string; reinstall?: boolean; grantPermissions?: boolean; allowDowngrade?: boolean },
+  ): Promise<{ package: string | null; durationMs: number; output: string }>
+  push(deviceId: string, opts: { artifactId: string; remotePath: string }): Promise<void>
+  pull(deviceId: string, opts: { remotePath: string }): Promise<{ artifactId: string; bytes: number }>
+}

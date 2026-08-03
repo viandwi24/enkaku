@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceAddedMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
+import { DeviceAddedMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
 import {
   DevicePairingCodeMessage,
   DevicePairingCodeResultMessage,
@@ -10,7 +10,7 @@ import {
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
 } from './messages/enroll'
-import { InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
+import { InputGestureMessage, InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage } from './messages/input'
 import {
   JobArtifactMessage,
   JobCancelMessage,
@@ -25,8 +25,10 @@ import {
   LeaseRevokedMessage,
 } from './messages/job'
 import {
+  QualitySchema,
   SessionProgressMessage,
   StreamEndedMessage,
+  StreamKeyframeMessage,
   StreamMetaMessage,
   StreamStartedMessage,
   StreamStartMessage,
@@ -62,6 +64,8 @@ import {
   ShellEchoMessage,
   ShellResultMessage,
 } from './messages/shell'
+import { ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
+import { TransferCancelMessage, TransferDoneMessage, TransferProgressMessage } from './messages/transfer'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
 export { normaliseTag, TagSchema } from './tags'
@@ -71,13 +75,25 @@ export {
   DeviceAddedMessage,
   DeviceRemovedMessage,
   DeviceStatusMessage,
+  DeviceReadinessSetMessage,
+  DeviceReadinessMessage,
   type DeviceStatus,
   type DeviceInfo,
   type DeviceAdded,
   type DeviceRemoved,
   type DeviceStatusEvent,
+  type DeviceReadinessSet,
+  type DeviceReadinessEvent,
 } from './device'
-export type { Transport, TransportExecOptions, DisplaySource, InputSink, Inspector, Point, FrameMeta } from './driver'
+export {
+  ReadinessSchema,
+  ReadinessBlockedReasonSchema,
+  DeviceReadinessSchema,
+  type Readiness,
+  type ReadinessBlockedReason,
+  type DeviceReadiness,
+} from './readiness'
+export type { Transport, TransportExecOptions, DisplaySource, InputSink, Inspector, Point, FrameMeta, GestureSample } from './driver'
 export {
   EngineDescriptorSchema,
   RegistryResponseSchema,
@@ -94,13 +110,19 @@ export {
   ShellModeSchema,
   DeviceSettingsSchema,
   FarmSettingsSchema,
+  JobSettingsSchema,
   defaultFarmSettings,
   defaultDeviceSettings,
   type BatteryState,
   type KeepAwakeMode,
   type ShellMode,
+  type TimingSettings,
   type DeviceSettings,
   type FarmSettings,
+  type JobSettings,
+  type SessionSettings,
+  type WallSettings,
+  type ReadinessSettings,
 } from './settings'
 export {
   ToolInstallProgressMessage,
@@ -110,17 +132,30 @@ export {
   type ToolProvisionProgress,
   type ToolChanged,
 } from './messages/tool'
-export { NormPointSchema, InputTapMessage, InputSwipeMessage, InputKeyMessage, InputTextMessage, type NormPoint } from './messages/input'
+export {
+  NormPointSchema,
+  InputTapMessage,
+  InputSwipeMessage,
+  InputKeyMessage,
+  InputTextMessage,
+  NormGestureSampleSchema,
+  InputGestureMessage,
+  type NormPoint,
+  type NormGestureSample,
+} from './messages/input'
 export {
   StreamStartMessage,
   StreamStartedMessage,
   StreamStopMessage,
+  StreamKeyframeMessage,
   StreamMetaMessage,
   StreamEndedMessage,
   SessionPhaseSchema,
   SessionProgressMessage,
+  QualitySchema,
   type SessionPhase,
   type SessionProgress,
+  type Quality,
 } from './messages/stream'
 export {
   DeviceUnauthorizedMessage,
@@ -239,6 +274,23 @@ export {
   type MonitorEndReason,
 } from './messages/shell'
 export {
+  ClipboardGetMessage,
+  ClipboardSetMessage,
+  ClipboardValueMessage,
+  ClipboardOkMessage,
+} from './messages/clipboard'
+export {
+  TransferKindSchema,
+  TransferProgressMessage,
+  TransferDoneMessage,
+  TransferCancelMessage,
+  InstallJobParamsSchema,
+  InstallResultSchema,
+  type TransferKind,
+  type InstallJobParams,
+  type InstallResult,
+} from './messages/transfer'
+export {
   PointSchema,
   SelectorSchema,
   KeyCodeSchema,
@@ -286,11 +338,69 @@ export {
   ShellStreamReplyMessage,
   ShellStreamStopMessage,
   ShellStreamEndedMessage,
+  ClipboardReplyErrorSchema,
+  ClipboardGetRequestMessage,
+  ClipboardGetReplyMessage,
+  ClipboardSetRequestMessage,
+  ClipboardSetReplyMessage,
   type TunnelChannelKind,
   type RoutedEnvelope,
   type AgentToControl,
   type ControlToAgent,
 } from './tunnel'
+
+export {
+  NetworkEngineIdSchema,
+  NetworkCapabilitiesSchema,
+  Socks5RouteConfigSchema,
+  redactRouteConfig,
+  NetworkObservationSchema,
+  NetworkStatusSchema,
+  PersistedNetworkRouteSchema,
+  type NetworkEngineId,
+  type NetworkCapabilities,
+  type Socks5RouteConfig,
+  type NetworkObservation,
+  type NetworkStatus,
+  type PersistedNetworkRoute,
+} from './network'
+
+export {
+  GUEST_AGENT_SOCKET,
+  GUEST_AGENT_PROTOCOL,
+  GuestAgentCapabilitySchema,
+  GuestAgentErrorCodeSchema,
+  HelloRequestSchema,
+  PingRequestSchema,
+  RouteStartRequestSchema,
+  RouteStopRequestSchema,
+  RouteStatusRequestSchema,
+  GuestAgentRequestSchema,
+  HelloResultSchema,
+  PingResultSchema,
+  RouteStartResultSchema,
+  RouteStopResultSchema,
+  RouteStatusResultSchema,
+  GuestAgentOkResponseSchema,
+  GuestAgentErrorResponseSchema,
+  GuestAgentResponseSchema,
+  type GuestAgentCapability,
+  type GuestAgentErrorCode,
+  type HelloRequest,
+  type PingRequest,
+  type RouteStartRequest,
+  type RouteStopRequest,
+  type RouteStatusRequest,
+  type GuestAgentRequest,
+  type HelloResult,
+  type PingResult,
+  type RouteStartResult,
+  type RouteStopResult,
+  type RouteStatusResult,
+  type GuestAgentOkResponse,
+  type GuestAgentErrorResponse,
+  type GuestAgentResponse,
+} from './guest-agent'
 
 /** Generic server→client error (a failed reply, an invalid message). */
 export const ErrorMessage = z.object({
@@ -306,6 +416,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceAddedMessage,
   DeviceRemovedMessage,
   DeviceStatusMessage,
+  DeviceReadinessMessage,
   DeviceUnauthorizedMessage,
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
@@ -339,6 +450,10 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   MonitorSubscribersMessage,
   ShellEchoMessage,
   ShellResultMessage,
+  ClipboardValueMessage,
+  ClipboardOkMessage,
+  TransferProgressMessage,
+  TransferDoneMessage,
   ErrorMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
@@ -347,10 +462,13 @@ export type ServerMessage = z.infer<typeof ServerMessageSchema>
 export const ClientMessageSchema = z.discriminatedUnion('type', [
   InputTapMessage,
   InputSwipeMessage,
+  InputGestureMessage,
   InputKeyMessage,
   InputTextMessage,
   StreamStartMessage,
   StreamStopMessage,
+  StreamKeyframeMessage,
+  DeviceReadinessSetMessage,
   DevicePairingRequestMessage,
   DevicePairingCodeMessage,
   JobEnqueueMessage,
@@ -368,5 +486,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   MonitorStopMessage,
   MonitorOneshotMessage,
   ShellExecMessage,
+  ClipboardGetMessage,
+  ClipboardSetMessage,
+  TransferCancelMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

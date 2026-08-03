@@ -1,4 +1,5 @@
-import type { DeviceStatus, JobStatus } from '@enkaku/protocol'
+import type { DeviceReadiness, DeviceStatus, JobStatus } from '@enkaku/protocol'
+import { READINESS_BLOCKED_REASON } from '@/lib/readiness'
 import { cn } from '@/lib/utils'
 
 /**
@@ -62,6 +63,51 @@ export function JobStatusBadge({ status, className }: { status: JobStatus; class
     <span className={cn(base, JOB_TONE[status], className)}>
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {JOB_LABEL[status]}
+    </span>
+  )
+}
+
+/**
+ * Readiness — asleep|awake|hot (plan 43 §4.6). `desired` and `actual` are
+ * shown SEPARATELY: mid-transition this reads e.g. "waking…" rather than
+ * flickering between, or lying about, either value (acceptance #3). When
+ * `actual` cannot reach `desired` at all, the specific reason is the
+ * tooltip — a badge with no explanation is the thing operators file bugs
+ * about (plan 43 §3.4).
+ */
+const READINESS_LABEL: Record<'asleep' | 'awake' | 'hot', string> = { asleep: 'asleep', awake: 'awake', hot: 'hot' }
+
+const READINESS_TONE: Record<'asleep' | 'awake' | 'hot', string> = {
+  asleep: 'text-fg-subtle border-line bg-transparent',
+  awake: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  hot: 'text-led-ok border-led-ok/35 bg-led-ok/10',
+}
+
+/**
+ * The badge states where the device IS, never where something wishes it were.
+ *
+ * It used to render `actual → desired` whenever the two disagreed. On a wall
+ * that reads as a live transition, but nothing guarantees one is in flight:
+ * observed on real hardware, two devices sat at `hot → asleep` for eight
+ * minutes because the readiness manager never converged. Fifty tiles each
+ * showing an arrow that means "at some point somebody asked for something
+ * else" is noise, and worse, it is not true.
+ *
+ * The pending target is not thrown away — it moves to the tooltip, where it
+ * costs no visual weight and can say plainly that the change never landed.
+ */
+export function ReadinessBadge({ readiness, className }: { readiness: DeviceReadiness; className?: string }) {
+  const pending = readiness.actual !== readiness.desired && readiness.blocked === null
+  const label = READINESS_LABEL[readiness.actual]
+  const title = readiness.blocked
+    ? `Waiting for ${READINESS_LABEL[readiness.desired]}: ${READINESS_BLOCKED_REASON[readiness.blocked] ?? readiness.blocked}`
+    : pending
+      ? `${READINESS_LABEL[readiness.desired]} was requested and has not taken effect`
+      : undefined
+  return (
+    <span className={cn(base, READINESS_TONE[readiness.actual], className)} title={title}>
+      <span className="size-1.5 rounded-full bg-current" aria-hidden />
+      {label}
     </span>
   )
 }

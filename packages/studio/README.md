@@ -39,3 +39,9 @@ Tokens, screen patterns, and writing rules live in [`docs/design.md`](../../docs
 ## Notes
 
 The device page uses the query param `/device?id=<deviceId>` rather than a dynamic `[id]` route, because a static export cannot pre-render dynamic ids.
+
+## Tab lifecycle and the Wall (plan 42)
+
+The device page's tabs stay mounted and are hidden with the `hidden` HTML attribute (`TabPanel` in `app/device/page.tsx`) instead of being conditionally rendered — a tab switch no longer unmounts `LiveView`, which is what makes returning to Control instant instead of replaying the wake-up sequence. **Monitor and Crashes are the deliberate exception**: each holds a device-side `logcat` stream, so they stay mount-on-demand exactly as before, with their own cleanup effect stopping the stream on unmount. A gated panel like `FilesPanel` renders its controls disabled with one explanatory line rather than an empty panel, so "Take control" from any tab takes effect immediately without a tab switch.
+
+The devices list's **Wall** mode (`components/wall/`) shows every device's screen live in a grid — the same `LiveView` component in a `compact`, read-only mode, subscribed at the `wall` quality profile. `TileGrid` is the one responsive grid layout, reused by the topology page's `ClusterSection` too. At most `wall.maxTiles` (a farm setting) tiles stream at once; the rest render a placeholder with a "Show live" action. Offline and quarantined devices always render a static card with the reason, never a blank tile.

@@ -36,6 +36,7 @@ const KIND_LABEL: Record<string, string> = {
   'session.degraded': 'Session degraded',
   'job.started': 'Job started',
   'job.finished': 'Job finished',
+  'job.retry': 'Job retry',
   'settings.changed': 'Settings changed',
   'battery.warning': 'Battery warning',
   'input.tap': 'Tap',
@@ -45,6 +46,7 @@ const KIND_LABEL: Record<string, string> = {
   'adb.endpoint.opened': 'adb endpoint opened',
   'adb.endpoint.closed': 'adb endpoint closed',
   'adb.open': 'adb stream',
+  'app.crashed': 'App crashed',
 }
 
 const KIND_TONE: Record<string, string> = {
@@ -56,9 +58,11 @@ const KIND_TONE: Record<string, string> = {
   'control.revoked': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'session.degraded': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'job.finished': 'text-led-ok border-led-ok/35 bg-led-ok/10',
+  'job.retry': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'battery.warning': 'text-led-danger border-led-danger/40 bg-led-danger/10',
   'adb.endpoint.opened': 'text-led-active border-led-active/35 bg-led-active/10',
   'adb.endpoint.closed': 'text-fg-subtle border-line bg-transparent',
+  'app.crashed': 'text-led-danger border-led-danger/40 bg-led-danger/10',
 }
 const DEFAULT_TONE = 'text-fg-muted border-line bg-transparent'
 
@@ -89,6 +93,16 @@ function summarize(ev: DeviceEvent): string {
       const ms = typeof meta.durationMs === 'number' ? meta.durationMs : null
       return `${String(meta.status ?? '?')}${ms !== null ? ` in ${(ms / 1000).toFixed(1)}s` : ''}`
     }
+    case 'job.retry': {
+      // Plan 36 §4.4: attempt, class, code, backoff delay, and whether this
+      // was a batch member moving to another device rather than an in-place retry.
+      const delayMs = typeof meta.delayMs === 'number' ? meta.delayMs : 0
+      const rebound = meta.rebound === true
+      const parts = [`${String(meta.class ?? '?')}:${String(meta.code ?? '?')}`]
+      if (delayMs > 0) parts.push(`after ${delayMs}ms`)
+      if (rebound) parts.push(`→ moved to another device`)
+      return parts.join(' ')
+    }
     case 'settings.changed':
       return Array.isArray(meta.keys) && meta.keys.length > 0 ? `Changed: ${meta.keys.join(', ')}` : 'Settings changed'
     case 'battery.warning':
@@ -114,6 +128,12 @@ function summarize(ev: DeviceEvent): string {
       // Already redacted server-side (plan 27 §3.6) — same log-hygiene pass
       // as `shell.exec` (plan 26 §3.3), never a security control.
       return String(meta.service ?? '?')
+    case 'app.crashed': {
+      // plan 37 §4.2, §4.5 — the parser's CrashEvent shape, mirrored in the meta.
+      const label = meta.kind === 'anr' ? 'ANR' : String(meta.exception ?? 'crash')
+      const suffix = meta.jobId ? ` (job ${String(meta.jobId).slice(0, 8)})` : ''
+      return `${String(meta.package ?? '?')} — ${label}${suffix}`
+    }
     default:
       return ev.kind
   }

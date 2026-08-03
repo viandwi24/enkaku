@@ -21,6 +21,7 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
     scriptVersion: script?.version ?? null,
     status: (row.status ?? 'queued') as JobStatus,
     error: row.error,
+    failureClass: row.failureClass,
     priority: row.priority ?? 0,
     createdAt: toSec(row.createdAt) ?? 0,
     startedAt: toSec(row.startedAt),
@@ -65,8 +66,18 @@ export interface JobStore {
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string }>
   /** Single-writer transaction: claim a queued job for an idle device (spec §10.3, plan 20 §4.2). */
   claimNext(jobTtlSec: number): ClaimedJob | null
-  finish(jobId: string, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string }): JobRow | null
+  /** `failureClass` (plan 36 §4.3) is only meaningful for `status: 'failed'`; omitted/undefined leaves the column untouched. */
+  finish(jobId: string, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string; failureClass?: string | null }): JobRow | null
   cancelQueued(jobId: string): JobRow | null
+  /**
+   * Plan 36 §3.6, §4.3 — a batch member's infra failure returns to the
+   * queue instead of settling terminally: status back to `queued`, the new
+   * (or unchanged) device it should try next, the lease/lifecycle columns
+   * cleared as if it had never run, `infraAttempts` incremented — but
+   * `priority` and `createdAt` untouched, so plan 21's ordering treats it as
+   * the old job it is. Only affects a `running` row, mirroring `finish()`.
+   */
+  requeueForRebind(jobId: string, newDeviceId: string): JobRow | null
   /** Every job belonging to a batch, ordered by batchSeq (plan 20 §4.5, §4.6). */
   listByBatch(batchId: string): JobRow[]
   /** Cancel every queued job in a batch in one statement — used by the batch cancel endpoint (plan 20 §4.6). */
@@ -110,6 +121,8 @@ export function createJobStore(db: Db): JobStore {
         batchId: input.batchId ?? null,
         batchSeq: input.batchSeq ?? null,
         expiresAt: input.expiresAt ?? null,
+        failureClass: null,
+        infraAttempts: 0,
       }
       db.insert(jobs).values(row).run()
       return row
@@ -241,6 +254,25 @@ export function createJobStore(db: Db): JobStore {
             leaseExpiresAt: null,
             ...(data.result !== undefined ? { result: data.result } : {}),
             ...(data.error !== undefined ? { error: data.error } : {}),
+            ...(data.failureClass !== undefined ? { failureClass: data.failureClass } : {}),
+          })
+          .where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
+          .run(),
+      )
+      if (changed === 0) return null
+      return db.select().from(jobs).where(eq(jobs.id, jobId)).get() ?? null
+    },
+
+    requeueForRebind(jobId, newDeviceId) {
+      const changed = changedRows(
+        db
+          .update(jobs)
+          .set({
+            status: 'queued',
+            deviceId: newDeviceId,
+            leaseExpiresAt: null,
+            startedAt: null,
+            infraAttempts: sql`COALESCE(${jobs.infraAttempts}, 0) + 1`,
           })
           .where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
           .run(),
@@ -316,7 +348,11 @@ export function createJobStore(db: Db): JobStore {
       return changedRows(
         db
           .update(jobs)
-          .set({ status: 'failed', error: 'core restarted', finishedAt: new Date(), leaseExpiresAt: null })
+          // A restart is unambiguously the farm's problem, not the script's
+          // — classified 'infra' directly rather than through
+          // `classifyFailure` (plan 36 §3.2, acceptance #8), since this
+          // recovery path (plan 04 §4.6) never runs the executor at all.
+          .set({ status: 'failed', error: 'core restarted', finishedAt: new Date(), leaseExpiresAt: null, failureClass: 'infra' })
           .where(eq(jobs.status, 'running'))
           .run(),
       )

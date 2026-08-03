@@ -1,6 +1,11 @@
+import { mkdirSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
 import { and, asc, eq } from 'drizzle-orm'
+import type { ArtifactInfo, ShellMode } from '@enkaku/protocol'
+import type { AuthEnv } from '../auth/middleware'
+import { canUseFiles } from '../auth/acl'
+import type { AuditLogger } from '../auth/audit'
 import type { Db } from '../db'
 import { artifacts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
@@ -14,11 +19,36 @@ const CONTENT_TYPES: Record<string, string> = {
   log: 'text/plain; charset=utf-8',
   txt: 'text/plain; charset=utf-8',
   mp4: 'video/mp4',
+  apk: 'application/vnd.android.package-archive',
 }
 
-/** Per-job artifacts: list and download (spec §11.2, §19 job detail). */
-export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
-  const app = new Hono()
+/**
+ * A hard ceiling on the upload itself (plan 39 §3.5, §4.4 — "a multipart
+ * upload, subject to the same auth"), independent of `transfer.maxPushBytes`:
+ * that farm setting caps what may later be PUSHED or INSTALLED from an
+ * artifact already in the store; this is a blunt safety net against an
+ * oversized request body regardless of what the upload is destined for.
+ */
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
+
+const slug = (label: string): string =>
+  label
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80) || 'upload'
+
+/** Per-job artifacts: list, download, and (plan 39 §4.4) upload. */
+export function createArtifactRoutes(deps: {
+  db: Db
+  dataDir: string
+  /** Upload is gated by `device.files` (widened by `shell.mode`, same switch install/push/pull use) plus an audit record — undefined disables the route (mirrors `adbEndpoint`/`transfer` optionality elsewhere). */
+  upload?: {
+    audit: AuditLogger
+    shellSettings: () => { mode: ShellMode }
+  }
+}): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>()
 
   app.get('/', (c) => {
     const jobId = c.req.query('jobId')
@@ -68,6 +98,74 @@ export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
     return c.json({ items, nextCursor, total, artifacts: items })
   })
 
+  /**
+   * `POST /api/artifacts` — a multipart upload, the ONLY way a file enters
+   * the artifact store from outside a job (plan 39 §3.5, §4.4). This is
+   * deliberately separate from install/push/pull: those three accept an
+   * artifact id ONLY, never a URL or path (§3.5's SSRF-shaped hole); getting
+   * a file INTO the store in the first place is this one auditable step,
+   * gated the same way (`device.files`, widened by `shell.mode`) and
+   * size-capped independent of any single device's `transfer.maxPushBytes`.
+   */
+  app.post('/', async (c) => {
+    if (!deps.upload) throw new EnkakuError('E_BAD_REQUEST', 'artifact upload is not enabled')
+    const user = c.get('user')
+    if (!user || !canUseFiles(user.role, deps.upload.shellSettings().mode)) {
+      throw new EnkakuError('auth.forbidden', 'you do not have permission to upload artifacts')
+    }
+    const declaredLength = Number(c.req.header('content-length') ?? '0')
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
+      throw new EnkakuError('E_TRANSFER_TOO_LARGE', `the upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit`)
+    }
+    const body = await c.req.parseBody().catch(() => null)
+    const file = body?.file
+    if (!file || !(file instanceof File)) {
+      throw new EnkakuError('E_BAD_REQUEST', 'a multipart "file" field is required')
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new EnkakuError('E_TRANSFER_TOO_LARGE', `the upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit`)
+    }
+    const labelField = body?.label
+    const label = typeof labelField === 'string' && labelField.trim().length > 0 ? labelField.trim() : file.name || 'upload'
+    const ext = file.name.includes('.') ? (file.name.split('.').pop() as string) : 'bin'
+
+    const relDir = join('artifacts', 'uploads')
+    const dir = join(deps.dataDir, relDir)
+    mkdirSync(dir, { recursive: true })
+    const filename = `${Date.now()}-${slug(label)}.${ext}`
+    const relPath = join(relDir, filename)
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    await Bun.write(join(dir, filename), bytes)
+
+    const info: ArtifactInfo = {
+      id: crypto.randomUUID(),
+      jobId: null,
+      deviceId: null,
+      kind: 'file',
+      label,
+      path: relPath,
+      sizeBytes: bytes.length,
+      createdAt: Math.floor(Date.now() / 1000),
+    }
+    deps.db
+      .insert(artifacts)
+      .values({
+        id: info.id,
+        jobId: null,
+        deviceId: null,
+        kind: info.kind,
+        label: info.label,
+        path: info.path,
+        sizeBytes: info.sizeBytes,
+        createdAt: new Date(),
+      })
+      .run()
+
+    deps.upload.audit.record({ userId: user.id, action: 'artifact.upload', target: info.id, meta: { label, sizeBytes: bytes.length, ext } })
+
+    return c.json({ artifact: info }, 201)
+  })
+
   app.get('/:id/content', async (c) => {
     const row = deps.db.select().from(artifacts).where(eq(artifacts.id, c.req.param('id'))).get()
     if (!row) throw new EnkakuError('artifact_not_found', 'no such artifact')
@@ -83,9 +181,15 @@ export function createArtifactRoutes(deps: { db: Db; dataDir: string }): Hono {
     })
   })
 
+  const ERROR_STATUS: Record<string, number> = {
+    artifact_not_found: 404,
+    'auth.forbidden': 403,
+    E_TRANSFER_TOO_LARGE: 413,
+  }
+
   app.onError((err, c) => {
     if (err instanceof EnkakuError) {
-      return c.json(err.toJSON(), (err.code === 'artifact_not_found' ? 404 : 400) as 400)
+      return c.json(err.toJSON(), (ERROR_STATUS[err.code] ?? 400) as 400)
     }
     throw err
   })

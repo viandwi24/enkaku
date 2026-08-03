@@ -355,11 +355,17 @@ Rules that hold for every engine on this layer:
 5. **Every change is recorded** to the device event log (`network.*` kinds) with the secret redacted.
 6. **HTTPS interception is out of scope and cannot be solved here.** Reading TLS payloads needs a trusted CA, which since Android 7 means a debug build of your own app with a matching network security config. The layer routes traffic; it does not decrypt it.
 
-### 7.10 VPN helper profiles
+### 7.10 The `vpn-helper` engine is served by a first-party agent
 
-`vpn-helper` does not hardcode any vendor. A profile declares how to drive one app — package, components, intent action, and the extras mapping — and is validated with Zod like any other config. A profile is only usable once its APK is provisioned through the Toolchain Manager (§7.2) with a pinned sha256, and installed with `adb install -r -g`, reusing the `ui-server` provisioning path (§7.4).
+> **v0.5 revision.** This section originally described driving a *third-party* VPN app through a declarative intent profile. Research has ruled that approach out; see `docs/research/android-guest-agent.md` for the verified findings and their sources.
 
-Two consequences must be stated plainly rather than discovered later: many candidate apps export **no** receiver at all (SocksDroid's `AndroidManifest.xml` exports only its launcher activity, so it cannot be driven by broadcast), and `VpnService` requires a one-time consent dialog which is pre-granted with `appops set <pkg> ACTIVATE_VPN allow` or, failing that, tapped through the farm's own input engine. Any profile shipped in-tree must be verified against the real APK before it is written down; an invented intent contract is the exact failure mode `TODO-verify` exists to prevent.
+Two results kill the third-party-profile idea outright. First, **`adb shell am` cannot reach components declared `exported="false"`** — only root and system bypass the export check, and shell is neither; worse, `am broadcast` fails *silently* with exit code 0. Second, real candidate apps export nothing usable: SocksDroid's manifest exports only its launcher activity, with its VPN service and boot receiver both unexported. There is therefore no intent contract to declare, for that app or most others.
+
+So `vpn-helper` is served by **`enkaku-guest-agent`**, a first-party APK, provisioned through the Toolchain Manager (§7.2) with a pinned sha256 and installed with `adb install -r -g`, reusing the `ui-server` path (§7.4). It is controlled over a `localabstract` socket reached with `adb forward` — typed request/response, so the engine can *read* state rather than fire intents blindly, which is what makes `observe()` and `probe()` (§7.9) truthful rather than assumed.
+
+Three platform facts constrain it and must not be rediscovered the hard way: the agent's entry components have to be `exported="true"` and guarded by a token in the payload rather than a signature permission; a freshly installed app sits in the stopped state and receives **no** broadcasts — including `BOOT_COMPLETED` — until the host explicitly launches it once; and the `VpnService` consent dialog is pre-granted non-interactively with `appops set <pkg> ACTIVATE_VPN allow`, which writes exactly the state the dialog writes. That last one is `@hide` and undocumented, so it is pinned by a per-release smoke test, never assumed.
+
+The agent is scoped as a general on-device helper with negotiated capabilities, not a proxy shim: provisioning cost is per-app rather than per-feature, and SOCKS routing is simply its first capability.
 
 
 ---

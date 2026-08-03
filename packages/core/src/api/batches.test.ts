@@ -1,7 +1,11 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
+import { createAuditLogger } from '../auth/audit'
+import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches } from '../db/schema'
-import { queryBatchRows } from './batches'
+import { batches, devices } from '../db/schema'
+import { ExecutorRegistry } from '../jobs/executor'
+import { createBatchRoutes, queryBatchRows, type BatchRoutesDeps } from './batches'
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -89,5 +93,66 @@ describe('queryBatchRows keyset pagination', () => {
   test('a malformed cursor is rejected, not silently ignored', () => {
     const db = setUp()
     expect(() => queryBatchRows(db, { cursor: 'not-valid-base64!!!', limit: 50 })).toThrow()
+  })
+})
+
+function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', inner)
+  return wrapper
+}
+
+function makeApp(db: Db, role: 'admin' | 'operator' | null) {
+  const audit = createAuditLogger(db)
+  const registry = new ExecutorRegistry()
+  registry.register('internal:sleep', { validateParams: (p) => p, run: async () => undefined })
+  const deps: BatchRoutesDeps = {
+    db,
+    jobStore: { listByBatch: () => [] } as unknown as BatchRoutesDeps['jobStore'],
+    scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+    audit,
+    broadcastBatchStatus: () => {},
+    scriptNames: () => new Map(),
+    registry,
+    findScript: () => null,
+  }
+  return withUser(role, createBatchRoutes(deps))
+}
+
+/**
+ * `requirePermission('job.run')` on `POST /` (plan 34 §4.4, §4.5) — there is
+ * no `job.manage` permission; `job.run` is the closest existing fit and,
+ * being an OPERATOR permission, must not lock an operator out of a flow
+ * they already had.
+ */
+describe('requirePermission("job.run") on /api/batches mutations (plan 34 §4.4, §4.5)', () => {
+  const createBody = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }
+
+  test('POST / is refused with no authenticated user', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(createBody) })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (job.run is an OPERATOR permission) may create a batch — no lockout', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator')
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(createBody) })
+    expect(res.status).toBe(201)
+  })
+
+  test('GET / needs no permission at all — read routes stay open', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
   })
 })

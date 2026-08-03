@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, LayoutGrid, FileCode2, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server } from 'lucide-react'
+import { Menu, MonitorSmartphone, FileCode2, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { coreBase, ws } from '@/lib/ws'
@@ -11,7 +11,6 @@ import { cn } from '@/lib/utils'
 
 const NAV = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
-  { href: '/topology', label: 'Topology', icon: LayoutGrid, countKey: null },
   { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
   { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },

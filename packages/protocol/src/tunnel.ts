@@ -221,7 +221,8 @@ export const JobProgressMessage = z.object({
   payload: z.object({
     jobId: z.string(),
     kind: z.enum(['phase', 'log', 'artifact', 'result']),
-    phase: z.enum(['prepare', 'run', 'finish']).optional(),
+    /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
+    phase: z.enum(['reset', 'prepare', 'run', 'finish']).optional(),
     attempt: z.number().int().optional(),
     log: z
       .object({ level: z.string(), source: z.string(), msg: z.string(), ts: z.number() })
@@ -320,6 +321,56 @@ export const ShellStreamEndedMessage = z.object({
   payload: z.object({ streamId: z.string(), reason: z.string() }),
 })
 
+// ---- correlated clipboard request/response (M17d, plan 38 §4.5) ----
+
+/**
+ * The clipboard's cloud parity: same correlation pattern as `shell.exec.*`
+ * above, one request/reply pair per operation. `ClipboardReplyErrorSchema` is
+ * its own (structurally identical) schema rather than a reuse of
+ * `ShellReplyErrorSchema` — clipboard and shell are independent protocol
+ * surfaces, and this keeps a future divergence (an extra field on one but not
+ * the other) from being a breaking rename.
+ */
+export const ClipboardReplyErrorSchema = z.object({ code: z.string(), message: z.string() })
+
+export const ClipboardGetRequestMessage = z.object({
+  type: z.literal('clipboard.get.request'),
+  id: z.string(),
+  payload: z.object({
+    deviceId: z.string(),
+    copyKey: z.enum(['none', 'copy', 'cut']).optional(),
+  }),
+})
+
+export const ClipboardGetReplyMessage = z.object({
+  type: z.literal('clipboard.get.reply'),
+  id: z.string(),
+  payload: z.object({
+    ok: z.boolean(),
+    text: z.string().optional(),
+    error: ClipboardReplyErrorSchema.optional(),
+  }),
+})
+
+export const ClipboardSetRequestMessage = z.object({
+  type: z.literal('clipboard.set.request'),
+  id: z.string(),
+  payload: z.object({
+    deviceId: z.string(),
+    text: z.string(),
+    paste: z.boolean().optional(),
+  }),
+})
+
+export const ClipboardSetReplyMessage = z.object({
+  type: z.literal('clipboard.set.reply'),
+  id: z.string(),
+  payload: z.object({
+    ok: z.boolean(),
+    error: ClipboardReplyErrorSchema.optional(),
+  }),
+})
+
 // ---- the cloud adb endpoint (M12g, plan 28 §4.1) ----
 
 /**
@@ -393,6 +444,8 @@ export const AgentToControlSchema = z.discriminatedUnion('type', [
   ShellExecReplyMessage,
   ShellStreamReplyMessage,
   ShellStreamEndedMessage,
+  ClipboardGetReplyMessage,
+  ClipboardSetReplyMessage,
   AdbOpenReplyMessage,
   AdbCloseMessage,
   AdbAckMessage,
@@ -413,6 +466,8 @@ export const ControlToAgentSchema = z.discriminatedUnion('type', [
   ShellExecRequestMessage,
   ShellStreamRequestMessage,
   ShellStreamStopMessage,
+  ClipboardGetRequestMessage,
+  ClipboardSetRequestMessage,
   AdbOpenRequestMessage,
   AdbCloseMessage,
 ])

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { AdbClient } from '@enkaku/adb'
+import type { SessionManager } from '@enkaku/session'
 import type { AuthEnv } from '../auth/middleware'
 import { can } from '../auth/acl'
 import type { Db } from '../db'
@@ -23,6 +24,8 @@ export function createAdbStatsRoutes(deps: {
   health: () => DeviceHealth | null
   /** Whether the current global cap comes from the autoscaler (true) or a pinned `adb.maxConcurrent` (false). */
   auto: () => boolean
+  /** Idle session TTL (plan 42 §4.4) — exposed so the effect is measurable rather than assumed. Null under the orchestrator. */
+  sessions: () => SessionManager | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -39,6 +42,10 @@ export function createAdbStatsRoutes(deps: {
     const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, perDevice: {} }
     const health = deps.health()
     const rows = deps.db.select().from(devices).all()
+    // Idle session TTL (plan 42 §4.4) — every session currently held open
+    // with no subscriber, oldest first, so the setting's effect is
+    // measurable rather than assumed.
+    const idle = deps.sessions()?.idleSessions() ?? []
 
     return c.json({
       global: {
@@ -53,6 +60,7 @@ export function createAdbStatsRoutes(deps: {
         active: streamStats.streams,
         perDevice: streamStats.perDevice,
       },
+      idleSessions: idle,
       devices: rows.map((row) => {
         const m = deps.metrics.forSerial(row.serial)
         return {

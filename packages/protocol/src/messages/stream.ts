@@ -2,10 +2,24 @@ import { z } from 'zod'
 
 /** Stream video (spec §13). Request-reply pakai korelasi `id`. */
 
+/**
+ * The session's video quality profile (Plan 42 §3.5, §4.5): `control` is the
+ * device page's full-fidelity picture; `wall` is a low-rate profile for the
+ * fleet Wall, so many tiles can decode at once without saturating the
+ * browser or the network. Reuse rules live in `@enkaku/session`'s manager —
+ * this schema only carries the request/response, never decides anything.
+ */
+export const QualitySchema = z.enum(['control', 'wall'])
+export type Quality = z.infer<typeof QualitySchema>
+
 export const StreamStartMessage = z.object({
   type: z.literal('stream.start'),
   id: z.string(),
-  payload: z.object({ deviceId: z.string() }),
+  payload: z.object({
+    deviceId: z.string(),
+    /** Defaults to `control` server-side when omitted (every pre-plan-42 caller). */
+    quality: QualitySchema.optional(),
+  }),
 })
 
 export const StreamStartedMessage = z.object({
@@ -17,11 +31,29 @@ export const StreamStartedMessage = z.object({
     codec: z.enum(['png', 'h264']),
     width: z.number(),
     height: z.number(),
+    /**
+     * The quality this viewer actually got — not necessarily what it asked
+     * for: a `wall` request against a device already streaming at `control`
+     * is shared as-is, never downgraded (Plan 42 §3.5).
+     */
+    quality: QualitySchema,
   }),
 })
 
 export const StreamStopMessage = z.object({
   type: z.literal('stream.stop'),
+  payload: z.object({ streamId: z.number().int() }),
+})
+
+/**
+ * Ask the encoder for a fresh IDR without restarting the stream (Plan 42
+ * §4.1) — sent when a hidden `<video>` becomes visible again: browsers may
+ * throttle a hidden canvas/video, so the first frame after unhiding can be
+ * stale. Fire-and-forget, the same shape as `stream.stop`; a stream id the
+ * server no longer recognises (already stopped) is silently ignored.
+ */
+export const StreamKeyframeMessage = z.object({
+  type: z.literal('stream.keyframe'),
   payload: z.object({ streamId: z.number().int() }),
 })
 

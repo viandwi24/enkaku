@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
-import { fetchDevices } from '@/lib/api'
+import { deviceRefLabel, fetchDeviceRefs, fetchDevices, type DeviceRef } from '@/lib/api'
 import { duration, relativeTime } from '@/lib/format'
 import { ws } from '@/lib/ws'
 
@@ -42,6 +42,10 @@ function BatchDetail() {
   const router = useRouter()
   const [batch, setBatch] = useState<BatchInfo | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
+  // A batch member's device may have since been forgotten (plan 47 §3.4) —
+  // resolved lazily, only for ids the live list does not have, and cached
+  // here so a re-render never re-fetches the same id.
+  const [refs, setRefs] = useState<Record<string, DeviceRef>>({})
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
   const jobsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
@@ -85,6 +89,14 @@ function BatchDetail() {
     const b = await api<{ batch: BatchInfo; jobs: JobInfo[] }>(`/api/batches/${batchId}`)
     setBatch(b.batch)
     const sorted = [...b.jobs].sort((a, z) => (a.batchSeq ?? 0) - (z.batchSeq ?? 0))
+    // A member's device may have been forgotten since this batch ran (plan
+    // 47 §3.4) — resolve only the ids the live list does not already have.
+    const missing = [...new Set(sorted.map((j) => j.deviceId))].filter((id) => !devices.some((d) => d.id === id) && !(id in refs))
+    if (missing.length > 0) {
+      void fetchDeviceRefs(missing)
+        .then((r) => setRefs((prev) => ({ ...prev, ...r })))
+        .catch(() => undefined)
+    }
     return { items: sorted, nextCursor: null, total: sorted.length }
   }
 
@@ -92,7 +104,7 @@ function BatchDetail() {
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={loadBatch} /></div>
   if (!batch) return <div className="px-5 py-4"><LoadingRows rows={3} /></div>
 
-  const deviceLabel = (id: string) => devices.find((d) => d.id === id)?.label ?? id.slice(0, 8)
+  const deviceLabel = (id: string) => devices.find((d) => d.id === id)?.label ?? deviceRefLabel(refs[id], id)
   const scriptName = batch.scriptName ? `${batch.scriptName}${batch.scriptVersion ? `@${batch.scriptVersion}` : ''}` : batch.scriptId
   const done = batch.counts.success + batch.counts.failed + batch.counts.cancelled
   const pct = batch.counts.total > 0 ? Math.round((done / batch.counts.total) * 100) : 0
@@ -151,7 +163,15 @@ function BatchDetail() {
               <h2 className="rack-label">progress</h2>
               <span className="readout text-[12px] text-fg-muted">
                 {done}/{batch.counts.total} finished
-                {batch.counts.failed > 0 && <span className="text-led-danger"> · {batch.counts.failed} failed</span>}
+                {batch.counts.failed > 0 && (
+                  <span className="text-led-danger">
+                    {' '}
+                    · {batch.counts.failed} failed
+                    {/* Plan 36 §4.4 — a batch that fell over because of one bad hub should not read as N broken tests. */}
+                    {(batch.counts.failedInfra > 0 || batch.counts.failedScript > 0) &&
+                      ` (${batch.counts.failedScript} script, ${batch.counts.failedInfra} infra)`}
+                  </span>
+                )}
               </span>
             </div>
             <Progress value={pct} className="mt-2 h-1.5" />

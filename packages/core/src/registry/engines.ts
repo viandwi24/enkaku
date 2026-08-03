@@ -57,6 +57,7 @@ export async function buildRegistryResponse(toolchain: ToolchainManager): Promis
     displays: byKind('display'),
     inputs: byKind('input'),
     inspectors: byKind('inspector'),
+    networks: byKind('network'),
     tools: tools.map((t) => ({ id: t.id, displayName: t.displayName, swappable: t.swappable })),
   })
 }

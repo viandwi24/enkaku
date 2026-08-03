@@ -17,6 +17,7 @@ export {
   type TrackerEvent,
 } from './tracker'
 export { Semaphore, PerDeviceQueue, type QueueRunOptions } from './queue'
+export { shellQuote } from './shell-quote'
 export { AdbSocket, encodeRequest, type AdbSocketOptions } from './socket'
 export { AdbError, type AdbErrorCode } from './errors'
 export {
@@ -45,3 +46,6 @@ export {
   MIN_MAXDATA as ADBD_MIN_MAXDATA,
   CONNECT_VERSION as ADBD_CONNECT_VERSION,
 } from './transport/wire'
+// The sync protocol (plan 39 §4.1) — push/pull/stat over an `openRaw(serial,
+// 'sync:')` stream, no adb CLI involved.
+export { pushFile, pullFile, statRemote, type PushFileOptions, type PullFileOptions, type RemoteStat, type SyncTransfer } from './transport/sync'

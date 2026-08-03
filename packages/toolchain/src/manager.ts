@@ -8,7 +8,7 @@ import { checkAdbBinary, checkFileHash } from './health'
 import { ManifestStore } from './manifest'
 import { ActivePointerStore, createPaths, ensureLayout, type ToolchainPaths } from './paths'
 import { currentPlatformKey, pickPlatformKey } from './platform'
-import { isRealSha256, type HealthResult, type ToolManifestEntry, type ToolVersion } from './types'
+import { isRealSha256, type DeviceArtifact, type HealthResult, type ToolManifestEntry, type ToolVersion } from './types'
 
 /** An install catalogue row — implemented by the core over the tool_installs table. */
 export interface ToolInstallRecord {
@@ -145,6 +145,22 @@ export class ToolchainManager {
 
   async activeVersion(toolId: string): Promise<string | null> {
     return (await this.pointers.read(toolId))?.version ?? null
+  }
+
+  /**
+   * The manifest's on-device expectation (plan 41 §3.2, §4.1) for the
+   * currently active version of `toolId` — `null` when the tool is unknown,
+   * not yet provisioned, or the manifest simply has no `deviceArtifact`
+   * recorded for that version. Callers must treat `null` as "skip the
+   * verification", never as a failure.
+   */
+  async deviceArtifactExpectation(toolId: string): Promise<DeviceArtifact | null> {
+    const tool = this.manifests.getTool(toolId)
+    if (!tool) return null
+    const version = await this.activeVersion(toolId)
+    if (!version) return null
+    const v = tool.versions.find((x) => x.version === version)
+    return v?.deviceArtifact ?? null
   }
 
   /** Bentuk response GET /api/tools (plan 02 §4.8). */

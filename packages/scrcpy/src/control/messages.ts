@@ -122,6 +122,40 @@ export function encodeResetVideo(): Uint8Array {
   return new Uint8Array([CONTROL_MSG.RESET_VIDEO])
 }
 
+/** `copyKey` → the byte the server's `ControlMessageReader` expects (plan 38 §4.1). */
+const COPY_KEY = { none: 0, copy: 1, cut: 2 } as const
+
+/**
+ * Ask the server to reply with a `CLIPBOARD` device message (plan 38 §3.3,
+ * §4.1). `copyKey` asks it to send a copy/cut keystroke FIRST so the current
+ * *selection* becomes the clipboard; `none` (the default) reads the
+ * clipboard as it already stands.
+ */
+export function encodeGetClipboard(copyKey: 'none' | 'copy' | 'cut' = 'none'): Uint8Array {
+  return new Uint8Array([CONTROL_MSG.GET_CLIPBOARD, COPY_KEY[copyKey]])
+}
+
+/**
+ * `[type u8][sequence u64BE][paste u8][len u32BE][utf8 text]` (plan 38 §3.4).
+ * `sequence` is echoed back in the device's `ACK_CLIPBOARD` message, which is
+ * how a caller knows the write actually landed rather than merely having been
+ * sent — the control socket is fire-and-forget UDP-in-spirit-if-not-in-fact,
+ * so nothing else confirms delivery. `paste` defaults to false: it makes the
+ * device immediately paste into the focused field, which is useful but also
+ * genuinely surprising if triggered by accident (plan 38 §3.4).
+ */
+export function encodeSetClipboard(sequence: bigint, text: string, paste = false): Uint8Array {
+  const body = enc.encode(text)
+  const buf = new Uint8Array(1 + 8 + 1 + 4 + body.length)
+  const dv = new DataView(buf.buffer)
+  dv.setUint8(0, CONTROL_MSG.SET_CLIPBOARD)
+  dv.setBigUint64(1, BigInt.asUintN(64, sequence), false)
+  dv.setUint8(9, paste ? 1 : 0)
+  dv.setUint32(10, body.length, false)
+  buf.set(body, 14)
+  return buf
+}
+
 /**
  * Blank or restore the device's physical panel while the encoder keeps
  * producing frames (Plan 17 §3.5, §4.4). Verified against scrcpy 3.3.1's

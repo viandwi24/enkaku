@@ -2,8 +2,10 @@ import {
   UiautomatorDumpInspector,
   UiServerInspector,
   createUiServerLauncher,
+  type UiServerArtifactMismatch,
   type UiServerStatus,
 } from '@enkaku/drivers'
+import type { AdbStreamHandle, AdbStreamOptions } from '@enkaku/adb'
 import type { Inspector, Transport } from '@enkaku/protocol'
 import type { ToolchainManager } from '@enkaku/toolchain'
 import type { Logger } from './logger'
@@ -23,8 +25,17 @@ export interface InspectorFactoryDeps {
   log: Logger
   /** adb CLI-level (install/forward) — bukan shell device. */
   hostAdb: (args: string[]) => Promise<string>
+  /**
+   * The Plan 24 streaming lane (plan 34 §4.1) — bound to `AdbClient.execStream`
+   * by the host (`daemon.ts`). Used ONLY for the ui-server instrumentation,
+   * which must never park a `PerDeviceQueue` slot for as long as the session
+   * lives.
+   */
+  execStream: (serial: string, cmd: string, opts: AdbStreamOptions) => Promise<AdbStreamHandle>
   onStatus?: (deviceId: string, status: UiServerStatus) => void
   onFallback?: (deviceId: string, from: string, to: string, reason: string) => void
+  /** A repair attempt still left the on-device artifact mismatched (plan 41 §3.3) — the host records `device.artifact.mismatch`. */
+  onArtifactMismatch?: (deviceId: string, info: UiServerArtifactMismatch) => void
 }
 
 const DUMP_POLL_MS = 500
@@ -55,12 +66,31 @@ export async function createInspectorForSession(
       app: await deps.toolchain.resolveToolPath('ui-server'),
       test: await deps.toolchain.resolveToolPath('ui-server-test'),
     })
+    // The manifest's on-device expectation for the currently active
+    // ui-server build (plan 41 §3.2, §4.1) — `null` (unknown tool, nothing
+    // provisioned, or an older manifest with no `deviceArtifact`) is a
+    // legitimate "skip the version/signature check" outcome, not an error.
+    const expected = await deps.toolchain.deviceArtifactExpectation('ui-server').catch(() => null)
     port = await deps.ports.claim(opts.deviceId)
     const launcher = createUiServerLauncher({
       serial: opts.transport.serial,
-      exec: (cmd) => opts.transport.exec(cmd, { profile: 'appLifecycle' }),
+      exec: (cmd, execOpts) => opts.transport.exec(cmd, execOpts ?? { profile: 'appLifecycle' }),
       hostAdb: deps.hostAdb,
       apkPaths,
+      ...(expected ? { expectedArtifact: { versionCode: expected.versionCode, signatureSha256: expected.signatureSha256 } } : {}),
+      onMismatch: (info) => deps.onArtifactMismatch?.(opts.deviceId, info),
+      // Both stream clocks OFF (plan 34 §3.2, §4.1, §8 risk row 2): the
+      // instrumentation is silent once healthy and must live as long as the
+      // session, not the lane's default idle/absolute budgets. Bounded
+      // anyway — the handle is stopped in `release()` below, and Plan 24's
+      // `stopForDevice` already fires when a device goes away.
+      execStream: (cmd, streamOpts) =>
+        deps.execStream(opts.transport.serial, cmd, {
+          onData: () => {},
+          onEnd: (reason, err) => streamOpts.onEnd(reason, err),
+          idleTimeoutMs: 0,
+          absoluteTimeoutMs: 0,
+        }),
       onLog: (level, msg) => deps.log[level](msg),
     })
     const inspector = new UiServerInspector({

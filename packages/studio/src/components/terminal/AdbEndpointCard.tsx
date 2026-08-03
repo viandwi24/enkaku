@@ -79,7 +79,14 @@ export function AdbEndpointCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId, clientId, endpoint !== null])
 
-  if (!checked || !canOpen) return null
+  // Still loading the initial check — not a permission gate, just not ready
+  // yet, so rendering nothing briefly is fine here (unlike `!canOpen` below).
+  if (!checked) return null
+
+  // A gated panel renders its controls disabled, with one line saying why,
+  // rather than vanishing (plan 42 §3.2, §4.2 — the same treatment as
+  // `FilesPanel`, "and any panel with the same shape").
+  const disabled = !canOpen
 
   const command = endpoint ? `adb connect ${endpoint.host}:${endpoint.port}` : null
   const idleInSec = endpoint ? Math.max(0, endpoint.expiresAt - Math.floor(now / 1000)) : null
@@ -123,15 +130,24 @@ export function AdbEndpointCard({
           </p>
         </div>
         {endpoint ? (
-          <Button size="sm" variant="outline" onClick={() => void close()} disabled={isPending('adb-endpoint-close')}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void close()}
+            disabled={disabled || isPending('adb-endpoint-close')}
+          >
             {isPending('adb-endpoint-close') ? 'Closing…' : 'Close'}
           </Button>
         ) : (
-          <Button size="sm" onClick={() => void open()} disabled={isPending('adb-endpoint-open') || !clientId}>
+          <Button size="sm" onClick={() => void open()} disabled={disabled || isPending('adb-endpoint-open') || !clientId}>
             {isPending('adb-endpoint-open') ? 'Opening…' : 'Open endpoint'}
           </Button>
         )}
       </div>
+
+      {disabled && (
+        <p className="mt-3 text-[11.5px] text-fg-subtle">Take control of this device to open an adb endpoint.</p>
+      )}
 
       {command && (
         <div className="mt-3 flex flex-wrap items-center gap-3">

@@ -1,4 +1,6 @@
 import type { Socket } from 'bun'
+import { createClipboardControl } from './control'
+import { createDeviceMessageReader, type DeviceMessage } from './control/device-messages'
 import {
   encodeInjectKeycode,
   encodeInjectText,
@@ -44,6 +46,19 @@ export interface ScrcpyControl {
   setDisplayPower(on: boolean): void
   /** Force the encoder to emit a fresh keyframe, for a viewer that just joined (Plan 17 §3.6). */
   resetVideo(): void
+  /**
+   * Read the device clipboard (plan 38 §4.3). Resolves on the next
+   * `clipboard` device message; rejects `E_CLIPBOARD_TIMEOUT` after
+   * `timeoutMs` (default 2s) with no reply.
+   */
+  getClipboard(opts?: { copyKey?: 'none' | 'copy' | 'cut'; timeoutMs?: number }): Promise<string>
+  /**
+   * Write the device clipboard (plan 38 §3.4, §4.3). Resolves once the
+   * server's `ACK_CLIPBOARD` echoes back the sequence this call sent;
+   * rejects `E_CLIPBOARD_TIMEOUT` after `timeoutMs` (default 2s) with none.
+   * `paste` defaults to false.
+   */
+  setClipboard(text: string, opts?: { paste?: boolean; timeoutMs?: number }): Promise<void>
 }
 
 export interface ScrcpySession {
@@ -51,6 +66,13 @@ export interface ScrcpySession {
   onPacket(cb: (p: ScrcpyPacket) => void): void
   onMetaChange(cb: (m: VideoMeta) => void): void
   onClose(cb: (reason: string) => void): void
+  /**
+   * Device→host messages on the control socket (plan 38 §3.2, §4.2) —
+   * clipboard replies today, UHID output reports in future work. `control`'s
+   * `getClipboard`/`setClipboard` are built on this same channel; most
+   * callers never need to subscribe directly.
+   */
+  onDeviceMessage(cb: (m: DeviceMessage) => void): void
   control: ScrcpyControl
   close(): Promise<void>
 }
@@ -132,9 +154,21 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     },
     log,
   )
+  // Device→host messages (plan 38 §3.2): the control socket was write-only
+  // until now — GET_CLIPBOARD is the first message that gets an answer back.
+  // A parser error must never close this socket (plan 38 §8): input already
+  // works through it via `write` below, and the reader is purely additive.
+  const deviceMessageHandlers = new Set<(m: DeviceMessage) => void>()
+  const deviceMessageReader = createDeviceMessageReader(
+    (m) => {
+      for (const cb of deviceMessageHandlers) cb(m)
+    },
+    (err) => log('warn', `device message reader stopped: ${String(err)}`),
+  )
+
   // Safe now: the server has accepted the video socket, so it is listening and
   // the next connection lands on it rather than on a half-open forward.
-  const controlSocket = await connectWithRetry(port, () => {}, () => {})
+  const controlSocket = await connectWithRetry(port, (data) => deviceMessageReader(data), () => {})
 
   const write = (bytes: Uint8Array) => {
     try {
@@ -144,6 +178,14 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     }
   }
 
+  const clipboardControl = createClipboardControl({
+    write,
+    onDeviceMessage: (cb) => {
+      deviceMessageHandlers.add(cb)
+      return () => deviceMessageHandlers.delete(cb)
+    },
+  })
+
   return {
     get meta() {
       return currentMeta
@@ -151,6 +193,7 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     onPacket: (cb) => void packetHandlers.add(cb),
     onMetaChange: (cb) => void metaHandlers.add(cb),
     onClose: (cb) => void closeHandlers.add(cb),
+    onDeviceMessage: (cb) => void deviceMessageHandlers.add(cb),
     control: {
       injectTouch: (action, x, y, w, h) =>
         write(encodeInjectTouch({ action, x, y, screenWidth: w, screenHeight: h })),
@@ -161,6 +204,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       uhidDestroy: (id) => write(encodeUhidDestroy(id)),
       setDisplayPower: (on) => write(encodeSetDisplayPower(on)),
       resetVideo: () => write(encodeResetVideo()),
+      getClipboard: (opts) => clipboardControl.getClipboard(opts),
+      setClipboard: (text, opts) => clipboardControl.setClipboard(text, opts),
     },
     async close() {
       try {

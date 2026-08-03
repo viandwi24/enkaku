@@ -50,7 +50,22 @@
 | 30 | `30-m14a-server-side-pagination.md` | M14a | **Pagination**: one keyset envelope for every list endpoint, a shared `PaginatedTable`, no unbounded fetches. |
 | 31 | `31-m14b-viewer-presence-and-control.md` | M14b | **Presence**: who is watching a device and who holds control, live to every viewer. Starts by reproducing the reported two-browser symptom. |
 | 32 | `32-m14c-fleet-topology-view.md` | M14c | **Topology**: the whole farm as grouped tiles — status, battery, temperature, running job — live, no graph library. |
+| 34 | `34-m16-shipped-defect-repairs.md` | M16 | **Four defects in shipped behaviour**: the ui-server inspector has never started (wrong stub class, measured); it must also move to the Plan 24 lane; the Timing settings are saved but never read; `app.launch` interpolates unquoted job params; `requirePermission` and `canUseDevice` are written but never called. |
+| 35 | `35-m17a-session-hygiene-between-jobs.md` | M17a | **Session hygiene**: a declared reset before every job, so two jobs on one device stop inheriting each other's app state. |
+| 36 | `36-m17b-retry-classification-and-backoff.md` | M17b | **Retry classification**: infrastructure failures separated from script failures, exponential backoff with jitter, a separate infra budget, batch members rebind to another device. |
+| 37 | `37-m17c-crash-detection.md` | M17c | **Crash detection**: `logcat -b crash` on the Plan 24 lane, crash and ANR events, the trace as an artifact, opt-in job failure. |
+| 38 | `38-m17d-clipboard.md` | M17d | **Clipboard**: get/set over the scrcpy control socket — which first needs a device-message reader, since that socket is write-only today. |
+| 39 | `39-m17e-file-transfer-and-apk-install.md` | M17e | **File transfer and APK install**: the sync protocol on the streaming lane, artifact-id sources only (never a client URL), batch install across a cluster. |
+| 40 | `40-m17f-input-realism.md` | M17f | **Input realism**: Bézier gesture paths with eased velocity, `scroll`/`fling` verbs, per-character typing cadence. Depends on Plan 34 reconnecting the Timing settings. |
+| 48 | `48-m22-wall-tile-density.md` | M22 | **Wall tile density**: one chrome block instead of two (label line, then a fixed chip row), actions as a hover/focus overlay on the screen — with touch and keyboard fallbacks so nobody loses the control. |
+| 47 | `47-m21-device-lifecycle-and-unified-fleet-view.md` | M21 | **Device lifecycle**: Forget (offline devices) and Block (by `stableId`, survives a replug) — there is no delete anywhere today. History is kept unless explicitly deleted with its counts shown. Devices and Topology merge into one page with view × grouping. |
+| 46 | `46-m20-device-settings-ux.md` | M20 | **Device settings UX**: the Settings tab gains vertical sub-sections on the left, derived from the schema's own keys, with a URL per section. Layout only — no setting changes meaning. |
+| 45 | `45-m19-device-readiness.md` | M19 | **Readiness as a state**: `asleep | awake | hot` as a second axis beside `DeviceStatus`, desired-vs-actual reported separately, Wake/Sleep without opening a stream, a farm-wide hot budget, and readiness on the Wall, the devices list, and topology. |
+| 42 | `42-m18-view-lifecycle-and-fleet-wall.md` | M18 | **View lifecycle and the wall**: tab switching no longer restarts the video (the Control subtree is unmounted today), one lease truth across tabs, gated panels disabled rather than absent, the `api()` GET-with-body defect, an idle session TTL, and a Wall mode showing every device's screen at a low-rate quality profile. |
+| 41 | `41-m17g-toolchain-integrity-and-doctor.md` | M17g | **Integrity and preflight**: verify on-device APKs by version and signature rather than package name; `enkaku doctor` with a remedy for every failed check. |
 | 33 | `33-m15-device-network.md` | M15 | **Network layer**: a fifth driver layer (spec §7.9). `adb-proxy` and `adb-reverse-proxy` engines, lease-scoped apply/revert, declared-vs-observed status, a Studio card, and `ctx.device.network.*` in the SDK. |
+| 43 | `43-m15b-guest-agent.md` | M15b | **`enkaku-guest-agent`**: a first-party on-device APK (`apps/guest-agent/`) with a `localabstract` control channel, provisioned unattended via the Toolchain Manager; turns on the `vpn-helper` engine — an enforcing SOCKS5 route apps cannot ignore. Depends on 33. |
+| 44 | `44-m15v-proxy-end-to-end.md` | M15v | **Delivery slice**: the minimum subset of 33 and 43 that lets an operator set a SOCKS5 full-tunnel proxy on a device from Studio. Opens with a device bring-up gate; defers the other engines, the SDK, CI, and the toolchain entry. |
 
 Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
 
@@ -74,6 +89,19 @@ Plan 22.0 is not part of that series — it revises the M11d cluster model — b
                                               └────→ 27 (local adb endpoint) → 28 (cloud adb endpoint)
 ```
 
+The M17 series (35–41) is **not** a chain — each plan stands alone and they can be worked in any order, with two exceptions: Plan 40 depends on Plan 34 (building input realism on a settings block that is never read would be building on sand), and Plans 37 and 39 each need `adb.maxStreamsPerDevice` raised, so whichever lands second must not lower it again.
+
+```
+34 (defect repairs)  ← do first: 40 depends on it, and it revives the ui-server
+ ├─ 35 (session hygiene)      ─┐
+ ├─ 36 (retry classification)  ├─ independent, any order
+ ├─ 37 (crash detection)       │   37 and 39 both raise the per-device stream budget
+ ├─ 38 (clipboard)             │
+ ├─ 39 (transfer + install)    │
+ ├─ 41 (integrity + doctor)   ─┘
+ └─ 40 (input realism)  ← after 34
+```
+
 Plans 27 and 28 are the largest in the series and are gated: **Plan 27 opens with a throwaway spike against a real `adb` client, and the plan stops there if the spike fails.** Do not start 28 before 27's shim is proven.
 
 One plan is one working session. Do not start a later plan in the same session as an earlier one — the point of the split is that the context stays small enough to hold accurately.
@@ -81,6 +109,8 @@ One plan is one working session. Do not start a later plan in the same session a
 The M14 series is independent of M12 and M13. `30` and `31` do not depend on each other; `32` reads best after `31` (a device tile can then show its viewer count), but does not require it.
 
 Plan `33` is independent of M12–M14. It needs Plan 18 (the device event log it writes to), Plan 22.1 (adb deadlines, since a hung `adb reverse` would otherwise park a queue slot), and the permission-gating pattern established in Plan 26. Its §9 Q4 names a smaller bug fix — honouring `HTTPS_PROXY` for the core's own outbound requests — that should land **before** it and is not part of it.
+
+Plan `43` is a hard successor to `33`: it implements the `vpn-helper` engine that 33 registers as `available: false`, against the `NetworkRoute` interface and the lease-scoped teardown 33 establishes. It also introduces the repo's **third language toolchain** (Kotlin/Gradle in `apps/guest-agent/`, alongside TypeScript/Bun and Rust/Cargo), so it is the one plan whose cost is as much operational as technical. Its platform research lives in `docs/research/android-guest-agent.md` and must be read before its step 5.1. **Start from Plan `44` rather than from `33` or `43` directly** — it is a delivery slice that selects the minimum subset of both needed to make a proxy work end to end, and defers the rest explicitly.
 
 **Plan 29 is a draft, not a work item.** Its status line says `DRAFT — NEEDS DISCUSSION. DO NOT EXECUTE`, and it deliberately has no implementation steps or acceptance criteria. It becomes executable only when a human answers its §9 and changes the status line. "Work the plans in order" does not include it.
 

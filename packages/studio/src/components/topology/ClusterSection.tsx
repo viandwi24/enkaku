@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import type { TopologyActiveJob } from '@/lib/api'
 import { DeviceTile } from './DeviceTile'
+import { TileGrid } from '@/components/wall/TileGrid'
 import { cn } from '@/lib/utils'
 
 const STATUS_ORDER: DeviceStatus[] = ['idle', 'busy', 'manual', 'quarantined', 'offline']
@@ -76,14 +77,7 @@ export function ClusterSection({
             {emptyMessage ?? 'No devices currently match this cluster.'}
           </p>
         ) : (
-          <div
-            className={cn(
-              'grid gap-2 pl-5',
-              compact
-                ? 'grid-cols-[repeat(auto-fill,minmax(140px,1fr))]'
-                : 'grid-cols-[repeat(auto-fill,minmax(200px,1fr))]',
-            )}
-          >
+          <TileGrid minTileWidthPx={compact ? 140 : 200} className="pl-5">
             {devices.map((d) => (
               <DeviceTile
                 key={d.id}
@@ -95,7 +89,7 @@ export function ClusterSection({
                 compact={compact}
               />
             ))}
-          </div>
+          </TileGrid>
         ))}
     </section>
   )

@@ -126,3 +126,62 @@ export async function saveForDevice(
     .run()
   return info
 }
+
+/**
+ * Computes (but does not create) the destination for a pulled file (plan 39
+ * §3.6, §4.2) — split from `saveForDevice` above because a pull streams
+ * straight to disk via `@enkaku/adb`'s `pullFile` (up to `transfer.maxPullBytes`,
+ * default 512 MB) rather than handing a whole `Uint8Array` through this
+ * module, which would mean buffering a pull's entire contents in memory just
+ * to satisfy this function's signature. The caller creates `dir`, streams
+ * into `abs`, then calls `registerDeviceArtifact` once the file is written.
+ */
+export function devicePullArtifactPath(
+  dataDir: string,
+  deviceId: string,
+  label: string,
+  ext: string,
+): { abs: string; rel: string; dir: string } {
+  const relDir = join('artifacts', `device-${deviceId}`)
+  const dir = join(dataDir, relDir)
+  const filename = `${Date.now()}-${slug(label)}.${ext}`
+  return { abs: join(dir, filename), rel: join(relDir, filename), dir }
+}
+
+/**
+ * Registers a device-scoped artifact for a file ALREADY written to disk at
+ * `devicePullArtifactPath`'s `abs` (plan 39 §3.6, §4.2) — no `MAX_FILE_BYTES`
+ * check here, unlike `saveForDevice`: a pull's cap is `transfer.maxPullBytes`
+ * (default 512 MB, far above the 8 MB `saveForDevice` enforces for "save last
+ * N lines" style artifacts), and it was already enforced twice before this
+ * point — once by `statRemote` and again by `pullFile`'s running-total check
+ * — so re-applying the smaller cap here would be both redundant and wrong.
+ */
+export function registerDeviceArtifact(
+  deps: { db: Db },
+  opts: { deviceId: string; label: string; relPath: string; sizeBytes: number },
+): ArtifactInfo {
+  const info: ArtifactInfo = {
+    id: crypto.randomUUID(),
+    jobId: null,
+    deviceId: opts.deviceId,
+    kind: 'file',
+    label: opts.label,
+    path: opts.relPath,
+    sizeBytes: opts.sizeBytes,
+    createdAt: Math.floor(Date.now() / 1000),
+  }
+  deps.db
+    .insert(artifacts)
+    .values({
+      id: info.id,
+      deviceId: info.deviceId,
+      kind: info.kind,
+      label: info.label,
+      path: info.path,
+      sizeBytes: info.sizeBytes,
+      createdAt: new Date(),
+    })
+    .run()
+  return info
+}

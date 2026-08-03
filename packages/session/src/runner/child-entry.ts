@@ -23,7 +23,7 @@ function send(msg: ChildToParent): void {
 const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingArtifact = new Map<string, { resolve: () => void; reject: (e: unknown) => void }>()
 const abortController = new AbortController()
-let aborted: 'timeout' | 'cancelled' | 'hung' | null = null
+let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | null = null
 
 function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>): Promise<T> {
   const callId = crypto.randomUUID()
@@ -50,8 +50,29 @@ const log = (level: Level) => (msg: string, fields?: Record<string, unknown>) =>
 
 const deviceApi = {
   tap: (target: unknown) => request<void>({ method: 'tap', args: { target } } as never),
-  swipe: (from: unknown, to: unknown, ms = 300) => request<void>({ method: 'swipe', args: { from, to, ms } } as never),
-  type: (text: string) => request<void>({ method: 'type', args: { text } } as never),
+  swipe: (from: unknown, to: unknown, ms = 300, opts?: { curvature?: number; easing?: string }) =>
+    request<void>({
+      method: 'swipe',
+      args: {
+        from,
+        to,
+        ms,
+        ...(opts?.curvature !== undefined ? { curvature: opts.curvature } : {}),
+        ...(opts?.easing !== undefined ? { easing: opts.easing } : {}),
+      },
+    } as never),
+  scroll: (opts: { direction: string; distance?: number; from?: unknown }) =>
+    request<void>({ method: 'scroll', args: opts } as never),
+  fling: (opts: { direction: string; strength?: string }) => request<void>({ method: 'fling', args: opts } as never),
+  type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }) =>
+    request<void>({
+      method: 'type',
+      args: {
+        text,
+        ...(opts?.perCharMs !== undefined ? { perCharMs: opts.perCharMs } : {}),
+        ...(opts?.instant !== undefined ? { instant: opts.instant } : {}),
+      },
+    } as never),
   key: (code: unknown) => request<void>({ method: 'key', args: { code } } as never),
   find: (sel: unknown) => request<unknown>({ method: 'find', args: { sel } } as never),
   waitFor: (sel: unknown, opts?: { timeout?: number; intervalMs?: number }) =>
@@ -68,6 +89,16 @@ const deviceApi = {
       request<void>({ method: 'app.launch', args: { pkg, ...(opts?.activity ? { activity: opts.activity } : {}) } } as never),
     forceStop: (pkg: string) => request<void>({ method: 'app.forceStop', args: { pkg } } as never),
   },
+  clipboard: {
+    get: () => request<string>({ method: 'clipboard.get', args: {} } as never),
+    set: (text: string, opts?: { paste?: boolean }) =>
+      request<void>({ method: 'clipboard.set', args: { text, paste: opts?.paste ?? false } } as never),
+  },
+  install: (opts: { artifactId: string; reinstall?: boolean; grantPermissions?: boolean; allowDowngrade?: boolean }) =>
+    request<{ package: string | null; durationMs: number; output: string }>({ method: 'install', args: opts } as never),
+  push: (opts: { artifactId: string; remotePath: string }) => request<void>({ method: 'push', args: opts } as never),
+  pull: (opts: { remotePath: string }) =>
+    request<{ artifactId: string; bytes: number }>({ method: 'pull', args: opts } as never),
 }
 
 const artifactApi = {
@@ -141,29 +172,37 @@ function resolveBundlePath(): string | undefined {
   return flag >= 0 ? process.argv[flag + 1] : process.argv[2]
 }
 
-async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<void> {
+interface BundleDef {
+  id: string
+  version: string
+  timeout?: number
+  retries?: number
+  params: { parse(v: unknown): unknown }
+  prepare?: (ctx: unknown) => Promise<void>
+  run: (ctx: unknown) => Promise<unknown>
+  finish?: (ctx: unknown) => Promise<void>
+  reset?: { packages: string[]; clearData?: boolean }
+}
+
+/**
+ * Import the bundle and report `ready` — done ONCE, at process start, rather
+ * than gated on the `init` message (plan 35 §4.3 ordering problem). The
+ * bundle path is already known from argv, so the child does not need any IPC
+ * message to begin this: the parent reads `ready` (now carrying `reset`),
+ * runs the pre-job reset, and only then sends `init`. The child holds
+ * through the SAME `init` handshake that already existed — `runScript` below
+ * just waits on this promise instead of doing the import itself.
+ *
+ * A failure here is reported as a `result` directly (there is no attempt to
+ * run without a bundle), so the parent's existing `result` handling covers
+ * it without needing `init` to ever be sent.
+ */
+async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | undefined> {
   const bundlePath = resolveBundlePath()
-  let finishRan = false
-  let failure: { code: string; message: string; phase: string; stack?: string } | undefined
-  let value: unknown
-
-  const heartbeat = setInterval(() => send({ t: 'heartbeat' }), HEARTBEAT_MS)
-
   try {
     if (!bundlePath) throw new Error('no bundlePath was given to the child')
     const mod = (await import(bundlePath)) as { default?: unknown }
-    const def = mod.default as
-      | {
-          id: string
-          version: string
-          timeout?: number
-          retries?: number
-          params: { parse(v: unknown): unknown }
-          prepare?: (ctx: unknown) => Promise<void>
-          run: (ctx: unknown) => Promise<unknown>
-          finish?: (ctx: unknown) => Promise<void>
-        }
-      | undefined
+    const def = mod.default as BundleDef | undefined
     if (!def || typeof def.run !== 'function') {
       throw Object.assign(new Error('the bundle has no default ScriptDefinition export'), { code: 'BAD_BUNDLE' })
     }
@@ -173,7 +212,31 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       version: def.version,
       ...(typeof def.timeout === 'number' ? { timeoutMs: def.timeout } : {}),
       ...(typeof def.retries === 'number' ? { retries: def.retries } : {}),
+      ...(def.reset ? { reset: { packages: def.reset.packages, ...(def.reset.clearData !== undefined ? { clearData: def.reset.clearData } : {}) } } : {}),
     })
+    return { bundlePath, def }
+  } catch (err) {
+    const e = toScriptError(err, 'run')
+    send({ t: 'result', ok: false, error: e, finishRan: false })
+    return undefined
+  }
+}
+
+/** Kicked off immediately at process start — see `loadBundle` above. */
+const loaded = loadBundle()
+
+async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<void> {
+  let finishRan = false
+  let failure: { code: string; message: string; phase: string; stack?: string } | undefined
+  let value: unknown
+
+  const heartbeat = setInterval(() => send({ t: 'heartbeat' }), HEARTBEAT_MS)
+
+  try {
+    const bundle = await loaded
+    // `loadBundle` already reported the failure as a `result` — nothing left to do.
+    if (!bundle) return
+    const { def } = bundle
 
     const ctx: Record<string, unknown> = {
       device: deviceApi,
@@ -217,7 +280,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       value = await raceAbort(def.run(ctx))
     } catch (err) {
       failure = aborted
-        ? { code: 'TIMEOUT', message: `job di-abort (${aborted})`, phase: 'timeout' }
+        ? { code: aborted === 'crashed' ? 'APP_CRASHED' : 'TIMEOUT', message: `job di-abort (${aborted})`, phase: 'timeout' }
         : toScriptError(err, currentPhase)
     }
 

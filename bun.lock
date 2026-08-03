@@ -16,6 +16,10 @@
         "@tauri-apps/cli": "^2",
       },
     },
+    "apps/guest-agent": {
+      "name": "@enkaku/guest-agent",
+      "version": "0.0.1",
+    },
     "examples": {
       "name": "@enkaku/examples",
       "version": "0.0.0",
@@ -46,7 +50,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@enkaku/adb": "workspace:*",
         "@enkaku/drivers": "workspace:*",
@@ -167,6 +171,8 @@
     "@enkaku/drivers": ["@enkaku/drivers@workspace:packages/drivers"],
 
     "@enkaku/examples": ["@enkaku/examples@workspace:examples"],
+
+    "@enkaku/guest-agent": ["@enkaku/guest-agent@workspace:apps/guest-agent"],
 
     "@enkaku/protocol": ["@enkaku/protocol@workspace:packages/protocol"],
 

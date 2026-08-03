@@ -1,6 +1,8 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
+import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { clusters, devices } from '../db/schema'
 import { createClusterRoutes } from './clusters'
@@ -17,9 +19,25 @@ function setUp() {
   return opened.db
 }
 
-function makeApp(db: Db) {
+/**
+ * Every mutating route below now requires `device.settings` (plan 34 §4.4,
+ * §4.5) — an admin user by default, matching what these pre-existing tests
+ * already assumed implicitly. The `requirePermission` wiring itself is
+ * covered by the dedicated describe block at the end of this file.
+ */
+function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', inner)
+  return wrapper
+}
+
+function makeApp(db: Db, role: 'admin' | 'operator' | null = 'admin') {
   const audit = createAuditLogger(db)
-  return createClusterRoutes({ db, audit })
+  return withUser(role, createClusterRoutes({ db, audit }))
 }
 
 let seq = 0
@@ -180,5 +198,39 @@ describe('DELETE /api/clusters/:id (plan 22.0 §3.6, acceptance #3)', () => {
 
     const stillThere = db.select().from(clusters).where(eq(clusters.id, c1!)).get()
     expect(stillThere).toBeUndefined()
+  })
+})
+
+describe('requirePermission("device.settings") on every cluster mutation (plan 34 §4.4, §4.5, acceptance #7)', () => {
+  test('POST / is refused with no authenticated user', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'x' }) })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still create a cluster — no lockout', async () => {
+    const db = setUp()
+    const app = makeApp(db, 'operator')
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'x' }) })
+    expect(res.status).toBe(201)
+  })
+
+  test('POST /:id/devices is refused with no authenticated user', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedDevice(db, 'a')
+    const app = makeApp(db, null)
+    const res = await app.request(`/${c1}/devices`, json({ deviceIds: ['a'] }))
+    expect(res.status).toBe(403)
+  })
+
+  test('GET / needs no permission at all — read routes stay open', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
   })
 })

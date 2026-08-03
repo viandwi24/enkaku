@@ -21,6 +21,25 @@ export const ToolArtifactSchema = z.object({
 })
 export type ToolArtifact = z.infer<typeof ToolArtifactSchema>
 
+/**
+ * What plan 41 (§3.2, §4.1) expects to find installed ON THE DEVICE for a
+ * device-side artifact (currently only the ui-server APK) — as opposed to
+ * `ToolArtifact.sha256` above, which verifies the download. Optional so an
+ * older manifest (or a tool with nothing device-side) still loads; where it
+ * is absent, the on-device verifier skips the version/signature comparison
+ * rather than failing (a missing expectation must never block the inspector).
+ */
+export const DeviceArtifactSchema = z.object({
+  packageName: z.string(),
+  versionCode: z.number().int().nonnegative(),
+  /** Hex SHA-256 of the signing certificate, uppercase, colon-free. Optional — reading it reliably varies across Android versions (plan 41 §8). */
+  signatureSha256: z
+    .string()
+    .regex(/^[0-9A-F]{64}$/)
+    .optional(),
+})
+export type DeviceArtifact = z.infer<typeof DeviceArtifactSchema>
+
 export const ToolVersionSchema = z.object({
   version: z.string(),
   releasedAt: z.string(),
@@ -28,6 +47,7 @@ export const ToolVersionSchema = z.object({
   compatibleCoreRange: z.string().optional(),
   platforms: z.partialRecord(PlatformKeySchema, ToolArtifactSchema),
   knownGood: z.boolean().optional(),
+  deviceArtifact: DeviceArtifactSchema.optional(),
 })
 export type ToolVersion = z.infer<typeof ToolVersionSchema>
 

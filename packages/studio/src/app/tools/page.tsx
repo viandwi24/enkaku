@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Lock, RefreshCw } from 'lucide-react'
+import { Lock, RefreshCw, Stethoscope } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorState, LoadingRows } from '@/components/states'
@@ -11,6 +11,27 @@ import { api, useAction } from '@/lib/actions'
 import { fileSize } from '@/lib/format'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
+
+/** Mirrors `@enkaku/core`'s `doctor/types.ts` — the exact same shape `enkaku doctor --json` prints (plan 41 §4.5, §6.8). */
+type DoctorCheckStatus = 'ok' | 'warn' | 'fail' | 'skip'
+interface DoctorCheckResult {
+  id: string
+  title: string
+  status: DoctorCheckStatus
+  observed: string
+  remedy?: string
+}
+interface DoctorRun {
+  results: DoctorCheckResult[]
+  exitCode: 0 | 1
+}
+
+const DOCTOR_TONE: Record<DoctorCheckStatus, string> = {
+  ok: 'text-led-ok border-led-ok/35 bg-led-ok/10',
+  warn: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  fail: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  skip: 'text-fg-subtle border-line bg-transparent',
+}
 
 interface ToolEntry {
   id: string
@@ -34,7 +55,11 @@ export default function ToolsPage() {
   const [tools, setTools] = useState<ToolEntry[] | null>(null)
   const [progress, setProgress] = useState<Record<string, InstallProgress>>({})
   const [error, setError] = useState<string | null>(null)
+  const [diagnostics, setDiagnostics] = useState<DoctorRun | null>(null)
   const { run, isPending } = useAction()
+
+  const runDiagnostics = () =>
+    run('diagnostics', () => api<DoctorRun>('/api/doctor'), { failure: 'Diagnostics failed', onSuccess: setDiagnostics })
 
   const load = () => {
     setError(null)
@@ -80,19 +105,56 @@ export default function ToolsPage() {
         title="Tools"
         description="Binaries the core uses to talk to devices"
         actions={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={isPending('refresh')}
-            onClick={() => void act('refresh', '/api/tools/manifest/refresh', { method: 'POST' }, 'Manifest refreshed')}
-          >
-            <RefreshCw className={cn('size-4', isPending('refresh') && 'animate-spin')} aria-hidden />
-            Refresh manifest
-          </Button>
+          <>
+            <Button size="sm" variant="outline" disabled={isPending('diagnostics')} onClick={() => void runDiagnostics()}>
+              <Stethoscope className={cn('size-4', isPending('diagnostics') && 'animate-pulse')} aria-hidden />
+              Run diagnostics
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isPending('refresh')}
+              onClick={() => void act('refresh', '/api/tools/manifest/refresh', { method: 'POST' }, 'Manifest refreshed')}
+            >
+              <RefreshCw className={cn('size-4', isPending('refresh') && 'animate-spin')} aria-hidden />
+              Refresh manifest
+            </Button>
+          </>
         }
       />
 
       <div className="space-y-3 px-5 py-4">
+        {diagnostics && (
+          <div className="rounded-lg border bg-surface p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[14px] font-semibold tracking-tight">Diagnostics</h2>
+              <span className="readout text-[11.5px] text-fg-muted">
+                exit code {diagnostics.exitCode} · {diagnostics.results.filter((r) => r.status === 'fail').length} failed,{' '}
+                {diagnostics.results.filter((r) => r.status === 'warn').length} warnings
+              </span>
+            </div>
+            <dl className="mt-3 divide-y overflow-hidden rounded border">
+              {diagnostics.results.map((r) => (
+                <div key={r.id} className="flex flex-col gap-1 px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none whitespace-nowrap',
+                        DOCTOR_TONE[r.status],
+                      )}
+                    >
+                      <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                      {r.status}
+                    </span>
+                    <dt className="text-[12.5px] font-medium">{r.title}</dt>
+                  </div>
+                  <dd className="readout text-[11.5px] text-fg-muted">{r.observed}</dd>
+                  {r.remedy && <dd className="text-[11.5px] text-led-warn">→ {r.remedy}</dd>}
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
         {error ? (
           <ErrorState message={error} onRetry={load} />
         ) : tools === null ? (

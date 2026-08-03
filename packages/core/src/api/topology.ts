@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import type { DeviceInfo } from '@enkaku/protocol'
+import type { DeviceInfo, DeviceReadiness } from '@enkaku/protocol'
 import type { Db } from '../db'
+import type { DeviceRow } from '../db/schema'
 import { clusters, jobs, scripts } from '../db/schema'
 import { resolveCluster } from '../clusters/resolve'
 import { listDevicesWithTags } from '../registry/device-registry'
@@ -33,8 +34,12 @@ export interface TopologyResponse {
  * Deliberately NOT paginated (plan 30 §4.1 note carried into plan 32): a map
  * needs the whole farm at once or it is not a map.
  */
-export function buildTopology(db: Db): TopologyResponse {
-  const deviceInfos = listDevicesWithTags(db)
+export function buildTopology(
+  db: Db,
+  /** Readiness badge (plan 43 §4.6) — the same live accessor `/api/devices` uses; omitted call sites fall back per-row. */
+  readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
+): TopologyResponse {
+  const deviceInfos = listDevicesWithTags(db, readinessOf)
   const knownIds = new Set(deviceInfos.map((d) => d.id))
 
   // Membership is resolved with the SAME function a batch dispatch uses
@@ -75,10 +80,13 @@ export function buildTopology(db: Db): TopologyResponse {
 }
 
 /** `GET /api/topology` (plan 32 §4.1) — the whole farm, grouped, in one call. */
-export function createTopologyRoutes(deps: { db: Db }): Hono {
+export function createTopologyRoutes(deps: {
+  db: Db
+  readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness
+}): Hono {
   const app = new Hono()
 
-  app.get('/', (c) => c.json(buildTopology(deps.db)))
+  app.get('/', (c) => c.json(buildTopology(deps.db, deps.readinessOf)))
 
   return app
 }

@@ -20,10 +20,21 @@ function setUp(): Db {
   return opened.db
 }
 
+/**
+ * Raw SQL, not `db.insert(devices)` (plan 43 §5 — same reasoning
+ * `seedLegacyCluster` below already documents for `clusters`): the frozen
+ * table this test runs against predates any `devices` column added by a
+ * migration after `DROP_CLUSTER_SELECTOR_COLUMNS_TAG` (currently just
+ * `desired_readiness`, plan 43 §4.2). Drizzle's insert builder names EVERY
+ * column the live `schema.ts` object declares, regardless of which keys are
+ * actually passed to `.values()` — so any such column, however unrelated to
+ * clusters, breaks a plain typed insert against this intentionally-older
+ * table. Raw SQL decouples the seed from that ongoing schema churn.
+ */
 function seedDevice(db: Db, id: string, status: 'idle' | 'offline' = 'idle'): void {
-  db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status })
-    .run()
+  db.run(
+    sql`INSERT INTO devices (id, stable_id, serial, label, status) VALUES (${id}, ${`stable-${id}`}, ${`serial-${id}`}, ${`device ${id}`}, ${status})`,
+  )
 }
 
 /** The pre-22.0 clusters shape (tags/device_ids), inserted with raw SQL since the current Drizzle schema no longer declares those columns. */
@@ -71,9 +82,9 @@ describe('materialiseClusters (plan 22.0 §3.4, §7)', () => {
         expect(c.alsoMatched).toEqual({ id: 'mid', name: 'Mid' })
       }
 
-      const d1 = db.select().from(devices).where(eq(devices.id, 'd1')).get()
-      const d2 = db.select().from(devices).where(eq(devices.id, 'd2')).get()
-      const d3 = db.select().from(devices).where(eq(devices.id, 'd3')).get()
+      const d1 = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd1')).get()
+      const d2 = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd2')).get()
+      const d3 = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd3')).get()
       expect(d1?.clusterId).toBe('old')
       expect(d2?.clusterId).toBe('old')
       expect(d3?.clusterId).toBe('new')
@@ -93,7 +104,7 @@ describe('materialiseClusters (plan 22.0 §3.4, §7)', () => {
       db.update(devices).set({ clusterId: null }).where(eq(devices.id, 'd3')).run()
       const second = materialiseClusters(db, { dataDir, log })
       expect(second).toBeNull()
-      const d3After = db.select().from(devices).where(eq(devices.id, 'd3')).get()
+      const d3After = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd3')).get()
       expect(d3After?.clusterId).toBeNull()
       const filesAfter = readdirSync(join(dataDir, 'logs')).filter((f) => f.startsWith('cluster-migration-'))
       expect(filesAfter).toHaveLength(1)
@@ -111,7 +122,7 @@ describe('materialiseClusters (plan 22.0 §3.4, §7)', () => {
 
       const report = materialiseClusters(db, { dataDir, log: createLogger('test') })
       expect(report!.assigned).toBe(1)
-      const d1 = db.select().from(devices).where(eq(devices.id, 'd1')).get()
+      const d1 = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd1')).get()
       expect(d1?.clusterId).toBe('c1')
     } finally {
       cleanup()
@@ -125,7 +136,7 @@ describe('materialiseClusters (plan 22.0 §3.4, §7)', () => {
       seedDevice(db, 'd1')
       const report = materialiseClusters(db, { dataDir, log: createLogger('test') })
       expect(report).toEqual({ ranAt: expect.any(String), assigned: 0, conflicts: [] })
-      const d1 = db.select().from(devices).where(eq(devices.id, 'd1')).get()
+      const d1 = db.select({ id: devices.id, clusterId: devices.clusterId }).from(devices).where(eq(devices.id, 'd1')).get()
       expect(d1?.clusterId).toBeNull()
     } finally {
       cleanup()

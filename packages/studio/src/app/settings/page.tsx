@@ -1,13 +1,13 @@
 'use client'
 
 import { Suspense, useEffect, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -32,6 +32,19 @@ interface AuditEntry {
   at: number | null
 }
 
+/** The farm Settings page's section list — content unchanged, only the container swaps from a horizontal `EntityTabs` strip to the shared vertical `SectionNav` (plan 46 §4.3). */
+const FARM_SECTION_DEFS: readonly { id: string; title: string }[] = [
+  { id: 'defaults', title: 'Device defaults' },
+  { id: 'battery', title: 'Battery' },
+  { id: 'adb', title: 'adb' },
+  { id: 'job', title: 'Jobs' },
+  { id: 'sessions', title: 'Sessions & Wall' },
+  { id: 'storage', title: 'Storage' },
+  { id: 'blocked', title: 'Blocked devices' },
+  { id: 'users', title: 'Users' },
+  { id: 'audit', title: 'Audit log' },
+]
+
 /**
  * Farm settings, split by subject rather than stacked into one long scroll.
  *
@@ -39,34 +52,39 @@ interface AuditEntry {
  * existed and were enforced server-side, but could only be reached with curl.
  */
 function SettingsView() {
+  const router = useRouter()
   const tab = useSearchParams().get('tab') ?? 'defaults'
-  return (
-    <>
-      <PageHeader title="Farm settings" description="Applies to every device and job in this farm" />
-      <EntityTabs
-        active={tab}
-        tabs={[
-          { key: 'defaults', label: 'Device defaults' },
-          { key: 'battery', label: 'Battery' },
-          { key: 'adb', label: 'adb' },
-          { key: 'storage', label: 'Storage' },
-          { key: 'users', label: 'Users' },
-          { key: 'audit', label: 'Audit log' },
-        ]}
-        hrefFor={(k) => `/settings${k === 'defaults' ? '' : `?tab=${k}`}`}
-      />
-      {tab === 'users' ? (
+
+  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title }) => ({
+    id,
+    title,
+    render: () =>
+      id === 'blocked' ? (
+        <BlockedDevicesSection />
+      ) : id === 'users' ? (
         <UsersSection />
-      ) : tab === 'audit' ? (
+      ) : id === 'audit' ? (
         <AuditSection />
-      ) : tab === 'adb' ? (
+      ) : id === 'adb' ? (
         <>
-          <FarmForm section={tab} />
+          <FarmForm section={id} />
           <AdbDiagnosticsPanel />
         </>
       ) : (
-        <FarmForm section={tab} />
-      )}
+        <FarmForm section={id} />
+      ),
+  }))
+
+  return (
+    <>
+      <PageHeader title="Farm settings" description="Applies to every device and job in this farm" />
+      <div className="px-5 py-4">
+        <SectionNav
+          sections={sections}
+          active={tab}
+          onChange={(id) => router.push(id === 'defaults' ? '/settings' : `/settings?tab=${id}`)}
+        />
+      </div>
     </>
   )
 }
@@ -76,6 +94,12 @@ function keysForSection(section: string): string[] {
   if (section === 'battery') return ['battery']
   if (section === 'storage') return ['retention']
   if (section === 'adb') return ['adb', 'health']
+  // Session hygiene between jobs (plan 35 §4.1) — its own tab, no UI code
+  // beyond this mapping: the fields render from `.describe()`/`.meta()`.
+  if (section === 'job') return ['job']
+  // Idle session TTL and the fleet Wall's tile cap (plan 42 §4.4, §4.6) —
+  // same pattern: no bespoke UI, the fields render from `.describe()`/`.meta()`.
+  if (section === 'sessions') return ['session', 'wall']
   return ['defaults']
 }
 
@@ -110,8 +134,8 @@ function FarmForm({ section }: { section: string }) {
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
 
-  if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={load} /></div>
-  if (!schema || !draft) return <div className="px-5 py-4"><LoadingRows rows={4} /></div>
+  if (error) return <div className="py-4"><ErrorState message={error} onRetry={load} /></div>
+  if (!schema || !draft) return <div className="py-4"><LoadingRows rows={4} /></div>
 
   // Narrow the schema to this section's keys, so the form renders one
   // subject at a time while the value stays the whole settings object the
@@ -122,7 +146,7 @@ function FarmForm({ section }: { section: string }) {
   }
 
   return (
-    <div className="max-w-3xl px-5 py-4">
+    <div className="max-w-3xl py-4">
       <SchemaForm
         schema={sectionSchema}
         value={draft}
@@ -192,7 +216,7 @@ function AdbDiagnosticsPanel() {
   }, [open])
 
   return (
-    <div className="max-w-3xl px-5 pb-6">
+    <div className="max-w-3xl pb-6">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -261,6 +285,100 @@ function AdbDiagnosticsPanel() {
   )
 }
 
+interface BlockedDevice {
+  stableId: string
+  label: string | null
+  reason: string | null
+  blockedAt: number
+  blockedBy: string | null
+}
+
+/**
+ * Blocked devices (plan 47 §3.3, §4.5): listed here with when, by whom, and
+ * why — a block you cannot find again is indistinguishable from a bug. Keyed
+ * on `stableId`, never a device row (there may be none — a blocked device is
+ * removed from the fleet, exactly like a Forget), which is also why this
+ * list is the only place an Unblock can happen.
+ */
+function BlockedDevicesSection() {
+  const [blocked, setBlocked] = useState<BlockedDevice[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const { run, isPending } = useAction()
+
+  const load = () => {
+    setError(null)
+    api<{ blocked: BlockedDevice[] }>('/api/devices/blocked')
+      .then((b) => setBlocked(b.blocked))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }
+  useEffect(load, [])
+
+  return (
+    <div>
+      <p className="mb-3 max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
+        A blocked device is skipped the instant it is seen again — a different USB port or a switch to wireless does
+        not bring it back (plan 47 §3.3). Unblocking lets it return on its next connection, as a fresh device.
+      </p>
+      {error ? (
+        <ErrorState message={error} onRetry={load} />
+      ) : blocked === null ? (
+        <LoadingRows rows={3} />
+      ) : blocked.length === 0 ? (
+        <EmptyState
+          title="Nothing blocked"
+          description="Block a connected device from its own page when Forget refuses it — that action lands here."
+        />
+      ) : (
+        <div className="overflow-hidden rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Device</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead>Blocked</TableHead>
+                <TableHead>By</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {blocked.map((b) => (
+                <TableRow key={b.stableId}>
+                  <TableCell className="font-medium">
+                    {b.label ?? b.stableId}
+                    <p className="readout mt-0.5 text-[11px] text-fg-subtle">{b.stableId}</p>
+                  </TableCell>
+                  <TableCell className="text-[12.5px] text-fg-muted">{b.reason ?? '—'}</TableCell>
+                  <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(b.blockedAt)}</TableCell>
+                  <TableCell className="readout text-[11.5px] text-fg-muted">
+                    {b.blockedBy ? b.blockedBy.slice(0, 8) : 'system'}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-[12px]"
+                      disabled={isPending('unblock-' + b.stableId)}
+                      onClick={() =>
+                        run('unblock-' + b.stableId, () => api(`/api/devices/blocked/${encodeURIComponent(b.stableId)}`, { method: 'DELETE' }), {
+                          success: `${b.label ?? b.stableId} unblocked`,
+                          failure: 'Could not unblock the device',
+                          onSuccess: load,
+                        })
+                      }
+                    >
+                      Unblock
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UsersSection() {
   const [users, setUsers] = useState<User[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -292,7 +410,7 @@ function UsersSection() {
     })
 
   return (
-    <div className="px-5 py-4">
+    <div>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
           Admins manage users, devices, and tools. Operators run scripts and control devices. Roles are enforced by the
@@ -404,7 +522,7 @@ function AuditSection() {
   useEffect(load, [])
 
   return (
-    <div className="px-5 py-4">
+    <div>
       <p className="mb-3 max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
         Who did what: jobs started, devices enrolled, tools activated, users changed. Written by the core, and not
         editable from here.

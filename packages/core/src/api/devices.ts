@@ -2,21 +2,26 @@ import { Hono } from 'hono'
 import {
   DeviceSettingsSchema,
   MonitorKindSchema,
+  ReadinessSchema,
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
   type RegistryResponse,
+  type ServerMessage,
   type ShellMode,
   type Viewer,
 } from '@enkaku/protocol'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { devices } from '../db/schema'
+import { deletedDevices, devices } from '../db/schema'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { BatteryMonitor } from '../device/battery'
+import type { DeviceLifecycle } from '../device/lifecycle'
+import { staticReadinessFallback, type ReadinessManager } from '../device/readiness'
 import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
 import { assignDevices, unassignDevices } from '../clusters/membership'
@@ -26,6 +31,7 @@ import { saveForDevice } from '../runner/artifact-store'
 import { EnkakuError } from '../util/errors'
 import { createAdbEndpointRoutes } from './adb-endpoint'
 import { createDeviceEventsRoutes } from './device-events'
+import { createTransferRoutes, type TransferRoutesDeps } from './transfer'
 import { decodeStringCursor, encodeCursor, parsePageQuery } from './pagination'
 
 const DriversBody = z.object({
@@ -46,6 +52,9 @@ const TagsBody = z.object({ tags: z.array(z.string()) })
 /** Plan 22.0 §4.4 — `PUT /:id/cluster`. `null` unassigns. */
 const DeviceClusterBody = z.object({ clusterId: z.string().min(1).nullable() })
 
+/** Plan 47 §4.4 — `POST /:id/block`. Every field optional: a bodyless call is valid. */
+const BlockBody = z.object({ reason: z.string().min(1).optional() })
+
 /** Plan 24 §4.6 — `POST /:id/monitor/save`. The Monitor pane's "save last N lines" action. */
 const MonitorSaveBody = z.object({
   kind: MonitorKindSchema,
@@ -61,7 +70,24 @@ const ERROR_STATUS: Record<string, number> = {
   LOCK_CONFLICT: 409,
   REQUIREMENT_MISSING: 409,
   not_quarantined: 409,
+  // Device readiness (plan 43 §3.4, §4.5) — the same codes `readiness.set` throws.
+  device_offline: 409,
+  device_quarantined: 409,
+  job_running: 409,
+  device_in_use: 409,
+  E_NOT_SUPPORTED: 501,
+  // Device lifecycle (plan 47 §3.5, §4.4) — the same codes `lifecycle.forget`/`block` throw.
+  device_busy: 409,
+  device_online: 409,
+  not_blocked: 404,
 }
+
+/** `PUT /:id/readiness` (plan 43 §4.5). */
+const ReadinessSetBody = z.object({
+  desired: ReadinessSchema,
+  /** The WS session id, when the caller is a browser tab that also holds a lease (plan 43 §3.4's "you hold the lease" check) — same pattern as plan 27/39's `clientId`. */
+  clientId: z.string().min(1).optional(),
+})
 
 export function createDeviceRoutes(deps: {
   db: Db
@@ -90,6 +116,28 @@ export function createDeviceRoutes(deps: {
     leases: LeaseManager
     shellSettings: () => { mode: ShellMode; endpointEnabled: boolean }
   }
+  /**
+   * File transfer and APK install (plan 39 §4.3, §4.4) — undefined when the
+   * adb subsystem is not up (orchestrator mode), the same optionality as
+   * `adbEndpoint` above.
+   */
+  transfer?: TransferRoutesDeps
+  /**
+   * Device readiness (plan 43 §4.5) — undefined only in orchestrator mode
+   * (no local devices at all) or a test that does not wire it; the mounted
+   * routes refuse with `E_NOT_SUPPORTED` rather than not existing.
+   */
+  readiness?: Pick<ReadinessManager, 'get' | 'set'>
+  /**
+   * Device lifecycle — Forget and Block (plan 47 §4.3, §4.4). Required
+   * (unlike `adbEndpoint`/`transfer`/`readiness` above): it depends only on
+   * `db` and the lease manager, both of which exist in every mode,
+   * including the orchestrator (constructed before that mode's early return
+   * in daemon.ts).
+   */
+  lifecycle: DeviceLifecycle
+  /** `device.removed` on Forget/Block (plan 47 §4.4) — the same broadcast the Studio fleet list already listens for, previously never sent by anything. */
+  broadcast: (msg: ServerMessage) => void
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { db } = deps
@@ -98,10 +146,60 @@ export function createDeviceRoutes(deps: {
   // lives under /api/devices/:id/events without a separate entry in http.ts.
   app.route('/', createDeviceEventsRoutes({ db }))
 
+  // GET /refs?ids=a,b,c (plan 47 §4.5) — dangling-reference resolution: a job,
+  // batch, or schedule keeps a plain `deviceId` after the device it points at
+  // is forgotten (§3.4), so any UI rendering one needs a label to show —
+  // `deleted device (<stableId>)` rather than a blank. Mounted as a static
+  // route BEFORE `/:id` below so it is never shadowed by the param route.
+  app.get('/refs', (c) => {
+    const ids = (c.req.query('ids') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean }> = {}
+    if (ids.length > 0) {
+      const liveRows = db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, ids)).all()
+      for (const r of liveRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: false }
+      const missing = ids.filter((id) => !(id in refs))
+      if (missing.length > 0) {
+        const deletedRows = db.select().from(deletedDevices).where(inArray(deletedDevices.id, missing)).all()
+        for (const r of deletedRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: true }
+      }
+    }
+    return c.json({ refs })
+  })
+
+  // GET /blocked, DELETE /blocked/:stableId (plan 47 §4.4) — the Blocked
+  // devices list in farm Settings. Static routes, mounted before `/:id`
+  // below for the same shadowing reason as `/refs` above.
+  app.get('/blocked', requirePermission('device.settings'), async (c) => {
+    return c.json({ blocked: await deps.lifecycle.listBlocked() })
+  })
+
+  app.delete('/blocked/:stableId', requirePermission('device.settings'), async (c) => {
+    const stableId = c.req.param('stableId')
+    await deps.lifecycle.unblock(stableId, { userId: c.get('user')?.id ?? null })
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.unblock', target: stableId })
+    return c.json({ ok: true })
+  })
+
+  // `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a minimal lookup, not
+  // `mustGet` (defined below): a missing device is not this check's problem,
+  // it is `checkInputAllowed`'s (`adb-endpoint.ts`'s `authorize` already
+  // treats "no such device" as "no ownership check", letting that error
+  // surface with its own coded error further down).
+  const getDeviceOwner = (id: string): { ownerId: string | null } | null => {
+    const row = db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, id)).get()
+    return row ?? null
+  }
+
   // POST/DELETE/GET /:id/adb-endpoint (plan 27 §4.3) — same mounting pattern
   // as the event log above, so it lives under /api/devices/:id/adb-endpoint
   // without a separate top-level entry in http.ts.
-  if (deps.adbEndpoint) app.route('/', createAdbEndpointRoutes(deps.adbEndpoint))
+  if (deps.adbEndpoint) app.route('/', createAdbEndpointRoutes({ ...deps.adbEndpoint, getDevice: getDeviceOwner }))
+
+  // POST /:id/install|push|pull (plan 39 §4.4) — same mounting pattern again.
+  if (deps.transfer) app.route('/', createTransferRoutes(deps.transfer))
 
   const mustGet = (id: string) => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
@@ -109,9 +207,13 @@ export function createDeviceRoutes(deps: {
     return row
   }
 
+  /** The manager's live `get()` when wired, else the pure DB-only fallback (plan 43 §4.1). */
+  const readinessOf = (row: { id: string; status: string | null; desiredReadiness: string | null }) =>
+    deps.readiness?.get(row.id) ?? staticReadinessFallback(row)
+
   const infoWithTags = (id: string) => {
     const row = mustGet(id)
-    return rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId))
+    return rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row))
   }
 
   // `?tag=a&tag=b` narrows to devices carrying ALL of them (plan 19 §4.3) — one
@@ -133,6 +235,8 @@ export function createDeviceRoutes(deps: {
         r,
         tagMap.get(r.id) ?? [],
         r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
+        null,
+        readinessOf(r),
       ),
     )
 
@@ -173,7 +277,7 @@ export function createDeviceRoutes(deps: {
     const parsedSettings = DeviceSettingsSchema.safeParse(row.settings ?? {})
     return c.json({
       device: {
-        ...rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId)),
+        ...rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row)),
         transport: row.transport,
         display: row.display,
         input: row.input,
@@ -191,6 +295,33 @@ export function createDeviceRoutes(deps: {
   app.get('/:id/viewers', (c) => {
     const row = mustGet(c.req.param('id'))
     return c.json({ viewers: deps.viewersOf?.(row.id) ?? [] })
+  })
+
+  /** `GET /:id/readiness` (plan 43 §4.5) — the same shape `device.readiness` broadcasts. */
+  app.get('/:id/readiness', (c) => {
+    const row = mustGet(c.req.param('id'))
+    return c.json({ readiness: readinessOf(row) })
+  })
+
+  /**
+   * `PUT /:id/readiness` (plan 43 §4.5) — server-authoritative (spec §10.1):
+   * every refusal in §3.4 is enforced inside `readiness.set` itself, not
+   * here, so this route refuses exactly the same way the WS
+   * `device.readiness.set` message does (acceptance #7). `device.view` is
+   * the permission both Wake and Sleep require per the plan's table; the
+   * finer distinction (job running, another viewer/lease holder) is
+   * `readiness.set`'s own job.
+   */
+  app.put('/:id/readiness', requirePermission('device.view'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const body = ReadinessSetBody.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { desired } is required')
+    if (!deps.readiness) throw new EnkakuError('E_NOT_SUPPORTED', 'device readiness is not available (orchestrator mode)')
+    const readiness = await deps.readiness.set(row.id, body.data.desired, {
+      userId: c.get('user')?.id ?? null,
+      clientId: body.data.clientId ?? null,
+    })
+    return c.json({ readiness })
   })
 
   app.patch('/:id', async (c) => {
@@ -214,7 +345,12 @@ export function createDeviceRoutes(deps: {
       // scheduler query them. They are still validated and written from the
       // settings object, so the column and the JSON can never disagree.
       const engines = parsed.data.engines
-      const result = validateEngineSelection(await deps.registry(), engines)
+      // `network` is not yet a `DeviceSettingsSchema.engines` field (plan 44
+      // §5.4, the settings/migration side of the network engine, is not
+      // built in this slice) — defaulted to 'none' here purely to satisfy
+      // `EngineSelection`'s shape; nothing persists a chosen network engine
+      // through this route yet.
+      const result = validateEngineSelection(await deps.registry(), { ...engines, network: 'none' })
       if (!result.ok) throw new EnkakuError(result.code, result.message)
       // Diffed against the CURRENT settings (normalised through the same
       // schema, so a legacy row's defaults do not read as a spurious change) —
@@ -249,7 +385,9 @@ export function createDeviceRoutes(deps: {
     const row = mustGet(c.req.param('id'))
     const body = DriversBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { transport, display, input, inspection } is required')
-    const result = validateEngineSelection(await deps.registry(), body.data)
+    // Same 'none' default as the `.settings` branch above (plan 44 §5.4 is
+    // not built yet) — this endpoint does not accept a network engine choice.
+    const result = validateEngineSelection(await deps.registry(), { ...body.data, network: 'none' })
     if (!result.ok) throw new EnkakuError(result.code, result.message)
     db.update(devices).set(body.data).where(eq(devices.id, row.id)).run()
     return c.json({ device: { id: row.id, ...body.data } })
@@ -283,7 +421,9 @@ export function createDeviceRoutes(deps: {
    * Replace a device's whole tag set (plan 19 §4.3) — simpler to reason about
    * than add/remove endpoints, and it makes the Studio editor a plain form.
    */
-  app.put('/:id/tags', async (c) => {
+  // `device.settings` (plan 34 §4.4, §4.5) — the exact permission already
+  // named as the audit action for both of these mutations below.
+  app.put('/:id/tags', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = TagsBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { tags: string[] } is required')
@@ -303,7 +443,7 @@ export function createDeviceRoutes(deps: {
    * necessarily clears whatever cluster it was in before, so `movedFrom`
    * reports what changed (acceptance #2) without a second lookup.
    */
-  app.put('/:id/cluster', async (c) => {
+  app.put('/:id/cluster', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = DeviceClusterBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { clusterId: string | null } is required')
@@ -320,6 +460,63 @@ export function createDeviceRoutes(deps: {
       meta: { clusterId: body.data.clusterId, from },
     })
     return c.json({ device: infoWithTags(row.id), movedFrom: from })
+  })
+
+  /**
+   * `GET /:id/history-counts` (plan 47 §3.4, §4.4) — shown before "delete
+   * history" is offered on a Forget: never destructive by itself.
+   */
+  app.get('/:id/history-counts', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const counts = await deps.lifecycle.historyCounts(row.id)
+    return c.json({ counts })
+  })
+
+  /**
+   * `DELETE /:id?deleteHistory=true|false` (plan 47 §4.4) — Forget. Every
+   * refusal in §3.5 (busy, an active manual lease, still connected) is
+   * enforced inside `lifecycle.forget` itself, server-authoritative exactly
+   * like every other mutation here (spec §10.1, acceptance #12): calling
+   * this directly is refused exactly as the Studio dialog is.
+   */
+  app.delete('/:id', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const deleteHistory = c.req.query('deleteHistory') === 'true'
+    const result = await deps.lifecycle.forget(row.id, { deleteHistory, actor: { userId: c.get('user')?.id ?? null } })
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.forget',
+      target: row.id,
+      meta: { stableId: result.stableId, deleteHistory: result.historyDeleted, ...(result.counts ? { counts: result.counts } : {}) },
+    })
+    // The fleet list has listened for this since plan 42 — nothing ever sent
+    // it before this plan, which is the whole reason forgetting did not exist.
+    deps.broadcast({ type: 'device.removed', payload: { id: result.deviceId, stableId: result.stableId } })
+    return c.json({ forgotten: result })
+  })
+
+  /**
+   * `POST /:id/block` (plan 47 §3.3, §4.4) — forgets AND blocks the
+   * `stableId` in one transaction (`lifecycle.block`), so the fleet can
+   * never show the confusing half-state of a device that is blocked but
+   * still listed.
+   */
+  app.post('/:id/block', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const body = BlockBody.safeParse(await c.req.json().catch(() => ({})))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { reason? } is required')
+    const blocked = await deps.lifecycle.block(row.id, {
+      ...(body.data.reason ? { reason: body.data.reason } : {}),
+      actor: { userId: c.get('user')?.id ?? null },
+    })
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.block',
+      target: row.id,
+      meta: { stableId: blocked.stableId, reason: blocked.reason },
+    })
+    deps.broadcast({ type: 'device.removed', payload: { id: row.id, stableId: blocked.stableId } })
+    return c.json({ blocked })
   })
 
   app.onError((err, c) => {

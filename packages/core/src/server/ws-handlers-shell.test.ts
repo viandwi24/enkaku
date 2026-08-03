@@ -39,6 +39,7 @@ function fakeSession(deviceId: string): DeviceSession {
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
     displayEngineId: 'screencap-loop',
+    quality: 'control',
     inputEngineId: 'adb-input',
     videoConfig: () => null,
     videoKeyframe: () => null,
@@ -47,6 +48,7 @@ function fakeSession(deviceId: string): DeviceSession {
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
+    clipboard: null,
     close: async () => {},
   }
 }
@@ -65,6 +67,8 @@ function fakeSessionManager(): SessionManager {
     release() {},
     get: (deviceId) => sessions.get(deviceId) ?? null,
     async closeDevice() {},
+    async closeIfIdle() {},
+    idleSessions: () => [],
     async closeAll() {},
   }
 }
@@ -140,6 +144,11 @@ function setUpHandler(
     // (plan 27) — a fake that never actually opens anything is enough here.
     adbEndpoint: { open: async () => ({ host: '127.0.0.1', port: 0, expiresAt: 0 }), close: () => {}, get: () => null, closeAllForClient: () => {} },
     adb: () => client,
+    // Crash detection (plan 37) is exercised in its own suites
+    // (`crash-watcher.test.ts`); this suite is about the terminal.
+    crashPolicy: () => 'declared',
+    targetPackagesForJob: () => [],
+    saveCrashTrace: async () => ({ id: 'a', jobId: null, deviceId: null, kind: 'log', label: 'x', path: 'x', sizeBytes: 0, createdAt: 0 }),
     db,
     log,
   }

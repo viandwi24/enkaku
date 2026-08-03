@@ -93,6 +93,10 @@
           "version": "2.3.3",
           "releasedAt": "unknown",
           "compatibleCoreRange": "TODO-M4.5",
+          "deviceArtifact": {
+            "packageName": "com.github.uiautomator",
+            "versionCode": 2003003
+          },
           "platforms": {
             "*": {
               "url": "https://github.com/openatx/android-uiautomator-server/releases/download/2.3.3/app-uiautomator.apk",

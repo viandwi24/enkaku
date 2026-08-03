@@ -143,6 +143,16 @@ function infoToUiNode(info: unknown): UiNode {
 }
 
 export { UiServerClient, UiServerClientError } from './client'
-export { createUiServerLauncher, UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT, type UiServerLauncher } from './launcher'
+export {
+  createUiServerLauncher,
+  UI_SERVER_PACKAGE,
+  UI_SERVER_DEVICE_PORT,
+  UI_SERVER_STUB_CLASS,
+  type UiServerLauncher,
+  type UiServerLauncherDeps,
+  type UiServerExpectedArtifact,
+  type UiServerArtifactMismatch,
+} from './launcher'
 export { toUiSelector, SelectorUnsupportedError, type UiSelector } from './selector'
 export { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
+export { verifyDeviceArtifact, type DeviceArtifactExpectation, type VerifyResult } from './verify'

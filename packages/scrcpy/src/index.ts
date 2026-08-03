@@ -27,5 +27,9 @@ export {
   encodeUhidInput,
   encodeUhidDestroy,
   encodeResetVideo,
+  encodeGetClipboard,
+  encodeSetClipboard,
 } from './control/messages'
+export { createDeviceMessageReader, type DeviceMessage } from './control/device-messages'
+export { createClipboardControl, type ClipboardControl, type ClipboardControlDeps } from './control'
 export { ABSOLUTE_POINTER_DESCRIPTOR, POINTER_LOGICAL_MAX, buildPointerReport } from './hid/pointer'

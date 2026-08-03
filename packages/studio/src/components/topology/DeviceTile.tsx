@@ -1,10 +1,11 @@
 'use client'
 
 import Link from 'next/link'
-import { Battery, Boxes, Thermometer } from 'lucide-react'
+import { Boxes } from 'lucide-react'
 import type { DeviceInfo } from '@enkaku/protocol'
 import type { TopologyActiveJob } from '@/lib/api'
-import { DeviceStatusBadge } from '@/components/StatusBadge'
+import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
+import { TileChips } from '@/components/TileChips'
 import { duration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -35,8 +36,6 @@ export function DeviceTile({
   compact?: boolean
 }) {
   const offline = device.status === 'offline'
-  const hot = device.battery !== null && device.battery.temperatureC >= tempThresholdC
-  const lowBattery = device.battery !== null && device.battery.level < 20
 
   return (
     <Link
@@ -58,23 +57,26 @@ export function DeviceTile({
           <p className="truncate text-[13px] font-medium leading-tight">{device.label}</p>
           <p className="readout truncate text-[10.5px] text-fg-subtle">{device.stableId}</p>
         </div>
-        <DeviceStatusBadge status={device.status} className="shrink-0" />
+        <div className="flex shrink-0 items-center gap-1">
+          {/* Readiness (plan 43 §4.6) — the same badge the Wall and the devices list use. */}
+          <ReadinessBadge readiness={device.readiness} className={compact ? 'scale-90' : undefined} />
+          <DeviceStatusBadge status={device.status} />
+        </div>
       </div>
 
       {!compact && (
         <>
-          {device.battery && (
-            <div className="flex items-center gap-3 text-[11px]">
-              <span className={cn('readout flex items-center gap-1', lowBattery ? 'text-led-warn' : 'text-fg-muted')}>
-                <Battery className="size-3" aria-hidden />
-                {device.battery.level}%
-              </span>
-              <span className={cn('readout flex items-center gap-1', hot ? 'text-led-danger' : 'text-fg-muted')}>
-                <Thermometer className="size-3" aria-hidden />
-                {device.battery.temperatureC.toFixed(1)}°C
-              </span>
-            </div>
-          )}
+          {/* Battery + temperature only (plan 48 §5 step 48.4) — readiness
+              and status are already shown above, next to the label, so this
+              tile does not duplicate them. Sharing `TileChips` here keeps
+              the low-battery / hot colour rules from drifting against the
+              Wall's version of the same row. */}
+          <TileChips
+            device={device}
+            chips={['battery', 'temperature']}
+            tempThresholdC={tempThresholdC}
+            className="gap-3 text-[11px] [&_svg]:size-3"
+          />
 
           {device.status === 'busy' && runningJob && (
             <p className="truncate rounded border border-led-active/30 bg-led-active/5 px-2 py-1 text-[11px] text-fg-muted">

@@ -1,3 +1,4 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -5,13 +6,35 @@ import { join } from 'node:path'
 import type { RegistryResponse } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
+import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, auditLog, clusters, devices, deviceTags } from '../db/schema'
+import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, devices, deviceEvents, deviceTags } from '../db/schema'
+import { createDeviceLifecycle } from '../device/lifecycle'
+import type { Lease, LeaseManager } from '../lease/lease-manager'
 import { deleteDeviceTags } from '../registry/device-tags'
+import { createLogger } from '../util/logger'
 import { createDeviceRoutes } from './devices'
 
 function emptyRegistry(): RegistryResponse {
-  return { transports: [], displays: [], inputs: [], inspectors: [], tools: [] }
+  return { transports: [], displays: [], inputs: [], inspectors: [], networks: [], tools: [] }
+}
+
+/** No test in this file exercises a live manual lease — `getLease` always answers "none held". */
+function fakeLeases(): LeaseManager {
+  return {
+    acquireManual: (): Lease => {
+      throw new Error('not used in this test')
+    },
+    touchManual: () => {},
+    releaseManual: () => false,
+    releaseAllForClient: () => {},
+    noteJobLease: () => {},
+    clearJobLease: () => {},
+    getLease: () => null,
+    checkInputAllowed: () => ({ ok: true }),
+    startReaper: () => {},
+    stopReaper: () => {},
+  }
 }
 
 function seedDevice(db: Db, id: string, tags: string[] = []): void {
@@ -22,14 +45,43 @@ function seedDevice(db: Db, id: string, tags: string[] = []): void {
   for (const tag of tags) db.insert(deviceTags).values({ deviceId: id, tag, at: now }).run()
 }
 
-function makeApp() {
+/**
+ * `PUT /:id/tags` and `PUT /:id/cluster` now require `device.settings` (plan
+ * 34 §4.4, §4.5) — an admin user by default, matching what these
+ * pre-existing tests already assumed implicitly. The wiring itself is
+ * covered by the dedicated describe block at the end of this file.
+ */
+function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', inner)
+  return wrapper
+}
+
+function makeApp(role: 'admin' | 'operator' | null = 'admin') {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const audit = createAuditLogger(db)
   const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-  const app = createDeviceRoutes({ db, registry: async () => emptyRegistry(), battery: () => null, audit, dataDir })
-  return { db, app, dataDir }
+  const broadcast: Array<{ type: string; payload: unknown }> = []
+  const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
+  const app = withUser(
+    role,
+    createDeviceRoutes({
+      db,
+      registry: async () => emptyRegistry(),
+      battery: () => null,
+      audit,
+      dataDir,
+      lifecycle,
+      broadcast: (msg) => broadcast.push(msg),
+    }),
+  )
+  return { db, app, dataDir, broadcast }
 }
 
 const json = (body: unknown) => ({ method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -62,7 +114,16 @@ describe('GET /api/devices tag filtering', () => {
     for (let i = 0; i < 50; i++) seedDevice(db, `dev-${i}`, ['pool:smoke'])
     const audit = createAuditLogger(db)
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-    const app = createDeviceRoutes({ db, registry: async () => emptyRegistry(), battery: () => null, audit, dataDir })
+    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
+    const app = createDeviceRoutes({
+      db,
+      registry: async () => emptyRegistry(),
+      battery: () => null,
+      audit,
+      dataDir,
+      lifecycle,
+      broadcast: () => {},
+    })
 
     // Every drizzle bun-sqlite query goes through `client.prepare(sql)` — count
     // how many of those touch device_tags (acceptance #7: one query, not N+1).
@@ -323,5 +384,195 @@ describe('POST /:id/monitor/save (plan 24 §4.6) — "save last N lines" writes 
       body: JSON.stringify({ kind: 'top', lines: ['x'] }),
     })
     expect(res.status).toBe(404)
+  })
+})
+
+describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, §4.5, acceptance #7)', () => {
+  test('PUT /:id/tags is refused with no authenticated user', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a/tags', json({ tags: ['pool:smoke'] }))
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still set tags — no lockout', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+    const res = await app.request('/a/tags', json({ tags: ['pool:smoke'] }))
+    expect(res.status).toBe(200)
+  })
+
+  test('PUT /:id/cluster is refused with no authenticated user', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
+    const res = await app.request('/a/cluster', json({ clusterId: 'c1' }))
+    expect(res.status).toBe(403)
+  })
+
+  test('GET /:id needs no permission at all — read routes stay open', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a')
+    expect(res.status).toBe(200)
+  })
+
+  // Plan 47 §4.4 — the same permission tags/cluster already use (§9 of the
+  // plan says so explicitly), calling directly is refused exactly as the UI
+  // would be (acceptance #12).
+  test('DELETE /:id (Forget) is refused with no authenticated user', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a', { method: 'DELETE' })
+    expect(res.status).toBe(403)
+  })
+
+  test('POST /:id/block is refused with no authenticated user', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a/block', { method: 'POST' })
+    expect(res.status).toBe(403)
+  })
+
+  test('GET /:id/history-counts is refused with no authenticated user', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a/history-counts')
+    expect(res.status).toBe(403)
+  })
+
+  test('GET /blocked and DELETE /blocked/:stableId are refused with no authenticated user', async () => {
+    const { app } = makeApp(null)
+    expect((await app.request('/blocked')).status).toBe(403)
+    expect((await app.request('/blocked/stable-a', { method: 'DELETE' })).status).toBe(403)
+  })
+})
+
+describe('DELETE /api/devices/:id — Forget (plan 47 §4.4, §6)', () => {
+  test('an offline device is forgotten: 200, gone from the list, a device.removed broadcast, an audit entry', async () => {
+    const { db, app, broadcast } = makeApp()
+    seedDevice(db, 'a')
+    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'a')).run()
+
+    const res = await app.request('/a', { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { forgotten: { deviceId: string; stableId: string; historyDeleted: boolean; counts: unknown } }
+    expect(body.forgotten).toEqual({ deviceId: 'a', stableId: 'stable-a', historyDeleted: false, counts: null })
+
+    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
+    expect(db.select().from(deletedDevices).where(eq(deletedDevices.id, 'a')).get()?.stableId).toBe('stable-a')
+    expect(broadcast).toContainEqual({ type: 'device.removed', payload: { id: 'a', stableId: 'stable-a' } })
+    const auditRows = db.select().from(auditLog).where(eq(auditLog.action, 'device.forget')).all()
+    expect(auditRows).toHaveLength(1)
+    expect(auditRows[0]?.target).toBe('a')
+  })
+
+  test('forgetting an online, idle device is refused with device_online — calling the API directly is refused exactly like the UI (acceptance #12)', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a') // seedDevice leaves status: 'idle'
+    const res = await app.request('/a', { method: 'DELETE' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('device_online')
+    // Untouched.
+    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(1)
+  })
+
+  test('?deleteHistory=true deletes exactly the counts GET /:id/history-counts promised', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'a')).run()
+    db.insert(deviceEvents).values({ id: 'e1', deviceId: 'a', stream: 'main', kind: 'device.online', at: new Date() }).run()
+
+    const before = await app.request('/a/history-counts')
+    const beforeBody = (await before.json()) as { counts: { jobs: number; artifacts: number; events: number } }
+    expect(beforeBody.counts.events).toBe(1)
+
+    const res = await app.request('/a?deleteHistory=true', { method: 'DELETE' })
+    const body = (await res.json()) as { forgotten: { historyDeleted: boolean; counts: unknown } }
+    expect(body.forgotten.historyDeleted).toBe(true)
+    expect(body.forgotten.counts).toEqual(beforeBody.counts)
+    expect(db.select().from(deviceEvents).where(eq(deviceEvents.deviceId, 'a')).all()).toHaveLength(0)
+  })
+
+  test('an unknown device is refused with 404', async () => {
+    const { app } = makeApp()
+    const res = await app.request('/ghost', { method: 'DELETE' })
+    expect(res.status).toBe(404)
+  })
+})
+
+describe('POST /api/devices/:id/block (plan 47 §4.4, §6)', () => {
+  test('blocks a connected device: it disappears from the fleet, is listed under GET /blocked, and can be unblocked', async () => {
+    const { db, app, broadcast } = makeApp()
+    seedDevice(db, 'a') // idle — the connected case this verb exists for.
+
+    const res = await app.request('/a/block', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'retired' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { blocked: { stableId: string; reason: string | null } }
+    expect(body.blocked).toMatchObject({ stableId: 'stable-a', reason: 'retired' })
+
+    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
+    expect(broadcast).toContainEqual({ type: 'device.removed', payload: { id: 'a', stableId: 'stable-a' } })
+
+    const list = await app.request('/blocked')
+    const listBody = (await list.json()) as { blocked: Array<{ stableId: string }> }
+    expect(listBody.blocked.map((b) => b.stableId)).toEqual(['stable-a'])
+
+    const unblock = await app.request('/blocked/stable-a', { method: 'DELETE' })
+    expect(unblock.status).toBe(200)
+    const listAfter = await app.request('/blocked')
+    const listAfterBody = (await listAfter.json()) as { blocked: unknown[] }
+    expect(listAfterBody.blocked).toEqual([])
+    const auditRows = db.select().from(auditLog).where(eq(auditLog.action, 'device.unblock')).all()
+    expect(auditRows).toHaveLength(1)
+  })
+
+  test('block is refused for a busy device, exactly like forget', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'a')).run()
+    const res = await app.request('/a/block', { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('device_busy')
+  })
+
+  test('a blocked stableId never comes back through GET /api/devices — it is not in the live list', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    db.insert(blockedDevices).values({ stableId: 'blocked-elsewhere', label: null, reason: null, blockedAt: new Date(), blockedBy: null }).run()
+    const res = await app.request('/')
+    const body = (await res.json()) as { devices: Array<{ stableId: string }> }
+    expect(body.devices.map((d) => d.stableId)).toEqual(['stable-a'])
+  })
+})
+
+describe('GET /api/devices/refs — dangling-reference resolution (plan 47 §4.5)', () => {
+  test('resolves a live device and a deleted one in the same call, and omits an id neither table has', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    db.insert(deletedDevices).values({ id: 'gone-1', stableId: 'stable-gone-1', label: 'Old Phone', deletedAt: new Date() }).run()
+
+    const res = await app.request('/refs?ids=a,gone-1,never-existed')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean }>
+    }
+    expect(body.refs.a).toEqual({ id: 'a', label: 'Test Phone', stableId: 'stable-a', deleted: false })
+    expect(body.refs['gone-1']).toEqual({ id: 'gone-1', label: 'Old Phone', stableId: 'stable-gone-1', deleted: true })
+    expect(body.refs['never-existed']).toBeUndefined()
+  })
+
+  test('no permission required — the same "reads stay open" rule as GET /:id', async () => {
+    const { app } = makeApp(null)
+    const res = await app.request('/refs?ids=x')
+    expect(res.status).toBe(200)
   })
 })

@@ -89,6 +89,12 @@ describe('buildMonitorCommand (plan 24 §4.3) — the only place a monitor comma
     expect(cmd).toContain('sleep 5')
   })
 
+  test('crash: the fixed crash-watcher feed (plan 37 §4.1)', () => {
+    expect(buildMonitorCommand('crash', {})).toBe('logcat -b crash,main -v threadtime -T 1')
+    // No options accepted, same as top/thermal.
+    expect(() => buildMonitorCommand('crash', { anything: true })).toThrow(EnkakuError)
+  })
+
   test('one-shot kinds: fixed commands', () => {
     expect(buildMonitorCommand('ps', {})).toBe('ps -A')
     expect(buildMonitorCommand('meminfo', {})).toBe('dumpsys meminfo')

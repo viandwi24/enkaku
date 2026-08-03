@@ -15,6 +15,7 @@ import {
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
 import { batches, clusters, schedules, scheduleRuns, type ScheduleRow } from '../db/schema'
@@ -251,7 +252,11 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     return c.json({ items, nextCursor, total, schedules: items })
   })
 
-  app.post('/', async (c) => {
+  // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
+  // matrix; a schedule (and a batch, in `api/batches.ts`) is a way of
+  // causing jobs to run, so it takes the same permission an operator already
+  // has for running one job by hand — no lockout, one pattern.
+  app.post('/', requirePermission('job.run'), async (c) => {
     const body = ScheduleBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
       throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
@@ -290,7 +295,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
 
   app.get('/:id', (c) => c.json({ schedule: rowToScheduleInfo(deps, mustGet(c.req.param('id'))) }))
 
-  app.patch('/:id', async (c) => {
+  app.patch('/:id', requirePermission('job.run'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = SchedulePatchBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
@@ -329,7 +334,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     return c.json({ schedule: rowToScheduleInfo(deps, mustGet(row.id)) })
   })
 
-  app.delete('/:id', (c) => {
+  app.delete('/:id', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     db.delete(schedules).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()
@@ -348,7 +353,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
 
   // Ignores the cron — fires right now — but still honours onOverlap unless
   // the operator explicitly overrides it (plan 21 §9 open question #2).
-  app.post('/:id/run-now', async (c) => {
+  app.post('/:id/run-now', requirePermission('job.run'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = RunNowBody.safeParse(await c.req.json().catch(() => ({})))
     const ignoreOverlap = body.success && body.data.ignoreOverlap

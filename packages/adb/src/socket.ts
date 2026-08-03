@@ -202,6 +202,8 @@ export interface AdbSocketOptions {
 
 export class AdbSocket {
   private closed = false
+  /** Non-null only while a `write()` is parked waiting for buffer space. */
+  private drainWaiters: (() => void)[] | null = null
 
   private constructor(
     private socket: import('bun').Socket,
@@ -227,6 +229,8 @@ export class AdbSocket {
     // `AdbSocket` can be constructed around its result. Same forward-ref
     // shape as `settleEarly` above.
     let onNativeTimeout: (() => void) | null = null
+    /** Forward-ref, same shape: resolves whoever is parked in `write()`. */
+    let onDrain: (() => void) | null = null
 
     const connecting = Bun.connect({
       hostname: host,
@@ -237,9 +241,22 @@ export class AdbSocket {
         },
         close() {
           queue.end()
+          onDrain?.()
         },
         error(_s, err) {
           queue.end(err)
+          onDrain?.()
+        },
+        // Bun's `socket.write()` returns the number of bytes it actually
+        // accepted; when the kernel buffer is full it writes FEWER than asked
+        // and the remainder must wait for this event. `write()` below parks on
+        // it. Without that, a large transfer (a 60 MB APK push) silently drops
+        // whatever did not fit, the sync stream desynchronises, and the adb
+        // server answers `FAIL invalid data message` — while a small payload
+        // that fits in one buffer works perfectly, which is exactly how this
+        // went unnoticed.
+        drain(_s) {
+          onDrain?.()
         },
         // Without this, a refused connection surfaces only as an unhandled
         // rejection on the connect() promise; routing it through `early`
@@ -272,6 +289,7 @@ export class AdbSocket {
       const socket = await Promise.race([connecting, early])
       const adbSocket = new AdbSocket(socket, queue)
       onNativeTimeout = () => adbSocket.handleIdleTimeout()
+      onDrain = () => adbSocket.handleDrain()
       return adbSocket
     } catch (err) {
       // Whichever side loses the race must still be cleaned up: a connect
@@ -295,8 +313,30 @@ export class AdbSocket {
    * `openRaw`, used to bridge an adb endpoint stream). Never call this
    * before both handshake `readStatus()`s have resolved.
    */
-  write(data: Uint8Array): void {
-    this.socket.write(data)
+  async write(data: Uint8Array): Promise<void> {
+    let offset = 0
+    while (offset < data.length) {
+      const written = this.socket.write(data.subarray(offset))
+      // A non-positive return means the kernel buffer is full right now. Bun
+      // fires `drain` once it has room again; parking here is what makes a
+      // multi-megabyte push correct instead of silently lossy.
+      if (written > 0) offset += written
+      if (offset < data.length) await this.waitForDrain()
+    }
+  }
+
+  /** Resolved by the socket's `drain`, `close`, or `error` handler. */
+  private waitForDrain(): Promise<void> {
+    if (this.closed) throw new AdbError('E_ADB_PROTOCOL', 'the adb socket closed mid-write')
+    this.drainWaiters ??= []
+    return new Promise<void>((resolve) => this.drainWaiters!.push(resolve))
+  }
+
+  /** @internal — called from the socket handlers wired in `connect()`. */
+  handleDrain(): void {
+    const waiters = this.drainWaiters
+    this.drainWaiters = null
+    if (waiters) for (const w of waiters) w()
   }
 
   private async withHandshakeTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {

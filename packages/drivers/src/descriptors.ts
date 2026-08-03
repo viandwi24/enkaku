@@ -79,4 +79,31 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
     locks: ['instrumentation'],
     configSchema: {},
   },
+  {
+    id: 'none',
+    displayName: 'No route (default)',
+    kind: 'network',
+    capabilities: [],
+    locks: [],
+    configSchema: {},
+  },
+  {
+    id: 'vpn-helper',
+    displayName: 'Guest agent VPN route (SOCKS5)',
+    kind: 'network',
+    // NOT 'probe' — the egress probe does not exist yet and claiming it would be a lie.
+    capabilities: ['auth', 'enforcing', 'udp'],
+    locks: ['network-route'],
+    configSchema: {
+      type: 'object',
+      properties: {
+        host: { type: 'string', description: 'SOCKS5 upstream host' },
+        port: { type: 'integer', minimum: 1, maximum: 65535, description: 'SOCKS5 upstream port' },
+        username: { type: 'string', description: 'Optional SOCKS5 username' },
+        password: { type: 'string', description: 'Optional SOCKS5 password' },
+        udpMode: { type: 'string', enum: ['udp', 'tcp'], default: 'udp', description: 'How UDP traffic is carried' },
+      },
+      required: ['host', 'port'],
+    },
+  },
 ]

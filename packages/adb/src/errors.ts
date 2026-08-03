@@ -23,6 +23,10 @@ export type AdbErrorCode =
   | 'E_ADB_STREAM_IDLE'
   /** A stream's absolute clock fired: it outlived absoluteTimeoutMs (plan 24 §3.3). */
   | 'E_ADB_STREAM_DEADLINE'
+  /** The sync peer answered FAIL to SEND/RECV/STAT (plan 39 §4.1). */
+  | 'E_ADB_SYNC_FAIL'
+  /** A pull's remote file exceeded the caller's `maxBytes` while streaming, after `statRemote` already cleared it (plan 39 §3.6). */
+  | 'E_ADB_PULL_TOO_LARGE'
 
 export class AdbError extends Error {
   constructor(

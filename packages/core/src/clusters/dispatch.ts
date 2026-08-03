@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm'
+import { asc, eq, inArray } from 'drizzle-orm'
 import type { JobInfo } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { batches, clusters, jobs, type BatchRow, type JobRow } from '../db/schema'
+import { batches, clusters, devices, jobs, type BatchRow, type JobRow } from '../db/schema'
 import type { AuditLogger } from '../auth/audit'
 import { rowToJobInfo } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
@@ -40,6 +40,15 @@ export interface BatchDispatchDeps {
    * full executor registry.
    */
   validateScript?: (scriptId: string, params: unknown) => unknown
+  /**
+   * `canUseDevice` (plan 34 §3.5, §4.4) — called once per RESOLVED usable
+   * device, before any job row is built, so an operator targeting a device
+   * they do not own refuses the WHOLE batch rather than silently dispatching
+   * a smaller one. Throws to refuse; a caller with no interest in ownership
+   * (a schedule firing on its own cron, which has no interactive "acting
+   * user" — see plan 34 §9 open question area) simply omits this.
+   */
+  assertDeviceAllowed?: (deviceId: string) => void
 }
 
 /**
@@ -87,6 +96,8 @@ function toJobRow(input: {
     batchId: input.batchId,
     batchSeq: input.batchSeq,
     expiresAt: input.expiresAt,
+    failureClass: null,
+    infraAttempts: 0,
   }
 }
 
@@ -122,6 +133,12 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
         ? `no usable devices — every match was unavailable: ${resolved.skipped.map((s) => `${s.deviceId} (${s.reason})`).join(', ')}`
         : 'no devices matched this target',
     )
+  }
+
+  // `canUseDevice` (plan 34 §3.5, §4.4) — before any job row exists, so a
+  // refusal never leaves a half-created batch.
+  if (deps.assertDeviceAllowed) {
+    for (const t of resolved.usable) deps.assertDeviceAllowed(t.deviceId)
   }
 
   const ordered = input.order === 'random' ? shuffle(resolved.usable) : resolved.usable
@@ -165,4 +182,32 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
   deps.scheduler.kick()
 
   return { batch, jobs: jobRows }
+}
+
+/**
+ * Plan 36 §3.6 — after an infra failure, a batch member should move to
+ * another eligible device rather than retrying against the one that is
+ * failing. Batch dispatch (`createBatch` above) already put exactly one job
+ * row per resolved device, so "the batch's device set" is simply the
+ * distinct `deviceId`s among the job's own siblings — this works whether the
+ * batch came from a saved cluster or an ad-hoc device list, with no need to
+ * re-resolve either.
+ *
+ * Picks the lowest-`batchSeq` sibling device that is currently `idle` and
+ * not the device the job just failed on. Returns null when none is
+ * available — the caller then requeues the job on its own current device,
+ * exactly as plan 36 §3.6 describes ("if none is available it retries on
+ * the same device after the backoff").
+ */
+export function pickRebindDevice(db: Db, job: JobRow): string | null {
+  if (!job.batchId) return null
+  const siblings = db.select({ deviceId: jobs.deviceId }).from(jobs).where(eq(jobs.batchId, job.batchId)).orderBy(asc(jobs.batchSeq)).all()
+  const candidateIds = [...new Set(siblings.map((s) => s.deviceId))].filter((id) => id !== job.deviceId)
+  if (candidateIds.length === 0) return null
+  const rows = db.select().from(devices).where(inArray(devices.id, candidateIds)).all()
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  for (const id of candidateIds) {
+    if (byId.get(id)?.status === 'idle') return id
+  }
+  return null
 }

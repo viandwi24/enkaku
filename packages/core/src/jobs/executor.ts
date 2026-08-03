@@ -7,6 +7,15 @@ export interface ExecutorContext {
   /** Extend the job lease (called by the host on every heartbeat). */
   heartbeat(): void
   log: Logger
+  /**
+   * Registers a callback for a crash-based abort (plan 37 §4.4) — kept
+   * SEPARATE from `signal`, which is reserved for user-initiated
+   * cancel/force-release (`ExecutorHost.abort`) and always means "abandon
+   * the job", never "the target app crashed, fail on that specific basis".
+   * Optional: only the script executor wires this today (the sleep and
+   * remote-bridge executors have no crash-attributable subprocess to abort).
+   */
+  onCrash?: (cb: (e: { package: string; exception: string; message: string }) => void) => void
 }
 
 export interface JobExecutor {

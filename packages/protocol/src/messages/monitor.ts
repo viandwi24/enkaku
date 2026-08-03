@@ -8,11 +8,22 @@ import { z } from 'zod'
  * to an arbitrary shell string: every value here is either an enum or is
  * shell-quoted before it ever reaches a device.
  */
-export const MonitorKindSchema = z.enum(['logcat', 'top', 'thermal', 'ps', 'meminfo', 'df'])
+/**
+ * `crash` (plan 37 §4.1) is the crash watcher's own feed — `logcat -b
+ * crash,main -v threadtime -T 1` (see `packages/core/src/device/monitors.ts`)
+ * — read-only and fixed like every other kind here. It takes no options
+ * (`optionsSchemaFor` below falls through to `EmptyMonitorOptionsSchema`), so
+ * a human viewer who picks it in the Monitor tab and the always-on crash
+ * watcher resolve to the exact same command and therefore the exact same
+ * shared stream (plan 37 §3, acceptance #8) — there is nothing kind-specific
+ * about sharing; it is the same (deviceId, kind, options) → one hub entry
+ * rule every other monitor already gets.
+ */
+export const MonitorKindSchema = z.enum(['logcat', 'top', 'thermal', 'crash', 'ps', 'meminfo', 'df'])
 export type MonitorKind = z.infer<typeof MonitorKindSchema>
 
 /** Which kinds open a lane stream (§4.3) — the rest are one-shot request/response. */
-export const STREAMING_MONITOR_KINDS: readonly MonitorKind[] = ['logcat', 'top', 'thermal']
+export const STREAMING_MONITOR_KINDS: readonly MonitorKind[] = ['logcat', 'top', 'thermal', 'crash']
 /** Runs once through the normal per-device queue and returns a single payload. */
 export const ONE_SHOT_MONITOR_KINDS: readonly MonitorKind[] = ['ps', 'meminfo', 'df']
 

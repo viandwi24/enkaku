@@ -39,12 +39,15 @@ function makeApp(opts: {
   shellMode?: ShellMode
   endpointEnabled?: boolean
   manager?: AdbEndpointManager
+  /** `undefined` (the default) means "device not found" — `canUseDevice` then never applies, matching every pre-plan-34 test above unchanged. */
+  deviceOwnerId?: string | null
 }): Hono<AuthEnv> {
   const leaseResult = opts.leaseOk === false ? ({ ok: false, code: 'no_lease', message: 'take control first' } as const) : ({ ok: true } as const)
   const inner = createAdbEndpointRoutes({
     manager: opts.manager ?? fakeManager(),
     leases: fakeLeases(leaseResult),
     shellSettings: () => ({ mode: opts.shellMode ?? 'admin', endpointEnabled: opts.endpointEnabled ?? true }),
+    getDevice: () => (opts.deviceOwnerId === undefined ? null : { ownerId: opts.deviceOwnerId }),
   })
   return withUser(opts.role, inner)
 }
@@ -122,6 +125,51 @@ describe('POST /api/devices/:id/adb-endpoint (plan 27 §4.3, acceptance #7)', ()
       body: JSON.stringify({}),
     })
     expect(res.status).toBe(400)
+  })
+})
+
+describe('canUseDevice (plan 34 §3.5, §4.4, §4.1 "the Plan 27 endpoint")', () => {
+  test('an operator is refused an endpoint on a device owned by another user', async () => {
+    const app = makeApp({ role: 'operator', shellMode: 'operator', deviceOwnerId: 'someone-else' })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+    expect(body.error.message).toContain('belongs to another user')
+  })
+
+  test('an admin may still open an endpoint on a device owned by another user', async () => {
+    const app = makeApp({ role: 'admin', deviceOwnerId: 'someone-else' })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('a device with ownerId: null is unaffected — the pre-plan-34 default', async () => {
+    const app = makeApp({ role: 'operator', shellMode: 'operator', deviceOwnerId: null })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('an operator owning the device may open it', async () => {
+    const app = makeApp({ role: 'operator', shellMode: 'operator', deviceOwnerId: 'u1' })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    expect(res.status).toBe(200)
   })
 })
 

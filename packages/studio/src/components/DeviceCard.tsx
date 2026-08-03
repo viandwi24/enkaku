@@ -1,10 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { Battery, Play, ScreenShare, Thermometer } from 'lucide-react'
+import { Battery, Bug, MoreVertical, Play, ScreenShare, Thermometer, Trash2 } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
-import { DeviceStatusBadge } from '@/components/StatusBadge'
+import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { ReadinessControl } from '@/components/ReadinessControl'
 import { cn } from '@/lib/utils'
 
 /**
@@ -19,10 +21,20 @@ export function DeviceCard({
   device,
   runningJob,
   onReleaseQuarantine,
+  onRequestForget,
+  selectable,
+  selected,
+  onToggleSelect,
 }: {
   device: DeviceInfo
   runningJob?: JobInfo | null
   onReleaseQuarantine?: () => void
+  /** Opens the Forget/Block dialog for this device (plan 47 §4.5). */
+  onRequestForget?: () => void
+  /** Multi-select for a batch action (plan 39 §4.7 — "Install on selected"). */
+  selectable?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const offline = device.status === 'offline'
   const hot = device.battery && device.battery.temperatureC >= 45
@@ -42,16 +54,59 @@ export function DeviceCard({
         aria-hidden
       />
 
+      {selectable && (
+        <label className="absolute right-3 top-3 z-10 flex size-5 cursor-pointer items-center justify-center rounded border bg-surface">
+          <input
+            type="checkbox"
+            checked={Boolean(selected)}
+            onChange={onToggleSelect}
+            aria-label={`Select ${device.label} for a batch action`}
+            className="size-3.5"
+          />
+        </label>
+      )}
+
       <div className="space-y-3 p-4 pl-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="truncate text-[14px] font-semibold tracking-tight">{device.label}</h3>
             <p className="readout mt-0.5 truncate text-[11px] text-fg-subtle">{device.serial}</p>
           </div>
-          <DeviceStatusBadge status={device.status} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* A device crashing repeatedly should be visible without opening
+                it (plan 37 §4.5) — server-populated only within the last
+                hour (`listDevicesWithTags`), so this is never stale. */}
+            {device.lastCrashAt !== null && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-led-danger/40 bg-led-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-led-danger"
+                title="An app crashed on this device in the last hour"
+              >
+                <Bug className="size-3" aria-hidden />
+                Crash
+              </span>
+            )}
+            <DeviceStatusBadge status={device.status} />
+            {onRequestForget && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="size-6" aria-label={`More actions for ${device.label}`}>
+                    <MoreVertical className="size-3.5" aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={onRequestForget} className="text-led-danger focus:text-led-danger">
+                    <Trash2 className="size-3.5" aria-hidden />
+                    Remove from farm…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
+          {/* Readiness — a second, orthogonal axis to status (plan 43 §4.6). */}
+          <ReadinessBadge readiness={device.readiness} />
           {/* The cluster is always shown, even when empty — "Unclustered" muted
               rather than omitted, so the field reads as a field (plan 22.0 §4.5). */}
           <span
@@ -164,14 +219,18 @@ export function DeviceCard({
               </Button>
             </>
           )}
+          {/* Wake/Sleep without opening video (plan 43 §1) — refused
+              server-side exactly as the WS message would be; the button
+              itself only pre-disables for offline/quarantined. */}
+          <ReadinessControl device={device} className="h-8" />
         </div>
       </div>
     </div>
   )
 }
 
-/** `thermal:49.8C` is not a sentence — turn it into something readable. */
-function explainQuarantine(reason: string): string {
+/** `thermal:49.8C` is not a sentence — turn it into something readable. Reused by the Wall (plan 42 §4.6) for the same reason text. */
+export function explainQuarantine(reason: string): string {
   const thermal = /^thermal:([\d.]+)C$/.exec(reason)
   if (thermal) return `temperature reached ${thermal[1]}°C`
   return reason

@@ -1,7 +1,11 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
+import { createAuditLogger } from '../auth/audit'
+import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { scheduleRuns, schedules } from '../db/schema'
-import { queryScheduleRunsRows, querySchedulesRows } from './schedules'
+import { devices, scheduleRuns, schedules } from '../db/schema'
+import { ExecutorRegistry } from '../jobs/executor'
+import { createScheduleRoutes, queryScheduleRunsRows, querySchedulesRows, type ScheduleRoutesDeps } from './schedules'
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -114,5 +118,85 @@ describe('queryScheduleRunsRows keyset pagination', () => {
     const page2 = queryScheduleRunsRows(db, schedA!, { cursor: page1.nextCursor, limit: 2 })
     const overlap = page2.rows.filter((r) => page1.rows.some((p) => p.id === r.id))
     expect(overlap).toHaveLength(0)
+  })
+})
+
+function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', inner)
+  return wrapper
+}
+
+function makeApp(db: Db, role: 'admin' | 'operator' | null) {
+  const audit = createAuditLogger(db)
+  const registry = new ExecutorRegistry()
+  registry.register('internal:sleep', { validateParams: (p) => p, run: async () => undefined })
+  const deps: ScheduleRoutesDeps = {
+    db,
+    jobStore: {} as ScheduleRoutesDeps['jobStore'],
+    scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+    audit,
+    log: { debug() {}, info() {}, warn() {}, error() {}, child() { return this } } as ScheduleRoutesDeps['log'],
+    runner: { start: () => {}, stop: () => {}, reload: () => {}, nextFires: () => new Map() },
+    registry,
+    findScript: () => null,
+    scriptNames: () => new Map(),
+    onJobStatus: () => {},
+    broadcastBatchStatus: () => {},
+    broadcastFired: () => {},
+  }
+  return withUser(role, createScheduleRoutes(deps))
+}
+
+/**
+ * `requirePermission('job.run')` on the mutating schedule routes (plan 34
+ * §4.4, §4.5) — there is no `job.manage` permission; `job.run` is the
+ * closest existing fit and, being an OPERATOR permission, must not lock an
+ * operator out of a flow they already had.
+ */
+describe('requirePermission("job.run") on /api/schedules mutations (plan 34 §4.4, §4.5)', () => {
+  const scheduleBody = {
+    name: 'nightly',
+    cron: '0 0 * * *',
+    timezone: 'UTC',
+    scriptId: 'internal:sleep',
+    params: {},
+    target: { deviceIds: ['d1'] },
+  }
+
+  test('POST / is refused with no authenticated user', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(scheduleBody) })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (job.run is an OPERATOR permission) may create a schedule — no lockout', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator')
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(scheduleBody) })
+    expect(res.status).toBe(201)
+  })
+
+  test('DELETE /:id is refused with no authenticated user', async () => {
+    const db = setUp()
+    const [id] = seedSchedule(db, 1)
+    const app = makeApp(db, null)
+    const res = await app.request(`/${id}`, { method: 'DELETE' })
+    expect(res.status).toBe(403)
+  })
+
+  test('GET / needs no permission at all — read routes stay open', async () => {
+    const db = setUp()
+    const app = makeApp(db, null)
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
   })
 })

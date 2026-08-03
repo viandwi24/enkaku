@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Circle, Loader2, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
-import { decodeVideoFrame, KEYCODES, VIDEO_CODEC, type SessionPhase } from '@enkaku/protocol'
+import { decodeVideoFrame, KEYCODES, VIDEO_CODEC, type Quality, type SessionPhase } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -18,6 +18,18 @@ const AKEYCODE = KEYCODES
 
 const DRAG_THRESHOLD_PX = 10
 const TEXT_DEBOUNCE_MS = 500
+/**
+ * Manual control sends the operator's REAL pointer trace, not a synthesised
+ * curve (Plan 40 §4.6) — a human dragging in the browser already produces a
+ * natural path. `onPointerMove` fires far faster than is useful to send, so
+ * the trace is batched client-side to roughly this interval (the same
+ * cadence the gesture engine itself samples at by default) before being sent
+ * as one `input.gesture` message on pointer-up.
+ */
+const MANUAL_GESTURE_SAMPLE_MS = 8
+/** Matches `InputGestureMessage`'s schema ceiling — a very long drag simply
+ * stops adding new samples past this, rather than growing the payload unbounded. */
+const MANUAL_GESTURE_MAX_SAMPLES = 300
 /** Below this, a gap is just a static screen; above it, something is wrong. */
 const STALE_AFTER_SEC = 5
 /** Past this, staying quiet is no longer helpful — offer to wake the device. */
@@ -55,6 +67,9 @@ export function LiveView({
   inputEnabled = true,
   onActivity,
   autoReconnect = false,
+  active = true,
+  quality = 'control',
+  compact = false,
 }: {
   deviceId: string
   inputEnabled?: boolean
@@ -62,11 +77,32 @@ export function LiveView({
   onActivity?: () => void
   /** DeviceSettings.autoReconnect — one stream.stop + stream.start cycle when frames go stale (Plan 17 §4.8). */
   autoReconnect?: boolean
+  /**
+   * Whether this view is the one currently visible (Plan 42 §4.1) — the
+   * Control tab stays mounted behind a hidden CSS panel now instead of
+   * unmounting, so a hidden `<video>` a browser throttled can come back with
+   * a stale first frame. On the false→true transition this asks the server
+   * for a fresh keyframe (`stream.keyframe`) without restarting the stream.
+   * Defaults to true: every pre-plan-42 caller renders exactly one always-visible view.
+   */
+  active?: boolean
+  /** Video quality profile (Plan 42 §3.5, §4.5) — `wall` for a Wall tile, `control` everywhere else. */
+  quality?: Quality
+  /**
+   * A small, read-only Wall tile (Plan 42 §4.6): no toolbar, no case-button
+   * rails, no pointer/keyboard handling — just the picture and a status dot.
+   * The SAME stream.start/decode path as the full Control view, only less
+   * chrome around it.
+   */
+  compact?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamIdRef = useRef<number | null>(null)
   const lastSeqRef = useRef(-1)
   const pointerDownRef = useRef<{ x: number; y: number; t: number } | null>(null)
+  /** The real trace of the current drag (Plan 40 §4.6), normalised 0..1, batched to MANUAL_GESTURE_SAMPLE_MS. */
+  const gestureSamplesRef = useRef<{ x: number; y: number; atMs: number }[]>([])
+  const lastGestureSampleAtRef = useRef(0)
   const textBufferRef = useRef('')
   const textTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -120,7 +156,7 @@ export function LiveView({
 
     async function startStream() {
       try {
-        const res = await ws.request({ type: 'stream.start', id: newId(), payload: { deviceId } })
+        const res = await ws.request({ type: 'stream.start', id: newId(), payload: { deviceId, quality } })
         if (res.type !== 'stream.started' || disposed) return
         streamIdRef.current = res.payload.streamId
         lastSeqRef.current = -1
@@ -232,6 +268,19 @@ export function LiveView({
     }
   }, [deviceId, retryTick])
 
+  // A hidden `<video>` becoming visible again (Plan 42 §4.1, §4.2 risks): the
+  // Control tab stays mounted behind a CSS `hidden` panel now, and browsers
+  // may throttle a hidden canvas, so the first frame after unhiding can be
+  // stale. Ask for a fresh IDR on the false→true transition only — never on
+  // the initial mount, which already gets a keyframe from stream.start itself.
+  const wasActiveRef = useRef(active)
+  useEffect(() => {
+    if (active && !wasActiveRef.current && streamIdRef.current !== null) {
+      ws.send({ type: 'stream.keyframe', payload: { streamId: streamIdRef.current } })
+    }
+    wasActiveRef.current = active
+  }, [active])
+
   /** Normalised against the element's DISPLAYED size — CSS scaling never leaks to the server. */
   function normalize(e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -245,7 +294,22 @@ export function LiveView({
     if (!inputEnabled) return
     const p = normalize(e)
     pointerDownRef.current = { ...p, t: Date.now() }
+    gestureSamplesRef.current = [{ x: p.x, y: p.y, atMs: 0 }]
+    lastGestureSampleAtRef.current = 0
     e.currentTarget.focus()
+  }
+
+  /** Batches the real trace while dragging (Plan 40 §4.6) — see MANUAL_GESTURE_SAMPLE_MS. */
+  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!inputEnabled) return
+    const start = pointerDownRef.current
+    if (!start) return
+    const elapsed = Date.now() - start.t
+    if (elapsed - lastGestureSampleAtRef.current < MANUAL_GESTURE_SAMPLE_MS) return
+    if (gestureSamplesRef.current.length >= MANUAL_GESTURE_MAX_SAMPLES - 1) return
+    const p = normalize(e)
+    gestureSamplesRef.current.push({ x: p.x, y: p.y, atMs: elapsed })
+    lastGestureSampleAtRef.current = elapsed
   }
 
   function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
@@ -254,17 +318,31 @@ export function LiveView({
     pointerDownRef.current = null
     if (!start) return
     const end = normalize(e)
+    const elapsed = Date.now() - start.t
     const rect = e.currentTarget.getBoundingClientRect()
     const distPx = Math.hypot((end.x - start.x) * rect.width, (end.y - start.y) * rect.height)
     if (distPx < DRAG_THRESHOLD_PX) {
       ws.send({ type: 'input.tap', payload: { deviceId, pos: end } })
     } else {
-      const durationMs = Math.min(10_000, Math.max(50, Date.now() - start.t))
-      ws.send({
-        type: 'input.swipe',
-        payload: { deviceId, from: { x: start.x, y: start.y }, to: end, durationMs },
-      })
+      // The operator's REAL pointer trace, not a synthesised curve (Plan 40
+      // §4.6) — whatever `onPointerMove` batched, plus the exact release
+      // point so the trace always ends precisely where the drag did.
+      const samples = gestureSamplesRef.current
+      const lastSample = samples[samples.length - 1]
+      if (!lastSample || lastSample.atMs !== elapsed) samples.push({ x: end.x, y: end.y, atMs: elapsed })
+      if (samples.length >= 2) {
+        ws.send({ type: 'input.gesture', payload: { deviceId, samples } })
+      } else {
+        // No intermediate move events were captured (a very fast drag) —
+        // fall back to the two-point swipe exactly as before Plan 40.
+        const durationMs = Math.min(10_000, Math.max(50, elapsed))
+        ws.send({
+          type: 'input.swipe',
+          payload: { deviceId, from: { x: start.x, y: start.y }, to: end, durationMs },
+        })
+      }
     }
+    gestureSamplesRef.current = []
     onActivity?.()
   }
 
@@ -379,8 +457,11 @@ export function LiveView({
   const phaseElapsedSec = phase ? Math.max(0, Math.round((now - phaseChangedAtRef.current) / 1000)) : 0
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-surface">
-      {/* Stream readouts: the numbers that describe the picture being watched. */}
+    <div className={cn('overflow-hidden rounded-lg border bg-surface', compact && 'h-full')}>
+      {/* Stream readouts: the numbers that describe the picture being watched.
+          Skipped in compact (Wall tile) mode — a tile has room for a status
+          dot, not a toolbar (Plan 42 §4.6). */}
+      {!compact && (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-[11.5px] text-fg-muted">
         <span className="flex items-center gap-1.5">
           <span
@@ -440,42 +521,45 @@ export function LiveView({
           </>
         )}
       </div>
+      )}
 
-      {error && (
+      {!compact && error && (
         <p className="border-b border-led-danger/30 bg-led-danger/5 px-3 py-2 text-[12px] text-led-danger">
           {error}
         </p>
       )}
-      {degradedReason && (
+      {!compact && degradedReason && (
         <p className="border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
           The WebRTC path is not in use ({degradedReason}). Video still runs over WebSocket, but it can stutter when
           the network drops packets.
         </p>
       )}
 
-      <div className="relative flex items-start justify-center gap-2 bg-bg p-4">
-        {/* Mirrors the button rail so the screen itself stays centred. */}
-        <div className="w-10 shrink-0" aria-hidden />
+      <div className={cn('relative flex items-start justify-center gap-2 bg-bg', compact ? 'h-full p-0' : 'p-4')}>
+        {/* Mirrors the button rail so the screen itself stays centred — omitted in compact mode, which has no rail. */}
+        {!compact && <div className="w-10 shrink-0" aria-hidden />}
         <canvas
           ref={canvasRef}
-          tabIndex={0}
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onKeyDown={onKeyDown}
+          tabIndex={compact ? -1 : 0}
+          onPointerDown={compact ? undefined : onPointerDown}
+          onPointerMove={compact ? undefined : onPointerMove}
+          onPointerUp={compact ? undefined : onPointerUp}
+          onKeyDown={compact ? undefined : onKeyDown}
           aria-label="Device screen"
           className={cn(
-            'max-h-[calc(100vh-19rem)] min-h-[18rem] rounded-md bg-black shadow-[0_0_0_1px_var(--color-border)]',
-            'outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
+            compact
+              ? 'h-full w-full rounded-md bg-black object-contain pointer-events-none'
+              : 'max-h-[calc(100vh-19rem)] min-h-[18rem] rounded-md bg-black shadow-[0_0_0_1px_var(--color-border)] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
             stopped && 'opacity-40',
           )}
           style={{
             ...(size.width > 0 ? { aspectRatio: `${size.width} / ${size.height}` } : { aspectRatio: '9 / 16' }),
-            cursor: inputEnabled && !stopped ? 'crosshair' : 'not-allowed',
+            ...(compact ? {} : { cursor: inputEnabled && !stopped ? 'crosshair' : 'not-allowed' }),
           }}
         />
 
-        {/* The case buttons, on the case. */}
-        <div className="flex w-10 shrink-0 flex-col items-center gap-1 pt-10">{hardware.map(keyButton)}</div>
+        {/* The case buttons, on the case — omitted in compact mode: a Wall tile is read-only, no controls to place. */}
+        {!compact && <div className="flex w-10 shrink-0 flex-col items-center gap-1 pt-10">{hardware.map(keyButton)}</div>}
 
         {stopped && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
@@ -511,17 +595,20 @@ export function LiveView({
         )}
       </div>
 
-      {/* Nav buttons below the canvas — the same place as the Android nav bar. */}
-      <div className="flex flex-wrap items-center gap-1 border-t px-3 py-2">
-        {nav.map(keyButton)}
-        <span className="mx-1 h-5 w-px bg-line" aria-hidden />
-        {power.map(keyButton)}
-        <p className="ml-2 text-[11.5px] text-fg-subtle">
-          {inputEnabled
-            ? 'Click to tap, drag to swipe, type while the canvas is focused. Esc sends Back.'
-            : 'Input is off — watching only.'}
-        </p>
-      </div>
+      {/* Nav buttons below the canvas — the same place as the Android nav bar.
+          Omitted in compact mode: a Wall tile is read-only, there is nothing here to press. */}
+      {!compact && (
+        <div className="flex flex-wrap items-center gap-1 border-t px-3 py-2">
+          {nav.map(keyButton)}
+          <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+          {power.map(keyButton)}
+          <p className="ml-2 text-[11.5px] text-fg-subtle">
+            {inputEnabled
+              ? 'Click to tap, drag to swipe, type while the canvas is focused. Esc sends Back.'
+              : 'Input is off — watching only.'}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

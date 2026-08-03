@@ -44,6 +44,7 @@ const KEY_MAP: Record<string, keyof RegistryResponse> = {
   'registry.displays': 'displays',
   'registry.inputs': 'inputs',
   'registry.inspectors': 'inspectors',
+  'registry.networks': 'networks',
 }
 
 export function useEnumOptions(enumValues: unknown[] | undefined, enumSource: string | undefined): EnumOption[] {

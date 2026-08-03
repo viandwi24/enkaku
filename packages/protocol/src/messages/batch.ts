@@ -17,6 +17,14 @@ export const BatchCountsSchema = z.object({
   cancelled: z.number().int(),
   /** Plan 21 §3.3 — a job that never got a device before its queue deadline. Counted separately from `failed`. */
   expired: z.number().int().default(0),
+  /**
+   * Plan 36 §4.4 — of `failed`, how many were classified `script` vs
+   * `infra`/`load` (`jobs.failureClass`). A batch that fell over because of
+   * one bad hub should not read as twenty broken tests. Defaulted so an
+   * older cached `BatchStatusEvent` still parses.
+   */
+  failedScript: z.number().int().default(0),
+  failedInfra: z.number().int().default(0),
 })
 export type BatchCounts = z.infer<typeof BatchCountsSchema>
 

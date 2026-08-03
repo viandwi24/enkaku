@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
-import { clusters, devices, jobs, type ClusterRow } from '../db/schema'
+import { clusters, devices, jobs, type ClusterRow, type JobRow } from '../db/schema'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
-import { createBatch } from './dispatch'
+import { createBatch, pickRebindDevice } from './dispatch'
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -117,5 +117,109 @@ describe('createBatch — resolution and dispatch (plan 20 §4.4, §7)', () => {
         { scriptId: 'internal:sleep', params: {}, target: { clusterId: 'nope' }, concurrency: 0, order: 'as-listed' },
       ),
     ).toThrow(EnkakuError)
+  })
+})
+
+describe('createBatch — assertDeviceAllowed / canUseDevice (plan 34 §3.5, §4.4)', () => {
+  test('a refusal on any resolved device stops the WHOLE batch — no job rows persist', () => {
+    const db = setUp()
+    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+    const checked: string[] = []
+
+    expect(() =>
+      createBatch(
+        {
+          db,
+          scheduler,
+          audit,
+          onJobStatus: () => {},
+          assertDeviceAllowed: (deviceId) => {
+            checked.push(deviceId)
+            if (deviceId === 'd2') throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
+          },
+        },
+        { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] }, concurrency: 0, order: 'as-listed' },
+      ),
+    ).toThrow(EnkakuError)
+
+    expect(checked).toContain('d2')
+    // No half-created batch — the check runs before any job row is built.
+    expect(db.select().from(jobs).all().length).toBe(0)
+  })
+
+  test('with no assertDeviceAllowed configured, dispatch is unaffected — the pre-plan-34 default', () => {
+    const db = setUp()
+    for (const d of ['d1', 'd2']) seedDevice(db, d)
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+
+    const { jobs: created } = createBatch(
+      { db, scheduler, audit, onJobStatus: () => {} },
+      { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2'] }, concurrency: 0, order: 'as-listed' },
+    )
+    expect(created.length).toBe(2)
+  })
+})
+
+describe('pickRebindDevice — moving a batch member after an infra failure (plan 36 §3.6)', () => {
+  test('picks an idle sibling device, never the one that just failed', () => {
+    const db = setUp()
+    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+    const { jobs: created } = createBatch(
+      { db, scheduler, audit, onJobStatus: () => {} },
+      { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] }, concurrency: 0, order: 'as-listed' },
+    )
+    // d2 and d3 stay idle; d1 is the device the job just failed on.
+    const failing = created.find((j) => j.deviceId === 'd1')
+    if (!failing) throw new Error('fixture: expected a job on d1')
+
+    const picked = pickRebindDevice(db, failing)
+    expect(picked).toBe('d2') // lowest batchSeq among the idle siblings
+  })
+
+  test('returns null when every sibling device is busy (the caller then retries in place)', () => {
+    const db = setUp()
+    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+    const { jobs: created } = createBatch(
+      { db, scheduler, audit, onJobStatus: () => {} },
+      { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] }, concurrency: 0, order: 'as-listed' },
+    )
+    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'd2')).run()
+    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'd3')).run()
+    const failing = created.find((j) => j.deviceId === 'd1')
+    if (!failing) throw new Error('fixture: expected a job on d1')
+
+    expect(pickRebindDevice(db, failing)).toBeNull()
+  })
+
+  test('a standalone job (no batch) never rebinds', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const standalone: JobRow = {
+      id: 'job-standalone',
+      scriptId: 'internal:sleep',
+      deviceId: 'd1',
+      params: null,
+      priority: 0,
+      status: 'running',
+      leaseExpiresAt: null,
+      result: null,
+      error: null,
+      createdAt: new Date(),
+      startedAt: new Date(),
+      finishedAt: null,
+      batchId: null,
+      batchSeq: null,
+      expiresAt: null,
+      failureClass: null,
+      infraAttempts: 0,
+    }
+    expect(pickRebindDevice(db, standalone)).toBeNull()
   })
 })

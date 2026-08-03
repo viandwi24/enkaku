@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ReadinessSchema } from './readiness'
 
 /** Per-device battery and thermal state (spec §15.2). */
 export const BatteryStateSchema = z.object({
@@ -46,10 +47,48 @@ export const TimingSettingsSchema = z.object({
     .describe('Random range for the pause between actions, in milliseconds')
     .meta({ title: 'Pause between actions' }),
   coordJitterPx: z.number().default(2).describe('Random offset applied to the tap point, in pixels').meta({ title: 'Tap point jitter' }),
+  /**
+   * Input realism (plan 40 §3.5, §4.3): `instant` reproduces the pre-plan-40
+   * behaviour exactly — a straight-line swipe, and text delivered in one go —
+   * which matters both as an escape hatch for a suite that would otherwise
+   * change behaviour, and as the control arm when comparing results (§7's
+   * A/B). `natural` curves gestures and types character by character, which
+   * is what exercises `VelocityTracker`-driven fling physics, autocomplete,
+   * and debounced validation — code paths a straight line and a single
+   * `set_text` never reach.
+   */
+  profile: z
+    .enum(['instant', 'natural'])
+    .default('natural')
+    .describe(
+      '"instant" sends a straight-line swipe and types text in one go — the pre-M17f behaviour. "natural" curves gestures and types character by character, which exercises fling physics, autocomplete, and debounced validation.',
+    )
+    .meta({ title: 'Input profile' }),
+  gestureCurvature: z
+    .number()
+    .min(0)
+    .max(0.5)
+    .default(0.08)
+    .describe('How far a swipe bows away from a straight line, as a fraction of its length.')
+    .meta({ title: 'Gesture curvature' }),
+  gestureSampleIntervalMs: z
+    .number()
+    .int()
+    .min(4)
+    .max(50)
+    .default(8)
+    .describe('Interval between touch-move events. Android needs several to compute a release velocity.')
+    .meta({ title: 'Gesture sample interval (ms)' }),
+  perCharMs: z
+    .tuple([z.number().int().min(0), z.number().int().min(0)])
+    .default([40, 140])
+    .describe('Delay range between characters when typing.')
+    .meta({ title: 'Typing cadence (ms)' }),
 }).meta({
   title: 'Human-like touch',
   description: 'A little randomness in tap timing and position, so automation does not fall into an obvious pattern.',
 })
+export type TimingSettings = z.infer<typeof TimingSettingsSchema>
 
 /**
  * A device row written before Plan 17 still holds `prep.stayAwake` as a plain
@@ -128,7 +167,13 @@ export const DeviceSettingsSchema = z
       })
       .default({ preferredMode: 'uhid' })
       .meta({ title: 'Input injection' }),
-    timing: TimingSettingsSchema.default({ tapJitterMs: [40, 120], betweenActionMs: [300, 900], coordJitterPx: 2 }),
+    // A thunk, not a literal object (plan 40 §4.3): a literal default bypasses
+    // schema validation, so a hand-written object here would silently omit
+    // any field added to `TimingSettingsSchema` later (as this plan just did)
+    // and every consumer would read `undefined` for it at runtime despite TS
+    // believing it present. Parsing `{}` through the schema itself keeps this
+    // in lockstep with `TimingSettingsSchema`'s own defaults, always.
+    timing: TimingSettingsSchema.default(() => TimingSettingsSchema.parse({})),
     prep: z
       .preprocess(
         normaliseLegacyPrep,
@@ -174,6 +219,113 @@ export const DeviceSettingsSchema = z
   })
   .meta({ title: 'Device settings' })
 export type DeviceSettings = z.infer<typeof DeviceSettingsSchema>
+
+/**
+ * Session hygiene between jobs (plan 35 §4.1): what to reset on a device
+ * before every job runs, so two jobs on one device stop inheriting each
+ * other's application state. `resetPolicy` is one of four escalating levels
+ * (plan 35 §3.3); `retry` is added by plan 36 to this same block, so the
+ * shape here is deliberately a container rather than a flat set of fields.
+ */
+export const JobSettingsSchema = z
+  .object({
+    resetPolicy: z
+      .enum(['none', 'home', 'declared', 'aggressive'])
+      .default('home')
+      .describe(
+        'What to reset on a device before each job. "home" returns to the launcher; "declared" also stops the packages a script declares; "aggressive" stops every non-system app.',
+      )
+      .meta({ title: 'Reset before each job' }),
+    resetTimeoutMs: z
+      .number()
+      .int()
+      .min(1_000)
+      .max(60_000)
+      .default(15_000)
+      .describe('Budget for the pre-job reset. Exceeding it logs a warning and the job continues.')
+      .meta({ title: 'Reset timeout (ms)' }),
+    resetStrict: z
+      .boolean()
+      .default(false)
+      .describe('Fail the job when its pre-job reset fails, instead of warning and continuing.')
+      .meta({ title: 'Fail on reset error' }),
+    /**
+     * Retry classification and backoff (plan 36 §4.2): infra failures (device
+     * lost, adb timeout) draw from `maxInfraAttempts`, a budget separate from
+     * `ScriptDefinition.retries` (§3.4) — a farm problem must never spend an
+     * author's own retry count.
+     */
+    retry: z
+      .object({
+        maxInfraAttempts: z
+          .number()
+          .int()
+          .min(0)
+          .max(10)
+          .default(2)
+          .describe("Extra attempts allowed when a job fails for infrastructure reasons (device lost, adb timeout). Separate from a script's own retries.")
+          .meta({ title: 'Infrastructure retries' }),
+        backoffBaseMs: z
+          .number()
+          .int()
+          .min(100)
+          .max(60_000)
+          .default(2_000)
+          .describe('First backoff delay; it doubles each infrastructure retry, with jitter.')
+          .meta({ title: 'Retry backoff base (ms)' }),
+        backoffMaxMs: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(300_000)
+          .default(30_000)
+          .describe('Upper bound on the backoff delay.')
+          .meta({ title: 'Retry backoff cap (ms)' }),
+        timeoutIsInfra: z
+          .boolean()
+          .default(false)
+          .describe('Treat a job timeout as an infrastructure failure rather than a script failure.')
+          .meta({ title: 'Timeouts count as infrastructure' }),
+        rebindOnInfra: z
+          .boolean()
+          .default(true)
+          .describe('On an infrastructure failure, let a batch member move to another eligible device.')
+          .meta({ title: 'Move batch members after infrastructure failures' }),
+      })
+      .default({ maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true })
+      .meta({
+        title: 'Retry classification',
+        description: "Infrastructure failures retry with backoff, separately from a script's own retry budget.",
+      }),
+    /**
+     * Crash detection's opt-in job failure (plan 37 §3.4). Three escalating
+     * levels, defaulting to the middle one: a blanket "any crash fails the
+     * job" would fail every run on a farm phone with one flaky OEM service,
+     * so `declared` — matching only the script's own target package(s) — is
+     * the default, and `ignore` restores pre-plan-37 behaviour exactly
+     * (crashes are still recorded as `app.crashed` events either way; this
+     * setting only controls whether one can fail a *job*).
+     */
+    crashPolicy: z
+      .enum(['ignore', 'declared', 'any'])
+      .default('declared')
+      .describe(
+        'Whether an application crash can fail a running job. "ignore" only records the event; "declared" fails the job when the script\'s own target package crashes; "any" fails it on any non-system crash.',
+      )
+      .meta({ title: 'Fail jobs on app crash' }),
+  })
+  .default({
+    resetPolicy: 'home',
+    resetTimeoutMs: 15_000,
+    resetStrict: false,
+    retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
+    crashPolicy: 'declared',
+  })
+  .meta({
+    title: 'Jobs',
+    description: 'Session hygiene between jobs — what gets cleaned up on a device before each run.',
+  })
+export type JobSettings = z.infer<typeof JobSettingsSchema>
 
 /** Farm-wide settings (a single row). */
 export const FarmSettingsSchema = z.object({
@@ -270,14 +422,24 @@ export const FarmSettingsSchema = z.object({
        * separate from `maxConcurrent` above: streams never draw from the
        * exec semaphore, so their limit is its own field rather than a slice
        * of it.
+       *
+       * Raised from 3 to 4 by plan 39 §3.3: with the ui-server inspector
+       * (plan 34), the always-on crash watcher (plan 37), a human's Monitor
+       * tab, and now a file transfer or `pm install` (plan 39 — both run on
+       * this lane, never `PerDeviceQueue`, so a 60 MB push does not block
+       * video/input/jobs on that device), four concurrent slots is the
+       * floor that lets all four coexist without one starving another. This
+       * must never be lowered back down.
        */
       maxStreamsPerDevice: z
         .number()
         .int()
         .min(1)
         .max(8)
-        .default(1)
-        .describe('Concurrent adb streams (logcat, top, ...) allowed on one device.')
+        .default(4)
+        .describe(
+          'Concurrent adb streams (logcat, top, crash, file transfer, ...) allowed on one device. Kept above 1 because the ui-server inspector, the always-on crash watcher, and a file transfer or APK install each hold a slot of their own, on top of anything a human opens in the Monitor tab.',
+        )
         .meta({ title: 'Max streams per device' }),
       maxStreams: z
         .number()
@@ -288,7 +450,7 @@ export const FarmSettingsSchema = z.object({
         .describe('Concurrent adb streams allowed across the whole farm.')
         .meta({ title: 'Max concurrent streams (farm-wide)' }),
     })
-    .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 1, maxStreams: 4 })
+    .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 4, maxStreams: 4 })
     .meta({
       title: 'adb concurrency',
       description: 'How many adb commands the farm runs at once, and the budgets for a single command.',
@@ -406,8 +568,132 @@ export const FarmSettingsSchema = z.object({
       title: 'Device terminal',
       description: 'Free-form adb shell commands, gated by permission and audited in full (plan 26), plus an optional lease-scoped adb endpoint (plan 27).',
     }),
+  job: JobSettingsSchema,
+  /**
+   * Idle session TTL (plan 42 §3.4, §4.4): when the last viewer of a device
+   * leaves, the session is not closed right away — it is kept alive for
+   * `idleTtlSec` in case the same or another viewer returns shortly, which is
+   * what makes returning to a device instant instead of a fresh wake-up.
+   * Bounded farm-wide by `maxIdleSessions` so a big fleet cannot hold every
+   * device's session open at once; `idleTtlSec: 0` restores the pre-plan-42
+   * behaviour of closing the instant the last viewer leaves.
+   */
+  session: z
+    .object({
+      idleTtlSec: z
+        .number()
+        .int()
+        .min(0)
+        .max(3600)
+        .default(300)
+        .describe('How long a device session stays alive after the last viewer leaves, so returning is instant. 0 closes it immediately.')
+        .meta({ title: 'Idle session TTL (s)' }),
+      maxIdleSessions: z
+        .number()
+        .int()
+        .min(0)
+        .max(64)
+        .default(8)
+        .describe('How many idle sessions may be held open across the farm before the oldest is closed.')
+        .meta({ title: 'Max idle sessions' }),
+    })
+    .default({ idleTtlSec: 300, maxIdleSessions: 8 })
+    .meta({
+      title: 'Device sessions',
+      description: 'How long a device session lingers after the last viewer leaves, and how many may linger at once.',
+    }),
+  /**
+   * The fleet Wall (plan 42 §3.5, §4.6) — a grid of every device's screen at
+   * a low-rate `wall` quality profile, capped so a big fleet does not
+   * saturate the browser or the network with live decoders at once.
+   */
+  wall: z
+    .object({
+      maxTiles: z
+        .number()
+        .int()
+        .min(1)
+        .max(64)
+        .default(8)
+        .describe('How many wall tiles stream live at once. The rest show their status and a "show live" action.')
+        .meta({ title: 'Max live wall tiles' }),
+    })
+    .default({ maxTiles: 8 })
+    .meta({
+      title: 'Fleet wall',
+      description: 'The devices list Wall mode: every screen live, at a low-rate quality profile.',
+    }),
+  /**
+   * Device readiness (plan 43 §3.5, §4.4) — `maxHot` deliberately matches
+   * `wall.maxTiles` and `session.maxIdleSessions` above (both default 8), so
+   * one page of the Wall is, by default, exactly the set of devices that can
+   * be hot: the thing you are looking at is the thing that is warm.
+   */
+  readiness: z
+    .object({
+      maxHot: z
+        .number()
+        .int()
+        .min(0)
+        .max(64)
+        .default(8)
+        .describe('How many devices may be held hot (session alive, encoder running) at once. Hot devices open instantly but the encoder costs device CPU and battery.')
+        .meta({ title: 'Max hot devices' }),
+      defaultDesired: ReadinessSchema.default('asleep')
+        .describe('Readiness a newly enrolled device starts at.')
+        .meta({ title: 'Default device readiness' }),
+    })
+    .default({ maxHot: 8, defaultDesired: 'asleep' })
+    .meta({
+      title: 'Device readiness',
+      description: 'How many devices may be held warm at once, and what a newly enrolled device starts at.',
+    }),
+  /**
+   * File transfer and APK install (plan 39 §4.3) — push, pull, and install
+   * all run on the plan 24 streaming lane, never `PerDeviceQueue`, and the
+   * client always names an artifact id, never a URL or filesystem path
+   * (§3.5 — the SSRF-shaped hole that rule closes).
+   */
+  transfer: z
+    .object({
+      enabled: z
+        .boolean()
+        .default(true)
+        .describe('Allow file transfer and APK install from Studio and scripts.')
+        .meta({ title: 'Allow file transfer' }),
+      maxPushBytes: z
+        .number()
+        .int()
+        .min(1_048_576)
+        .default(536_870_912)
+        .describe('Largest file that may be pushed or installed.')
+        .meta({ title: 'Max push size (bytes)' }),
+      maxPullBytes: z
+        .number()
+        .int()
+        .min(1_048_576)
+        .default(536_870_912)
+        .describe('Largest file that may be pulled from a device.')
+        .meta({ title: 'Max pull size (bytes)' }),
+      installTimeoutMs: z
+        .number()
+        .int()
+        .min(10_000)
+        .max(1_800_000)
+        .default(300_000)
+        .describe('Budget for pm install once the APK is on the device. Runs on the streaming lane, not the 120s adb exec ceiling.')
+        .meta({ title: 'Install timeout (ms)' }),
+    })
+    .default({ enabled: true, maxPushBytes: 536_870_912, maxPullBytes: 536_870_912, installTimeoutMs: 300_000 })
+    .meta({
+      title: 'File transfer',
+      description: 'Push, pull, and APK install from Studio, a script, or a batch — always from a server-side artifact, never a client-supplied URL or path.',
+    }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>
+export type SessionSettings = FarmSettings['session']
+export type WallSettings = FarmSettings['wall']
+export type ReadinessSettings = FarmSettings['readiness']
 
 export const defaultFarmSettings = (): FarmSettings => FarmSettingsSchema.parse({})
 export const defaultDeviceSettings = (): DeviceSettings => DeviceSettingsSchema.parse({})

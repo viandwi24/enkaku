@@ -1,9 +1,10 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
-import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceSettings } from '@enkaku/protocol'
-import { and, eq, ne } from 'drizzle-orm'
+import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type Readiness } from '@enkaku/protocol'
+import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
-import { clusters, devices, type DeviceRow } from '../db/schema'
+import { blockedDevices, clusters, devices, deviceEvents, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
+import { staticReadinessFallback } from '../device/readiness'
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
@@ -29,6 +30,8 @@ export interface DeviceRegistryDeps {
    * never read, and new devices silently took the DB column defaults instead.
    */
   deviceDefaults?: () => DeviceSettings
+  /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below for why this is a separate accessor from `deviceDefaults`. */
+  defaultDesiredReadiness?: () => Readiness
 }
 
 export interface DeviceRegistry {
@@ -59,6 +62,16 @@ export function rowToDeviceInfo(
   row: DeviceRow,
   tags: string[] = [],
   cluster: { id: string; name: string } | null = null,
+  /** Populated only by `listDevicesWithTags` (plan 37 §4.5) — see `DeviceInfoSchema.lastCrashAt`. */
+  lastCrashAt: number | null = null,
+  /**
+   * Readiness (plan 43 §4.1) — the live `ReadinessManager.get()` result from
+   * every production call site. Falls back to `staticReadinessFallback`
+   * (offline-aware, but session-blind) ONLY when no manager was threaded
+   * through, which today is orchestrator mode (no local readiness manager
+   * exists there at all) and tests that construct a row directly.
+   */
+  readiness: DeviceReadiness | null = null,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
@@ -76,7 +89,29 @@ export function rowToDeviceInfo(
     quarantineReason: row.quarantineReason ?? null,
     tags,
     cluster,
+    lastCrashAt,
+    readiness: readiness ?? staticReadinessFallback(row),
   })
+}
+
+/**
+ * Devices that crashed at least once in the last hour (plan 37 §4.5's device
+ * card badge) — ONE aggregate query regardless of fleet size, not a
+ * per-device lookup, keyed off the same `idx_device_events_tail
+ * (deviceId, stream, at)` index the Logs tab already relies on.
+ */
+export function loadRecentCrashes(db: Db, sinceEpochSec: number): Map<string, number> {
+  const rows = db
+    .select({ deviceId: deviceEvents.deviceId, lastAt: sql<number>`max(${deviceEvents.at})` })
+    .from(deviceEvents)
+    .where(and(eq(deviceEvents.kind, 'app.crashed'), gte(deviceEvents.at, new Date(sinceEpochSec * 1000))))
+    .groupBy(deviceEvents.deviceId)
+    .all()
+  // `max(at)` is a raw SQL aggregate over the underlying INTEGER column — it
+  // returns the stored unix-seconds value directly, NOT a Drizzle-mapped
+  // Date (that mapping only applies to plain column selects), so this is
+  // just a number, already in the repo-wide unix-seconds convention.
+  return new Map(rows.map((r) => [r.deviceId, Math.floor(Number(r.lastAt))]))
 }
 
 /**
@@ -84,12 +119,25 @@ export function rowToDeviceInfo(
  * regardless of how many devices there are (plan 19 §4.3 and plan 22.0
  * §4.4, acceptance #7 and #10 — never N+1).
  */
-export function listDevicesWithTags(db: Db): DeviceInfo[] {
+export function listDevicesWithTags(
+  db: Db,
+  /** Readiness (plan 43 §4.1) — omitted call sites fall back to `staticReadinessFallback` per-row, same as `rowToDeviceInfo` itself. */
+  readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
+): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
   const clusterNames = loadClusterNames(db)
+  // The device card crash badge (plan 37 §4.5) — one query for the whole
+  // fleet, not one per device.
+  const recentCrashes = loadRecentCrashes(db, Math.floor(Date.now() / 1000) - 3600)
   return rows.map((r) =>
-    rowToDeviceInfo(r, tagMap.get(r.id) ?? [], r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null),
+    rowToDeviceInfo(
+      r,
+      tagMap.get(r.id) ?? [],
+      r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
+      recentCrashes.get(r.id) ?? null,
+      readinessOf?.(r.id, r) ?? null,
+    ),
   )
 }
 
@@ -114,6 +162,14 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       input: s.engines.input,
       inspection: s.engines.inspection,
       settings: s,
+      // Readiness (plan 43 §4.4) — `readiness.defaultDesired` on
+      // `FarmSettings` is a separate top-level block from `DeviceSettings`
+      // (unlike engines/prep/timing above, which ARE nested inside it), so
+      // it needs its own accessor. `null` (the omitted-accessor default)
+      // reads as `asleep` everywhere `desiredReadiness` is consulted — the
+      // schema's own default, so a host that does not wire this keeps
+      // enrolling devices exactly as before this plan.
+      desiredReadiness: deps.defaultDesiredReadiness?.() ?? null,
     }
   }
 
@@ -137,6 +193,17 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       }
       if (probe.stableId.startsWith('serial:')) {
         log.warn(`using the tertiary stableId fallback for ${serial} (ro.serialno and android_id are both invalid)`)
+      }
+      // Block check (plan 47 §3.3, §4.2): keyed on `stableId`, never the
+      // serial — a blocked device is skipped BEFORE it is ever inserted, so
+      // blocking is free at steady state and survives a different USB port
+      // or a switch to adb-tcp, both of which change only the serial. Logged
+      // once at `debug` (not `info`) since a blocked device reappearing is
+      // expected, ongoing behaviour, not a noteworthy event.
+      const blocked = db.select({ stableId: blockedDevices.stableId }).from(blockedDevices).where(eq(blockedDevices.stableId, probe.stableId)).get()
+      if (blocked) {
+        log.debug(`skipping blocked device ${probe.stableId} (serial ${serial}) — not probing further`)
+        return
       }
       const now = new Date()
       const existing = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()

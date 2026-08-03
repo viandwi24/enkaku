@@ -20,17 +20,21 @@ export interface HttpDeps {
   /** Status subsistem adb: 'provisioning' | 'ready' | 'error'. */
   adbState: () => string
   toolchain: ToolchainManager
-  jobRoutes: Hono
-  scriptRoutes: Hono
+  jobRoutes: Hono<AuthEnv>
+  scriptRoutes: Hono<AuthEnv>
   deviceRoutes: Hono<AuthEnv>
+  /** `GET/POST/DELETE /:id/guest-agent` and `GET/PUT/DELETE /:id/network` (plan 44 §5.8) — mounted at the same `/api/devices` prefix as `deviceRoutes`, from its own Hono app so `packages/core/src/api/devices.ts` stays untouched beyond the registry fallout fix. */
+  guestAgentRoutes: Hono<AuthEnv>
   tagRoutes: Hono
   clusterRoutes: Hono<AuthEnv>
   topologyRoutes: Hono
   batchRoutes: Hono<AuthEnv>
   scheduleRoutes: Hono<AuthEnv>
-  settingsRoutes: Hono
-  artifactRoutes: Hono
+  settingsRoutes: Hono<AuthEnv>
+  artifactRoutes: Hono<AuthEnv>
   adbStatsRoutes: Hono<AuthEnv>
+  /** `enkaku doctor`'s checks, rendered as JSON for the Tools page's diagnostics view (plan 41 §4.5). */
+  doctorRoutes: Hono<AuthEnv>
   authRoutes: Hono<AuthEnv>
   agentRoutes: Hono<AuthEnv>
   auth: AuthService
@@ -103,6 +107,11 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/devices', deps.deviceRoutes)
 
+  // Plan 44 §5.8 — a second Hono app mounted at the same base path, the same
+  // pattern `deviceRoutes` itself uses internally for the adb-endpoint and
+  // transfer routes (`api/devices.ts`'s `app.route('/', ...)` calls).
+  app.route('/api/devices', deps.guestAgentRoutes)
+
   app.route('/api/tags', deps.tagRoutes)
 
   app.route('/api/clusters', deps.clusterRoutes)
@@ -119,6 +128,9 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   // adb concurrency and health diagnostics (plan 23 §4.6).
   app.route('/api/adb/stats', deps.adbStatsRoutes)
+
+  // `enkaku doctor`'s checks, core-connected mode (plan 41 §4.5).
+  app.route('/api/doctor', deps.doctorRoutes)
 
   app.route('/api/tools', createToolsRoutes(deps.toolchain))
 

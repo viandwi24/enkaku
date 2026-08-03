@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { BatchCounts } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
 import { batches, devices, jobs } from '../db/schema'
@@ -29,49 +30,49 @@ function seedJob(db: Db, batchId: string, status: 'queued' | 'running' | 'succes
 
 describe('computeBatchStatus (plan 20 §3.5; plan 21 §3.3 adds `expired`)', () => {
   test('any job running → running', () => {
-    expect(computeBatchStatus({ total: 3, queued: 1, running: 1, success: 1, failed: 0, cancelled: 0, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 3, queued: 1, running: 1, success: 1, failed: 0, cancelled: 0, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'running',
     )
   })
 
   test('all terminal, none failed → success', () => {
-    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 2, failed: 0, cancelled: 0, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 2, failed: 0, cancelled: 0, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'success',
     )
   })
 
   test('all terminal, at least one failed → failed', () => {
-    expect(computeBatchStatus({ total: 3, queued: 0, running: 0, success: 2, failed: 1, cancelled: 0, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 3, queued: 0, running: 0, success: 2, failed: 1, cancelled: 0, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'failed',
     )
   })
 
   test('all jobs cancelled → cancelled', () => {
-    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 0, cancelled: 2, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 0, cancelled: 2, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'cancelled',
     )
   })
 
   test('a mix of cancelled and failed (all terminal) → failed, not cancelled', () => {
-    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 1, cancelled: 1, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 1, cancelled: 1, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'failed',
     )
   })
 
   test('nothing has started yet → queued', () => {
-    expect(computeBatchStatus({ total: 3, queued: 3, running: 0, success: 0, failed: 0, cancelled: 0, expired: 0 })).toBe(
+    expect(computeBatchStatus({ total: 3, queued: 3, running: 0, success: 0, failed: 0, cancelled: 0, expired: 0, failedScript: 0, failedInfra: 0 })).toBe(
       'queued',
     )
   })
 
   test('plan 21 §4.3 — an expired job reaches a terminal batch status (not stuck at queued)', () => {
-    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 1, failed: 0, cancelled: 0, expired: 1 })).toBe(
+    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 1, failed: 0, cancelled: 0, expired: 1, failedScript: 0, failedInfra: 0 })).toBe(
       'failed',
     )
   })
 
   test('all jobs expired → failed, distinct from success', () => {
-    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 0, cancelled: 0, expired: 2 })).toBe(
+    expect(computeBatchStatus({ total: 2, queued: 0, running: 0, success: 0, failed: 0, cancelled: 0, expired: 2, failedScript: 0, failedInfra: 0 })).toBe(
       'failed',
     )
   })
@@ -113,9 +114,7 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
     seedJob(db, 'b1', 'queued')
     seedJob(db, 'b1', 'queued')
 
-    const broadcasts: {
-      payload: { counts: { total: number; queued: number; running: number; success: number; failed: number; cancelled: number; expired: number } }
-    }[] = []
+    const broadcasts: { payload: { counts: BatchCounts } }[] = []
     recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
     expect(broadcasts[0]?.payload.counts).toEqual({
       total: 3,
@@ -125,6 +124,8 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
       failed: 0,
       cancelled: 0,
       expired: 0,
+      failedScript: 0,
+      failedInfra: 0,
     })
   })
 
@@ -139,6 +140,28 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
     const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('cancelled')
     expect(row?.finishedAt).not.toBeNull()
+  })
+
+  test('plan 36 §4.4 — failed jobs split into failedScript vs failedInfra by jobs.failureClass', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    seedBatch(db, 'b1')
+    const scriptFail = seedJob(db, 'b1', 'failed')
+    const infraFail = seedJob(db, 'b1', 'failed')
+    const loadFail = seedJob(db, 'b1', 'failed')
+    seedJob(db, 'b1', 'success')
+    db.update(jobs).set({ failureClass: 'script' }).where(eq(jobs.id, scriptFail)).run()
+    db.update(jobs).set({ failureClass: 'infra' }).where(eq(jobs.id, infraFail)).run()
+    db.update(jobs).set({ failureClass: 'load' }).where(eq(jobs.id, loadFail)).run()
+
+    const broadcasts: { payload: { counts: BatchCounts } }[] = []
+    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    const counts = broadcasts[0]?.payload.counts
+    expect(counts?.failed).toBe(3)
+    expect(counts?.failedScript).toBe(1)
+    // `load` rolls into the infra bucket too — it is still a farm-caused
+    // failure from the batch's point of view, not the script's fault.
+    expect(counts?.failedInfra).toBe(2)
   })
 
   test('plan 21 §4.3 — a batch with one expired job (the rest terminal) reaches "failed", not stuck at "queued"', () => {

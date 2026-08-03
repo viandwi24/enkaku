@@ -180,6 +180,16 @@ export function createAgent(opts: AgentOptions): Agent {
               quarantineReason: null,
               tags: [],
               cluster: null,
+              // Crash detection's badge field (plan 37 §4.5) is populated
+              // only by the control plane's own fleet list — the agent has
+              // no `device_events` table of its own to aggregate here.
+              lastCrashAt: null,
+              // Readiness (plan 43 §9 open question #2) is local-devices-only
+              // in this plan — an agent-owned device always reports the
+              // schema's own default rather than a manager-derived value; the
+              // control plane's readiness manager never touches a device this
+              // agent owns.
+              readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: Math.floor(Date.now() / 1000) },
             })
           }
           hosts?.updateDevices([...snapshots.values()])

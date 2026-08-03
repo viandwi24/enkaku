@@ -246,4 +246,54 @@ describe('AdbSocket against a fake adb server (Bun.listen)', () => {
       listener.stop(true)
     }
   })
+
+  /**
+   * Regression: `write()` used to discard Bun's return value, which is the
+   * number of bytes it ACTUALLY accepted. Anything the kernel buffer could not
+   * take was silently dropped, so a small payload worked and a large one
+   * corrupted the stream — a real 30 MB APK push failed with the adb server's
+   * own `FAIL invalid data message`, while a 150 KB probe passed. The write
+   * must deliver every byte, parking on `drain` when the buffer is full.
+   */
+  test('write() delivers every byte of a large payload, honouring backpressure', async () => {
+    const SIZE = 8 * 1024 * 1024
+    let received = 0
+    let handshakeSeen = false
+    const listener = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        // The OKAY is sent in response to the handshake request, NOT on open:
+        // replying on open lets `readStatus()` resolve before the request has
+        // even reached the server, so the handshake's own bytes would land
+        // after the counter was zeroed and inflate the total.
+        data(s, data) {
+          if (!handshakeSeen) {
+            handshakeSeen = true
+            s.write(new TextEncoder().encode('OKAY'))
+            return
+          }
+          received += data.length
+        },
+      },
+    })
+    try {
+      const socket = await AdbSocket.connect('127.0.0.1', listener.port)
+      socket.send('host:transport:probe')
+      await socket.readStatus()
+
+      const payload = new Uint8Array(SIZE)
+      for (let i = 0; i < SIZE; i++) payload[i] = i & 0xff
+      await socket.write(payload)
+
+      // The write resolved, so every byte was handed to the kernel. Give the
+      // loopback peer a moment to drain what is still in flight.
+      const deadline = Date.now() + 5000
+      while (received < SIZE && Date.now() < deadline) await Bun.sleep(10)
+      expect(received).toBe(SIZE)
+      socket.close()
+    } finally {
+      listener.stop(true)
+    }
+  })
 })

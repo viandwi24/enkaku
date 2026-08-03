@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import { clusters, type ClusterRow } from '../db/schema'
 import { assignDevices, clusterMembers, deleteClusterAndUnassign, unassignDevices } from '../clusters/membership'
@@ -88,7 +89,12 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
     return c.json({ items, nextCursor, total, clusters: items })
   })
 
-  app.post('/', async (c) => {
+  // `device.settings` (plan 34 §4.4, §4.5) — there is no `device.manage` in
+  // the ACL matrix; a cluster is device organisation, and `device.settings`
+  // is already the audit action label these exact mutations use below
+  // (`cluster.assign`/`cluster.unassign` in `api/devices.ts` too), so it is
+  // the closest existing permission, not an invented one.
+  app.post('/', requirePermission('device.settings'), async (c) => {
     const body = ClusterBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { name, description? } is required')
     const row: ClusterRow = {
@@ -102,7 +108,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
     return c.json({ cluster: rowToClusterInfo(db, row) }, 201)
   })
 
-  app.patch('/:id', async (c) => {
+  app.patch('/:id', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = ClusterPatchBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'invalid body')
@@ -117,7 +123,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
   // Deleting a cluster unassigns its members in the same transaction — the
   // devices stay, only the container goes away (plan 22.0 §3.6, acceptance #3).
   // Past batch reports that named this cluster stand alone, unaffected.
-  app.delete('/:id', (c) => {
+  app.delete('/:id', requirePermission('device.settings'), (c) => {
     const row = mustGet(c.req.param('id'))
     deleteClusterAndUnassign(db, row.id)
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'cluster.delete', target: row.id, meta: { name: row.name } })
@@ -127,7 +133,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
   // Assign devices into this cluster — moves any that already belong to
   // another one, and reports what each moved from (plan 22.0 §4.3, §4.4,
   // acceptance #2).
-  app.post('/:id/devices', async (c) => {
+  app.post('/:id/devices', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = AssignBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { deviceIds: string[] } is required')
@@ -143,7 +149,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
 
   // Remove one device from this cluster (idempotent — a device already
   // unclustered, or clustered elsewhere, is left exactly as it was).
-  app.delete('/:id/devices/:deviceId', (c) => {
+  app.delete('/:id/devices/:deviceId', requirePermission('device.settings'), (c) => {
     const row = mustGet(c.req.param('id'))
     const deviceId = c.req.param('deviceId')
     const members = new Set(clusterMembers(db, row.id).map((d) => d.id))

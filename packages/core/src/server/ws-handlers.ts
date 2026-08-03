@@ -5,10 +5,13 @@ import {
   ClientMessageSchema,
   encodeVideoFrame,
   KEYCODES,
+  type ArtifactInfo,
   type DeviceEvent,
   type DeviceEventStream,
   type FrameMeta,
+  type GestureSample,
   type Point,
+  type Quality,
   type ServerMessage,
   type ShellMode,
   type Viewer,
@@ -16,15 +19,17 @@ import {
 import type { PairingService } from '../enroll/pairing'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { LeaseManager } from '../lease/lease-manager'
-import type { SessionManager } from '@enkaku/session'
+import type { Hold, ReadinessManager } from '../device/readiness'
+import type { DeviceSession, SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
 import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
-import { canUseShell } from '../auth/acl'
+import { canUseDevice, canUseShell } from '../auth/acl'
 import type { Role } from '../auth/service'
 import { createMonitorHub, runOneshotMonitor } from '../device/monitor-hub'
+import { createCrashWatcher, type CrashPolicy } from '../device/crash-watcher'
 import { createLocalShellPort, createRemoteShellPort, type ShellPort } from '../device/shell-port'
 import { createShellSessionStore } from '../device/shell-session'
 import { withExitMarker, parseExitMarker } from '../device/exit-marker'
@@ -79,6 +84,14 @@ interface StreamBinding {
   lastSize: { width: number; height: number }
   /** Unix seconds — when this binding was created (plan 31 §4.1 Viewer.since). */
   since: number
+  /** Readiness hold for this viewer (plan 43 §3.7 table, §5 step 43.7) — local devices only. */
+  readinessHold?: Hold
+  /**
+   * Set while an H.264 stream recovers from congestion: everything is dropped
+   * until a keyframe arrives, because a delta that references frames the
+   * viewer never received produces a corrupt picture, not a late one.
+   */
+  awaitingKeyframe?: boolean
 }
 
 /** Per-connection WS state: the clientId and the streams this connection owns. */
@@ -103,15 +116,32 @@ interface ConnState {
   shellDevices: Set<string>
 }
 
+/**
+ * Plan 40 §4.6's `input.gesture` needs a `gesture` member on this shape too,
+ * so the manual-control handler below can treat a local `DeviceSession` and
+ * an agent-owned remote session identically. It stays OPTIONAL and undefined
+ * here on purpose: the cloud tunnel does not carry curved gestures yet (out
+ * of scope for this plan — Plan 08/M9 own the input engine wiring for
+ * agent-owned devices), so a remote session always falls back to a linear
+ * swipe, the same honest-absence contract `InputSink.gesture` uses locally.
+ */
+interface RemoteInput {
+  tap(p: Point): Promise<void>
+  swipe(f: Point, t: Point, ms: number): Promise<void>
+  key(c: number): Promise<void>
+  text(s: string): Promise<void>
+  gesture?(samples: GestureSample[]): Promise<void>
+}
+
 export interface RemoteSessions {
   agentIdFor(deviceId: string): string | null
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<{
     frameSize: { width: number; height: number }
     codec: 'png' | 'h264'
-    input: { tap(p: Point): Promise<void>; swipe(f: Point, t: Point, ms: number): Promise<void>; key(c: number): Promise<void>; text(s: string): Promise<void> }
+    input: RemoteInput
   }>
   release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
-  get(deviceId: string): { frameSize: { width: number; height: number }; input: { tap(p: Point): Promise<void>; swipe(f: Point, t: Point, ms: number): Promise<void>; key(c: number): Promise<void>; text(s: string): Promise<void> } } | null
+  get(deviceId: string): { frameSize: { width: number; height: number }; input: RemoteInput } | null
 }
 
 export interface WebRtcSignaling {
@@ -153,10 +183,26 @@ export interface WsHandlerDeps {
    * guarantee `isLogInputTextEnabled` gives `logInputText`.
    */
   roleOf: (userId: string | null) => Role
+  /**
+   * `canUseDevice`'s device half (plan 34 §3.5, §4.4) — `lease.acquire`'s
+   * ownership check. Optional so an existing test harness (or a host that
+   * has not wired auth) keeps compiling unchanged; omitting it means "no
+   * ownership check", the same default every other optional ACL dep here uses.
+   */
+  getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
   /** The farm's `shell` settings block, read fresh on every `shell.exec` (plan 26 §4.1). */
   shellSettings: () => { mode: ShellMode; execTimeoutMs: number; maxOutputBytes: number }
   /** The lease-scoped adb endpoint (plan 27 §4.2) — torn down on an explicit `lease.release` below and on WS disconnect (`handleClose`). */
   adbEndpoint: AdbEndpointManager
+  /**
+   * Device readiness (plan 43 §5 step 43.7) — `stream.start` and
+   * `lease.acquire` each take a hold before proceeding, local devices only.
+   * Optional so tests/hosts (and orchestrator mode, which has no local
+   * readiness manager at all) that do not wire it keep working unchanged.
+   */
+  readiness?: Pick<ReadinessManager, 'hold' | 'set'>
+  /** `transfer.cancel` (plan 39 §4.4, acceptance #9) — undefined only in tests that do not wire file transfer. */
+  transfer?: { cancel(transferId: string): void }
   /**
    * A human-readable label for an authenticated user (plan 31 §3.3, §4.1) —
    * null in local mode (one implicit admin: the UI falls back to the session
@@ -164,6 +210,20 @@ export interface WsHandlerDeps {
    * callers (and tests) do not need to wire it up.
    */
   userLabel?: (userId: string | null) => string | null
+  /**
+   * Crash detection (plan 37 §4.3, §4.4) — always on for any device with an
+   * active session, independent of the Monitor tab or any of the deps
+   * above. `crashPolicy`/`targetPackagesForJob` are read fresh per crash,
+   * the same freshness guarantee `shellSettings`/`isLogInputTextEnabled`
+   * already give their own farm settings.
+   */
+  crashPolicy: () => CrashPolicy
+  /** The `declared` policy's target package set for a running job (plan 37 §3.4) — from `JobRunnerDeps.onTargetPackages`, wired in daemon.ts. */
+  targetPackagesForJob: (jobId: string) => string[]
+  /** Writes the crash trace as an artifact (plan 37 §3.6) — job-scoped or device-scoped, decided in daemon.ts by whether a jobId is given. */
+  saveCrashTrace: (opts: { deviceId: string; jobId: string | null; label: string; text: string }) => Promise<ArtifactInfo>
+  /** A crash matched the farm's policy for a running job — abort it (plan 37 §4.4), wired to `ExecutorHost.notifyCrash` in daemon.ts. */
+  onJobCrash?: (jobId: string, e: { package: string; exception: string; message: string }) => void
   log: Logger
 }
 
@@ -243,6 +303,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   const shellSessions = createShellSessionStore()
 
   /**
+   * Readiness holds taken by `lease.acquire` (plan 43 §5 step 43.7), keyed
+   * by deviceId — a device has at most one manual lease at a time, so at
+   * most one entry. Released on an explicit `lease.release`, or here on WS
+   * disconnect for whichever devices this connection held (`handleClose`),
+   * mirroring `shellSessions`'s own per-device release above. `daemon.ts`'s
+   * `onManualRevoked` (idle timeout, quarantine, forced release) reaches
+   * this through the `releaseLeaseHold` export below, the same forward-ref
+   * pattern `releaseShellSession` already uses.
+   */
+  const leaseHolds = new Map<string, { clientId: string; hold: Hold }>()
+  const releaseLeaseHold = (deviceId: string): void => {
+    const entry = leaseHolds.get(deviceId)
+    if (!entry) return
+    leaseHolds.delete(deviceId)
+    entry.hold.release()
+  }
+
+  /**
    * The ONE place local-vs-remote is decided for shell work (plan 25 §3.4,
    * §4.3) — `MonitorHub` and `runOneshotMonitor` just consume a `ShellPort`
    * and never branch on it themselves. Mirrors the existing `stream.start`
@@ -263,22 +341,53 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     return createLocalShellPort({ client, serial: row.serial })
   }
 
+  // Forward-referenced (same pattern as `shellSessions` below and the
+  // several forward-refs in daemon.ts): the crash watcher is constructed
+  // right after `monitors` and needs `monitors` itself as its hub (plan 37
+  // §4.3), but `monitors`'s own `onData`/`onEnded` — set at construction —
+  // must ALSO feed the watcher, since `MonitorHub` has no per-subscription
+  // callback (`subscribe()` only returns a `streamId`, not a data channel).
+  let crashWatcher: ReturnType<typeof createCrashWatcher> | null = null
+
   const monitors = createMonitorHub({
     shellPort: shellPortFor,
     log: deps.log.child('monitor'),
     onData: (streamId, lines) => {
       for (const ws of monitorTargets(streamId)) send(ws, { type: 'monitor.data', payload: { streamId, lines } })
+      crashWatcher?.handleStreamData(streamId, lines)
     },
     onEnded: (streamId, reason) => {
       for (const ws of monitorTargets(streamId)) {
         send(ws, { type: 'monitor.ended', payload: { streamId, reason } })
         conns.get(ws)?.monitorSubs.delete(streamId)
       }
+      crashWatcher?.handleStreamEnded(streamId, reason)
     },
     onSubscribersChanged: (streamId, count) => {
       for (const ws of monitorTargets(streamId)) send(ws, { type: 'monitor.subscribers', payload: { streamId, count } })
     },
+    // Readiness hold (plan 43 §3.7 table, §5 step 43.7) — one per underlying
+    // stream entry (not per subscriber), released when the last subscriber leaves.
+    holdFor: (deviceId) => deps.readiness?.hold(deviceId, 'monitor') ?? Promise.resolve({ release() {} }),
   })
+
+  crashWatcher = createCrashWatcher({
+    hub: monitors,
+    record: deps.recorder.record,
+    saveTrace: deps.saveCrashTrace,
+    // Attribution requires a JOB lease specifically (plan 37 §3.3, §8 risks)
+    // — a manual lease at the moment of the crash means "record only".
+    getJobLease: (deviceId) => {
+      const lease = deps.leases.getLease(deviceId)
+      return lease?.type === 'job' ? { jobId: lease.holder } : null
+    },
+    crashPolicy: deps.crashPolicy,
+    targetPackagesForJob: deps.targetPackagesForJob,
+    log: deps.log.child('crash'),
+  })
+  crashWatcher.onJobCrash((_deviceId, jobId, e) =>
+    deps.onJobCrash?.(jobId, { package: e.package, exception: e.exception, message: e.message }),
+  )
 
   /**
    * Fan a device event out to connections that explicitly subscribed to it
@@ -374,7 +483,40 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               since: Math.floor(Date.now() / 1000),
               onFrame: (chunk, meta) => {
                 if (ws.readyState !== 1) return
-                if (ws.getBufferedAmount() > MAX_BUFFERED) return // backpressure: skip frame
+
+                /**
+                 * Backpressure, handled per codec — dropping a frame means two
+                 * completely different things.
+                 *
+                 * A PNG frame stands alone: skip one and the next is whole
+                 * again. An H.264 delta does not — it describes the change
+                 * since the frame before it, so dropping one corrupts every
+                 * frame after it until the next keyframe. The encoder's IDR
+                 * interval is measured in seconds, so at 40 fps a single
+                 * skipped delta can smear several hundred frames. That is the
+                 * "artifacts even at high fps" an operator reported, and why
+                 * raising the buffer limit would not have helped: the higher
+                 * the frame rate, the more often the socket fills.
+                 *
+                 * So a congested H.264 stream stops sending entirely and asks
+                 * for a fresh keyframe, then resumes from it. A brief freeze
+                 * is honest; a smeared picture pretending to be live is not.
+                 */
+                const congested = ws.getBufferedAmount() > MAX_BUFFERED
+                if (meta.codec === 'png') {
+                  if (congested) return // one lost picture; nothing downstream depends on it
+                } else {
+                  if (congested && !binding.awaitingKeyframe) {
+                    binding.awaitingKeyframe = true
+                    deps.sessions?.get(binding.deviceId)?.requestKeyframe?.()
+                  }
+                  if (binding.awaitingKeyframe) {
+                    // Resume only on a keyframe, and only once the socket drained.
+                    if (congested || !meta.keyframe) return
+                    binding.awaitingKeyframe = false
+                  }
+                }
+
                 if (meta.width !== binding.lastSize.width || meta.height !== binding.lastSize.height) {
                   binding.lastSize = { width: meta.width, height: meta.height }
                   send(ws, { type: 'stream.meta', payload: { streamId, width: meta.width, height: meta.height } })
@@ -385,17 +527,38 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // Video keeps running even while a device is `busy` (spec §10.1) —
             // only input is rejected.
             const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
+            // Defaults to `control` — every pre-plan-42 caller, and the
+            // device page itself. Only the Wall asks for `wall` (Plan 42 §4.5).
+            const requestedQuality = msg.payload.quality ?? 'control'
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
+            let quality: Quality = 'control'
             if (remoteAgent) {
+              // The tunnel protocol does not carry a quality profile yet
+              // (Plan 42 §9 open question) — every remote-agent device
+              // streams at its one existing profile regardless of what was
+              // requested, which this reports honestly rather than claiming
+              // an upgrade that never happened.
               const remoteSession = await deps.remote!.acquire(msg.payload.deviceId, binding.onFrame)
               codec = remoteSession.codec
               frameSize = remoteSession.frameSize
               binding.remote = true
             } else if (deps.sessions) {
-              const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame)
+              // Readiness hold (plan 43 §3.6, §5 step 43.7) — local devices
+              // only (remote/agent-owned devices are handled by the branch
+              // above and are out of scope for this plan, §9 open question
+              // #2). Ensures the device is at least `awake` before the
+              // session itself is acquired; `sessions.acquire` below is what
+              // actually brings it to `hot` and is what Plan 42's
+              // `session.idleTtlSec` governs once this connection releases.
+              binding.readinessHold = await deps.readiness?.hold(msg.payload.deviceId, 'viewer').catch((err) => {
+                deps.log.warn(`readiness hold failed for viewer on ${msg.payload.deviceId}, proceeding anyway: ${String(err)}`)
+                return undefined
+              })
+              const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, requestedQuality)
               codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'
               frameSize = session.frameSize
+              quality = session.quality
             } else {
               // The device belongs to no agent AND there is no local session.
               sendError(
@@ -423,6 +586,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 codec,
                 width: frameSize.width,
                 height: frameSize.height,
+                quality,
               },
             })
             // A new viewer needs SPS/PPS to configure its decoder, and then a
@@ -466,12 +630,45 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             state.streams.delete(binding.streamId)
             if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
             else deps.sessions?.release(binding.deviceId, binding.onFrame)
+            binding.readinessHold?.release()
             broadcastViewers(binding.deviceId)
             return
           }
 
+          case 'stream.keyframe': {
+            // A hidden `<video>` becoming visible again (Plan 42 §4.1) — an
+            // unrecognised or already-stopped streamId is silently ignored,
+            // the same tolerance `stream.stop` above already gives a race
+            // with the server ending the stream first.
+            const binding = state.streams.get(msg.payload.streamId)
+            if (!binding || binding.remote) return
+            deps.sessions?.get(binding.deviceId)?.requestKeyframe?.()
+            return
+          }
+
           case 'lease.acquire': {
+            // `canUseDevice` (plan 34 §3.5, §4.4) — checked before the lease
+            // is even attempted, so a device owned by another user is
+            // refused the same way an already-busy device is, not after
+            // control has already been granted.
+            const role = deps.roleOf(state.userId)
+            const owner = deps.getDeviceOwner?.(msg.payload.deviceId) ?? null
+            if (owner && !canUseDevice({ id: state.userId ?? '', role }, owner)) {
+              sendError(ws, 'auth.forbidden', 'this device belongs to another user', msgId)
+              return
+            }
             const lease = deps.leases.acquireManual(msg.payload.deviceId, state.clientId, state.userId)
+            // Readiness hold (plan 43 §3.6, §5 step 43.7) — taking manual
+            // control is one of the acquisition paths listed in §3.6's
+            // pseudocode. One hold per device (a device has at most one
+            // manual lease); a re-acquire by the same client below the
+            // `existing` early-return in `acquireManual` never reaches here
+            // twice for the same lease.
+            const readinessHold = await deps.readiness?.hold(lease.deviceId, 'lease').catch((err) => {
+              deps.log.warn(`readiness hold failed for lease on ${lease.deviceId}, proceeding anyway: ${String(err)}`)
+              return undefined
+            })
+            if (readinessHold) leaseHolds.set(lease.deviceId, { clientId: state.clientId, hold: readinessHold })
             send(ws, {
               type: 'lease.acquired',
               ...(msgId ? { id: msgId } : {}),
@@ -526,7 +723,43 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               // of the lease... and disappears when the lease is released"
               // (plan 27 §1, acceptance #5).
               deps.adbEndpoint.close(msg.payload.deviceId, 'lease_released')
+              // Nor does the readiness hold this lease took (plan 43 §5 step
+              // 43.7) — releasing it lets the device drift back toward its
+              // `desired` readiness rather than staying awake forever.
+              releaseLeaseHold(msg.payload.deviceId)
+              // TODO(plan 44 §5.7): tear down any applied `vpn-helper` network
+              // route here too — `guestAgent.revertNetwork(deviceId)` from
+              // `packages/core/src/api/guest-agent.ts`, mirroring
+              // `deps.adbEndpoint.close` above. Not wired here to avoid a
+              // conflicting edit while another agent works in this file;
+              // `daemon.ts`'s `onManualRevoked` and device-offline paths
+              // already cover the automatic (idle/quarantine/disconnect)
+              // teardown cases, so only THIS explicit-release path is missing.
             }
+            return
+          }
+
+          case 'device.readiness.set': {
+            // Server-authoritative (spec §10.1, plan 43 §3.4, acceptance #7):
+            // `readiness.set` itself enforces the whole permission matrix —
+            // crafting this message directly is refused exactly the same way
+            // the Wall's Wake/Sleep control would be, whether or not the
+            // client bothered to check first.
+            if (!deps.readiness) {
+              sendError(ws, 'E_NOT_SUPPORTED', 'device readiness is not available (orchestrator mode)', msgId)
+              return
+            }
+            const readiness = await deps.readiness.set(msg.payload.deviceId, msg.payload.desired, {
+              userId: state.userId,
+              clientId: state.clientId,
+            })
+            // `readiness.set` already broadcasts the result to every
+            // connected client (through `reconcile`'s own `deps.broadcast`,
+            // wired in daemon.ts to `hub.broadcast`) — this reply just
+            // carries the request's correlation `id` back to the sender
+            // (acceptance #13: one broadcast, no page refresh, for everyone
+            // including this connection).
+            send(ws, { type: 'device.readiness', id: msgId, payload: { deviceId: msg.payload.deviceId, readiness } })
             return
           }
 
@@ -732,6 +965,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
           case 'input.tap':
           case 'input.swipe':
+          case 'input.gesture':
           case 'input.key':
           case 'input.text': {
             // Server-authoritative: the lease and status are validated here,
@@ -784,6 +1018,32 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 meta: { from, to, durationMs: msg.payload.durationMs },
               })
               await session.input.swipe(from, to, msg.payload.durationMs)
+            } else if (msg.type === 'input.gesture') {
+              // Plan 40 §4.6: a manual drag sends the OPERATOR'S REAL pointer
+              // trace, batched to the sample interval on the client — not a
+              // synthesised curve over a path the human already drew.
+              const samples: GestureSample[] = msg.payload.samples.map((s) => {
+                const p = mapNormToDevice(s, session.frameSize)
+                return { x: p.x, y: p.y, atMs: s.atMs }
+              })
+              const first = samples[0]
+              const last = samples[samples.length - 1]
+              deps.recorder.record({
+                deviceId: msg.payload.deviceId,
+                stream: 'input',
+                kind: 'input.gesture',
+                actor,
+                meta: { from: first, to: last, samples: samples.length, durationMs: last && first ? last.atMs - first.atMs : 0 },
+              })
+              if (session.input.gesture) {
+                await session.input.gesture(samples)
+              } else if (first && last) {
+                // The engine cannot curve (AdbInput) — fall back to a linear
+                // swipe over the trace's endpoints, honestly, rather than
+                // dropping the input. Already reported once at session
+                // creation (plan 40 §3.6), so nothing further to report here.
+                await session.input.swipe(first, last, Math.max(50, last.atMs - first.atMs))
+              }
             } else if (msg.type === 'input.key') {
               const name = KEYCODE_NAMES[msg.payload.keycode]
               deps.recorder.record({
@@ -809,12 +1069,127 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          case 'clipboard.get': {
+            // Read-only, no lease (plan 38 §4.5, acceptance #5) — same
+            // "no state change, no gate" reasoning `monitor.start` uses.
+            const { deviceId } = msg.payload
+            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
+            let text: string
+            if (remoteAgent) {
+              if (!deps.rpc) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+              const reply = await deps.rpc.request<{ ok: boolean; text?: string; error?: { code: string; message: string } }>(
+                deviceId,
+                'clipboard.get.request',
+                { deviceId },
+              )
+              if (!reply.ok) {
+                throw new EnkakuError(
+                  reply.error?.code ?? 'E_CLIPBOARD_UNAVAILABLE',
+                  reply.error?.message ?? 'the agent could not read the clipboard',
+                )
+              }
+              text = reply.text ?? ''
+            } else {
+              const session = deps.sessions?.get(deviceId) ?? null
+              if (!session) {
+                sendError(ws, 'E_DEVICE_NOT_READY', 'no active session for this device (start the stream first)', msgId)
+                return
+              }
+              if (!session.clipboard) {
+                sendError(ws, 'E_CLIPBOARD_UNAVAILABLE', 'this session cannot access the clipboard', msgId)
+                return
+              }
+              text = await session.clipboard.get()
+            }
+            // Unicast, never broadcast (plan 38 §4.5, acceptance #6):
+            // clipboard content is very often a password or a token, unlike
+            // the plan 26 terminal transcript which every viewer sees.
+            send(ws, { type: 'clipboard.value', id: msg.id, payload: { deviceId, text } })
+            return
+          }
+
+          case 'clipboard.set': {
+            const { deviceId, text, paste } = msg.payload
+            // The exact plan 26 lease pattern (§4.5): checkInputAllowed, then
+            // touchManual, then record — writing the clipboard is input.
+            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
+            if (!allowed.ok) {
+              sendError(ws, allowed.code, allowed.message, msgId)
+              return
+            }
+            // Resolve local vs. remote — and refuse a session that genuinely
+            // cannot do this — BEFORE touching the lease timer or recording
+            // anything (mirrors `shellPortFor`'s ordering, plan 25 §4.1 step
+            // 3): a routing failure must never look like an accepted write
+            // in the audit trail.
+            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
+            let localSession: DeviceSession | null = null
+            if (remoteAgent) {
+              if (!deps.rpc) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+            } else {
+              localSession = deps.sessions?.get(deviceId) ?? null
+              if (!localSession) {
+                sendError(ws, 'E_DEVICE_NOT_READY', 'no active session for this device (start the stream first)', msgId)
+                return
+              }
+              if (!localSession.clipboard) {
+                sendError(ws, 'E_CLIPBOARD_UNAVAILABLE', 'this session cannot access the clipboard', msgId)
+                return
+              }
+            }
+            deps.leases.touchManual(deviceId, state.clientId)
+            const actor = state.userId
+            // Recorded AFTER the lease check passes and BEFORE the device is
+            // awaited (plan 18/26's ordering, reused verbatim): a refused
+            // write is never logged as if it happened. The LENGTH only,
+            // never the text (plan 38 §3.6, §4.5, acceptance #7) — clipboard
+            // content is routinely a password or a one-time code.
+            deps.recorder.record({
+              deviceId,
+              stream: 'input',
+              kind: 'clipboard.set',
+              actor,
+              meta: { length: text.length, paste },
+            })
+            if (remoteAgent) {
+              const reply = await deps.rpc!.request<{ ok: boolean; error?: { code: string; message: string } }>(
+                deviceId,
+                'clipboard.set.request',
+                { deviceId, text, paste },
+              )
+              if (!reply.ok) {
+                throw new EnkakuError(
+                  reply.error?.code ?? 'E_CLIPBOARD_UNAVAILABLE',
+                  reply.error?.message ?? 'the agent could not write the clipboard',
+                )
+              }
+            } else {
+              await localSession!.clipboard!.set(text, { paste })
+            }
+            send(ws, { type: 'clipboard.ok', id: msg.id, payload: { deviceId } })
+            return
+          }
+
+          case 'transfer.cancel': {
+            // No lease/permission check: knowing a `transferId` at all already
+            // requires having started (or watched) that transfer — it is a
+            // random server-minted id, never guessable — and cancelling one's
+            // own (or a device's own) in-flight transfer is harmless either
+            // way (plan 39 §4.4, acceptance #9).
+            deps.transfer?.cancel(msg.payload.transferId)
+            return
+          }
+
           case 'job.enqueue': {
+            // `canUseDevice` (plan 34 §3.5, §4.4) — refused inside
+            // `deps.jobs.enqueue` with `auth.forbidden`, caught by this
+            // handler's outer try/catch like any other coded error.
             const info = deps.jobs.enqueue({
               scriptId: msg.payload.scriptId,
               deviceId: msg.payload.deviceId,
               params: msg.payload.params,
               priority: msg.payload.priority,
+              actor: { id: state.userId ?? '', role: deps.roleOf(state.userId) },
             })
             send(ws, { type: 'job.status', payload: info })
             return
@@ -884,6 +1259,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       for (const binding of state.streams.values()) {
         if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
         else deps.sessions?.release(binding.deviceId, binding.onFrame)
+        binding.readinessHold?.release()
       }
       state.streams.clear()
       state.logSubs.clear()
@@ -899,10 +1275,21 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       for (const deviceId of state.shellDevices) shellSessions.release(deviceId)
       state.shellDevices.clear()
       deps.leases.releaseAllForClient(state.clientId)
+      // Nor does any readiness hold this connection's lease(s) took (plan 43
+      // §5 step 43.7) — `LeaseManager.releaseAllForClient` above does not
+      // report back which devices it released, so this walks `leaseHolds`
+      // directly for anything still attributed to this connection.
+      for (const [deviceId, entry] of [...leaseHolds]) {
+        if (entry.clientId === state.clientId) releaseLeaseHold(deviceId)
+      }
       // Any adb endpoint(s) this WS session (the REST route's `clientId`,
       // the same session id `hello` sent) opened must not outlive it either
       // (plan 27 §4.2 — "a WS disconnect" is one of the three teardown triggers).
       deps.adbEndpoint.closeAllForClient(state.clientId)
+      // TODO(plan 44 §5.7): a WS disconnect should also revert any
+      // `vpn-helper` network route this connection's manual lease(s) were
+      // covering — same reasoning as the `lease.release` TODO above, and
+      // left unwired for the same reason (avoiding a conflicting edit here).
       conns.delete(ws)
       for (const deviceId of watchedDeviceIds) broadcastViewers(deviceId)
     },
@@ -910,11 +1297,33 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /** Device offline / session closed (plan 24 §4.5) — stops its monitor streams regardless of subscriber count. */
     stopMonitorsForDevice(deviceId: string): void {
       monitors.stopForDevice(deviceId)
+      // A stopped monitor stream includes a running crash watch — `unwatch`
+      // just drops now-stale bookkeeping (plan 37 §3.3: detection resumes
+      // the next time a session opens for this device).
+      crashWatcher?.unwatch(deviceId)
+    },
+
+    /** A session opened for this device (plan 37 §3.3, §4.3) — detection is always on, independent of jobs. Idempotent. */
+    watchDevice(deviceId: string): void {
+      void crashWatcher?.watch(deviceId).catch((err) => deps.log.warn(`crash watch failed to start for ${deviceId}: ${String(err)}`))
+    },
+
+    /** A session closed for this device — stop watching until the next one opens. */
+    unwatchDevice(deviceId: string): void {
+      crashWatcher?.unwatch(deviceId)
     },
 
     /** The manual lease on this device was released, however that happened (plan 26 §3.7, §4.4) — the next holder starts at `/`. */
     releaseShellSession(deviceId: string): void {
       shellSessions.release(deviceId)
     },
+
+    /**
+     * The manual lease's readiness hold (plan 43 §5 step 43.7), for the
+     * automatic-revocation paths (idle timeout, quarantine) that go through
+     * `daemon.ts`'s `onManualRevoked` rather than through this router's own
+     * `lease.release`/`handleClose`, which already call this directly.
+     */
+    releaseLeaseHold,
   }
 }

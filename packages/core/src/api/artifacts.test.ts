@@ -1,4 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Hono } from 'hono'
+import type { AuthEnv } from '../auth/middleware'
+import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts } from '../db/schema'
 import { createArtifactRoutes } from './artifacts'
@@ -74,6 +80,84 @@ describe('GET /api/artifacts keyset pagination', () => {
     const db = setUp()
     const app = createArtifactRoutes({ db, dataDir: '/tmp' })
     const res = await app.request('/?jobId=job-1&cursor=not-valid-base64!!!')
+    expect(res.status).toBe(400)
+  })
+})
+
+/** Wraps the routes with a fake auth middleware so `c.get('user')` resolves (plan 39 §4.4 — the real one is `authMiddleware`, applied one layer up in `http.ts`). */
+function withUser(inner: ReturnType<typeof createArtifactRoutes>, role: 'admin' | 'operator' = 'admin'): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>()
+  app.use('*', async (c, next) => {
+    c.set('user', { id: 'u1', email: 'u1@example.com', role })
+    await next()
+  })
+  app.route('/', inner)
+  return app
+}
+
+describe('POST /api/artifacts — multipart upload (plan 39 §4.4)', () => {
+  test('rejects when upload is not configured', async () => {
+    const db = setUp()
+    const app = withUser(createArtifactRoutes({ db, dataDir: '/tmp' }))
+    const form = new FormData()
+    form.set('file', new File([new Uint8Array([1, 2, 3])], 'x.apk'))
+    const res = await app.request('/', { method: 'POST', body: form })
+    expect(res.status).toBe(400)
+  })
+
+  test('rejects without device.files permission (operator, admin-only default)', async () => {
+    const db = setUp()
+    const app = withUser(
+      createArtifactRoutes({
+        db,
+        dataDir: '/tmp',
+        upload: { audit: createAuditLogger(db), shellSettings: () => ({ mode: 'admin' }) },
+      }),
+      'operator',
+    )
+    const form = new FormData()
+    form.set('file', new File([new Uint8Array([1, 2, 3])], 'x.apk'))
+    const res = await app.request('/', { method: 'POST', body: form })
+    expect(res.status).toBe(403)
+  })
+
+  test('an admin uploads a file, which lands as a standalone artifact row and on disk', async () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-artifact-upload-'))
+    const app = withUser(
+      createArtifactRoutes({
+        db,
+        dataDir,
+        upload: { audit: createAuditLogger(db), shellSettings: () => ({ mode: 'admin' }) },
+      }),
+    )
+    const content = new Uint8Array(5000).fill(9)
+    const form = new FormData()
+    form.set('file', new File([content], 'app.apk'))
+    form.set('label', 'my build')
+    const res = await app.request('/', { method: 'POST', body: form })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { artifact: { id: string; jobId: string | null; deviceId: string | null; sizeBytes: number; path: string } }
+    expect(body.artifact.jobId).toBeNull()
+    expect(body.artifact.deviceId).toBeNull()
+    expect(body.artifact.sizeBytes).toBe(content.length)
+    const row = db.select().from(artifacts).all().find((r) => r.id === body.artifact.id)
+    expect(row).toBeDefined()
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  test('rejects a request with no file field', async () => {
+    const db = setUp()
+    const app = withUser(
+      createArtifactRoutes({
+        db,
+        dataDir: '/tmp',
+        upload: { audit: createAuditLogger(db), shellSettings: () => ({ mode: 'admin' }) },
+      }),
+    )
+    const form = new FormData()
+    form.set('label', 'no file here')
+    const res = await app.request('/', { method: 'POST', body: form })
     expect(res.status).toBe(400)
   })
 })

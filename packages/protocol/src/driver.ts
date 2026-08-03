@@ -62,6 +62,20 @@ export interface DisplaySource {
   stop(): Promise<void>
 }
 
+/**
+ * One point of a sampled gesture path (plan 40 §4.1) — the output of
+ * `@enkaku/drivers`' `buildGesturePath`, a pure function that knows nothing
+ * about scrcpy or adb. Defined here rather than in `@enkaku/drivers` because
+ * `InputSink` (below) needs to reference it and the dependency only runs one
+ * way: `drivers` depends on `protocol`, never the reverse.
+ */
+export interface GestureSample {
+  x: number
+  y: number
+  /** Milliseconds since the gesture started (the first sample is 0). */
+  atMs: number
+}
+
 export interface InputSink {
   id: string
   mode: 'sdk' | 'uhid' | 'aoa'
@@ -69,6 +83,20 @@ export interface InputSink {
   swipe(from: Point, to: Point, ms: number): Promise<void>
   key(code: number): Promise<void>
   text(s: string): Promise<void>
+  /**
+   * Play a sampled gesture path (plan 40 §4.2) — a curved, eased swipe with a
+   * real release velocity. Optional: an engine that cannot honour a curved
+   * path (`AdbInput` — `input swipe` accepts only two points) leaves this
+   * undefined rather than pretending to curve a straight line, so a caller
+   * can tell "unsupported" from "ran and did nothing" by simple absence.
+   */
+  gesture?(samples: GestureSample[]): Promise<void>
+  /**
+   * Type with a per-character delay (plan 40 §4.2), so autocomplete,
+   * debounced validation, and per-keystroke listeners actually run. Optional
+   * for the same reason as `gesture`.
+   */
+  typeText?(text: string, opts: { perCharMs: [number, number]; rng?: () => number }): Promise<void>
 }
 
 /** Engine inspeksi UI (spec §7): `uiautomator-dump` (M4), `ui-server` (M4.5). */

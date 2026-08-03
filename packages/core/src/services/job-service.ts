@@ -1,4 +1,6 @@
 import type { JobInfo, JobStatus } from '@enkaku/protocol'
+import { canUseDevice } from '../auth/acl'
+import type { Role } from '../auth/service'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { ExecutorHost } from '../jobs/executor-host'
 import { rowToJobInfo, type JobCursor, type JobStore } from '../queue/job-store'
@@ -8,7 +10,20 @@ import type { Logger } from '../util/logger'
 import { validateScriptForRun } from '../jobs/validate-script'
 
 export interface JobService {
-  enqueue(input: { scriptId: string; deviceId: string; params: unknown; priority?: number }): JobInfo
+  enqueue(input: {
+    scriptId: string
+    deviceId: string
+    params: unknown
+    priority?: number
+    /**
+     * `canUseDevice` (plan 34 §3.5, §4.4) — the caller acting on this device;
+     * undefined means "no ownership check" (a test harness, or a host that
+     * has not wired auth). Both `POST /api/jobs` and the `job.enqueue` WS
+     * message pass this through the SAME choke point rather than duplicating
+     * the check at each call site.
+     */
+    actor?: { id: string; role: Role } | null
+  }): JobInfo
   cancel(jobId: string): JobInfo
   get(jobId: string): JobInfo | null
   list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null; offset?: number }): {
@@ -30,9 +45,22 @@ export function createJobService(deps: {
   findScript?: (scriptId: string) => { enabled: boolean } | null
   /** A batch member job was cancelled while still queued — recompute the batch (plan 20 §4.5). */
   onBatchChanged?: (batchId: string) => void
+  /**
+   * `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a lookup, not the
+   * whole `devices` row, so a caller with no interest in ACL (a test, or a
+   * host that has not wired auth) can simply omit it. Undefined means "no
+   * ownership check", same as `input.actor` being undefined.
+   */
+  getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
 }): JobService {
   return {
     enqueue(input) {
+      if (input.actor) {
+        const device = deps.getDeviceOwner?.(input.deviceId)
+        if (device && !canUseDevice(input.actor, device)) {
+          throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
+        }
+      }
       const params = validateScriptForRun(deps, input.scriptId, input.params)
       const row = deps.jobStore.enqueue({
         scriptId: input.scriptId,

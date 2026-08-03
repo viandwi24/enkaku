@@ -62,6 +62,12 @@ export interface AdbEndpointManagerDeps {
   remoteAgentIdFor?: (deviceId: string) => string | null
   rpc?: () => TunnelRpc | null
   router?: () => TunnelRouter | null
+  /**
+   * Readiness hold (plan 43 §3.7 table, §5 step 43.7): an open endpoint keeps
+   * its device at least `awake`, released when the endpoint closes for any
+   * reason. Optional so tests that do not wire readiness keep working.
+   */
+  holdFor?: (deviceId: string) => Promise<{ release(): void }>
   log: Logger
 }
 
@@ -76,6 +82,8 @@ interface EndpointRecord {
   connections: number
   expiresAt: number
   idleTimer: ReturnType<typeof setTimeout> | null
+  /** The readiness hold for this endpoint's lifetime (plan 43 §5 step 43.7). */
+  hold: { release(): void } | null
 }
 
 /**
@@ -108,6 +116,7 @@ export function createAdbEndpointManager(deps: AdbEndpointManagerDeps): AdbEndpo
     endpoints.delete(deviceId)
     if (rec.idleTimer) clearTimeout(rec.idleTimer)
     rec.listener.stop()
+    rec.hold?.release()
     deps.onEndpointClosed(deviceId, reason)
   }
 
@@ -141,6 +150,9 @@ export function createAdbEndpointManager(deps: AdbEndpointManagerDeps): AdbEndpo
 
       const { serial, banner } = resolveDeviceInfo(deviceId)
       const settings = deps.shellSettings()
+      // Readiness hold (plan 43 §5 step 43.7): wakes the device before the
+      // listener even opens, if it was asleep.
+      const hold = (await deps.holdFor?.(deviceId).catch(() => null)) ?? null
 
       // An agent-owned device gets the remote `openService`, everything else
       // the local one (plan 28 §4.4) — the ONE place local-vs-remote is
@@ -210,6 +222,7 @@ export function createAdbEndpointManager(deps: AdbEndpointManagerDeps): AdbEndpo
         connections: 0,
         expiresAt: 0,
         idleTimer: null,
+        hold,
       }
       endpoints.set(deviceId, rec)
       armIdleTimer(rec)

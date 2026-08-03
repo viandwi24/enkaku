@@ -6,6 +6,7 @@ import {
   createSessionManager,
   PortAllocator,
   parsePortRange,
+  QUALITY_PROFILES,
   type ArtifactSink,
   type DeviceSnapshot,
   type DeviceSnapshotSource,
@@ -15,6 +16,7 @@ import {
 import { startScrcpySession } from '@enkaku/scrcpy'
 import type { ToolchainManager } from '@enkaku/toolchain'
 import { createAdbRawHost } from './adb-raw'
+import { createClipboardHost } from './clipboard'
 import { createShellHost } from './shell'
 import type { Tunnel } from './tunnel'
 
@@ -68,16 +70,36 @@ export function createAgentHosts(deps: {
     log: deps.log.child('session'),
     makeInspector: (deviceId, transport, requested) =>
       createInspectorForSession(
-        { toolchain: deps.toolchain, ports, log: deps.log.child('inspector'), hostAdb },
+        {
+          toolchain: deps.toolchain,
+          ports,
+          log: deps.log.child('inspector'),
+          hostAdb,
+          // The Plan 24 streaming lane, bound to this agent's own adb client
+          // (plan 34 §4.1) — same as the core's local wiring in `daemon.ts`.
+          execStream: (serial, cmd, streamOpts) => deps.client.execStream(serial, cmd, streamOpts),
+        },
         { deviceId, transport, requested },
       ),
-    makeScrcpy: async (deviceId, transport) => {
+    makeScrcpy: async (deviceId, transport, quality) => {
       const jarPath = await deps.toolchain.resolveToolPath('scrcpy-server').catch(() => null)
       if (!jarPath) return null
       const port = await ports.claim(`scrcpy:${deviceId}`)
+      // The Wall's low-rate profile (Plan 42 §3.5, §4.5) — not reachable
+      // today over the tunnel (the control-plane side does not send a
+      // `quality` yet), but the agent's own SessionManager already honours
+      // it, so this stays correct rather than silently ignoring the param.
+      const profile = QUALITY_PROFILES[quality]
       return startScrcpySession(
         { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }), hostAdb },
-        { jarPath, port, onLog: (level, msg) => deps.log.child('scrcpy')[level](msg) },
+        {
+          jarPath,
+          port,
+          maxSize: profile.maxSize,
+          maxFps: profile.maxFps,
+          bitRate: profile.bitRate,
+          onLog: (level, msg) => deps.log.child('scrcpy')[level](msg),
+        },
       )
     },
   })
@@ -95,6 +117,13 @@ export function createAgentHosts(deps: {
     bufferedAmount: () => deps.tunnel()?.bufferedAmount() ?? 0,
     log: deps.log.child('shell'),
   })
+
+  // The clipboard's cloud parity (plan 38 §4.5): rides the SAME
+  // `SessionManager` the video/input path already builds — a device's
+  // `DeviceSession.clipboard` already knows whether to use scrcpy's real
+  // round trip or the adb fallback, so nothing clipboard-specific differs
+  // for a cloud device here either.
+  const clipboardHost = createClipboardHost({ sessions, send })
 
   // The cloud adb endpoint's agent side (plan 28 §4.3): `AdbClient.openRaw`
   // against the SAME `AdbClient` shell/session work already uses — nothing
@@ -244,6 +273,14 @@ export function createAgentHosts(deps: {
 
         case 'shell.stream.stop':
           shellHost.streamStop(msg.payload)
+          return
+
+        case 'clipboard.get.request':
+          await clipboardHost.getRequest(msg)
+          return
+
+        case 'clipboard.set.request':
+          await clipboardHost.setRequest(msg)
           return
 
         case 'adb.open.request':

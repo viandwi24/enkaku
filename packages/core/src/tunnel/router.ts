@@ -14,7 +14,8 @@ export interface TunnelRouterHooks {
   onJobProgress?: (payload: {
     jobId: string
     kind: 'phase' | 'log' | 'artifact' | 'result'
-    phase?: 'prepare' | 'run' | 'finish'
+    /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
+    phase?: 'reset' | 'prepare' | 'run' | 'finish'
     attempt?: number
     log?: { level: string; source: string; msg: string; ts: number }
     artifact?: { label: string; kind: string; ext?: string; dataBase64: string }
@@ -132,7 +133,13 @@ export function createTunnelRouter(deps: {
         // otherwise a channel the agent proactively drops (rather than the
         // core) would leak forever (plan 25 §4.5, §8 risks).
         releaseChannel(msg.payload.channelId)
-      } else if (msg.type === 'shell.exec.reply' || msg.type === 'shell.stream.reply' || msg.type === 'adb.open.reply') {
+      } else if (
+        msg.type === 'shell.exec.reply' ||
+        msg.type === 'shell.stream.reply' ||
+        msg.type === 'clipboard.get.reply' ||
+        msg.type === 'clipboard.set.reply' ||
+        msg.type === 'adb.open.reply'
+      ) {
         deps.onRpcReply?.(msg)
       } else if (msg.type === 'shell.stream.ended') {
         deps.onShellStreamEnded?.(msg.payload.streamId, msg.payload)

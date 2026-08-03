@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { ArrowLeft, Download } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronRight, Download } from 'lucide-react'
 import type { ArtifactInfo, JobInfo } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
@@ -12,7 +12,7 @@ import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
-import { fetchAllPages } from '@/lib/api'
+import { deviceRefLabel, fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
@@ -26,10 +26,11 @@ interface LogLine {
 }
 
 interface JobWithPhase extends JobInfo {
-  phase?: 'prepare' | 'run' | 'finish' | null
+  phase?: 'reset' | 'prepare' | 'run' | 'finish' | null
 }
 
-const PHASES = ['prepare', 'run', 'finish'] as const
+/** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
+const PHASES = ['reset', 'prepare', 'run', 'finish'] as const
 
 /** Absolute time, because "5h ago" is useless when comparing two runs. */
 function absolute(epochSeconds: number | null): string {
@@ -50,12 +51,18 @@ function JobDetail() {
   const tab = params.get('tab') ?? 'summary'
 
   const [job, setJob] = useState<JobWithPhase | null>(null)
+  // The device a job ran on may have been forgotten since (plan 47 §3.4) —
+  // resolved once the job itself loads, live or deleted either way.
+  const [deviceRef, setDeviceRef] = useState<DeviceRef | undefined>(undefined)
   const [liveLogs, setLiveLogs] = useState<LogLine[]>([])
   const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
   const [source, setSource] = useState<string | null | undefined>(undefined)
   const [followLog, setFollowLog] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // The crash trace disclosure (plan 37 §4.5) — collapsed by default, fetched lazily on first open.
+  const [traceOpen, setTraceOpen] = useState(false)
+  const [traceText, setTraceText] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const { run, isPending } = useAction()
   // Run time and total-time tick without a refresh while a job is running.
@@ -71,6 +78,9 @@ function JobDetail() {
         void api<{ script: { source?: string | null } }>(`/api/scripts/${b.job.scriptId}`)
           .then((s) => setSource(s.script.source ?? null))
           .catch(() => setSource(null))
+        void fetchDeviceRefs([b.job.deviceId])
+          .then((refs) => setDeviceRef(refs[b.job.deviceId]))
+          .catch(() => undefined)
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
     // A job's artifacts are usually a handful, but a script producing many
@@ -132,6 +142,21 @@ function JobDetail() {
 
   const images = useMemo(() => artifacts.filter((a) => a.kind === 'screenshot'), [artifacts])
   const files = useMemo(() => artifacts.filter((a) => a.kind !== 'screenshot'), [artifacts])
+  // `crash-<pkg>`/`anr-<pkg>` is the exact label `saveCrashTrace` in daemon.ts
+  // gives the artifact when a job lease was held (plan 37 §3.6) — found
+  // among the job's own artifacts, no separate device_events query needed.
+  const crashTraceArtifact = useMemo(
+    () => artifacts.find((a) => a.kind === 'log' && (a.label?.startsWith('crash-') || a.label?.startsWith('anr-'))),
+    [artifacts],
+  )
+
+  useEffect(() => {
+    if (!traceOpen || !crashTraceArtifact || traceText !== null) return
+    void fetch(`${coreBase()}/api/artifacts/${crashTraceArtifact.id}/content`)
+      .then((r) => (r.ok ? r.text() : 'Could not load the trace.'))
+      .then(setTraceText)
+      .catch(() => setTraceText('Could not load the trace.'))
+  }, [traceOpen, crashTraceArtifact, traceText])
 
   if (!jobId) return <div className="px-5 py-4"><ErrorState message="The address is missing an id parameter." /></div>
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={load} /></div>
@@ -190,8 +215,40 @@ function JobDetail() {
           above the tabs rather than inside one of them. */}
       {job.status === 'failed' && job.error && (
         <div className="mx-5 mt-4 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3.5">
-          <p className="rack-label text-led-danger">failure reason</p>
+          <div className="flex items-center gap-2">
+            <p className="rack-label text-led-danger">failure reason</p>
+            {/* Plan 36 §4.4 — infra vs script vs load, so "this suite is flaky" becomes an answerable question. */}
+            {job.failureClass && (
+              <span
+                className={cn(
+                  'rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+                  job.failureClass === 'infra' && 'border-led-warn/40 bg-led-warn/10 text-led-warn',
+                  job.failureClass === 'load' && 'border-line bg-transparent text-fg-muted',
+                  job.failureClass === 'script' && 'border-led-danger/40 bg-led-danger/10 text-led-danger',
+                )}
+              >
+                {job.failureClass}
+              </span>
+            )}
+          </div>
           <p className="mt-1 break-words text-[13px]">{job.error}</p>
+          {crashTraceArtifact && (
+            <div className="mt-2.5 border-t border-led-danger/20 pt-2.5">
+              <button
+                type="button"
+                onClick={() => setTraceOpen((v) => !v)}
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-led-danger hover:underline"
+              >
+                {traceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+                {traceOpen ? 'Hide crash trace' : 'Show crash trace'}
+              </button>
+              {traceOpen && (
+                <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/20 bg-surface p-2.5 text-[11px] leading-relaxed">
+                  {traceText ?? 'Loading…'}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -253,7 +310,7 @@ function JobDetail() {
                 {[
                   ['job id', job.jobId],
                   ['script', scriptName],
-                  ['device', job.deviceId],
+                  ['device', deviceRefLabel(deviceRef, job.deviceId)],
                   ['priority', String(job.priority)],
                 ].map(([k, v]) => (
                   <div key={k} className="flex items-baseline justify-between gap-3">
@@ -262,9 +319,13 @@ function JobDetail() {
                   </div>
                 ))}
               </dl>
-              <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
-                <Link href={`/device?id=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
-              </Button>
+              {/* A forgotten device (plan 47 §3.4) has no page to open — the
+                  link is dropped rather than pointing at a 404. */}
+              {!deviceRef?.deleted && (
+                <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
+                  <Link href={`/device?id=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
+                </Button>
+              )}
             </div>
           </aside>
         </div>

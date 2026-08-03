@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
+import type { AuthEnv } from '../auth/middleware'
+import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import { jobs, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
@@ -29,8 +31,8 @@ const ERROR_STATUS: Record<string, number> = {
  * Script CRUD (plan 05 §4.9). Every publish creates a new row; (name, version)
  * is unique so older jobs stay reproducible.
  */
-export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hono {
-  const app = new Hono()
+export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>()
   const { db } = deps
 
   // Mutation guard: a token when one is configured (full auth arrives in Plan 09).
@@ -98,7 +100,14 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hon
     })
   })
 
-  app.post('/', async (c) => {
+  // `script.publish`/`script.delete` (plan 34 §4.4, §4.5) — there is no
+  // `script.manage` in the ACL matrix (`auth/acl.ts`), so each verb takes the
+  // existing permission that already fits it: publishing a new version or
+  // flipping `enabled` is `script.publish` (an OPERATOR permission, matching
+  // the mutation-token guard above which never distinguished POST/PATCH
+  // either); removing a script outright is the ADMIN-only `script.delete`,
+  // exactly as its name and its comment in `acl.ts` already say.
+  app.post('/', requirePermission('script.publish'), async (c) => {
     const body = PublishBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) {
       return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
@@ -127,7 +136,7 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hon
     return c.json({ script: { id, name: body.data.name, version: body.data.version } }, 201)
   })
 
-  app.patch('/:id', async (c) => {
+  app.patch('/:id', requirePermission('script.publish'), async (c) => {
     const body = PatchBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { enabled } is required' } }, 400)
     const row = db.select().from(scripts).where(eq(scripts.id, c.req.param('id'))).get()
@@ -136,7 +145,7 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string }): Hon
     return c.json({ script: { id: row.id, enabled: body.data.enabled } })
   })
 
-  app.delete('/:id', (c) => {
+  app.delete('/:id', requirePermission('script.delete'), (c) => {
     const id = c.req.param('id')
     const row = db.select().from(scripts).where(eq(scripts.id, id)).get()
     if (!row) throw new EnkakuError('script_not_found', 'no such script')

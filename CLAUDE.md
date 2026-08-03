@@ -31,9 +31,14 @@ bun run typecheck      # every package — do NOT run scripts/typecheck.sh via `
 bun run build:studio   # static export to packages/studio/out (served by the core = single origin)
 bun run reset          # delete .dev-data/.dev-cloud/.dev-agent
 bun run --cwd packages/core db:generate   # generate a Drizzle migration after changing src/db/schema.ts
+bun run build:guest-agent   # on-device APK (needs JDK 17 + Android SDK; see apps/guest-agent/README.md)
+bun run doctor              # environment check: toolchain integrity, adb, egress
+bun test                    # the suite; device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
 ```
 
-There is no test runner, linter, or formatter configured yet. Test conventions (when writing them): `bun test`, `*.test.ts` files colocated in `src/`, and tests needing a physical device gated behind `ENKAKU_TEST_DEVICE=1`. Observed code style: no semicolons, single quotes, two-space indent.
+Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.
+
+**After cloning, run `git submodule update --init --recursive`** — `apps/guest-agent` vendors `hev-socks5-tunnel`, and without it the Android build fails on a missing `Android.mk`.
 
 ## Rules that get broken when you do not know them
 
@@ -47,6 +52,8 @@ There is no test runner, linter, or formatter configured yet. Test conventions (
 - Studio: static export (`output: 'export'`) — the device page uses `/device?id=...` (not a dynamic route), internal links must use `next/link` (a plain `<a>` remounts React and kills the WS and video), and workspace packages go in `transpilePackages`.
 - Tailwind v4 colour classes: write `bg-surface` and `text-fg-muted`, never `bg-[--color-surface]`. The v3 bracket form compiles to nothing in v4 and fails silently. See `docs/design.md`.
 - The `/ws` protocol has no snapshot replay: a client must `GET /api/devices` first, then subscribe.
+- The driver subsystem has **five** layers, not four: transport, display, input, inspector, and `network` (spec §7.9). The network layer is the only optional one — its default engine is `none`, and `vpn-helper` (a SOCKS5 full tunnel through the on-device guest agent) is the only engine an app under test cannot bypass. It deliberately does not advertise a `probe` capability, so its status is reported `unverified`, never `ok`.
+- The guest agent APK resolves in three tiers, first match wins: `ENKAKU_GUEST_AGENT_PATH`, then a local Gradle build under `apps/guest-agent/app/build/outputs/apk/`, then the sha256-pinned artifact from the Toolchain Manager. It is never auto-built.
 - Config precedence is env > file > default; an invalid config fails the boot (`E_BAD_CONFIG`) and must never silently fall back. Auth mode derives from the bind address (non-loopback ⇒ server mode ⇒ TLS required unless `ENKAKU_ALLOW_INSECURE=1`).
 
 ## Dev environment notes
@@ -54,4 +61,5 @@ There is no test runner, linter, or formatter configured yet. Test conventions (
 - Local dev works with no env vars at all (`bun run dev`). The full env list is in `docs/guide/install.md`.
 - First run downloads the tools (adb, scrcpy-server, ui-server) in under a minute; the system adb on PATH is never used.
 - CORS for `localhost:*` is only active when `NODE_ENV !== 'production'` — that is what lets Studio dev on :3001 talk to the core on :7700.
-- There is no CI yet; `scripts/typecheck.sh` is designed to drop into one (non-zero exit on failure).
+- CI is release-only so far: `.github/workflows/release.yml` builds per-OS binaries on a `v*` tag, boots each one and checks `/api/health` before publishing. **There is no CI on push or PR** — nothing runs `bun run typecheck` or `bun test` automatically, so run them yourself. `scripts/typecheck.sh` exits non-zero on failure and is ready to drop in.
+- The release workflow does **not** build the guest agent APK yet; publishing and pinning it is plan 43 §5.11.

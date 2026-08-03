@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
-import { canUseAdbEndpoint } from '../auth/acl'
+import { canUseAdbEndpoint, canUseDevice } from '../auth/acl'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
@@ -44,16 +44,25 @@ export function createAdbEndpointRoutes(deps: {
   manager: AdbEndpointManager
   leases: LeaseManager
   shellSettings: () => { mode: ShellMode; endpointEnabled: boolean }
+  /** `canUseDevice`'s device half (plan 34 §3.5, §4.4). */
+  getDevice: (deviceId: string) => { ownerId: string | null } | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
-  function authorize(user: { role: 'admin' | 'operator' } | undefined, deviceId: string, clientId: string): void {
+  function authorize(user: { id: string; role: 'admin' | 'operator' } | undefined, deviceId: string, clientId: string): void {
     const settings = deps.shellSettings()
     if (!settings.endpointEnabled) {
       throw new EnkakuError('auth.forbidden', 'the adb endpoint is disabled for this farm (shell.endpointEnabled)')
     }
     if (!user || !canUseAdbEndpoint(user.role, settings.mode)) {
       throw new EnkakuError('auth.forbidden', 'you do not have permission to open an adb endpoint on this device')
+    }
+    // `canUseDevice` (plan 34 §3.5, §4.4) — this is "the Plan 27 endpoint"
+    // the plan names explicitly: lending the caller's own `adb` full control
+    // of a device someone else owns is exactly the case ownership exists to stop.
+    const device = deps.getDevice(deviceId)
+    if (device && !canUseDevice(user, device)) {
+      throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
     }
     const allowed = deps.leases.checkInputAllowed(deviceId, clientId)
     if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)

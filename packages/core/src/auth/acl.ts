@@ -26,6 +26,22 @@ export type Permission =
    * SAME `shell.mode` switch (`canUseAdbEndpoint` below), not a second one.
    */
   | 'device.adb'
+  /**
+   * Push, pull, and APK install (plan 39 §3.7, §4.4) — a device write (push,
+   * install) or a read of its filesystem (pull, which has no meaningful
+   * "safe" subset of paths), so it sits at the same admin-only default as
+   * `device.shell`/`device.adb` and is widened by the SAME `shell.mode`
+   * switch (`canUseFiles` below), not a third one.
+   */
+  | 'device.files'
+  /**
+   * Install/repair/uninstall the guest agent and apply/revert its SOCKS5
+   * route (plan 44 §5.8) — unlike `device.shell`/`device.adb`/`device.files`,
+   * this is NOT admin-only by default: an operator legitimately running a
+   * test through a proxy needs it, so it sits directly in the OPERATOR set
+   * below rather than behind a `shell.mode`-style widening switch.
+   */
+  | 'device.network'
   | 'script.view'
   | 'script.publish'
   | 'script.delete'
@@ -44,6 +60,7 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.control',
   'device.settings',
   'device.enroll',
+  'device.network',
   'script.view',
   'script.publish',
   'job.view',
@@ -83,6 +100,20 @@ export function canUseShell(role: Role, mode: ShellMode): boolean {
 export function canUseAdbEndpoint(role: Role, mode: ShellMode): boolean {
   if (mode === 'off') return false
   if (can(role, 'device.adb')) return true
+  return mode === 'operator' && role === 'operator'
+}
+
+/**
+ * The gate for install/push/pull (plan 39 §3.7, §4.4) — reuses the terminal's
+ * `shell.mode` rather than inventing a second role switch, exactly like
+ * `canUseAdbEndpoint` does: an operator already trusted with shell access on
+ * this farm is trusted with file transfer too, since both are "full remote
+ * code execution / filesystem access on this device" in the same sense. The
+ * farm's separate `transfer.enabled` opt-in is checked by the caller, not here.
+ */
+export function canUseFiles(role: Role, mode: ShellMode): boolean {
+  if (mode === 'off') return false
+  if (can(role, 'device.files')) return true
   return mode === 'operator' && role === 'operator'
 }
 

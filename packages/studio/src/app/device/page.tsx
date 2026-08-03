@@ -1,15 +1,19 @@
 'use client'
 
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft, Hand, Play } from 'lucide-react'
+import { ArrowLeft, Hand, Play, Trash2 } from 'lucide-react'
 import type { BatteryState, DeviceInfo, DeviceStatus, JobInfo, RegistryResponse, ShellMode, Viewer } from '@enkaku/protocol'
 import { LiveView } from '@/components/LiveView'
+import { ClipboardCard } from '@/components/ClipboardCard'
 import { DeviceLog } from '@/components/DeviceLog'
+import { CrashesPanel } from '@/components/CrashesPanel'
 import { MonitorPane } from '@/components/monitor/MonitorPane'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
+import { FilesPanel } from '@/components/FilesPanel'
+import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 import { ViewerList, labelFor } from '@/components/ViewerList'
 import { DEVICE_LABEL, DeviceStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -17,6 +21,7 @@ import { EntityTabs } from '@/components/layout/EntityTabs'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { TableCell, TableHead } from '@/components/ui/table'
@@ -25,11 +30,14 @@ import { useNow } from '@/lib/useNow'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
+import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
+import { deviceSections } from '@/components/settings/deviceSections'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
-import { fetchAllPages } from '@/lib/api'
+import { fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
@@ -56,6 +64,10 @@ function DeviceDetail() {
   const router = useRouter()
   const deviceId = params.get('id')
   const tab = params.get('tab') ?? 'control'
+  // The Settings tab's active sub-section (plan 46 §3.4, §4.3) — an
+  // unknown or absent value falls back to the first section, resolved
+  // below once the schema (and therefore the section list) has loaded.
+  const section = params.get('section')
   const [device, setDevice] = useState<DeviceDetailInfo | null>(null)
   const [registry, setRegistry] = useState<RegistryResponse | null>(null)
   const [status, setStatus] = useState<DeviceStatus | null>(null)
@@ -68,12 +80,19 @@ function DeviceDetail() {
   const [battery, setBattery] = useState<BatteryState | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A link into this page can outlive the device it points at (plan 47 §3.4)
+  // — resolved only when the device fetch itself fails, so the common case
+  // pays nothing extra.
+  const [deletedRef, setDeletedRef] = useState<DeviceRef | null>(null)
   const [acquiring, setAcquiring] = useState(false)
   const [jobsCount, setJobsCount] = useState<number | null>(null)
   const jobsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   const [scripts, setScripts] = useState<ScriptRow[]>([])
   const [runScript, setRunScript] = useState<ScriptRow | null>(null)
   const [runOpen, setRunOpen] = useState(false)
+  // Removal (plan 47 §4.5) — the smallest additive hook into this page: a
+  // single dialog, no new tab, no restructuring of what is already here.
+  const [forgetOpen, setForgetOpen] = useState(false)
   const [schema, setSchema] = useState<JsonSchemaNode | null>(null)
   // The terminal tab is hidden entirely when the farm switches it off (plan
   // 26 §5, step 26.1) — defaults to 'admin' (the loopback default) until the
@@ -84,8 +103,19 @@ function DeviceDetail() {
   // terminal — defaults to false (the feature's own safe default) until the
   // real value loads, so a farm that never enabled it never sees a flash.
   const [endpointEnabled, setEndpointEnabled] = useState(false)
+  // The Files tab (plan 39 §4.7) — hidden entirely when the farm turns off
+  // `transfer.enabled`, the same "hide, don't merely disable" treatment the
+  // terminal tab gets from `shellMode: 'off'` above.
+  const [transferEnabled, setTransferEnabled] = useState(true)
   const [savedSettings, setSavedSettings] = useState<unknown>(undefined)
   const [draftSettings, setDraftSettings] = useState<unknown>(undefined)
+  // The EFFECTIVE inspector engine (plan 34 §4.6): `device.inspection` below
+  // is only the configured choice — `createInspectorForSession` (session
+  // package) falls back to `uiautomator-dump` per session when `ui-server`
+  // cannot start, and until this plan nothing told the operator that had
+  // happened. `null` means "no fallback reported for the current session" —
+  // the configured engine is presumed to be the one actually running.
+  const [inspectorFallback, setInspectorFallback] = useState<{ to: string; reason: string } | null>(null)
   const idleTimeoutRef = useRef(300)
   const { run, isPending } = useAction()
   // The lease countdown and the jobs tab tick without a refresh (Plan 17 §4.6).
@@ -118,16 +148,29 @@ function DeviceDetail() {
         setStatus(b.device.status)
         setSavedSettings(b.device.settings ?? undefined)
         setDraftSettings(b.device.settings ?? undefined)
+        // A fresh load has no session-scoped fallback to report yet.
+        setInspectorFallback(null)
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : String(e))
+        // Tolerate a missing device rather than leaving a bare error (plan
+        // 47 §3.4): if it was forgotten, `deletedDevices` still has a label.
+        void fetchDeviceRefs([deviceId])
+          .then((refs) => setDeletedRef(refs[deviceId]?.deleted ? refs[deviceId]! : null))
+          .catch(() => undefined)
+      })
     void fetchRegistry().then(setRegistry)
     // The very same schema the farm defaults are rendered from, so a field can
     // never exist in one place and be missing in the other.
-    void api<{ deviceSchema: JsonSchemaNode; settings: { shell: { mode: ShellMode; endpointEnabled: boolean } } }>('/api/settings')
+    void api<{
+      deviceSchema: JsonSchemaNode
+      settings: { shell: { mode: ShellMode; endpointEnabled: boolean }; transfer: { enabled: boolean } }
+    }>('/api/settings')
       .then((b) => {
         setSchema(b.deviceSchema)
         setShellMode(b.settings.shell.mode)
         setEndpointEnabled(b.settings.shell.endpointEnabled)
+        setTransferEnabled(b.settings.transfer.enabled)
       })
       .catch(() => undefined)
     void fetchAllPages<ScriptRow>('/api/scripts')
@@ -152,6 +195,18 @@ function DeviceDetail() {
         // The panel used to show whatever the first fetch returned; a device
         // that heats up or drains while you watch it looked frozen.
         setBattery(msg.payload.battery)
+      } else if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === deviceId) {
+        // The effective engine for the CURRENT session dropped to the
+        // fallback (plan 34 §4.6) — reported until the next session start.
+        setInspectorFallback({ to: msg.payload.to, reason: msg.payload.reason })
+      } else if (
+        msg.type === 'device.inspector.status' &&
+        msg.payload.deviceId === deviceId &&
+        msg.payload.state === 'starting'
+      ) {
+        // A new session is negotiating its inspector from scratch — any
+        // fallback reported for the previous session no longer applies.
+        setInspectorFallback(null)
       } else if (msg.type === 'lease.revoked' && msg.payload.deviceId === deviceId) {
         setExpiresAt(null)
         // Scoped to the actual former holder (plan 31 §3.1): this broadcast
@@ -221,6 +276,17 @@ function DeviceDetail() {
     )
   }
   if (error && !device) {
+    // A forgotten device (plan 47 §3.4) — never a blank or a crash, and
+    // never an ErrorState's "try again" for something retrying cannot fix.
+    if (deletedRef) {
+      return (
+        <div className="px-5 py-4">
+          <ErrorState
+            message={`This device was removed from the farm — deleted device (${deletedRef.stableId}). Its jobs, artifacts, and events are kept.`}
+          />
+        </div>
+      )
+    }
     return (
       <div className="px-5 py-4">
         <ErrorState message={error} />
@@ -240,6 +306,30 @@ function DeviceDetail() {
   const canTakeControl = currentStatus === 'idle'
   const inputEnabled = iHoldControl && !busy
 
+  // The Settings tab's vertical sub-sections (plan 46 §3.3, §4.2): derived
+  // from `DeviceSettingsSchema`'s own top-level keys via `deviceSections`,
+  // not a hand-maintained list, so a setting can never be added to the
+  // schema and quietly appear nowhere. Each section renders the SAME
+  // schema-driven form, submit path, and dirty/saved state as before —
+  // only the visible slice of `schema` differs (`narrowSchema`).
+  const settingsSections: SettingsSection[] = schema
+    ? deviceSections(schema).map((s) => ({
+        id: s.id,
+        title: s.title,
+        render: () => (
+          <SchemaForm
+            schema={narrowSchema(schema, s.keys)}
+            value={draftSettings}
+            onChange={setDraftSettings}
+            onSubmit={saveSettings}
+            onReset={() => setDraftSettings(savedSettings)}
+            busy={isPending('settings')}
+            dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
+          />
+        ),
+      }))
+    : []
+
   return (
     <>
       <PageHeader
@@ -253,6 +343,13 @@ function DeviceDetail() {
                 <ArrowLeft className="size-4" aria-hidden />
                 All devices
               </Link>
+            </Button>
+            {/* Removal (plan 47 §4.5) — the dialog itself states what is
+                removed vs. kept, and handles the "still connected" refusal
+                with a Block instead offer; this button only opens it. */}
+            <Button variant="ghost" size="sm" onClick={() => setForgetOpen(true)}>
+              <Trash2 className="size-4" aria-hidden />
+              Remove device
             </Button>
             {currentStatus === 'offline' || currentStatus === 'quarantined' ? (
               <Button variant="outline" size="sm" disabled>
@@ -327,11 +424,14 @@ function DeviceDetail() {
           { key: 'control', label: 'Control' },
           { key: 'jobs', label: 'Jobs', count: jobsCount },
           { key: 'monitor', label: 'Monitor' },
+          { key: 'crashes', label: 'Crashes' },
           // Hidden entirely when the farm switches the terminal off (plan 26
           // §5, 26.1) — server-authoritative either way: even a forced
           // `tab=terminal` in the address bar still gets refused by the WS
           // handler, this is purely so the tab is not a dead end to click.
           ...(shellMode === 'off' ? [] : [{ key: 'terminal', label: 'Terminal' }]),
+          ...(transferEnabled ? [{ key: 'files', label: 'Files' }] : []),
+          { key: 'network', label: 'Network' },
           { key: 'logs', label: 'Logs' },
           { key: 'settings', label: 'Settings' },
         ]}
@@ -349,7 +449,7 @@ function DeviceDetail() {
         </div>
       )}
 
-      {tab === 'control' && (
+      <TabPanel active={tab === 'control'}>
         <div className="grid gap-4 px-5 py-4 xl:grid-cols-[1fr_18rem]">
           <div className="min-w-0 space-y-3">
             {/* One line of control status, three possibilities — always in the
@@ -404,6 +504,7 @@ function DeviceDetail() {
               inputEnabled={inputEnabled}
               onActivity={noteActivity}
               autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
+              active={tab === 'control'}
             />
           </div>
 
@@ -445,22 +546,48 @@ function DeviceDetail() {
             <div className="mt-3 rounded-lg border bg-surface p-3.5">
               <h2 className="rack-label mb-2.5">active engines</h2>
               <dl className="space-y-2">
-                {ENGINE_ROWS.map((r) => (
-                  <div key={r.key}>
-                    <dt className="rack-label">{r.label}</dt>
-                    <dd className="mt-0.5 text-[12.5px] leading-snug">{engineName(registry, r.reg, device[r.key])}</dd>
-                  </div>
-                ))}
+                {ENGINE_ROWS.map((r) => {
+                  // The `inspection` row reports the EFFECTIVE engine, not
+                  // just what is configured (plan 34 §3.1, §4.6): a session
+                  // that fell back to `uiautomator-dump` is running the slow
+                  // path, and an operator who only sees "ui-server" here has
+                  // no way to know that.
+                  const fallback = r.key === 'inspection' ? inspectorFallback : null
+                  return (
+                    <div key={r.key}>
+                      <dt className="rack-label">{r.label}</dt>
+                      <dd className="mt-0.5 text-[12.5px] leading-snug">
+                        {fallback ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-default text-led-warn">
+                                {engineName(registry, r.reg, fallback.to)} (fallback)
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Configured as {engineName(registry, r.reg, device[r.key])}, but this session dropped to{' '}
+                              {engineName(registry, r.reg, fallback.to)}: {fallback.reason}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          engineName(registry, r.reg, device[r.key])
+                        )}
+                      </dd>
+                    </div>
+                  )
+                })}
               </dl>
               <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
                 <Link href={`/device?id=${encodeURIComponent(device.id)}&tab=settings`}>Change</Link>
               </Button>
             </div>
+
+            <ClipboardCard deviceId={device.id} canSend={inputEnabled} />
           </aside>
         </div>
-      )}
+      </TabPanel>
 
-      {tab === 'jobs' && (
+      <TabPanel active={tab === 'jobs'}>
         <div className="px-5 py-4">
           <PaginatedTable<JobInfo>
             ref={jobsRef}
@@ -517,41 +644,63 @@ function DeviceDetail() {
             }}
           />
         </div>
-      )}
+      </TabPanel>
 
+      {/* Monitor and Crashes stay mount-on-demand, deliberately NOT wrapped in
+          TabPanel (Plan 42 §3.1, §4.1): each holds a device-side `logcat`
+          stream (Plan 24's MonitorHub / the crash watcher's own subscription
+          reuses it), and keeping either alive for a tab nobody is looking at
+          would leave a process running on a real phone. Their own cleanup
+          effects already stop the stream on unmount — that behaviour is
+          unchanged, only Control and the cheap panels below gained the
+          keep-mounted treatment. */}
       {tab === 'monitor' && <MonitorPane deviceId={device.id} />}
 
-      {tab === 'terminal' && shellMode !== 'off' && (
-        <div className="px-5 pt-4">
-          {endpointEnabled && (
-            <AdbEndpointCard
-              deviceId={device.id}
-              clientId={mySessionId}
-              // Same gate as the terminal's own input box (plan 27 §3.4) —
-              // Studio hiding the card is a convenience, the server checks
-              // `device.adb` plus the lease itself on every request.
-              canOpen={iHoldControl && !busy}
-            />
-          )}
-        </div>
-      )}
-      {tab === 'terminal' && shellMode !== 'off' && (
-        <TerminalPane
-          deviceId={device.id}
-          // The SAME server-published fact the Control tab's button and
-          // banner read (plan 31 §4.3) — never a local inference. The
-          // server re-checks this itself on every `shell.exec` regardless
-          // (spec §10.1); this only decides whether Studio shows the input
-          // box at all.
-          canType={iHoldControl && !busy}
-          onRunAsStream={() => router.replace(`/device?id=${encodeURIComponent(device.id)}&tab=monitor`)}
-        />
+      {tab === 'crashes' && <CrashesPanel deviceId={device.id} />}
+
+      {shellMode !== 'off' && (
+        <TabPanel active={tab === 'terminal'}>
+          <div className="px-5 pt-4">
+            {endpointEnabled && (
+              <AdbEndpointCard
+                deviceId={device.id}
+                clientId={mySessionId}
+                // Same gate as the terminal's own input box (plan 27 §3.4) —
+                // Studio hiding the card is a convenience, the server checks
+                // `device.adb` plus the lease itself on every request.
+                canOpen={iHoldControl && !busy}
+              />
+            )}
+          </div>
+          <TerminalPane
+            deviceId={device.id}
+            // The SAME server-published fact the Control tab's button and
+            // banner read (plan 31 §4.3) — never a local inference. The
+            // server re-checks this itself on every `shell.exec` regardless
+            // (spec §10.1); this only decides whether Studio shows the input
+            // box at all.
+            canType={iHoldControl && !busy}
+            onRunAsStream={() => router.replace(`/device?id=${encodeURIComponent(device.id)}&tab=monitor`)}
+          />
+        </TabPanel>
       )}
 
-      {tab === 'logs' && <DeviceLog deviceId={device.id} deviceOffline={currentStatus === 'offline'} />}
+      {transferEnabled && (
+        <TabPanel active={tab === 'files'}>
+          <FilesPanel deviceId={device.id} clientId={mySessionId} canUse={iHoldControl && !busy} />
+        </TabPanel>
+      )}
 
-      {tab === 'settings' && (
-        <div className="max-w-3xl px-5 py-4">
+      <TabPanel active={tab === 'network'}>
+        <NetworkPanel deviceId={device.id} deviceLabel={device.label} canUse={iHoldControl && !busy} />
+      </TabPanel>
+
+      <TabPanel active={tab === 'logs'}>
+        <DeviceLog deviceId={device.id} deviceOffline={currentStatus === 'offline'} />
+      </TabPanel>
+
+      <TabPanel active={tab === 'settings'}>
+        <div className="max-w-4xl px-5 py-4">
           <section className="mb-5 rounded-lg border bg-surface p-5">
             <h3 className="text-[14px] font-semibold tracking-tight">Tags</h3>
             <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
@@ -569,20 +718,18 @@ function DeviceDetail() {
             touch a device that is already enrolled.
           </p>
           {schema ? (
-            <SchemaForm
-              schema={schema}
-              value={draftSettings}
-              onChange={setDraftSettings}
-              onSubmit={saveSettings}
-              onReset={() => setDraftSettings(savedSettings)}
-              busy={isPending('settings')}
-              dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
+            <SectionNav
+              sections={settingsSections}
+              active={section ?? settingsSections[0]?.id ?? 'general'}
+              onChange={(id) =>
+                router.push(`/device?id=${encodeURIComponent(device.id)}&tab=settings&section=${id}`)
+              }
             />
           ) : (
             <LoadingRows rows={4} />
           )}
         </div>
-      )}
+      </TabPanel>
 
       <RunScriptDialog
         script={runOpen ? runScript : null}
@@ -599,7 +746,32 @@ function DeviceDetail() {
         }}
       />
 
+      <ForgetDeviceDialog
+        device={device}
+        open={forgetOpen}
+        onOpenChange={setForgetOpen}
+        onDone={() => router.push('/')}
+      />
     </>
+  )
+}
+
+/**
+ * Keeps a tab's subtree mounted and toggles visibility with CSS instead of
+ * unmounting it (Plan 42 §3.1, §4.1). `{tab === 'x' && <Panel/>}` used to
+ * take `LiveView` — its decoder, its frame subscription, its WS stream
+ * registration — down with it on every switch away from Control, which is
+ * why returning sometimes replayed the whole wake-up sequence: it depended
+ * on whether the core-side session happened to still be alive.
+ *
+ * `hidden` is the HTML attribute, not only a class, so a hidden panel is out
+ * of the accessibility tree and untabbable.
+ */
+function TabPanel({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <div hidden={!active} aria-hidden={!active}>
+      {children}
+    </div>
   )
 }
 
