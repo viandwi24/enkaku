@@ -43,28 +43,16 @@ export function createJobRoutes(service: JobService, deps?: { log?: Logger }): H
   app.get('/', (c) => {
     const status = JobStatusSchema.safeParse(c.req.query('status'))
     const { cursor: cursorParam, limit } = parsePageQuery(c)
-    const offsetParam = c.req.query('offset')
-    let offset: number | undefined
-    if (offsetParam !== undefined) {
-      offset = Number.parseInt(offsetParam, 10) || 0
-      // Deprecated legacy alias (plan 30 §3.2) — kept for one release so
-      // nothing breaks mid-migration, but every use is logged.
-      deps?.log?.warn('GET /api/jobs?offset= is deprecated; use ?cursor= instead', { offset })
-    }
-    const cursor = offset === undefined ? decodeCursor(cursorParam) : null
     const result = service.list({
       deviceId: c.req.query('deviceId') ?? undefined,
       status: status.success ? status.data : undefined,
       limit,
-      cursor,
-      offset,
+      cursor: decodeCursor(cursorParam),
     })
     return c.json({
       items: result.jobs,
       nextCursor: result.nextCursor ? encodeCursor(result.nextCursor.sortValue, result.nextCursor.id) : null,
       total: result.total,
-      // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-      jobs: result.jobs,
     })
   })
 

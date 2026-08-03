@@ -162,8 +162,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = queryBatchRows(db, { cursor, limit })
     const items = rows.map((r) => rowToBatchInfo(deps, r))
-    // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-    return c.json({ items, nextCursor, total, batches: items })
+    return c.json({ items, nextCursor, total })
   })
 
   app.get('/:id', (c) => {

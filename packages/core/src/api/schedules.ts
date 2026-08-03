@@ -248,8 +248,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = querySchedulesRows(db, { cursor, limit })
     const items = rows.map((r) => rowToScheduleInfo(deps, r))
-    // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-    return c.json({ items, nextCursor, total, schedules: items })
+    return c.json({ items, nextCursor, total })
   })
 
   // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
@@ -347,8 +346,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = queryScheduleRunsRows(db, row.id, { cursor, limit })
     const items = rows.map(rowToScheduleRunInfo)
-    // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-    return c.json({ items, nextCursor, total, runs: items })
+    return c.json({ items, nextCursor, total })
   })
 
   // Ignores the cron — fires right now — but still honours onOverlap unless

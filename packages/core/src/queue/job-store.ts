@@ -52,12 +52,8 @@ export interface JobStore {
     expiresAt?: number | null
   }): JobRow
   get(jobId: string): JobRow | null
-  /**
-   * Keyset by default — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2).
-   * `offset` is a deprecated legacy alias, kept for one release (plan 30
-   * §3.2): when present it takes over paging and `cursor` is ignored.
-   */
-  list(filter: { deviceId?: string; status?: JobStatus; limit: number; cursor?: JobCursor | null; offset?: number }): {
+  /** Keyset paging — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2). */
+  list(filter: { deviceId?: string; status?: JobStatus; limit: number; cursor?: JobCursor | null }): {
     rows: JobRow[]
     nextCursor: JobCursor | null
     total: number
@@ -138,19 +134,6 @@ export function createJobStore(db: Db): JobStore {
       if (filter.status) conds.push(eq(jobs.status, filter.status))
       const countWhere = conds.length > 0 ? and(...conds) : undefined
       const total = db.select().from(jobs).where(countWhere).all().length
-
-      if (filter.offset !== undefined) {
-        // Deprecated legacy alias (plan 30 §3.2) — OFFSET semantics kept verbatim.
-        const rows = db
-          .select()
-          .from(jobs)
-          .where(countWhere)
-          .orderBy(desc(jobs.createdAt), desc(jobs.id))
-          .limit(filter.limit)
-          .offset(filter.offset)
-          .all()
-        return { rows, nextCursor: null, total }
-      }
 
       const keyset = keysetWhere(
         filter.cursor ? { value: new Date(filter.cursor.sortValue * 1000), id: filter.cursor.id } : null,

@@ -95,16 +95,16 @@ describe('GET /api/devices tag filtering', () => {
 
     const both = await app.request('/?tag=pool:smoke&tag=android:15')
     expect(both.status).toBe(200)
-    const bothBody = (await both.json()) as { devices: Array<{ id: string }> }
-    expect(bothBody.devices.map((d) => d.id)).toEqual(['a'])
+    const bothBody = (await both.json()) as { items: Array<{ id: string }> }
+    expect(bothBody.items.map((d) => d.id)).toEqual(['a'])
 
     const one = await app.request('/?tag=pool:smoke')
-    const oneBody = (await one.json()) as { devices: Array<{ id: string }> }
-    expect(oneBody.devices.map((d) => d.id).sort()).toEqual(['a', 'b'])
+    const oneBody = (await one.json()) as { items: Array<{ id: string }> }
+    expect(oneBody.items.map((d) => d.id).sort()).toEqual(['a', 'b'])
 
     const none = await app.request('/')
-    const noneBody = (await none.json()) as { devices: Array<{ id: string }> }
-    expect(noneBody.devices).toHaveLength(3)
+    const noneBody = (await none.json()) as { items: Array<{ id: string }> }
+    expect(noneBody.items).toHaveLength(3)
   })
 
   test('a single GET /api/devices?tag=... issues exactly one device_tags query, not one per device', async () => {
@@ -136,8 +136,8 @@ describe('GET /api/devices tag filtering', () => {
 
     const res = await app.request('/?tag=pool:smoke')
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { devices: unknown[] }
-    expect(body.devices).toHaveLength(50)
+    const body = (await res.json()) as { items: unknown[] }
+    expect(body.items).toHaveLength(50)
     expect(tagQueries).toBe(1)
   })
 })
@@ -257,12 +257,12 @@ describe('GET /api/devices?clusterId= (plan 22.0 §4.4, acceptance #4)', () => {
     db.update(devices).set({ clusterId: 'c1' }).where(eq(devices.id, 'b')).run()
 
     const clustered = await app.request('/?clusterId=c1')
-    const clusteredBody = (await clustered.json()) as { devices: Array<{ id: string }> }
-    expect(clusteredBody.devices.map((d) => d.id).sort()).toEqual(['a', 'b'])
+    const clusteredBody = (await clustered.json()) as { items: Array<{ id: string }> }
+    expect(clusteredBody.items.map((d) => d.id).sort()).toEqual(['a', 'b'])
 
     const none = await app.request('/?clusterId=none')
-    const noneBody = (await none.json()) as { devices: Array<{ id: string }> }
-    expect(noneBody.devices.map((d) => d.id)).toEqual(['c'])
+    const noneBody = (await none.json()) as { items: Array<{ id: string }> }
+    expect(noneBody.items.map((d) => d.id)).toEqual(['c'])
   })
 })
 
@@ -549,8 +549,8 @@ describe('POST /api/devices/:id/block (plan 47 §4.4, §6)', () => {
     seedDevice(db, 'a')
     db.insert(blockedDevices).values({ stableId: 'blocked-elsewhere', label: null, reason: null, blockedAt: new Date(), blockedBy: null }).run()
     const res = await app.request('/')
-    const body = (await res.json()) as { devices: Array<{ stableId: string }> }
-    expect(body.devices.map((d) => d.stableId)).toEqual(['stable-a'])
+    const body = (await res.json()) as { items: Array<{ stableId: string }> }
+    expect(body.items.map((d) => d.stableId)).toEqual(['stable-a'])
   })
 })
 

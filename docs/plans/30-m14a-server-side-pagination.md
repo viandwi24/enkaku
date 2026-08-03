@@ -48,7 +48,7 @@ The rule: **order by a monotonic column plus a tiebreaker, and cursor on both.**
 
 For every list here the ordering is `(createdAt DESC, id DESC)` — `id` breaks ties, because unix-second timestamps collide constantly (a batch stamps one `now` across all its jobs, by design; see Plan 20 §4.4).
 
-`/api/jobs` keeps `offset` as a deprecated alias for one release so nothing breaks mid-migration, and logs a warning when it is used.
+**Reversed 2026-08-03.** `offset` was removed outright, not deprecated. See the note below.
 
 ### 3.3 One envelope
 
@@ -66,7 +66,11 @@ Every list endpoint returns:
 
 The cursor is opaque to the client: base64 of `${sortValue}:${id}`. Making it opaque means the sort key can change later without breaking a bookmarked page.
 
-Existing keys (`{ jobs: [...] }`, `{ devices: [...] }`) stay for one release alongside `items`, so Studio can migrate screen by screen rather than in one commit. Both are populated from the same array.
+**Reversed 2026-08-03.** The legacy keys were removed outright.
+
+The original reasoning — keep both "for one release" so Studio can migrate gradually — assumed a released product with clients in the wild. There is none: this is a pre-1.0 prototype whose only client ships in the same repository, so the compatibility window protects nothing and every endpoint carries a second name for the same array forever. The product owner's rule, and the right one, is that a change replaces the thing it changes rather than sitting beside it.
+
+Removed: the `devices`/`jobs`/`batches`/`schedules`/`runs`/`agents` aliases and the `offset` query parameter, along with the code that implemented OFFSET paging and the test that pinned it. Every response is now `{ items, nextCursor, total }` and nothing else. The same rule applies to anything built from here: no `v2`, no `Legacy*`, no parallel old and new path.
 
 ### 3.4 Load-more, not page numbers
 

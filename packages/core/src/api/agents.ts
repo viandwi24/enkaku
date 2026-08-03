@@ -77,8 +77,7 @@ export function createAgentRoutes(deps: { agentAuth: AgentAuth; db: Db }): Hono<
     if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     const { cursor, limit } = parsePageQuery(c)
     const result = queryAgentsPage(deps.db, { cursor, limit })
-    // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-    return c.json({ ...result, agents: result.items })
+    return c.json(result)
   })
 
   app.post('/', async (c) => {

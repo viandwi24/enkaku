@@ -26,7 +26,7 @@ export interface JobService {
   }): JobInfo
   cancel(jobId: string): JobInfo
   get(jobId: string): JobInfo | null
-  list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null; offset?: number }): {
+  list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null }): {
     jobs: JobInfo[]
     nextCursor: JobCursor | null
     total: number
@@ -107,7 +107,6 @@ export function createJobService(deps: {
         status: filter.status,
         limit: filter.limit ?? 50,
         cursor: filter.cursor,
-        offset: filter.offset,
       })
       const names = deps.jobStore.scriptNames(rows.map((r) => r.scriptId))
       return { jobs: rows.map((r) => rowToJobInfo(r, names.get(r.scriptId) ?? null)), nextCursor, total }

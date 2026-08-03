@@ -106,18 +106,4 @@ describe('JobStore.list keyset pagination', () => {
     expect(new Set(seen).size).toBe(6)
     expect([...seen].sort()).toEqual([...ids].sort())
   })
-
-  test('the deprecated `offset` alias still works when passed explicitly', () => {
-    const db = setUp()
-    seedDevice(db, 'dev-1')
-    const base = 1_700_000_000
-    const ids = Array.from({ length: 5 }, (_, i) => seedJob(db, 'dev-1', new Date((base + i) * 1000)))
-    const store = createJobStore(db)
-
-    const page1 = store.list({ limit: 2, offset: 0 })
-    const page2 = store.list({ limit: 2, offset: 2 })
-    expect(page1.rows.map((r) => r.id)).toEqual([ids[4]!, ids[3]!])
-    expect(page2.rows.map((r) => r.id)).toEqual([ids[2]!, ids[1]!])
-    expect(page1.total).toBe(5)
-  })
 })

@@ -262,8 +262,6 @@ export function createDeviceRoutes(deps: {
       items,
       nextCursor,
       total: sorted.length,
-      // Legacy key, kept alongside `items` for one release (plan 30 §3.3).
-      devices: items,
     })
   })
 

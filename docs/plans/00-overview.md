@@ -66,6 +66,9 @@
 | 33 | `33-m15-device-network.md` | M15 | **Network layer**: a fifth driver layer (spec §7.9). `adb-proxy` and `adb-reverse-proxy` engines, lease-scoped apply/revert, declared-vs-observed status, a Studio card, and `ctx.device.network.*` in the SDK. |
 | 43 | `43-m15b-guest-agent.md` | M15b | **`enkaku-guest-agent`**: a first-party on-device APK (`apps/guest-agent/`) with a `localabstract` control channel, provisioned unattended via the Toolchain Manager; turns on the `vpn-helper` engine — an enforcing SOCKS5 route apps cannot ignore. Depends on 33. |
 | 44 | `44-m15v-proxy-end-to-end.md` | M15v | **Delivery slice**: the minimum subset of 33 and 43 that lets an operator set a SOCKS5 full-tunnel proxy on a device from Studio. Opens with a device bring-up gate; defers the other engines, the SDK, CI, and the toolchain entry. |
+| 50 | `50-m24a-ci-and-device-smoke-test.md` | M24a | **CI plus a device smoke test**: typecheck and tests on every push, a path-conditional Android build job, and an `ENKAKU_TEST_DEVICE=1` runner whose stages map one-to-one onto the six defects the proxy bring-up could only find by hand. Prerequisite for 51 and 52. |
+| 51 | `51-m24b-verified-egress-and-fail-closed.md` | M24b | **Verified egress, fail-closed routing**: `health` becomes named checks instead of one enum; an egress probe measured from the device *through* the tunnel and outside it; DNS-leak detection against a self-hosted endpoint; explicit IPv6 blocking; opt-in lockdown so a dead tunnel stops traffic instead of silently leaking the real address. |
+| 52 | `52-m24c-device-scoped-routes-and-stable-identity.md` | M24c | **Routes belong to the device**: survive lease release, reboot and core restart; restore by probing rather than reapplying; a credential store replacing plaintext secrets; per-device sticky session identity; route and health on the devices list. **Supersedes Plan 44's lease-scoped lifetime.** |
 
 Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
 
@@ -171,7 +174,18 @@ openpf/
 - Entity IDs: use `nanoid()` or `crypto.randomUUID()` — pick one consistently from Plan 01 onward (we use `crypto.randomUUID()`, built into Bun).
 - DB timestamps: integer unix epoch **seconds** (Drizzle `{ mode: 'timestamp' }`), consistently across every table.
 
-### 4.3 API and protocol conventions
+### 4.3 Replace, never version
+
+This is a pre-1.0 prototype. Nothing has shipped to anyone, so **no compatibility window exists and none may be invented.**
+
+- No `v2` suffixes, no `Legacy*` names, no `Old`/`New` pairs, no "deprecated but kept for one release". A change replaces the thing it changes.
+- Renaming a field, changing a return type, or dropping a query parameter is a normal edit. Migrate every call site in the same commit — the only client ships in this repository.
+- The exception is data already written to disk: a Drizzle migration that reads old rows is not a compatibility shim, it is a migration, and it is expected to exist.
+- External protocol names are not ours to rename. adb's `shell,v2` service string is adb's spelling; it appears in the wire call and nowhere in our API surface.
+
+This rule exists because the opposite was tried: Plan 30 kept six legacy response keys and an `offset` alias "for one release", which protected no one and left every list endpoint publishing the same array under two names. All of it was removed on 2026-08-03.
+
+### 4.4 API and protocol conventions
 
 - REST: the `/api/...` prefix, JSON, semantic status codes. Tool endpoints follow spec §7.7 exactly.
 - WS: one `/ws` endpoint for control-plane messages (a JSON envelope), with binary video streams as binary messages carrying a channel prefix (details in Plans 03 and 08). The JSON envelope:
@@ -180,13 +194,13 @@ openpf/
   ```
 - Every message type is declared in `packages/protocol` as a Zod discriminated union; core and studio import from there. There are **no** hardcoded message type strings outside the protocol package.
 
-### 4.4 Testing conventions
+### 4.5 Testing conventions
 
 - Test runner: `bun test`. `*.test.ts` files colocated in `src/`.
 - Every plan has a **Test plan** section; at minimum: unit tests for pure logic (queue, parsers, checksums, state machine) plus a scripted manual smoke test (with the exact commands written into the plan).
 - Tests needing a physical device are marked and skippable via the `ENKAKU_TEST_DEVICE=1` env var.
 
-### 4.5 Commit and branch conventions
+### 4.6 Commit and branch conventions
 
 - One plan may span many commits; messages read `feat(m0): ...`, `fix(m2): ...`, `chore: ...`.
 - This repo is not yet a git repo — Plan 01's first step includes `git init`.
@@ -247,3 +261,5 @@ Every plan follows this structure, at a depth where "the AI builder just follows
 - **stableId** — the stable device identity (ro.serialno / ANDROID_ID), not the adb serial.
 - **Toolchain Manager** — the subsystem that provisions binaries (adb, scrcpy-server, ui-server, and so on).
 - **swappable** — a tool flag: whether users may freely pick a version (scrcpy-server: `false`).
+
+The **M24 series is a chain, and the order is load-bearing**: `50 → 51 → 52`. Plan 50 exists because the proxy bring-up found six defects that unit tests could not see, so 51 and 52 are built on a foundation that can be checked. Plan 51 must precede 52 because a route that persists across leases and reboots but cannot be verified is *worse* than one that dies — it fails silently for longer. Plan 52 deliberately reverses Plan 44's lease-scoped route lifetime; the reasoning is in its §0 and §3.1, and spec §7.9 rule 1 is amended by its step 5.7.
