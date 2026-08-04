@@ -34,6 +34,8 @@ import { cn } from '@/lib/utils'
 interface ShellResultPayload {
   deviceId: string
   stdout: string
+  /** Kept apart from `stdout` by the framed transport (plan 53) and rendered as its own stream. */
+  stderr: string
   exitCode: number | null
   truncated: boolean
   durationMs: number
@@ -288,6 +290,19 @@ function TranscriptRow({ entry, onRunAsStream }: { entry: TranscriptEntry; onRun
       ) : (
         <>
           {result.stdout.length > 0 && <pre className="whitespace-pre-wrap break-all text-fg-muted">{result.stdout}</pre>}
+          {/*
+            stderr is a separate stream, not a verdict. Plenty of Android tools
+            write warnings and progress to it while exiting 0 — `dumpsys` on a
+            missing service does exactly that — so it is marked as a different
+            stream (warn) rather than as failure (danger). Whether the command
+            succeeded is the `exit` badge's job, and only its job.
+          */}
+          {result.stderr.length > 0 && (
+            <div className="border-l-2 border-led-warn/40 pl-2">
+              <div className="readout text-[10px] uppercase tracking-wide text-led-warn/70">stderr</div>
+              <pre className="whitespace-pre-wrap break-all text-led-warn">{result.stderr}</pre>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-x-3 text-[10.5px]">
             <span
               className={cn(

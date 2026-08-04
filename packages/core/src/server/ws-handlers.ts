@@ -886,26 +886,26 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 maxOutputBytes: shellSettings.maxOutputBytes,
               })
               const { stdout, stderr, exitCode } = result
-              // The terminal has always shown one merged stream (§3.7's
-              // emulation is about cwd, not about splitting panes) — stderr
-              // is appended rather than dropped, now that the transport
-              // reports it separately.
-              const combined = stderr ? (stdout ? `${stdout}\n${stderr}` : stderr) : stdout
+              // The two streams travel apart all the way to Studio (plan 53).
+              // Merging them here would have put error text in a field named
+              // `stdout` — the same naming lie plan 53 removed from the
+              // transport — and left the operator unable to see which was
+              // which. Studio renders `stderr` distinctly.
               let resultCwd = cwdAtStart
-              let reportedStdout = combined
+              let reportedStdout = stdout
               if (cdAttempt) {
                 if (exitCode === 0) {
-                  // `pwd` writes only to stdout, never stderr, so `stdout`
-                  // alone (not `combined`) is the path on a successful cd.
+                  // `pwd` writes only to stdout, so `stdout` is the path. It
+                  // is consumed into the cwd rather than shown — a successful
+                  // `cd` prints nothing in a real shell.
                   resultCwd = stdout.trim() || cwdAtStart
                   shellSessions.commitCwd(deviceId, resultCwd)
                   reportedStdout = ''
                 }
                 // A failed cd (exitCode !== 0, or exitCode null — the device
-                // could not report one): the probe's own error text — a real
-                // shell's `cd` failure goes to stderr — is still visible via
-                // `combined`, and the cwd is deliberately left unchanged
-                // (acceptance #9).
+                // could not report one): the probe's own error text goes to
+                // stderr, which is forwarded untouched, and the cwd is
+                // deliberately left unchanged (acceptance #9).
               }
               const durationMs = Date.now() - startedAt
               // 8. Broadcast the outcome to every viewer (plan 26 §3.8).
@@ -915,6 +915,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   payload: {
                     deviceId,
                     stdout: reportedStdout,
+                    stderr,
                     exitCode,
                     truncated: result.truncated,
                     durationMs,
@@ -929,7 +930,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 stream: 'input',
                 kind: 'shell.result',
                 actor,
-                meta: { exitCode, bytes: reportedStdout.length, truncated: result.truncated, durationMs },
+                meta: {
+                  exitCode,
+                  bytes: reportedStdout.length + stderr.length,
+                  truncated: result.truncated,
+                  durationMs,
+                },
               })
             } catch (err) {
               const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'E_INTERNAL'
@@ -955,7 +961,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               for (const target of shellTargets(deviceId, ws)) {
                 send(target, {
                   type: 'shell.result',
-                  payload: { deviceId, stdout: message, exitCode: null, truncated, durationMs, cwd: cwdAtStart, ...hint },
+                  // The failure text is ours, not the command's — it belongs
+                  // on `stderr`. Reporting it as `stdout` said the command
+                  // had printed "adb shell exceeded 15000ms", which it never
+                  // did; `stdout` stays empty because nothing was produced.
+                  payload: {
+                    deviceId,
+                    stdout: '',
+                    stderr: message,
+                    exitCode: null,
+                    truncated,
+                    durationMs,
+                    cwd: cwdAtStart,
+                    ...hint,
+                  },
                 })
               }
               deps.recorder.record({

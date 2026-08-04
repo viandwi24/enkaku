@@ -311,7 +311,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     else throw new Error('no shell.result received')
   })
 
-  test('stderr, now separated by the framed transport (plan 53), is still visible in the terminal — appended rather than dropped', async () => {
+  test('stderr travels to the terminal as its own field, never folded into stdout (plan 53)', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
     const client = fakeAdbClient(async () => shellResult('normal output', 1, 'the error text'))
@@ -324,8 +324,30 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
     const result = a.sent.find((m) => m.type === 'shell.result')
     if (result?.type === 'shell.result') {
-      expect(result.payload.stdout).toBe('normal output\nthe error text')
+      expect(result.payload.stdout).toBe('normal output')
+      expect(result.payload.stderr).toBe('the error text')
       expect(result.payload.exitCode).toBe(1)
+    } else throw new Error('no shell.result received')
+  })
+
+  test('a failure raised by the core reports itself on stderr — stdout stays empty because the command printed nothing', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => {
+      throw new AdbError('E_ADB_TIMEOUT', 'adb shell:sleep 99 exceeded 15000ms')
+    })
+    const { handler } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    a.sent.length = 0
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'sleep 99' } }))
+
+    const result = a.sent.find((m) => m.type === 'shell.result')
+    if (result?.type === 'shell.result') {
+      expect(result.payload.stdout).toBe('')
+      expect(result.payload.stderr).toBe('adb shell:sleep 99 exceeded 15000ms')
+      expect(result.payload.exitCode).toBeNull()
     } else throw new Error('no shell.result received')
   })
 

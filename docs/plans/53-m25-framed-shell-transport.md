@@ -171,7 +171,11 @@ Two findings worth keeping:
 7. `bash scripts/typecheck.sh`, `bun test` and `bun run build:studio` are green.
 8. `bash scripts/check-plan-status.sh` passes with this plan's status updated.
 
-**Status against these, at implementation.** 1–6 and 8 met. Criterion 2 holds at the transport: `ShellPort.exec` and the tunnel reply carry `stderr` as its own field. The terminal's WS handler then merges the two *for display*, because dropping stderr there would erase error text from the operator's view — but that leaves the WS message's field named `stdout` carrying both, which is the kind of naming lie this plan exists to remove. Adding `stderr` to `ShellResultMessage` and rendering it distinctly in Studio is the honest finish; it was out of scope here under §2.
+**Status against these.** 1–6 and 8 met, end to end. Criterion 2 holds the whole way now: `ShellPort.exec`, the tunnel reply, `ShellResultMessage`, and the terminal each keep the two streams apart. The first cut merged them at the WS boundary for display, which left a field named `stdout` carrying error text — the same naming lie this plan removed from the transport, just moved one layer up. `ShellResultMessage` gained `stderr`, and Studio renders it as its own stream.
+
+Widening that field also exposed a second instance the compiler found: the handler's `catch` reported *its own* failure text as `stdout`, so a timeout appeared in the terminal as though the command had printed `adb shell exceeded 15000ms`. It now reports `stdout: ''` with the message on `stderr`, which is what actually happened.
+
+Studio colours stderr as **warn**, not danger. A stream is not a verdict — `dumpsys` on a missing service writes to stderr and exits 0 — and whether the command succeeded is the `exit` badge's job alone.
 
 Criterion 7 is met except `bun run build:studio`, which `scripts/build-studio.sh` refuses while a Studio dev server holds :3001 — building would corrupt it. Nothing under `packages/studio` changed in this plan and `tsc --noEmit -p packages/studio` is clean, so the risk is low, but it is unverified rather than proven.
 

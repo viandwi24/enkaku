@@ -145,7 +145,17 @@ export const ShellResultMessage = z.object({
   payload: z.object({
     deviceId: z.string(),
     stdout: z.string(),
-    /** `null` when the exit marker is absent — killed shell, or output truncated at the cap (§3.5). Never guessed. */
+    /**
+     * Kept apart from `stdout` rather than merged into it (plan 53). A field
+     * named `stdout` that also carried error text was the naming lie plan 53
+     * set out to remove; Studio renders this stream distinctly.
+     */
+    stderr: z.string(),
+    /**
+     * `null` when the device could not report one — a shell too old for the
+     * framed `shell,v2,raw` service, or a killed shell (plan 53 §3.4). Never
+     * guessed, and never a fabricated `0`.
+     */
     exitCode: z.number().int().nullable(),
     truncated: z.boolean(),
     durationMs: z.number(),
