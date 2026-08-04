@@ -70,7 +70,19 @@ class WsClient {
         return
       }
       const parsed = ServerMessageSchema.safeParse(json)
-      if (!parsed.success) return
+      if (!parsed.success) {
+        // Dropping the message is right — an unvalidated payload must never
+        // reach a component. Dropping it *silently* is not: a core running
+        // older code than this build sends a shape Studio no longer accepts,
+        // and the only symptom is a UI that waits forever for a reply that
+        // was already thrown away. Say so, so the next person does not spend
+        // an afternoon on it.
+        if (process.env.NODE_ENV !== 'production') {
+          const type = typeof json === 'object' && json !== null && 'type' in json ? String(json.type) : '<unknown>'
+          console.warn(`[enkaku] dropped a "${type}" message the schema rejected — is the core running older code?`, parsed.error.issues)
+        }
+        return
+      }
       const msg = parsed.data
       if (msg.type === 'hello') this.sessionId = msg.payload.sessionId
       const id = 'id' in msg ? msg.id : undefined
