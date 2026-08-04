@@ -871,6 +871,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         dataDir: cfg.dataDir,
         record: recorder!.record,
         log: log.child('guest-agent'),
+        // Plan 55 §3.2, §5.1 — read fresh on every call, same as every other `settingsStore.get()`
+        // getter dep in this file.
+        networkSettings: () => settingsStore.get().network,
       })
       handleNetworkDeviceOffline = guestAgent.handleDeviceOffline
       restoreNetworkRoute = guestAgent.restoreDeviceRoute

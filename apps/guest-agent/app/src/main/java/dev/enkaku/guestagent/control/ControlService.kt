@@ -15,6 +15,7 @@ import android.util.Log
 import dev.enkaku.guestagent.R
 import dev.enkaku.guestagent.route.DeadMansSwitch
 import dev.enkaku.guestagent.route.EgressProbe
+import dev.enkaku.guestagent.route.Ipv6Leak
 import dev.enkaku.guestagent.route.RouteState
 import dev.enkaku.guestagent.route.RouteVpnService
 import dev.enkaku.guestagent.route.Socks5Upstream
@@ -219,7 +220,23 @@ class ControlService : Service() {
           put("upstream", RouteState.describeUpstream())
           put("lastError", RouteState.lastError())
           RouteState.stats()?.let { put("stats", JSONArray(it.toTypedArray())) }
+          // Plan 51 §4.5, §5.7 — asserted, not assumed: reads back `LinkProperties` off
+          // `ConnectivityManager` rather than trusting that `RouteVpnService`'s own
+          // `addRoute("::", 0)` request was actually honoured by the OS. Absent (not `null`) when
+          // no VPN network can currently be found to ask — see `Ipv6Leak.isBlocked`'s doc comment.
+          Ipv6Leak.isBlocked(this@ControlService)?.let { put("ipv6Blocked", it) }
         }
+
+      // Plan 55 §3.5, §4.1, §5.6 — forces the SAME hold-closed transition the dead-man's switch
+      // reaches on its own (`RouteVpnService.hold`), but triggered by the HOST: a `geo` check
+      // failure is decided on the host (only it runs the lookup), so unlike every other hold
+      // trigger this one has to be told rather than noticed on-device.
+      Protocol.METHOD_ROUTE_HOLD -> {
+        val reason = request.optString("reason").takeIf { it.isNotEmpty() }
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing reason")
+        RouteVpnService.hold(this, reason)
+        ok(id) { put("held", true) }
+      }
 
       // Plan 51 §4.2, §5.4. `EgressProbe.run` itself never throws — a leg that could not connect
       // or fetch is reported as `{ok:false, error, stage}`, not an exception — so this always

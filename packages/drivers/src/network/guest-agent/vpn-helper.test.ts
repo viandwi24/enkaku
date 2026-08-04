@@ -3,6 +3,7 @@ import type {
   EgressProbeResult,
   HelloResult,
   PingResult,
+  RouteHoldResult,
   RouteStartResult,
   RouteStatusResult,
   RouteStopResult,
@@ -13,7 +14,7 @@ import { GuestAgentClientError } from './client'
 import type { GuestAgentLauncher } from './launcher'
 import { createGuestAgentSession, createVpnHelperRoute, type GuestAgentClientFactory, type GuestAgentSession } from './vpn-helper'
 
-const CONFIG: Socks5RouteConfig = { host: 'proxy.example', port: 1080, udpMode: 'udp' }
+const CONFIG: Socks5RouteConfig = { host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'report' }
 
 /** A launcher fake that records every call and never touches adb for real. */
 function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: GuestAgentLauncher; calls: string[] } {
@@ -60,6 +61,7 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): { client: GuestA
       tunnelled: { ok: true, status: 200, body: '', ms: 1 },
       direct: { ok: true, status: 200, body: '', ms: 1 },
     }),
+    routeHold: async (): Promise<RouteHoldResult> => ({ held: true }),
     ...overrides,
   }
   return { client, factory: () => client }

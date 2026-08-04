@@ -1,12 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 import {
   deriveHealth,
+  EXIT_HISTORY_LIMIT,
+  GeoExpectationSchema,
+  GeoObservationSchema,
+  GeoProviderResponseSchema,
+  matchGeoExpectation,
   NetworkObservationSchema,
   PersistedNetworkRouteSchema,
+  pushExitHistory,
   renderStickyUsername,
   RouteCheckSchema,
   RouteLifecycleStateSchema,
   Socks5RouteConfigSchema,
+  type GeoObservation,
   type RouteCheck,
 } from './network'
 
@@ -223,5 +230,126 @@ describe('renderStickyUsername (plan 52 §3.3, §4.3)', () => {
 
   test('multiple {id} occurrences are all substituted', () => {
     expect(renderStickyUsername('sam', 'xyz', '-{id}-{id}')).toBe('sam-xyz-xyz')
+  })
+})
+
+describe('Socks5RouteConfigSchema.expect / onGeoFail (plan 55 §4.1)', () => {
+  test('both are absent by default — omitting them still parses', () => {
+    const parsed = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp' })
+    expect(parsed.expect).toBeUndefined()
+    expect(parsed.onGeoFail).toBeUndefined()
+  })
+
+  test('expect requires a 2-letter country code', () => {
+    expect(() =>
+      Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JPN' } }),
+    ).toThrow()
+    const parsed = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } })
+    expect(parsed.expect).toEqual({ country: 'JP' })
+  })
+
+  test('expect carries region/city/asn/isp alongside country', () => {
+    const parsed = Socks5RouteConfigSchema.parse({
+      host: 'proxy.example',
+      port: 1080,
+      udpMode: 'udp',
+      expect: { country: 'JP', region: 'Tokyo', city: 'Shibuya', asn: 4713, isp: 'NTT' },
+    })
+    expect(parsed.expect).toEqual({ country: 'JP', region: 'Tokyo', city: 'Shibuya', asn: 4713, isp: 'NTT' })
+  })
+
+  test('onGeoFail only accepts report/hold', () => {
+    expect(() =>
+      Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'ignore' }),
+    ).toThrow()
+    expect(Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'hold' }).onGeoFail).toBe('hold')
+  })
+})
+
+function geoObservation(overrides: Partial<GeoObservation> = {}): GeoObservation {
+  return { address: '1.2.3.4', country: 'JP', region: 'Tokyo', city: 'Shibuya', asn: 4713, isp: 'NTT', at: 1_700_000_000, ...overrides }
+}
+
+describe('GeoObservationSchema / GeoProviderResponseSchema (plan 55 §4.1, §5.2)', () => {
+  test('a full observation parses', () => {
+    expect(GeoObservationSchema.parse(geoObservation())).toEqual(geoObservation())
+  })
+
+  test('every field but address/at is nullable — an honest "unknown" per field', () => {
+    const parsed = GeoObservationSchema.parse({ address: '1.2.3.4', country: null, region: null, city: null, asn: null, isp: null, at: 1 })
+    expect(parsed.country).toBeNull()
+  })
+
+  test('GeoProviderResponseSchema is the observation minus address/at — what a geo provider endpoint actually answers', () => {
+    const parsed = GeoProviderResponseSchema.parse({ country: 'JP', region: null, city: null, asn: null, isp: null })
+    expect(parsed).toEqual({ country: 'JP', region: null, city: null, asn: null, isp: null })
+  })
+})
+
+describe('matchGeoExpectation (plan 55 §4.2, §3.3) — matches at the narrowest level declared', () => {
+  test('every declared field matches → matches: true', () => {
+    const result = matchGeoExpectation({ country: 'JP', city: 'Shibuya' }, geoObservation())
+    expect(result).toEqual({ matches: true })
+  })
+
+  test('a bare country-only expectation is not failed by a city difference', () => {
+    const result = matchGeoExpectation({ country: 'JP' }, geoObservation({ city: 'Osaka' }))
+    expect(result.matches).toBe(true)
+  })
+
+  test('a country mismatch fails and names the field', () => {
+    const result = matchGeoExpectation({ country: 'JP' }, geoObservation({ country: 'ID' }))
+    expect(result).toEqual({ matches: false, field: 'country', expected: 'JP', observed: 'ID' })
+  })
+
+  test('country matches case-insensitively and trimmed', () => {
+    expect(matchGeoExpectation({ country: 'jp ' }, geoObservation({ country: ' JP' })).matches).toBe(true)
+  })
+
+  test('the broadest mismatched field wins — country checked before city', () => {
+    const result = matchGeoExpectation(
+      { country: 'JP', city: 'Shibuya' },
+      geoObservation({ country: 'ID', city: 'Surabaya' }),
+    )
+    expect(result.field).toBe('country')
+  })
+
+  test('a declared ASN mismatch fails on exact numeric comparison', () => {
+    const result = matchGeoExpectation({ country: 'JP', asn: 4713 }, geoObservation({ asn: 9999 }))
+    expect(result).toEqual({ matches: false, field: 'asn', expected: '4713', observed: '9999' })
+  })
+
+  test('a declared field the observation could not attribute (null) is a mismatch, not a free pass', () => {
+    const result = matchGeoExpectation({ country: 'JP', isp: 'NTT' }, geoObservation({ isp: null }))
+    expect(result).toEqual({ matches: false, field: 'isp', expected: 'NTT', observed: 'unknown' })
+  })
+
+  test('an expectation with only country and no other field never inspects region/city/asn/isp at all', () => {
+    const result = matchGeoExpectation({ country: 'JP' }, geoObservation({ region: null, city: null, asn: null, isp: null }))
+    expect(result.matches).toBe(true)
+  })
+})
+
+describe('pushExitHistory / EXIT_HISTORY_LIMIT (plan 55 §4.3, §5.5)', () => {
+  test('an empty/undefined history plus one observation is a one-element ring, newest first', () => {
+    const obs = geoObservation()
+    expect(pushExitHistory(undefined, obs)).toEqual([obs])
+    expect(pushExitHistory([], obs)).toEqual([obs])
+  })
+
+  test('a fresh observation is prepended — newest first', () => {
+    const older = geoObservation({ address: '1.1.1.1', at: 1 })
+    const newer = geoObservation({ address: '2.2.2.2', at: 2 })
+    expect(pushExitHistory([older], newer)).toEqual([newer, older])
+  })
+
+  test('the ring is capped at EXIT_HISTORY_LIMIT, dropping the oldest', () => {
+    const full = Array.from({ length: EXIT_HISTORY_LIMIT }, (_, i) => geoObservation({ address: `1.1.1.${i}`, at: i }))
+    const fresh = geoObservation({ address: '9.9.9.9', at: 999 })
+    const result = pushExitHistory(full, fresh)
+    expect(result).toHaveLength(EXIT_HISTORY_LIMIT)
+    expect(result[0]).toEqual(fresh)
+    // The oldest entry (index EXIT_HISTORY_LIMIT - 1 of `full`) fell off the end.
+    expect(result.some((o) => o.address === `1.1.1.${EXIT_HISTORY_LIMIT - 1}`)).toBe(false)
   })
 })

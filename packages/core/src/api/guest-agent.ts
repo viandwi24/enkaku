@@ -4,9 +4,12 @@ import {
   PersistedNetworkRouteSchema,
   Socks5RouteConfigSchema,
   CreateNetworkCredentialRequestSchema,
+  GeoProviderResponseSchema,
   redactRouteConfig,
   renderStickyUsername,
   deriveHealth,
+  matchGeoExpectation,
+  pushExitHistory,
   type NetworkEngineId,
   type NetworkObservation,
   type PersistedNetworkRoute,
@@ -14,6 +17,7 @@ import {
   type NetworkCredential,
   type RouteCheck,
   type EgressProbeResult,
+  type GeoObservation,
   type ShellResult,
 } from '@enkaku/protocol'
 import {
@@ -72,7 +76,18 @@ export interface GuestAgentStatusResult {
 export interface NetworkStatusResult {
   engine: NetworkEngineId
   /** Persisted route config — `credentialRef` names a stored credential (plan 52 §4.2); never a username/password. Null when nothing has ever been declared. */
-  config: { host: string; port: number; credentialRef?: string; udpMode: 'udp' | 'tcp' } | null
+  config:
+    | {
+        host: string
+        port: number
+        credentialRef?: string
+        udpMode: 'udp' | 'tcp'
+        /** Plan 55 §3.1, §4.1 — undefined means no expectation stated; `geo` stays `skip` forever. */
+        expect?: Socks5RouteConfig['expect']
+        /** Plan 55 §3.5, §4.1 — always concrete here (`resolveOnGeoFail()`), never `undefined`, so Studio never has to guess a default of its own. */
+        onGeoFail: 'report' | 'hold'
+      }
+    | null
   /** The operator's declared on/off intent — separate from `config` on purpose (plan 44 step 5.4): the default config is null, and with no config there is nothing to enable. */
   enabled: boolean
   observed: NetworkObservation | null
@@ -86,6 +101,8 @@ export interface NetworkStatusResult {
   /** The named facts `health` was derived from — always present, even when every check is `unknown` (plan 51 §4.1, §5.8). */
   checks: RouteCheck[]
   lastError: { code: string; message: string } | null
+  /** Plan 55 §4.3, §5.5 — the last `EXIT_HISTORY_LIMIT` geo observations, newest first, so a rotating pool is visible as a sequence rather than one current value. Always present (possibly empty) once a route exists. */
+  exitHistory: GeoObservation[]
 }
 
 /** How often the daemon-wide heartbeat pings every device with an enabled route (plan 44 step 5.4) — the core's half of the dead-man's-switch pair described in plan 44 §8b; the agent's own half tears the route down after 90s of silence. */
@@ -125,6 +142,51 @@ const PROBE_TIMEOUT_MS = 8_000
  */
 function sessionTemplate(): string {
   return process.env.ENKAKU_NETWORK_SESSION_TEMPLATE?.trim() ?? ''
+}
+
+/**
+ * Plan 51 §4.3, §5.3 — the zone this farm's probe endpoint (`packages/probe-server`) is
+ * authoritative for, e.g. `dns.probe.example.com`. Read from an env var, the SAME scope decision
+ * `probeUrl()` above documents (and for the same reason `sessionTemplate()` is): this and
+ * `network.probeUrl` are one feature's two halves, and only `network.geoProvider` (Plan 55 §5.1)
+ * was worth moving into real `FarmSettingsSchema` settings for this pass. Unset means the `dns`
+ * check stays `skip`, naming this variable — never a guessed `pass`.
+ */
+function probeDnsZone(): string | null {
+  return process.env.ENKAKU_NETWORK_PROBE_DNS_ZONE?.trim().toLowerCase() || null
+}
+
+/**
+ * Plan 55 §3.5, §4.1, §5.6 — turns a possibly-absent `Socks5RouteConfig.onGeoFail` into a
+ * concrete value, in exactly ONE place, mirroring `resolveFailClosed()` immediately below.
+ * `undefined` resolves to `'report'` — the safe default per §3.5: defaulting to `'hold'` would
+ * strand a device the first time a residential pool drifts one city over.
+ */
+function resolveOnGeoFail(config: Pick<Socks5RouteConfig, 'onGeoFail'> | undefined): 'report' | 'hold' {
+  return config?.onGeoFail ?? 'report'
+}
+
+/** Budget for one `GET <geoProvider>?ip=<address>` call — a farm's own infrastructure, but still a network call this process must not hang on. */
+const GEO_LOOKUP_TIMEOUT_MS = 5_000
+
+/**
+ * Calls a `network.geoProvider` endpoint for `address` and turns its response into a
+ * `GeoObservation` (Plan 55 §3.2, §5.2). Returns `null` on ANY failure — unreachable provider,
+ * non-200, a body that fails `GeoProviderResponseSchema` — never a guess; the caller
+ * (`maybeRunGeoAndDns`) is what turns a null into the `geo`/`dns` checks' own `unknown` state.
+ */
+async function lookupGeo(geoProvider: string, address: string): Promise<GeoObservation | null> {
+  try {
+    const url = new URL(geoProvider)
+    url.searchParams.set('ip', address)
+    const res = await fetch(url, { signal: AbortSignal.timeout(GEO_LOOKUP_TIMEOUT_MS) })
+    if (!res.ok) return null
+    const parsed = GeoProviderResponseSchema.safeParse(await res.json())
+    if (!parsed.success) return null
+    return { address, at: nowSeconds(), ...parsed.data }
+  } catch {
+    return null
+  }
 }
 
 /** A per-device sticky-session id (plan 52 §4.3) — generated once, kept stable thereafter. Not a secret, so a short opaque token is enough; it only has to be unlikely to collide and safe to embed in a username. */
@@ -208,6 +270,20 @@ interface ChecksInput {
   agentCapabilities: string[] | null
   /** The route's own username/password, if any — every `detail` string below is scrubbed of a literal occurrence of either (acceptance criterion 8, plan 51 §6). */
   secrets: readonly string[]
+  /** Plan 55 §3.1, §4.1 — the operator's declared expectation, if any. `geo` stays `skip` forever without one (acceptance criterion 1). */
+  expect: Socks5RouteConfig['expect']
+  /** Plan 55 §3.2 — `network.geoProvider`, or undefined when unset. */
+  geoProviderConfigured: boolean
+  /** The most recent lookup for the CURRENT egress address, or null if none has run yet. */
+  geoObservation: GeoObservation | null
+  /** A lookup that ran and failed (unreachable provider, bad response) — distinct from never having run. */
+  geoError: { code: string; message: string } | null
+  /** Plan 51 §4.3, §5.3 — `network.probeDnsZone` (`ENKAKU_NETWORK_PROBE_DNS_ZONE`) configured. */
+  probeDnsZoneConfigured: boolean
+  /** Set by `maybeRunGeoAndDns()` once a dns check attempt has completed — `null` before the first attempt. */
+  dnsResult: { state: 'pass' | 'fail' | 'unknown'; detail?: string; at: number } | null
+  /** Plan 51 §4.5, §5.7 — read back from the device's own `route.status` (`Ipv6Leak.isBlocked()` on the Kotlin side). Undefined on an older agent build, or when no VPN network could be found to ask. */
+  ipv6Blocked: boolean | undefined
 }
 
 /**
@@ -216,11 +292,14 @@ interface ChecksInput {
  * `NetworkRouteEntry`, so this is trivial to unit-test without a fake device at all.
  */
 /**
- * Pulls a human-readable address out of whatever the probe endpoint returned. Endpoints differ —
- * some answer `{"ip":"1.2.3.4"}`, some answer bare text — so this stays deliberately loose and
- * simply reports nothing it cannot recognise rather than guessing.
+ * Pulls a bare address out of whatever the probe endpoint returned. Endpoints differ — some
+ * answer `{"ip":"1.2.3.4"}`, `packages/probe-server`'s own `/probe` answers `{"address":...}`,
+ * some answer bare text — so this stays deliberately loose and simply reports nothing it cannot
+ * recognise rather than guessing. Shared by `summariseEgress()` (a display string for the
+ * `egress` check's `detail`) and `maybeRunGeoAndDns()` (the actual value handed to a geo lookup),
+ * so the two never disagree about what address a probe body means.
  */
-function summariseEgress(body: string | undefined): string | undefined {
+function parseEgressAddress(body: string | undefined): string | undefined {
   if (!body) return undefined
   const trimmed = body.trim().slice(0, 400)
   try {
@@ -228,12 +307,26 @@ function summariseEgress(body: string | undefined): string | undefined {
     if (parsed && typeof parsed === 'object') {
       const rec = parsed as Record<string, unknown>
       const ip = rec.ip ?? rec.address ?? rec.origin
-      if (typeof ip === 'string') return `exit address ${ip}`
+      if (typeof ip === 'string') return ip
     }
   } catch {
     // not JSON — fall through to the plain-text shape below
   }
-  return /^[0-9a-f.:]+$/i.test(trimmed) ? `exit address ${trimmed}` : undefined
+  return /^[0-9a-f.:]+$/i.test(trimmed) ? trimmed : undefined
+}
+
+/** A human-readable form for the `egress` check's own `detail` — see `parseEgressAddress()` for the parsing this wraps. */
+function summariseEgress(body: string | undefined): string | undefined {
+  const address = parseEgressAddress(body)
+  return address ? `exit address ${address}` : undefined
+}
+
+/** Renders a `GeoObservation` for a check `detail` — every field the provider could attribute, `—` for what it could not. */
+function describeLocation(observed: GeoObservation): string {
+  const parts = [observed.city, observed.region, observed.country].filter((v): v is string => v !== null)
+  const place = parts.length > 0 ? parts.join(', ') : '—'
+  const network = observed.isp ?? (observed.asn !== null ? `AS${observed.asn}` : '—')
+  return `${place} (${network})`
 }
 
 function buildChecks(input: ChecksInput): RouteCheck[] {
@@ -359,29 +452,95 @@ function buildChecks(input: ChecksInput): RouteCheck[] {
     checks.push({ id: 'egress', state: 'unknown', at: null })
   }
 
-  // geo — NEVER inferred from the username (a provider like SOAX encodes targeting there, but
-  // that is provider-specific and guessing from it would produce confident nonsense against any
-  // other provider). Skip unless an operator has stated an expectation — this slice has no input
-  // for that yet.
-  checks.push({ id: 'geo', state: 'skip', detail: 'no expected region was configured for this upstream', at: null })
+  // geo (plan 55 §4.2) — NEVER inferred from the username (a provider like SOAX encodes targeting
+  // there, but that is provider-specific and guessing from it would produce confident nonsense
+  // against any other provider). `skip` unless an operator has stated an expectation — acceptance
+  // criterion 1: no expectation means skip, forever, never a silent pass.
+  if (!input.expect) {
+    checks.push({ id: 'geo', state: 'skip', detail: 'no expected region was configured for this upstream', at: null })
+  } else if (held) {
+    checks.push({ id: 'geo', state: 'fail', detail: heldDetail, at: input.observedAt })
+  } else if (!input.geoProviderConfigured) {
+    checks.push({ id: 'geo', state: 'skip', detail: 'no geo lookup provider is configured (Settings → Network → geo lookup provider URL)', at: null })
+  } else if (input.geoError) {
+    // Acceptance criterion 5: a failed lookup is `unknown`, never `pass`.
+    checks.push({ id: 'geo', state: 'unknown', detail: safeCheckDetail(input.geoError.message, input.secrets), at: now })
+  } else if (!input.geoObservation) {
+    checks.push({ id: 'geo', state: 'unknown', at: null })
+  } else {
+    const result = matchGeoExpectation(input.expect, input.geoObservation)
+    // A geo provider's fields (city/region/country/ISP) never legitimately contain a route
+    // credential, but every OTHER detail string in this function is scrubbed regardless
+    // (acceptance criterion 8 is a grep over every surface) — this is that same discipline
+    // applied defensively rather than an admission that it could.
+    const rawLocation = describeLocation(input.geoObservation)
+    const locationDetail = safeCheckDetail(rawLocation, input.secrets) ?? rawLocation
+    checks.push({
+      id: 'geo',
+      state: result.matches ? 'pass' : 'fail',
+      detail: result.matches ? locationDetail : `${result.field} expected ${result.expected}, observed ${result.observed} — ${locationDetail}`,
+      at: input.geoObservation.at,
+    })
+  }
 
-  // dns — needs the probe endpoint's own authoritative-resolver hook (plan 51 §4.3, §5.3), which
-  // is not built in this pass. Always skip rather than guess.
-  checks.push({
-    id: 'dns',
-    state: 'skip',
-    detail: 'DNS-leak detection needs a self-hosted probe endpoint with an authoritative-resolver hook (plan 51 §5.3, not implemented)',
-    at: null,
-  })
+  // dns (plan 51 §4.3, §5.3) — needs the probe endpoint's own authoritative-resolver hook AND a
+  // geo provider to attribute the resolver's and the exit's networks (`maybeRunGeoAndDns()` is
+  // where the actual lookups happen; this only ever reads back what it found). Held is NOT forced
+  // to fail here the way `upstream`/`egress` are: DNS-leak-blocking is a property of the route's
+  // OWN config (never inferred from live traffic), so a held route's last known answer is still
+  // meaningful — unlike egress, there is no "looks healthy while blocked" risk to guard against.
+  if (!input.probeUrl) {
+    checks.push({ id: 'dns', state: 'skip', detail: 'no probe endpoint is configured (ENKAKU_NETWORK_PROBE_URL)', at: null })
+  } else if (!input.probeDnsZoneConfigured) {
+    checks.push({
+      id: 'dns',
+      state: 'skip',
+      detail: 'DNS-leak detection needs a delegated zone (ENKAKU_NETWORK_PROBE_DNS_ZONE) — see packages/probe-server/README.md',
+      at: null,
+    })
+  } else if (!input.geoProviderConfigured) {
+    checks.push({
+      id: 'dns',
+      state: 'skip',
+      detail: 'DNS-leak detection needs a geo lookup provider to attribute the resolver and exit addresses to a network (Settings → Network)',
+      at: null,
+    })
+  } else if (!capabilitiesKnown) {
+    checks.push({ id: 'dns', state: 'unknown', at: null })
+  } else if (!agentSupportsProbe) {
+    checks.push({
+      id: 'dns',
+      state: 'skip',
+      detail: 'the installed guest agent build does not advertise the egress-probe capability',
+      at: null,
+    })
+  } else if (input.dnsResult) {
+    checks.push({
+      id: 'dns',
+      state: input.dnsResult.state,
+      ...(input.dnsResult.detail ? { detail: safeCheckDetail(input.dnsResult.detail, input.secrets) } : {}),
+      at: input.dnsResult.at,
+    })
+  } else {
+    checks.push({ id: 'dns', state: 'unknown', at: null })
+  }
 
-  // leak — asserting IPv6 is blocked needs on-device detection (plan 51 §4.5, §5.7), which is not
-  // built in this pass either. Always skip rather than assert something nobody checked.
-  checks.push({
-    id: 'leak',
-    state: 'skip',
-    detail: 'IPv6 leak assertion is not implemented in this build (plan 51 §5.7, not implemented)',
-    at: null,
-  })
+  // leak (plan 51 §4.5, §5.7) — asserted from the device's own `route.status` (`Ipv6Leak.isBlocked()`
+  // reads back `LinkProperties` rather than trusting the `Builder.addRoute("::", 0)` request).
+  if (input.observed === null) {
+    checks.push({ id: 'leak', state: 'unknown', at: null })
+  } else if (input.ipv6Blocked === undefined) {
+    checks.push({
+      id: 'leak',
+      state: 'skip',
+      detail: 'the installed guest agent build does not report IPv6 leak status',
+      at: null,
+    })
+  } else if (input.ipv6Blocked) {
+    checks.push({ id: 'leak', state: 'pass', at: input.observedAt })
+  } else {
+    checks.push({ id: 'leak', state: 'fail', detail: 'IPv6 is not blocked — an app could leak traffic over IPv6', at: input.observedAt })
+  }
 
   return checks
 }
@@ -509,6 +668,14 @@ export interface GuestAgentRoutesDeps {
    * real wall-clock minutes.
    */
   recoveryBackoffS?: number[]
+  /**
+   * Plan 55 §3.2, §5.1 — the geo-lookup half of `FarmSettingsSchema.network`, read fresh on every
+   * call (mirrors `settingsStore.get()`'s own always-current contract — this is a getter, not a
+   * snapshot). Optional so every existing test/call site that has no opinion keeps compiling
+   * unchanged; defaults internally to `{ geoIntervalSec: 300 }` (no provider configured), the
+   * same "unset means the check stays skip" reading `probeUrl()` gives an absent env var.
+   */
+  networkSettings?: () => { geoProvider?: string; geoIntervalSec: number }
 }
 
 export interface GuestAgentRoutesHandle {
@@ -560,6 +727,8 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   const { db } = deps
   /** The named-credential store (plan 52 §4.2) — every route below that touches a secret goes through this, never the raw DB row. */
   const credentials = createCredentialStore({ db, dataDir: deps.dataDir })
+  /** See `GuestAgentRoutesDeps.networkSettings`'s doc comment for the default's meaning. */
+  const networkSettings: () => { geoProvider?: string; geoIntervalSec: number } = deps.networkSettings ?? (() => ({ geoIntervalSec: 300 }))
 
   const makeLauncher =
     deps.makeLauncher ??
@@ -933,6 +1102,14 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     probeError: { code: string; message: string } | null
     /** From the device's own `hello().capabilities`, refreshed opportunistically — null until fetched at least once. */
     agentCapabilities: string[] | null
+    /** Plan 55 §3.2, §4.2, §5.3 — the most recent geo lookup for the CURRENT egress address, or null if none has run yet (no geo provider configured, or no successful probe to look up). */
+    geoObservation: GeoObservation | null
+    /** Unix seconds `geoObservation` (or `geoError`) was last set. */
+    geoAt: number | null
+    /** A geo lookup that ran and failed — distinct from never having run (plan 55 §4.2: "lookup failed → unknown, never pass"). */
+    geoError: { code: string; message: string } | null
+    /** Plan 51 §4.3, §5.3 — the `dns` check's own most recent result, computed by `maybeRunGeoAndDns()`. Null before the first attempt. */
+    dnsResult: { state: 'pass' | 'fail' | 'unknown'; detail?: string; at: number } | null
   }
 
   const networkStateByDevice = new Map<string, NetworkRouteEntry>()
@@ -1123,6 +1300,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       // before this can ever be reached in practice, and this is the belt to its braces.
       ...(config.credentialRef !== undefined ? { credentialRef: config.credentialRef } : {}),
       udpMode: config.udpMode,
+      // Plan 55 §4.1, §4.4 — no credential to redact in either field, unlike everything above.
+      ...(config.expect !== undefined ? { expect: config.expect } : {}),
+      onGeoFail: resolveOnGeoFail(config),
     }
   }
 
@@ -1177,6 +1357,13 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       probeUrl: probeUrl(),
       agentCapabilities: entry.agentCapabilities,
       secrets: secretsFor(config),
+      expect: config?.expect,
+      geoProviderConfigured: networkSettings().geoProvider !== undefined,
+      geoObservation: entry.geoObservation,
+      geoError: entry.geoError,
+      probeDnsZoneConfigured: probeDnsZone() !== null,
+      dnsResult: entry.dnsResult,
+      ipv6Blocked: entry.observed?.ipv6Blocked,
     })
     entry.health = deriveHealth(entry.checks)
   }
@@ -1218,6 +1405,117 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       entry.probeResult = null
     }
     entry.probeAt = nowSeconds()
+  }
+
+  /**
+   * Plan 55 §3.4, §4.2, §4.3, §5.3, §5.4, §5.6 — the `geo`/`dns` checks' own I/O, sharing
+   * `maybeRunProbe`'s throttle-and-force pattern but on `network.geoIntervalSec`'s own slower
+   * cadence ("a residential pool moves... an egress probe every 20s per device is real traffic
+   * and cost at fleet scale" — Plan 51 §9 Q1, Plan 55 §3.4). Called AFTER `maybeRunProbe` at
+   * every one of its call sites, so it always has that tick's freshest egress address to work
+   * from. Never throws — every failure lands on `entry.geoError`/`entry.dnsResult`, which
+   * `buildChecks()` turns into `unknown`, never a false `pass`.
+   */
+  async function maybeRunGeoAndDns(row: DeviceRow, config: Socks5RouteConfig, entry: NetworkRouteEntry, route: NetworkRoute, force: boolean): Promise<void> {
+    const net = networkSettings()
+    const now = nowSeconds()
+    if (!force && entry.geoAt !== null && now - entry.geoAt < net.geoIntervalSec) return
+
+    // Nothing to look up without BOTH a provider and a fresh egress address — leave whatever
+    // `entry.geoObservation` already holds untouched rather than clearing it (a momentary probe
+    // miss should not erase the last confirmed sighting), and never advance `geoAt` so the next
+    // tick tries again promptly instead of waiting out the full interval.
+    const address = parseEgressAddress(entry.probeResult?.tunnelled.body)
+    if (!net.geoProvider || !address) return
+
+    const observation = await lookupGeo(net.geoProvider, address)
+    if (observation) {
+      entry.geoObservation = observation
+      entry.geoError = null
+      // Plan 55 §3.4, §4.3 — the history ring is appended to for EVERY fresh observation,
+      // whether or not an `expect` is declared: "three addresses in an afternoon is itself the
+      // signal", and an operator watching a pool before deciding what to declare still benefits.
+      // Re-read FRESH from the DB rather than trusting `row` — the caller's own `row` parameter
+      // is frequently a snapshot taken BEFORE that same caller's own `writePersistedRoute` call
+      // (every HTTP handler in this file reads `row` once at the top, then writes `config`
+      // before ever reaching `applyRoute`), so `readPersistedRoute(row)` would silently miss
+      // that write and, on a device's very FIRST apply, read `null` and drop the observation
+      // entirely — exactly the kind of "saved but never actually appended to" bug this comment
+      // exists to prevent happening again.
+      const persisted = readPersistedRoute(mustGet(row.id))
+      if (persisted) {
+        writePersistedRoute(row.id, { ...persisted, exitHistory: pushExitHistory(persisted.exitHistory, observation) })
+      }
+    } else {
+      entry.geoError = { code: 'E_NETWORK_GEO_LOOKUP_FAILED', message: `geo lookup for ${address} failed or returned an unparseable response` }
+    }
+    entry.geoAt = now
+
+    // dns (Plan 51 §4.3, §5.3) — needs the delegated zone, the SAME geo provider (to attribute
+    // the resolver's network), and the agent's egress-probe capability (already confirmed live by
+    // the time `maybeRunProbe` populated `entry.probeResult` above, but re-checked defensively).
+    const zone = probeDnsZone()
+    const base = probeUrl()
+    if (zone && base && net.geoProvider && entry.agentCapabilities?.includes('egress-probe') && route.probe) {
+      const nonce = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      try {
+        const probed = await route.probe(`http://${nonce}.${zone}/probe`, PROBE_TIMEOUT_MS)
+        if (!probed.tunnelled.ok) {
+          entry.dnsResult = {
+            state: 'unknown',
+            detail: probed.tunnelled.error ?? 'the DNS-check probe target did not answer',
+            at: now,
+          }
+        } else {
+          const resolverRes = await fetch(new URL(`/resolver/${nonce}`, base), { signal: AbortSignal.timeout(GEO_LOOKUP_TIMEOUT_MS) }).catch(() => null)
+          const sighting = resolverRes?.ok ? ((await resolverRes.json().catch(() => null)) as { seenFrom?: string | null } | null) : null
+          if (!sighting?.seenFrom) {
+            entry.dnsResult = { state: 'unknown', detail: 'no resolver was observed querying for the probe subdomain', at: now }
+          } else {
+            const resolverGeo = await lookupGeo(net.geoProvider, sighting.seenFrom)
+            const exitGeo = entry.geoObservation
+            if (!resolverGeo || !exitGeo) {
+              entry.dnsResult = { state: 'unknown', detail: 'could not attribute the resolver or exit address to a network', at: now }
+            } else {
+              // ASN first — far more stable and less ambiguous than an ISP display name; ISP name
+              // is the fallback when either side's provider does not return one.
+              const matches =
+                resolverGeo.asn !== null && exitGeo.asn !== null
+                  ? resolverGeo.asn === exitGeo.asn
+                  : resolverGeo.isp !== null && exitGeo.isp !== null
+                    ? resolverGeo.isp.trim().toLowerCase() === exitGeo.isp.trim().toLowerCase()
+                    : null
+              entry.dnsResult =
+                matches === null
+                  ? { state: 'unknown', detail: 'neither the resolver nor the exit address could be attributed to a network to compare', at: now }
+                  : matches
+                    ? { state: 'pass', detail: `resolved by ${resolverGeo.isp ?? `AS${resolverGeo.asn}`}, matching the upstream's own network`, at: now }
+                    : {
+                        state: 'fail',
+                        detail: `resolved by ${resolverGeo.isp ?? (resolverGeo.asn !== null ? `AS${resolverGeo.asn}` : sighting.seenFrom)}, not the upstream's network (${exitGeo.isp ?? (exitGeo.asn !== null ? `AS${exitGeo.asn}` : 'unknown')})`,
+                        at: now,
+                      }
+            }
+          }
+        }
+      } catch (err) {
+        entry.dnsResult = { state: 'unknown', detail: err instanceof Error ? err.message : String(err), at: now }
+      }
+    }
+
+    // Plan 55 §3.5, §4.1, §5.6 — a geo MISMATCH with `onGeoFail: 'hold'` forces the device into
+    // Plan 54's `held` state. Decided here, not in `buildChecks()` (which is pure and must stay
+    // that way): this is the one place with both the fresh comparison AND a live `route` to act
+    // through. Best-effort — a hold that could not be delivered is not this function's failure to
+    // report; the `geo` check itself already says the exit drifted.
+    if (config.expect && entry.geoObservation && resolveOnGeoFail(config) === 'hold' && route.hold && entry.agentCapabilities?.includes('route-hold')) {
+      const result = matchGeoExpectation(config.expect, entry.geoObservation)
+      if (!result.matches) {
+        await route
+          .hold(`geo check failed: ${result.field} expected ${result.expected}, observed ${result.observed}`)
+          .catch((err) => deps.log.warn(`network: device ${row.id}: onGeoFail=hold could not force a hold, tolerated: ${String(err)}`))
+      }
+    }
   }
 
   function countEnabledPersistedRoutes(): number {
@@ -1281,6 +1579,8 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         ...(status.upstream !== undefined ? { upstream: status.upstream } : {}),
         ...(status.stats !== undefined ? { stats: status.stats } : {}),
         ...(status.lastError !== undefined ? { lastError: status.lastError } : {}),
+        // Plan 51 §4.5, §5.7 — same treatment as every other optional field here.
+        ...(status.ipv6Blocked !== undefined ? { ipv6Blocked: status.ipv6Blocked } : {}),
       }
       observedAt = nowSeconds()
     } catch (err) {
@@ -1303,6 +1603,10 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       probeAt: null,
       probeError: null,
       agentCapabilities: null,
+      geoObservation: null,
+      geoAt: null,
+      geoError: null,
+      dnsResult: null,
     }
     recomputeChecks(entry, config)
     networkStateByDevice.set(row.id, entry)
@@ -1382,6 +1686,11 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     entry.lastError = null
     entry.probeResult = null
     entry.probeError = null
+    // Plan 55 — same treatment as `probeResult`/`probeError`: a `geo`/`dns` verdict from before
+    // the disconnect is not something this process can still stand behind.
+    entry.geoObservation = null
+    entry.geoError = null
+    entry.dnsResult = null
     const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
     recomputeChecks(entry, row ? (readPersistedRoute(row)?.config ?? undefined) : undefined)
     deps.log.info(`network: device ${deviceId} went offline — route config kept, live state cleared, checks now unknown`)
@@ -1443,6 +1752,8 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
           // Best-effort, throttled (plan 51 §9 open question 1) — never allowed to fail this
           // tick; a probe transport failure lands on `entry.probeError`, not here.
           await maybeRunProbe(entry, entry.route, false)
+          // Plan 55 §3.4, §5.4 — its own, slower throttle; shares this tick rather than a second timer.
+          await maybeRunGeoAndDns(row, persisted.config, entry, entry.route, false)
           recomputeChecks(entry, persisted.config)
         } else {
           await coldProbe(row, persisted.config)
@@ -1493,6 +1804,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         health: 'unknown',
         checks: [],
         lastError: null,
+        exitHistory: [],
       }
     }
 
@@ -1536,6 +1848,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       health: entry?.health ?? 'unknown',
       checks: entry?.checks ?? [],
       lastError: entry?.lastError ?? null,
+      exitHistory: persisted.exitHistory ?? [],
     }
   }
 
@@ -1611,6 +1924,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         config: currentPersisted?.config ?? config,
         enabled: currentPersisted?.enabled ?? true,
         ...(currentPersisted?.failClosed !== undefined ? { failClosed: currentPersisted.failClosed } : {}),
+        ...(currentPersisted?.exitHistory ? { exitHistory: currentPersisted.exitHistory } : {}),
         sessionId,
       })
     }
@@ -1647,6 +1961,10 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         probeAt: null,
         probeError: null,
         agentCapabilities: null,
+        geoObservation: null,
+        geoAt: null,
+        geoError: null,
+        dnsResult: null,
       }
       networkStateByDevice.set(row.id, entry)
     }
@@ -1675,6 +1993,8 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       // not wait out `PROBE_INTERVAL_S`. Best-effort: a probe failure lands on
       // `entry.probeError`/the `egress`/`upstream` checks, never on this apply.
       await maybeRunProbe(entry, route, true)
+      // Plan 55 §3.4, §5.4 — "plus on every apply", forced for the same reason the probe above is.
+      await maybeRunGeoAndDns(row, config, entry, route, true)
       recomputeChecks(entry, config)
     } catch (err) {
       const coded = toCodedError(err, 'E_NETWORK_APPLY_FAILED')
@@ -1719,17 +2039,30 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    *   serves a default-pool exit, so every check passes while the requested targeting is gone.
    *   `clearCredential` is how an operator asks for a genuinely anonymous upstream.
    */
+  /**
+   * Plan 55 §4.1, §5.1 — `expect`/`onGeoFail` carry over from `previous` exactly like
+   * `failClosed` does at the PUT handler below: an explicit value on THIS request wins, but a
+   * config update alone (e.g. changing the port) is not an operator asking to drop a declared
+   * expectation. Shared by every `normalizeDeclaredConfig` return branch.
+   */
+  function carryGeoFields(submitted: Socks5RouteConfig, previous: PersistedNetworkRoute | null): Pick<Socks5RouteConfig, 'expect' | 'onGeoFail'> {
+    const expect = submitted.expect ?? previous?.config?.expect
+    const onGeoFail = submitted.onGeoFail ?? previous?.config?.onGeoFail
+    return { ...(expect ? { expect } : {}), ...(onGeoFail ? { onGeoFail } : {}) }
+  }
+
   function normalizeDeclaredConfig(
     row: DeviceRow,
     submitted: Socks5RouteConfig,
     previous: PersistedNetworkRoute | null,
     actor: string | null,
   ): Socks5RouteConfig {
+    const geo = carryGeoFields(submitted, previous)
     if (submitted.credentialRef) {
       if (!credentials.findByName(submitted.credentialRef)) {
         throw new EnkakuError('E_CREDENTIAL_NOT_FOUND', `no stored credential named "${submitted.credentialRef}"`)
       }
-      return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode, credentialRef: submitted.credentialRef }
+      return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode, credentialRef: submitted.credentialRef, ...geo }
     }
     if (submitted.username === undefined && submitted.password === undefined) {
       const carried = submitted.clearCredential ? undefined : previous?.config?.credentialRef
@@ -1740,11 +2073,12 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         port: submitted.port,
         udpMode: submitted.udpMode,
         ...(carried && credentials.findByName(carried) ? { credentialRef: carried } : {}),
+        ...geo,
       }
     }
     const name = `device-${row.id}`
     credentials.upsert({ name, username: submitted.username, secret: submitted.password ?? '', createdBy: actor })
-    return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode, credentialRef: name }
+    return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode, credentialRef: name, ...geo }
   }
 
   app.get('/:id/network', async (c) => {
@@ -1771,7 +2105,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     // alone is not an operator asking to change it); `resolveFailClosed()` supplies the safe
     // default (`true`) for a route that has never had an opinion on it, new or pre-existing alike.
     const failClosed = parsed.data.failClosed ?? resolveFailClosed(previous)
-    writePersistedRoute(row.id, { config, enabled: true, failClosed })
+    // `exitHistory` carries over exactly like `sessionId`/`failClosed` below do — a config update
+    // is not an operator asking to forget the drift history observed so far (plan 55 §4.3).
+    writePersistedRoute(row.id, { config, enabled: true, failClosed, ...(previous?.exitHistory ? { exitHistory: previous.exitHistory } : {}) })
     ensureHeartbeat()
 
     await applyRoute(row, config, actor)
@@ -1798,6 +2134,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       enabled: true,
       failClosed: resolveFailClosed(persisted),
       ...(persisted.sessionId !== undefined ? { sessionId: persisted.sessionId } : {}),
+      ...(persisted.exitHistory ? { exitHistory: persisted.exitHistory } : {}),
     })
     ensureHeartbeat()
     await applyRoute(row, persisted.config, actor)
@@ -1819,6 +2156,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         enabled: false,
         ...(persisted.failClosed !== undefined ? { failClosed: persisted.failClosed } : {}),
         ...(persisted.sessionId !== undefined ? { sessionId: persisted.sessionId } : {}),
+        ...(persisted.exitHistory ? { exitHistory: persisted.exitHistory } : {}),
       })
       maybeStopHeartbeat()
     }

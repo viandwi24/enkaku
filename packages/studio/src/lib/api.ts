@@ -160,6 +160,34 @@ export interface RouteCheck {
   at: number | null
 }
 
+/**
+ * Where an operator expects a route's exit to be (plan 55 §3.1, §4.1). Only `country` is
+ * required — that is what ENABLES the `geo` check at all; everything else is optional, and the
+ * check only ever compares fields actually declared here (plan 55 §3.3, "match at the narrowest
+ * level declared").
+ */
+export interface GeoExpectation {
+  country: string
+  region?: string
+  city?: string
+  asn?: number
+  isp?: string
+}
+
+/** What a geo lookup actually reported for one exit address (plan 55 §4.1) — every field but `address`/`at` nullable, an honest "unknown" per field rather than a guess. */
+export interface GeoObservation {
+  address: string
+  country: string | null
+  region: string | null
+  city: string | null
+  asn: number | null
+  isp: string | null
+  at: number
+}
+
+/** What a failed `geo` check should do to the route (plan 55 §3.5, §4.1, §5.6). */
+export type OnGeoFail = 'report' | 'hold'
+
 /** What was saved. Never carries a password — the API never returns one (plan 44 §4.5, acceptance criterion 8). */
 export interface NetworkConfig {
   host: string
@@ -172,6 +200,10 @@ export interface NetworkConfig {
    */
   credentialRef?: string
   udpMode: NetworkUdpMode
+  /** Plan 55 §3.1, §4.1 — undefined means no expectation stated; `geo` stays `skip` forever. */
+  expect?: GeoExpectation
+  /** Plan 55 §3.5, §4.1 — always concrete, never absent, so the form never has to guess a default. */
+  onGeoFail: OnGeoFail
 }
 
 /**
@@ -214,6 +246,8 @@ export interface NetworkStatus {
   /** The named facts `health` was derived from — always present, even when every check is `unknown`. */
   checks: RouteCheck[]
   lastError: { code: string; message: string } | null
+  /** Plan 55 §4.3, §5.5 — past exit observations, newest first, so a rotating pool is visible as a sequence rather than one current value. Always present (possibly empty). */
+  exitHistory: GeoObservation[]
 }
 
 export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatus> {

@@ -14,6 +14,8 @@ import {
   RouteStopResultSchema,
   EgressProbeRequestSchema,
   EgressProbeResultSchema,
+  RouteHoldRequestSchema,
+  RouteHoldResultSchema,
   type GuestAgentErrorCode,
   type GuestAgentRequest,
   type HelloResult,
@@ -22,6 +24,7 @@ import {
   type RouteStatusResult,
   type RouteStopResult,
   type EgressProbeResult,
+  type RouteHoldResult,
   type Socks5RouteConfig,
 } from '@enkaku/protocol'
 
@@ -114,6 +117,12 @@ export interface GuestAgentClient {
    * `skip`), never as a route failure.
    */
   egressProbe(url: string, timeoutMs: number): Promise<EgressProbeResult>
+  /**
+   * Plan 55 §3.5, §4.1, §5.6. Same "always present on the client, gated on `hello().capabilities`"
+   * treatment as `egressProbe` above — an older build answers `E_UNKNOWN_METHOD`, which callers
+   * treat as "cannot force a hold" rather than a route failure.
+   */
+  routeHold(reason: string): Promise<RouteHoldResult>
 }
 
 /** One connect → write one line → read one line → close, with a hard timeout. */
@@ -313,6 +322,16 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
       // device's own budget, or a slow but genuinely still-running probe would be cut off here
       // before the agent ever answers.
       return call(connect, opts.port, Math.max(timeoutMs, probeTimeoutMs * 2 + 10_000), req, EgressProbeResultSchema)
+    },
+
+    routeHold(reason) {
+      const req = RouteHoldRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'route.hold',
+        reason,
+      })
+      return call(connect, opts.port, timeoutMs, req, RouteHoldResultSchema)
     },
   }
 }

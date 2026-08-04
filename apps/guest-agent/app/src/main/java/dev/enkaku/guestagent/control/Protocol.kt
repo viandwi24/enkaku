@@ -26,8 +26,10 @@ object Protocol {
    * `egress-probe` (plan 51 §5.4): added now that [dev.enkaku.guestagent.route.EgressProbe]
    * actually runs — never claim a capability before it works, or the whole point of this list
    * (the host gates on it rather than assuming) is defeated.
+   *
+   * `route-hold` (plan 55 §3.5, §4.1, §5.6): added now that [METHOD_ROUTE_HOLD] is handled below.
    */
-  val CAPABILITIES: List<String> = listOf("socks5-route", "vpn-status", "egress-probe")
+  val CAPABILITIES: List<String> = listOf("socks5-route", "vpn-status", "egress-probe", "route-hold")
 
   // Requests
   const val METHOD_HELLO = "hello"
@@ -36,6 +38,7 @@ object Protocol {
   const val METHOD_ROUTE_STOP = "route.stop"
   const val METHOD_ROUTE_STATUS = "route.status"
   const val METHOD_EGRESS_PROBE = "egress.probe"
+  const val METHOD_ROUTE_HOLD = "route.hold"
 
   // Error codes. Mirrored on the host so failures are matched on a code, never on message text.
   const val ERR_UNAUTHORISED = "E_UNAUTHORISED"

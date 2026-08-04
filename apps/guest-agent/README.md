@@ -68,13 +68,13 @@ It is a temporary developer tool, not part of the product — delete it once the
 
 ## Smoke test
 
-`scripts/smoke-guest-agent.ts` is the real test suite for this app: install, permissions, pre-grant, bootstrap, token rotation, an ANR check, routing, egress, an error-frame check, interleaving, uninstall, and teardown — twelve stages, each asserting on what the device reports. It supersedes `scripts/guest-agent.ts` for anything beyond ad hoc debugging; see [`docs/plans/50-m24a-ci-and-device-smoke-test.md`](../../docs/plans/50-m24a-ci-and-device-smoke-test.md) for why each stage exists.
+`scripts/smoke-guest-agent.ts` is the real test suite for this app: install, permissions, pre-grant, bootstrap, token rotation, an ANR check, routing, egress, an error-frame check, interleaving, fail-closed via the dead-man's switch, recovery, fail-closed via a dead upstream, uninstall, and teardown — fifteen stages, each asserting on what the device reports. It supersedes `scripts/guest-agent.ts` for anything beyond ad hoc debugging; see [`docs/plans/50-m24a-ci-and-device-smoke-test.md`](../../docs/plans/50-m24a-ci-and-device-smoke-test.md) and [`docs/plans/51-m24b-verified-egress-and-fail-closed.md`](../../docs/plans/51-m24b-verified-egress-and-fail-closed.md) §5.9 for why each stage exists.
 
 ```bash
 ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
 ```
 
-Add `ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port` to also run the routing stages (7-10); without it they print a skip line rather than failing. `--serial` is mandatory — it never guesses which attached device to drive. Not run in CI: GitHub runners have no phone attached, so this stays a local (or eventually self-hosted-runner) command.
+Add `ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port` to also run the routing stages (7-13); without it they print a skip line rather than failing. Add `ENKAKU_SMOKE_PROBE_URL=<a packages/probe-server /probe URL, reachable through that proxy>` for stage 8's real `egress.probe` assertion — without it, stage 8 falls back to the `dumpsys connectivity` VALIDATED signal alone. `--serial` is mandatory — it never guesses which attached device to drive. Not run in CI: GitHub runners have no phone attached, so this stays a local (or eventually self-hosted-runner) command.
 
 ## Project layout
 

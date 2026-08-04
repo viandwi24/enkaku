@@ -689,6 +689,44 @@ export const FarmSettingsSchema = z.object({
       title: 'File transfer',
       description: 'Push, pull, and APK install from Studio, a script, or a batch — always from a server-side artifact, never a client-supplied URL or path.',
     }),
+  /**
+   * Plan 55 §3.2, §5.1, §5.2 — the pluggable geo lookup the `geo` check compares an observed
+   * exit address against a route's declared `expect`ation with. UNSET BY DEFAULT, on purpose
+   * (§3.2: "a hosted geolocation service of our own" is explicitly a non-goal) — hardcoding one
+   * vendor here would repeat the exact mistake Plan 51 §4.1 and Plan 55 §3.1 already refused for
+   * geo-TARGETING syntax (never infer a region from the credential username). Unlike
+   * `network.probeUrl`/`network.sessionTemplate` (still read from an env var, a scope decision
+   * recorded on `probeUrl()` in `packages/core/src/api/guest-agent.ts`), this one lives in real
+   * farm settings from the start: it needs to be something an operator sets from Studio, not
+   * just at process start, and — unlike an env var — a value saved here and never read by
+   * anything is a bug a test can actually catch.
+   */
+  network: z
+    .object({
+      geoProvider: z
+        .string()
+        .url()
+        .optional()
+        .describe(
+          'URL of a GET <geoProvider>?ip=<address> endpoint answering GeoProviderResponseSchema\'s shape. Unset: the geo check stays skip, naming this setting. The self-hosted probe endpoint (packages/probe-server) implements this at its own /geo route.',
+        )
+        .meta({ title: 'Geo lookup provider URL' }),
+      geoIntervalSec: z
+        .number()
+        .int()
+        .min(30)
+        .max(86_400)
+        .default(300)
+        .describe(
+          'How often a route\'s exit is re-checked against its declared region, in seconds. A residential pool that rotates every few minutes is still caught; a lookup on every 20s heartbeat tick would be real per-device traffic and cost at fleet scale (Plan 51 §9 Q1, Plan 55 §3.4) for no extra safety.',
+        )
+        .meta({ title: 'Geo re-check interval (s)' }),
+    })
+    .default({ geoIntervalSec: 300 })
+    .meta({
+      title: 'Network geo verification',
+      description: 'Where the geo check looks up an exit address\'s location, and how often it re-checks a route already applied.',
+    }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>
 export type SessionSettings = FarmSettings['session']

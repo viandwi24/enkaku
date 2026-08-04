@@ -80,6 +80,13 @@
         "zod": "^4.0.0",
       },
     },
+    "packages/probe-server": {
+      "name": "@enkaku/probe-server",
+      "version": "0.0.1",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@enkaku/protocol",
       "version": "0.0.1",
@@ -173,6 +180,8 @@
     "@enkaku/examples": ["@enkaku/examples@workspace:examples"],
 
     "@enkaku/guest-agent": ["@enkaku/guest-agent@workspace:apps/guest-agent"],
+
+    "@enkaku/probe-server": ["@enkaku/probe-server@workspace:packages/probe-server"],
 
     "@enkaku/protocol": ["@enkaku/protocol@workspace:packages/protocol"],
 

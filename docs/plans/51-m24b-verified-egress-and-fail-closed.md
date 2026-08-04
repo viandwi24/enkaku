@@ -1,7 +1,8 @@
 # Plan 51 — M24b : Verified egress, and a route that fails closed
 
-> Status: implemented — named `RouteCheck`s with `deriveHealth()` replace the single enum, the `egress.probe` agent capability and control method exist end to end, and Studio surfaces per-check state.
-> Ships: packages/protocol/src/network.ts
+> Status: implemented except §5.1 — named `RouteCheck`s with `deriveHealth()` replace the single enum, the `egress.probe` capability and control method exist end to end, Studio surfaces per-check state, and §5.3 (the self-hosted probe endpoint, `packages/probe-server`, with its authoritative-resolver hook) and §5.7 (IPv6 blocked explicitly and *asserted* by the `leak` check) landed under Plan 55.
+> **§5.1 remains an unverified gate.** Always-on VPN + lockdown via `settings put secure` needs a device reboot to confirm, and no device has been free to test it. Until it is settled, `failClosed` is Plan 54's hold-closed only: it protects a live agent whose upstream failed, not an agent that was force-stopped. §4.4's lockdown wording still describes the unbuilt version.
+> Ships: packages/protocol/src/network.ts, packages/probe-server/
 > **Depends on:** Plan 44 (the working route), Plan 50 (CI and the device smoke test — its stage 8 becomes real here).
 > **Spec references:** §7.9 (network layer — this plan makes rule 3 true), §17 (positioning).
 > **Research:** `docs/research/android-guest-agent.md` §6 (always-on VPN), and the VpnService findings behind it.

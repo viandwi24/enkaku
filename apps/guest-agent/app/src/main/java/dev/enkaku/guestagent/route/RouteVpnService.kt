@@ -174,6 +174,16 @@ class RouteVpnService : VpnService() {
         .addAddress(Socks5Config.TUN_IPV4, Socks5Config.TUN_PREFIX_LENGTH)
         // Default route: everything goes through the tunnel. That is the point of this engine.
         .addRoute("0.0.0.0", 0)
+        // Plan 51 §4.5, §5.7 — EXPLICIT, not incidental. Without an IPv6 address on this
+        // interface, Android already refuses to route IPv6 anywhere (`dumpsys` shows
+        // `::/0 unreachable`) — but that is the platform's own behaviour for a VPN with no IPv6
+        // address, not something this app asked for, and it could change under us with no test
+        // ever noticing. Capturing `::/0` into this TUN ourselves makes the intent ours: every
+        // IPv6 packet on the device is funnelled in here, where `hev-socks5-tunnel` — configured
+        // IPv4-only above (`Socks5Config.TUN_IPV4`) — has nowhere to forward it and it simply
+        // goes nowhere. `Ipv6Leak.isBlocked()` (asked from `route.status`) reads this route back
+        // from `LinkProperties` rather than assuming this call did what it asked.
+        .addRoute("::", 0)
         // The tunnel's own resolver, not a real one — see Socks5Config.MAPPED_DNS_IPV4 for why
         // a real resolver breaks browsing through a TCP-only SOCKS5 proxy.
         .addDnsServer(Socks5Config.MAPPED_DNS_IPV4)

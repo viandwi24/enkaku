@@ -37,8 +37,12 @@ export const GUEST_AGENT_PROTOCOL = 1
  * probe runs on a socket protected out of the agent's own tunnel, since a
  * probe measured from inside the tunnel would only ever answer its own
  * question (Protocol.kt's `CAPABILITIES` comment, plan 44 §2).
+ *
+ * `route-hold` (plan 55 §3.5, §4.1, §5.6) — an older build has no `route.hold` handler and
+ * answers `E_UNKNOWN_METHOD`; the host gates on this the same way it gates `egress.probe` on
+ * `egress-probe`, rather than finding out from a failed call.
  */
-export const GuestAgentCapabilitySchema = z.enum(['socks5-route', 'vpn-status', 'egress-probe'])
+export const GuestAgentCapabilitySchema = z.enum(['socks5-route', 'vpn-status', 'egress-probe', 'route-hold'])
 export type GuestAgentCapability = z.infer<typeof GuestAgentCapabilitySchema>
 
 /** Mirrors Protocol.kt's `ERR_*` constants. Failures are matched on `code`, never on message text. */
@@ -105,6 +109,20 @@ export const EgressProbeRequestSchema = GuestAgentRequestBaseSchema.extend({
 })
 export type EgressProbeRequest = z.infer<typeof EgressProbeRequestSchema>
 
+/**
+ * Plan 55 §3.5, §4.1, §5.6 — forces the SAME hold-closed transition Plan 54's dead-man's switch
+ * reaches internally (`RouteVpnService.hold()`), but reachable from the HOST: a `geo` check
+ * disagreeing with `Socks5RouteConfig.onGeoFail: 'hold'` is decided on the HOST (only the host
+ * runs the geo lookup and the comparison), so unlike every other hold trigger — which are all
+ * on-device conditions the agent notices about itself — this one has to be told. `reason` is
+ * plain language, shown back through `route.status`'s `lastError`, same as any other hold.
+ */
+export const RouteHoldRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('route.hold'),
+  reason: z.string().min(1),
+})
+export type RouteHoldRequest = z.infer<typeof RouteHoldRequestSchema>
+
 /** The full request union, discriminated on `method` — mirrors `Protocol.METHOD_*`. */
 export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   HelloRequestSchema,
@@ -113,6 +131,7 @@ export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   RouteStopRequestSchema,
   RouteStatusRequestSchema,
   EgressProbeRequestSchema,
+  RouteHoldRequestSchema,
 ])
 export type GuestAgentRequest = z.infer<typeof GuestAgentRequestSchema>
 
@@ -141,6 +160,12 @@ export const RouteStopResultSchema = z.object({
 })
 export type RouteStopResult = z.infer<typeof RouteStopResultSchema>
 
+/** Plan 55 §3.5, §4.1, §5.6. Mirrors `RouteStartResultSchema`'s shape — a plain acknowledgement, since `route.status` is where the resulting state is actually read back. */
+export const RouteHoldResultSchema = z.object({
+  held: z.literal(true),
+})
+export type RouteHoldResult = z.infer<typeof RouteHoldResultSchema>
+
 /**
  * `upstream`, `stats`, and `lastError` are ABSENT from the frame when there
  * is nothing to report, not `null` — `ControlService.handle` builds this with
@@ -166,6 +191,16 @@ export const RouteStatusResultSchema = z.object({
    * against had never errored, so no test covered it.
    */
   lastError: z.string().optional(),
+  /**
+   * Plan 51 §4.5, §5.7 — asserts IPv6 is actually blocked rather than the host assuming a
+   * `Builder.addRoute("::", 0)` call that returned a non-null descriptor did exactly what was
+   * asked (`Ipv6Leak.isBlocked()` on the Kotlin side reads back `LinkProperties` rather than
+   * trusting the request). Absent on an older agent build that predates the check, and whenever
+   * `ConnectivityManager` cannot currently find the VPN network to ask (nothing established yet)
+   * — both map to the `leak` check reading `skip`/`unknown` rather than a guessed answer, never a
+   * silent `pass`.
+   */
+  ipv6Blocked: z.boolean().optional(),
 })
 export type RouteStatusResult = z.infer<typeof RouteStatusResultSchema>
 
@@ -218,6 +253,7 @@ export const GuestAgentOkResponseSchema = z.object({
     RouteStopResultSchema,
     RouteStatusResultSchema,
     EgressProbeResultSchema,
+    RouteHoldResultSchema,
   ]),
 })
 export type GuestAgentOkResponse = z.infer<typeof GuestAgentOkResponseSchema>

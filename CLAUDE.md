@@ -33,6 +33,7 @@ bun run reset          # delete .dev-data/.dev-cloud/.dev-agent
 bun run --cwd packages/core db:generate   # generate a Drizzle migration after changing src/db/schema.ts
 bun run build:guest-agent   # on-device APK (needs JDK 17 + Android SDK; see apps/guest-agent/README.md)
 bun run doctor              # environment check: toolchain integrity, adb, egress
+bun run probe-server        # the self-hosted egress/geo/DNS probe endpoint (plan 51 §5.3); routes degrade to `skip` when it is unset, never to a false `ok`
 bun test                    # the suite; device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
 ```
 

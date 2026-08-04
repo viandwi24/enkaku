@@ -10,6 +10,13 @@
       to be active. Cost most of a debugging session to find.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      Plan 51 §4.5, §5.7 — Ipv6Leak.isBlocked() reads back LinkProperties/NetworkCapabilities off
+      ConnectivityManager to ASSERT the ::/0 route actually landed, rather than trusting the
+      Builder call that asked for it. A "normal" permission (no runtime grant dialog), but still
+      required to call getAllNetworks()/getNetworkCapabilities()/getLinkProperties().
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

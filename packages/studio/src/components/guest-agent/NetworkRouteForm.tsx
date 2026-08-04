@@ -13,6 +13,7 @@ import {
   disableNetworkRoute,
   enableNetworkRoute,
   fetchNetworkStatus,
+  type GeoObservation,
   type NetworkHealth,
   type NetworkStatus,
   type NetworkUdpMode,
@@ -110,6 +111,13 @@ const CHECK_STATE_TEXT: Record<RouteCheckState, string> = {
   fail: 'text-led-danger',
   skip: 'text-fg-subtle',
   unknown: 'text-led-warn',
+}
+
+/** Renders a `GeoObservation` for the exit history list — whatever the provider could attribute, `—` for what it could not. */
+function describeExitLocation(o: GeoObservation): string {
+  const place = [o.city, o.region, o.country].filter((v): v is string => v !== null).join(', ')
+  const network = o.isp ?? (o.asn !== null ? `AS${o.asn}` : null)
+  return [place || null, network].filter(Boolean).join(' · ') || '—'
 }
 
 /** One row of the per-check breakdown — names the fact, its state, and (when present) why, without needing logs (plan 51 §5.8, acceptance criterion 9). */
@@ -255,6 +263,18 @@ export function NetworkRouteForm({
   const [pasteUrl, setPasteUrl] = useState('')
   const [pasteError, setPasteError] = useState<string | null>(null)
 
+  // Plan 55 §3.1, §4.1, §4.4 — the expected-exit fields. `country` alone enables the `geo` check
+  // (acceptance criterion 1); the rest narrow it further, per §3.3's "match at the narrowest
+  // level declared". Blank means "not declared", never a guessed default.
+  const [expectCountry, setExpectCountry] = useState('')
+  const [expectRegion, setExpectRegion] = useState('')
+  const [expectCity, setExpectCity] = useState('')
+  const [expectAsn, setExpectAsn] = useState('')
+  const [expectIsp, setExpectIsp] = useState('')
+  // Plan 55 §3.5, §4.1, §5.6 — defaults to the safe reading until the server's own value is
+  // seeded in, matching `resolveOnGeoFail()`'s own default.
+  const [onGeoFail, setOnGeoFail] = useState<'report' | 'hold'>('report')
+
   const load = () => {
     setError(null)
     fetchNetworkStatus(deviceId)
@@ -271,6 +291,13 @@ export function NetworkRouteForm({
       setPort(String(status.config.port))
       setUdpMode(status.config.udpMode)
       setFailClosed(status.failClosed)
+      const expect = status.config.expect
+      setExpectCountry(expect?.country ?? '')
+      setExpectRegion(expect?.region ?? '')
+      setExpectCity(expect?.city ?? '')
+      setExpectAsn(expect?.asn !== undefined ? String(expect.asn) : '')
+      setExpectIsp(expect?.isp ?? '')
+      setOnGeoFail(status.config.onGeoFail)
     }
   }, [status])
 
@@ -292,6 +319,20 @@ export function NetworkRouteForm({
   const canApply =
     canUse && host.trim().length > 0 && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535
 
+  const expectAsnNum = expectAsn.trim() ? Number(expectAsn.trim()) : undefined
+  // A bare country is enough to enable the check (Plan 55 §4.1); everything else is optional and
+  // only sent when actually filled in. No country at all means "no expectation" — omit `expect`
+  // entirely rather than send an empty object the server would reject (`country` is required).
+  const expect = expectCountry.trim()
+    ? {
+        country: expectCountry.trim().toUpperCase(),
+        ...(expectRegion.trim() ? { region: expectRegion.trim() } : {}),
+        ...(expectCity.trim() ? { city: expectCity.trim() } : {}),
+        ...(expectAsnNum !== undefined && Number.isInteger(expectAsnNum) && expectAsnNum > 0 ? { asn: expectAsnNum } : {}),
+        ...(expectIsp.trim() ? { isp: expectIsp.trim() } : {}),
+      }
+    : undefined
+
   const applyRoute = () =>
     run(
       'apply',
@@ -306,6 +347,8 @@ export function NetworkRouteForm({
             udpMode,
             failClosed,
             clearCredential: clearCredential ? true : undefined,
+            expect,
+            onGeoFail,
           },
         }),
       {
@@ -553,6 +596,104 @@ export function NetworkRouteForm({
             </Label>
           </div>
 
+          {/* Plan 55 §3.1, §3.3, §4.4 — country alone enables the `geo` check; everything else
+              narrows it. Matching happens at the narrowest level declared, so filling in only the
+              country is never failed by a city or ISP change — the drift is still visible in the
+              check's own detail line and in the exit history below. */}
+          <div className="mt-3 rounded border bg-bg px-2.5 py-2.5">
+            <h4 className="text-[12px] font-medium text-fg">Expected exit</h4>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+              Where this route should exit. Only fields filled in here are checked — declaring just a
+              country will not fail on a city change, but a drift is still shown.
+            </p>
+            <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor={`expect-country-${deviceId}`} className="text-[12px] font-normal">
+                  Country (ISO 2-letter)
+                </Label>
+                <Input
+                  id={`expect-country-${deviceId}`}
+                  value={expectCountry}
+                  onChange={(e) => setExpectCountry(e.target.value.slice(0, 2))}
+                  placeholder="JP"
+                  disabled={!canUse}
+                  maxLength={2}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`expect-region-${deviceId}`} className="text-[12px] font-normal">
+                  Region (optional)
+                </Label>
+                <Input
+                  id={`expect-region-${deviceId}`}
+                  value={expectRegion}
+                  onChange={(e) => setExpectRegion(e.target.value)}
+                  placeholder="Tokyo"
+                  disabled={!canUse}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`expect-city-${deviceId}`} className="text-[12px] font-normal">
+                  City (optional)
+                </Label>
+                <Input
+                  id={`expect-city-${deviceId}`}
+                  value={expectCity}
+                  onChange={(e) => setExpectCity(e.target.value)}
+                  placeholder="Shibuya"
+                  disabled={!canUse}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`expect-isp-${deviceId}`} className="text-[12px] font-normal">
+                  ISP (optional)
+                </Label>
+                <Input
+                  id={`expect-isp-${deviceId}`}
+                  value={expectIsp}
+                  onChange={(e) => setExpectIsp(e.target.value)}
+                  placeholder="NTT"
+                  disabled={!canUse}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor={`expect-asn-${deviceId}`} className="text-[12px] font-normal">
+                  ASN (optional)
+                </Label>
+                <Input
+                  id={`expect-asn-${deviceId}`}
+                  inputMode="numeric"
+                  value={expectAsn}
+                  onChange={(e) => setExpectAsn(e.target.value)}
+                  placeholder="4713"
+                  disabled={!canUse}
+                />
+              </div>
+            </div>
+
+            {expectCountry.trim() && (
+              <div className="mt-3 space-y-1.5">
+                <Label htmlFor={`on-geo-fail-${deviceId}`} className="text-[12px] font-normal">
+                  On mismatch
+                </Label>
+                <Select value={onGeoFail} onValueChange={(v) => setOnGeoFail(v as 'report' | 'hold')} disabled={!canUse}>
+                  <SelectTrigger id={`on-geo-fail-${deviceId}`} className="w-full sm:w-56">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="report">Report only</SelectItem>
+                    <SelectItem value="hold">Hold the device closed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  {onGeoFail === 'hold'
+                    ? 'A drifted exit blocks the device’s own traffic on purpose, the same as a failed tunnel — it recovers on its own once the exit is back in range. Only turn this on if presenting the wrong identity is worse than no connectivity at all.'
+                    : 'A drifted exit only shows up in health and the checks below — the device keeps routing.'}
+                </p>
+              </div>
+            )}
+          </div>
+
           <div className="mt-4 flex items-center gap-2 border-t pt-3">
             <Button type="submit" size="sm" disabled={!canApply || isPending('apply')}>
               {isPending('apply') ? 'Applying…' : status.config ? 'Update route' : 'Apply route'}
@@ -629,6 +770,26 @@ export function NetworkRouteForm({
             <div className="mt-2.5 rounded border border-led-danger/40 bg-led-danger/5 px-2.5 py-2 text-[11.5px]">
               <span className="readout font-medium text-led-danger">{status.lastError.code}</span>
               <p className="mt-0.5 text-fg-muted">{status.lastError.message}</p>
+            </div>
+          )}
+
+          {/* Plan 55 §3.4, §4.3, §4.4 — a short list, not a chart: three addresses in an
+              afternoon is itself the signal a rotating pool is drifting, visible without reading
+              logs (acceptance criterion 7). Only rendered once there is at least one observation
+              — an unconfigured geo provider means this stays empty forever, which is honest. */}
+          {status.exitHistory.length > 0 && (
+            <div className="mt-2.5 border-t pt-2.5">
+              <h4 className="text-[12px] font-medium text-fg-subtle">exit history</h4>
+              <ul className="mt-1.5 space-y-1">
+                {status.exitHistory.map((o, i) => (
+                  // eslint-disable-next-line react/no-array-index-key -- addresses can repeat; (address, at) pairs are the real key but at can collide within the same second too.
+                  <li key={`${o.at}-${i}`} className="flex items-baseline justify-between gap-3 text-[11.5px]">
+                    <span className="readout text-fg">{o.address}</span>
+                    <span className="min-w-0 truncate text-fg-muted">{describeExitLocation(o)}</span>
+                    <span className="shrink-0 text-fg-subtle">{new Date(o.at * 1000).toLocaleString()}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

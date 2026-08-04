@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { GuestAgentClient, GuestAgentClientOptions, GuestAgentLauncher } from '@enkaku/drivers'
 import { GuestAgentClientError } from '@enkaku/drivers'
-import type { EgressProbeResult, HelloResult, PingResult, RouteStartResult, RouteStatusResult, RouteStopResult } from '@enkaku/protocol'
+import type { EgressProbeResult, HelloResult, PingResult, RouteHoldResult, RouteStartResult, RouteStatusResult, RouteStopResult } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
@@ -87,6 +87,10 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): GuestAgentClient
       tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 100 },
       direct: { ok: true, status: 200, body: 'nonce=abc', ms: 20 },
     }),
+    // Not called unless a route reaches `onGeoFail: 'hold'` with a genuinely mismatched geo check
+    // (plan 55 §5.6) — every existing test here runs without that, so this default only matters
+    // for the hold-wiring tests below.
+    routeHold: async (): Promise<RouteHoldResult> => ({ held: true }),
     ...overrides,
   }
 }
@@ -136,6 +140,8 @@ function makeHarness(opts: {
   makeClient?: (opts: GuestAgentClientOptions) => GuestAgentClient
   /** Plan 54 §3.2, §4.2 test seam — the bounded-recovery backoff, overridden in recovery tests so they need not sit out real wall-clock delays. */
   recoveryBackoffS?: number[]
+  /** Plan 55 §3.2, §5.1 — the geo half of `FarmSettingsSchema.network`, overridden in the geo/dns tests below. Defaults to no provider configured, matching a farm that never touched Settings → Network. */
+  networkSettings?: () => { geoProvider?: string; geoIntervalSec: number }
 }): Harness {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
@@ -162,6 +168,7 @@ function makeHarness(opts: {
     ...(opts.recoveryBackoffS ? { recoveryBackoffS: opts.recoveryBackoffS } : {}),
     ...(opts.launcher ? { makeLauncher: () => opts.launcher! } : {}),
     makeClient: opts.makeClient ?? (() => opts.client ?? fakeClient()),
+    ...(opts.networkSettings ? { networkSettings: opts.networkSettings } : {}),
   }
   const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline } = createGuestAgentRoutes(deps)
   const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
@@ -360,6 +367,7 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       sessionId: unknown
       failClosed: unknown
       lastError: unknown
+      exitHistory: unknown[]
     }
     expect(body).toEqual({
       engine: 'none',
@@ -374,6 +382,7 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       health: 'unknown',
       checks: [],
       lastError: null,
+      exitHistory: [],
     })
   })
 
@@ -395,14 +404,14 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       engine: string
       health: string
       enabled: boolean
-      config: { host: string; port: number; credentialRef?: string; udpMode: string }
+      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string }
     }
     expect(body.engine).toBe('vpn-helper')
     expect(body.health).toBe('unverified')
     expect(body.enabled).toBe(true)
     // No username/password on the response — inline credentials were moved into this device's own
     // named credential (plan 52 §4.2, §5.1), referenced by `credentialRef` only.
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
 
     const applied = events.find((e) => e.kind === 'network.applied')
     expect(applied).toBeTruthy()
@@ -552,11 +561,11 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     const body = (await res.json()) as {
       engine: string
       enabled: boolean
-      config: { host: string; port: number; credentialRef?: string; udpMode: string } | null
+      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string } | null
     }
     expect(body.enabled).toBe(false)
     // No username/password on the response — moved into this device's own named credential.
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
     expect(ports.inUse.size).toBe(0)
 
     // The config on the row references the credential by name — no plaintext password anywhere
@@ -589,9 +598,12 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     expect(res.status).toBe(200)
     const text = await res.text()
     expect(text).not.toContain('hunter2')
-    const body = JSON.parse(text) as { enabled: boolean; config: { host: string; port: number; credentialRef?: string; udpMode: string } }
+    const body = JSON.parse(text) as {
+      enabled: boolean
+      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string }
+    }
     expect(body.enabled).toBe(true)
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
   })
 
   test('enable/disable refuse without a held lease', async () => {
@@ -932,6 +944,524 @@ describe('checks and health derivation (plan 51 §4.1, §5.5) — requires ENKAK
       })
       const text = await res.text()
       expect(text).not.toContain('hunter2')
+    }))
+})
+
+describe('geo / dns / leak checks (plan 51 §5.3, §5.7; plan 55) — requires ENKAKU_NETWORK_PROBE_URL and a fake geo provider', () => {
+  /** Sets `ENKAKU_NETWORK_PROBE_URL` for the duration of `fn` — mirrors the identically-named helper in the "checks and health derivation" describe block above (each `describe` here has its own copy; the env var itself is the only shared state). */
+  async function withProbeUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.ENKAKU_NETWORK_PROBE_URL
+    process.env.ENKAKU_NETWORK_PROBE_URL = url
+    try {
+      return await fn()
+    } finally {
+      if (saved === undefined) delete process.env.ENKAKU_NETWORK_PROBE_URL
+      else process.env.ENKAKU_NETWORK_PROBE_URL = saved
+    }
+  }
+
+  /** Mirrors `withProbeUrl` above, for `ENKAKU_NETWORK_PROBE_DNS_ZONE` (plan 51 §5.3). */
+  async function withDnsZone<T>(zone: string, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.ENKAKU_NETWORK_PROBE_DNS_ZONE
+    process.env.ENKAKU_NETWORK_PROBE_DNS_ZONE = zone
+    try {
+      return await fn()
+    } finally {
+      if (saved === undefined) delete process.env.ENKAKU_NETWORK_PROBE_DNS_ZONE
+      else process.env.ENKAKU_NETWORK_PROBE_DNS_ZONE = saved
+    }
+  }
+
+  /** Swaps `globalThis.fetch` for the duration of `fn` — `lookupGeo()`/the dns resolver check in guest-agent.ts call the real global, never an injected client (that HTTP surface belongs to the farm's own probe-server, not the guest agent's wire protocol). */
+  async function withFetch<T>(handler: (url: URL) => { status?: number; body: unknown } | null, fn: () => Promise<T>): Promise<T> {
+    const saved = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const result = handler(new URL(raw))
+      if (!result) return new Response('not found', { status: 404 })
+      return new Response(JSON.stringify(result.body), { status: result.status ?? 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      return await fn()
+    } finally {
+      globalThis.fetch = saved
+    }
+  }
+
+  const GEO_PROVIDER = 'https://probe.internal/geo'
+  const geoSettings = () => ({ geoProvider: GEO_PROVIDER, geoIntervalSec: 300 })
+
+  function fakeGeoFetch(byIp: Record<string, { country?: string | null; region?: string | null; city?: string | null; asn?: number | null; isp?: string | null }>) {
+    return (url: URL): { body: unknown } | null => {
+      if (url.pathname !== '/geo') return null
+      const ip = url.searchParams.get('ip')
+      const fields = (ip && byIp[ip]) ?? { country: null, region: null, city: null, asn: null, isp: null }
+      return { body: { country: null, region: null, city: null, asn: null, isp: null, ...fields } }
+    }
+  }
+
+  test('acceptance criterion 1: a route with no expectation reports geo: skip — never pass, even with a geo provider configured', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'JP' } }), async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+        })
+        const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+        expect(byId.geo).toBe('skip')
+      })))
+
+  test('acceptance criterion 2: an expectation with no geo provider configured reports skip, naming the setting', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        egressProbe: async () => ({
+          tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+          direct: { ok: true, status: 200, ms: 20 },
+        }),
+      })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+      })
+      const body = (await res.json()) as { checks: Array<{ id: string; state: string; detail?: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+      expect(byId.geo?.state).toBe('skip')
+      expect(byId.geo?.detail).toContain('geo lookup provider')
+    }))
+
+  test('acceptance criterion 3: a matching exit reports pass with the observed location in detail (this IS the dead-config test — geoProvider is actually read, not just stored)', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'JP', city: 'Tokyo', isp: 'NTT' } }), async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+        })
+        const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+        expect(byId.geo?.state).toBe('pass')
+        expect(byId.geo?.detail).toContain('Tokyo')
+        expect(byId.geo?.detail).toContain('NTT')
+        expect(body.health).toBe('ok')
+      })))
+
+  test('acceptance criterion 4: a mismatched exit reports fail, names the field, and health is no longer ok', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'ID', city: 'Surabaya' } }), async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+        })
+        const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+        expect(byId.geo?.state).toBe('fail')
+        expect(byId.geo?.detail).toContain('country')
+        expect(byId.geo?.detail).toContain('JP')
+        expect(byId.geo?.detail).toContain('ID')
+        expect(body.health).not.toBe('ok')
+      })))
+
+  test('acceptance criterion 5: a failed lookup reports unknown, never pass', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(() => ({ status: 500, body: { error: 'boom' } }), async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+        })
+        const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+        expect(byId.geo).toBe('unknown')
+        expect(byId.geo).not.toBe('pass')
+      })))
+
+  test('acceptance criterion 6: an operator declaring only a country is not failed by a city change, but the city is visible in detail', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'JP', city: 'Osaka' } }), async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+        })
+        const body = (await res.json()) as { checks: Array<{ id: string; state: string; detail?: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+        expect(byId.geo?.state).toBe('pass')
+        expect(byId.geo?.detail).toContain('Osaka')
+      })))
+
+  test('the expect/onGeoFail fields round-trip through PUT and GET — saved config is actually read back, not dead', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient()
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+      await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP', city: 'Tokyo' }, onGeoFail: 'hold' }),
+      })
+      const res = await app.request('/dev-1/network')
+      const body = (await res.json()) as { config: { expect?: { country: string; city?: string }; onGeoFail: string } }
+      expect(body.config.expect).toEqual({ country: 'JP', city: 'Tokyo' })
+      expect(body.config.onGeoFail).toBe('hold')
+    }))
+
+  test('dns: no probeDnsZone configured reports skip naming ENKAKU_NETWORK_PROBE_DNS_ZONE', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+      })
+      const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+      seedDevice(db)
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { checks: Array<{ id: string; state: string; detail?: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+      expect(byId.dns?.state).toBe('skip')
+      expect(byId.dns?.detail).toContain('ENKAKU_NETWORK_PROBE_DNS_ZONE')
+    }))
+
+  test('dns: zone configured but no geo provider reports skip naming the geo provider', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withDnsZone('dns.probe.test', async () => {
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        })
+        const { db, app } = makeHarness({ launcher, client })
+        seedDevice(db)
+        const res = await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+        })
+        const body = (await res.json()) as { checks: Array<{ id: string; state: string; detail?: string }> }
+        const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+        expect(byId.dns?.state).toBe('skip')
+        expect(byId.dns?.detail).toContain('geo')
+      })))
+
+  test('dns: resolver on the upstream\'s own network reports pass', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withDnsZone('dns.probe.test', async () =>
+        withFetch(
+          (url) => {
+            if (url.pathname === '/geo') {
+              // Both the exit (1.2.3.4) and the resolver (9.9.9.9) attribute to the same network.
+              return { body: { country: 'JP', region: null, city: null, asn: 4713, isp: 'NTT' } }
+            }
+            if (url.pathname.startsWith('/resolver/')) return { body: { nonce: 'x', seenFrom: '9.9.9.9', at: 1_700_000_000 } }
+            return null
+          },
+          async () => {
+            const { launcher } = fakeLauncher()
+            const client = fakeClient({
+              hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+              routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+              egressProbe: async () => ({
+                tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+                direct: { ok: true, status: 200, ms: 20 },
+              }),
+            })
+            const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+            seedDevice(db)
+            const res = await app.request('/dev-1/network', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+            })
+            const body = (await res.json()) as { checks: Array<{ id: string; state: string; detail?: string }> }
+            const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+            expect(byId.dns?.state).toBe('pass')
+          },
+        ))))
+
+  test('dns: resolver on a DIFFERENT network than the exit reports fail — the real DNS-leak signal', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withDnsZone('dns.probe.test', async () =>
+        withFetch(
+          (url) => {
+            if (url.pathname === '/geo') {
+              const ip = url.searchParams.get('ip')
+              // 1.2.3.4 (the exit) is NTT/AS4713; 8.8.8.8 (the resolver) is a different network entirely.
+              const network = ip === '1.2.3.4' ? { asn: 4713, isp: 'NTT' } : { asn: 15169, isp: 'Google' }
+              return { body: { country: null, region: null, city: null, ...network } }
+            }
+            if (url.pathname.startsWith('/resolver/')) return { body: { nonce: 'x', seenFrom: '8.8.8.8', at: 1_700_000_000 } }
+            return null
+          },
+          async () => {
+            const { launcher } = fakeLauncher()
+            const client = fakeClient({
+              hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+              routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+              egressProbe: async () => ({
+                tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+                direct: { ok: true, status: 200, ms: 20 },
+              }),
+            })
+            const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+            seedDevice(db)
+            const res = await app.request('/dev-1/network', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+            })
+            const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+            const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+            expect(byId.dns?.state).toBe('fail')
+            expect(byId.dns?.detail).toContain('Google')
+            expect(body.health).not.toBe('ok')
+          },
+        ))))
+
+  test('dns: no resolver sighting at all reports unknown, not fail — cannot confirm a leak from silence alone', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withDnsZone('dns.probe.test', async () =>
+        withFetch(
+          (url) => {
+            if (url.pathname === '/geo') return { body: { country: 'JP', region: null, city: null, asn: 4713, isp: 'NTT' } }
+            if (url.pathname.startsWith('/resolver/')) return { body: { nonce: 'x', seenFrom: null, at: null } }
+            return null
+          },
+          async () => {
+            const { launcher } = fakeLauncher()
+            const client = fakeClient({
+              hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+              routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+              egressProbe: async () => ({
+                tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+                direct: { ok: true, status: 200, ms: 20 },
+              }),
+            })
+            const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+            seedDevice(db)
+            const res = await app.request('/dev-1/network', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+            })
+            const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+            const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+            expect(byId.dns).toBe('unknown')
+          },
+        ))))
+
+  test('leak: IPv6 blocked reports pass', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080', ipv6Blocked: true }) })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+      expect(Object.fromEntries(body.checks.map((c) => [c.id, c.state])).leak).toBe('pass')
+    }))
+
+  test('leak: IPv6 NOT blocked reports fail — asserted, not assumed (plan 51 §5.7)', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080', ipv6Blocked: false }) })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+      expect(byId.leak?.state).toBe('fail')
+      expect(body.health).not.toBe('ok')
+    }))
+
+  test('leak: an agent build that does not report ipv6Blocked reports skip, not a guessed pass', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      // Default fakeClient's routeStatus omits ipv6Blocked entirely — an older agent build.
+      const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+      expect(Object.fromEntries(body.checks.map((c) => [c.id, c.state])).leak).toBe('skip')
+    }))
+
+  test('onGeoFail: hold — a mismatched exit forces the device into held via route.hold when the agent supports it', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'ID' } }), async () => {
+        const holdCalls: string[] = []
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({
+            protocol: 1,
+            appVersion: '1.0.0',
+            androidSdkInt: 35,
+            capabilities: ['socks5-route', 'vpn-status', 'egress-probe', 'route-hold'],
+          }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+          routeHold: async (reason: string) => {
+            holdCalls.push(reason)
+            return { held: true }
+          },
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' }, onGeoFail: 'hold' }),
+        })
+        expect(holdCalls).toHaveLength(1)
+        expect(holdCalls[0]).toContain('country')
+      })))
+
+  test('onGeoFail: report (the default) — a mismatched exit does NOT call route.hold', async () =>
+    withProbeUrl('https://probe.internal/x', async () =>
+      withFetch(fakeGeoFetch({ '1.2.3.4': { country: 'ID' } }), async () => {
+        const holdCalls: string[] = []
+        const { launcher } = fakeLauncher()
+        const client = fakeClient({
+          hello: async () => ({
+            protocol: 1,
+            appVersion: '1.0.0',
+            androidSdkInt: 35,
+            capabilities: ['socks5-route', 'vpn-status', 'egress-probe', 'route-hold'],
+          }),
+          routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+          egressProbe: async () => ({
+            tunnelled: { ok: true, status: 200, body: '{"address":"1.2.3.4"}', ms: 100 },
+            direct: { ok: true, status: 200, ms: 20 },
+          }),
+          routeHold: async (reason: string) => {
+            holdCalls.push(reason)
+            return { held: true }
+          },
+        })
+        const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+        seedDevice(db)
+        await app.request('/dev-1/network', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', expect: { country: 'JP' } }),
+        })
+        expect(holdCalls).toHaveLength(0)
+      })))
+
+  test('exit history (plan 55 §4.3, §5.5): each fresh geo observation is prepended, newest first, without reading logs', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      let address = '1.1.1.1'
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({ protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route', 'vpn-status', 'egress-probe'] }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        egressProbe: async () => ({
+          tunnelled: { ok: true, status: 200, body: JSON.stringify({ address }), ms: 100 },
+          direct: { ok: true, status: 200, ms: 20 },
+        }),
+      })
+      await withFetch(
+        (url) => (url.pathname === '/geo' ? { body: { country: 'JP', asn: null, isp: null, city: null, region: null } } : null),
+        async () => {
+          const { db, app } = makeHarness({ launcher, client, networkSettings: geoSettings })
+          seedDevice(db)
+          await app.request('/dev-1/network', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+          })
+          address = '2.2.2.2'
+          // A second apply (an operator re-saving, or the /enable path) forces a fresh geo lookup
+          // the same way PUT's own apply does.
+          await app.request('/dev-1/network/enable', { method: 'POST' })
+
+          const res = await app.request('/dev-1/network')
+          const body = (await res.json()) as { exitHistory: Array<{ address: string }> }
+          expect(body.exitHistory.map((o) => o.address)).toEqual(['2.2.2.2', '1.1.1.1'])
+        },
+      )
     }))
 })
 

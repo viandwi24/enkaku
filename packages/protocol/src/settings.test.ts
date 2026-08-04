@@ -234,3 +234,24 @@ describe('FarmSettingsSchema.transfer — file transfer and APK install (plan 39
     expect(FarmSettingsSchema.parse({ transfer: { installTimeoutMs: 1_800_000 } }).transfer.installTimeoutMs).toBe(1_800_000)
   })
 })
+
+describe('FarmSettingsSchema.network — geo lookup provider (plan 55 §3.2, §5.1)', () => {
+  test('a settings row that predates this field (an empty object) still parses, geoProvider unset', () => {
+    const parsed = FarmSettingsSchema.parse({})
+    expect(parsed.network.geoProvider).toBeUndefined()
+    expect(parsed.network.geoIntervalSec).toBe(300)
+  })
+
+  test('geoProvider must be a URL, not an arbitrary string', () => {
+    expect(() => FarmSettingsSchema.parse({ network: { geoProvider: 'not a url' } })).toThrow()
+    expect(FarmSettingsSchema.parse({ network: { geoProvider: 'https://probe.example.com/geo' } }).network.geoProvider).toBe(
+      'https://probe.example.com/geo',
+    )
+  })
+
+  test('geoIntervalSec is bounded to [30, 86400] and round-trips a custom value', () => {
+    expect(() => FarmSettingsSchema.parse({ network: { geoIntervalSec: 10 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ network: { geoIntervalSec: 86_401 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ network: { geoIntervalSec: 600 } }).network.geoIntervalSec).toBe(600)
+  })
+})

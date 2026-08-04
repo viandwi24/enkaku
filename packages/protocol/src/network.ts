@@ -38,6 +38,97 @@ export const NetworkCapabilitiesSchema = z.object({
 export type NetworkCapabilities = z.infer<typeof NetworkCapabilitiesSchema>
 
 /**
+ * Where an operator expects a route's exit to be (plan 55 §3.1, §4.1). Only `country` is
+ * required — required because it is the field that ENABLES the `geo` check at all (acceptance
+ * criterion 1: no expectation, not even a bare country, means `skip`, forever). Everything else
+ * is optional, and the check only ever compares fields actually declared here (plan 55 §3.3,
+ * "match at the narrowest level the operator declared") — declaring only a country is not failed
+ * by a city change, but the observed city still appears in the check's `detail` either way.
+ */
+export const GeoExpectationSchema = z.object({
+  country: z.string().length(2).describe('ISO 3166-1 alpha-2 country code, e.g. "JP"').meta({ title: 'Country' }),
+  region: z.string().min(1).optional().describe('State/province/region name, as the geo provider reports it').meta({ title: 'Region' }),
+  city: z.string().min(1).optional().describe('City name, as the geo provider reports it').meta({ title: 'City' }),
+  asn: z.number().int().positive().optional().describe('Autonomous system number, without the "AS" prefix').meta({ title: 'ASN' }),
+  isp: z.string().min(1).optional().describe('ISP/organisation name, as the geo provider reports it').meta({ title: 'ISP' }),
+})
+export type GeoExpectation = z.infer<typeof GeoExpectationSchema>
+
+/**
+ * What a geo lookup actually reported for one exit address (plan 55 §4.1) — every field but
+ * `address`/`at` is nullable, not optional, because a lookup that SUCCEEDED but could not
+ * attribute a particular field (e.g. no ASN in the provider's data for this address) is a
+ * different fact than a field the provider's response shape never carries at all;
+ * `GeoProviderResponseSchema` below is what a `network.geoProvider` endpoint is actually expected
+ * to answer with, and this schema is that response plus the address it was looked up for and when.
+ */
+export const GeoObservationSchema = z.object({
+  address: z.string(),
+  country: z.string().nullable(),
+  region: z.string().nullable(),
+  city: z.string().nullable(),
+  asn: z.number().int().nullable(),
+  isp: z.string().nullable(),
+  /** Unix epoch seconds this observation was made. */
+  at: z.number().int(),
+})
+export type GeoObservation = z.infer<typeof GeoObservationSchema>
+
+/**
+ * The documented response shape a `network.geoProvider` endpoint (plan 55 §3.2, §5.2) must
+ * answer `GET <geoProvider>?ip=<address>` with — every field nullable so an honest "I don't know
+ * this one" never has to be faked as a wrong guess. The self-hosted probe endpoint
+ * (`packages/probe-server`, Plan 51 §5.3) implements this exact shape at its own `/geo` route,
+ * as the reference implementation Plan 55 §3.2 calls for — but ANY service answering this shape
+ * is a valid `network.geoProvider`, which is the whole point of the setting being a plain URL
+ * rather than a hardcoded vendor SDK.
+ */
+export const GeoProviderResponseSchema = GeoObservationSchema.omit({ address: true, at: true })
+export type GeoProviderResponse = z.infer<typeof GeoProviderResponseSchema>
+
+/**
+ * Which declared field of a `GeoExpectation` a comparison disagreed on (plan 55 §4.2: "fail,
+ * `detail` names WHICH field and both values") — checked in this order (broadest first) so a
+ * country-level mismatch is reported as the country being wrong, not buried under a coincidental
+ * city difference.
+ */
+const GEO_FIELD_ORDER = ['country', 'region', 'city', 'asn', 'isp'] as const
+
+export interface GeoMatchResult {
+  matches: boolean
+  /** Set only when `matches` is false — the first declared field (in `GEO_FIELD_ORDER`) that disagreed. */
+  field?: (typeof GEO_FIELD_ORDER)[number]
+  expected?: string
+  observed?: string
+}
+
+/** Case-insensitive, trimmed string compare — a geo provider's casing/whitespace is not a signal worth failing on. */
+function sameText(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
+/**
+ * Compares a declared `GeoExpectation` against an observed `GeoObservation` (plan 55 §4.2, §3.3).
+ * Only fields the operator actually declared are ever checked — "match at the narrowest level
+ * declared" falls directly out of iterating `expect`'s own keys rather than every field
+ * `GeoObservation` could carry. An observed `null` for a DECLARED field counts as a mismatch: the
+ * operator asked this to be verified, and "the provider has no answer for it" is not evidence
+ * that it matches.
+ */
+export function matchGeoExpectation(expect: GeoExpectation, observed: GeoObservation): GeoMatchResult {
+  for (const field of GEO_FIELD_ORDER) {
+    const wanted = expect[field]
+    if (wanted === undefined) continue
+    const got = observed[field]
+    const isMatch = field === 'asn' ? got === wanted : typeof got === 'string' && typeof wanted === 'string' && sameText(got, wanted)
+    if (!isMatch) {
+      return { matches: false, field, expected: String(wanted), observed: got === null ? 'unknown' : String(got) }
+    }
+  }
+  return { matches: true }
+}
+
+/**
  * A SOCKS5 upstream a `vpn-helper` route can be pointed at (plan 44 §4.2) —
  * the exact shape carried in a `route.start` request's `config` field on the
  * guest-agent wire (see `guest-agent.ts`), which is why `username`/`password`
@@ -101,6 +192,36 @@ export const Socks5RouteConfigSchema = z.object({
    * dropping it has to be asked for. Dropped from the DECLARED and RESOLVED shapes alike.
    */
   clearCredential: z.boolean().optional().describe('Drop the stored credential and connect to this upstream anonymously').meta({ title: 'No authentication' }),
+  /**
+   * Plan 55 §3.1, §4.1 — where this route's exit is EXPECTED to be, typed by the operator and
+   * never inferred from the credential username (Plan 51 §4.1 and Plan 55 §3.1 both refuse that:
+   * SOAX-style targeting syntax is one vendor's convention, and since Plan 52 the username is
+   * encrypted at rest and the API deliberately never returns it — the UI could not read it back
+   * even if it wanted to). Absent means "no expectation stated", which keeps the `geo` check at
+   * `skip` forever (acceptance criterion 1) — never inferred, never defaulted. HOST-ONLY: dropped
+   * from the RESOLVED wire object the same way `credentialRef`/`clearCredential` are — the device
+   * has no notion of where it is "supposed" to be, only the host compares an observation against
+   * this.
+   */
+  expect: GeoExpectationSchema.optional().describe('Where this route is expected to exit, for the geo check to compare against').meta({ title: 'Expected exit' }),
+  /**
+   * Plan 55 §3.5, §4.1, §5.6 — what a FAILED `geo` check should do to the route. `'report'` (the
+   * default) only surfaces the failure through `health`/`checks`, same as any other failing
+   * check; `'hold'` additionally forces the device into Plan 54's `held` state (traffic blocked,
+   * TUN left up) via the `route.hold` control method, on the theory that a route whose exit left
+   * its declared region is arguably worse than one merely down — it is actively presenting the
+   * wrong identity while otherwise reporting success. Defaulting this to `'hold'` would strand a
+   * device the first time a residential pool drifts one city over, so it stays opt-in. HOST-ONLY,
+   * same reasoning as `expect` above — dropped from the resolved wire object.
+   *
+   * `.optional()` rather than `.default('report')` ON PURPOSE, mirroring `failClosed` above: a
+   * Zod default makes the OUTPUT type non-optional, which would force every hand-built
+   * `Socks5RouteConfig` object literal in this codebase (there are several, in both production
+   * code and tests) to spell out `onGeoFail` even where it is irrelevant. `resolveOnGeoFail()` in
+   * `packages/core/src/api/guest-agent.ts` is the one place `undefined` becomes the concrete
+   * `'report'` default, the same treatment `resolveFailClosed()` gives `failClosed`.
+   */
+  onGeoFail: z.enum(['report', 'hold']).optional().describe('What a failed geo check should do: only report it, or hold the device closed too').meta({ title: 'On geo mismatch' }),
 })
 export type Socks5RouteConfig = z.infer<typeof Socks5RouteConfigSchema>
 
@@ -238,8 +359,31 @@ export const PersistedNetworkRouteSchema = z.object({
    * than every reader guessing its own default.
    */
   failClosed: z.boolean().optional(),
+  /**
+   * A small bounded ring of past exit observations (plan 55 §3.4, §4.3) — three different
+   * residential-pool addresses in one afternoon is itself the signal an operator needs, and a
+   * single "current" reading throws that history away the moment the pool rotates again.
+   * Newest first, capped at `EXIT_HISTORY_LIMIT` by `pushExitHistory()` below; appended to on
+   * every fresh `geo`/egress observation, never on a lookup failure (nothing new was actually
+   * learned then). Optional, matching `sessionId`/`failClosed` above: every route predating plan
+   * 55 lacks it.
+   */
+  exitHistory: z.array(GeoObservationSchema).optional(),
 })
 export type PersistedNetworkRoute = z.infer<typeof PersistedNetworkRouteSchema>
+
+/** How many past exit observations `pushExitHistory()` keeps — "a short list, not a chart" (plan 55 §4.4). */
+export const EXIT_HISTORY_LIMIT = 20
+
+/**
+ * Appends a fresh `GeoObservation` to a route's exit history ring, newest first, capped at
+ * `EXIT_HISTORY_LIMIT` (plan 55 §4.3, §5.5). A pure function — the caller (`guest-agent.ts`) owns
+ * reading the previous value and persisting the result, same as every other `PersistedNetworkRoute`
+ * mutation in this codebase.
+ */
+export function pushExitHistory(history: GeoObservation[] | undefined, observation: GeoObservation): GeoObservation[] {
+  return [observation, ...(history ?? [])].slice(0, EXIT_HISTORY_LIMIT)
+}
 
 /**
  * Replace `password` with a fixed mask. This exists because a config this
@@ -291,6 +435,8 @@ export const NetworkObservationSchema = z.object({
   stats: z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int()]).optional(),
   /** The device's own account of why the route is not working — e.g. the dead-man switch's reason. */
   lastError: z.string().optional(),
+  /** Plan 51 §4.5, §5.7 — see `RouteStatusResultSchema.ipv6Blocked` (`guest-agent.ts`) for the full doc comment; carried through unchanged. */
+  ipv6Blocked: z.boolean().optional(),
 })
 export type NetworkObservation = z.infer<typeof NetworkObservationSchema>
 

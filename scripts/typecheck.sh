@@ -4,7 +4,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 fail=0
-for p in protocol adb toolchain drivers scrcpy sdk session core agent studio; do
+for p in protocol adb toolchain drivers scrcpy sdk session core agent studio probe-server; do
   printf '%-10s ' "$p"
   if bunx tsc --noEmit -p "packages/$p" >/tmp/tc-$p.log 2>&1; then
     echo "OK"

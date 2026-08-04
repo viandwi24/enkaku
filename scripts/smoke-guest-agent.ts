@@ -10,7 +10,8 @@
  *   ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
  *
  * Optional:
- *   ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port   # enables stages 7-12; skipped without it
+ *   ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port   # enables stages 7-13; skipped without it
+ *   ENKAKU_SMOKE_PROBE_URL=https://probe.example/probe # a packages/probe-server /probe URL — enables stage 8's real egress.probe assertion
  *   ENKAKU_GUEST_AGENT_PATH=/path/to/app-debug.apk    # overrides the built-APK autodetect
  *   ADB=/path/to/adb | ANDROID_HOME=...               # adb location (see --help)
  *
@@ -31,7 +32,14 @@ import { join } from 'node:path'
 // scope. Importing the schema file directly (rather than redeclaring its shape here) is what
 // makes stage 9 a real check against the wire contract instead of a copy that could quietly drift
 // from it — which is exactly how the `lastError` defect went unnoticed in the first place.
-import { GUEST_AGENT_SOCKET, GUEST_AGENT_PROTOCOL, GuestAgentResponseSchema, RouteStatusResultSchema } from '../packages/protocol/src/guest-agent'
+import {
+  GUEST_AGENT_SOCKET,
+  GUEST_AGENT_PROTOCOL,
+  GuestAgentResponseSchema,
+  RouteStatusResultSchema,
+  EgressProbeResultSchema,
+  HelloResultSchema,
+} from '../packages/protocol/src/guest-agent'
 import { Socks5RouteConfigSchema, type Socks5RouteConfig } from '../packages/protocol/src/network'
 
 const PKG = 'dev.enkaku.guestagent'
@@ -51,8 +59,11 @@ function usage(): string {
 
 Env:
   ENKAKU_TEST_DEVICE=1     required gate — this script drives real hardware
-  ENKAKU_SMOKE_PROXY       socks5://[user:pass@]host:port — enables stages 7-12 (egress, fail-closed, recovery);
+  ENKAKU_SMOKE_PROXY       socks5://[user:pass@]host:port — enables stages 7-13 (egress, fail-closed, recovery);
                            without it those stages print a skip line rather than failing
+  ENKAKU_SMOKE_PROBE_URL   a packages/probe-server /probe URL, reachable through the proxy above — enables
+                           stage 8's real egress.probe assertion (plan 51 §5.9); without it stage 8 falls
+                           back to the dumpsys VALIDATED signal alone, same as before plan 51 landed
   ENKAKU_GUEST_AGENT_PATH  overrides the auto-detected debug/release APK
   ADB, ANDROID_HOME        adb location; falls back to ~/Library/Android/sdk/platform-tools/adb
 `
@@ -124,7 +135,7 @@ async function main() {
    * Raised when the device itself has gone — unplugged, powered off, or debugging revoked. It is
    * fatal and must abort the run: every later poll would otherwise burn its full deadline against
    * a device that is not there, so a disconnect turns a fast failure into a ten-minute crawl
-   * through fourteen stages that cannot possibly pass. Seen exactly that way.
+   * through fifteen stages that cannot possibly pass. Seen exactly that way.
    */
   class DeviceGoneError extends Error {}
 
@@ -279,7 +290,7 @@ async function main() {
   let liveToken = ''
 
   /**
-   * Runs from `finally` no matter which stage failed, plus once more as stage 14's own assertion
+   * Runs from `finally` no matter which stage failed, plus once more as stage 15's own assertion
    * when everything else passed. Every step is best-effort — the agent may already be
    * uninstalled, crashed, or never got far enough to be reachable — so nothing here may throw.
    */
@@ -438,6 +449,15 @@ async function main() {
     return `up via ${status.upstream ?? `${proxyCfg.host}:${proxyCfg.port}`}`
   }
 
+  /**
+   * Plan 51 §5.9: this used to assert nothing more than `dumpsys connectivity` showing the VPN
+   * network `VALIDATED` — a real signal, but not proof that a specific probe target answered
+   * THROUGH the tunnel, the exact gap plan 51 exists to close. Now that `egress.probe` exists on
+   * the wire, this stage calls it directly (the same request the host issues) and asserts the
+   * TUNNELLED leg actually answered — the real egress assertion the plan asks for. The VALIDATED
+   * check stays as a first sanity gate: it is cheap, requires no extra configuration, and failing
+   * fast on it beats waiting out a probe timeout against a route that never came up at all.
+   */
   async function stage8Egress(): Promise<string> {
     if (!proxyRaw) throw new SkipStage('ENKAKU_SMOKE_PROXY is not set')
     const dump = await pollUntil(
@@ -447,7 +467,29 @@ async function main() {
       },
       { timeoutMs: 30_000, intervalMs: 2_000, label: `dumpsys connectivity to show VPN:${PKG} VALIDATED` },
     )
-    return dump.includes(`VPN:${PKG}`) ? 'VPN network reports VALIDATED' : 'VALIDATED'
+    const validated = dump.includes(`VPN:${PKG}`) ? 'VPN network reports VALIDATED' : 'VALIDATED'
+
+    const probeUrl = process.env.ENKAKU_SMOKE_PROBE_URL?.trim()
+    if (!probeUrl) {
+      // Degrades honestly rather than a silent pass — mirrors the same rule
+      // `network.geoProvider`/`network.probeUrl` follow on the host (plan 51 §4.3).
+      return `${validated}; ENKAKU_SMOKE_PROBE_URL not set, egress.probe assertion skipped`
+    }
+
+    const hello = await call('hello', liveToken)
+    if (!hello.ok) throw new Error(`hello failed: ${hello.error.code} ${hello.error.message}`)
+    const helloResult = HelloResultSchema.parse(hello.result)
+    if (!helloResult.capabilities.includes('egress-probe')) {
+      return `${validated}; installed agent build does not advertise egress-probe, assertion skipped`
+    }
+
+    const probed = await call('egress.probe', liveToken, { url: probeUrl, timeoutMs: 8_000 })
+    if (!probed.ok) throw new Error(`egress.probe failed: ${probed.error.code} ${probed.error.message}`)
+    const result = EgressProbeResultSchema.parse(probed.result)
+    if (!result.tunnelled.ok) {
+      throw new Error(`egress.probe's tunnelled leg did not succeed: ${result.tunnelled.error ?? `status ${result.tunnelled.status}`}`)
+    }
+    return `${validated}; egress.probe tunnelled leg answered in ${result.tunnelled.ms}ms (direct leg: ${result.direct.ok ? 'ok' : 'failed'})`
   }
 
   /**
@@ -575,11 +617,54 @@ async function main() {
   }
 
   /**
+   * Plan 51 §5.9: "add a fail-closed stage: drop the upstream and assert the device sends
+   * nothing." Distinct from stage 11 — that one forces `held` through CORE silence (the
+   * dead-man's switch); this one forces it by pointing `route.start` straight at an upstream that
+   * refuses the connection, the ordinary way a proxy actually dies in production. `127.0.0.1:1` is
+   * local and always refuses immediately (nothing ever listens on port 1), so this does not depend
+   * on any external network condition. `failClosed` is left at its wire default (`true` — the
+   * safe reading, plan 54 §4.2) since neither the smoke config nor `ENKAKU_SMOKE_PROXY` sets it.
+   */
+  async function stage13FailClosedDeadUpstream(): Promise<string> {
+    if (!proxyRaw || !proxyCfg) throw new SkipStage('ENKAKU_SMOKE_PROXY is not set')
+    const deadCfg = Socks5RouteConfigSchema.parse({ host: '127.0.0.1', port: 1, udpMode: 'udp' as const })
+    const started = await call('route.start', liveToken, { config: deadCfg })
+    if (!started.ok) throw new Error(`route.start (dead upstream) failed: ${started.error.code} ${started.error.message}`)
+
+    const status = await pollUntil(
+      async () => {
+        const r = await call('route.status', liveToken)
+        if (!r.ok) throw new Error(`route.status failed: ${r.error.code} ${r.error.message}`)
+        const result = RouteStatusResultSchema.parse(r.result)
+        return result.state === 'held' ? result : undefined
+      },
+      { timeoutMs: 30_000, intervalMs: 1_000, label: 'route.status to report state:"held" for the dead upstream' },
+    )
+    if (!(await hasTunInterface())) throw new Error('tun0 is gone — a dead upstream tore the route down instead of holding it')
+    if (await hasWorkingInternet()) throw new Error('the device can still reach the internet with a dead upstream — traffic is leaking, not being blocked')
+
+    // Restore the working route — later stages (and, more importantly, teardown) assume a route
+    // that can be cleanly torn down; leaving the device held on a dead upstream would still pass
+    // stage 15's `tun0 is gone` check, but only by accident, not because recovery was proven again.
+    const restarted = await call('route.start', liveToken, { config: proxyCfg })
+    if (!restarted.ok) throw new Error(`could not restore the good route after the dead-upstream test: ${restarted.error.code} ${restarted.error.message}`)
+    await pollUntil(
+      async () => {
+        const r = await call('route.status', liveToken)
+        if (!r.ok) return undefined
+        return RouteStatusResultSchema.parse(r.result).up ? true : undefined
+      },
+      { timeoutMs: 20_000, intervalMs: 1_000, label: 'route.status to report up: true again after restoring the good config' },
+    )
+    return `held closed on a dead upstream: tun0 present, device had no working internet (${status.lastError ?? 'no lastError'}); good route restored`
+  }
+
+  /**
    * Catches: the self-undoing uninstall (plan §0.4) — the reconcile loop saw `enabled: true` in
    * the DB and reinstalled the app seconds later. An immediate check after uninstall would have
    * passed; the dwell is the point.
    */
-  async function stage13Uninstall(): Promise<string> {
+  async function stage14Uninstall(): Promise<string> {
     await call('route.stop', liveToken).catch(() => undefined)
     await adb('forward', '--remove', `tcp:${port}`).catch(() => undefined)
     await adb('uninstall', PKG)
@@ -589,7 +674,7 @@ async function main() {
     return 'package gone immediately, and stayed gone for 30s (nothing reinstalled it)'
   }
 
-  async function stage14Teardown(): Promise<string> {
+  async function stage15Teardown(): Promise<string> {
     await teardown()
     if (await hasTunInterface()) throw new Error('tun0 is still up')
     const dump = await adb('shell', 'dumpsys', 'connectivity').catch(() => '')
@@ -645,15 +730,16 @@ async function main() {
     [10, 'interleaving', stage10Interleaving],
     [11, 'fail-closed (dead-man\'s switch)', stage11FailClosed],
     [12, 'recovery', stage12Recovery],
-    [13, 'uninstall', stage13Uninstall],
-    [14, 'teardown', stage14Teardown],
+    [13, 'fail-closed (dead upstream)', stage13FailClosedDeadUpstream],
+    [14, 'uninstall', stage14Uninstall],
+    [15, 'teardown', stage15Teardown],
   ]
 
   let failed = false
   let deviceGone = false
   try {
     // Before anything else: if the serial is not attached, say so now. Discovering it stage by
-    // stage means fourteen deadlines expiring in a row against a device that was never there.
+    // stage means fifteen deadlines expiring in a row against a device that was never there.
     await requireDeviceAttached()
     for (const [n, name, fn] of stages) {
       const outcome = await runStage(n, name, fn)

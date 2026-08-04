@@ -21,6 +21,14 @@ export interface NetworkRoute {
    * method is discovered from `hello().capabilities`, not assumed here.
    */
   probe?(url: string, timeoutMs: number): Promise<EgressProbeResult>
+  /**
+   * Plan 55 §3.5, §4.1, §5.6. Forces the device into Plan 54's `held` state — used when a `geo`
+   * check disagrees with `Socks5RouteConfig.onGeoFail: 'hold'`, a decision only the HOST can make
+   * (only the host runs the geo lookup). Optional for the same reason `probe` is: whether the
+   * installed build actually understands `route.hold` is discovered from `hello().capabilities`
+   * (`'route-hold'`), not assumed here.
+   */
+  hold?(reason: string): Promise<void>
   revert(): Promise<void>
 }
 
@@ -169,6 +177,9 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
         ...(status.upstream !== undefined ? { upstream: status.upstream } : {}),
         ...(status.stats !== undefined ? { stats: status.stats } : {}),
         ...(status.lastError !== undefined ? { lastError: status.lastError } : {}),
+        // Plan 51 §4.5, §5.7 — same optionality as every other field here: absent on an older
+        // agent build, or when `Ipv6Leak.isBlocked()` found no VPN network to ask.
+        ...(status.ipv6Blocked !== undefined ? { ipv6Blocked: status.ipv6Blocked } : {}),
       }
       return observation
     },
@@ -183,6 +194,16 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
      */
     async probe(url, timeoutMs) {
       return deps.session.withClient((client) => client.egressProbe(url, timeoutMs))
+    },
+
+    /**
+     * Plan 55 §3.5, §4.1, §5.6 — same lazy-bootstrap contract as `observe()`/`probe()`. A
+     * `GuestAgentClientError` (including `E_UNKNOWN_METHOD` from a build that predates this
+     * capability) propagates uncaught; the caller treats that as "cannot force a hold" rather
+     * than a route failure, mirroring `probe()`'s own division of responsibility.
+     */
+    async hold(reason) {
+      await deps.session.withClient((client) => client.routeHold(reason))
     },
 
     /**
