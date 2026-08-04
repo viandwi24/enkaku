@@ -177,7 +177,7 @@ Widening that field also exposed a second instance the compiler found: the handl
 
 Studio colours stderr as **warn**, not danger. A stream is not a verdict — `dumpsys` on a missing service writes to stderr and exits 0 — and whether the command succeeded is the `exit` badge's job alone.
 
-Criterion 7 is met except `bun run build:studio`, which `scripts/build-studio.sh` refuses while a Studio dev server holds :3001 — building would corrupt it. Nothing under `packages/studio` changed in this plan and `tsc --noEmit -p packages/studio` is clean, so the risk is low, but it is unverified rather than proven.
+Criterion 7 met in full: typecheck clean across 10 packages, 1193 tests pass, and `bun run build:studio` completes (it had to wait for the operator's dev server to release :3001, which `scripts/build-studio.sh` refuses to build around).
 
 ## 7. Test plan
 
