@@ -13,6 +13,20 @@ bun run dev
 
 You do not need to install adb: on first run the core downloads adb, scrcpy-server, and the inspector APKs, verifies their sha256, and activates them itself (about 15 seconds). Dev data lives in `.dev-data/` inside the project folder, so nothing leaks into your system.
 
+### Configuration
+
+Everything is optional — `bun run dev` works with no configuration at all. To change something, copy the template and edit:
+
+```bash
+cp .env.example .env
+```
+
+Bun loads that file automatically for anything it runs as code: the core, the cloud agent, and the scripts. No dotenv package, no import. A real shell variable still wins over it (`ENKAKU_LOG_LEVEL=debug bun run dev`), matching the documented env > file > default precedence.
+
+**One place it does not reach, and it is worth knowing before it costs you an hour:** Bun does not expand `.env` inside `package.json` script strings. `dev:studio` resolves `${NEXT_PUBLIC_ENKAKU_CORE_URL:-…}` in a shell that never saw the root file, so a value set there is silently ignored. Studio's own variables live in `packages/studio/.env`, which Next.js loads itself — see `packages/studio/.env.example`.
+
+Both `.env` files are gitignored; both `.env.example` files are committed and are the reference for every variable the code reads.
+
 ### Toolchains
 
 Bun is the only thing needed for the core, Studio, the SDK, and the cloud agent — which is nearly everything. Two apps carry their own toolchain, and you only need it if you are working on that app:

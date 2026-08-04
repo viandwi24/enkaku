@@ -1,13 +1,18 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { GuestAgentClient, GuestAgentClientOptions, GuestAgentLauncher } from '@enkaku/drivers'
 import { GuestAgentClientError } from '@enkaku/drivers'
-import type { HelloResult, PingResult, RouteStartResult, RouteStatusResult, RouteStopResult } from '@enkaku/protocol'
+import type { EgressProbeResult, HelloResult, PingResult, RouteStartResult, RouteStatusResult, RouteStopResult } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createDeviceStateMachine } from '../device/state-machine'
+import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import type { JobStore } from '../queue/job-store'
 import { createLogger } from '../util/logger'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps } from './guest-agent'
 
@@ -76,6 +81,12 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): GuestAgentClient
     routeStart: async (): Promise<RouteStartResult> => ({ started: true }),
     routeStop: async (): Promise<RouteStopResult> => ({ stopped: true }),
     routeStatus: async (): Promise<RouteStatusResult> => ({ prepared: true, up: true }),
+    // Not called unless ENKAKU_NETWORK_PROBE_URL is set (plan 51 §5.5) — every existing test
+    // here runs without it, so this default only matters for the probe-specific tests below.
+    egressProbe: async (): Promise<EgressProbeResult> => ({
+      tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 100 },
+      direct: { ok: true, status: 200, body: 'nonce=abc', ms: 20 },
+    }),
     ...overrides,
   }
 }
@@ -111,6 +122,10 @@ interface Harness {
   ports: ReturnType<typeof fakePorts>
   /** Awaited explicitly by boot-reconciliation tests instead of racing the fire-and-forget call `createGuestAgentRoutes` makes at construction. */
   reconcileNetworkRoutes: () => Promise<void>
+  /** The plan 52 §5.3 "device online" restore — probe-first, never a blind re-apply. */
+  restoreDeviceRoute: (deviceId: string) => Promise<void>
+  /** The plan 52 §4.1 "device offline" handler — keeps the persisted route, marks checks unknown. */
+  handleDeviceOffline: (deviceId: string) => Promise<void>
 }
 
 function makeHarness(opts: {
@@ -132,6 +147,10 @@ function makeHarness(opts: {
     exec: async () => '',
     apkPath: async () => '/fake/guest-agent.apk',
     ports,
+    // A fresh temp dir per harness — the credential store (plan 52 §4.2) writes a real key file
+    // to `<dataDir>/network-credentials.key`, and tests must never share one, or an encrypt in
+    // one test and a decrypt in another would use two different keys for the "same" credential.
+    dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
     leases: fakeLeases(opts.leaseHeld ?? true),
     record: (e) => events.push(e),
     log: createLogger('test'),
@@ -141,9 +160,9 @@ function makeHarness(opts: {
     ...(opts.launcher ? { makeLauncher: () => opts.launcher! } : {}),
     makeClient: opts.makeClient ?? (() => opts.client ?? fakeClient()),
   }
-  const { routes, reconcileNetworkRoutes } = createGuestAgentRoutes(deps)
+  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline } = createGuestAgentRoutes(deps)
   const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
-  return { db, app, events, ports, reconcileNetworkRoutes }
+  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline }
 }
 
 describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)', () => {
@@ -333,10 +352,22 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       enabled: boolean
       observed: unknown
       health: string
+      checks: unknown[]
       drift: boolean
+      sessionId: unknown
       lastError: unknown
     }
-    expect(body).toEqual({ engine: 'none', config: null, enabled: false, observed: null, drift: false, health: 'unknown', lastError: null })
+    expect(body).toEqual({
+      engine: 'none',
+      config: null,
+      enabled: false,
+      observed: null,
+      drift: false,
+      sessionId: null,
+      health: 'unknown',
+      checks: [],
+      lastError: null,
+    })
   })
 
   test('PUT saves AND enables the route in one action, never reports health "ok" (only an egress probe could), and never echoes the password', async () => {
@@ -357,22 +388,26 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       engine: string
       health: string
       enabled: boolean
-      config: { host: string; port: number; username?: string; udpMode: string }
+      config: { host: string; port: number; credentialRef?: string; udpMode: string }
     }
     expect(body.engine).toBe('vpn-helper')
     expect(body.health).toBe('unverified')
     expect(body.enabled).toBe(true)
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, username: 'u', udpMode: 'udp' })
+    // No username/password on the response — inline credentials were moved into this device's own
+    // named credential (plan 52 §4.2, §5.1), referenced by `credentialRef` only.
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
 
     const applied = events.find((e) => e.kind === 'network.applied')
     expect(applied).toBeTruthy()
     expect(JSON.stringify(applied?.meta)).not.toContain('hunter2')
 
-    // Persisted straight into the DB row, not just held in memory — the
-    // whole point of step 5.4. The password IS in the raw column (it must
-    // survive a restart), but it must never leave the process un-redacted.
+    // Persisted straight into the DB row, not just held in memory — the whole point of step 5.4.
+    // Unlike plan 44's original compromise, the password is NOT in the raw column any more (plan
+    // 52 §4.2, §5.1, acceptance criterion 4) — only a `credentialRef` naming where it actually
+    // lives, encrypted, in `network_credentials`.
     const row = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
-    expect(JSON.stringify(row?.networkRoute)).toContain('hunter2')
+    expect(JSON.stringify(row?.networkRoute)).not.toContain('hunter2')
+    expect(JSON.stringify(row?.networkRoute)).toContain('device-dev-1')
   })
 
   test('drift: enabled true with observed.up false produces drift true, never quietly reported as off', async () => {
@@ -478,18 +513,24 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     const body = (await res.json()) as {
       engine: string
       enabled: boolean
-      config: { host: string; port: number; username?: string; udpMode: string } | null
+      config: { host: string; port: number; credentialRef?: string; udpMode: string } | null
     }
     expect(body.enabled).toBe(false)
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, username: 'u', udpMode: 'udp' })
+    // No username/password on the response — moved into this device's own named credential.
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
     expect(ports.inUse.size).toBe(0)
 
-    // The config, password included, is still on the row — only `enabled` flipped.
+    // The config on the row references the credential by name — no plaintext password anywhere
+    // in `devices` (plan 52 §4.2, acceptance criterion 4).
     const row = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
-    expect(row?.networkRoute).toEqual({
-      config: { host: 'proxy.example', port: 1080, username: 'u', password: 'hunter2', udpMode: 'udp' },
-      enabled: false,
-    })
+    const stored = row?.networkRoute as { config: Record<string, unknown>; enabled: boolean; sessionId?: string } | null
+    expect(stored?.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
+    expect(stored?.enabled).toBe(false)
+    expect(JSON.stringify(stored)).not.toContain('hunter2')
+    // The sticky-session id (plan 52 §4.3), minted on the PUT's own apply(), survives the
+    // disable — it is kept, not cleared, so re-enabling does not get a fresh exit for no reason.
+    expect(typeof stored?.sessionId).toBe('string')
+    expect(stored?.sessionId?.length).toBeGreaterThan(0)
   })
 
   test('enable re-applies a previously stored config without the operator retyping it', async () => {
@@ -509,9 +550,9 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     expect(res.status).toBe(200)
     const text = await res.text()
     expect(text).not.toContain('hunter2')
-    const body = JSON.parse(text) as { enabled: boolean; config: { host: string; port: number; udpMode: string } }
+    const body = JSON.parse(text) as { enabled: boolean; config: { host: string; port: number; credentialRef?: string; udpMode: string } }
     expect(body.enabled).toBe(true)
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, udpMode: 'udp' })
+    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
   })
 
   test('enable/disable refuse without a held lease', async () => {
@@ -670,6 +711,613 @@ describe('plan 44 §8b "Bug 1": one token per device, shared across every operat
     expect(body.observed?.up).toBe(true)
     // Two bootstraps total for the device: the original apply(), plus exactly one re-auth.
     expect(calls.filter((c) => c.startsWith('bootstrap:'))).toHaveLength(2)
+  })
+})
+
+describe('checks and health derivation (plan 51 §4.1, §5.5) — requires ENKAKU_NETWORK_PROBE_URL', () => {
+  /** Sets `ENKAKU_NETWORK_PROBE_URL` for the duration of `fn`, then restores whatever was there before — `probeUrl()` in guest-agent.ts reads the env var fresh on every call, so this is enough; no module reload needed. */
+  async function withProbeUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.ENKAKU_NETWORK_PROBE_URL
+    process.env.ENKAKU_NETWORK_PROBE_URL = url
+    try {
+      return await fn()
+    } finally {
+      if (saved === undefined) delete process.env.ENKAKU_NETWORK_PROBE_URL
+      else process.env.ENKAKU_NETWORK_PROBE_URL = saved
+    }
+  }
+
+  test('with no probe endpoint configured, egress/dns/geo are skip and health stays unverified even with a healthy tunnel', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    const res = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+    const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string }> }
+    expect(body.health).toBe('unverified')
+    const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+    expect(byId.tunnel).toBe('pass')
+    expect(byId.egress).toBe('skip')
+    expect(byId.dns).toBe('skip')
+    expect(byId.geo).toBe('skip')
+    expect(byId.leak).toBe('skip')
+  })
+
+  test('a working route with the probe endpoint configured and the agent advertising egress-probe reaches health: ok — the first time that value is reachable (plan 51 §1)', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({
+          protocol: 1,
+          appVersion: '1.0.0',
+          androidSdkInt: 35,
+          capabilities: ['socks5-route', 'vpn-status', 'egress-probe'],
+        }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        egressProbe: async (url) => {
+          expect(url).toBe('https://probe.internal/x')
+          return {
+            tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 210 },
+            direct: { ok: true, status: 200, body: 'nonce=abc', ms: 30 },
+          }
+        },
+      })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+      expect(byId.tunnel).toBe('pass')
+      expect(byId.upstream).toBe('pass')
+      expect(byId.egress).toBe('pass')
+      expect(body.health).toBe('ok')
+    }))
+
+  test('upstream reports fail when the tunnelled leg dies at the SOCKS5 connect stage, distinct from a healthy tunnel check (acceptance criterion 2)', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({
+          protocol: 1,
+          appVersion: '1.0.0',
+          androidSdkInt: 35,
+          capabilities: ['socks5-route', 'vpn-status', 'egress-probe'],
+        }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        egressProbe: async () => ({
+          tunnelled: { ok: false, ms: 8000, error: 'SOCKS5 CONNECT failed (reply code 5)', stage: 'connect' },
+          direct: { ok: true, status: 200, body: 'nonce=xyz', ms: 40 },
+        }),
+      })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+      // The TUN itself is fine — only the SOCKS5 session failed, and the checks say exactly that
+      // rather than a blanket `degraded` with no indication of which fact is wrong.
+      expect(byId.tunnel?.state).toBe('pass')
+      expect(byId.upstream?.state).toBe('fail')
+      expect(byId.egress?.state).toBe('fail')
+      expect(body.health).toBe('degraded')
+    }))
+
+  test('a probe target that fails to answer (SOCKS5 connect succeeded) reports upstream: pass, egress: fail — the two are not conflated', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({
+          protocol: 1,
+          appVersion: '1.0.0',
+          androidSdkInt: 35,
+          capabilities: ['socks5-route', 'vpn-status', 'egress-probe'],
+        }),
+        routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+        egressProbe: async () => ({
+          tunnelled: { ok: false, status: 503, ms: 210, error: 'probe target responded 503', stage: 'fetch' },
+          direct: { ok: true, status: 200, body: 'nonce=xyz', ms: 40 },
+        }),
+      })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { checks: Array<{ id: string; state: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+      expect(byId.upstream).toBe('pass')
+      expect(byId.egress).toBe('fail')
+    }))
+
+  test('an agent build that does not advertise egress-probe leaves egress: skip even with a probe endpoint configured', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      // Default fakeClient hello() advertises only socks5-route/vpn-status — no egress-probe.
+      const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { health: string; checks: Array<{ id: string; state: string; detail?: string }> }
+      const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+      expect(byId.egress?.state).toBe('skip')
+      expect(byId.egress?.detail).toContain('does not advertise')
+      expect(body.health).toBe('unverified')
+    }))
+
+  test('no check detail ever carries the route\'s username or password (acceptance criterion 8)', async () =>
+    withProbeUrl('https://probe.internal/x', async () => {
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({
+        hello: async () => ({
+          protocol: 1,
+          appVersion: '1.0.0',
+          androidSdkInt: 35,
+          capabilities: ['socks5-route', 'vpn-status', 'egress-probe'],
+        }),
+        routeStatus: async () => ({ prepared: true, up: false, lastError: 'auth failed for hunter2' }),
+        egressProbe: async () => ({
+          tunnelled: { ok: false, ms: 10, error: 'no route is currently up — nothing to measure through', stage: 'connect' },
+          direct: { ok: true, status: 200, ms: 12 },
+        }),
+      })
+      const { db, app } = makeHarness({ launcher, client })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' }),
+      })
+      const text = await res.text()
+      expect(text).not.toContain('hunter2')
+    }))
+})
+
+describe('plan 52 §4.1 device lifecycle — offline keeps the route, online restores it by probing', () => {
+  test('device offline: the persisted route stays enabled, the live session is released, and every check reverts to unknown', async () => {
+    const { launcher, calls } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app, ports, handleDeviceOffline } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+    expect(ports.inUse.size).toBe(1)
+
+    await handleDeviceOffline('dev-1')
+
+    // The port/forward this process was holding is released — it is now
+    // forwarding to nothing, and holding it would leak a slot forever.
+    expect(ports.inUse.size).toBe(0)
+
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as { enabled: boolean; health: string; checks: Array<{ id: string; state: string }>; observed: unknown }
+    // The stored config/enabled is untouched — a device going offline is not
+    // an operator turning the route off.
+    expect(body.enabled).toBe(true)
+    // The two checks that depend on live observation revert to `unknown`,
+    // not a stale `pass` left over from before the disconnect. (`egress`,
+    // `geo`, `dns`, `leak` stay `skip` regardless — no probe endpoint is
+    // configured in this test, matching every other test in this file.)
+    const byId = Object.fromEntries(body.checks.map((c) => [c.id, c.state]))
+    expect(byId.tunnel).toBe('unknown')
+    expect(byId.upstream).toBe('unknown')
+    expect(body.observed).toBeNull()
+
+    // Nothing on the device was asked to stop — no `route.stop`-shaped call.
+    expect(calls).not.toContain('stop')
+  })
+
+  test('device online: the route is restored by probing, never by re-applying', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher, calls } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        return { started: true }
+      },
+      routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+    })
+    const { db, app, restoreDeviceRoute, handleDeviceOffline } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+    expect(routeStartCalls).toHaveLength(1) // the PUT's own apply()
+
+    await handleDeviceOffline('dev-1')
+    const bootstrapsBeforeRestore = calls.filter((c) => c.startsWith('bootstrap:')).length
+
+    await restoreDeviceRoute('dev-1')
+
+    // A fresh probe happened (bootstrap + forward to reach `route.status`)...
+    expect(calls.filter((c) => c.startsWith('bootstrap:')).length).toBeGreaterThan(bootstrapsBeforeRestore)
+    // ...but `route.start` was NEVER called again — restore only probes.
+    expect(routeStartCalls).toHaveLength(1)
+
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as {
+      enabled: boolean
+      observed: { prepared: boolean; up: boolean; upstream?: string } | null
+      drift: boolean
+    }
+    expect(body.enabled).toBe(true)
+    expect(body.observed).toEqual({ prepared: true, up: true, upstream: 'proxy.example:1080' })
+    expect(body.drift).toBe(false)
+  })
+
+  test('restore decision table: no persisted route, a disabled route, and an offline device are all no-ops', async () => {
+    const { launcher, calls } = fakeLauncher()
+    const client = fakeClient()
+    const { db, restoreDeviceRoute } = makeHarness({ launcher, client })
+
+    // No device row at all.
+    await restoreDeviceRoute('ghost')
+    expect(calls).toHaveLength(0)
+
+    // A device with no persisted route.
+    seedDevice(db, { id: 'dev-none', stableId: 'stable-dev-none', serial: 'serial-dev-none' })
+    await restoreDeviceRoute('dev-none')
+    expect(calls).toHaveLength(0)
+
+    // A device whose route is stored but disabled (turned off, not removed).
+    seedDevice(db, {
+      id: 'dev-disabled',
+      stableId: 'stable-dev-disabled',
+      serial: 'serial-dev-disabled',
+      networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: false },
+    })
+    await restoreDeviceRoute('dev-disabled')
+    expect(calls).toHaveLength(0)
+
+    // A device with an enabled route, but currently offline — left enabled
+    // and unprobed; the next `device online` transition will call this again.
+    seedDevice(db, {
+      id: 'dev-offline',
+      stableId: 'stable-dev-offline',
+      serial: 'serial-dev-offline',
+      status: 'offline',
+      networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true },
+    })
+    await restoreDeviceRoute('dev-offline')
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('plan 52 §0, §3.1: a route is no longer scoped to a lease', () => {
+  /**
+   * Builds a real `DeviceStateMachine` + `LeaseManager` over the SAME `db`
+   * the guest-agent routes use, wired the way `daemon.ts` now wires them
+   * (plan 52 §4.1: `onManualRevoked` touches nothing network-related) —
+   * proving the lifecycle end to end rather than only asserting "nothing in
+   * this file calls revertNetwork".
+   */
+  function makeLeaseManager(db: Db): LeaseManager {
+    const states = createDeviceStateMachine({ db, log: createLogger('test') })
+    const jobStore = { expiredRunning: () => [] } as unknown as JobStore
+    return createLeaseManager({
+      states,
+      jobStore,
+      config: { jobTtlSec: 3600, manualIdleTimeoutSec: 90, reaperIntervalMs: 60_000 },
+      log: createLogger('test'),
+      onJobLeaseExpired: () => {},
+      // Deliberately empty — plan 52 §4.1's whole point is that a manual
+      // lease ending (idle timeout, disconnect, or an explicit release)
+      // must not touch the device's network route.
+      onManualRevoked: () => {},
+    })
+  }
+
+  test('a route survives a manual lease being released (explicit release, and a forced idle-timeout revoke)', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app, events } = makeHarness({ launcher, client })
+    seedDevice(db)
+    const leases = makeLeaseManager(db)
+
+    leases.acquireManual('dev-1', 'client-a', 'user-1')
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+
+    // An explicit release, exactly like a client sending `lease.release`.
+    expect(leases.releaseManual('dev-1', 'client-a')).toBe(true)
+
+    let res = await app.request('/dev-1/network')
+    let body = (await res.json()) as { enabled: boolean; observed: { up: boolean } | null }
+    expect(body.enabled).toBe(true)
+    expect(body.observed?.up).toBe(true)
+
+    // Re-acquire and force-revoke it as an idle timeout would (the reaper's
+    // own call shape) — still nothing torn down.
+    leases.acquireManual('dev-1', 'client-b', 'user-2')
+    expect(leases.releaseManual('dev-1', 'client-b', 'idle_timeout')).toBe(true)
+
+    res = await app.request('/dev-1/network')
+    body = (await res.json()) as { enabled: boolean; observed: { up: boolean } | null }
+    expect(body.enabled).toBe(true)
+    expect(body.observed?.up).toBe(true)
+
+    // No `network.reverted` event was ever recorded — the only things that
+    // ever tear a route down are `/disable`, `DELETE /network`, and
+    // uninstall, none of which were called here.
+    expect(events.find((e) => e.kind === 'network.reverted')).toBeUndefined()
+  })
+})
+
+describe('the named credential store (plan 52 §4.2, §5.1)', () => {
+  test('create, list (never a secret), and delete round-trip', async () => {
+    const { app } = makeHarness({})
+
+    const createRes = await app.request('/network/credentials', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'soax-jp', username: 'sam', secret: 'hunter2' }),
+    })
+    expect(createRes.status).toBe(201)
+    const created = (await createRes.json()) as { id: string; name: string; username?: string; createdAt: number; createdBy: string | null }
+    expect(created.name).toBe('soax-jp')
+    expect(created.username).toBe('sam')
+    // Never the secret, on ANY response shape.
+    expect(JSON.stringify(created)).not.toContain('hunter2')
+
+    const listRes = await app.request('/network/credentials')
+    const list = (await listRes.json()) as Array<{ name: string }>
+    expect(list.map((c) => c.name)).toContain('soax-jp')
+    expect(JSON.stringify(list)).not.toContain('hunter2')
+
+    const deleteRes = await app.request('/network/credentials/soax-jp', { method: 'DELETE' })
+    expect(deleteRes.status).toBe(200)
+    const listAfter = (await (await app.request('/network/credentials')).json()) as Array<{ name: string }>
+    expect(listAfter.map((c) => c.name)).not.toContain('soax-jp')
+  })
+
+  test('creating a credential with an already-taken name is refused', async () => {
+    const { app } = makeHarness({})
+    const body = JSON.stringify({ name: 'dup', secret: 'x' })
+    const first = await app.request('/network/credentials', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+    expect(first.status).toBe(201)
+    const second = await app.request('/network/credentials', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+    expect(second.status).toBe(409)
+    expect(((await second.json()) as { error: { code: string } }).error.code).toBe('E_CREDENTIAL_NAME_TAKEN')
+  })
+
+  test('a route referencing an unknown credentialRef is refused, not silently persisted', async () => {
+    const { db, app } = makeHarness({})
+    seedDevice(db)
+    const res = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, credentialRef: 'does-not-exist', udpMode: 'udp' }),
+    })
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_CREDENTIAL_NOT_FOUND')
+    const row = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
+    expect(row?.networkRoute).toBeNull()
+  })
+
+  test('deleting a credential still referenced by a device is refused (acceptance criterion 3: removing a route keeps the credential, but nothing forces a dangling reference)', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    await app.request('/network/credentials', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'shared', username: 'sam', secret: 'hunter2' }),
+    })
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, credentialRef: 'shared', udpMode: 'udp' }),
+    })
+
+    const deleteRes = await app.request('/network/credentials/shared', { method: 'DELETE' })
+    expect(deleteRes.status).toBe(409)
+    expect(((await deleteRes.json()) as { error: { code: string } }).error.code).toBe('E_CREDENTIAL_IN_USE')
+  })
+
+  test('two devices share one named credential without retyping it (acceptance criterion 5)', async () => {
+    const capturedConfigs: Array<{ username?: string; password?: string }> = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => ({ started: true }),
+      routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+    })
+    // Intercept the resolved wire config every `route.start` receives, without changing the
+    // client's declared behaviour above.
+    const spyClient: typeof client = { ...client, routeStart: async (cfg) => (capturedConfigs.push(cfg), client.routeStart(cfg)) }
+    const { db, app } = makeHarness({ launcher, client: spyClient })
+    seedDevice(db, { id: 'dev-1', stableId: 'stable-dev-1', serial: 'serial-dev-1' })
+    seedDevice(db, { id: 'dev-2', stableId: 'stable-dev-2', serial: 'serial-dev-2' })
+
+    await app.request('/network/credentials', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'shared', username: 'sam', secret: 'hunter2' }),
+    })
+
+    for (const id of ['dev-1', 'dev-2']) {
+      const res = await app.request(`/${id}/network`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, credentialRef: 'shared', udpMode: 'udp' }),
+      })
+      expect(res.status).toBe(200)
+    }
+
+    // Exactly one credential exists — neither PUT created its own.
+    const list = (await (await app.request('/network/credentials')).json()) as Array<{ name: string }>
+    expect(list.filter((c) => c.name === 'shared')).toHaveLength(1)
+
+    // Both devices' resolved wire config carried the SAME real credential.
+    expect(capturedConfigs).toHaveLength(2)
+    for (const cfg of capturedConfigs) {
+      expect(cfg.username).toBe('sam')
+      expect(cfg.password).toBe('hunter2')
+    }
+  })
+})
+
+describe('sticky session (plan 52 §3.3, §4.3)', () => {
+  /** Sets `ENKAKU_NETWORK_SESSION_TEMPLATE`, then restores whatever was there before. */
+  async function withSessionTemplate<T>(template: string, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.ENKAKU_NETWORK_SESSION_TEMPLATE
+    process.env.ENKAKU_NETWORK_SESSION_TEMPLATE = template
+    try {
+      return await fn()
+    } finally {
+      if (saved === undefined) delete process.env.ENKAKU_NETWORK_SESSION_TEMPLATE
+      else process.env.ENKAKU_NETWORK_SESSION_TEMPLATE = saved
+    }
+  }
+
+  test('with a template set, the resolved wire username carries the per-device sessionId', async () =>
+    withSessionTemplate('-sessionid-{id}', async () => {
+      const capturedConfigs: Array<{ username?: string }> = []
+      const { launcher } = fakeLauncher()
+      const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+      const spyClient: typeof client = { ...client, routeStart: async (cfg) => (capturedConfigs.push(cfg), client.routeStart(cfg)) }
+      const { db, app } = makeHarness({ launcher, client: spyClient })
+      seedDevice(db)
+
+      const res = await app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' }),
+      })
+      const body = (await res.json()) as { sessionId: string | null }
+      expect(body.sessionId).toBeTruthy()
+
+      expect(capturedConfigs).toHaveLength(1)
+      expect(capturedConfigs[0]?.username).toBe(`sam-sessionid-${body.sessionId}`)
+    }))
+
+  test('with no template set (the default), the resolved wire username is unchanged, even though a sessionId is still minted', async () => {
+    const capturedConfigs: Array<{ username?: string }> = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const spyClient: typeof client = { ...client, routeStart: async (cfg) => (capturedConfigs.push(cfg), client.routeStart(cfg)) }
+    const { db, app } = makeHarness({ launcher, client: spyClient })
+    seedDevice(db)
+
+    const res = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' }),
+    })
+    const body = (await res.json()) as { sessionId: string | null }
+    expect(body.sessionId).toBeTruthy()
+    expect(capturedConfigs[0]?.username).toBe('sam')
+  })
+
+  test('the sessionId is stable across a disable/enable cycle — it is not regenerated on re-enable', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    const putRes = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' }),
+    })
+    const firstSessionId = ((await putRes.json()) as { sessionId: string | null }).sessionId
+
+    await app.request('/dev-1/network/disable', { method: 'POST' })
+    const enableRes = await app.request('/dev-1/network/enable', { method: 'POST' })
+    const secondSessionId = ((await enableRes.json()) as { sessionId: string | null }).sessionId
+
+    expect(secondSessionId).toBe(firstSessionId)
+  })
+})
+
+describe('the boot-time inline-credential migration (plan 52 §5.1) — nothing is lost', () => {
+  test('a pre-migration row with inline username/password is rewritten to reference a named credential, and the credential resolves to the exact same values', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+
+    // Build the harness's `db` first, seed a PRE-MIGRATION row directly (bypassing every endpoint
+    // in this file, exactly what a row written by a core built before plan 52 would look like),
+    // THEN construct `createGuestAgentRoutes` against it — migration runs synchronously at
+    // construction, before this function returns.
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db)
+    db.update(devices)
+      .set({
+        networkRoute: {
+          config: { host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' },
+          enabled: true,
+        },
+      })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    const deps: GuestAgentRoutesDeps = {
+      db,
+      hostAdb: async () => '',
+      exec: async () => '',
+      apkPath: async () => '/fake/guest-agent.apk',
+      ports: fakePorts(),
+      dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
+      leases: fakeLeases(true),
+      log: createLogger('test'),
+      routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
+      makeLauncher: () => launcher,
+      makeClient: () => client,
+    }
+    const { routes } = createGuestAgentRoutes(deps)
+    const app = withUser('admin', routes)
+
+    // The row no longer carries the raw password.
+    const migratedRow = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
+    expect(JSON.stringify(migratedRow?.networkRoute)).not.toContain('hunter2')
+
+    // The API reflects a credentialRef, never username/password.
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as { config: { credentialRef?: string; username?: string } | null; enabled: boolean }
+    expect(body.enabled).toBe(true)
+    expect(body.config?.credentialRef).toBeTruthy()
+    expect(body.config?.username).toBeUndefined()
+
+    // Nothing was lost: the migrated credential resolves to the EXACT original username/password.
+    const list = (await (await app.request('/network/credentials')).json()) as Array<{ name: string; username?: string }>
+    const migrated = list.find((c) => c.name === body.config?.credentialRef)
+    expect(migrated?.username).toBe('sam')
   })
 })
 

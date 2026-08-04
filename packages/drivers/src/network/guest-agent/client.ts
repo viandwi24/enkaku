@@ -12,6 +12,8 @@ import {
   RouteStatusResultSchema,
   RouteStopRequestSchema,
   RouteStopResultSchema,
+  EgressProbeRequestSchema,
+  EgressProbeResultSchema,
   type GuestAgentErrorCode,
   type GuestAgentRequest,
   type HelloResult,
@@ -19,6 +21,7 @@ import {
   type RouteStartResult,
   type RouteStatusResult,
   type RouteStopResult,
+  type EgressProbeResult,
   type Socks5RouteConfig,
 } from '@enkaku/protocol'
 
@@ -103,6 +106,14 @@ export interface GuestAgentClient {
   routeStart(config: Socks5RouteConfig): Promise<RouteStartResult>
   routeStop(): Promise<RouteStopResult>
   routeStatus(): Promise<RouteStatusResult>
+  /**
+   * Plan 51 §4.2, §5.4. Always present on this interface — like every other method here, the wire
+   * request can always be sent; whether the agent actually understands it is a property of the
+   * INSTALLED BUILD, discovered from `hello().capabilities` (`'egress-probe'`), not of this client.
+   * An older build answers `E_UNKNOWN_METHOD`, which callers treat as "this check cannot run" (a
+   * `skip`), never as a route failure.
+   */
+  egressProbe(url: string, timeoutMs: number): Promise<EgressProbeResult>
 }
 
 /** One connect → write one line → read one line → close, with a hard timeout. */
@@ -286,6 +297,22 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
         method: 'route.status',
       })
       return call(connect, opts.port, timeoutMs, req, RouteStatusResultSchema)
+    },
+
+    egressProbe(url, probeTimeoutMs) {
+      const req = EgressProbeRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'egress.probe',
+        url,
+        timeoutMs: probeTimeoutMs,
+      })
+      // The device measures BOTH legs sequentially, each individually bounded by `probeTimeoutMs`
+      // (`EgressProbe.run` in the Kotlin), and `ControlService` itself waits up to
+      // `probeTimeoutMs * 2 + 5_000` for that — this socket-level timeout must outlive the
+      // device's own budget, or a slow but genuinely still-running probe would be cut off here
+      // before the agent ever answers.
+      return call(connect, opts.port, Math.max(timeoutMs, probeTimeoutMs * 2 + 10_000), req, EgressProbeResultSchema)
     },
   }
 }

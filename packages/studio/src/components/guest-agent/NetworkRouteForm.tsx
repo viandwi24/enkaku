@@ -16,6 +16,9 @@ import {
   type NetworkHealth,
   type NetworkStatus,
   type NetworkUdpMode,
+  type RouteCheck,
+  type RouteCheckId,
+  type RouteCheckState,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -71,6 +74,59 @@ function HealthBadge({ health }: { health: NetworkHealth }) {
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {HEALTH_LABEL[health]}
     </span>
+  )
+}
+
+/**
+ * Plain-language names for the six named checks `health` is derived from (plan 51 §4.1, §5.8) —
+ * an operator should be able to tell which fact is missing without opening logs (acceptance
+ * criterion 9).
+ */
+const CHECK_LABEL: Record<RouteCheckId, string> = {
+  tunnel: 'Tunnel established',
+  upstream: 'Reaches the proxy',
+  egress: 'Traffic actually leaves through it',
+  geo: 'Exit matches the expected region',
+  dns: 'DNS resolver belongs to the proxy',
+  leak: 'IPv6 blocked',
+}
+
+const CHECK_STATE_LABEL: Record<RouteCheckState, string> = {
+  pass: 'confirmed',
+  fail: 'failed',
+  skip: 'not checked',
+  unknown: 'not yet run',
+}
+
+const CHECK_STATE_DOT: Record<RouteCheckState, string> = {
+  pass: 'bg-led-ok',
+  fail: 'bg-led-danger',
+  skip: 'bg-fg-subtle',
+  unknown: 'bg-led-warn',
+}
+
+const CHECK_STATE_TEXT: Record<RouteCheckState, string> = {
+  pass: 'text-led-ok',
+  fail: 'text-led-danger',
+  skip: 'text-fg-subtle',
+  unknown: 'text-led-warn',
+}
+
+/** One row of the per-check breakdown — names the fact, its state, and (when present) why, without needing logs (plan 51 §5.8, acceptance criterion 9). */
+function CheckRow({ check }: { check: RouteCheck }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-1">
+      <div className="flex items-start gap-2">
+        <span className={cn('mt-1 size-1.5 shrink-0 rounded-full', CHECK_STATE_DOT[check.state])} aria-hidden />
+        <div>
+          <div className="text-[12px] text-fg">{CHECK_LABEL[check.id]}</div>
+          {check.detail && <div className="text-[11px] leading-relaxed text-fg-muted">{check.detail}</div>}
+        </div>
+      </div>
+      <span className={cn('shrink-0 text-[11px] font-medium whitespace-nowrap', CHECK_STATE_TEXT[check.state])}>
+        {CHECK_STATE_LABEL[check.state]}
+      </span>
+    </div>
   )
 }
 
@@ -446,6 +502,18 @@ export function NetworkRouteForm({
               The route was applied and the device accepted it, but no egress check has confirmed traffic is
               actually leaving through this proxy yet.
             </p>
+          )}
+
+          {/* The per-check breakdown health is derived from (plan 51 §4.1, §5.8) — an operator
+              can see WHICH fact is missing or failed without opening logs (acceptance criterion 9),
+              rather than staring at one opaque enum. Always shown once a route exists, even when
+              every check is still `unknown`. */}
+          {status.checks.length > 0 && (
+            <div className="mt-2.5 divide-y border-t">
+              {status.checks.map((check) => (
+                <CheckRow key={check.id} check={check} />
+              ))}
+            </div>
           )}
 
           {status.drift && (

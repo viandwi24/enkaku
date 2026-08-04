@@ -207,3 +207,80 @@ describe('route.status frames that carry an error', () => {
     expect(GuestAgentResponseSchema.parse(frame).ok).toBe(true)
   })
 })
+
+describe('egress.probe (plan 51 §4.2, §5.2)', () => {
+  test('request: url and timeoutMs required', () => {
+    const raw = { id: 'p1', method: 'egress.probe', token: 't', url: 'https://probe.example/x', timeoutMs: 5000 }
+    const result = GuestAgentRequestSchema.parse(raw)
+    if (result.method !== 'egress.probe') throw new Error('expected egress.probe')
+    expect(result.url).toBe('https://probe.example/x')
+    expect(result.timeoutMs).toBe(5000)
+  })
+
+  test('request rejects a non-URL', () => {
+    const raw = { id: 'p1', method: 'egress.probe', token: 't', url: 'not-a-url', timeoutMs: 5000 }
+    expect(() => GuestAgentRequestSchema.parse(raw)).toThrow()
+  })
+
+  test('request rejects a timeout over the 60s ceiling', () => {
+    const raw = { id: 'p1', method: 'egress.probe', token: 't', url: 'https://probe.example/x', timeoutMs: 90_000 }
+    expect(() => GuestAgentRequestSchema.parse(raw)).toThrow()
+  })
+
+  test('result: both legs succeeding, no stage on either', () => {
+    const raw = {
+      id: 'p1',
+      ok: true,
+      result: {
+        tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 340 },
+        direct: { ok: true, status: 200, body: 'nonce=abc', ms: 41 },
+      },
+    }
+    const parsed = GuestAgentResponseSchema.parse(raw)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error('expected ok')
+    expect(parsed.result).toEqual(raw.result)
+  })
+
+  test('result: a dead tunnel — tunnelled fails at connect, direct still succeeds (the whole point of comparing the two legs, plan 51 §4.4)', () => {
+    const raw = {
+      id: 'p2',
+      ok: true,
+      result: {
+        tunnelled: { ok: false, ms: 8001, error: 'SOCKS5 CONNECT failed (reply code 5)', stage: 'connect' as const },
+        direct: { ok: true, status: 200, body: 'nonce=xyz', ms: 55 },
+      },
+    }
+    const parsed = GuestAgentResponseSchema.parse(raw)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error('expected ok')
+    expect(parsed.result).toEqual(raw.result)
+  })
+
+  test('a captured probe frame carrying a socks5:// upstream in an error string is still just a plain string field — the schema does not special-case it, the host-side redaction does', () => {
+    // This schema has no opinion on credential safety; it only proves the shape parses. The
+    // actual "never a credential in `error`" guarantee lives in the Kotlin probe (which never
+    // embeds one) and the host-side `safeDetail()` in `packages/core/src/api/guest-agent.ts`.
+    const raw = {
+      id: 'p3',
+      ok: true,
+      result: {
+        tunnelled: { ok: false, ms: 10, error: 'connection refused', stage: 'connect' },
+        direct: { ok: false, ms: 12, error: 'connection refused', stage: 'connect' },
+      },
+    }
+    expect(GuestAgentResponseSchema.parse(raw).ok).toBe(true)
+  })
+
+  test('result rejects an unknown stage value', () => {
+    const raw = {
+      id: 'p4',
+      ok: true,
+      result: {
+        tunnelled: { ok: false, ms: 1, stage: 'dns' },
+        direct: { ok: true, ms: 1 },
+      },
+    }
+    expect(() => GuestAgentResponseSchema.parse(raw)).toThrow()
+  })
+})

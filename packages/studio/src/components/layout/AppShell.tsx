@@ -60,8 +60,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           // No cheap "how many are active" total exists, so this still scans
           // a bounded recent window (the system's own 200-row cap, not an
           // unbounded fetch) rather than every job ever run.
-          activeJobs: (j.jobs ?? []).filter((x: { status: string }) => x.status === 'queued' || x.status === 'running')
-            .length,
+          // `.items`, not `.jobs` — list endpoints return the keyset envelope (plan 30). Reading
+          // the old key here did not throw, it just made this badge silently count zero, which is
+          // worse: a wrong number nobody questions. `.jobs` is kept as a fallback only so an older
+          // core still reports something rather than nothing.
+          activeJobs: ((j.items ?? j.jobs ?? []) as { status: string }[]).filter(
+            (x) => x.status === 'queued' || x.status === 'running',
+          ).length,
         })
         setVersion(h.version ?? null)
         setMode(h.mode ?? 'local')

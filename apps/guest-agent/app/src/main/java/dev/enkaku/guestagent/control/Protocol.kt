@@ -23,10 +23,11 @@ object Protocol {
    * What this build can actually do. The host is expected to gate on this rather than assume, the
    * same way the driver registry advertises engine capabilities instead of guessing them.
    *
-   * `egress-probe` is not here yet — it arrives when the probe runs on a socket protected out of
-   * our own tunnel, since a probe measured from inside the tunnel would answer its own question.
+   * `egress-probe` (plan 51 §5.4): added now that [dev.enkaku.guestagent.route.EgressProbe]
+   * actually runs — never claim a capability before it works, or the whole point of this list
+   * (the host gates on it rather than assuming) is defeated.
    */
-  val CAPABILITIES: List<String> = listOf("socks5-route", "vpn-status")
+  val CAPABILITIES: List<String> = listOf("socks5-route", "vpn-status", "egress-probe")
 
   // Requests
   const val METHOD_HELLO = "hello"
@@ -34,6 +35,7 @@ object Protocol {
   const val METHOD_ROUTE_START = "route.start"
   const val METHOD_ROUTE_STOP = "route.stop"
   const val METHOD_ROUTE_STATUS = "route.status"
+  const val METHOD_EGRESS_PROBE = "egress.probe"
 
   // Error codes. Mirrored on the host so failures are matched on a code, never on message text.
   const val ERR_UNAUTHORISED = "E_UNAUTHORISED"

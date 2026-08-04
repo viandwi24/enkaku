@@ -727,14 +727,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               // 43.7) — releasing it lets the device drift back toward its
               // `desired` readiness rather than staying awake forever.
               releaseLeaseHold(msg.payload.deviceId)
-              // TODO(plan 44 §5.7): tear down any applied `vpn-helper` network
-              // route here too — `guestAgent.revertNetwork(deviceId)` from
-              // `packages/core/src/api/guest-agent.ts`, mirroring
-              // `deps.adbEndpoint.close` above. Not wired here to avoid a
-              // conflicting edit while another agent works in this file;
-              // `daemon.ts`'s `onManualRevoked` and device-offline paths
-              // already cover the automatic (idle/quarantine/disconnect)
-              // teardown cases, so only THIS explicit-release path is missing.
+              // A `vpn-helper` route deliberately does NOT tear down on lease
+              // release (plan 52 §0, §3.1, §4.1 — superseding plan 44 §5.7):
+              // a route is a property of the device, not of whoever held the
+              // lease, so releasing it — explicit or automatic — leaves the
+              // route exactly as it was.
             }
             return
           }
@@ -1286,10 +1283,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // the same session id `hello` sent) opened must not outlive it either
       // (plan 27 §4.2 — "a WS disconnect" is one of the three teardown triggers).
       deps.adbEndpoint.closeAllForClient(state.clientId)
-      // TODO(plan 44 §5.7): a WS disconnect should also revert any
-      // `vpn-helper` network route this connection's manual lease(s) were
-      // covering — same reasoning as the `lease.release` TODO above, and
-      // left unwired for the same reason (avoiding a conflicting edit here).
+      // A WS disconnect does NOT revert any `vpn-helper` route this
+      // connection's manual lease(s) were covering, for the same reason as
+      // the `lease.release` handler above (plan 52 §0, §3.1, §4.1): the
+      // route belongs to the device, not the connection.
       conns.delete(ws)
       for (const deviceId of watchedDeviceIds) broadcastViewers(deviceId)
     },

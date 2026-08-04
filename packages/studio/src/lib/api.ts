@@ -148,6 +148,18 @@ export type NetworkEngineId = 'none' | 'vpn-helper'
 export type NetworkUdpMode = 'udp' | 'tcp'
 export type NetworkHealth = 'ok' | 'unverified' | 'degraded' | 'unknown'
 
+/** Mirrors `RouteCheckIdSchema` in `@enkaku/protocol` (plan 51 §4.1). */
+export type RouteCheckId = 'tunnel' | 'upstream' | 'egress' | 'geo' | 'dns' | 'leak'
+export type RouteCheckState = 'pass' | 'fail' | 'skip' | 'unknown'
+
+/** One named fact `health` was derived from — always present alongside `health`, even when every check is `unknown` (plan 51 §4.1, §5.8). */
+export interface RouteCheck {
+  id: RouteCheckId
+  state: RouteCheckState
+  detail?: string
+  at: number | null
+}
+
 /** What was saved. Never carries a password — the API never returns one (plan 44 §4.5, acceptance criterion 8). */
 export interface NetworkConfig {
   host: string
@@ -176,7 +188,10 @@ export interface NetworkStatus {
   observed: NetworkObserved | null
   /** True when the saved config and the device's own observation disagree — the whole point of keeping both. */
   drift: boolean
+  /** Derived from `checks` (plan 51 §4.1) — never set directly. */
   health: NetworkHealth
+  /** The named facts `health` was derived from — always present, even when every check is `unknown`. */
+  checks: RouteCheck[]
   lastError: { code: string; message: string } | null
 }
 

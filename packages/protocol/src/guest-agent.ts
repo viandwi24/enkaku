@@ -91,6 +91,20 @@ export const RouteStatusRequestSchema = GuestAgentRequestBaseSchema.extend({
 })
 export type RouteStatusRequest = z.infer<typeof RouteStatusRequestSchema>
 
+/**
+ * Plan 51 §4.2, §5.4 — measures whether the world is actually reachable, from the device, through
+ * the tunnel. Only meaningful once the agent advertises the `egress-probe` capability (§5.4:
+ * advertised ONLY once this is implemented) — an older build answers `E_UNKNOWN_METHOD`, which the
+ * host-side engine checks (`packages/core/src/api/guest-agent.ts`) treat as "cannot run this check"
+ * rather than a route failure.
+ */
+export const EgressProbeRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('egress.probe'),
+  url: z.string().url(),
+  timeoutMs: z.number().int().positive().max(60_000),
+})
+export type EgressProbeRequest = z.infer<typeof EgressProbeRequestSchema>
+
 /** The full request union, discriminated on `method` — mirrors `Protocol.METHOD_*`. */
 export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   HelloRequestSchema,
@@ -98,6 +112,7 @@ export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   RouteStartRequestSchema,
   RouteStopRequestSchema,
   RouteStatusRequestSchema,
+  EgressProbeRequestSchema,
 ])
 export type GuestAgentRequest = z.infer<typeof GuestAgentRequestSchema>
 
@@ -152,6 +167,42 @@ export const RouteStatusResultSchema = z.object({
 })
 export type RouteStatusResult = z.infer<typeof RouteStatusResultSchema>
 
+/**
+ * One measurement leg of an egress probe (plan 51 §4.2). `stage` says WHERE a failed leg died —
+ * `'connect'` covers the TCP/TLS connect and, for the tunnelled leg, the SOCKS5 handshake itself;
+ * `'fetch'` covers the HTTP request/response to the probe target once a connection exists. This is
+ * what lets the host-side engine tell "could not reach or authenticate with the SOCKS5 upstream"
+ * (an `upstream` check failure) apart from "reached the upstream fine but the probe target itself
+ * did not answer" (an `egress` check failure) without parsing `error` text. Absent on a successful
+ * leg. `error` and every other field here must never carry a credential — nothing in this shape is
+ * built from the upstream's username/password on the Kotlin side (`EgressProbe.kt`).
+ */
+export const EgressProbeLegSchema = z.object({
+  ok: z.boolean(),
+  status: z.number().int().optional(),
+  /** Truncated to a few KB on the device side — never assume this is the whole body. */
+  body: z.string().optional(),
+  ms: z.number().int(),
+  error: z.string().optional(),
+  stage: z.enum(['connect', 'fetch']).optional(),
+})
+export type EgressProbeLeg = z.infer<typeof EgressProbeLegSchema>
+
+/**
+ * `tunnelled` is measured by proxying through the route's own configured SOCKS5 upstream — the
+ * app's own uid is excluded from its own TUN (`RouteVpnService.start()`'s
+ * `addDisallowedApplication`), so a plain socket from this process can never be captured by the
+ * tunnel to prove anything about it; `direct` uses `RouteVpnService.protectOutbound()` so it
+ * leaves on the underlying network. Comparing the two in one call is what proves the tunnel is
+ * actually carrying traffic rather than the device merely having internet some other way (plan 51
+ * §3.2, §4.2).
+ */
+export const EgressProbeResultSchema = z.object({
+  tunnelled: EgressProbeLegSchema,
+  direct: EgressProbeLegSchema,
+})
+export type EgressProbeResult = z.infer<typeof EgressProbeResultSchema>
+
 // ---- response envelope (agent -> host) ----
 
 /** `{ id?, ok: true, result }` — `id` is absent when the request line itself failed to parse (`handle`'s catch path had no `id` to echo back). */
@@ -164,6 +215,7 @@ export const GuestAgentOkResponseSchema = z.object({
     RouteStartResultSchema,
     RouteStopResultSchema,
     RouteStatusResultSchema,
+    EgressProbeResultSchema,
   ]),
 })
 export type GuestAgentOkResponse = z.infer<typeof GuestAgentOkResponseSchema>

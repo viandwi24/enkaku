@@ -90,10 +90,13 @@ function DashboardView() {
     try {
       const [d, j] = await Promise.all([
         fetchDevices(),
-        api<{ jobs: JobInfo[] }>('/api/jobs?status=running&limit=50'),
+        // Every list endpoint returns the keyset envelope `{items, nextCursor, total}` (plan 30);
+        // this call site still read `.jobs`, so `setJobs(undefined)` made the whole dashboard throw
+        // on the next render. Default defensively too — a shape change must not blank the page.
+        api<{ items: JobInfo[] }>('/api/jobs?status=running&limit=50'),
       ])
       setDevices(d)
-      setJobs(j.jobs)
+      setJobs(j.items ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }

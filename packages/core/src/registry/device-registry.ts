@@ -20,8 +20,12 @@ export interface DeviceRegistryDeps {
   states: DeviceStateMachine
   /** Device gone or offline → close any session still open (Plan 03). */
   onDeviceGone?: (deviceId: string) => void
-  /** Device became usable → kick the scheduler (Plan 04). */
-  onDeviceReady?: () => void
+  /**
+   * Device became usable → kick the scheduler (Plan 04). Takes the device's
+   * id (plan 52 §4.1, §5.3) so a caller can also restore any persisted
+   * network route for exactly this device, probe-first.
+   */
+  onDeviceReady?: (deviceId: string) => void
   /** Main-stream device events: device.online / device.offline / device.unauthorized (Plan 18 §4.2). */
   record?: EventRecorder['record']
   /**
@@ -251,7 +255,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         log.info(`new device registered: ${row.label} (${probe.stableId}) via ${serial}`)
       }
       deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb' } })
-      deps.onDeviceReady?.()
+      deps.onDeviceReady?.(row.id)
     } catch (err) {
       log.warn(`probe of ${serial} failed outright — waiting for the next event`, { err: String(err) })
     } finally {

@@ -167,4 +167,34 @@ describe('createGuestAgentClient (plan 44 §5.5)', () => {
     const client = createGuestAgentClient({ port: 1, token: 't', connect })
     await expect(client.ping()).rejects.toMatchObject({ code: 'E_UNEXPECTED_RESPONSE' })
   })
+
+  test('egressProbe() sends the url and timeoutMs through and returns both legs (plan 51 §5.4)', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.method).toBe('egress.probe')
+      expect(req.url).toBe('https://probe.example/x')
+      expect(req.timeoutMs).toBe(4000)
+      return {
+        id: req.id,
+        ok: true,
+        result: {
+          tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 210 },
+          direct: { ok: true, status: 200, body: 'nonce=abc', ms: 40 },
+        },
+      }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    const result = await client.egressProbe('https://probe.example/x', 4000)
+    expect(result.tunnelled.ok).toBe(true)
+    expect(result.direct.ok).toBe(true)
+  })
+
+  test('egressProbe() surfaces E_UNKNOWN_METHOD as a coded error for an agent build that predates the capability', async () => {
+    const { connect } = scriptedConnect((req) => ({
+      id: req.id,
+      ok: false,
+      error: { code: 'E_UNKNOWN_METHOD', message: 'unknown method: egress.probe' },
+    }))
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    await expect(client.egressProbe('https://probe.example/x', 4000)).rejects.toMatchObject({ code: 'E_UNKNOWN_METHOD' })
+  })
 })

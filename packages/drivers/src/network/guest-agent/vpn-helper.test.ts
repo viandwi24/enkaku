@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import type { HelloResult, PingResult, RouteStartResult, RouteStatusResult, RouteStopResult, Socks5RouteConfig } from '@enkaku/protocol'
+import type {
+  EgressProbeResult,
+  HelloResult,
+  PingResult,
+  RouteStartResult,
+  RouteStatusResult,
+  RouteStopResult,
+  Socks5RouteConfig,
+} from '@enkaku/protocol'
 import type { GuestAgentClient } from './client'
 import { GuestAgentClientError } from './client'
 import type { GuestAgentLauncher } from './launcher'
@@ -48,6 +56,10 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): { client: GuestA
     routeStart: async (): Promise<RouteStartResult> => ({ started: true }),
     routeStop: async (): Promise<RouteStopResult> => ({ stopped: true }),
     routeStatus: async (): Promise<RouteStatusResult> => ({ prepared: true, up: true }),
+    egressProbe: async (): Promise<EgressProbeResult> => ({
+      tunnelled: { ok: true, status: 200, body: '', ms: 1 },
+      direct: { ok: true, status: 200, body: '', ms: 1 },
+    }),
     ...overrides,
   }
   return { client, factory: () => client }
@@ -87,16 +99,51 @@ function fakeSession(
   return { session, ports }
 }
 
-describe('createVpnHelperRoute (plan 44 §4.4, §5.6)', () => {
-  test('advertises id and capabilities with probe: false — the egress probe does not exist yet', () => {
+describe('createVpnHelperRoute (plan 44 §4.4, §5.6; probe: plan 51 §4.2, §5.4)', () => {
+  test('advertises id and capabilities with probe: true, and probe() is defined', () => {
     const { launcher } = fakeLauncher()
     const { factory } = fakeClient()
     const { session } = fakeSession(launcher, factory)
     const route = createVpnHelperRoute({ launcher, session, apkPath: async () => '/apk', deviceId: 'dev-1' })
 
     expect(route.id).toBe('vpn-helper')
-    expect(route.capabilities).toEqual({ auth: true, enforcing: true, udp: true, probe: false })
-    expect(route.probe).toBeUndefined()
+    expect(route.capabilities).toEqual({ auth: true, enforcing: true, udp: true, probe: true })
+    expect(route.probe).toBeInstanceOf(Function)
+  })
+
+  test('probe() sends the url/timeout through the shared session and returns both legs', async () => {
+    const { launcher } = fakeLauncher()
+    const { client, factory } = fakeClient()
+    const seen: unknown[] = []
+    client.egressProbe = async (url, timeoutMs) => {
+      seen.push({ url, timeoutMs })
+      return {
+        tunnelled: { ok: true, status: 200, body: 'nonce=abc', ms: 200 },
+        direct: { ok: true, status: 200, body: 'nonce=abc', ms: 30 },
+      }
+    }
+    const { session } = fakeSession(launcher, factory)
+    const route = createVpnHelperRoute({ launcher, session, apkPath: async () => '/apk', deviceId: 'dev-1' })
+
+    const result = await route.probe?.('https://probe.example/x', 4000)
+    expect(seen).toEqual([{ url: 'https://probe.example/x', timeoutMs: 4000 }])
+    expect(result?.tunnelled.ok).toBe(true)
+    expect(result?.direct.ok).toBe(true)
+  })
+
+  test('probe() lazily bootstraps a session with no prior apply() (mirrors observe()\'s plan 44 §8b "Bug 2" fix)', async () => {
+    const { launcher, calls } = fakeLauncher()
+    const { client, factory } = fakeClient()
+    client.egressProbe = async () => ({
+      tunnelled: { ok: false, ms: 10, error: 'no route is currently up', stage: 'connect' },
+      direct: { ok: true, status: 200, ms: 12 },
+    })
+    const { session } = fakeSession(launcher, factory)
+    const route = createVpnHelperRoute({ launcher, session, apkPath: async () => '/apk', deviceId: 'dev-1' })
+
+    const result = await route.probe?.('https://probe.example/x', 4000)
+    expect(result?.tunnelled.ok).toBe(false)
+    expect(calls.some((c) => c.startsWith('bootstrap:'))).toBe(true)
   })
 
   test('apply() walks install → grant → bootstrap → forward → handshake → route.start, in order', async () => {

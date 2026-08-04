@@ -1,4 +1,4 @@
-import type { NetworkCapabilities, NetworkObservation, Socks5RouteConfig } from '@enkaku/protocol'
+import type { EgressProbeResult, NetworkCapabilities, NetworkObservation, Socks5RouteConfig } from '@enkaku/protocol'
 import { GuestAgentClientError, type GuestAgentClient, type GuestAgentClientOptions } from './client'
 import type { GuestAgentLauncher } from './launcher'
 
@@ -14,8 +14,13 @@ export interface NetworkRoute {
   capabilities: NetworkCapabilities
   apply(config: Socks5RouteConfig): Promise<void>
   observe(): Promise<NetworkObservation>
-  /** Optional (spec §7.9): `vpn-helper` advertises `probe: false` below and leaves this undefined. */
-  probe?(): Promise<{ ok: boolean; egressIp?: string; detail?: string }>
+  /**
+   * Plan 51 §4.2, §5.4. Optional (spec §7.9) in principle, but `vpn-helper` now always defines it
+   * below — `capabilities.probe: true` means it does. Runs an egress probe THROUGH the guest
+   * agent's control channel; whether the device's installed build actually understands the wire
+   * method is discovered from `hello().capabilities`, not assumed here.
+   */
+  probe?(url: string, timeoutMs: number): Promise<EgressProbeResult>
   revert(): Promise<void>
 }
 
@@ -111,10 +116,12 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
   return {
     id: 'vpn-helper',
 
-    // `probe: false` is deliberate (plan 44 §4.3/§4.4): the egress probe does not exist in this
-    // build, and claiming a capability this engine lacks is exactly the failure mode the
-    // registry's capability advertisement exists to prevent.
-    capabilities: { auth: true, enforcing: true, udp: true, probe: false },
+    // `probe: true` (plan 51 §4.2, §5.4): the egress probe now exists on this engine. This
+    // describes what the HOST-SIDE driver can drive, not what a specific device's installed
+    // agent build supports — that distinction is `hello().capabilities` including
+    // `'egress-probe'`, checked by the caller (`packages/core/src/api/guest-agent.ts`) before it
+    // ever calls `probe()` below, since an older build answers `E_UNKNOWN_METHOD`.
+    capabilities: { auth: true, enforcing: true, udp: true, probe: true },
 
     async apply(config) {
       await deps.launcher.ensureInstalled()
@@ -160,6 +167,18 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
         ...(status.lastError !== undefined ? { lastError: status.lastError } : {}),
       }
       return observation
+    },
+
+    /**
+     * Plan 51 §4.2, §5.4. Same lazy-bootstrap contract as `observe()`: goes through
+     * `deps.session`, which bootstraps if nothing is live yet, so a probe never requires that
+     * THIS process is the one that applied the route. A `GuestAgentClientError` — including
+     * `E_UNKNOWN_METHOD` from a build that predates this capability — propagates uncaught; the
+     * caller is responsible for treating that as "this check cannot run" rather than a route
+     * failure (mirrors `observe()`'s own division of responsibility).
+     */
+    async probe(url, timeoutMs) {
+      return deps.session.withClient((client) => client.egressProbe(url, timeoutMs))
     },
 
     /**

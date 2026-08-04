@@ -253,13 +253,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // in `ws-handlers.ts`; this covers the automatic paths (idle timeout,
       // quarantine) handled below in `onManualRevoked`.
       let releaseLeaseReadinessHold: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: a `vpn-helper` network route must not
-      // outlive a lease however it ends (plan 44 §5.7) — but
-      // `createGuestAgentRoutes` needs `leases` itself, which does not exist
-      // until `createLeaseManager` below returns, and `onManualRevoked` is
-      // one of THAT call's own options. Resolved once `guestAgent` is built
-      // further down.
-      let revertNetworkRoute: ((deviceId: string, actor?: string | null) => Promise<void>) | null = null
+      // Same forward-ref pattern: a device going offline must mark its
+      // `vpn-helper` network route's checks unknown (never tear the route
+      // down — plan 52 §4.1 reverses plan 44 §5.7's lease-scoped teardown),
+      // and a device coming back online must restore it, probe-first (plan
+      // 52 §3.2, §5.3). `createGuestAgentRoutes` needs `leases` itself,
+      // which does not exist until `createLeaseManager` below returns.
+      // Resolved once `guestAgent` is built further down.
+      let handleNetworkDeviceOffline: ((deviceId: string) => Promise<void>) | null = null
+      let restoreNetworkRoute: ((deviceId: string) => Promise<void>) | null = null
       // Same forward-ref pattern: crash detection (plan 37 §3.3) starts when
       // a session opens and stops when it closes — both hooks fire from
       // `sessions = createSessionManager({ onEvent, ... })` below, well
@@ -645,14 +647,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // lease, however the lease ends — idle timeout, disconnect, or
           // quarantine, not just the explicit release ws-handlers.ts handles.
           adbEndpointManager?.close(deviceId, reason)
-          // Nor does an applied `vpn-helper` route (plan 44 §5.7, plan 33
-          // §4.5's lease-teardown sites) — an idle timeout, disconnect, or
-          // quarantine must tear the tunnel down exactly like an explicit
-          // `DELETE /network` does, or a released lease would leave a phone
-          // routing all its traffic through someone else's proxy.
-          void revertNetworkRoute?.(deviceId).catch((err) =>
-            log.warn(`revertNetworkRoute failed for ${deviceId} on manual revoke, tolerated: ${String(err)}`),
-          )
+          // A `vpn-helper` route is deliberately left ALONE here (plan 52
+          // §0, §3.1, §4.1 — superseding plan 44 §5.7's lease-scoped
+          // teardown): a route is a property of the device, not of whoever
+          // held the lease, so an idle timeout, disconnect, or quarantine
+          // must not tear it down. Turning a route off is now an explicit
+          // act only (`/disable`, `DELETE /network`, agent uninstall).
         },
         onDeviceFreed: () => scheduler?.kick(),
       })
@@ -858,10 +858,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           }),
         ports,
         leases,
+        dataDir: cfg.dataDir,
         record: recorder!.record,
         log: log.child('guest-agent'),
       })
-      revertNetworkRoute = guestAgent.revertNetwork
+      handleNetworkDeviceOffline = guestAgent.handleDeviceOffline
+      restoreNetworkRoute = guestAgent.restoreDeviceRoute
 
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
@@ -1445,17 +1447,23 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // bridges to is gone regardless of whether the lease itself
             // survives the disconnect.
             adbEndpointManager?.close(deviceId, 'device_offline')
-            // Nor an applied `vpn-helper` route (plan 44 §5.7) — `revert()`
-            // itself tolerates a device that is already gone (plan 44 §8b,
-            // the known `route.stop` acknowledgement defect), so this is
-            // safe to fire even though the phone just disappeared.
-            void revertNetworkRoute?.(deviceId).catch((err) =>
-              log.warn(`revertNetworkRoute failed for ${deviceId} on device-offline, tolerated: ${String(err)}`),
+            // A `vpn-helper` route's stored config/enabled survives the
+            // device going offline (plan 52 §4.1) — nothing is torn down on
+            // the device, since there is nothing left to reach. Its checks
+            // are marked `unknown` instead of continuing to report a
+            // last-known `pass` this process can no longer confirm.
+            void handleNetworkDeviceOffline?.(deviceId).catch((err) =>
+              log.warn(`handleNetworkDeviceOffline failed for ${deviceId}, tolerated: ${String(err)}`),
             )
           },
-          onDeviceReady: () => {
+          onDeviceReady: (deviceId) => {
             scheduler?.kick()
             recomputeAdbConcurrency()
+            // The device just came online — restore any persisted `vpn-helper`
+            // route (plan 52 §4.1, §5.3): probe first, never blindly re-apply.
+            void restoreNetworkRoute?.(deviceId).catch((err) =>
+              log.warn(`restoreNetworkRoute failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+            )
           },
         })
         await registry.start()

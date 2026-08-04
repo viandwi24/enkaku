@@ -56,11 +56,13 @@ export const devices = sqliteTable(
      * The persisted `vpn-helper` route (plan 44 step 5.4, @enkaku/protocol's
      * `PersistedNetworkRouteSchema`) — null when no route has ever been
      * declared. Kept off `settings` deliberately, so it is queryable on its
-     * own and does not collide with that column's schema. This stores the
-     * upstream password in PLAINTEXT at rest in SQLite: there is no secret
-     * store yet (plan 33 §9 Q2 remains open), and this comment exists so
-     * that fact is never quietly assumed away. Never read this column into
-     * an API response without redacting it first.
+     * own and does not collide with that column's schema. `config` carries
+     * a `credentialRef` naming a row in `network_credentials` below rather
+     * than a raw password (plan 52 §4.2, §5.1, superseding plan 44's
+     * PLAINTEXT compromise) — this column itself never holds a secret.
+     * Still, never read it into an API response without redacting first:
+     * an old, pre-migration row can carry inline `username`/`password`
+     * until `createGuestAgentRoutes`'s boot-time migration rewrites it.
      */
     networkRoute: text('network_route', { mode: 'json' }),
   },
@@ -131,6 +133,30 @@ export const deletedDevices = sqliteTable('deleted_devices', {
 })
 
 export type DeletedDeviceRow = typeof deletedDevices.$inferSelect
+
+/**
+ * Named upstream credentials for a `vpn-helper` route (plan 52 §4.2, §5.1), replacing the
+ * plaintext `username`/`password` plan 44 stored inline on `devices.network_route`. `secret` is
+ * encrypted with a key kept in a file in the data directory
+ * (`packages/core/src/network/credential-store.ts`), created on first use with file mode `0600`.
+ *
+ * This is NOT a KMS and does not claim to be one — the honest claim, repeated in Studio, is that
+ * a secret here is "not readable by grepping the database"; anyone with read access to the whole
+ * data directory (the key file sits right beside `enkaku.db`) can still decrypt it. A route
+ * references one of these by `name`, so the same upstream credential can back several devices
+ * without retyping it (plan 52 acceptance criterion 5).
+ */
+export const networkCredentials = sqliteTable('network_credentials', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  username: text('username'),
+  /** `iv.tag.ciphertext`, AES-256-GCM, each segment base64 — never the plaintext secret. */
+  secret: text('secret').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  createdBy: text('created_by'),
+})
+
+export type NetworkCredentialRow = typeof networkCredentials.$inferSelect
 
 /**
  * One-shot data migrations that cannot be expressed as plain SQL — currently

@@ -7,6 +7,9 @@ dist/
 .DS_Store
 .env
 .env.*
+# ...but the templates are the documentation, so they must be committed.
+!.env.example
+!packages/studio/.env.example
 
 # next.js
 .next/

@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.util.Log
 import dev.enkaku.guestagent.R
 import dev.enkaku.guestagent.route.DeadMansSwitch
+import dev.enkaku.guestagent.route.EgressProbe
 import dev.enkaku.guestagent.route.RouteState
 import dev.enkaku.guestagent.route.RouteVpnService
 import dev.enkaku.guestagent.route.Socks5Upstream
@@ -211,9 +212,44 @@ class ControlService : Service() {
           RouteState.stats()?.let { put("stats", JSONArray(it.toTypedArray())) }
         }
 
+      // Plan 51 §4.2, §5.4. `EgressProbe.run` itself never throws — a leg that could not connect
+      // or fetch is reported as `{ok:false, error, stage}`, not an exception — so this always
+      // answers `ok(id)`; only a malformed request (missing/invalid url or timeoutMs) is an
+      // error reply.
+      Protocol.METHOD_EGRESS_PROBE -> {
+        val url = request.optString("url").takeIf { it.isNotEmpty() }
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing url")
+        val timeoutMs = request.optInt("timeoutMs", -1).takeIf { it in 1..60_000 }
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "timeoutMs must be 1..60000")
+        // Runs on RouteVpnService's own single-thread `ops` executor when a route is active
+        // (serialising against a concurrent start()/teardown()), or on this request's own
+        // worker thread otherwise — never the main thread either way. See
+        // `RouteVpnService.submitProbe`'s doc comment. Budget is `timeoutMs * 2` because
+        // `EgressProbe.run` measures BOTH legs sequentially, each individually bounded by
+        // `timeoutMs` — plus slack for dispatch overhead on the `ops` executor.
+        val result = RouteVpnService.submitProbe(timeoutMs.toLong() * 2 + PROBE_BUDGET_SLACK_MS) {
+          EgressProbe.run(url, timeoutMs)
+        }
+        ok(id) {
+          put("tunnelled", result.tunnelled.toJson())
+          put("direct", result.direct.toJson())
+        }
+      }
+
       else -> error(id, Protocol.ERR_UNKNOWN_METHOD, "unknown method: $method")
     }
   }
+
+  /** Mirrors `EgressProbeLegSchema` in `packages/protocol/src/guest-agent.ts` field for field — both sides change together. */
+  private fun EgressProbe.Leg.toJson(): JSONObject =
+    JSONObject().apply {
+      put("ok", ok)
+      status?.let { put("status", it) }
+      body?.let { put("body", it) }
+      put("ms", ms)
+      error?.let { put("error", it) }
+      stage?.let { put("stage", it) }
+    }
 
   private fun appVersion(): String =
     runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "unknown"
@@ -240,6 +276,9 @@ class ControlService : Service() {
     private const val CHANNEL_ID = "enkaku-control"
     private const val NOTIFICATION_ID = 1
     const val EXTRA_TOKEN = "token"
+
+    /** Slack added on top of a probe's own `timeoutMs` when bounding `RouteVpnService.submitProbe`'s wait — enough for both legs' own internal budgets plus dispatch overhead, without waiting forever on a stuck `ops` executor. */
+    private const val PROBE_BUDGET_SLACK_MS = 5_000L
 
     fun start(context: Context, token: String?) {
       val intent = Intent(context, ControlService::class.java).putExtra(EXTRA_TOKEN, token)

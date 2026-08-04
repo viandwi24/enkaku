@@ -14,7 +14,9 @@ import dev.enkaku.guestagent.R
 import java.io.File
 import java.net.InetAddress
 import java.net.Socket
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -50,6 +52,22 @@ class RouteVpnService : VpnService() {
   private val tun = AtomicReference<ParcelFileDescriptor?>(null)
   private val worker = AtomicReference<Thread?>(null)
   private val configFile = AtomicReference<File?>(null)
+
+  /**
+   * The upstream this route is CURRENTLY dialled against, credentials included — in memory only,
+   * never persisted, never sent back over the control channel (plan 51 §4.2). Its sole reader is
+   * [EgressProbe]'s tunnelled leg, which needs the exact same host/port/credentials
+   * `hev-socks5-tunnel` was handed so it measures the identical connection rather than a
+   * lookalike. Lifetime matches the route's own config file (also cleartext, also deleted in
+   * [teardown]) — this is no wider an exposure than what already exists on disk while a route is
+   * up.
+   */
+  private val currentUpstreamRef = AtomicReference<Socks5Upstream?>(null)
+
+  override fun onCreate() {
+    super.onCreate()
+    active.set(this)
+  }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
@@ -103,6 +121,9 @@ class RouteVpnService : VpnService() {
     // would ANR just as surely as blocking in onStartCommand did.
     ops.execute { runCatching { teardown() } }
     ops.shutdown()
+    // Only clear if WE are still the registered instance — a fast stop/start could already have
+    // installed a fresh one by the time this runs, and this must not disown that one.
+    active.compareAndSet(this, null)
     super.onDestroy()
   }
 
@@ -173,6 +194,10 @@ class RouteVpnService : VpnService() {
     RouteState.markUp("${upstream.host}:${upstream.port}") {
       runCatching { Tun2Socks.TProxyGetStats() }.getOrNull()
     }
+    // `dialled` (resolved IP, real credentials) — NOT the original `upstream` — matches exactly
+    // what was handed to hev-socks5-tunnel above, so EgressProbe's tunnelled leg measures the
+    // identical connection rather than a lookalike that resolves the hostname differently.
+    currentUpstreamRef.set(dialled)
     Log.i(TAG, "route up via ${upstream.host}:${upstream.port}")
   }
 
@@ -184,6 +209,7 @@ class RouteVpnService : VpnService() {
     runCatching { tun.getAndSet(null)?.close() }
     // The config holds the upstream password, so it does not outlive the route.
     configFile.getAndSet(null)?.delete()
+    currentUpstreamRef.set(null)
     RouteState.markDown(null)
   }
 
@@ -262,5 +288,26 @@ class RouteVpnService : VpnService() {
      * apart from "upstream unreachable" instead of reporting one failure for both.
      */
     fun isPrepared(context: Context): Boolean = prepare(context) == null
+
+    /** The currently running instance, or null when no route is up. Set in [onCreate], cleared in [onDestroy]. */
+    private val active = AtomicReference<RouteVpnService?>(null)
+
+    fun activeInstance(): RouteVpnService? = active.get()
+
+    /** See [currentUpstreamRef]'s doc comment — null when no route is currently up. */
+    fun currentUpstream(): Socks5Upstream? = active.get()?.currentUpstreamRef?.get()
+
+    /**
+     * Runs [block] on the active instance's own single-thread [ops] executor — serialising a
+     * probe against a concurrent start()/teardown() the same way every other route operation
+     * already is — or directly on the calling thread when no route is up (there is no [ops]
+     * executor to reuse then, and the caller — [dev.enkaku.guestagent.control.ControlService]'s
+     * own worker pool — is already off the main thread; plan 51 §4.2's "never the main thread"
+     * rule is satisfied either way).
+     */
+    fun <T> submitProbe(budgetMs: Long, block: () -> T): T {
+      val instance = active.get() ?: return block()
+      return instance.ops.submit(Callable { block() }).get(budgetMs, TimeUnit.MILLISECONDS)
+    }
   }
 }
