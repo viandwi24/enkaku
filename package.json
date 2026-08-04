@@ -17,6 +17,7 @@
     "build:guest-agent": "bash scripts/build-guest-agent.sh",
     "smoke:guest-agent": "bun run scripts/smoke-guest-agent.ts",
     "probe-server": "bun run packages/probe-server/src/index.ts",
+    "dev:probe": "PROBE_HTTP_PORT=${PROBE_HTTP_PORT:-8080} PROBE_GEOIP_UPSTREAM_URL='http://ip-api.com/json/{ip}' bun run packages/probe-server/src/index.ts",
     "publish:example": "bun run packages/sdk/src/cli/index.ts publish examples/hello-no-device.ts",
     "typecheck": "bash scripts/typecheck.sh",
     "reset": "rm -rf .dev-data .dev-cloud .dev-agent"
