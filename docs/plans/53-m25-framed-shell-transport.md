@@ -1,6 +1,6 @@
 # Plan 53 — M25 : Framed Shell Transport (replaces the exit-marker workaround)
 
-> Status: implemented — `AdbClient.exec` speaks `shell,v2,raw`, falls back to `shell:` honestly, and the exit-marker workaround is deleted. Hardware verification (53.5) still pending.
+> Status: implemented — `AdbClient.exec` speaks `shell,v2,raw`, falls back to `shell:` honestly, and the exit-marker workaround is deleted. Verified on hardware (53.5); `bun run build:studio` not re-run, see §6.
 > Ships: packages/adb/src/shell-frames.ts
 > Depends on: Plans 22–26 complete (adb deadlines, streaming lane, ShellPort, terminal).
 > Spec references: §10.4 (adb serialisation), §13 (API conventions), `00-overview.md` §4.3.
@@ -142,8 +142,23 @@ A call that genuinely wants to know whether it worked should now check `exitCode
 - Result: `grep -r "EXIT_MARKER" packages` finds nothing.
 
 ### 53.5 Verify on hardware
-- [ ] Run `echo out; echo err 1>&2; exit 7` through the terminal and through a `ShellPort`, and confirm the three fields.
-- Result: `exitCode` is 7 and `stderr` is separate, observed rather than assumed.
+- [x] Run `echo out; echo err 1>&2; exit 7` through the terminal and through a `ShellPort`, and confirm the three fields.
+- Result: **observed on ZP2222RMBS (moto g06 power, Android 15)**, through `AdbClient.exec` rather than raw adb, so what is proven is our code path and not merely Android's:
+
+```
+echo out; echo err 1>&2; exit 7      stdout "out"          stderr "err"    exit 7
+ls /definitely-not-here              stdout ""             stderr "ls: … No such file or directory"   exit 1
+cat /data/…/does-not-exist           stdout ""             stderr "cat: … Permission denied"          exit 1
+echo first; echo second 1>&2; …      stdout "first\nthird" stderr "second" exit 3
+dumpsys nosuchservice                stdout ""             stderr "Can't find service: nosuchservice" exit 0
+```
+
+Two findings worth keeping:
+
+- The interleaved case proves ordering is preserved **within** each stream while the streams stay apart — `first` and `third` arrive in order on stdout with `second` never wedged between them.
+- `dumpsys nosuchservice` exits **0** while writing its error to stderr. Before this plan that text landed in `stdout` and was indistinguishable from real `dumpsys` output, which is exactly what `monitor-hub.ts` parses. Separation, not the exit code, is what protects those parsers.
+
+`am broadcast` was tried first and rejected as a probe: it exits 0 with `Broadcast completed: result=0` even for a component that does not exist. That is the silent failure §7.9 and spec §362 already record — framing reports the code a command gives, and a command that lies still lies.
 
 ## 6. Acceptance criteria
 
@@ -155,6 +170,10 @@ A call that genuinely wants to know whether it worked should now check `exitCode
 6. Existing timeout, byte-cap, queue and metric behaviour is unchanged, proven by the Plan 22 tests still passing untouched.
 7. `bash scripts/typecheck.sh`, `bun test` and `bun run build:studio` are green.
 8. `bash scripts/check-plan-status.sh` passes with this plan's status updated.
+
+**Status against these, at implementation.** 1–6 and 8 met. Criterion 2 holds at the transport: `ShellPort.exec` and the tunnel reply carry `stderr` as its own field. The terminal's WS handler then merges the two *for display*, because dropping stderr there would erase error text from the operator's view — but that leaves the WS message's field named `stdout` carrying both, which is the kind of naming lie this plan exists to remove. Adding `stderr` to `ShellResultMessage` and rendering it distinctly in Studio is the honest finish; it was out of scope here under §2.
+
+Criterion 7 is met except `bun run build:studio`, which `scripts/build-studio.sh` refuses while a Studio dev server holds :3001 — building would corrupt it. Nothing under `packages/studio` changed in this plan and `tsc --noEmit -p packages/studio` is clean, so the risk is low, but it is unverified rather than proven.
 
 ## 7. Test plan
 
