@@ -134,6 +134,8 @@ function makeHarness(opts: {
   launcher?: GuestAgentLauncher
   client?: GuestAgentClient
   makeClient?: (opts: GuestAgentClientOptions) => GuestAgentClient
+  /** Plan 54 §3.2, §4.2 test seam — the bounded-recovery backoff, overridden in recovery tests so they need not sit out real wall-clock delays. */
+  recoveryBackoffS?: number[]
 }): Harness {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
@@ -144,7 +146,7 @@ function makeHarness(opts: {
   const deps: GuestAgentRoutesDeps = {
     db,
     hostAdb: async () => '',
-    exec: async () => '',
+    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     apkPath: async () => '/fake/guest-agent.apk',
     ports,
     // A fresh temp dir per harness — the credential store (plan 52 §4.2) writes a real key file
@@ -157,6 +159,7 @@ function makeHarness(opts: {
     // These drive fakes; sitting out the real multi-second settle/poll budgets would only make the
     // suite slow and flaky.
     routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
+    ...(opts.recoveryBackoffS ? { recoveryBackoffS: opts.recoveryBackoffS } : {}),
     ...(opts.launcher ? { makeLauncher: () => opts.launcher! } : {}),
     makeClient: opts.makeClient ?? (() => opts.client ?? fakeClient()),
   }
@@ -355,6 +358,7 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       checks: unknown[]
       drift: boolean
       sessionId: unknown
+      failClosed: unknown
       lastError: unknown
     }
     expect(body).toEqual({
@@ -364,6 +368,9 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       observed: null,
       drift: false,
       sessionId: null,
+      // Plan 54 §4.2, §5.6 — the safe default even with nothing stored yet, so Studio never has to
+      // guess one of its own.
+      failClosed: true,
       health: 'unknown',
       checks: [],
       lastError: null,
@@ -408,6 +415,38 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
     const row = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
     expect(JSON.stringify(row?.networkRoute)).not.toContain('hunter2')
     expect(JSON.stringify(row?.networkRoute)).toContain('device-dev-1')
+  })
+
+  test('re-saving host/port alone KEEPS the stored credential — a blank username is not a request to connect anonymously', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    const put = (body: unknown) =>
+      app.request('/dev-1/network', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    await put({ host: 'proxy.example', port: 1080, username: 'country-id-city-surabaya', password: 'hunter2', udpMode: 'udp' })
+
+    // Exactly what Studio re-sends: the API never returns a username, so the form has none to
+    // send back. Treating that as "no authentication" silently downgraded an authenticated route
+    // to an anonymous one — against an upstream that also accepts IP-whitelist auth it connects
+    // fine and serves a default-pool exit, so every check passes while the requested targeting is
+    // gone. The credential must survive.
+    const res = await put({ host: 'proxy.example', port: 1080, udpMode: 'tcp' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { config: { udpMode: string; credentialRef?: string } }
+    expect(body.config.credentialRef).toBe('device-dev-1')
+    expect(body.config.udpMode).toBe('tcp')
+
+    // ...and dropping it is available, but only by asking.
+    const cleared = await put({ host: 'proxy.example', port: 1080, udpMode: 'udp', clearCredential: true })
+    const clearedBody = (await cleared.json()) as { config: { credentialRef?: string } }
+    expect(clearedBody.config.credentialRef).toBeUndefined()
   })
 
   test('drift: enabled true with observed.up false produces drift true, never quietly reported as off', async () => {
@@ -1290,7 +1329,7 @@ describe('the boot-time inline-credential migration (plan 52 §5.1) — nothing 
     const deps: GuestAgentRoutesDeps = {
       db,
       hostAdb: async () => '',
-      exec: async () => '',
+      exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
       apkPath: async () => '/fake/guest-agent.apk',
       ports: fakePorts(),
       dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
@@ -1318,6 +1357,269 @@ describe('the boot-time inline-credential migration (plan 52 §5.1) — nothing 
     const list = (await (await app.request('/network/credentials')).json()) as Array<{ name: string; username?: string }>
     const migrated = list.find((c) => c.name === body.config?.credentialRef)
     expect(migrated?.username).toBe('sam')
+  })
+})
+
+describe('plan 54 §3.2, §4.2 — restore actually applies, bounded and shared with the heartbeat', () => {
+  test('restoreDeviceRoute applies when the device reports no route (the defect this plan fixes: restore used to only probe)', async () => {
+    const routeStartCalls: string[] = []
+    let started = false
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        started = true
+        return { started: true }
+      },
+      // Down until `route.start` is actually sent, then up — a stand-in for a real device that
+      // only starts reporting `up` once the route genuinely applies.
+      routeStatus: async () => (started ? { prepared: true, up: true, upstream: 'proxy.example:1080' } : { prepared: true, up: false, state: 'down' as const }),
+    })
+    const { db, restoreDeviceRoute, app } = makeHarness({ launcher, client, recoveryBackoffS: [0] })
+    seedDevice(db)
+    // Simulates a route left behind by a previous core process — never applied by THIS process.
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(1)
+
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as { enabled: boolean; observed: { up: boolean } | null }
+    expect(body.enabled).toBe(true)
+    expect(body.observed?.up).toBe(true)
+  })
+
+  test('a device already carrying its route is never re-applied, even when recovery is pending — probed and left alone', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        return { started: true }
+      },
+      routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }),
+    })
+    const { db, restoreDeviceRoute } = makeHarness({ launcher, client, recoveryBackoffS: [0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(0)
+  })
+
+  test('the retry bound holds: gives up after the configured number of attempts and records a check that says why (acceptance criterion 5)', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    // Three attempts, zero backoff — the test still exercises the real bound without sitting out
+    // real wall-clock seconds.
+    const { db, restoreDeviceRoute, app } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    // Each call simulates one reconnect/heartbeat tick noticing the device is still down.
+    await restoreDeviceRoute('dev-1')
+    await restoreDeviceRoute('dev-1')
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3)
+
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as { lastError: { code: string; message: string } | null; enabled: boolean }
+    expect(body.enabled).toBe(true) // never disabled by a failed recovery — the operator decides
+    expect(body.lastError?.code).toBe('E_NETWORK_RECOVERY_EXHAUSTED')
+    expect(body.lastError?.message).toContain('gave up after 3 attempts')
+
+    // Does not spin: a fourth tick makes no further attempt, and the "gave up" answer survives it
+    // (a cold probe's own success would otherwise silently erase `lastError` on this next tick).
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3)
+    const res2 = await app.request('/dev-1/network')
+    const body2 = (await res2.json()) as { lastError: { code: string } | null }
+    expect(body2.lastError?.code).toBe('E_NETWORK_RECOVERY_EXHAUSTED')
+  })
+
+  test('turning the route off mid-recovery resets the bound — a route re-enabled later gets a fresh three attempts', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    const { db, restoreDeviceRoute, app } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await restoreDeviceRoute('dev-1')
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(2)
+
+    await app.request('/dev-1/network/disable', { method: 'POST' })
+    await app.request('/dev-1/network/enable', { method: 'POST' })
+    expect(routeStartCalls).toHaveLength(3) // `/enable` itself applies once
+
+    await restoreDeviceRoute('dev-1')
+    // A fresh bound: this is attempt 4 overall, but only the 2nd since re-enabling — well within 3.
+    expect(routeStartCalls).toHaveLength(4)
+  })
+
+  test('the heartbeat is the SAME owner as restoreDeviceRoute — one counter, not two independent retry loops (plan 54 §4.2)', async () => {
+    // heartbeatTick itself is not exposed to tests (it only ever runs off a real setInterval in
+    // production), so this proves the SHARED-counter property the way it is actually observable:
+    // interleaving `restoreDeviceRoute` calls (standing in for "device reconnected") with the
+    // recovery bound must still add up to exactly the configured number of attempts, never double
+    // that — which is exactly what would happen if the heartbeat kept its own separate counter.
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    const { db, restoreDeviceRoute } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    for (let i = 0; i < 6; i++) await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3) // bounded at 3, no matter how many callers ask
+  })
+})
+
+describe('plan 54 §4.3 — a held route reads as fail-closed, never as healthy', () => {
+  test('held: tunnel passes (the TUN is still up), upstream and egress both fail with an honest "blocked on purpose" reason, health is never ok', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStatus: async () => ({
+        prepared: true,
+        up: false,
+        state: 'held' as const,
+        upstream: 'proxy.example:1080',
+        lastError: 'no contact from the farm for 91000ms',
+      }),
+    })
+    // A plain GET never probes on its own (it only re-observes a route this process already has
+    // live state for) — `restoreDeviceRoute` is what actually asks the device, the same as a real
+    // reconnect would.
+    const { db, app, restoreDeviceRoute } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+    await restoreDeviceRoute('dev-1')
+
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as {
+      health: string
+      checks: Array<{ id: string; state: string; detail?: string }>
+      observed: { up: boolean; state?: string } | null
+    }
+    expect(body.observed?.up).toBe(false)
+    expect(body.observed?.state).toBe('held')
+    const byId = Object.fromEntries(body.checks.map((c) => [c.id, c]))
+    expect(byId.tunnel?.state).toBe('pass')
+    expect(byId.upstream?.state).toBe('fail')
+    expect(byId.upstream?.detail).toContain('no contact from the farm')
+    expect(byId.egress?.state).toBe('fail')
+    expect(body.health).not.toBe('ok')
+    expect(body.health).toBe('degraded')
+  })
+})
+
+describe('plan 54 §4.2, §5.6 — failClosed is real, not inert', () => {
+  test('a brand-new route defaults failClosed to true, and the device is told so on route.start', async () => {
+    const routeStartConfigs: Array<{ failClosed?: boolean }> = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async (config) => {
+        routeStartConfigs.push(config)
+        return { started: true }
+      },
+    })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    const res = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+    const body = (await res.json()) as { failClosed: boolean }
+    expect(body.failClosed).toBe(true)
+    expect(routeStartConfigs).toHaveLength(1)
+    expect(routeStartConfigs[0]?.failClosed).toBe(true)
+  })
+
+  test('an explicit failClosed:false on PUT is honoured, persisted, and sent to the device — the debugging opt-out', async () => {
+    const routeStartConfigs: Array<{ failClosed?: boolean }> = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async (config) => {
+        routeStartConfigs.push(config)
+        return { started: true }
+      },
+    })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    const res = await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp', failClosed: false }),
+    })
+    const body = (await res.json()) as { failClosed: boolean }
+    expect(body.failClosed).toBe(false)
+    expect(routeStartConfigs[0]?.failClosed).toBe(false)
+
+    // A plain config update (no opinion on failClosed this time) carries the false value forward
+    // rather than resetting it back to the safe default — an update is not an operator asking to
+    // change a setting they did not mention.
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1081, udpMode: 'udp' }),
+    })
+    const res2 = await app.request('/dev-1/network')
+    expect(((await res2.json()) as { failClosed: boolean }).failClosed).toBe(false)
+  })
+
+  test('a route persisted before this plan shipped (no failClosed on the stored row) reads failClosed:true through GET — the safe default applies retroactively, not just to brand-new routes', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    const res = await app.request('/dev-1/network')
+    expect(((await res.json()) as { failClosed: boolean }).failClosed).toBe(true)
   })
 })
 

@@ -1,6 +1,7 @@
 # Plan 50 — M24a : CI on every push, and a device smoke test
 
-> **Status:** not started.
+> Status: implemented — `.github/workflows/ci.yml` runs typecheck/test on every push plus a path-conditional Android build job, and `scripts/smoke-guest-agent.ts` (wired as `bun run smoke:guest-agent`) drives the 12-stage device smoke test.
+> Ships: .github/workflows/ci.yml
 > **Depends on:** nothing. This is a prerequisite for Plans 51 and 52, and should land before either.
 > **Spec references:** §16 (NFR), `00-overview.md` §7 (Definition of Done).
 

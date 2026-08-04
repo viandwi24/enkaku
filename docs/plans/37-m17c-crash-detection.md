@@ -1,6 +1,7 @@
 # Plan 37 — M17c : Application Crash Detection
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/core/src/device/crash-parser.ts
 > Depends on: Plan 24 (the streaming lane and the monitor builder pattern — this is a new monitor kind) and Plan 18 (the device event log).
 > Spec references: §9 (scripts and jobs), §13 (protocol), §15 (device lifecycle).
 

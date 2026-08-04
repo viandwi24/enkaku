@@ -1,6 +1,7 @@
 # Plan 36 — M17b : Retry Classification and Backoff
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/core/src/jobs/failure-class.ts
 > Depends on: Plan 22.1 (the coded errors that make classification possible) and Plan 23 (the device health tracker this feeds). Plan 35 is independent.
 > Spec references: §9 (jobs), §10.2 (leases and heartbeats), §15 (device lifecycle).
 

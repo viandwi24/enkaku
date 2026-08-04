@@ -6,12 +6,19 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Tears the route down when the farm stops talking to us.
+ * Holds the route closed when the farm stops talking to us.
  *
  * This exists because of a real incident, not a hypothetical one. A route was applied, the core was
  * killed, and the device was left holding `0.0.0.0/0 → tun0` pointed at an upstream nobody was
  * talking to any more: WiFi connected, network `VALIDATED`, and no usable internet. Recovering it
  * needed adb. On a farm, one core crash would strand every routed device at once.
+ *
+ * Plan 54 §3.1, §5.2 reverses what used to happen here: this class used to tear the route down
+ * (`RouteVpnService.stop()`), on the theory that a device with no farm watching it should not stay
+ * routed. That was backwards — tearing the TUN down is exactly what hands every packet back to the
+ * device's real address, silently, which is the leak this whole mechanism exists to prevent. It now
+ * asks [onExpired] to HOLD the tunnel closed instead (`RouteVpnService.hold()`/`handleFailure()`):
+ * the TUN stays established, forwarding stops, and traffic goes nowhere rather than somewhere real.
  *
  * It has to live here rather than on the host for the obvious reason — **the host may be the thing
  * that died**, and a dead process runs no cleanup. Host-side lease teardown is still the normal
@@ -23,7 +30,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class DeadMansSwitch(
   private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
-  private val onExpired: () -> Unit,
+  /** Receives the plain-language reason so `RouteState.lastError()` says something specific, not a generic "held". */
+  private val onExpired: (reason: String) -> Unit,
 ) {
   private val lastContact = AtomicLong(0)
   private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
@@ -50,10 +58,10 @@ class DeadMansSwitch(
     val silentMs = (System.nanoTime() - lastContact.get()) / 1_000_000
     if (silentMs < timeoutMs) return
 
-    Log.w(TAG, "no contact from the farm for ${silentMs}ms — tearing the route down")
-    RouteState.markError("no contact from the farm for ${silentMs}ms; route torn down to avoid stranding the device")
-    runCatching { onExpired() }
-      .onFailure { Log.e(TAG, "dead-man teardown failed", it) }
+    val reason = "no contact from the farm for ${silentMs}ms"
+    Log.w(TAG, "$reason — holding the route closed")
+    runCatching { onExpired(reason) }
+      .onFailure { Log.e(TAG, "dead-man hold failed", it) }
     touch()
   }
 

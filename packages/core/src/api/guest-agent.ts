@@ -14,6 +14,7 @@ import {
   type NetworkCredential,
   type RouteCheck,
   type EgressProbeResult,
+  type ShellResult,
 } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
@@ -78,6 +79,8 @@ export interface NetworkStatusResult {
   drift: boolean
   /** The per-device sticky-session id (plan 52 §4.3), read-only — null until a route has been applied at least once. */
   sessionId: string | null
+  /** Plan 54 §4.2, §5.6 — whether a failure holds the device closed (`true`, the default even for a route created before this field existed — `resolveFailClosed()`) or tears down (`false`, explicit opt-out). Always a concrete boolean here, never `undefined`, so Studio never has to guess a default of its own. */
+  failClosed: boolean
   /** Derived from `checks` via `deriveHealth()` (plan 51 §4.1) — never set directly. */
   health: 'ok' | 'unverified' | 'degraded' | 'unknown'
   /** The named facts `health` was derived from — always present, even when every check is `unknown` (plan 51 §4.1, §5.8). */
@@ -127,6 +130,20 @@ function sessionTemplate(): string {
 /** A per-device sticky-session id (plan 52 §4.3) — generated once, kept stable thereafter. Not a secret, so a short opaque token is enough; it only has to be unlikely to collide and safe to embed in a username. */
 function generateSessionId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+}
+
+/**
+ * Plan 54 §4.2, §5.6 — turns a possibly-absent `PersistedNetworkRoute.failClosed` into a concrete
+ * boolean, in exactly ONE place, so every reader (the PUT handler persisting a value, `applyRoute`
+ * resolving the wire object, the UI default Studio shows) agrees. `undefined` resolves to `true`
+ * — "the safe default is the one that does not leak" (plan 54 §3.1) — for every route regardless
+ * of age: a route created before this plan shipped gets the safer behaviour the next time it is
+ * actually applied, not just a brand-new one, since a silent leak on an old route is exactly as
+ * bad as one on a new route. An operator who wants the old tear-down behaviour back sets it to
+ * `false` explicitly (`PUT /network`'s body).
+ */
+function resolveFailClosed(persisted: Pick<PersistedNetworkRoute, 'failClosed'> | null): boolean {
+  return persisted?.failClosed ?? true
 }
 
 /**
@@ -223,6 +240,12 @@ function buildChecks(input: ChecksInput): RouteCheck[] {
   const checks: RouteCheck[] = []
   const now = nowSeconds()
 
+  // Fail-closed (plan 54 §3.1, §4.1): the TUN is still established on purpose. This is NOT the
+  // same fact as `tunnel: fail` (which reads as "broken") — held is reported honestly below, on
+  // `upstream` and `egress`, not here. An apply/observe failure that couldn't even ask the device
+  // takes priority over a stale `held` from before it, same as it already does over a stale `up`.
+  const held = input.lastError === null && input.observed?.state === 'held'
+
   // tunnel — the device's own TUN/worker-thread state. An apply/observe failure (we could not
   // even ASK the device) outranks a stale `observed`: the honest reading of "we don't know
   // because the last attempt to find out failed" is `fail`, not a leftover `pass` from before
@@ -231,7 +254,7 @@ function buildChecks(input: ChecksInput): RouteCheck[] {
     checks.push({ id: 'tunnel', state: 'fail', detail: safeCheckDetail(input.lastError.message, input.secrets), at: now })
   } else if (input.observed === null) {
     checks.push({ id: 'tunnel', state: 'unknown', at: null })
-  } else if (input.observed.up) {
+  } else if (held || input.observed.up) {
     checks.push({ id: 'tunnel', state: 'pass', at: input.observedAt })
   } else {
     checks.push({
@@ -249,10 +272,24 @@ function buildChecks(input: ChecksInput): RouteCheck[] {
   // distinct from a leg inside a successful call reporting its own failure.
   const probeTransportFailed = input.probe === null && input.probeError !== null
 
+  /**
+   * Plan 54 §4.3 — a held route must never read as healthy: `upstream`/`egress` are FORCED to
+   * `fail` here, ahead of whatever a probe might otherwise say. This matters because
+   * `EgressProbe`'s tunnelled leg dials a FRESH SOCKS5 connection through `currentUpstream()`
+   * (Kotlin), independent of the forwarding this route stopped — it could well succeed even while
+   * held, and reporting that as `pass` would be exactly the "looks healthy" failure §4.3 forbids.
+   */
+  const heldDetail = safeCheckDetail(
+    input.observed?.lastError ?? 'route is held closed on purpose — traffic is blocked, not leaking',
+    input.secrets,
+  )
+
   // upstream — only the probe's tunnelled leg can answer "did a SOCKS5 session reach and
   // authenticate with the proxy" (plan 51 §4.2): `tunnel` above only means the TUN and the
   // tunnel's worker thread started, never that any session completed a handshake.
-  if (input.probe) {
+  if (held) {
+    checks.push({ id: 'upstream', state: 'fail', detail: heldDetail, at: input.observedAt })
+  } else if (input.probe) {
     const leg = input.probe.tunnelled
     const failedAtConnect = !leg.ok && leg.stage === 'connect'
     checks.push({
@@ -273,7 +310,9 @@ function buildChecks(input: ChecksInput): RouteCheck[] {
   }
 
   // egress — did the probe target answer, reached through the tunnel.
-  if (!probeConfigured) {
+  if (held) {
+    checks.push({ id: 'egress', state: 'fail', detail: heldDetail, at: input.observedAt })
+  } else if (!probeConfigured) {
     checks.push({
       id: 'egress',
       state: 'skip',
@@ -371,6 +410,10 @@ const ERROR_STATUS: Record<string, number> = {
   // `E_NETWORK_APPLY_FAILED` depending on which kind of operation actually failed.
   E_NETWORK_OBSERVE_FAILED: 502,
   E_NO_ROUTE_CONFIG: 409,
+  // Plan 54 §3.2, §4.2 — bounded automatic recovery gave up; never thrown over HTTP (it only ever
+  // lands on `entry.lastError`), but coded like every other failure this file reports so it fits
+  // the same `toCodedError`/`ERROR_STATUS` machinery if that ever changes.
+  E_NETWORK_RECOVERY_EXHAUSTED: 503,
   // The credential store (plan 52 §4.2).
   E_CREDENTIAL_NOT_FOUND: 404,
   E_CREDENTIAL_NAME_TAKEN: 409,
@@ -439,8 +482,8 @@ export interface GuestAgentRoutesDeps {
   db: Db
   /** CLI-level adb (install/forward/uninstall) — the same helper the session/inspector wiring uses. */
   hostAdb: (args: string[]) => Promise<string>
-  /** Per-device shell exec, through the adb queue (the same shape `Transport.exec` and the inspector launcher use). */
-  exec: (serial: string, cmd: string) => Promise<string>
+  /** Per-device shell exec, through the adb queue (the same shape `Transport.exec` uses). */
+  exec: (serial: string, cmd: string) => Promise<ShellResult>
   apkPath: () => Promise<string>
   ports: Pick<PortAllocator, 'claim' | 'release'>
   leases: LeaseManager
@@ -459,6 +502,13 @@ export interface GuestAgentRoutesDeps {
    * Tests drive fakes and must not sit out either one.
    */
   routeTimings?: { applySettleTimeoutMs?: number; applySettleIntervalMs?: number; revertPollTimeoutMs?: number }
+  /**
+   * Plan 54 §3.2, §4.2 — the backoff (seconds) between bounded automatic-recovery attempts;
+   * length is the attempt bound. Default `[5, 20, 60]` (three attempts, matching the plan's own
+   * suggestion). Test seam so a test proving "gives up after N attempts" does not have to sit out
+   * real wall-clock minutes.
+   */
+  recoveryBackoffS?: number[]
 }
 
 export interface GuestAgentRoutesHandle {
@@ -888,6 +938,133 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   const networkStateByDevice = new Map<string, NetworkRouteEntry>()
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
+  // ---- bounded recovery (plan 54 §3.2, §4.2) ----
+  //
+  // Deliberately NOT stored on `NetworkRouteEntry`: `coldProbe()` below replaces that object
+  // wholesale on every call (a fresh cold probe every heartbeat tick, for a device this process
+  // holds no live route for), which would silently reset any counter kept on it. This map is the
+  // one thing that survives across those replacements, and it is the ONLY place either
+  // `restoreDeviceRoute` or `heartbeatTick` may attempt a recovery apply from — "one owner, one
+  // counter" (plan 54 §4.2) means both call the SAME `maybeRecoverRoute` against the SAME entry
+  // here, never their own independent retry loop.
+  const recoveryBackoffS = deps.recoveryBackoffS ?? [5, 20, 60]
+  const RECOVERY_MAX_ATTEMPTS = recoveryBackoffS.length
+  /** `recoveryBackoffS[i]`, clamped to the last entry (or 0 for a caller-supplied empty schedule) — `noUncheckedIndexedAccess` requires this even though `i` is always in bounds for every call site below. */
+  function backoffAt(i: number): number {
+    return recoveryBackoffS[i] ?? recoveryBackoffS[recoveryBackoffS.length - 1] ?? 0
+  }
+
+  interface RecoveryState {
+    attempts: number
+    /** Unix seconds; an attempt before this time is skipped (the backoff between attempts). */
+    nextAttemptAt: number
+    /** The bound was reached without success — stop retrying, and a check now says why (plan 54 §3.2 "bound it": silent infinite retry against a broken proxy is its own failure mode). */
+    exhausted: boolean
+    /** Set alongside `exhausted` — re-applied to the entry on every subsequent tick (see below), since a cold probe would otherwise overwrite it with its own `lastError: null` before the next `maybeRecoverRoute` call ever runs. */
+    exhaustedMessage: string | null
+    /** True while an attempt is actually in flight — guards against `restoreDeviceRoute` and `heartbeatTick` racing onto two concurrent applies for the same device. */
+    pending: boolean
+  }
+  const recoveryByDevice = new Map<string, RecoveryState>()
+
+  function resetRecovery(deviceId: string): boolean {
+    return recoveryByDevice.delete(deviceId)
+  }
+
+  /**
+   * The one place either `restoreDeviceRoute` or `heartbeatTick` may attempt a recovery apply
+   * (plan 54 §4.2) — `entry` must already reflect this tick's own probe/observe, since this never
+   * probes on its own. A no-op when the device already carries its route (probed and left alone,
+   * plan 52 §3.2 / plan 54 acceptance #6), when a bound-reached device is still cooling down, or
+   * when another call already has an attempt in flight for this device.
+   */
+  async function maybeRecoverRoute(row: DeviceRow, persisted: PersistedNetworkRoute, entry: NetworkRouteEntry): Promise<void> {
+    const deviceId = row.id
+    if (entry.observed?.up === true) {
+      // Already carrying its route — never re-applied (plan 52 §3.2, plan 54 acceptance #6).
+      if (resetRecovery(deviceId)) deps.log.info(`network restore: device ${deviceId} recovered`)
+      else deps.log.info(`network restore: device ${deviceId} already carries its route — probed and left alone`)
+      return
+    }
+
+    const now = nowSeconds()
+    let r = recoveryByDevice.get(deviceId)
+    if (!r) {
+      // Waits `recoveryBackoffS[0]` before the FIRST attempt too, not just between retries — a
+      // device that just reconnected may still be settling (the same reasoning `applySettleTimeoutMs`
+      // already applies to a fresh apply), and hammering it the instant it is noticed down serves
+      // nobody.
+      r = { attempts: 0, nextAttemptAt: now + backoffAt(0), exhausted: false, exhaustedMessage: null, pending: false }
+      recoveryByDevice.set(deviceId, r)
+    }
+    if (r.exhausted) {
+      // `entry` reflects THIS tick's own fresh probe/observe (a cold probe's own successful read
+      // sets `lastError: null`), which would silently erase the "gave up" answer the very next
+      // tick if this did not re-apply it — acceptance criterion 5 ("says why") means this stays
+      // visible for as long as the bound stays reached, not just the one tick it was first hit.
+      if (r.exhaustedMessage) {
+        entry.lastError = { code: 'E_NETWORK_RECOVERY_EXHAUSTED', message: r.exhaustedMessage }
+        recomputeChecks(entry, persisted.config)
+      }
+      return
+    }
+    if (r.pending) return
+    if (now < r.nextAttemptAt) return
+
+    r.pending = true
+    r.attempts += 1
+    const attempt = r.attempts
+    deps.log.info(
+      `network restore: device ${deviceId} is not carrying its route (attempt ${attempt}/${RECOVERY_MAX_ATTEMPTS}) — applying`,
+    )
+    try {
+      // `actor: null` — this is the core acting on its own, not a user (matches `revertNetwork`'s
+      // own convention for its internal uninstall call).
+      await applyRoute(row, persisted.config, null)
+      // `applyRoute`/`vpn-helper.ts`'s `apply()` does NOT throw just because the device never
+      // reaches `up` within its own settle window — it "gives up quietly rather than failing an
+      // apply that may yet succeed" (that file's own doc comment) — so a bare absence-of-throw
+      // here is NOT proof of recovery. Confirming `observed.up` is what stops a permanently-held
+      // device from being declared "recovered" forever while still not carrying traffic
+      // (acceptance criterion 5: the bound must hold even when `route.start` keeps being
+      // accepted).
+      const settled = networkStateByDevice.get(deviceId)
+      if (settled?.observed?.up !== true) {
+        throw new EnkakuError('E_NETWORK_APPLY_FAILED', 'applied, but the device still does not report the route up')
+      }
+      recoveryByDevice.delete(deviceId)
+      deps.log.info(`network restore: device ${deviceId} recovered on attempt ${attempt}`)
+    } catch (err) {
+      if (attempt >= RECOVERY_MAX_ATTEMPTS) {
+        r.exhausted = true
+        r.exhaustedMessage = `automatic recovery gave up after ${RECOVERY_MAX_ATTEMPTS} attempts; the route stays enabled — apply manually once the upstream is reachable`
+        deps.log.warn(`network restore: device ${deviceId}: ${r.exhaustedMessage} (${err instanceof Error ? err.message : String(err)})`)
+        // `applyRoute` already set its own entry's `lastError` to the raw apply failure — this
+        // OVERWRITES it with the "gave up" message, since that is now the more honest answer to
+        // "why isn't this routed": not just that the last attempt failed, but that no more will be
+        // made without an operator. Re-fetched rather than using the `entry` this function was
+        // called with: `applyRoute` may have replaced `networkStateByDevice`'s value with a fresh
+        // entry (a cold entry adopting a live `route` for the first time), and writing to a stale
+        // reference would land on an object nothing reads any more.
+        const live = networkStateByDevice.get(deviceId)
+        if (live) {
+          live.lastError = { code: 'E_NETWORK_RECOVERY_EXHAUSTED', message: r.exhaustedMessage }
+          recomputeChecks(live, persisted.config)
+        }
+      } else {
+        // `backoffAt(attempt)`, not `(attempt - 1)` — index 0 already paid for the wait before
+        // THIS attempt; the wait before the NEXT one is the following entry in the schedule
+        // (attempt 1 failing schedules attempt 2 after index 1, i.e. 20s of the suggested
+        // 5s/20s/60s).
+        const delayS = backoffAt(attempt)
+        r.nextAttemptAt = nowSeconds() + delayS
+        deps.log.warn(`network restore: device ${deviceId} attempt ${attempt} failed, retrying in ${delayS}s: ${String(err)}`)
+      }
+    } finally {
+      r.pending = false
+    }
+  }
+
   /**
    * Reads `devices.network_route`, Zod-validated (CLAUDE.md: never trust a
    * JSON DB column). A row that fails validation is treated as "no route"
@@ -1095,8 +1272,15 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       observed = {
         prepared: status.prepared,
         up: status.up,
+        // Plan 54 §4.1 — carries `held` through a cold read, the same way `vpn-helper.ts`'s
+        // `observe()` already does for a route this process itself applied. `lastError` too:
+        // previously dropped here even though the device sends it, which meant a held route
+        // probed cold could only ever get the generic "held closed on purpose" detail, never the
+        // device's own specific reason (e.g. the dead-man's-switch timeout).
+        ...(status.state !== undefined ? { state: status.state } : {}),
         ...(status.upstream !== undefined ? { upstream: status.upstream } : {}),
         ...(status.stats !== undefined ? { stats: status.stats } : {}),
+        ...(status.lastError !== undefined ? { lastError: status.lastError } : {}),
       }
       observedAt = nowSeconds()
     } catch (err) {
@@ -1154,13 +1338,20 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
     if (!row) return
     const persisted = readPersistedRoute(row)
-    if (!persisted?.enabled) return
+    if (!persisted?.enabled) {
+      resetRecovery(deviceId)
+      return
+    }
     if (row.status === 'offline') {
       deps.log.info(`network restore: device ${deviceId} is offline, leaving its route enabled and unprobed`)
       return
     }
     await coldProbe(row, persisted.config)
     ensureHeartbeat()
+    // Plan 54 §3.2, §4.2: probe first (just did, above) — only apply when the device reports no
+    // route. `coldProbe` always (re)creates this device's entry, so it is always found here.
+    const entry = networkStateByDevice.get(deviceId)
+    if (entry) await maybeRecoverRoute(row, persisted, entry)
   }
 
   /**
@@ -1232,7 +1423,10 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     const rows = db.select().from(devices).all()
     for (const row of rows) {
       const persisted = readPersistedRoute(row)
-      if (!persisted?.enabled) continue
+      if (!persisted?.enabled) {
+        resetRecovery(row.id)
+        continue
+      }
       if (row.status === 'offline') continue // nothing to keep alive
       const entry = networkStateByDevice.get(row.id)
       try {
@@ -1253,10 +1447,19 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         } else {
           await coldProbe(row, persisted.config)
         }
+        // Plan 54 §4.2, §5.5: the heartbeat is the OTHER caller of the same bounded recovery
+        // `restoreDeviceRoute` uses — "one owner, one counter" means both go through
+        // `maybeRecoverRoute` against the SAME `recoveryByDevice` entry, never their own retry
+        // loop. A device that just dropped to `held`/`down` while enabled is exactly the case
+        // this catches without waiting for a reconnect event to fire `restoreDeviceRoute`.
+        const current = networkStateByDevice.get(row.id)
+        if (current) await maybeRecoverRoute(row, persisted, current)
       } catch (err) {
         // A heartbeat failure is always an OBSERVE failure — this loop only ever reads status
         // (`entry.route.observe()`) or cold-probes; it never calls `route.start` (plan 44 §8b,
-        // "Bug 2").
+        // "Bug 2"). `maybeRecoverRoute` above catches its OWN apply failures internally and never
+        // throws, so reaching this catch still means an observe/probe step failed, not a recovery
+        // attempt.
         const coded = toCodedError(err, 'E_NETWORK_OBSERVE_FAILED')
         if (entry) {
           entry.lastError = coded
@@ -1279,7 +1482,18 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   async function currentNetworkStatus(row: DeviceRow): Promise<NetworkStatusResult> {
     const persisted = readPersistedRoute(row)
     if (!persisted) {
-      return { engine: 'none', config: null, enabled: false, observed: null, drift: false, sessionId: null, health: 'unknown', checks: [], lastError: null }
+      return {
+        engine: 'none',
+        config: null,
+        enabled: false,
+        observed: null,
+        drift: false,
+        sessionId: null,
+        failClosed: resolveFailClosed(null),
+        health: 'unknown',
+        checks: [],
+        lastError: null,
+      }
     }
 
     const entry = networkStateByDevice.get(row.id)
@@ -1298,6 +1512,19 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       recomputeChecks(entry, persisted.config)
     }
 
+    // Plan 54 §3.2 acceptance #5 ("says why", and keeps saying why): the re-observe above just
+    // unconditionally reset `entry.lastError` to whatever THIS read found, which would silently
+    // erase a "gave up after N attempts" account on the very next GET otherwise — a bound that
+    // stops retrying but cannot explain itself past one poll is not meaningfully different from
+    // one that never explained itself at all. Re-applied here, AFTER the observe above, so it
+    // always wins for as long as `recoveryByDevice` still considers this device exhausted —
+    // regardless of how many times `entry` itself gets replaced by a cold probe in between.
+    const recovery = recoveryByDevice.get(row.id)
+    if (entry && recovery?.exhausted && recovery.exhaustedMessage) {
+      entry.lastError = { code: 'E_NETWORK_RECOVERY_EXHAUSTED', message: recovery.exhaustedMessage }
+      recomputeChecks(entry, persisted.config)
+    }
+
     return {
       engine: 'vpn-helper',
       config: toConfigResponse(persisted.config),
@@ -1305,6 +1532,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       observed: redactObservationForResponse(entry?.observed ?? null, secretsFor(persisted.config)),
       drift: computeDrift(persisted.config, persisted.enabled, entry?.observed ?? null),
       sessionId: persisted.sessionId ?? null,
+      failClosed: resolveFailClosed(persisted),
       health: entry?.health ?? 'unknown',
       checks: entry?.checks ?? [],
       lastError: entry?.lastError ?? null,
@@ -1313,6 +1541,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
 
   /** Tears down any LIVE or COLD in-memory state for a device's route — never touches the persisted config/enabled columns, which the caller decides separately (PUT/enable keep it, disable keeps it, DELETE clears it). */
   async function revertNetwork(deviceId: string, actor: string | null = null): Promise<void> {
+    // An operator explicitly turning a route off (or removing/uninstalling it) ends any recovery
+    // cycle in progress — there is nothing left to recover once the route is gone (plan 54 §4.2).
+    resetRecovery(deviceId)
     const entry = networkStateByDevice.get(deviceId)
     if (!entry) return
     // Removed up front so a concurrent/repeated call (e.g. the DELETE route
@@ -1335,7 +1566,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    * device has no notion of a name that only exists in this farm's own database. Throws
    * `E_CREDENTIAL_NOT_FOUND` (via `credentials.resolve`) if the name no longer exists.
    */
-  function resolveWireConfig(declared: Socks5RouteConfig, sessionId: string): Socks5RouteConfig {
+  function resolveWireConfig(declared: Socks5RouteConfig, sessionId: string, failClosed: boolean): Socks5RouteConfig {
     let username = declared.username
     let password = declared.password
     if (declared.credentialRef) {
@@ -1349,6 +1580,11 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       host: declared.host,
       port: declared.port,
       udpMode: declared.udpMode,
+      // Plan 54 §4.2, §5.6 — tells the agent whether to hold closed or tear down on failure. Never
+      // absent on the RESOLVED object: the device has no notion of "unspecified", only true/false,
+      // so `resolveFailClosed()` at the call site has already turned any `undefined` into the safe
+      // default before this function ever runs.
+      failClosed,
       ...(username !== undefined ? { username } : {}),
       ...(password !== undefined ? { password } : {}),
     }
@@ -1420,7 +1656,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       // device needs, with the sticky-session template applied on top (plan 52 §4.2, §4.3) —
       // done INSIDE the try so a missing credential surfaces as a normal apply failure
       // (`E_CREDENTIAL_NOT_FOUND`), not an unhandled throw.
-      const resolved = resolveWireConfig(config, sessionId)
+      const resolved = resolveWireConfig(config, sessionId, resolveFailClosed(currentPersisted))
       // `apply()` walks install → grant → bootstrap → forward → handshake →
       // route.start itself (plan 44 §4.4) — pressing apply installs the
       // agent if needed, exactly plan 44 §1 goal 2.
@@ -1475,10 +1711,20 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    *   the same device updates its one private entry instead of accumulating a fresh orphan on
    *   every PUT, and the deterministic name cannot collide with an operator's own named
    *   credential (which would have to guess a device's UUID to collide).
-   * - Neither `credentialRef` nor inline credentials is valid too — an upstream that genuinely
-   *   needs no authentication.
+   * - Neither `credentialRef` nor inline credentials CARRIES OVER `previous`'s credential rather
+   *   than dropping it. The API never returns a username (§4.2 — only `credentialRef`), so Studio
+   *   cannot re-send one it was never given; treating that absence as "this upstream needs no
+   *   authentication" silently downgraded an authenticated route to an anonymous one on any
+   *   re-save. Against a provider that also accepts IP-whitelist auth that connects fine and
+   *   serves a default-pool exit, so every check passes while the requested targeting is gone.
+   *   `clearCredential` is how an operator asks for a genuinely anonymous upstream.
    */
-  function normalizeDeclaredConfig(row: DeviceRow, submitted: Socks5RouteConfig, actor: string | null): Socks5RouteConfig {
+  function normalizeDeclaredConfig(
+    row: DeviceRow,
+    submitted: Socks5RouteConfig,
+    previous: PersistedNetworkRoute | null,
+    actor: string | null,
+  ): Socks5RouteConfig {
     if (submitted.credentialRef) {
       if (!credentials.findByName(submitted.credentialRef)) {
         throw new EnkakuError('E_CREDENTIAL_NOT_FOUND', `no stored credential named "${submitted.credentialRef}"`)
@@ -1486,7 +1732,15 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode, credentialRef: submitted.credentialRef }
     }
     if (submitted.username === undefined && submitted.password === undefined) {
-      return { host: submitted.host, port: submitted.port, udpMode: submitted.udpMode }
+      const carried = submitted.clearCredential ? undefined : previous?.config?.credentialRef
+      // A carried-over name whose credential has since been deleted is dropped rather than
+      // persisted as a dangling reference — the same rule the explicit branch above enforces.
+      return {
+        host: submitted.host,
+        port: submitted.port,
+        udpMode: submitted.udpMode,
+        ...(carried && credentials.findByName(carried) ? { credentialRef: carried } : {}),
+      }
     }
     const name = `device-${row.id}`
     credentials.upsert({ name, username: submitted.username, secret: submitted.password ?? '', createdBy: actor })
@@ -1506,15 +1760,18 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
     }
     const actor = c.get('user')?.id ?? null
-    const config = normalizeDeclaredConfig(row, parsed.data, actor)
+    const previous = readPersistedRoute(row)
+    const config = normalizeDeclaredConfig(row, parsed.data, previous, actor)
 
     // Saves AND enables in one action (the common path stays one action,
     // plan 44 step 5.4) — persisted BEFORE the apply attempt, so the config
     // survives even if the apply below fails or the core dies mid-request.
-    // `failClosed` carries over from whatever was there before (plan 51
-    // §4.4) — a config update is not an operator asking to reset it.
-    const previous = readPersistedRoute(row)
-    writePersistedRoute(row.id, { config, enabled: true, ...(previous?.failClosed !== undefined ? { failClosed: previous.failClosed } : {}) })
+    // `failClosed`: an explicit value on THIS request wins (plan 54 §4.2, §5.6 — Studio's route
+    // form can set it); otherwise it carries over from whatever was there before (a config update
+    // alone is not an operator asking to change it); `resolveFailClosed()` supplies the safe
+    // default (`true`) for a route that has never had an opinion on it, new or pre-existing alike.
+    const failClosed = parsed.data.failClosed ?? resolveFailClosed(previous)
+    writePersistedRoute(row.id, { config, enabled: true, failClosed })
     ensureHeartbeat()
 
     await applyRoute(row, config, actor)
@@ -1539,7 +1796,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     writePersistedRoute(row.id, {
       config: persisted.config,
       enabled: true,
-      ...(persisted.failClosed !== undefined ? { failClosed: persisted.failClosed } : {}),
+      failClosed: resolveFailClosed(persisted),
       ...(persisted.sessionId !== undefined ? { sessionId: persisted.sessionId } : {}),
     })
     ensureHeartbeat()

@@ -1,6 +1,8 @@
 # Plan 14 — M9c : The desktop application (Tauri)
 
-> **Status:** ready to work on. **Depends on:** Plan 09 (single-binary core, Studio static export). Independent of Plans 12 and 13.
+> Status: partial — the core sidecar lifecycle (free-port search, health-wait, PID file, orphan cleanup, stop-on-exit) and a minimal tray (Open/Quit only) are implemented in `main.rs`/`core_process.rs`; the auto-updater (no `tauri-plugin-updater`, no `pubkey`), the full tray menu (Status, Open data folder, Check for updates), and `docs/guide/desktop.md` are missing.
+> Ships: apps/desktop/src-tauri/src/core_process.rs
+> **Depends on:** Plan 09 (single-binary core, Studio static export). Independent of Plans 12 and 13.
 > **Spec references:** §2 (zero-config), §5.1 (the Tauri shell), §3 (the end customer persona).
 
 ---

@@ -2,7 +2,7 @@ import { shellQuote } from '@enkaku/adb'
 // `GUEST_AGENT_SOCKET` now lives in `@enkaku/protocol` (plan 44 §4.2) —
 // re-exported here so callers of this launcher don't need a second import
 // for the one constant they need alongside it.
-import { GUEST_AGENT_SOCKET } from '@enkaku/protocol'
+import { GUEST_AGENT_SOCKET, type ShellResult } from '@enkaku/protocol'
 
 export { GUEST_AGENT_SOCKET }
 
@@ -27,8 +27,12 @@ const ACTIVATE_VPN_OP = 'ACTIVATE_VPN'
 
 export interface GuestAgentLauncherDeps {
   serial: string
-  /** Per-device shell exec (through the Plan 01 queue). */
-  exec: (cmd: string) => Promise<string>
+  /**
+   * Per-device shell exec (through the Plan 01 queue). Returns the three
+   * fields separately (plan 53) — this launcher decides installation from
+   * the real exit code rather than by matching text.
+   */
+  exec: (cmd: string) => Promise<ShellResult>
   /** `adb install` and `adb forward` need CLI-level adb, supplied by the core. */
   hostAdb: (args: string[]) => Promise<string>
   /** APK path from the Toolchain Manager (or `ENKAKU_GUEST_AGENT_PATH`, plan 44 §7). */
@@ -66,14 +70,21 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // `cmd package path <pkg>` takes the package name as an argument, not
       // a filter — unlike `pm list packages`, whose substring match would
       // false-positive on a sibling package (docs/research/android-guest-agent.md
-      // §6). On a real device this prints `package:/data/app/.../base.apk`
-      // and exits 0 when installed, or nothing and exit 1 when it is not —
-      // but the per-device `exec` here is adb's legacy `shell:` service,
-      // which streams stdout until the socket closes and never surfaces the
-      // remote exit code. So this keys on the fixed `package:` prefix
-      // rather than on an exit code `exec` cannot report.
-      const out = await deps.exec(`cmd package path ${shellQuote(GUEST_AGENT_PACKAGE)}`)
-      return out.startsWith('package:')
+      // §6). It prints `package:/data/app/.../base.apk` and exits 0 when
+      // installed, or nothing and exit 1 when it is not.
+      //
+      // Unlike `dumpsys` — which exits 0 even for a service that does not
+      // exist, verified on hardware in plan 53 §5.5 — this command reports
+      // the answer in its exit status, so that is what decides. The prefix
+      // is still required for the positive case: an exit of 0 with output
+      // in some other shape means the command did something we do not
+      // understand, and "installed" is too consequential a thing to assume.
+      const { stdout, exitCode } = await deps.exec(`cmd package path ${shellQuote(GUEST_AGENT_PACKAGE)}`)
+      // `null` means the device is too old for the framed shell service
+      // (plan 53 §3.4). No exit code exists to read, so fall back to the
+      // prefix alone rather than treat "unknown" as "not installed".
+      if (exitCode === null) return stdout.startsWith('package:')
+      return exitCode === 0 && stdout.startsWith('package:')
     },
 
     async ensureInstalled() {
@@ -93,11 +104,15 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // must still fail loudly. Seen in the field as an install that reported success and then
       // failed to pre-grant.
       for (let attempt = 1; attempt <= 3; attempt++) {
+        // `appops get` writes "No UID for <pkg>" to stderr, not stdout, so
+        // both streams are searched — before plan 53 they arrived merged and
+        // this read stdout alone.
         const probe = await deps.exec(`appops get ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP}`)
-        if (!probe.includes('No UID')) break
+        const probeText = `${probe.stdout}\n${probe.stderr}`
+        if (!probeText.includes('No UID')) break
         if (attempt === 3) {
           throw new Error(
-            `${GUEST_AGENT_PACKAGE} is not registered with package manager (${JSON.stringify(probe)}) — ` +
+            `${GUEST_AGENT_PACKAGE} is not registered with package manager (${JSON.stringify(probeText.trim())}) — ` +
               'the install did not take, so the VPN app op cannot be granted',
           )
         }
@@ -108,9 +123,9 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // (docs/research/android-guest-agent.md §1.2) and could stop behaving
       // this way on any future Android release without notice.
       const readback = await deps.exec(`appops get ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP}`)
-      if (!readback.includes('allow')) {
+      if (!readback.stdout.includes('allow')) {
         throw new Error(
-          `appops set ${GUEST_AGENT_PACKAGE} ${ACTIVATE_VPN_OP} allow did not take (readback: ${JSON.stringify(readback)}) — ` +
+          `appops set ${GUEST_AGENT_PACKAGE} ${ACTIVATE_VPN_OP} allow did not take (readback: ${JSON.stringify(readback.stdout)}) — ` +
             `this app op is @hide/@SystemApi and its behaviour is not guaranteed across Android releases`,
         )
       }
@@ -123,7 +138,21 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // after the device's first reboot. Budget for the same after any
       // force-stop (see stop() below).
       const out = await deps.exec(`am start -n ${BOOTSTRAP_ACTIVITY} --es token ${shellQuote(token)}`)
-      deps.onLog?.('debug', `bootstrap on ${deps.serial}: ${out}`)
+      // Measured on a moto g06 (Android 15): a failing `am start` exits 1 and
+      // puts "Error: Activity class {...} does not exist." on stderr — while
+      // stdout still reads `Starting: Intent { ... }`, which looks like
+      // success. Merged into one stream and logged at debug, as it was before
+      // plan 53, a bootstrap that never happened was indistinguishable from
+      // one that did: the agent stays dead and the route never comes up, with
+      // nothing louder than a debug line to say so. Unlike `am broadcast`,
+      // which reports success for a component that does not exist, this
+      // command's exit code can be trusted.
+      if (out.exitCode !== null && out.exitCode !== 0) {
+        throw new Error(
+          `bootstrapping the guest agent on ${deps.serial} failed (exit ${out.exitCode}): ${out.stderr || out.stdout}`,
+        )
+      }
+      deps.onLog?.('debug', `bootstrap on ${deps.serial}: ${out.stdout}`)
     },
 
     async forward(localPort) {

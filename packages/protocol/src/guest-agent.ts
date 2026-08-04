@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Socks5RouteConfigSchema } from './network'
+import { RouteLifecycleStateSchema, Socks5RouteConfigSchema } from './network'
 
 /**
  * The wire contract between the farm host and the Enkaku guest agent APK
@@ -153,6 +153,8 @@ export type RouteStopResult = z.infer<typeof RouteStopResultSchema>
 export const RouteStatusResultSchema = z.object({
   prepared: z.boolean(),
   up: z.boolean(),
+  /** Plan 54 §4.1, §5.3 — see `RouteLifecycleStateSchema`'s doc comment. */
+  state: RouteLifecycleStateSchema.optional(),
   upstream: z.string().optional(),
   /** [txPackets, txBytes, rxPackets, rxBytes]. */
   stats: z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int()]).optional(),

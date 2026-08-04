@@ -1,6 +1,7 @@
 # Plan 16 — M10b : Perombakan tiap layar & alur pengguna
 
-> **Status:** SELESAI. Seluruh layar dirombak dan diperiksa langsung di 1440/1024/768 px; static export lolos build.
+> Status: implemented — every screen described here (dashboard with clickable summary/search/filter/quick actions, device control, jobs, scripts, tools, settings, enrollment) is built in `packages/studio/src/app/`, since extended further by later plans (22, 30, 39, 43, 47).
+> Ships: packages/studio/src/app/page.tsx
 > **Referensi spec:** §19 (spec layar), §3 (persona), §10.1 (status device), §15.2 (baterai/termal).
 
 ---

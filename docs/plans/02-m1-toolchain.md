@@ -1,6 +1,7 @@
 # Plan 02 — M1 : Toolchain Manager
 
-> **Status:** draft, siap dikerjakan setelah Plan 01 selesai.
+> Status: implemented — ToolchainManager (install/activate/remove/reconcile/ensureRequiredTools, mandatory sha256 verification, health check gating activation, adb-swap hook) is built and matches this plan.
+> Ships: packages/toolchain/src/manager.ts
 > **Depends on:** Plan 01 (M0 — monorepo, core daemon, `packages/adb`, device registry, SQLite/Drizzle, WS broadcast, per-device queue + semaphore).
 > **Referensi spec:** §20 baris M1, §7.2 (konsep Toolchain Manager), §7.3 (ToolManifest/ToolVersion), §7.6 (scrcpy-server locked), §7.7 (API tools), §7.8 (aturan keamanan tool), §10.4 (`adb kill-server` hanya di sini), §12 (`tool_installs`), §16 (NFR first-run < 90 detik).
 

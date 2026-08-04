@@ -1,6 +1,7 @@
 # Plan 09 — M7 : Multi-user & Packaging
 
-> **Status:** draft, siap dikerjakan setelah Plan 08 selesai.
+> Status: implemented — auth/ACL, TLS, config precedence, retention GC, sessions table, and the Tauri desktop shell all ship in the core and apps/desktop.
+> Ships: packages/core/src/auth/acl.ts
 > **Depends on:** Plan 01–08 (M0–M6) selesai & acceptance criteria-nya lulus. Placeholder settings retention dari Plan 07 diaktifkan di sini.
 > **Referensi spec:** §20 baris M7, §14 (keamanan: auth, TLS, audit, data hygiene), §5.1–5.2 (mode deployment local & headless server), §12 (tabel `users`, `audit_log`, `artifacts.sizeBytes`), §18 (artifact retention/GC), §7.2 (app-data dir), §4 (`apps/desktop` Tauri).
 

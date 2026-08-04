@@ -16,6 +16,15 @@ data class Socks5Upstream(
   val password: String? = null,
   /** `udp` carries UDP over UDP; `tcp` tunnels it over the TCP connection when the server refuses. */
   val udpMode: String = "udp",
+  /**
+   * Plan 54 §4.2, §5.6 — whether a failure on THIS route should hold the TUN closed (default,
+   * the safe reading — "the safe default is the one that does not leak") or tear it down the
+   * pre-plan-54 way, for an operator debugging by hand. Read by
+   * [RouteVpnService.handleFailure] and by [RouteVpnService.failClosed] (which the dead-man's
+   * switch consults) off the upstream a route was actually started with, never off a global
+   * default, since two different devices can carry two different policies at once.
+   */
+  val failClosed: Boolean = true,
 )
 
 /**

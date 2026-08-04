@@ -164,13 +164,28 @@ export interface RouteCheck {
 export interface NetworkConfig {
   host: string
   port: number
-  username?: string
+  /**
+   * Names the stored credential this route authenticates with (plan 52 §4.2). There is no
+   * `username` here and there never was one to read: the API returns only the name, so a form
+   * that seeds a username field off this config always seeded it BLANK, which then re-saved the
+   * route without a credential. Show the name; make replacing it a deliberate act.
+   */
+  credentialRef?: string
   udpMode: NetworkUdpMode
 }
+
+/**
+ * The three states a route's TUN can actually be in (plan 54 §4.1) — `up` alone (a plain boolean)
+ * cannot tell "held closed on purpose, deliberately blocking traffic" apart from "nothing
+ * configured at all"; both used to read `up: false` identically. Optional: an older core/agent
+ * pair never sends it, and `up` alone is the fallback reading in that case.
+ */
+export type NetworkRouteState = 'up' | 'held' | 'down'
 
 /** What the device itself reported back, from its own `route.status` — not what was asked for. */
 export interface NetworkObserved {
   up: boolean
+  state?: NetworkRouteState
   upstream?: string
   stats?: number[]
 }
@@ -188,6 +203,12 @@ export interface NetworkStatus {
   observed: NetworkObserved | null
   /** True when the saved config and the device's own observation disagree — the whole point of keeping both. */
   drift: boolean
+  /**
+   * Plan 54 §4.2, §5.6 — whether a failure holds the device closed (`true`, the default even for
+   * a route saved before this existed) or falls back to the device's real address (`false`,
+   * an explicit opt-out for debugging by hand). Always a concrete boolean, never absent.
+   */
+  failClosed: boolean
   /** Derived from `checks` (plan 51 §4.1) — never set directly. */
   health: NetworkHealth
   /** The named facts `health` was derived from — always present, even when every check is `unknown`. */

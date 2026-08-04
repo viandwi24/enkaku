@@ -215,6 +215,28 @@ describe('createVpnHelperRoute (plan 44 §4.4, §5.6; probe: plan 51 §4.2, §5.
     })
   })
 
+  test('observe() carries a held state through — plan 54 §4.1, so a caller can tell "fail-closed on purpose" from "nothing configured", which up:false alone cannot', async () => {
+    const { launcher } = fakeLauncher()
+    const { client, factory } = fakeClient()
+    client.routeStatus = async () => ({
+      prepared: true,
+      up: false,
+      state: 'held' as const,
+      upstream: 'proxy.example:1080',
+      lastError: 'no contact from the farm for 91000ms',
+    })
+    const { session } = fakeSession(launcher, factory)
+
+    const route = createVpnHelperRoute({ launcher, session, apkPath: async () => '/apk', deviceId: 'dev-1' })
+    await expect(route.observe()).resolves.toEqual({
+      prepared: true,
+      up: false,
+      state: 'held',
+      upstream: 'proxy.example:1080',
+      lastError: 'no contact from the farm for 91000ms',
+    })
+  })
+
   test('a genuinely unreachable agent fails observe() with a coded error, not the old "before apply()" message', async () => {
     const { launcher } = fakeLauncher()
     const { factory } = fakeClient({

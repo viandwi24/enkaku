@@ -1,6 +1,7 @@
 # Plan 01 — M0 : Fondasi (monorepo, adb client, device registry, SQLite, WS broadcast)
 
-> **Status:** draft, siap dikerjakan.
+> Status: implemented — AdbClient (smartsocket protocol, per-device queue + semaphore, track-devices, no kill-server) and the device registry (probe, upsert by stableId, WS broadcast) are built and match this plan.
+> Ships: packages/adb/src/client.ts
 > **Depends on:** `00-overview.md` (konvensi & template). Tidak ada plan sebelumnya — ini plan pertama; repo belum git.
 > **Referensi spec:** §4 (arsitektur & layout packages), §7 (interface `Transport`), §7.5 (stableId), §10.4 (per-device queue + semaphore, larangan `kill-server`), §12 (data model `devices`), §13 (protokol Core⇄Studio), §20 baris **M0**.
 

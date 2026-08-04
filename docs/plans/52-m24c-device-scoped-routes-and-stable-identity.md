@@ -1,6 +1,7 @@
 # Plan 52 — M24c : Routes belong to the device, and keep a stable identity
 
-> **Status:** not started.
+> Status: implemented — lease-scoped teardown is removed (`onManualRevoked` deliberately leaves the route alone), routes are restored on device-online/core-start, and the AES-256-GCM `network_credentials` store replaces plaintext secrets.
+> Ships: packages/core/src/network/credential-store.ts
 > **Depends on:** Plan 44 (the working route), Plan 50 (smoke test), Plan 51 (verification — a persistent route that cannot be verified is worse than none).
 > **Spec references:** §7.9 (network layer), §17 (positioning).
 > **Supersedes:** Plan 44 §1 goal 4 and its lease-scoped lifetime.

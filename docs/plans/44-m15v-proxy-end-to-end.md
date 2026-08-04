@@ -1,6 +1,7 @@
 # Plan 44 — M15v : first working proxy, end to end
 
-> **Status:** the goal is met end to end. A SOCKS5 full-tunnel route with username/password can be applied to a device through the core API and is carrying real traffic, verified on Android 15 hardware. Remaining rough edges are in §8b; none block the manual test.
+> Status: implemented — a SOCKS5 full-tunnel route with username/password can be applied to a device through the core API and carries real traffic, verified on Android 15 hardware; the token-rotation and dead-man's-switch fixes in §8b are in the tree.
+> Ships: packages/drivers/src/network/guest-agent/vpn-helper.ts
 > **Type:** a **delivery slice**, not a milestone. It does not add scope — it selects the minimum subset of Plan 33 and Plan 43 that makes one concrete thing work, and defers everything else in both.
 > **Consumes:** Plan 33 §5.1–5.4, §5.6–5.8, §5.11 · Plan 43 §5.4, §5.5 (partly), §5.8, §5.8b
 > **Spec references:** §7.9 (network layer), §7.10 (first-party agent), §17 (positioning).

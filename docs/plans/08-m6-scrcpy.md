@@ -1,6 +1,7 @@
 # Plan 08 — M6 : scrcpy Display + UHID Input + WebCodecs
 
-> **Status:** draft — siap dikerjakan setelah Plan 07 selesai.
+> Status: implemented — `@enkaku/scrcpy` protocol client (server launch, video demux, UHID/SDK control, clipboard) shipped
+> Ships: packages/scrcpy/src/session.ts
 > **Depends on:** Plan 01–07 (semua acceptance criteria lulus). Secara khusus: `screencap-loop` + `adb-input` sudah jalan sebagai fallback (Plan 03), lease/busy enforcement sudah ada (Plan 04), `scrcpy-server.jar` sudah di-manage Toolchain Manager dengan `swappable: false` (Plan 02), format binary channel-prefix WS sudah didesain (Plan 03), registry + capability locks + schema-driven form sudah ada (Plan 07).
 > **Referensi spec:** §20 baris M6, §4 (catatan arsitektur vanilla scrcpy-server), §6.2 (pelajaran ws-scrcpy), §7.6 (versi-lock scrcpy-server), §9 (input injection modes, §9.5 capability locks), §13 (protokol video), §16 NFR (glass-to-glass < 150 ms LAN, ≥ 24 fps), §12 (`devices.apiLevel`, `DeviceSettings.input.preferredMode`).
 

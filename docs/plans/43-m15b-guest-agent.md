@@ -1,6 +1,7 @@
 # Plan 43 — M15b : `enkaku-guest-agent` and the `vpn-helper` network engine
 
-> **Status:** not started.
+> Status: partial — the device-side APK (control channel, RouteVpnService, hev-socks5-tunnel JNI), the host launcher/client, and the vpn-helper NetworkRoute are built and proven on hardware (largely through plan 44's delivery slice); the fleet-wide Studio surface (device-list column/filter, bulk install — §4.5, §5.8b) and CI release signing plus the toolchain manifest entry (§5.11) are still missing.
+> Ships: apps/guest-agent/app/src/main/java/dev/enkaku/guestagent/route/RouteVpnService.kt
 > **Depends on:** Plan 33 (M15 — the network layer, its engine interface, lease-scoped apply/revert, and the event-log kinds). Do not start this before 33's acceptance criteria pass.
 > **Spec references:** §7.9 (network layer), §7.10 (first-party agent), §7.2/§7.3 (Toolchain Manager and manifest), §7.4 (the `ui-server` provisioning precedent), §17 (positioning).
 > **Research:** `docs/research/android-guest-agent.md` — every platform claim in this plan is sourced there. **Read it before step 5.1.** Where this plan states a platform behaviour without a source, the source is in that document.

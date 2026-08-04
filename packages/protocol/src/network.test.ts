@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   deriveHealth,
+  NetworkObservationSchema,
   PersistedNetworkRouteSchema,
   renderStickyUsername,
   RouteCheckSchema,
+  RouteLifecycleStateSchema,
   Socks5RouteConfigSchema,
   type RouteCheck,
 } from './network'
@@ -95,7 +97,7 @@ describe('deriveHealth (plan 51 §4.1) — health is derived from checks, never 
   })
 })
 
-describe('PersistedNetworkRouteSchema.failClosed (plan 51 §4.4, §5.6 — plumbing only, not enforced)', () => {
+describe('PersistedNetworkRouteSchema.failClosed (plan 51 §4.4 plumbing, made real by plan 54 §4.2, §5.6)', () => {
   test('omitting failClosed still parses — every pre-existing persisted route lacks it', () => {
     const parsed = PersistedNetworkRouteSchema.parse({
       config: { host: 'proxy.example', port: 1080, udpMode: 'udp' },
@@ -111,6 +113,63 @@ describe('PersistedNetworkRouteSchema.failClosed (plan 51 §4.4, §5.6 — plumb
       failClosed: true,
     })
     expect(parsed.failClosed).toBe(true)
+  })
+
+  test('failClosed false round-trips — the explicit opt-out for debugging by hand', () => {
+    const parsed = PersistedNetworkRouteSchema.parse({
+      config: { host: 'proxy.example', port: 1080, udpMode: 'udp' },
+      enabled: true,
+      failClosed: false,
+    })
+    expect(parsed.failClosed).toBe(false)
+  })
+})
+
+describe('Socks5RouteConfigSchema.failClosed (plan 54 §4.2, §5.6) — carried on the RESOLVED wire object only', () => {
+  test('omitting failClosed still parses', () => {
+    const parsed = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp' })
+    expect(parsed.failClosed).toBeUndefined()
+  })
+
+  test('failClosed round-trips alongside a resolved username/password', () => {
+    const parsed = Socks5RouteConfigSchema.parse({
+      host: 'proxy.example',
+      port: 1080,
+      username: 'sam',
+      password: 'hunter2',
+      udpMode: 'udp',
+      failClosed: true,
+    })
+    expect(parsed.failClosed).toBe(true)
+  })
+})
+
+describe('RouteLifecycleStateSchema / NetworkObservationSchema.state (plan 54 §4.1)', () => {
+  test('the three states parse', () => {
+    for (const s of ['up', 'held', 'down'] as const) {
+      expect(RouteLifecycleStateSchema.parse(s)).toBe(s)
+    }
+  })
+
+  test('an unrecognised state is rejected', () => {
+    expect(() => RouteLifecycleStateSchema.parse('paused')).toThrow()
+  })
+
+  test('a held observation parses with up:false and state:"held" together — the whole point of the field', () => {
+    const parsed = NetworkObservationSchema.parse({
+      prepared: true,
+      up: false,
+      state: 'held',
+      upstream: 'proxy.example:1080',
+      lastError: 'no contact from the farm for 91000ms',
+    })
+    expect(parsed.up).toBe(false)
+    expect(parsed.state).toBe('held')
+  })
+
+  test('omitting state still parses — an older agent build, or a cold read that never populated it', () => {
+    const parsed = NetworkObservationSchema.parse({ prepared: true, up: true })
+    expect(parsed.state).toBeUndefined()
   })
 })
 

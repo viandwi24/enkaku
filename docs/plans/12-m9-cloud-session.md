@@ -1,6 +1,7 @@
 # Plan 12 — M9a : Mode cloud yang benar-benar berfungsi (session & job di agent)
 
-> **Status:** siap dikerjakan. **Prioritas tertinggi** di antara plan 12–14.
+> Status: implemented — `@enkaku/session` (session.ts, manager.ts, device-executor.ts, runner/) extracted and shared by core and agent; the agent runs jobs locally via createJobRunner and streams log/artifact back over the tunnel; `agent_offline`/`not_supported_in_mode`/`device_not_reachable` error codes are wired in.
+> Ships: packages/session/src/session.ts
 > **Depends on:** Plan 11 (M8a — tunnel, registry agent, mode orchestrator).
 > **Referensi spec:** §5.3 (cloud split control plane), §10 (lease/queue), §11 (script framework), §13 (protokol).
 

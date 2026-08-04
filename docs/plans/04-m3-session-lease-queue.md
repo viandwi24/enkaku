@@ -1,6 +1,7 @@
 # Plan 04 — M3 : Session, Lease, Queue, Scheduler
 
-> **Status:** draft — siap dieksekusi setelah Plan 01–03 selesai.
+> Status: implemented — the LeaseManager (manual + job leases, idle-timeout and lease-expiry reaper, checkInputAllowed matrix matching §4.1) is built and matches this plan.
+> Ships: packages/core/src/lease/lease-manager.ts
 > **Depends on:** Plan 01 (core daemon, device registry + stableId, SQLite + Drizzle, WS broadcast, per-device adb queue + semaphore), Plan 02 (Toolchain Manager), Plan 03 (kontrol dasar `screencap-loop` + `adb-input`, Studio live view + klik, enrollment wizard).
 > **Referensi spec:** §10 (seluruhnya: state machine, lease + heartbeat, queue SQLite, serialisasi adb), §12 (tabel `jobs`, kolom `devices.status`), §13 (kategori message Queue/job & Control), §20 baris M3.
 >

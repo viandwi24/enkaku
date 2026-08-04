@@ -1,6 +1,7 @@
 # Plan 03 — M2 : Kontrol dasar (screencap-loop, adb-input, Studio live view, enrollment wizard)
 
-> **Status:** draft, siap dikerjakan setelah Plan 01–02 selesai.
+> Status: implemented — the `screencap-loop` DisplaySource (serial capture loop, PNG signature/size parsing, interval ~2.5 fps, backoff retry, clean stop) is built and matches this plan's §4.4.
+> Ships: packages/drivers/src/display/screencap-loop.ts
 > **Depends on:** Plan 01 (`packages/adb` client + track-devices, device registry + stableId probe, SQLite, WS `/ws` + broadcast device events, per-device queue + semaphore) dan Plan 02 (Toolchain Manager: adb ter-provision, path binary di-resolve dari toolchain — bukan PATH sistem).
 > **Referensi spec:** §20 baris M2, §7 (interface 4 lapisan), §7.1 (tabel engine), §8 (registry), §13 (protokol), §15.1 (enrollment), §19 (Dashboard, Enrollment wizard, Device detail — versi minimal).
 

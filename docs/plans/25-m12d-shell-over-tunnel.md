@@ -1,6 +1,7 @@
 # Plan 25 — M12d : Shell and Monitors over the Cloud Tunnel
 
-> Status: draft
+> Status: implemented — ShellPort (local + remote), correlated TunnelRpc, and the shell binary channel are all shipped and wired into MonitorHub
+> Ships: packages/core/src/device/shell-port.ts
 > Depends on: **Plan 24** (the lane, the monitor builders, and the WS protocol it defines), Plans 11–12 (the cloud tunnel and remote sessions).
 > Blocks: Plan 26 gains cloud support for free once this lands; Plan 28 reuses the correlation layer built here.
 > Spec references: §13 (protocol), plan 11 §4.2 (tunnel envelope), plan 12 §4.4 (remote sessions).

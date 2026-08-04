@@ -166,12 +166,29 @@ function describeToggle(status: NetworkStatus): { checked: boolean; tone: Toggle
       note: 'The device confirms traffic is flowing through this route.',
     }
   }
+  // Plan 54 §4.1, §4.3 — a HELD route is deliberately blocking traffic, not accidentally leaking
+  // it, and must read as neither "ok" (it is not carrying traffic) nor the same alarming "may
+  // leak" copy as a genuine down (the whole reason `state` exists on the wire). Recovery is
+  // automatic and bounded (plan 54 §3.2) — this is a "wait, or fix the upstream" state, not a
+  // "go turn the route off before it leaks" one.
+  if (status.observed?.state === 'held') {
+    return {
+      checked: true,
+      tone: 'warn',
+      title: 'Route held closed',
+      note:
+        (status.lastError?.message ?? 'The tunnel could not carry traffic') +
+        ' — the device is blocking its own traffic on purpose rather than falling back to its real address. It will recover on its own once the upstream answers again, within a few bounded attempts.',
+    }
+  }
   if (status.observed?.up === false) {
     return {
       checked: true,
       tone: 'danger',
       title: 'Route on — not carrying traffic',
-      note: 'The device reports this route is not passing traffic. It may be left with no usable internet — check the upstream, or turn the route off.',
+      note: status.failClosed
+        ? 'The device reports this route is not passing traffic. With "fail closed" on, it should hold rather than leak — if this persists, the agent build may predate that protection.'
+        : 'The device reports this route is not passing traffic, and "fail closed" is off for this device — it may be sending on its real address. Check the upstream, or turn the route off.',
     }
   }
   return {
@@ -228,6 +245,13 @@ export function NetworkRouteForm({
   // stays true even after a successful apply (plan 44 §4.6, point 4).
   const [password, setPassword] = useState('')
   const [udpMode, setUdpMode] = useState<NetworkUdpMode>('udp')
+  // Plan 54 §4.2, §5.6 — defaults true (the safe reading) until the server's own value is seeded
+  // in, matching `resolveFailClosed()`'s own default so the switch never flashes "off" for an
+  // instant on a route that will read `true` a moment later.
+  const [failClosed, setFailClosed] = useState(true)
+  // Asking for an anonymous upstream has to be explicit: blank credential fields mean "keep the
+  // stored one", because the API never returns a username for them to be seeded from.
+  const [clearCredential, setClearCredential] = useState(false)
   const [pasteUrl, setPasteUrl] = useState('')
   const [pasteError, setPasteError] = useState<string | null>(null)
 
@@ -245,8 +269,8 @@ export function NetworkRouteForm({
       seeded.current = true
       setHost(status.config.host)
       setPort(String(status.config.port))
-      setUsername(status.config.username ?? '')
       setUdpMode(status.config.udpMode)
+      setFailClosed(status.failClosed)
     }
   }, [status])
 
@@ -280,6 +304,8 @@ export function NetworkRouteForm({
             username: username.trim() ? username.trim() : undefined,
             password: password ? password : undefined,
             udpMode,
+            failClosed,
+            clearCredential: clearCredential ? true : undefined,
           },
         }),
       {
@@ -462,6 +488,33 @@ export function NetworkRouteForm({
             </div>
           </div>
 
+          {/*
+            Which credential this route actually authenticates with. Without this the fields above
+            read blank on a route that HAS one, and saving again dropped it — connecting anonymously
+            to an upstream that may accept it and hand back a default-pool exit, so the route looks
+            healthy while the requested targeting is silently gone.
+          */}
+          <div className="mt-2 text-[11px]">
+            {clearCredential ? (
+              <p className="text-led-warn">
+                Saving will drop the stored credential and connect with no authentication.{' '}
+                <button type="button" className="underline" onClick={() => setClearCredential(false)}>
+                  Keep it
+                </button>
+              </p>
+            ) : status?.config?.credentialRef ? (
+              <p className="text-fg-subtle">
+                Authenticating with stored credential <span className="font-mono text-fg-muted">{status.config.credentialRef}</span>. Leave
+                the fields above blank to keep it, or type a new username and password to replace it.{' '}
+                <button type="button" className="underline" onClick={() => setClearCredential(true)} disabled={!canUse}>
+                  Use no authentication
+                </button>
+              </p>
+            ) : (
+              <p className="text-fg-subtle">This route has no stored credential — it connects to the upstream anonymously.</p>
+            )}
+          </div>
+
           <div className="mt-3 space-y-1.5">
             <Label htmlFor={`udp-${deviceId}`} className="text-[12px] font-normal">
               UDP mode
@@ -477,6 +530,29 @@ export function NetworkRouteForm({
             </Select>
           </div>
 
+          {/* Plan 54 §4.2, §5.6, §5.7 — the default IS the safe behaviour (does not leak); this
+              switch is the explicit opt-out for an operator debugging by hand, not a knob most
+              people ever need to touch. The consequence is stated plainly either way, since a
+              held-but-unreachable device still needs an operator to know that's what happened. */}
+          <div className="mt-3 flex items-start gap-2.5 rounded border bg-bg px-2.5 py-2">
+            <Switch
+              id={`fail-closed-${deviceId}`}
+              checked={failClosed}
+              onCheckedChange={setFailClosed}
+              disabled={!canUse}
+              className="mt-0.5"
+              aria-label="Fail closed on tunnel failure"
+            />
+            <Label htmlFor={`fail-closed-${deviceId}`} className="text-[12px] font-normal">
+              <span className="text-fg">Fail closed</span>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                {failClosed
+                  ? 'When the tunnel breaks, the device blocks its own traffic instead of falling back to its real address. Recommended, and the default.'
+                  : 'Off: a broken tunnel falls back to the device’s real address instead of blocking traffic — only useful while debugging the route by hand.'}
+              </p>
+            </Label>
+          </div>
+
           <div className="mt-4 flex items-center gap-2 border-t pt-3">
             <Button type="submit" size="sm" disabled={!canApply || isPending('apply')}>
               {isPending('apply') ? 'Applying…' : status.config ? 'Update route' : 'Apply route'}
@@ -489,6 +565,7 @@ export function NetworkRouteForm({
           <dl className="space-y-1.5">
             <Row label="engine" value={status.engine} />
             <Row label="enabled" value={status.enabled ? 'yes' : 'no'} />
+            <Row label="fail closed" value={status.failClosed ? 'yes' : 'no — may leak on failure'} />
             <div className="flex items-baseline justify-between gap-3">
               <dt className="text-[12px] text-fg-subtle">health</dt>
               <dd>
@@ -533,7 +610,13 @@ export function NetworkRouteForm({
 
           {status.observed ? (
             <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
-              <Row label="up (device)" value={status.observed.up ? 'yes' : 'no'} />
+              {/* Plan 54 §4.1, §5.7 — `up` alone reads `no` for both `held` and `down`; the state
+                  row is what actually distinguishes "blocking on purpose" from "not routed at
+                  all", the same distinction the toggle banner above states in plain language. */}
+              <Row
+                label="up (device)"
+                value={status.observed.state === 'held' ? 'no — held closed' : status.observed.up ? 'yes' : 'no'}
+              />
               <Row label="upstream (device)" value={status.observed.upstream ?? '—'} />
             </dl>
           ) : (

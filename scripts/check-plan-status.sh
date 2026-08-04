@@ -21,6 +21,7 @@ cd "$(dirname "$0")/.."
 
 mismatch=0
 skipped=0
+partial=0
 
 for plan in docs/plans/*.md; do
   ships=$(grep -m1 '^> Ships: ' "$plan" | sed 's/^> Ships: //' | tr -d '\r')
@@ -30,6 +31,21 @@ for plan in docs/plans/*.md; do
   fi
 
   status=$(grep -m1 '^> Status: ' "$plan" | sed 's/^> Status: //' | tr -d '\r')
+
+  # `partial` is a third state, not a broken second one. A plan that shipped
+  # half of itself has an artefact on disk AND unfinished work, so neither
+  # "implemented" nor "draft" is true and the exists/not-exists test below
+  # cannot say anything useful about it. Counting these separately keeps the
+  # honest answer available instead of pushing authors toward rounding a
+  # partial up to `implemented` (or down to `draft`) just to get a green run.
+  case "$status" in
+    partial*)
+      partial=$((partial + 1))
+      printf '  PARTIAL  %-46s %s\n' "$(basename "$plan")" "${status:0:52}"
+      continue
+      ;;
+  esac
+
   claims_shipped=false
   case "$status" in
     implemented*) claims_shipped=true ;;
@@ -48,8 +64,8 @@ for plan in docs/plans/*.md; do
 done
 
 total=$(ls docs/plans/*.md | wc -l | tr -d ' ')
-checked=$((total - skipped))
-echo "  checked $checked of $total plans ($skipped declare no Ships: artefact)"
+checked=$((total - skipped - partial))
+echo "  checked $checked of $total plans ($skipped declare no Ships: artefact, $partial are partial)"
 
 if [ "$mismatch" -gt 0 ]; then
   echo "  $mismatch plan(s) disagree with the code — fix the status line or the code"

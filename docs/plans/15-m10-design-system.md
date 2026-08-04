@@ -1,6 +1,7 @@
 # Plan 15 — M10a : Fondasi desain (Tailwind + shadcn/ui, token, komponen dasar)
 
-> **Status:** SELESAI. Fondasi terpasang (Tailwind v4 + shadcn/ui, token instrumen, komponen dasar), semua cacat F1–F7 dan U1–U10 tertutup. Catatan sistem desain: `docs/design.md`.
+> Status: implemented — Tailwind v4 + shadcn/ui foundation, CSS-variable tokens, and the AppShell sidebar frame are built and used across Studio; enum-driven engine dropdowns (`enumSource`), confirm dialogs, and toast feedback are all present. The interface language later settled on English (superseding this plan's Indonesian default, see CLAUDE.md), and design notes now live in `docs/design.md`.
+> Ships: packages/studio/src/components/layout/AppShell.tsx
 > **Depends on:** Plan 07 (Studio lengkap). **Diikuti oleh:** Plan 16 (perombakan tiap layar).
 > **Referensi spec:** §2 (schema-driven UI), §3 (persona end customer), §19 (spec layar).
 

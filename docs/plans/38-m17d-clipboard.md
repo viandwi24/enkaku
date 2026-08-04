@@ -1,6 +1,7 @@
 # Plan 38 — M17d : Device Clipboard (get and set)
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/scrcpy/src/control/device-messages.ts
 > Depends on: Plan 08 (the scrcpy session and control socket). Independent of the rest of M17.
 > Spec references: §7.6 (version-locked scrcpy), §9 (script API), §10.1 (server-authoritative control), §13 (protocol).
 

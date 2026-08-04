@@ -10,7 +10,7 @@
  *   ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
  *
  * Optional:
- *   ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port   # enables stages 7-10; skipped without it
+ *   ENKAKU_SMOKE_PROXY=socks5://user:pass@host:port   # enables stages 7-12; skipped without it
  *   ENKAKU_GUEST_AGENT_PATH=/path/to/app-debug.apk    # overrides the built-APK autodetect
  *   ADB=/path/to/adb | ANDROID_HOME=...               # adb location (see --help)
  *
@@ -51,7 +51,7 @@ function usage(): string {
 
 Env:
   ENKAKU_TEST_DEVICE=1     required gate — this script drives real hardware
-  ENKAKU_SMOKE_PROXY       socks5://[user:pass@]host:port — enables stages 7-10 (egress);
+  ENKAKU_SMOKE_PROXY       socks5://[user:pass@]host:port — enables stages 7-12 (egress, fail-closed, recovery);
                            without it those stages print a skip line rather than failing
   ENKAKU_GUEST_AGENT_PATH  overrides the auto-detected debug/release APK
   ADB, ANDROID_HOME        adb location; falls back to ~/Library/Android/sdk/platform-tools/adb
@@ -124,7 +124,7 @@ async function main() {
    * Raised when the device itself has gone — unplugged, powered off, or debugging revoked. It is
    * fatal and must abort the run: every later poll would otherwise burn its full deadline against
    * a device that is not there, so a disconnect turns a fast failure into a ten-minute crawl
-   * through twelve stages that cannot possibly pass. Seen exactly that way.
+   * through fourteen stages that cannot possibly pass. Seen exactly that way.
    */
   class DeviceGoneError extends Error {}
 
@@ -213,7 +213,7 @@ async function main() {
     throw new Error(`timed out waiting for ${opts.label}${suffix}`)
   }
 
-  /** Stage 11's dwell: checks a condition holds for the whole window, not just once at the end. */
+  /** Stage 13's dwell: checks a condition holds for the whole window, not just once at the end. */
   async function staysTrueFor(check: () => Promise<boolean>, opts: { durationMs: number; intervalMs: number; label: string }): Promise<void> {
     const deadline = Date.now() + opts.durationMs
     while (Date.now() < deadline) {
@@ -279,7 +279,7 @@ async function main() {
   let liveToken = ''
 
   /**
-   * Runs from `finally` no matter which stage failed, plus once more as stage 12's own assertion
+   * Runs from `finally` no matter which stage failed, plus once more as stage 14's own assertion
    * when everything else passed. Every step is best-effort — the agent may already be
    * uninstalled, crashed, or never got far enough to be reachable — so nothing here may throw.
    */
@@ -511,11 +511,75 @@ async function main() {
   }
 
   /**
+   * Plan 54 §5.8 — the dead-man's switch used to tear the route down on silence
+   * (`RouteVpnService.stop()`), which is the exact leak plan 54 closes: every packet would then
+   * leave on the device's real address instead of going nowhere. This stage forces that switch to
+   * fire (by simply going quiet on the control channel for longer than
+   * `DeadMansSwitch.DEFAULT_TIMEOUT_MS`) and asserts, from the device itself, that it now holds
+   * closed instead: `tun0` survives, `route.status` reports `state: 'held'`, and — the acceptance
+   * criterion that actually matters — the device cannot reach the internet at all, checked with a
+   * real `adb shell ping`, not inferred from the wire state alone.
+   *
+   * Deliberately does NOT poll `route.status` (or send anything else) while waiting: `handle()` on
+   * the device calls `deadMan.touch()` on every authorised request, including `route.status`
+   * itself — polling here would keep resetting the exact timer this stage needs to expire.
+   */
+  async function stage11FailClosed(): Promise<string> {
+    if (!proxyRaw || !proxyCfg) throw new SkipStage('ENKAKU_SMOKE_PROXY is not set')
+    // Mirrors `DeadMansSwitch.DEFAULT_TIMEOUT_MS` (90s) plus its own `CHECK_INTERVAL_MS` (10s)
+    // worth of slack — the switch is checked on a 10s tick, not the instant the deadline passes.
+    const DEAD_MAN_TIMEOUT_MS = 90_000
+    const CHECK_SLACK_MS = 15_000
+    console.log(`   … going silent on the control channel for ${Math.round((DEAD_MAN_TIMEOUT_MS + CHECK_SLACK_MS) / 1000)}s to let the dead-man's switch fire (no polling — see doc comment)`)
+    await Bun.sleep(DEAD_MAN_TIMEOUT_MS + CHECK_SLACK_MS)
+
+    // Exactly ONE call after the silence — this is what finally re-touches the switch, but only
+    // after it has already had its say.
+    const status = await call('route.status', liveToken)
+    if (!status.ok) throw new Error(`route.status failed: ${status.error.code} ${status.error.message}`)
+    const result = RouteStatusResultSchema.parse(status.result)
+    if (result.up) throw new Error('route.status still reports up:true — the dead-man\'s switch did not fire')
+    if (result.state !== 'held') throw new Error(`expected state:"held", got ${JSON.stringify(result.state)} (up:false alone cannot tell held from down)`)
+    if (!(await hasTunInterface())) throw new Error('tun0 is gone — the switch tore the route down instead of holding it (the exact regression plan 54 fixes)')
+
+    // The real proof: ask the DEVICE, not the wire state, whether anything gets out.
+    if (await hasWorkingInternet()) throw new Error('the device can still reach the internet while held — traffic is leaking, not being blocked')
+
+    return `held closed: tun0 present, route.status state="held" (${result.lastError ?? 'no lastError'}), device has no working internet`
+  }
+
+  /**
+   * Plan 54 §5.8's second half — "restore connectivity and assert the route recovers without UI
+   * interaction". This script talks to the agent directly and never starts a core process, so
+   * "without UI interaction" here specifically proves the AGENT side of recovery: a plain
+   * `route.start` re-send (exactly what `packages/core/src/api/guest-agent.ts`'s
+   * `restoreDeviceRoute`/heartbeat send automatically, with no operator involved — see that
+   * file's own `bun test` coverage for the host-side half of this) tears the held TUN down
+   * properly and re-establishes a working one, rather than leaking the old descriptor
+   * (`RouteVpnService.start()`'s `worker.get() != null || tun.get() != null` guard).
+   */
+  async function stage12Recovery(): Promise<string> {
+    if (!proxyRaw || !proxyCfg) throw new SkipStage('ENKAKU_SMOKE_PROXY is not set')
+    const restarted = await call('route.start', liveToken, { config: proxyCfg })
+    if (!restarted.ok) throw new Error(`route.start (recovery) failed: ${restarted.error.code} ${restarted.error.message}`)
+    const status = await pollUntil(
+      async () => {
+        const r = await call('route.status', liveToken)
+        if (!r.ok) throw new Error(`route.status failed: ${r.error.code} ${r.error.message}`)
+        const result = RouteStatusResultSchema.parse(r.result)
+        return result.up ? result : undefined
+      },
+      { timeoutMs: 20_000, intervalMs: 1_000, label: 'route.status to report up: true again after resending route.start' },
+    )
+    return `recovered without any UI/operator step: up again via ${status.upstream ?? `${proxyCfg.host}:${proxyCfg.port}`}`
+  }
+
+  /**
    * Catches: the self-undoing uninstall (plan §0.4) — the reconcile loop saw `enabled: true` in
    * the DB and reinstalled the app seconds later. An immediate check after uninstall would have
    * passed; the dwell is the point.
    */
-  async function stage11Uninstall(): Promise<string> {
+  async function stage13Uninstall(): Promise<string> {
     await call('route.stop', liveToken).catch(() => undefined)
     await adb('forward', '--remove', `tcp:${port}`).catch(() => undefined)
     await adb('uninstall', PKG)
@@ -525,7 +589,7 @@ async function main() {
     return 'package gone immediately, and stayed gone for 30s (nothing reinstalled it)'
   }
 
-  async function stage12Teardown(): Promise<string> {
+  async function stage14Teardown(): Promise<string> {
     await teardown()
     if (await hasTunInterface()) throw new Error('tun0 is still up')
     const dump = await adb('shell', 'dumpsys', 'connectivity').catch(() => '')
@@ -579,15 +643,17 @@ async function main() {
     [8, 'egress', stage8Egress],
     [9, 'error frame', stage9ErrorFrame],
     [10, 'interleaving', stage10Interleaving],
-    [11, 'uninstall', stage11Uninstall],
-    [12, 'teardown', stage12Teardown],
+    [11, 'fail-closed (dead-man\'s switch)', stage11FailClosed],
+    [12, 'recovery', stage12Recovery],
+    [13, 'uninstall', stage13Uninstall],
+    [14, 'teardown', stage14Teardown],
   ]
 
   let failed = false
   let deviceGone = false
   try {
     // Before anything else: if the serial is not attached, say so now. Discovering it stage by
-    // stage means twelve deadlines expiring in a row against a device that was never there.
+    // stage means fourteen deadlines expiring in a row against a device that was never there.
     await requireDeviceAttached()
     for (const [n, name, fn] of stages) {
       const outcome = await runStage(n, name, fn)

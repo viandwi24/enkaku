@@ -12,6 +12,17 @@ export const NetworkEngineIdSchema = z.enum(['none', 'vpn-helper'])
 export type NetworkEngineId = z.infer<typeof NetworkEngineIdSchema>
 
 /**
+ * `up` alone cannot tell "held closed on purpose" (plan 54 §3.1's fail-closed fix) apart from
+ * "nothing configured at all" — both used to read `up: false` identically, which is exactly why a
+ * held route could not be told apart from a torn-down one anywhere upstream of the device. `state`
+ * carries that distinction; `up` (on `RouteStatusResultSchema` in `guest-agent.ts`, and on
+ * `NetworkObservationSchema` below) is kept alongside it for compatibility with every existing
+ * reader, and is always exactly `state === 'up'` on the Kotlin side (`RouteState.isUp()`).
+ */
+export const RouteLifecycleStateSchema = z.enum(['up', 'held', 'down'])
+export type RouteLifecycleState = z.infer<typeof RouteLifecycleStateSchema>
+
+/**
  * What an engine can actually do, advertised by its descriptor rather than
  * assumed by a caller (spec §9.5 pattern, Plan 33 §3.2). `probe` stays
  * `false` for `vpn-helper` until an egress check exists (plan 44 §4.3) —
@@ -64,6 +75,32 @@ export const Socks5RouteConfigSchema = z.object({
     .default('udp')
     .describe('Carry UDP natively through the tunnel, or fall back to TCP-only')
     .meta({ title: 'UDP mode' }),
+  /**
+   * Plan 54 §4.2, §5.6 — whether a failure on this route should hold the device's TUN closed
+   * (default, the safe reading: "the safe default is the one that does not leak") rather than
+   * tear it down, which is what happens when this is explicitly `false` — preserved for an
+   * operator debugging by hand. Absent on the DECLARED shape (`PersistedNetworkRoute.config`):
+   * the single source of truth is the wrapper's own `PersistedNetworkRoute.failClosed`
+   * (`resolveFailClosed()` in `packages/core/src/api/guest-agent.ts`), which `PUT /network`
+   * reads this same field off of and `applyRoute()` re-populates onto the RESOLVED wire object
+   * right before `route.apply()` — mirroring how `credentialRef` resolves into `username`/
+   * `password` on that same resolved object.
+   */
+  failClosed: z.boolean().optional().describe('Hold the device closed on failure instead of falling back to its real address').meta({ title: 'Fail closed' }),
+  /**
+   * REQUEST-ONLY, and the only way to turn an authenticated route into an anonymous one.
+   *
+   * A `PUT /network` carrying neither inline credentials nor a `credentialRef` used to mean
+   * "this upstream needs no authentication", so re-saving host/port alone silently dropped the
+   * credential the route already had. Against a provider that also accepts IP-whitelist auth
+   * that does not fail — it connects anonymously and serves a DEFAULT pool exit, so every check
+   * passes and `health` reads `ok` while the targeting the operator actually asked for is gone.
+   * A silent wrong answer, which is the failure mode plans 51/52/54 exist to prevent.
+   *
+   * So an absent credential now CARRIES OVER the previous one, exactly as `failClosed` does, and
+   * dropping it has to be asked for. Dropped from the DECLARED and RESOLVED shapes alike.
+   */
+  clearCredential: z.boolean().optional().describe('Drop the stored credential and connect to this upstream anonymously').meta({ title: 'No authentication' }),
 })
 export type Socks5RouteConfig = z.infer<typeof Socks5RouteConfigSchema>
 
@@ -188,17 +225,17 @@ export const PersistedNetworkRouteSchema = z.object({
    */
   sessionId: z.string().optional(),
   /**
-   * Plan 51 §4.4 / §5.6 — inert plumbing only in this build. The setting is meant to make
-   * provisioning also set always-on VPN with lockdown, so a dead tunnel sends nothing rather
-   * than silently falling back to the device's real address. That enforcement mechanism is
-   * NOT implemented here: plan 51 §5.1 (does `settings put secure always_on_vpn_app` +
-   * `always_on_vpn_lockdown` actually take effect, or is device-owner required?) has not been
-   * run, and building the enforcement on an unverified mechanism would produce exactly the
-   * "confident nonsense" this plan warns against elsewhere. `.optional()` rather than
-   * `.default(false)` on purpose — every existing `PersistedNetworkRoute` object literal in
-   * this codebase predates this field, and a default would make it non-optional in the
-   * inferred type, forcing every one of those call sites to supply it for no behavioural
-   * gain yet.
+   * Plan 51 §4.4 introduced this field inert; plan 54 §4.2, §5.6 makes it real, WITHOUT the
+   * always-on-VPN-plus-lockdown mechanism plan 51 §4.4 originally described — that mechanism is
+   * still gated on plan 51 §5.1 (unverified), and does not need to be settled for this to work:
+   * §3.1's fix is that the app-level `RouteVpnService` itself holds the TUN established and only
+   * stops forwarding, which needs no special Android permission at all. `true` (the default this
+   * plan writes for a newly-created route — `resolveFailClosed()` in
+   * `packages/core/src/api/guest-agent.ts`) tells the agent to hold closed on any failure; `false`
+   * preserves the pre-plan-54 tear-down, for an operator debugging by hand. `.optional()` rather
+   * than `.default(true)` on purpose — every `PersistedNetworkRoute` predating this plan lacks it,
+   * and `resolveFailClosed()` is the one place that turns "absent" into a concrete boolean rather
+   * than every reader guessing its own default.
    */
   failClosed: z.boolean().optional(),
 })
@@ -247,6 +284,8 @@ export function renderStickyUsername(username: string, sessionId: string, templa
 export const NetworkObservationSchema = z.object({
   prepared: z.boolean().describe('Whether VPN consent has been granted to the agent on the device'),
   up: z.boolean().describe('Whether the route is currently up, per the device'),
+  /** Plan 54 §4.1 — see `RouteLifecycleStateSchema`'s doc comment. Optional: an older agent build never sends it, and `up` alone is the fallback reading in that case. */
+  state: RouteLifecycleStateSchema.optional(),
   upstream: z.string().optional().describe('The upstream the device reports routing through, "host:port"'),
   /** [txPackets, txBytes, rxPackets, rxBytes]. */
   stats: z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int()]).optional(),

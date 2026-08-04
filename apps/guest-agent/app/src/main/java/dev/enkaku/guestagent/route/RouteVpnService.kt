@@ -79,6 +79,14 @@ class RouteVpnService : VpnService() {
         }
         return START_NOT_STICKY
       }
+      ACTION_HOLD -> {
+        // Plan 54 §5.2 — the dead-man's switch's own path in, but reachable by anything else that
+        // wants to hold rather than tear down. `handleFailure` decides whether this device's own
+        // `failClosed` policy actually wants a hold or a legacy tear-down.
+        val reason = intent.getStringExtra(EXTRA_REASON) ?: "held"
+        ops.execute { handleFailure(reason) }
+        return START_NOT_STICKY
+      }
       else -> {
         val upstream = intent?.toUpstream()
         if (upstream == null) {
@@ -93,8 +101,12 @@ class RouteVpnService : VpnService() {
           runCatching { start(upstream) }
             .onFailure {
               Log.e(TAG, "route start failed", it)
-              RouteState.markDown(it.message ?: it.javaClass.simpleName)
-              stopSelf()
+              // Plan 54 §3.1: a start() that fails AFTER establish() already handed us a live TUN
+              // must not tear that TUN down — `handleFailure` holds it closed instead when the
+              // route's own `failClosed` policy says so, and only falls through to a real
+              // teardown when nothing was ever established (nothing to leak from) or the policy
+              // explicitly opted out.
+              handleFailure(it.message ?: it.javaClass.simpleName)
             }
         }
       }
@@ -105,8 +117,10 @@ class RouteVpnService : VpnService() {
   }
 
   override fun onRevoke() {
-    // The user, or another VPN app taking over, revoked us. Tear down rather than linger in a state
-    // where status would claim a route that no longer carries traffic.
+    // The user, or another VPN app taking over, revoked us. Android has already torn the TUN down
+    // by the time this callback runs — there is nothing left to hold closed, unlike every OTHER
+    // failure path this service handles (plan 54 §3.1) — so this stays a real teardown regardless
+    // of `failClosed`.
     Log.w(TAG, "VPN consent revoked")
     RouteState.markDown("revoked")
     ops.execute {
@@ -128,8 +142,12 @@ class RouteVpnService : VpnService() {
   }
 
   private fun start(upstream: Socks5Upstream) {
-    if (worker.get() != null) {
-      Log.i(TAG, "route already up; replacing it")
+    // `tun.get() != null` on its own (worker null) is exactly a HELD route: forwarding already
+    // stopped, but the TUN is still open and never got closed. A restore (the host resending
+    // `route.start` per plan 54 §4.2) must tear that down properly before establishing a fresh
+    // one — reusing `worker.get() != null` alone would miss it and leak the old descriptor.
+    if (worker.get() != null || tun.get() != null) {
+      Log.i(TAG, "route already up or held; replacing it")
       teardown()
     }
 
@@ -183,8 +201,11 @@ class RouteVpnService : VpnService() {
             // Blocks until TProxyStopService(). The fd is duplicated natively; we still own ours.
             Tun2Socks.TProxyStartService(config.absolutePath, descriptor.fd)
           } catch (t: Throwable) {
-            RouteState.markDown(t.message ?: t.javaClass.simpleName)
             Log.e(TAG, "tunnel stopped unexpectedly", t)
+            // Plan 54 §3.1: the TUN (`tun`) is untouched here on purpose — closing it on a dead
+            // worker thread is exactly the leak this plan exists to close. `handleFailure` decides
+            // hold-vs-teardown from this route's own `failClosed` policy.
+            handleFailure(t.message ?: t.javaClass.simpleName)
           }
         },
         "enkaku-tun2socks",
@@ -196,12 +217,47 @@ class RouteVpnService : VpnService() {
     }
     // `dialled` (resolved IP, real credentials) — NOT the original `upstream` — matches exactly
     // what was handed to hev-socks5-tunnel above, so EgressProbe's tunnelled leg measures the
-    // identical connection rather than a lookalike that resolves the hostname differently.
+    // identical connection rather than a lookalike that resolves the hostname differently. Also
+    // the one place `handleFailure`/`failClosed()` read this route's fail-closed policy from.
     currentUpstreamRef.set(dialled)
     Log.i(TAG, "route up via ${upstream.host}:${upstream.port}")
   }
 
-  private fun teardown() {
+  /**
+   * The one decision point for hold-vs-tear-down on ANY failure while a route is (or was) up
+   * (plan 54 §3.1, §4.2) — the dead-man's switch, a dead tunnel thread, and a `start()` that fails
+   * after `establish()` already handed us a live TUN all funnel through here, so `failClosed` is
+   * read and applied identically everywhere instead of each call site guessing its own answer.
+   */
+  private fun handleFailure(reason: String) {
+    if (tun.get() == null) {
+      // Nothing was ever established — no TUN, no capture, nothing that could leak. Fail-closed
+      // only means something once a route was actually up (the state table in plan 54 §4.1 starts
+      // from `up`), so this is a plain down, same as before this plan.
+      RouteState.markDown(reason)
+      stopSelf()
+      return
+    }
+    if (currentUpstreamRef.get()?.failClosed != false) {
+      // The default, and the safe one: leave the TUN exactly as it is (still `0.0.0.0/0 → tun0`)
+      // and only stop forwarding. No teardown work happens here, so this is safe to run inline off
+      // any thread — see `RouteState.markHeld`'s doc comment for what this promises.
+      worker.set(null)
+      RouteState.markHeld(reason)
+      Log.w(TAG, "route held closed: $reason")
+    } else {
+      // failClosed explicitly false: preserve the pre-plan-54 tear-down behaviour for an operator
+      // debugging by hand (plan 54 §4.2). Routed through `ops` so it serialises against a
+      // concurrent start()/teardown() the same way every other route mutation does.
+      Log.w(TAG, "route torn down (failClosed=false): $reason")
+      ops.execute {
+        runCatching { teardown(reason) }
+        stopSelf()
+      }
+    }
+  }
+
+  private fun teardown(reason: String? = null) {
     worker.getAndSet(null)?.let {
       runCatching { Tun2Socks.TProxyStopService() }
       it.join(STOP_TIMEOUT_MS)
@@ -210,7 +266,7 @@ class RouteVpnService : VpnService() {
     // The config holds the upstream password, so it does not outlive the route.
     configFile.getAndSet(null)?.delete()
     currentUpstreamRef.set(null)
-    RouteState.markDown(null)
+    RouteState.markDown(reason)
   }
 
   /**
@@ -252,6 +308,9 @@ class RouteVpnService : VpnService() {
       username = getStringExtra(EXTRA_USERNAME),
       password = getStringExtra(EXTRA_PASSWORD),
       udpMode = getStringExtra(EXTRA_UDP_MODE) ?: "udp",
+      // Default true (fail-closed) if the extra is ever missing — the safe reading when in doubt,
+      // matching `Socks5Upstream.failClosed`'s own default (plan 54 §4.2).
+      failClosed = getBooleanExtra(EXTRA_FAIL_CLOSED, true),
     )
   }
 
@@ -262,11 +321,14 @@ class RouteVpnService : VpnService() {
     private const val STOP_TIMEOUT_MS = 3_000L
 
     const val ACTION_STOP = "dev.enkaku.guestagent.ROUTE_STOP"
+    const val ACTION_HOLD = "dev.enkaku.guestagent.ROUTE_HOLD"
     const val EXTRA_HOST = "host"
     const val EXTRA_PORT = "port"
     const val EXTRA_USERNAME = "username"
     const val EXTRA_PASSWORD = "password"
     const val EXTRA_UDP_MODE = "udpMode"
+    const val EXTRA_FAIL_CLOSED = "failClosed"
+    const val EXTRA_REASON = "reason"
 
     fun start(context: Context, upstream: Socks5Upstream) {
       val intent =
@@ -276,12 +338,31 @@ class RouteVpnService : VpnService() {
           .putExtra(EXTRA_USERNAME, upstream.username)
           .putExtra(EXTRA_PASSWORD, upstream.password)
           .putExtra(EXTRA_UDP_MODE, upstream.udpMode)
+          .putExtra(EXTRA_FAIL_CLOSED, upstream.failClosed)
       context.startForegroundService(intent)
     }
 
     fun stop(context: Context) {
       context.startService(Intent(context, RouteVpnService::class.java).setAction(ACTION_STOP))
     }
+
+    /**
+     * Plan 54 §3.1, §5.2 — the dead-man's switch's own entry point, and anything else that wants
+     * "hold closed" rather than "tear down". Routed through the SAME `handleFailure` decision
+     * point every other failure path uses, so `failClosed=false` is honoured here too instead of
+     * this call site silently always holding.
+     */
+    fun hold(context: Context, reason: String) {
+      context.startService(Intent(context, RouteVpnService::class.java).setAction(ACTION_HOLD).putExtra(EXTRA_REASON, reason))
+    }
+
+    /**
+     * Whether the currently active route should fail closed rather than tear down on the next
+     * failure (plan 54 §4.2) — read off the upstream the active route was actually started with.
+     * Defaults true (the safe reading) when there is no active route to ask, since every caller of
+     * this only consults it while a route is meant to be up.
+     */
+    fun failClosed(): Boolean = active.get()?.currentUpstreamRef?.get()?.failClosed != false
 
     /**
      * Whether the VPN consent has already been granted, so the host can tell "not pre-granted"

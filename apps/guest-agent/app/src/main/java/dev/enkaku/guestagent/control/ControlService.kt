@@ -42,9 +42,12 @@ class ControlService : Service() {
   private val running = AtomicBoolean(false)
   /**
    * Backstop for a farm that vanishes. Host-side lease teardown is the normal path; this covers the
-   * case where the host is the thing that died and so runs no cleanup at all.
+   * case where the host is the thing that died and so runs no cleanup at all. Holds the route
+   * closed rather than tearing it down (plan 54 §3.1) — `RouteVpnService.hold()` re-derives whether
+   * this device's route actually wants that (`failClosed`) or the pre-plan-54 tear-down, so this
+   * lambda does not have to know the policy itself.
    */
-  private val deadMan = DeadMansSwitch { RouteVpnService.stop(this) }
+  private val deadMan = DeadMansSwitch { reason -> RouteVpnService.hold(this, reason) }
   private var server: LocalServerSocket? = null
   private val workers = Executors.newCachedThreadPool()
   private var acceptThread: Thread? = null
@@ -191,6 +194,9 @@ class ControlService : Service() {
             username = cfg.optString("username").takeIf { it.isNotEmpty() },
             password = cfg.optString("password").takeIf { it.isNotEmpty() },
             udpMode = cfg.optString("udpMode").takeIf { it.isNotEmpty() } ?: "udp",
+            // Plan 54 §4.2, §5.6 — defaults true (fail-closed, the safe reading) when the host
+            // omits it, same as `Socks5Upstream`'s own default.
+            failClosed = cfg.optBoolean("failClosed", true),
           ),
         )
         ok(id) { put("started", true) }
@@ -207,6 +213,9 @@ class ControlService : Service() {
         ok(id) {
           put("prepared", RouteVpnService.isPrepared(this@ControlService))
           put("up", RouteState.isUp())
+          // Plan 54 §4.1, §5.3 — the state `up` alone could never distinguish: `held` (fail-closed,
+          // deliberate) reads identically to `down` (nothing configured) through `up` on its own.
+          put("state", RouteState.current().name.lowercase())
           put("upstream", RouteState.describeUpstream())
           put("lastError", RouteState.lastError())
           RouteState.stats()?.let { put("stats", JSONArray(it.toTypedArray())) }

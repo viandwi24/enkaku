@@ -1,6 +1,7 @@
 # Plan 23 — M12b : adb Concurrency Scaling and Device Health
 
-> Status: draft
+> Status: implemented — reason-prefixed auto-quarantine/recovery, consecutive-failure counting, and the recovery prober all present with tests
+> Ships: packages/core/src/device/health.ts
 > Depends on: **Plan 22.1** (deadlines and coded errors are the input signal for health). Blocks Plans 24–28 only softly — they work without it, but a 20-device farm will be throughput-bound until this lands.
 > Spec references: §10.4 (adb serialisation — **this plan amends it**), §15.2 (battery and thermal quarantine), §16 (NFR).
 

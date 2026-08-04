@@ -1,6 +1,7 @@
 # Plan 46 — M20 : Device Settings — Vertical Sub-tabs
 
-> Status: draft — small, self-contained UI work. Safe to run at any point.
+> Status: implemented — the shared `SectionNav` component is built with full keyboard/ARIA support and is wired into both the device Settings tab and the farm Settings page.
+> Ships: packages/studio/src/components/settings/SectionNav.tsx
 > Depends on: Plan 15 (design tokens), Plan 16 (screen patterns), Plan 42 (the `TabPanel` wrapper the device page now uses).
 > Spec references: §13 (protocol — unchanged here), `docs/design.md` (tokens, screen patterns, writing rules).
 

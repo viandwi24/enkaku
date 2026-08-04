@@ -1,6 +1,7 @@
 # Plan 27 — M12f : A Lease-Scoped adb Endpoint for Local Devices
 
-> Status: draft — **the largest and riskiest plan in the M12 series. Start with the spike in step 27.1 and stop if it fails.**
+> Status: implemented — verified by the presence of the artefact below. The spike (27.1) succeeded and the full shim, endpoint manager, API, settings, and Studio card are built.
+> Ships: packages/adb/src/transport/adbd-shim.ts
 > Depends on: **Plan 22.1** (deadlines), **Plan 26** (the permission, lease, and audit model this reuses). Plan 24's lane supplies the stream budget.
 > Blocks: Plan 28 (the cloud variant reuses this shim wholesale).
 > Spec references: §10.1 (server-authoritative control), §10.2 (leases), §10.4 (adb serialisation), §11.3 (not a sandbox).

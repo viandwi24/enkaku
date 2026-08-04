@@ -119,6 +119,36 @@ describe('captured responses', () => {
     expect('stats' in result.result).toBe(false)
   })
 
+  // Plan 54 §4.1, §5.3 — a route that is fail-closed rather than torn down. `up` reads `false`
+  // exactly like a fully-down route would, which is the whole reason `state` exists: without it,
+  // the host cannot tell "traffic is being blocked on purpose" from "nothing is configured".
+  test('route.status ok, held — up is false, state says why, upstream and lastError both survive', () => {
+    const raw = {
+      id: 'r3',
+      ok: true,
+      result: {
+        prepared: true,
+        up: false,
+        state: 'held' as const,
+        upstream: 'proxy.example.com:1337',
+        lastError: 'no contact from the farm for 91000ms',
+      },
+    }
+    const result = GuestAgentResponseSchema.parse(raw)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    expect(result.result).toEqual(raw.result)
+  })
+
+  test('route.status ok, down — omitting state still parses (older agent build, or a genuine down)', () => {
+    const raw = { id: 'r4', ok: true, result: { prepared: true, up: false, state: 'down' as const } }
+    const result = GuestAgentResponseSchema.parse(raw)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    if (!('state' in result.result)) throw new Error('expected state')
+    expect(result.result.state).toBe('down')
+  })
+
   test('route.stop ok', () => {
     const raw = { id: 's1', ok: true, result: { stopped: true } }
     const result = GuestAgentResponseSchema.parse(raw)
@@ -169,6 +199,11 @@ describe('wrong-shaped frames are rejected', () => {
 
   test('route.status result with a stats tuple of the wrong length', () => {
     const raw = { id: 'r2', ok: true, result: { prepared: true, up: true, stats: [1, 2, 3] } }
+    expect(() => GuestAgentResponseSchema.parse(raw)).toThrow()
+  })
+
+  test('route.status result with an unrecognised state value', () => {
+    const raw = { id: 'r5', ok: true, result: { prepared: true, up: false, state: 'stopped' } }
     expect(() => GuestAgentResponseSchema.parse(raw)).toThrow()
   })
 })

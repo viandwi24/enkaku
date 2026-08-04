@@ -162,6 +162,10 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
       const observation: NetworkObservation = {
         prepared: status.prepared,
         up: status.up,
+        // Plan 54 §4.1 — `state` is what lets a caller tell "held closed on purpose" apart from
+        // "nothing configured", which `up` alone cannot (both read `false`). Absent on an older
+        // agent build, same optionality as every other field here.
+        ...(status.state !== undefined ? { state: status.state } : {}),
         ...(status.upstream !== undefined ? { upstream: status.upstream } : {}),
         ...(status.stats !== undefined ? { stats: status.stats } : {}),
         ...(status.lastError !== undefined ? { lastError: status.lastError } : {}),

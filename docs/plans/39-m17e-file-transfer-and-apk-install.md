@@ -1,6 +1,7 @@
 # Plan 39 — M17e : File Transfer and APK Install
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/adb/src/transport/sync.ts
 > Depends on: Plan 22.1 (deadlines), Plan 24 (the streaming lane and device-scoped artifacts), Plan 27 (`AdbClient.openRaw`, which the sync protocol rides on). Plan 26's permission model is reused.
 > Spec references: §9 (script API), §10.1 (server-authoritative control), §10.4 (adb serialisation), §12 (artifacts).
 

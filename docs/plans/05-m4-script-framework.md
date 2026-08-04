@@ -1,6 +1,7 @@
 # Plan 05 — M4 : Script Framework
 
-> **Status:** draft, siap dieksekusi setelah Plan 04 selesai.
+> Status: implemented — child-process job runner (prepare/run/finish over IPC, no adb in the child) and `defineScript()` shipped, since evolved by plans 34–40
+> Ships: packages/session/src/runner/job-runner.ts
 > **Depends on:** Plan 01 (monorepo, core, adb client, per-device queue + semaphore), Plan 02 (Toolchain Manager, adb terprovisi), Plan 03 (`screencap-loop` + `adb-input` InputSink, coordinate mapping), Plan 04 (state machine device, lease + heartbeat, queue per-device dengan dummy job).
 > **Referensi spec:** §11 (seluruhnya — script framework), §20 baris M4, §12 (tabel `scripts` & `artifacts`), §7 (interface `Inspector`), §7.4 (keterbatasan `uiautomator dump`), §10 (queue/lease yang di-integrasikan), §11.3 (trust model), §13 (message `job.*`).
 

@@ -3,7 +3,14 @@ import { eq } from 'drizzle-orm'
 import { AdbClient, createAdbdShim } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
-import { DeviceSettingsSchema, type ArtifactInfo, type DeviceEvent, type DeviceStatus, type Viewer } from '@enkaku/protocol'
+import {
+  DeviceSettingsSchema,
+  type ArtifactInfo,
+  type DeviceEvent,
+  type DeviceStatus,
+  type ShellResult,
+  type Viewer,
+} from '@enkaku/protocol'
 import type { Server } from 'bun'
 import { createAgentRoutes } from './api/agents'
 import { createAgentAuth } from './tunnel/agent-auth'
@@ -843,9 +850,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
         return out
       }
-      const guestAgentExec = async (serial: string, cmd: string): Promise<string> => {
+      const guestAgentExec = async (serial: string, cmd: string): Promise<ShellResult> => {
         if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
-        return (await adb.exec(serial, cmd, { profile: 'appLifecycle' })).stdout
+        // The whole result, not just `.stdout`: the launcher decides whether
+        // the agent is installed from the exit code, and reads `am start`'s
+        // failure off stderr (plan 53).
+        return adb.exec(serial, cmd, { profile: 'appLifecycle' })
       }
       const guestAgent = createGuestAgentRoutes({
         db,

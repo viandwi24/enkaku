@@ -1,6 +1,7 @@
 # Plan 47 — M21 : Device Lifecycle (Forget / Block) and One Fleet View
 
-> Status: draft
+> Status: implemented — Forget/Block lifecycle service, blocked/deleted-device schema, API routes, and the merged List/Wall fleet page all shipped.
+> Ships: packages/core/src/device/lifecycle.ts
 > Depends on: Plan 22.0 (`devices.clusterId`), Plan 32 (topology tiles), Plan 42 (the Wall, `TileGrid`), Plan 45 (readiness) if it has landed — none are hard blockers.
 > Spec references: §7.5 (device identity is `stableId`), §10.1 (server-authoritative control), §12 (entities), §15 (device lifecycle).
 

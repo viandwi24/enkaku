@@ -1,6 +1,8 @@
 # Plan 13 — M9b : The WebRTC backend (cloud video without freezing)
 
-> **Status:** ready to work on. **Depends on:** Plan 12 (cloud mode working) — WebRTC replaces its video path rather than adding one from scratch.
+> Status: partial — the werift peer, RTP relay, and time-limited TURN credentials are implemented and wired into the daemon; the Stage 6 NFR benchmarks (packet-loss comparison, keyframe-recovery timing, TURN-blocked-UDP test, multi-stream CPU) remain unmeasured and `docker-compose.cloud.yml` is missing.
+> Ships: packages/core/src/relay/webrtc-relay.ts
+> **Depends on:** Plan 12 (cloud mode working) — WebRTC replaces its video path rather than adding one from scratch.
 > **Spec references:** §5.3 (cloud video needs a different transport), §16 (latency and fps NFRs).
 
 ---

@@ -1,6 +1,7 @@
 # Plan 26 — M12e : The Interactive Device Terminal
 
-> Status: draft
+> Status: implemented — device.shell permission, shell.mode switch, lease-gated shell.exec handler with audit and cwd emulation shipped (exit-code mechanism since upgraded by Plan 53's framed shell,v2,raw transport)
+> Ships: packages/core/src/server/ws-handlers.ts
 > Depends on: **Plan 24** (the lane and the WS protocol), **Plan 25** (`ShellPort`, so cloud works from day one). Plan 23 supplies the settings pattern.
 > Spec references: §10.1 (server-authoritative control), §10.2 (leases), §11.3 (crash containment, **not** a sandbox), §13 (protocol), Plan 09 (ACL), Plan 18 (the device event log).
 

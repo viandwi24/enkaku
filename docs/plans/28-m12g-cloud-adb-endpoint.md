@@ -1,6 +1,7 @@
 # Plan 28 — M12g : The adb Endpoint for Cloud Devices
 
-> Status: draft — the last plan in the M12 series. Do not start before Plan 27's shim is proven against a real `adb` client.
+> Status: partial — the protocol additions, remote `openService`, agent-side handler, and delivery-acknowledged flow control (§3.3) are all built and tested; step 28.5 (measuring real throughput/latency and writing the numbers into the guide) was never done, so `docs/guide/cloud.md` still says "not yet measured" and acceptance criterion 10 is unmet.
+> Ships: packages/core/src/tunnel/adb-remote.ts
 > Depends on: **Plan 27** (the adbd shim, the endpoint manager, the permission and lease model), **Plan 25** (the tunnel RPC and binary channels).
 > Spec references: §10.2 (leases), §13 (protocol), plan 11 §4.2 (tunnel envelope), plan 12 (cloud sessions).
 

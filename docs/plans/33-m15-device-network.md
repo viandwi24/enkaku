@@ -1,6 +1,7 @@
 # Plan 33 — M15 : Device network layer (proxy / VPN routing)
 
-> **Status:** not started.
+> Status: partial — the `network` driver-layer kind, registry wiring, lease/device-scoped lifecycle, and the `none`/`vpn-helper` engines shipped, but under Plans 44/51/52/54, not as this plan's own design: `adb-proxy` and `adb-reverse-proxy` (two of the three engines this plan calls for) were never built and are explicitly deferred in code comments; the `ctx.device.network.*` SDK surface (§4.8) does not exist; the route lifecycle is device-scoped and survives a lease (Plan 52 supersedes this plan's lease-scoped design).
+> Ships: packages/protocol/src/network.ts
 > **Depends on:** Plan 18 (device event log), Plan 22.1 (adb deadlines), Plan 26 (the permission-gating pattern). Independent of the M13/M14 series.
 > **Spec references:** §7 (five driver layers), §7.9 (the network layer), §7.10 (VPN helper profiles), §8 (registry and schema-driven UI), §9.5 (capability locks), §17 (positioning).
 

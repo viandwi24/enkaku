@@ -1,6 +1,7 @@
 # Plan 51 — M24b : Verified egress, and a route that fails closed
 
-> **Status:** not started.
+> Status: implemented — named `RouteCheck`s with `deriveHealth()` replace the single enum, the `egress.probe` agent capability and control method exist end to end, and Studio surfaces per-check state.
+> Ships: packages/protocol/src/network.ts
 > **Depends on:** Plan 44 (the working route), Plan 50 (CI and the device smoke test — its stage 8 becomes real here).
 > **Spec references:** §7.9 (network layer — this plan makes rule 3 true), §17 (positioning).
 > **Research:** `docs/research/android-guest-agent.md` §6 (always-on VPN), and the VpnService findings behind it.

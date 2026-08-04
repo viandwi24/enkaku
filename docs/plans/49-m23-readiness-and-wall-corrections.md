@@ -1,6 +1,7 @@
 # Plan 49 — M23 : Readiness and Wall Corrections
 
-> Status: draft — small, all corrections to work that just landed.
+> Status: implemented — sleep now checked against the manual lease instead of viewers, the button reads `actual`, the overlay was recentred (per the note in §3.3), and the Topology nav entry is gone.
+> Ships: packages/core/src/device/readiness.ts
 > Depends on: Plans 45 (readiness), 47 (merged fleet view), 48 (tile density). All landed.
 > **Amends Plan 45 §3.4** — the sleep rule stated there is wrong and is corrected here.
 > Spec references: §10.1 (server-authoritative control), §10.2 (leases).

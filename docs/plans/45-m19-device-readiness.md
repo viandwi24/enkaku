@@ -1,6 +1,7 @@
 # Plan 45 — M19 : Device Readiness as a First-Class State
 
-> Status: draft
+> Status: implemented — the readiness manager (desired/actual split, holds, hot budget, §3.4 permission rules as amended by Plan 49) is built and wired into the daemon, protocol, and API.
+> Ships: packages/core/src/device/readiness.ts
 > Depends on: Plan 17 (`keepAwake`, `standbyScreenOff`, session phases), Plan 42 (idle session TTL, quality profiles, the Wall). Independent of Plans 40 and 41.
 > Spec references: §7 (engines and sessions), §10.1 (server-authoritative control), §10.2 (leases), §12 (entities), §15 (device lifecycle).
 

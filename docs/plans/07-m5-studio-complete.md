@@ -1,6 +1,7 @@
 # Plan 07 — M5 : Studio Lengkap (schema-driven UI, registry, scripts/jobs/tools/settings, battery & auto-quarantine)
 
-> **Status:** draft, siap dieksekusi setelah Plan 01–06 selesai.
+> Status: implemented — schema-driven `SchemaForm` renderer shipped and used across engine config, device settings, script params, and farm settings
+> Ships: packages/studio/src/components/schema-form/SchemaForm.tsx
 > **Depends on:** Plan 01 (core + registry device + WS), Plan 02 (Toolchain Manager + API §7.7), Plan 03 (live view dasar + enrollment wizard), Plan 04 (state machine, lease, queue), Plan 05 (`defineScript`, runner, artifact/log, publish bundle), Plan 06 (`ui-server` inspector).
 > **Referensi spec:** §8 (registry & schema-driven UI), §9.5 (capability locks), §7.7 (API tools), §11.4–11.5 (publish & lifecycle script), §12 (data model, DeviceSettings), §13 (protokol), §15.2 (battery/thermal + auto-quarantine), §19 (spec layar Studio — SEMUA baris), §20 baris M5.
 

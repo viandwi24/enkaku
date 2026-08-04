@@ -1,6 +1,7 @@
 # Plan 35 — M17a : Session Hygiene Between Jobs
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below
+> Ships: packages/session/src/reset.ts
 > Depends on: Plans 22.1 (deadlines) and 18 (the device event log). Independent of the rest of M17.
 > Spec references: §9 (scripts and jobs), §10.2 (leases), §11.3 (crash containment), §15 (device lifecycle).
 

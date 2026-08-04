@@ -1,6 +1,7 @@
 # Plan 34 — M16 : Repairing Four Defects in Shipped Behaviour
 
-> Status: draft
+> Status: implemented — verified by the presence of the artefact below (the corrected `UI_SERVER_STUB_CLASS`, on the Plan 24 streaming lane via `execStream`); `shellQuote` moved to `@enkaku/adb`, timing settings wired through a getter, and `canUseDevice`/`requirePermission` are called from live routes.
+> Ships: packages/drivers/src/inspector/ui-server/launcher.ts
 > Depends on: Plans 22.1 and 24 (the timeout profiles and the streaming lane are what §4.1's fix moves onto). Nothing depends on this plan, but everything is degraded until it lands.
 > Spec references: §7.4 (persistent inspector), §9.3 (timing realism), §10.1 (server-authoritative control), §11.3 (crash containment, not a sandbox), §12 (`ownerId`).
 

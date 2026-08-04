@@ -6,6 +6,11 @@ import {
   type GuestAgentLauncherDeps,
 } from './launcher'
 
+/** A shell result, defaulting to the success shape (plan 53). */
+function sh(stdout = '', exitCode: number | null = 0, stderr = ''): { stdout: string; stderr: string; exitCode: number | null } {
+  return { stdout, stderr, exitCode }
+}
+
 /**
  * A fake `exec`/`hostAdb` good enough to drive the happy path: the package
  * is already installed, `appops get` echoes back `allow`, and
@@ -27,9 +32,11 @@ function fakeDeps(overrides: Partial<GuestAgentLauncherDeps> = {}): {
     serial,
     exec: async (cmd) => {
       execCalls.push(cmd)
-      if (cmd.startsWith('cmd package path')) return `package:/data/app/~~x/${GUEST_AGENT_PACKAGE}/base.apk`
-      if (cmd.startsWith('appops get')) return 'ACTIVATE_VPN: allow'
-      return ''
+      if (cmd.startsWith('cmd package path')) {
+        return { stdout: `package:/data/app/~~x/${GUEST_AGENT_PACKAGE}/base.apk`, stderr: '', exitCode: 0 }
+      }
+      if (cmd.startsWith('appops get')) return { stdout: 'ACTIVATE_VPN: allow', stderr: '', exitCode: 0 }
+      return { stdout: '', stderr: '', exitCode: 0 }
     },
     hostAdb: async (args) => {
       hostAdbCalls.push(args)
@@ -56,12 +63,40 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     test('false when `cmd package path` prints nothing (not installed, non-zero exit on the device)', async () => {
       const { deps } = fakeDeps({
         exec: async (cmd) => {
-          if (cmd.startsWith('cmd package path')) return ''
-          return ''
+          // A real device prints nothing and exits 1 when the package is absent.
+          if (cmd.startsWith('cmd package path')) return sh('', 1)
+          return sh()
         },
       })
       const launcher = createGuestAgentLauncher(deps)
       await expect(launcher.isInstalled()).resolves.toBe(false)
+    })
+
+    test('a zero exit with output in some other shape is NOT treated as installed', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          // Exit 0, but nothing resembling the documented `package:` line.
+          if (cmd.startsWith('cmd package path')) return sh('something unexpected', 0)
+          return sh()
+        },
+      })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.isInstalled()).resolves.toBe(false)
+    })
+
+    test('falls back to the prefix alone when the device cannot report an exit code (plan 53 §3.4)', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          // `null` is what a shell too old for `shell,v2,raw` yields — "unknown",
+          // which must not be read as "not installed".
+          if (cmd.startsWith('cmd package path')) {
+            return sh(`package:/data/app/~~x/${GUEST_AGENT_PACKAGE}/base.apk`, null)
+          }
+          return sh('', null)
+        },
+      })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.isInstalled()).resolves.toBe(true)
     })
 
     test('uses `cmd package path`, never the substring-matching `pm list packages`', async () => {
@@ -86,8 +121,9 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     test('installs with -r -g when not installed', async () => {
       const { deps, hostAdbCalls } = fakeDeps({
         exec: async (cmd) => {
-          if (cmd.startsWith('cmd package path')) return ''
-          return ''
+          // A real device prints nothing and exits 1 when the package is absent.
+          if (cmd.startsWith('cmd package path')) return sh('', 1)
+          return sh()
         },
       })
       const launcher = createGuestAgentLauncher(deps)
@@ -109,8 +145,8 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     test('throws naming the app op when the read-back does not say allow', async () => {
       const { deps } = fakeDeps({
         exec: async (cmd) => {
-          if (cmd.startsWith('appops get')) return 'ACTIVATE_VPN: ignore'
-          return ''
+          if (cmd.startsWith('appops get')) return sh('ACTIVATE_VPN: ignore')
+          return sh()
         },
       })
       const launcher = createGuestAgentLauncher(deps)
@@ -121,8 +157,8 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     test('throws when the read-back is empty (op unset or unsupported)', async () => {
       const { deps } = fakeDeps({
         exec: async (cmd) => {
-          if (cmd.startsWith('appops get')) return ''
-          return ''
+          if (cmd.startsWith('appops get')) return sh('')
+          return sh()
         },
       })
       const launcher = createGuestAgentLauncher(deps)
@@ -140,6 +176,36 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
       expect(cmd).toContain(`${GUEST_AGENT_PACKAGE}/.BootstrapActivity`)
       expect(cmd).toContain('--es token')
       expect(cmd).toContain('test-token')
+    })
+
+    test('throws when `am start` fails, even though its stdout still reads like success', async () => {
+      // Measured on a moto g06 (Android 15): a failing `am start` exits 1 with
+      // the reason on stderr while stdout still says `Starting: Intent {...}`.
+      // Before the streams were separated, this looked exactly like a success
+      // and was logged at debug — the agent stayed dead and nothing said so.
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('am start')) {
+            return sh(
+              'Starting: Intent { cmp=dev.enkaku.guestagent/.BootstrapActivity }',
+              1,
+              'Error type 3\nError: Activity class {dev.enkaku.guestagent/.BootstrapActivity} does not exist.',
+            )
+          }
+          return sh()
+        },
+      })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.bootstrap('test-token')).rejects.toThrow(/does not exist/)
+      await expect(launcher.bootstrap('test-token')).rejects.toThrow(/exit 1/)
+    })
+
+    test('a device that cannot report an exit code does not fail the bootstrap', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => (cmd.startsWith('am start') ? sh('Starting: Intent { ... }', null) : sh()),
+      })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.bootstrap('test-token')).resolves.toBeUndefined()
     })
   })
 

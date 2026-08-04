@@ -1,6 +1,7 @@
 # Plan 11 — M8 : Cloud & Driver Tambahan
 
-> **Status:** draft, siap dieksekusi setelah Plan 01–10 selesai.
+> Status: partial — M8a (packages/agent mini-core, outbound WSS tunnel with backoff, ENKAKU_MODE=orchestrator) and M8d (redroid via adb-tcp, scrcpy-aoa, appium) are built; M8b's WebRTC relay also exists but was implemented under Plan 13, not this plan's own design; M8c (per-job container isolation / security boundary) is not built — no docker/podman runtime, and tenant scoping is two unenforced `tenantId` columns.
+> Ships: packages/agent/src/index.ts
 > **Depends on:** Plan 01–10 (semua acceptance criteria lulus). Khususnya: Plan 04 (lease/queue), Plan 05 (runner subprocess + IPC), Plan 08 (scrcpy display + WS video), Plan 09 (auth/TLS/Docker image), Plan 10 (AUP/lisensi).
 > **Referensi spec:** §20 baris M8, §5.3–5.4 (cloud mode & WebRTC), §11.3 (trust model & isolasi), §18 (security boundary cloud), §9 (input modes, `scrcpy-aoa`), §9.5 (capability locks), §6.3 (Appium), §7.1 (engine `cloud-tunnel`, `adb-tcp`), §13 (protokol), §14 (keamanan).
 >
