@@ -55,7 +55,15 @@ const intOrNull = (s: string): number | null => {
  * automatically serialised by the per-device queue.
  */
 export async function probeDeviceIdentity(client: AdbClient, serial: string): Promise<DeviceProbeResult> {
-  const [serialno, androidId, model, version, sdk, wmSize, wmDensity] = await Promise.all([
+  const [
+    { stdout: serialno },
+    { stdout: androidId },
+    { stdout: model },
+    { stdout: version },
+    { stdout: sdk },
+    { stdout: wmSize },
+    { stdout: wmDensity },
+  ] = await Promise.all([
     client.exec(serial, 'getprop ro.serialno', { profile: 'probe' }),
     client.exec(serial, 'settings get secure android_id', { profile: 'probe' }),
     client.exec(serial, 'getprop ro.product.model', { profile: 'probe' }),

@@ -28,7 +28,7 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
       exec: async (serial: string) => {
         // One device (SER4) is artificially slow; the rest answer almost instantly.
         await sleep(serial === 'SER4' ? 150 : 5)
-        return dumpsysReply(80, 300)
+        return { stdout: dumpsysReply(80, 300), stderr: '', exitCode: 0 }
       },
       stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
     } as unknown as AdbClient
@@ -70,7 +70,7 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
     const client = {
       exec: async (serial: string) => {
         if (serial === 'SER-BAD') throw new Error('adb exploded')
-        return dumpsysReply(50, 300)
+        return { stdout: dumpsysReply(50, 300), stderr: '', exitCode: 0 }
       },
       stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
     } as unknown as AdbClient
@@ -105,7 +105,7 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
     const client = {
       exec: async (serial: string) => {
         called.push(serial)
-        return dumpsysReply(50, 300)
+        return { stdout: dumpsysReply(50, 300), stderr: '', exitCode: 0 }
       },
       stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
     } as unknown as AdbClient

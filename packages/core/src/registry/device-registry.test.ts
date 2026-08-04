@@ -29,7 +29,7 @@ function fakeAdb(): AdbClient {
     'wm density': 'Physical density: 420',
   }
   return {
-    exec: async (_serial: string, cmd: string) => replies[cmd] ?? '',
+    exec: async (_serial: string, cmd: string) => ({ stdout: replies[cmd] ?? '', stderr: '', exitCode: 0 }),
     trackDevices: () => ({ on: () => () => {}, start: async () => {}, stop: () => {} }),
   } as unknown as AdbClient
 }

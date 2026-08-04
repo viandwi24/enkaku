@@ -194,7 +194,7 @@ describe('runOneshotMonitor (plan 24 §4.3) — ps/meminfo/df, through the norma
     const shellPort = (): ShellPort => ({
       async exec(cmd) {
         seenCommands.push(cmd)
-        return { stdout: 'total 100  used 40  free 60', exitCode: null, truncated: false }
+        return { stdout: 'total 100  used 40  free 60', stderr: '', exitCode: null, truncated: false }
       },
       async stream() {
         throw new Error('not used by this test')
@@ -208,7 +208,7 @@ describe('runOneshotMonitor (plan 24 §4.3) — ps/meminfo/df, through the norma
   test('rejects a streaming kind — that path is monitor.start, not monitor.oneshot', async () => {
     const shellPort = (): ShellPort => ({
       async exec() {
-        return { stdout: '', exitCode: null, truncated: false }
+        return { stdout: '', stderr: '', exitCode: null, truncated: false }
       },
       async stream() {
         throw new Error('not used by this test')

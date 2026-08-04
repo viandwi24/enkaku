@@ -274,6 +274,13 @@ export const ShellExecReplyMessage = z.object({
   payload: z.object({
     ok: z.boolean(),
     stdout: z.string().optional(),
+    /**
+     * Separated from `stdout` by the framed shell,v2,raw protocol (plan 53
+     * §3.3). Optional so an older agent build that has not been upgraded
+     * yet — and so never sends this field — does not fail validation; the
+     * core defaults it to `''` when absent (plan 53).
+     */
+    stderr: z.string().optional(),
     exitCode: z.number().int().nullable().optional(),
     truncated: z.boolean().optional(),
     error: ShellReplyErrorSchema.optional(),

@@ -39,7 +39,7 @@ export async function wakeDevice(transport: Transport, opts: { keepAwake: KeepAw
   // that menu instead of hitting the app they aimed at.
   const locked = await transport
     .exec('dumpsys window | grep -m1 isKeyguardShowing', { profile: 'probe' })
-    .then((out) => /isKeyguardShowing=true/.test(out))
+    .then((r) => /isKeyguardShowing=true/.test(r.stdout))
     .catch(() => false)
   if (locked) {
     await transport.exec('input keyevent 82', { profile: 'probe' }).catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))

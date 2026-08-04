@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ServerWebSocket } from 'bun'
-import { AdbError, type AdbClient, type AdbExecOptions } from '@enkaku/adb'
+import { AdbError, type AdbClient, type AdbExecOptions, type ShellResult } from '@enkaku/adb'
 import type { DisplaySource, InputSink, ServerMessage, ShellMode, Transport } from '@enkaku/protocol'
 import type { DeviceSession, SessionManager } from '@enkaku/session'
 import { openDb, runMigrations, type Db } from '../db'
@@ -13,13 +13,13 @@ import type { Role } from '../auth/service'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
- * The interactive terminal's WS wiring (plan 26 §4.3, §7): the refusal
- * matrix (no lease / busy / wrong holder / no permission / mode off), the
- * record-ordering rule (a refusal records nothing, an accepted command
- * records exactly two rows), redaction, and the exit-marker/cd round trip —
- * all exercised against the REAL `createWsMessageHandler` and REAL
- * `LeaseManager`, with only the adb socket and the surrounding services
- * faked.
+ * The interactive terminal's WS wiring (plan 26 §4.3, §7; transport
+ * migrated to the framed shell by plan 53): the refusal matrix (no lease /
+ * busy / wrong holder / no permission / mode off), the record-ordering rule
+ * (a refusal records nothing, an accepted command records exactly two
+ * rows), redaction, and the exit-code/cd round trip — all exercised against
+ * the REAL `createWsMessageHandler` and REAL `LeaseManager`, with only the
+ * adb socket and the surrounding services faked.
  */
 
 function setUpDb(): Db {
@@ -93,7 +93,7 @@ interface RecordedEvent {
 }
 
 /** A scriptable `AdbClient.exec` — enough surface for the local `ShellPort` (plan 25 §4.3). */
-function fakeAdbClient(execImpl: (serial: string, cmd: string, opts?: AdbExecOptions) => Promise<string>): AdbClient {
+function fakeAdbClient(execImpl: (serial: string, cmd: string, opts?: AdbExecOptions) => Promise<ShellResult>): AdbClient {
   return { exec: execImpl } as unknown as AdbClient
 }
 
@@ -159,15 +159,16 @@ async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, 
   await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
 }
 
-function marker(stdout: string, exitCode: number): string {
-  return `${stdout}\n__ENKAKU_EXIT__${exitCode}`
+/** A framed shell result — real `stdout`/`stderr`/`exitCode`, no marker involved (plan 53). */
+function shellResult(stdout: string, exitCode: number | null, stderr = ''): ShellResult {
+  return { stdout, stderr, exitCode }
 }
 
 describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('no lease → refused with no_lease, even though the device is idle', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
@@ -182,7 +183,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('device busy (a job is running) → refused with device_busy', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'busy')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
@@ -197,7 +198,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('another client holds the lease → refused (not the lease holder)', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const holder = fakeConn()
     const bystander = fakeConn()
@@ -215,7 +216,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('no device.shell permission (operator, mode "admin") → refused with auth.forbidden', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'operator', shellMode: 'admin' })
     const a = fakeConn()
 
@@ -233,7 +234,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('shell.mode "off" refuses even an admin holding the lease', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'admin', shellMode: 'off' })
     const a = fakeConn()
 
@@ -251,7 +252,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
   test('shell.mode "operator" admits an operator holding the lease', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'operator', shellMode: 'operator' })
     const a = fakeConn()
 
@@ -271,7 +272,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     seedDevice(db, 'dev-1', 'idle')
     const client = fakeAdbClient(async (_serial, cmd) => {
       expect(cmd).toContain('echo hi')
-      return marker('hi', 0)
+      return shellResult('hi', 0)
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
@@ -296,7 +297,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
   test('a non-zero exit (`false`) is reported as exitCode 1, not swallowed as an error', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('', 1))
+    const client = fakeAdbClient(async () => shellResult('', 1))
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
@@ -308,6 +309,24 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const result = a.sent.find((m) => m.type === 'shell.result')
     if (result?.type === 'shell.result') expect(result.payload.exitCode).toBe(1)
     else throw new Error('no shell.result received')
+  })
+
+  test('stderr, now separated by the framed transport (plan 53), is still visible in the terminal — appended rather than dropped', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('normal output', 1, 'the error text'))
+    const { handler } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    a.sent.length = 0
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'a-command' } }))
+
+    const result = a.sent.find((m) => m.type === 'shell.result')
+    if (result?.type === 'shell.result') {
+      expect(result.payload.stdout).toBe('normal output\nthe error text')
+      expect(result.payload.exitCode).toBe(1)
+    } else throw new Error('no shell.result received')
   })
 
   test('a command whose output exceeds the cap (E_ADB_OUTPUT_LIMIT) reports truncated: true and a null exit code', async () => {
@@ -335,10 +354,10 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     expect(events.map((e) => e.kind)).toEqual(['shell.exec', 'shell.result'])
   })
 
-  test('output that is markerless for a benign reason (killed shell, not the cap) reports exitCode null and truncated: false', async () => {
+  test('a device that could not report an exit code (killed shell, or an unframed fallback) reports exitCode null and truncated: false', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => 'partial output, no marker — the shell was killed before it could print one')
+    const client = fakeAdbClient(async () => shellResult('partial output — the shell was killed before it could exit normally', null))
     const { handler } = setUpHandler(db, client)
     const a = fakeConn()
 
@@ -359,7 +378,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     let sentToDevice = ''
     const client = fakeAdbClient(async (_serial, cmd) => {
       sentToDevice = cmd
-      return marker('ok', 0)
+      return shellResult('ok', 0)
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
@@ -384,8 +403,8 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
     const client = fakeAdbClient(async (_serial, cmd) => {
-      if (cmd.includes('&& pwd')) return marker('/data/local/tmp', 0)
-      return marker('ok', 0)
+      if (cmd.includes('&& pwd')) return shellResult('/data/local/tmp', 0)
+      return shellResult('ok', 0)
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
@@ -416,7 +435,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     seedDevice(db, 'dev-1', 'idle')
     const client = fakeAdbClient(async (_serial, cmd) => {
       if (cmd.includes('&& pwd')) throw new AdbError('E_ADB_FAIL', 'No such file or directory')
-      return marker('ok', 0)
+      return shellResult('ok', 0)
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
@@ -440,8 +459,8 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
     const client = fakeAdbClient(async (_serial, cmd) => {
-      if (cmd.includes('&& pwd')) return marker('/data/local/tmp', 0)
-      return marker('ok', 0)
+      if (cmd.includes('&& pwd')) return shellResult('/data/local/tmp', 0)
+      return shellResult('ok', 0)
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
@@ -489,7 +508,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
   test('every viewer of the device (not just the sender) receives shell.echo and shell.result', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const holder = fakeConn()
     const viewer = fakeConn()
@@ -509,7 +528,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
   test('a viewer on the Terminal tab alone (no video open) still sees the transcript, via log.subscribe presence (acceptance #10)', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler } = setUpHandler(db, client)
     const holder = fakeConn()
     const viewer = fakeConn()
@@ -531,7 +550,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
     seedDevice(db, 'dev-2', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler } = setUpHandler(db, client)
     const holder = fakeConn()
     const bystander = fakeConn()
@@ -548,7 +567,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
   test('a non-holder cannot type: sending shell.exec without the lease is refused even while another viewer watches', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => marker('hi', 0))
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const holder = fakeConn()
     const viewer = fakeConn()

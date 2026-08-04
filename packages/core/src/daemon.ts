@@ -845,7 +845,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       }
       const guestAgentExec = async (serial: string, cmd: string): Promise<string> => {
         if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
-        return adb.exec(serial, cmd, { profile: 'appLifecycle' })
+        return (await adb.exec(serial, cmd, { profile: 'appLifecycle' })).stdout
       }
       const guestAgent = createGuestAgentRoutes({
         db,
@@ -1243,7 +1243,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // which is how a port could end up bound to the other device.
             const profile = QUALITY_PROFILES[quality]
             return startScrcpySession(
-              { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }), hostAdb },
+              { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout), hostAdb },
               {
                 jarPath,
                 maxSize: profile.maxSize,

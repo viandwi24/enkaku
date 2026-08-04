@@ -4,6 +4,17 @@
  */
 import type { Selector, UiNode } from './ui-node'
 
+/**
+ * `stdout`/`stderr` separated by the device, and `exitCode` reported
+ * honestly — `null` when the transport could not determine one (plan 53
+ * §3.4), never a fabricated `0`.
+ */
+export interface ShellResult {
+  stdout: string
+  stderr: string
+  exitCode: number | null
+}
+
 export interface Point {
   x: number
   y: number
@@ -50,7 +61,7 @@ export interface Transport {
   stableId: string
   connect(): Promise<void>
   disconnect(): Promise<void>
-  exec(cmd: string, opts?: TransportExecOptions): Promise<string>
+  exec(cmd: string, opts?: TransportExecOptions): Promise<ShellResult>
   /** Binary stdout (screencap and friends) — an M2 extension to spec §7. */
   execOut(cmd: string, opts?: TransportExecOptions): Promise<Uint8Array>
 }

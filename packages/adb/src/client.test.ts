@@ -2,12 +2,34 @@ import { describe, expect, test } from 'bun:test'
 import { AdbClient } from './client'
 import { AdbError, type AdbErrorCode } from './errors'
 
+/** Builds one `shell,v2,raw` wire packet: `[id][len:u32le][payload]` (plan 53 §3.3). */
+function v2Frame(id: number, payload: string | Uint8Array): Buffer {
+  const body = typeof payload === 'string' ? Buffer.from(payload, 'utf8') : Buffer.from(payload)
+  const header = Buffer.alloc(5)
+  header[0] = id
+  header.writeUInt32LE(body.length, 1)
+  return Buffer.concat([header, body])
+}
+const V2_STDOUT = 1
+const V2_STDERR = 2
+const V2_EXIT = 3
+
+function failBuffer(msg: string): Buffer {
+  const body = Buffer.from(msg, 'utf8')
+  return Buffer.concat([Buffer.from('FAIL'), Buffer.from(body.length.toString(16).padStart(4, '0')), body])
+}
+
 /**
- * A fake adb server good enough to drive AdbClient.exec end to end: it only
- * understands `host:transport:<serial>` (always OKAY) and whatever `shell:`
- * behaviour each test wires up via `onShell`.
+ * A fake adb server good enough to drive AdbClient.exec end to end: it
+ * understands `host:transport:<serial>` (always OKAY), `shell,v2,raw:`
+ * (routed to `onFramed`, or FAIL — "an adb build with no framed shell" —
+ * when `onFramed` is omitted, exercising the plan 53 §3.4 fallback), and
+ * whatever `shell:` behaviour each test wires up via `onShell`.
  */
-function fakeAdbServer(onShell: (socket: import('bun').Socket, cmd: string) => void) {
+function fakeAdbServer(
+  onShell: (socket: import('bun').Socket, cmd: string) => void,
+  onFramed?: (socket: import('bun').Socket, cmd: string) => void,
+) {
   return Bun.listen({
     hostname: '127.0.0.1',
     port: 0,
@@ -19,6 +41,14 @@ function fakeAdbServer(onShell: (socket: import('bun').Socket, cmd: string) => v
         const text = new TextDecoder().decode(data)
         if (text.includes('host:transport:')) {
           s.write(Buffer.from('OKAY'))
+          return
+        }
+        const framedMarker = 'shell,v2,raw:'
+        const framedIdx = text.indexOf(framedMarker)
+        if (framedIdx !== -1) {
+          const cmd = text.slice(framedIdx + framedMarker.length)
+          if (onFramed) onFramed(s, cmd)
+          else s.write(failBuffer('unknown service shell,v2,raw'))
           return
         }
         const marker = 'shell:'
@@ -64,7 +94,7 @@ describe('AdbClient.exec against a fake adb server (Bun.listen) — this is the 
       expect(client.pending('serial-1')).toBe(0)
 
       const next = await client.exec('serial-1', 'echo hi')
-      expect(next).toBe('ok')
+      expect(next).toEqual({ stdout: 'ok', stderr: '', exitCode: null })
     } finally {
       listener.stop(true)
     }
@@ -90,7 +120,7 @@ describe('AdbClient.exec against a fake adb server (Bun.listen) — this is the 
       expect(client.pending('serial-2')).toBe(0)
 
       const next = await client.exec('serial-2', 'echo hi')
-      expect(next).toBe('ok')
+      expect(next).toEqual({ stdout: 'ok', stderr: '', exitCode: null })
     } finally {
       listener.stop(true)
     }
@@ -118,7 +148,7 @@ describe('AdbClient.exec against a fake adb server (Bun.listen) — this is the 
       expect(client.pending('serial-3')).toBe(0)
 
       const next = await client.exec('serial-3', 'echo hi')
-      expect(next).toBe('ok')
+      expect(next).toEqual({ stdout: 'ok', stderr: '', exitCode: null })
     } finally {
       if (floodTimer) clearInterval(floodTimer)
       listener.stop(true)
@@ -136,7 +166,106 @@ describe('AdbClient.exec against a fake adb server (Bun.listen) — this is the 
     try {
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const out = await client.exec('serial-4', 'echo hi', { profile: 'probe' })
-      expect(out).toBe('ok') // exec() trims, matching pre-existing behaviour
+      expect(out).toEqual({ stdout: 'ok', stderr: '', exitCode: null }) // exec() trims stdout, matching pre-existing behaviour
+    } finally {
+      listener.stop(true)
+    }
+  })
+})
+
+/**
+ * The framed `shell,v2,raw` protocol itself (plan 53 §3.3, §3.4) — separate
+ * from the queue/timeout/cap suite above, which only ever drives the
+ * fallback path (its fake server has no `onFramed`).
+ */
+describe('AdbClient.exec — framed shell (plan 53)', () => {
+  test('stdout, stderr, and the exit code arrive separated — a failing command is no longer invisible', async () => {
+    const listener = fakeAdbServer(
+      () => {
+        throw new Error('should never fall back to shell: — the framed service answers directly')
+      },
+      (s, cmd) => {
+        if (cmd !== "echo hello-stdout; echo oops-stderr 1>&2; exit 7") return
+        s.write(Buffer.from('OKAY'))
+        s.write(v2Frame(V2_STDOUT, 'hello-stdout\n'))
+        s.write(v2Frame(V2_STDERR, 'oops-stderr\n'))
+        s.write(v2Frame(V2_EXIT, Uint8Array.of(7)))
+        s.end()
+      },
+    )
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const result = await client.exec('serial-framed-1', "echo hello-stdout; echo oops-stderr 1>&2; exit 7")
+      expect(result).toEqual({ stdout: 'hello-stdout', stderr: 'oops-stderr', exitCode: 7 })
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('packets split across several writes are still parsed correctly end to end', async () => {
+    const listener = fakeAdbServer(
+      () => {
+        throw new Error('should never fall back to shell:')
+      },
+      (s, cmd) => {
+        if (cmd !== 'split') return
+        s.write(Buffer.from('OKAY'))
+        const whole = Buffer.concat([v2Frame(V2_STDOUT, 'part-a-part-b\n'), v2Frame(V2_EXIT, Uint8Array.of(0))])
+        // Write it one byte at a time to exercise the parser's incremental path over a real socket.
+        for (const b of whole) s.write(Buffer.from([b]))
+        s.end()
+      },
+    )
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const result = await client.exec('serial-framed-2', 'split')
+      expect(result).toEqual({ stdout: 'part-a-part-b', stderr: '', exitCode: 0 })
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a device/adb build without shell,v2,raw falls back to shell: — exitCode: null, never a fabricated 0', async () => {
+    const listener = fakeAdbServer((s, cmd) => {
+      if (cmd !== 'echo hello-stdout; echo oops-stderr 1>&2; exit 7') return
+      s.write(Buffer.from('OKAY'))
+      // The legacy service merges stdout and stderr and has no exit-code channel at all.
+      s.write(Buffer.from('hello-stdout\noops-stderr\n'))
+      s.end()
+    }) // no onFramed — the server FAILs shell,v2,raw:, exactly like a pre-framing adb build
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const result = await client.exec('serial-fallback-1', 'echo hello-stdout; echo oops-stderr 1>&2; exit 7')
+      expect(result).toEqual({ stdout: 'hello-stdout\noops-stderr', stderr: '', exitCode: null })
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('the unsupported verdict is cached per serial — the second command on the same serial skips straight to shell:', async () => {
+    let framedAttempts = 0
+    const listener = fakeAdbServer(
+      (s, cmd) => {
+        if (cmd === 'one' || cmd === 'two') {
+          s.write(Buffer.from('OKAY'))
+          s.write(Buffer.from(`${cmd}-out\n`))
+          s.end()
+        }
+      },
+      (s) => {
+        framedAttempts++
+        s.write(failBuffer('unknown service'))
+      },
+    )
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const first = await client.exec('serial-cache-1', 'one')
+      expect(first).toEqual({ stdout: 'one-out', stderr: '', exitCode: null })
+      expect(framedAttempts).toBe(1)
+
+      const second = await client.exec('serial-cache-1', 'two')
+      expect(second).toEqual({ stdout: 'two-out', stderr: '', exitCode: null })
+      expect(framedAttempts).toBe(1) // no second attempt at the framed service — the verdict was cached
     } finally {
       listener.stop(true)
     }
@@ -165,6 +294,14 @@ describe('AdbClient.execStream — the streaming lane, never PerDeviceQueue (pla
           const text = new TextDecoder().decode(data)
           if (text.includes('host:transport:')) {
             s.write(Buffer.from('OKAY'))
+            return
+          }
+          // This fake server only understands the legacy `shell:` service
+          // (plan 53 §3.4) — every `AdbClient.exec` call below (the
+          // fire-and-forget `kill`, and any deliberate `exec()` call) tries
+          // `shell,v2,raw:` first and must fall back.
+          if (text.includes('shell,v2,raw:')) {
+            s.write(failBuffer('unknown service shell,v2,raw'))
             return
           }
           const marker = 'shell:'
@@ -229,7 +366,7 @@ describe('AdbClient.execStream — the streaming lane, never PerDeviceQueue (pla
       // is open — this is exactly what session.ts:90-98 documents as having
       // broken the last time a long-lived command went through the queue.
       const echoed = await client.exec('serial-stream-1', 'echo hi')
-      expect(echoed).toBe('ok')
+      expect(echoed).toEqual({ stdout: 'ok', stderr: '', exitCode: null })
       expect(client.pending('serial-stream-1')).toBe(0)
 
       // Wait for a few log lines and the PID to resolve.

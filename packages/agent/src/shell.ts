@@ -108,12 +108,12 @@ export function createShellHost(deps: {
         return
       }
       try {
-        const stdout = await deps.client.exec(snap.serial, cmd, {
+        const { stdout, stderr, exitCode } = await deps.client.exec(snap.serial, cmd, {
           ...(isAdbTimeoutProfile(profile) ? { profile } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}),
         })
-        reply({ ok: true, stdout, exitCode: null, truncated: false })
+        reply({ ok: true, stdout, stderr, exitCode, truncated: false })
       } catch (err) {
         reply({ ok: false, error: errorReply(err) })
       }

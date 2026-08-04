@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AdbStreamEndReason, AdbStreamHandle, AdbStreamOptions, RawStream } from '@enkaku/adb'
+import type { AdbStreamEndReason, AdbStreamHandle, AdbStreamOptions, RawStream, ShellResult } from '@enkaku/adb'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts, devices } from '../db/schema'
 import type { AdbBackend } from './transfer'
@@ -156,9 +156,9 @@ class FakeAdbBackend implements AdbBackend {
     return new FakeSyncPeer(this.fs)
   }
 
-  async exec(_serial: string, cmd: string): Promise<string> {
+  async exec(_serial: string, cmd: string): Promise<ShellResult> {
     this.execCalls.push(cmd)
-    return ''
+    return { stdout: '', stderr: '', exitCode: null }
   }
 
   async execStream(_serial: string, _cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle> {

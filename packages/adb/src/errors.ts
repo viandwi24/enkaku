@@ -27,6 +27,13 @@ export type AdbErrorCode =
   | 'E_ADB_SYNC_FAIL'
   /** A pull's remote file exceeded the caller's `maxBytes` while streaming, after `statRemote` already cleared it (plan 39 §3.6). */
   | 'E_ADB_PULL_TOO_LARGE'
+  /**
+   * Internal only (plan 53 §3.4) — the service request for `shell,v2,raw`
+   * itself FAILed, meaning this device/adb build has no framed shell.
+   * `AdbClient.exec` catches this and falls back to plain `shell:`; it never
+   * reaches a caller of `exec`.
+   */
+  | 'E_ADB_SHELL_FRAMED_UNSUPPORTED'
 
 export class AdbError extends Error {
   constructor(

@@ -1,7 +1,17 @@
 import { statSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
-import { pullFile, pushFile, shellQuote, statRemote, type AdbExecOptions, type AdbStreamHandle, type AdbStreamOptions, type RawStream } from '@enkaku/adb'
+import {
+  pullFile,
+  pushFile,
+  shellQuote,
+  statRemote,
+  type AdbExecOptions,
+  type AdbStreamHandle,
+  type AdbStreamOptions,
+  type RawStream,
+  type ShellResult,
+} from '@enkaku/adb'
 import type { InstallResult } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts, devices } from '../db/schema'
@@ -29,7 +39,7 @@ import { validateRemotePath } from './path-validate'
  * lightweight fake without satisfying every private member `AdbClient` has. */
 export interface AdbBackend {
   openRaw(serial: string, service: string): Promise<RawStream>
-  exec(serial: string, cmd: string, opts?: AdbExecOptions): Promise<string>
+  exec(serial: string, cmd: string, opts?: AdbExecOptions): Promise<ShellResult>
   execStream(serial: string, cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle>
 }
 

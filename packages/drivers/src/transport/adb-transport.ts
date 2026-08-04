@@ -1,5 +1,5 @@
 import { ADB_TIMEOUTS, type AdbClient, type AdbExecOptions, type AdbTimeoutProfile } from '@enkaku/adb'
-import type { Transport, TransportExecOptions } from '@enkaku/protocol'
+import type { ShellResult, Transport, TransportExecOptions } from '@enkaku/protocol'
 
 export interface AdbTransportOpts {
   client: AdbClient
@@ -50,7 +50,7 @@ export class AdbUsbTransport implements Transport {
     // no-op for USB.
   }
 
-  exec(cmd: string, opts?: TransportExecOptions): Promise<string> {
+  exec(cmd: string, opts?: TransportExecOptions): Promise<ShellResult> {
     return this.client.exec(this.serial, cmd, toAdbExecOptions(opts))
   }
 

@@ -12,13 +12,13 @@ describe('createLocalShellPort (plan 25 §4.3)', () => {
     const client = {
       exec: async (serial: string, cmd: string) => {
         calls.push({ serial, cmd })
-        return 'hello world'
+        return { stdout: 'hello world', stderr: 'a warning', exitCode: 0 }
       },
     } as unknown as AdbClient
     const port = createLocalShellPort({ client, serial: 'SER1' })
 
     const result = await port.exec('echo hi', { profile: 'appLifecycle' })
-    expect(result).toEqual({ stdout: 'hello world', exitCode: null, truncated: false })
+    expect(result).toEqual({ stdout: 'hello world', stderr: 'a warning', exitCode: 0, truncated: false })
     expect(calls).toEqual([{ serial: 'SER1', cmd: 'echo hi' }])
   })
 
@@ -150,17 +150,27 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
   test('exec() sends shell.exec.request and maps a successful reply', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
-    fakeRpc.setReply({ ok: true, stdout: 'device output', exitCode: 0, truncated: false })
+    fakeRpc.setReply({ ok: true, stdout: 'device output', stderr: 'device warning', exitCode: 0, truncated: false })
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
 
     const result = await port.exec('ps -A', { profile: 'appLifecycle', maxOutputBytes: 1024 })
-    expect(result).toEqual({ stdout: 'device output', exitCode: 0, truncated: false })
+    expect(result).toEqual({ stdout: 'device output', stderr: 'device warning', exitCode: 0, truncated: false })
     expect(fakeRpc.calls).toHaveLength(1)
     expect(fakeRpc.calls[0]).toMatchObject({
       deviceId: 'dev-1',
       type: 'shell.exec.request',
       payload: { deviceId: 'dev-1', cmd: 'ps -A', profile: 'appLifecycle', maxOutputBytes: 1024 },
     })
+  })
+
+  test('exec() defaults stderr to "" when the agent reply omits it (an older agent build predating plan 53)', async () => {
+    const fakeRpc = createFakeRpc()
+    const fakeRouter = createFakeRouter()
+    fakeRpc.setReply({ ok: true, stdout: 'device output', exitCode: 0, truncated: false }) // no `stderr` field at all
+    const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
+
+    const result = await port.exec('ps -A')
+    expect(result).toEqual({ stdout: 'device output', stderr: '', exitCode: 0, truncated: false })
   })
 
   test('exec() error passthrough: a reply with ok:false throws a coded EnkakuError built from it', async () => {

@@ -79,7 +79,7 @@ export function createBatteryMonitor(deps: {
   async function pollDevice(client: AdbClient, row: DeviceRow, status: DeviceStatus): Promise<void> {
     const cfg = deps.settings.get().battery
     try {
-      const raw = await client.exec(row.serial, 'dumpsys battery', { profile: 'battery' })
+      const { stdout: raw } = await client.exec(row.serial, 'dumpsys battery', { profile: 'battery' })
       const battery = parseDumpsysBattery(raw)
       if (!battery) return
       deps.db.update(devices).set({ battery }).where(eq(devices.id, row.id)).run()

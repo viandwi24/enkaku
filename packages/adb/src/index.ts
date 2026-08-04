@@ -8,6 +8,7 @@ export {
   type AdbStreamOptions,
   type AdbStreamHandle,
 } from './client'
+export { ShellFrameParser, type ShellResult } from './shell-frames'
 export {
   DeviceTracker,
   parseSnapshot,

@@ -32,7 +32,6 @@ import { createMonitorHub, runOneshotMonitor } from '../device/monitor-hub'
 import { createCrashWatcher, type CrashPolicy } from '../device/crash-watcher'
 import { createLocalShellPort, createRemoteShellPort, type ShellPort } from '../device/shell-port'
 import { createShellSessionStore } from '../device/shell-session'
-import { withExitMarker, parseExitMarker } from '../device/exit-marker'
 import { redactShellCommand } from '../device/redact'
 import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
@@ -878,25 +877,35 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               // 7. One-shot, through the NORMAL per-device queue (`default`
               // profile budget from farm settings) — never the plan 24
               // streaming lane. §3.6: the core chooses one-shot vs. stream,
-              // never the user.
-              const result = await port.exec(withExitMarker(onDeviceCmd), {
+              // never the user. The framed shell,v2,raw protocol (plan 53)
+              // reports the real exit code and separates stderr — no marker
+              // is appended to `onDeviceCmd`, so the command the operator
+              // typed reaches the device byte for byte.
+              const result = await port.exec(onDeviceCmd, {
                 timeoutMs: shellSettings.execTimeoutMs,
                 maxOutputBytes: shellSettings.maxOutputBytes,
               })
-              const { stdout, exitCode } = parseExitMarker(result.stdout)
+              const { stdout, stderr, exitCode } = result
+              // The terminal has always shown one merged stream (§3.7's
+              // emulation is about cwd, not about splitting panes) — stderr
+              // is appended rather than dropped, now that the transport
+              // reports it separately.
+              const combined = stderr ? (stdout ? `${stdout}\n${stderr}` : stderr) : stdout
               let resultCwd = cwdAtStart
-              let reportedStdout = stdout
+              let reportedStdout = combined
               if (cdAttempt) {
                 if (exitCode === 0) {
-                  // `pwd`'s own output, on success — never the `cmd` echo,
-                  // there is none for a `cd`.
+                  // `pwd` writes only to stdout, never stderr, so `stdout`
+                  // alone (not `combined`) is the path on a successful cd.
                   resultCwd = stdout.trim() || cwdAtStart
                   shellSessions.commitCwd(deviceId, resultCwd)
                   reportedStdout = ''
                 }
-                // A failed cd (exitCode !== 0, or exitCode null — the marker
-                // was lost): the probe's own error text is the output, and
-                // the cwd is deliberately left unchanged (acceptance #9).
+                // A failed cd (exitCode !== 0, or exitCode null — the device
+                // could not report one): the probe's own error text — a real
+                // shell's `cd` failure goes to stderr — is still visible via
+                // `combined`, and the cwd is deliberately left unchanged
+                // (acceptance #9).
               }
               const durationMs = Date.now() - startedAt
               // 8. Broadcast the outcome to every viewer (plan 26 §3.8).

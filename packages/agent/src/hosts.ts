@@ -91,7 +91,7 @@ export function createAgentHosts(deps: {
       // it, so this stays correct rather than silently ignoring the param.
       const profile = QUALITY_PROFILES[quality]
       return startScrcpySession(
-        { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }), hostAdb },
+        { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout), hostAdb },
         {
           jarPath,
           port,

@@ -93,7 +93,17 @@ export {
   type ReadinessBlockedReason,
   type DeviceReadiness,
 } from './readiness'
-export type { Transport, TransportExecOptions, DisplaySource, InputSink, Inspector, Point, FrameMeta, GestureSample } from './driver'
+export type {
+  Transport,
+  TransportExecOptions,
+  DisplaySource,
+  InputSink,
+  Inspector,
+  Point,
+  FrameMeta,
+  GestureSample,
+  ShellResult,
+} from './driver'
 export {
   EngineDescriptorSchema,
   RegistryResponseSchema,

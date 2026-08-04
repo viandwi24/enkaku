@@ -18,9 +18,9 @@ function recordingTransport(responses: Record<string, string> = {}) {
     exec: async (cmd: string) => {
       calls.push(cmd)
       for (const [prefix, out] of Object.entries(responses)) {
-        if (cmd.startsWith(prefix)) return out
+        if (cmd.startsWith(prefix)) return { stdout: out, stderr: '', exitCode: 0 }
       }
-      return ''
+      return { stdout: '', stderr: '', exitCode: 0 }
     },
   } as unknown as Transport
   return { transport, calls }
@@ -61,8 +61,8 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
       exec: async (cmd: string) => {
         calls.push(cmd)
         if (cmd === 'input keyevent KEYCODE_WAKEUP') throw new Error('boom')
-        if (cmd.startsWith('dumpsys window')) return 'isKeyguardShowing=false'
-        return ''
+        if (cmd.startsWith('dumpsys window')) return { stdout: 'isKeyguardShowing=false', stderr: '', exitCode: 0 }
+        return { stdout: '', stderr: '', exitCode: 0 }
       },
     } as unknown as Transport
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })

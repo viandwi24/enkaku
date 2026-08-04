@@ -50,9 +50,9 @@ function makeRunner(session: DeviceSession, controller: AbortController, applied
       return null
     }
     try {
-      const out = await session.transport.exec(cmd, { profile: 'appLifecycle', signal: controller.signal })
+      const { stdout } = await session.transport.exec(cmd, { profile: 'appLifecycle', signal: controller.signal })
       applied.push(label)
-      return out
+      return stdout
     } catch (err) {
       warnings.push(
         controller.signal.aborted
@@ -127,6 +127,7 @@ export async function resetDevice(
     if (!controller.signal.aborted) {
       const keyguardOut = await session.transport
         .exec('dumpsys window | grep -m1 isKeyguardShowing', { profile: 'appLifecycle', signal: controller.signal })
+        .then((r) => r.stdout)
         .catch(() => '')
       // Reuses the idiom `session.ts:179-185` already uses for the same check.
       if (/isKeyguardShowing=true/.test(keyguardOut)) {
@@ -153,9 +154,11 @@ export async function resetDevice(
           profile: 'appLifecycle',
           signal: controller.signal,
         })
+        .then((r) => r.stdout)
         .catch(() => '')
       const imeOut = await session.transport
         .exec('settings get secure default_input_method', { profile: 'appLifecycle', signal: controller.signal })
+        .then((r) => r.stdout)
         .catch(() => '')
       const dump = await run('dumpsys:activity-processes', 'dumpsys activity processes')
       if (dump !== null) {

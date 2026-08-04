@@ -12,8 +12,11 @@ import {
   resolveExecTimeout,
 } from './timeouts'
 import { PerDeviceQueue, Semaphore } from './queue'
+import { ShellFrameParser, type ShellResult } from './shell-frames'
 import { AdbSocket } from './socket'
 import { DeviceTracker } from './tracker'
+
+export type { ShellResult } from './shell-frames'
 
 /** Why an `execStream` ended (plan 24 §4.2). */
 export type AdbStreamEndReason = 'closed' | 'idle' | 'deadline' | 'bytes' | 'stopped' | 'error'
@@ -209,6 +212,8 @@ export class AdbClient {
    * stream's entire lifetime.
    */
   private streamLane: StreamLane
+  /** Per-serial verdict on `shell,v2,raw` support (plan 53 §3.4); unset means "not yet known". */
+  private shellFramedSupported = new Map<string, boolean>()
   private tracker: DeviceTracker | null = null
   private onLog?: (level: 'debug' | 'warn', msg: string) => void
   private onMetric?: AdbClientOptions['onMetric']
@@ -302,24 +307,34 @@ export class AdbClient {
 
   /**
    * One connection attempt, bounded end to end by `execTimeoutMs`: connect →
-   * host:transport:<serial> → shell:/exec:<cmd> → read until the socket
-   * closes. On any deadline or `AbortSignal`, the socket is terminated
-   * (plan 22.1 §3.5) so the pending read unblocks and the caller's `finally`
-   * in `PerDeviceQueue.run` can release the per-device slot — that release
-   * already existed; it was simply never reached before this plan.
+   * host:transport:<serial> → shell,v2,raw:/shell:/exec:<cmd> → read until
+   * the socket closes. On any deadline or `AbortSignal`, the socket is
+   * terminated (plan 22.1 §3.5) so the pending read unblocks and the
+   * caller's `finally` in `PerDeviceQueue.run` can release the per-device
+   * slot — that release already existed; it was simply never reached before
+   * this plan.
+   *
+   * `service: 'shell-framed'` sends the framed `shell,v2,raw:<cmd>` service
+   * (plan 53 §3.3) — the caller (`execFramedOrFallback` below) is the one
+   * that parses the returned bytes into `{ stdout, stderr, exitCode }`; this
+   * method only knows about raw bytes, same as the `'shell'`/`'exec'` paths.
+   * A FAIL at the service-request step (as opposed to the transport step)
+   * is reported as `E_ADB_SHELL_FRAMED_UNSUPPORTED` so the caller can tell
+   * "this device/adb build has no framed shell" from any other failure.
    */
   private async runOneShot(
     serial: string,
     cmd: string,
-    service: 'shell' | 'exec',
+    service: 'shell-framed' | 'shell' | 'exec',
     opts: { execTimeoutMs: number; maxOutputBytes: number; signal?: AbortSignal },
   ): Promise<Uint8Array> {
     let socket: AdbSocket | null = null
     let ok = false
     let deadlineErr: AdbError | null = null
+    const wireService = service === 'shell-framed' ? 'shell,v2,raw' : service
 
     const timer = setTimeout(() => {
-      deadlineErr = new AdbError('E_ADB_TIMEOUT', `adb ${service}:${cmd} exceeded ${opts.execTimeoutMs}ms`)
+      deadlineErr = new AdbError('E_ADB_TIMEOUT', `adb ${wireService}:${cmd} exceeded ${opts.execTimeoutMs}ms`)
       socket?.abort(deadlineErr)
     }, opts.execTimeoutMs)
 
@@ -339,8 +354,19 @@ export class AdbClient {
       socket.send(`host:transport:${serial}`)
       await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
       if (deadlineErr) throw deadlineErr
-      socket.send(`${service}:${cmd}`)
-      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      socket.send(`${wireService}:${cmd}`)
+      try {
+        await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      } catch (err) {
+        if (service === 'shell-framed' && err instanceof AdbError && err.code === 'E_ADB_FAIL') {
+          throw new AdbError(
+            'E_ADB_SHELL_FRAMED_UNSUPPORTED',
+            `adb server or device rejected shell,v2,raw: ${err.message}`,
+            err,
+          )
+        }
+        throw err
+      }
       const out = await socket.readUntilClose()
       ok = true
       return out
@@ -351,7 +377,12 @@ export class AdbClient {
     }
   }
 
-  private execRaw(serial: string, cmd: string, service: 'shell' | 'exec', opts?: AdbExecOptions): Promise<Uint8Array> {
+  private execRaw(
+    serial: string,
+    cmd: string,
+    service: 'shell-framed' | 'shell' | 'exec',
+    opts?: AdbExecOptions,
+  ): Promise<Uint8Array> {
     const profile = opts?.profile ?? 'default'
     const execTimeoutMs = resolveExecTimeout(opts)
     const maxOutputBytes = opts?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
@@ -381,11 +412,44 @@ export class AdbClient {
 
   /**
    * One-shot shell per device: new connection → host:transport:<serial> →
-   * shell:<cmd> → read until the socket closes. Always through the per-device queue
-   * plus the semaphore — there is no shortcut around it.
+   * shell,v2,raw:<cmd> → the framed protocol separates stdout, stderr, and
+   * the exit code (plan 53 §3.3) instead of merging everything and losing
+   * the exit status. Always through the per-device queue plus the
+   * semaphore — there is no shortcut around it.
+   *
+   * Falls back to the plain `shell:<cmd>` service — merged output on
+   * `stdout`, `exitCode: null` — when the device or adb server does not
+   * support framing (plan 53 §3.4); the verdict is cached per serial so
+   * that cost is paid once, not on every command.
    */
-  exec(serial: string, cmd: string, opts?: AdbExecOptions): Promise<string> {
-    return this.execRaw(serial, cmd, 'shell', opts).then((raw) => new TextDecoder().decode(raw).trim())
+  exec(serial: string, cmd: string, opts?: AdbExecOptions): Promise<ShellResult> {
+    return this.execFramedOrFallback(serial, cmd, opts)
+  }
+
+  private async execFramedOrFallback(serial: string, cmd: string, opts?: AdbExecOptions): Promise<ShellResult> {
+    if (this.shellFramedSupported.get(serial) === false) {
+      return this.execLegacyShell(serial, cmd, opts)
+    }
+    try {
+      const raw = await this.execRaw(serial, cmd, 'shell-framed', opts)
+      this.shellFramedSupported.set(serial, true)
+      const parser = new ShellFrameParser()
+      parser.push(raw)
+      const result = parser.result()
+      return { stdout: result.stdout.trim(), stderr: result.stderr.trim(), exitCode: result.exitCode }
+    } catch (err) {
+      if (err instanceof AdbError && err.code === 'E_ADB_SHELL_FRAMED_UNSUPPORTED') {
+        this.shellFramedSupported.set(serial, false)
+        return this.execLegacyShell(serial, cmd, opts)
+      }
+      throw err
+    }
+  }
+
+  /** `exitCode: null` here is the honest answer (plan 53 §3.4) — never a fabricated `0`. */
+  private async execLegacyShell(serial: string, cmd: string, opts?: AdbExecOptions): Promise<ShellResult> {
+    const raw = await this.execRaw(serial, cmd, 'shell', opts)
+    return { stdout: new TextDecoder().decode(raw).trim(), stderr: '', exitCode: null }
   }
 
   /** Like exec, but returns raw binary stdout (screencap and friends) via exec-out. */

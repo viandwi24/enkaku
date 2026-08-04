@@ -34,7 +34,7 @@ function fakeTransport(exec: (cmd: string) => Promise<string>): Transport {
     stableId: 'stable-1',
     connect: async () => {},
     disconnect: async () => {},
-    exec,
+    exec: async (cmd) => ({ stdout: await exec(cmd), stderr: '', exitCode: null }),
     execOut: async () => new Uint8Array(),
   }
 }

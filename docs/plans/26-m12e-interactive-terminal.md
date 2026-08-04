@@ -76,6 +76,8 @@ shell:<cmd> ; printf '\n__ENKAKU_EXIT__%d' $?
 
 The core strips the trailing marker and reports the code. If the marker is absent — the command killed the shell, or output was truncated at the cap — the exit code is reported as `null` rather than guessed.
 
+> **Superseded by Plan 53 (2026-08-04).** This marker workaround has been replaced by the framed `shell,v2,raw` adb service, which reports stdout, stderr, and the exit code as three separate fields off the wire — no command rewriting involved. `exit-marker.ts`/`withExitMarker`/`parseExitMarker` no longer exist. `ws-handlers.ts`'s `shell.exec` handler now reads `exitCode` directly off `ShellPort.exec`'s result and merges `stdout`+`stderr` only for terminal display (§3.7's cwd emulation is unaffected). The `null`-when-unknown contract described above is unchanged in spirit — it now also covers a device/adb build old enough to lack `shell,v2,raw` entirely, which falls back to the pre-Plan-53 merged-output behaviour with `exitCode: null`. See `docs/plans/53-m25-framed-shell-transport.md`.
+
 ### 3.6 One-shot or stream, chosen by the core, not the user
 
 A user typing `logcat` should not hang the terminal. The core decides:

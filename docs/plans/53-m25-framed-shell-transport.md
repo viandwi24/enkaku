@@ -1,6 +1,6 @@
 # Plan 53 — M25 : Framed Shell Transport (replaces the exit-marker workaround)
 
-> Status: not started
+> Status: implemented — `AdbClient.exec` speaks `shell,v2,raw`, falls back to `shell:` honestly, and the exit-marker workaround is deleted. Hardware verification (53.5) still pending.
 > Ships: packages/adb/src/shell-frames.ts
 > Depends on: Plans 22–26 complete (adb deadlines, streaming lane, ShellPort, terminal).
 > Spec references: §10.4 (adb serialisation), §13 (API conventions), `00-overview.md` §4.3.
@@ -123,22 +123,22 @@ A call that genuinely wants to know whether it worked should now check `exitCode
 ## 5. Implementation steps
 
 ### 53.1 Parser
-- [ ] `packages/adb/src/shell-frames.ts` per §4.1, with the five split cases as tests.
+- [x] `packages/adb/src/shell-frames.ts` per §4.1, with the five split cases as tests.
 - Result: parser green before anything depends on it.
 
 ### 53.2 Client
-- [ ] `runOneShot` learns the framed service; `exec` returns `ShellResult` with the per-serial fallback verdict.
-- [ ] Test the fallback: a stubbed service failure yields `exitCode: null` and merged output on `stdout`.
+- [x] `runOneShot` learns the framed service; `exec` returns `ShellResult` with the per-serial fallback verdict.
+- [x] Test the fallback: a stubbed service failure yields `exitCode: null` and merged output on `stdout`.
 - Result: `exec` returns the object; the workspace does not compile yet, which is expected.
 
 ### 53.3 Migrate the callers
-- [ ] `packages/protocol/src/driver.ts`, then adb → drivers → session → core, in that order.
-- [ ] Do not change failure semantics beyond mechanical `.stdout`, except where a test already asserts an outcome.
+- [x] `packages/protocol/src/driver.ts`, then adb → drivers → session → core, in that order.
+- [x] Do not change failure semantics beyond mechanical `.stdout`, except where a test already asserts an outcome.
 - Result: `bash scripts/typecheck.sh` green again.
 
 ### 53.4 Delete the workaround
-- [ ] Remove `exit-marker.ts` and its test; simplify `shell-port.ts`.
-- [ ] Note the replacement in Plan 26 §3.5.
+- [x] Remove `exit-marker.ts` and its test; simplify `shell-port.ts`.
+- [x] Note the replacement in Plan 26 §3.5.
 - Result: `grep -r "EXIT_MARKER" packages` finds nothing.
 
 ### 53.5 Verify on hardware

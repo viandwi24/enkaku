@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import type { ShellResult } from '@enkaku/protocol'
 import { parseForegroundPackages, resetDevice, type ResetPlan } from './reset'
 import type { DeviceSession } from './session'
 
-type ExecImpl = (cmd: string, opts?: { signal?: AbortSignal }) => Promise<string>
+type ExecImpl = (cmd: string, opts?: { signal?: AbortSignal }) => Promise<ShellResult>
 
 /** A fake `DeviceSession` that only needs `transport.exec` for `resetDevice`. */
 function fakeSession(exec: ExecImpl): DeviceSession {
@@ -17,9 +18,9 @@ function recordingSession(responses: Record<string, string> = {}) {
   const session = fakeSession(async (cmd) => {
     calls.push(cmd)
     for (const [prefix, out] of Object.entries(responses)) {
-      if (cmd.startsWith(prefix)) return out
+      if (cmd.startsWith(prefix)) return { stdout: out, stderr: '', exitCode: 0 }
     }
-    return ''
+    return { stdout: '', stderr: '', exitCode: 0 }
   })
   return { session, calls }
 }
@@ -120,9 +121,9 @@ describe('resetDevice — the timeout budget (plan 35 §4.2, acceptance #6)', ()
     // completion — "does not leave a command in flight".
     const session = fakeSession(
       (cmd, opts) =>
-        new Promise<string>((resolve, reject) => {
+        new Promise<ShellResult>((resolve, reject) => {
           calls.push(cmd)
-          const t = setTimeout(() => resolve(''), 200)
+          const t = setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 200)
           opts?.signal?.addEventListener('abort', () => {
             clearTimeout(t)
             reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))

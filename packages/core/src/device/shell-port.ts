@@ -3,9 +3,10 @@ import { EnkakuError } from '../util/errors'
 import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
 
-/** plan 25 §4.3 */
+/** plan 25 §4.3, extended with `stderr` by plan 53 §4.4 — the framed shell separates it from `stdout`. */
 export interface ShellExecResult {
   stdout: string
+  stderr: string
   exitCode: number | null
   truncated: boolean
 }
@@ -42,15 +43,15 @@ export interface ShellPort {
 export function createLocalShellPort(deps: { client: AdbClient; serial: string }): ShellPort {
   return {
     async exec(cmd, opts) {
-      const stdout = await deps.client.exec(deps.serial, cmd, {
+      const { stdout, stderr, exitCode } = await deps.client.exec(deps.serial, cmd, {
         ...(opts?.profile ? { profile: opts.profile } : {}),
         ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(opts?.maxOutputBytes !== undefined ? { maxOutputBytes: opts.maxOutputBytes } : {}),
       })
-      // `AdbClient.exec` has no exit-code path (a plain `shell:<cmd>`) and
-      // either returns full output or throws E_ADB_OUTPUT_LIMIT — there is no
-      // partial-truncation outcome to report locally.
-      return { stdout, exitCode: null, truncated: false }
+      // `AdbClient.exec` either returns full output or throws
+      // E_ADB_OUTPUT_LIMIT — there is no partial-truncation outcome to
+      // report locally (plan 53 §4.2, §4.3).
+      return { stdout, stderr, exitCode, truncated: false }
     },
 
     async stream(cmd, opts) {
@@ -85,6 +86,8 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
       const reply = await deps.rpc.request<{
         ok: boolean
         stdout?: string
+        /** Absent on an older agent build that predates plan 53 — defaults to `''`, never crashes the core. */
+        stderr?: string
         exitCode?: number | null
         truncated?: boolean
         error?: { code: string; message: string }
@@ -98,7 +101,12 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
       if (!reply.ok) {
         throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the agent failed to run the command')
       }
-      return { stdout: reply.stdout ?? '', exitCode: reply.exitCode ?? null, truncated: reply.truncated ?? false }
+      return {
+        stdout: reply.stdout ?? '',
+        stderr: reply.stderr ?? '',
+        exitCode: reply.exitCode ?? null,
+        truncated: reply.truncated ?? false,
+      }
     },
 
     async stream(cmd, opts) {
