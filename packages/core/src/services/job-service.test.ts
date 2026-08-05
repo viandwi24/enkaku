@@ -31,6 +31,7 @@ function fakeRow(overrides: Partial<JobRow> = {}): JobRow {
     batchSeq: null,
     expiresAt: null,
     failureClass: null,
+    errorPhase: null,
     infraAttempts: 0,
     ...overrides,
   }
@@ -130,5 +131,57 @@ describe('createJobService.enqueue — canUseDevice (plan 34 §3.5, §4.4)', () 
 
     const info = service.enqueue({ scriptId: 'internal:sleep', deviceId: 'dev-1', params: {} })
     expect(info.jobId).toBe('job-1')
+  })
+})
+
+/**
+ * `result` on the detail response and nowhere else (plan 60 §3.3, §4.3).
+ *
+ * `ScriptDefinition.run`'s return value has been documented as "Return value
+ * → jobs.result" since M4 and stored on the row ever since — and `get` never
+ * returned it, so the operator who ran the job could not see what it reported
+ * without opening SQLite. For a farm whose scripts exist to REPORT things,
+ * that is the same as no return value at all.
+ */
+describe('createJobService — the script’s return value (plan 60 §3.3, §4.3)', () => {
+  const finished = fakeRow({
+    status: 'success',
+    result: { ok: true, url: 'whoer.net', addressBar: 'whoer.net' },
+    finishedAt: new Date(),
+  })
+
+  const service = (row: JobRow) =>
+    createJobService({
+      jobStore: {
+        get: () => row,
+        list: () => ({ rows: [row], nextCursor: null, total: 1 }),
+        scriptNames: () => new Map(),
+      } as unknown as JobStore,
+      registry: fakeRegistry(),
+      scheduler: fakeScheduler(),
+      host: {} as ExecutorHost,
+      log: silentLog(),
+      onJobStatus: () => {},
+    })
+
+  test('get() carries what the script returned', () => {
+    expect(service(finished).get('job-1')?.result).toEqual({ ok: true, url: 'whoer.net', addressBar: 'whoer.net' })
+  })
+
+  test('list() does not — a result can be large, and fifty of them is not what a list is for', () => {
+    const listed = service(finished).list({})
+    expect(listed.jobs).toHaveLength(1)
+    expect(listed.jobs[0]).not.toHaveProperty('result')
+  })
+
+  test('a job that returned nothing reports null rather than being absent', () => {
+    expect(service(fakeRow({ status: 'success' })).get('job-1')?.result).toBeNull()
+  })
+
+  test('the phase a failure happened in travels with it (plan 60 §3.4)', () => {
+    const failed = fakeRow({ status: 'failed', error: 'the address bar reads ""', errorPhase: 'run' })
+    expect(service(failed).get('job-1')?.errorPhase).toBe('run')
+    // Unlike `result`, this one IS small enough for a list.
+    expect(service(failed).list({}).jobs[0]?.errorPhase).toBe('run')
   })
 })

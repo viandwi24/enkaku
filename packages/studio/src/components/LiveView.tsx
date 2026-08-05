@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Circle, Loader2, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
 import { decodeVideoFrame, KEYCODES, VIDEO_CODEC, type Quality, type SessionPhase } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
+import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useNow } from '@/lib/useNow'
@@ -602,6 +603,11 @@ export function LiveView({
           {nav.map(keyButton)}
           <span className="mx-1 h-5 w-px bg-line" aria-hidden />
           {power.map(keyButton)}
+          <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+          {/* The clipboard is an action on the device, not a fact about it
+              (plan 57 §3.4) — so it belongs with the other things you press,
+              not in a panel beside the screen. */}
+          <ClipboardButton deviceId={deviceId} canSend={inputEnabled} />
           <p className="ml-2 text-[11.5px] text-fg-subtle">
             {inputEnabled
               ? 'Click to tap, drag to swipe, type while the canvas is focused. Esc sends Back.'

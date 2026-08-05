@@ -46,12 +46,14 @@ describe('deviceSections — schema coverage (plan 46 §3.3, §7)', () => {
     }
   })
 
-  test('the real schema\'s known groups are non-empty today (prep, engines/input, timing)', () => {
+  test('the real schema\'s known groups are non-empty today (prep, engines/input, timing, identity)', () => {
     const schema = realDeviceSchema()
     const byId = Object.fromEntries(deviceSections(schema).map((s) => [s.id, s.keys]))
     expect(byId.power).toEqual(['prep'])
     expect(byId.engines).toEqual(['engines', 'input'])
     expect(byId.timing).toEqual(['timing'])
+    // Plan 58 §5.7 — its own named group, not General: see `deviceSections.ts`'s doc comment.
+    expect(byId.identity).toEqual(['identity'])
     // Whatever is left over — today autoReconnect and logInputText — lands
     // in General rather than being dropped.
     expect(byId.general).toEqual(['autoReconnect', 'logInputText'])

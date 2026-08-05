@@ -28,6 +28,7 @@ import { createRetentionGc, type RetentionGc } from './maintenance/retention'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes } from './api/artifacts'
 import { createDeviceRoutes } from './api/devices'
+import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
 import { createTagRoutes } from './api/tags'
 import { createClusterRoutes } from './api/clusters'
@@ -902,6 +903,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // dead-man's switch, which nothing here touches.
       revertNetworkForRemoval = guestAgent.revertNetwork
 
+      // Plan 58 §4.3, §5.3 — timezone/locale/GPS identity, a device-settings extension living
+      // beside the network route rather than inside it (plan 58 §3.1). Reuses `guestAgentExec`
+      // (the same adb-queue shell exec `guestAgent` itself uses) and `guestAgent.withGuestAgentClient`
+      // so a GPS apply/clear shares the exact per-device session a network route already owns.
+      const deviceIdentity = createDeviceIdentityRoutes({
+        db,
+        exec: guestAgentExec,
+        leases,
+        record: recorder!.record,
+        log: log.child('identity'),
+        withGuestAgentClient: guestAgent.withGuestAgentClient,
+      })
+
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         listDevices: () => listDevicesWithTags(db),
@@ -959,6 +973,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         }),
         // Plan 44 §5.8 — built just above, before adb was ready.
         guestAgentRoutes: guestAgent.routes,
+        // Plan 58 §5.3 — built just above, alongside `guestAgent`.
+        deviceIdentityRoutes: deviceIdentity,
         tagRoutes: createTagRoutes({ db }),
         clusterRoutes: createClusterRoutes({ db, audit }),
         topologyRoutes: createTopologyRoutes({ db, readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row) }),

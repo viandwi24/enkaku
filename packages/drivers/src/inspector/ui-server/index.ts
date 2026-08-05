@@ -1,6 +1,7 @@
 import { matchSelector, type Inspector, type Selector, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from '../xml-parser'
 import { UiServerClient, UiServerClientError } from './client'
+import { isImplausibleMatch } from './find-guard'
 import type { UiServerLauncher } from './launcher'
 import { toUiSelector } from './selector'
 import { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
@@ -21,6 +22,15 @@ export interface UiServerInspectorOptions {
   localPort: number
   launcher: UiServerLauncher
   findTimeoutMs?: number
+  /**
+   * The device's own screen size, for the plan 60 §3.1 find guard — read at
+   * most ONCE per inspector and cached, so the guard costs one `wm size`
+   * (~50 ms, `profile: 'probe'`) for the life of the session rather than
+   * anything per find. `null` (or an omitted provider) leaves the guard
+   * disabled: with no viewport to compare against there is nothing to
+   * measure, and guessing would be worse than not checking.
+   */
+  screenSize?: () => Promise<{ width: number; height: number } | null>
   onStatus?: (s: UiServerStatus) => void
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
 }
@@ -40,6 +50,10 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
 
   private client: UiServerClient
   private watchdog: Watchdog
+  /** The find guard's viewport — resolved at most once (see `screenSize`). */
+  private screen: Promise<{ width: number; height: number } | null> | null = null
+  /** Selectors already reported as implausible, so a polling `waitFor` says it once and not twelve times a second. */
+  private warned = new Set<string>()
 
   constructor(private opts: UiServerInspectorOptions) {
     this.client = new UiServerClient({
@@ -100,11 +114,51 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
     }
   }
 
+  /**
+   * The viewport the find guard measures against, resolved once per inspector
+   * and then reused — including a failure, which disables the guard for this
+   * session rather than paying a failing `wm size` on every find.
+   */
+  private screenSize(): Promise<{ width: number; height: number } | null> {
+    if (!this.opts.screenSize) return Promise.resolve(null)
+    this.screen ??= this.opts.screenSize().catch((err: unknown) => {
+      this.opts.onLog?.(
+        'warn',
+        `could not read the screen size of ${this.opts.serial} (${String(err)}) — the find guard is off for this session`,
+      )
+      return null
+    })
+    return this.screen
+  }
+
+  /**
+   * `null` for a selector that only matches a viewport-sized container (plan
+   * 60 §3.1) — the same answer `find` already gives for a genuine miss, so
+   * callers need no new branch. Rejections are logged at `warn` with the
+   * selector and what came back: swapping one invisible failure for another
+   * is not an improvement.
+   */
   async find(sel: Selector): Promise<UiNode | null> {
     if ('point' in sel) return matchSelector({} as UiNode, sel)
     const info = await this.call(() => this.client.objInfo(toUiSelector(sel)))
     if (!info) return null
-    return infoToUiNode(info)
+    const node = infoToUiNode(info)
+    const screen = await this.screenSize()
+    if (screen && isImplausibleMatch(node, screen)) {
+      const key = JSON.stringify(sel)
+      if (!this.warned.has(key)) {
+        this.warned.add(key)
+        const { left, top, right, bottom } = node.bounds
+        this.opts.onLog?.(
+          'warn',
+          `${key} matched a ${node.className || 'node'} covering ${left},${top} → ${right},${bottom} of a ` +
+            `${screen.width}×${screen.height} screen — that is a container, not this selector's element; ` +
+            'answering null (plan 60 §3.1). Use dump() to walk the tree if you meant the root.',
+        )
+      }
+      return null
+    }
+    return node
   }
 
   screenshot(): Promise<Uint8Array> {
@@ -168,6 +222,7 @@ export {
   type UiServerExpectedArtifact,
   type UiServerArtifactMismatch,
 } from './launcher'
+export { isImplausibleMatch, IMPLAUSIBLE_AREA_RATIO } from './find-guard'
 export { toUiSelector, SelectorUnsupportedError, type UiSelector } from './selector'
 export { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
 export { verifyDeviceArtifact, type DeviceArtifactExpectation, type VerifyResult } from './verify'

@@ -19,9 +19,14 @@ export function labelFor(viewer: Viewer): string {
  * not per user — because the confusing case ("my other tab has it") only
  * shows up if two tabs from the same person get two rows.
  *
- * `hoveredSessionId` / `onHoverSession` are lifted to the device page so the
- * holder's row and the control banner can highlight each other (plan 31
- * §4.3's "visual link the operator asked for").
+ * Since plan 57 §3.3 this is the body of the header's viewer popover rather
+ * than a permanent panel: the count is what an operator watches, the list is
+ * what they look up. So it renders bare — no card, no heading — because the
+ * popover's own trigger already carries the count.
+ *
+ * `hoveredSessionId` / `onHoverSession` are still lifted to the device page so
+ * the holder's row and the "held by" tooltip read the same hovered session
+ * (plan 31 §4.3's "visual link the operator asked for").
  */
 export function ViewerList({
   viewers,
@@ -37,10 +42,7 @@ export function ViewerList({
   onHoverSession: (sessionId: string | null) => void
 }) {
   return (
-    <div className="mt-3 rounded-lg border bg-surface p-3.5">
-      <h2 className="rack-label mb-2.5">
-        viewers{viewers.length > 0 ? ` (${viewers.length})` : ''}
-      </h2>
+    <div>
       {viewers.length === 0 ? (
         <p className="text-[12px] text-fg-muted">Nobody is watching this device right now.</p>
       ) : (

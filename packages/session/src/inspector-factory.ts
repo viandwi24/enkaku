@@ -10,6 +10,7 @@ import type { Inspector, Transport } from '@enkaku/protocol'
 import type { ToolchainManager } from '@enkaku/toolchain'
 import type { Logger } from './logger'
 import type { PortAllocator } from './port-allocator'
+import { parseWmSize } from './probe'
 
 export interface InspectorHandle {
   inspector: Inspector
@@ -97,6 +98,17 @@ export async function createInspectorForSession(
       serial: opts.transport.serial,
       localPort: port,
       launcher,
+      // The find guard's viewport (plan 60 §3.1, §4.1). Read from the device
+      // rather than from `devices.screen_w` so it cannot be stale, and asked
+      // for at most once per inspector — `UiServerInspector` caches it, so
+      // this is one `wm size` for the life of the session, not one per find.
+      // The device's own pixels, not the scrcpy frame size: node bounds are
+      // in device pixels, and a downscaled video would tilt every ratio.
+      screenSize: async () => {
+        const { stdout } = await opts.transport.exec('wm size', { profile: 'probe' })
+        const size = parseWmSize(stdout)
+        return size ? { width: size.w, height: size.h } : null
+      },
       ...(deps.onStatus ? { onStatus: (s) => deps.onStatus?.(opts.deviceId, s) } : {}),
       onLog: (level, msg) => deps.log[level](msg),
     })

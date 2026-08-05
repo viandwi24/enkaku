@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { toast } from 'sonner'
-import { ChevronDown, ChevronRight, Copy, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Hand, RefreshCw } from 'lucide-react'
 import {
   CHANNEL,
   decodeSnapshot,
@@ -13,6 +13,7 @@ import {
   type UiNode,
 } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
@@ -20,18 +21,38 @@ import { newId, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
 /**
- * The Inspect tab (plan 56) — dumps the on-device UI tree through the
- * existing `Inspector` driver, shows it beside a snapshot taken at the same
- * instant, and turns a picked node into a ranked, match-counted selector an
- * operator can test on the device and paste into a script.
+ * The Inspect mode of the screen card (plan 56; relocated by plan 57 §3.1) —
+ * dumps the on-device UI tree through the existing `Inspector` driver, shows
+ * it beside a snapshot taken at the same instant, and turns a picked node into
+ * a ranked, match-counted selector an operator can test on the device and
+ * paste into a script.
  *
- * Mount-on-demand, like `MonitorPane`/`CrashesPanel` (device/page.tsx §3.1,
- * §4.1) — never kept alive under a hidden `TabPanel`. This tab holds an
- * on-device engine (`instrumentation` lock, an `adb.maxConcurrent` slot) for
- * as long as it is attached, so mounting only while the tab is actually open
- * is what makes "released when the tab is not open" (§3.2, acceptance #8)
- * true rather than aspirational.
+ * **The attachment follows the lease, not the mode** (plan 59 §3.3). Plan 56
+ * §3.2 was right that an attached inspector holds an on-device engine — the
+ * `instrumentation` lock and an `adb.maxConcurrent` slot — and that the cost
+ * has to be paid consciously. What it missed is that this panel already
+ * requires a *manual lease* (§3.7, and plan 59 §3.1 keeps that), and a manual
+ * lease has already made the device exclusively one operator's: the scheduler
+ * will not pick it and nobody else can take it. Holding the instrumentation
+ * lock for the duration of a lease you are already holding therefore costs
+ * nobody anything, while unmounting on every `Live ⇄ Inspect` flip cost a full
+ * cold start each time. So the panel now stays mounted for as long as the
+ * device page does (the same `hidden` treatment `LiveView` has had since plan
+ * 42 §3.1) and detaches when the lease goes, not when the mode does.
+ *
+ * The lease requirement itself is *not* presentational politeness that could
+ * be dropped: a dump carries whatever is on screen, including text already
+ * typed into a field, and it seizes an instrumentation lock. Only the way the
+ * panel *says* so changed — a precondition an operator can satisfy in one
+ * click is not a failure, so it is no longer rendered through `ErrorState`
+ * (plan 59 §3.1).
  */
+
+/** `follow` polls at a stated interval (plan 59 §3.5) — a dump costs 334–584 ms on hardware, so it is never faster than this. */
+const FOLLOW_INTERVAL_MS = 2000
+
+/** A failing dump backs off rather than hammering a device that is already struggling (plan 59 §9 Q2). */
+const FOLLOW_MAX_BACKOFF_STEPS = 3
 
 interface TreePayload {
   root: UiNode
@@ -58,7 +79,7 @@ function primaryLabel(node: UiNode): { text: string; kind: 'id' | 'text' | 'desc
   return { text: '', kind: null }
 }
 
-function nodeAt(root: UiNode, path: number[]): UiNode | null {
+export function nodeAt(root: UiNode, path: number[]): UiNode | null {
   let node = root
   for (const i of path) {
     const child = node.children[i]
@@ -66,6 +87,103 @@ function nodeAt(root: UiNode, path: number[]): UiNode | null {
     node = child
   }
   return node
+}
+
+/**
+ * Every field of every node, in a fixed order — the comparison that decides
+ * whether a dump changed anything (plan 59 §3.4).
+ *
+ * Deliberately total, and deliberately not a hash of "the interesting parts":
+ * a false "unchanged" hides a real change on a screen someone is drawing
+ * conclusions from, which is far worse than one unnecessary re-render. The
+ * exhaustiveness record below is what keeps it total — adding a field to
+ * `UiNode` stops compiling until this function is told about it.
+ */
+type Assert<T extends true> = T
+type SerialisedField =
+  | 'resourceId'
+  | 'text'
+  | 'desc'
+  | 'className'
+  | 'packageName'
+  | 'bounds'
+  | 'clickable'
+  | 'enabled'
+  | 'focused'
+  | 'index'
+  | 'children'
+type _EveryUiNodeFieldIsCompared = Assert<Exclude<keyof UiNode, SerialisedField> extends never ? true : false>
+
+export function serialiseTree(node: UiNode): string {
+  const b = node.bounds
+  // JSON.stringify of an array, so a field whose text happens to contain a
+  // separator can never be read as a boundary between two fields.
+  const self = JSON.stringify([
+    node.className,
+    node.resourceId,
+    node.text,
+    node.desc,
+    node.packageName,
+    node.index,
+    b.left,
+    b.top,
+    b.right,
+    b.bottom,
+    node.clickable,
+    node.enabled,
+    node.focused,
+  ])
+  return `${self}[${node.children.map(serialiseTree).join(',')}]`
+}
+
+/**
+ * The selection to carry into a changed tree (plan 59 §3.4): kept when the
+ * path still resolves to a node, dropped only when the node genuinely went
+ * away. `refresh()` used to clear it unconditionally, which — with `follow`
+ * on — wiped the operator's selection every couple of seconds.
+ */
+export function keepSelection(root: UiNode, path: number[] | null): number[] | null {
+  if (!path) return null
+  return nodeAt(root, path) ? path : null
+}
+
+/**
+ * The expansion set for a new tree: the default depth, plus whatever the
+ * operator had opened by hand that still exists.
+ *
+ * Seeding is not optional — a stale set from a previous dump would show
+ * nothing at all if the new tree happens to be shallower. But *only* seeding
+ * threw away every branch the operator had opened, which under a two-second
+ * `follow` is the tree collapsing itself while it is being read.
+ */
+export function seedExpanded(root: UiNode, depth: number, previous?: ReadonlySet<string>): Set<string> {
+  const next = new Set<string>()
+  const walk = (node: UiNode, path: number[], d: number) => {
+    const key = path.join('.') || 'root'
+    if (d < depth) next.add(key)
+    else if (previous?.has(key) && node.children.length > 0) next.add(key)
+    node.children.forEach((c, i) => walk(c, [...path, i], d + 1))
+  }
+  walk(root, [], 0)
+  return next
+}
+
+/**
+ * Whether `follow` may fire another dump right now (plan 59 §3.5).
+ *
+ * Every term is a reason not to spend 334–584 ms of a real phone's time: no
+ * lease means the server would refuse anyway; `Live` showing or the Control
+ * tab hidden means nobody is reading the tree; a backgrounded browser tab is
+ * the same fact one level up (§9 Q1).
+ */
+export function shouldPoll(o: {
+  follow: boolean
+  visible: boolean
+  canUse: boolean
+  ready: boolean
+  pageVisible: boolean
+}): boolean {
+  return o.follow && o.visible && o.canUse && o.ready && o.pageVisible
 }
 
 function containsPoint(b: UiNode['bounds'], x: number, y: number): boolean {
@@ -138,8 +256,29 @@ function nodeIdentity(node: UiNode): string {
   return `${shortClassName(node.className)}${label.text ? ` "${label.text}"` : ''}`
 }
 
-export function InspectorPanel({ deviceId }: { deviceId: string }) {
+export function InspectorPanel({
+  deviceId,
+  canUse,
+  onTakeControl,
+  takeControlDisabledReason,
+  visible,
+}: {
+  deviceId: string
+  /**
+   * The manual lease this panel requires (plan 56 §3.7). Attaching, dumping
+   * and finding all need it, and the server checks it on every message — this
+   * only decides what the panel says and when it holds an engine.
+   */
+  canUse: boolean
+  /** Offered inline while `canUse` is false, so the fix is where the problem was found (plan 59 §3.1). */
+  onTakeControl: () => void
+  /** Why control cannot be taken right now (offline, held by someone else) — the button is then genuinely disabled and says so. */
+  takeControlDisabledReason?: string
+  /** False while `Live` is showing or the Control tab is hidden: stay mounted and attached, stop polling (§3.3, §3.5). */
+  visible: boolean
+}) {
   const now = useNow(1000)
+  const pageVisible = usePageVisible()
 
   const [state, setState] = useState<InspectState>('detached')
   const [engineId, setEngineId] = useState('')
@@ -158,6 +297,11 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [textOnlyFilter, setTextOnlyFilter] = useState(false)
 
+  // On by default (plan 59 §3.5): an inspector that does not track the screen
+  // is not doing its job. What keeps that honest is not timidity about the
+  // default but the three guards around it — visible-only, chained rather than
+  // timed, and an unchanged screen costing nothing (§3.4).
+  const [follow, setFollow] = useState(true)
   const [testingKey, setTestingKey] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, TestOutcome>>({})
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -165,6 +309,28 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
   const nextRequestIdRef = useRef(0)
   const snapshotUrlRef = useRef<string | null>(null)
   const imgRef = useRef<HTMLImageElement>(null)
+  /** The serialised tree currently on screen — the left-hand side of §3.4's comparison. */
+  const treeSerialRef = useRef<string | null>(null)
+  /** One dump at a time, ever (acceptance #5) — `follow` chains, but a manual Refresh must not cut in front of one. */
+  const inFlightRef = useRef(false)
+  /**
+   * The last dump that came back, whether or not it changed anything. Held in
+   * a ref precisely because §3.4 forbids a state write for an unchanged dump:
+   * the header line it feeds is repainted by `useNow(1000)` within a second
+   * anyway, so "checked 1s ago, unchanged" costs no render of its own.
+   */
+  const lastCheckRef = useRef<{ at: number; tookMs: number; unchanged: boolean } | null>(null)
+  /**
+   * The requestId of a dump whose tree was dropped as unchanged. Its snapshot
+   * is dropped with it, so the picture already on screen — which still matches
+   * that identical tree — stays, and no blob is allocated for nothing. The
+   * core sends `inspect.tree` before the snapshot frame (`ws-handlers.ts`), and
+   * the reply's continuation is a microtask while the frame is another message
+   * event, so this is always set before the frame arrives.
+   */
+  const droppedSnapshotRef = useRef<number | null>(null)
+  /** Consecutive failed dumps, for `follow`'s back-off (§9 Q2). */
+  const failuresRef = useRef(0)
 
   const nextRequestId = (): number => {
     const id = nextRequestIdRef.current
@@ -172,19 +338,37 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
     return id
   }
 
-  // ---- attach / detach lifecycle — the engine runs only while this
-  // component is mounted (§3.2, acceptance #8). ----
+  // ---- everything that belongs to *this device* is dropped when the device
+  // changes, and only then. Losing the lease detaches the engine (below) but
+  // must not throw the tree away: the operator takes control again and the
+  // previous dump is there while the re-attach happens behind it (§3.3). ----
   useEffect(() => {
-    setState('detached')
     setEngineId('')
     setCapabilities([])
     setReason(null)
-    setAttachError(null)
     setTree(null)
+    treeSerialRef.current = null
+    lastCheckRef.current = null
     setSnapshotUrl(null)
     setSnapshotRequestId(null)
     setSelectedPath(null)
     setTestResults({})
+    setDumpError(null)
+  }, [deviceId])
+
+  // ---- attach / detach lifecycle — keyed on the LEASE, not on the mode
+  // (§3.3). Gaining control attaches; losing it detaches and releases the
+  // engine, which is what keeps acceptance #6 true. ----
+  const autoRefreshedFor = useRef<string | null>(null)
+  useEffect(() => {
+    setAttachError(null)
+    if (!canUse) {
+      // Nothing to release: without a lease nothing was ever attached. The
+      // panel simply says what it needs (§3.1).
+      setState('detached')
+      autoRefreshedFor.current = null
+      return
+    }
 
     let cancelled = false
     const attach = () => {
@@ -221,7 +405,7 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
       offReconnect()
       ws.send({ type: 'inspect.detach', payload: { deviceId } })
     }
-  }, [deviceId])
+  }, [deviceId, canUse])
 
   // A tree describes the instant it was dumped, never longer (§3.3): any
   // input recorded on this device — from ANY viewer, not only this tab —
@@ -248,6 +432,10 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
     const off = ws.onBinary((buf) => {
       if (buf.length === 0 || buf[0] !== CHANNEL.SNAPSHOT) return
       const { requestId, data } = decodeSnapshot(buf)
+      // The tree from this dump was dropped as unchanged (§3.4), so its
+      // picture is dropped too — the one already on screen came from the same
+      // tree and still matches it, including every node's bounds.
+      if (requestId === droppedSnapshotRef.current) return
       const blob = new Blob([data.slice()], { type: 'image/png' })
       const url = URL.createObjectURL(blob)
       if (snapshotUrlRef.current) URL.revokeObjectURL(snapshotUrlRef.current)
@@ -264,46 +452,89 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
     }
   }, [])
 
-  async function refresh() {
-    if (state !== 'ready') return
-    setDumpLoading(true)
+  /**
+   * One dump.
+   *
+   * `silent` is what a `follow` tick passes: no spinner on the Refresh button,
+   * because a control that blinks every two seconds is noise, not feedback.
+   *
+   * A dump whose tree is byte-for-byte the tree already on screen is dropped
+   * (§3.4) — no `setTree`, so no re-render of the rows, no reseeded expansion,
+   * no lost selection, and no new snapshot blob. The only thing it leaves
+   * behind is the fact that it happened, which the header reports as
+   * "checked 1s ago, unchanged".
+   */
+  async function refresh({ silent = false }: { silent?: boolean } = {}) {
+    if (state !== 'ready' || !canUse || inFlightRef.current) return
+    inFlightRef.current = true
+    if (!silent) setDumpLoading(true)
+    // Both of these bail out inside React when the value has not changed, so
+    // an unchanged dump still writes nothing.
     setDumpError(null)
     const requestId = nextRequestId()
     try {
       const res = await ws.request({ type: 'inspect.dump', id: newId(), payload: { deviceId, requestId, screenshot: true } })
       if (res.type !== 'inspect.tree') return
+      failuresRef.current = 0
+      const serial = serialiseTree(res.payload.root)
+      const unchanged = serial === treeSerialRef.current
+      lastCheckRef.current = { at: res.payload.at, tookMs: res.payload.tookMs, unchanged }
+      if (unchanged) {
+        droppedSnapshotRef.current = requestId
+        // The screen is verifiably what the tree says it is again.
+        setStale(false)
+        return
+      }
+      droppedSnapshotRef.current = null
+      treeSerialRef.current = serial
       setTree({ root: res.payload.root, frameSize: res.payload.frameSize, at: res.payload.at, tookMs: res.payload.tookMs, requestId })
-      setSelectedPath(null)
+      setSelectedPath((prev) => keepSelection(res.payload.root, prev))
       setStale(false)
       setTestResults({})
-      // Auto-expand the default depth of the FRESH tree — a stale
-      // `expanded` set from a previous dump would otherwise show nothing at
-      // all if the new tree happens to be shallower.
-      const initial = new Set<string>()
-      const seed = (node: UiNode, path: number[], depth: number) => {
-        if (depth < DEFAULT_EXPAND_DEPTH) initial.add(path.join('.') || 'root')
-        node.children.forEach((c, i) => seed(c, [...path, i], depth + 1))
-      }
-      seed(res.payload.root, [], 0)
-      setExpanded(initial)
+      setExpanded((prev) => seedExpanded(res.payload.root, DEFAULT_EXPAND_DEPTH, prev))
       if (!res.payload.snapshot) setSnapshotUrl(null)
     } catch (err) {
+      failuresRef.current += 1
       setDumpError(err instanceof Error ? err.message : String(err))
     } finally {
-      setDumpLoading(false)
+      inFlightRef.current = false
+      if (!silent) setDumpLoading(false)
     }
   }
 
-  // The first dump happens automatically once the engine is ready — an
-  // operator opening the tab should not have to also press Refresh.
-  const autoRefreshedFor = useRef<string | null>(null)
+  // The first dump happens automatically once the engine is ready AND the
+  // panel is actually on screen — an operator opening `Inspect` should not
+  // have to also press Refresh, and one who took control while watching the
+  // live video should not be charged a dump for a tree nobody is looking at.
   useEffect(() => {
-    if (state === 'ready' && autoRefreshedFor.current !== deviceId) {
+    if (state === 'ready' && visible && autoRefreshedFor.current !== deviceId) {
       autoRefreshedFor.current = deviceId
       void refresh()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, deviceId])
+  }, [state, deviceId, visible])
+
+  // `follow` (plan 59 §3.5): the next dump is scheduled only once the previous
+  // one has come back, so a slow engine stretches the gap instead of queueing
+  // dumps behind each other on the device's adb queue. `shouldPoll` collects
+  // every reason not to spend a phone's time on a tree nobody is reading.
+  const polling = shouldPoll({ follow, visible, canUse, ready: state === 'ready', pageVisible })
+  useEffect(() => {
+    if (!polling) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const delay = () => FOLLOW_INTERVAL_MS * 2 ** Math.min(failuresRef.current, FOLLOW_MAX_BACKOFF_STEPS)
+    const tick = async () => {
+      await refresh({ silent: true })
+      if (!cancelled) timer = setTimeout(() => void tick(), delay())
+    }
+    timer = setTimeout(() => void tick(), delay())
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polling, deviceId])
 
   async function testOnDevice(candidate: SelectorCandidate) {
     if (state !== 'ready' || candidate.kind === 'point') return
@@ -387,43 +618,72 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
 
   // ---- render ----
 
-  if (state === 'detached' || state === 'starting') {
+  // A precondition, not a failure (§3.1). Nothing has gone wrong: control has
+  // simply not been taken yet, and the thing that fixes it is one click away
+  // from where it was discovered.
+  if (!canUse) {
     return (
-      <div className="px-5 py-4">
-        {attachError ? (
-          <ErrorState message={attachError} />
-        ) : (
-          <div className="flex items-center gap-2 text-[12.5px] text-fg-muted">
-            <RefreshCw className="size-3.5 animate-spin" aria-hidden />
-            Starting the inspector…
-          </div>
-        )}
+      <InspectorNeedsControl onTakeControl={onTakeControl} {...(takeControlDisabledReason ? { disabledReason: takeControlDisabledReason } : {})} />
+    )
+  }
+
+  // Real failures keep the red box. A server refusal is still a refusal.
+  if (attachError) {
+    return (
+      <div>
+        <ErrorState message={attachError} />
       </div>
     )
   }
 
   if (state === 'unavailable') {
     return (
-      <div className="px-5 py-4">
+      <div>
         <ErrorState message={reason ?? `The ${engineId || 'inspector'} engine is not available on this session.`} />
       </div>
     )
   }
 
+  // Only a panel with nothing to show waits. Once there is a tree, a re-attach
+  // (a WS reconnect, say) happens behind it rather than blanking the screen —
+  // it must never look like a cold start when it is not one (§3.3).
+  if (!tree && (state === 'detached' || state === 'starting')) {
+    return (
+      <div className="flex items-center gap-2 text-[12.5px] text-fg-muted">
+        <RefreshCw className="size-3.5 animate-spin" aria-hidden />
+        Starting the inspector…
+      </div>
+    )
+  }
+
   return (
-    <div className="px-5 py-4">
-      {/* Header: engine, tree age, staleness, Refresh (§4.4). */}
+    <div>
+      {/* Header: engine, how old this tree is and what it cost, staleness,
+          follow, Refresh (§4.4; plan 57 §3.5). The age and the duration are
+          always on screen — an inspector quietly showing a ten-second-old tree
+          is worse than one that admits its age, because every conclusion drawn
+          from it is wrong in a way nothing else contradicts. */}
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border bg-surface px-3.5 py-2.5">
         <span className="rack-label">{engineId}</span>
         <span className="readout text-[11.5px] text-fg-muted">
-          {tree ? `taken ${relativeTime(tree.at, now)} · ${tree.tookMs}ms` : 'no dump yet'}
+          {tree ? `taken ${dumpAge(tree.at, now)} · ${tree.tookMs} ms${unchangedSuffix(lastCheckRef.current, tree.at, now)}` : 'no dump yet'}
         </span>
+        {state !== 'ready' && (
+          <span className="flex items-center gap-1.5 text-[11px] text-fg-muted">
+            <RefreshCw className="size-3 animate-spin" aria-hidden />
+            reattaching
+          </span>
+        )}
         {stale && tree && (
           <span className="rounded-full border border-led-warn/35 bg-led-warn/10 px-2 py-0.5 text-[11px] text-led-warn">
             input was sent — this tree may no longer match the screen
           </span>
         )}
-        <Button variant="outline" size="sm" className="ml-auto" onClick={() => void refresh()} disabled={dumpLoading}>
+        <label className="ml-auto flex items-center gap-1.5 text-[11.5px] text-fg-muted">
+          <Switch size="sm" checked={follow} onCheckedChange={setFollow} />
+          follow (every {FOLLOW_INTERVAL_MS / 1000}s)
+        </label>
+        <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={dumpLoading || state !== 'ready'}>
           <RefreshCw className={cn('size-3.5', dumpLoading && 'animate-spin')} aria-hidden />
           Refresh
         </Button>
@@ -602,8 +862,109 @@ export function InspectorPanel({ deviceId }: { deviceId: string }) {
   )
 }
 
+/**
+ * The dump's age, always as a number of seconds (plan 57 §3.5).
+ *
+ * `relativeTime` says "just now" under five seconds, which is the one thing
+ * this line must never do: 4s of drift is enough for a highlight to land on
+ * the wrong row, and "just now" hides exactly that.
+ */
+function dumpAge(at: number, now: number): string {
+  const sec = Math.max(0, Math.floor(now / 1000) - at)
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ${sec % 60}s ago`
+  return relativeTime(at, now)
+}
+
 function countNodes(node: UiNode): number {
   let n = 1
   for (const c of node.children) n += countNodes(c)
   return n
+}
+
+/**
+ * "checked 1s ago, unchanged" (§3.4).
+ *
+ * A tree that has stopped being re-fetched and a tree that is re-fetched every
+ * two seconds and comes back identical look the same on screen, and they are
+ * not the same thing at all. This is the difference, said out loud — and it is
+ * why dropping an unchanged dump is free rather than dishonest.
+ */
+export function unchangedSuffix(
+  check: { at: number; unchanged: boolean } | null,
+  treeAt: number,
+  now: number,
+): string {
+  if (!check || !check.unchanged || check.at <= treeAt) return ''
+  return ` · checked ${dumpAge(check.at, now)}, unchanged`
+}
+
+/**
+ * Whether the browser tab itself is on screen (§9 Q1) — the same reason mode
+ * visibility gates polling, one level up. A phone should not be dumped every
+ * two seconds for a window nobody is looking at.
+ */
+function usePageVisible(): boolean {
+  const [pageVisible, setPageVisible] = useState(true)
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const read = () => setPageVisible(document.visibilityState !== 'hidden')
+    read()
+    document.addEventListener('visibilitychange', read)
+    return () => document.removeEventListener('visibilitychange', read)
+  }, [])
+  return pageVisible
+}
+
+/**
+ * The panel with no lease (plan 59 §3.1).
+ *
+ * What used to be here was `ErrorState` — a warning triangle, a danger border,
+ * "Could not load", and underneath it the *server's* wording for the input
+ * path, `take control (lease.acquire) before sending input`. Nothing had
+ * failed, and `lease.acquire` is an internal message name that means nothing
+ * to the person reading it.
+ *
+ * The requirement is not the problem and does not move: a dump carries
+ * whatever is on screen, text already typed into a field included, and it
+ * seizes an instrumentation lock. Reading someone's screen is not a passive
+ * act. So this says what is needed, says why, and offers it — the next action
+ * is a click away from where the operator found out they needed it.
+ *
+ * No hooks, so it can be called directly in a test (the workspace has no DOM
+ * renderer — see `TileChips.test.tsx`).
+ */
+export function InspectorNeedsControl({
+  onTakeControl,
+  disabledReason,
+}: {
+  onTakeControl: () => void
+  /** Set when control cannot be taken at all right now — the button is then genuinely disabled and names the state it needs. */
+  disabledReason?: string
+}) {
+  return (
+    <EmptyState
+      icon={<Hand className="size-4" aria-hidden />}
+      title="Take control to inspect this screen"
+      description={
+        <>
+          Reading the UI tree copies whatever is on screen — including text already typed into a field — and holds the
+          device&apos;s instrumentation lock while it does. So it needs control of the device, the same as sending input.
+          {disabledReason && <span className="mt-1.5 block text-fg-subtle">{disabledReason}</span>}
+        </>
+      }
+      action={
+        <Button
+          size="sm"
+          onClick={onTakeControl}
+          disabled={Boolean(disabledReason)}
+          {...(disabledReason ? { title: disabledReason } : {})}
+        >
+          <Hand className="size-4" aria-hidden />
+          Take control
+        </Button>
+      }
+    />
+  )
 }

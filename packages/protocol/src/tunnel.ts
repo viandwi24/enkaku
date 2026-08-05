@@ -234,7 +234,8 @@ export const JobProgressMessage = z.object({
       .object({
         ok: z.boolean(),
         value: z.unknown().optional(),
-        error: z.object({ code: z.string(), message: z.string() }).optional(),
+        /** `phase` (plan 60 §3.4) — where the failure happened, so a cloud job's Summary reads the same as a local one's. */
+        error: z.object({ code: z.string(), message: z.string(), phase: z.string().optional() }).optional(),
       })
       .optional(),
   }),

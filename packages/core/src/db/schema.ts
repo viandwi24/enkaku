@@ -237,6 +237,15 @@ export const jobs = sqliteTable(
      */
     failureClass: text('failure_class'),
     /**
+     * Plan 60 §3.4 — the phase a failure happened in ('prepare' | 'run' |
+     * 'finish', plus the runner's own 'reset' | 'acquire' | 'timeout'). The
+     * runner has always known this and threw it away at the executor
+     * boundary, so "it failed" was answerable from the job row and "where"
+     * was only answerable by reading the log. Null for a job that never
+     * failed, and for any row written before this column existed.
+     */
+    errorPhase: text('error_phase'),
+    /**
      * Plan 36 §3.4, §3.6 — how many times this job has been requeued for an
      * infrastructure failure (rebind on another eligible device for a batch
      * member). Nullable/defaulted so existing rows keep reading; 0 for a job

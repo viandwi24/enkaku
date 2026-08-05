@@ -6,7 +6,17 @@ import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { GuestAgentClient, GuestAgentClientOptions, GuestAgentLauncher } from '@enkaku/drivers'
 import { GuestAgentClientError } from '@enkaku/drivers'
-import type { EgressProbeResult, HelloResult, PingResult, RouteHoldResult, RouteStartResult, RouteStatusResult, RouteStopResult } from '@enkaku/protocol'
+import type {
+  EgressProbeResult,
+  HelloResult,
+  LocationClearResult,
+  LocationSetResult,
+  PingResult,
+  RouteHoldResult,
+  RouteStartResult,
+  RouteStatusResult,
+  RouteStopResult,
+} from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
@@ -91,6 +101,10 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): GuestAgentClient
     // (plan 55 §5.6) — every existing test here runs without that, so this default only matters
     // for the hold-wiring tests below.
     routeHold: async (): Promise<RouteHoldResult> => ({ held: true }),
+    // Not called unless a device applies GPS identity (plan 58 §5.3) — every existing test here
+    // runs without that, so this default only matters for the identity-specific tests below.
+    locationSet: async (): Promise<LocationSetResult> => ({ set: true }),
+    locationClear: async (): Promise<LocationClearResult> => ({ cleared: true }),
     ...overrides,
   }
 }

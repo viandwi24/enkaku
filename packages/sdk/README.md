@@ -45,6 +45,24 @@ export default defineScript({
 
 **Selectors are layered** — stable to fragile: `{ id }` → `{ desc }` → `{ text }` → `{ point }`. One selector holds exactly one key. The device page's **Inspect** tab dumps the live tree and proposes match-counted candidates instead of making you guess — see [`docs/guide/scripts.md`](../../docs/guide/scripts.md#finding-a-selector).
 
+**`find` answers `null` when it cannot answer.** A selector that only resolves to a viewport-sized container is not a match: `tap` aims at a node's centre, so acting on one presses the middle of the page. The inspector rejects it and `find` returns `null` — the same answer as a genuine miss, so there is no third case to handle.
+
+**`ctx.device.dump()` gives you the whole tree**, the same one the Inspect panel renders — for everything a four-shape selector cannot reach. **It costs 334–584 ms** (a `find` is ~80 ms), so fetch it once and walk the result:
+
+```ts
+const tree = await ctx.device.dump()
+const nodes: UiNode[] = []
+const walk = (n: UiNode) => { nodes.push(n); n.children.forEach(walk) }
+walk(tree)
+
+// The value the operator wants carries a resource id and no text of its own —
+// no selector reaches it, one line of TypeScript does.
+const ip = nodes.find((n) => n.resourceId.endsWith('lite-your-ip-value'))?.children[0]?.text
+const rowCount = nodes.filter((n) => n.resourceId.endsWith('list_item')).length
+```
+
+Calling it once per assertion instead is a choice, not an error — the cost is stated, not enforced.
+
 **`type()` handles printable ASCII only in M4** (it uses `adb shell input text`). Unicode and IME text arrive with `ui-server.set_text` (M4.5) and UHID input (M6).
 
 **`waitFor` polls the inspector; it is not a sleep.** In M4 the inspector is `uiautomator dump` (0.5–2 seconds per query), so the default interval is one second. M4.5 swaps in `ui-server` (<200 ms) without changing this API.

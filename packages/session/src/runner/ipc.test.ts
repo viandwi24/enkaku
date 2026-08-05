@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { DeviceCallSchema } from './ipc'
+import { DeviceCallSchema, ParentToChildSchema } from './ipc'
 
 /**
  * `app.launch`/`app.forceStop` package and activity validation (plan 34 §3.4,
@@ -75,6 +75,51 @@ describe('DeviceCallSchema — app.launch/app.forceStop package and activity reg
   test('a missing pkg is rejected', () => {
     const result = DeviceCallSchema.safeParse({ method: 'app.launch', args: {} })
     expect(result.success).toBe(false)
+  })
+})
+
+/** Plan 60 §4.2: `dump` crosses the same IPC boundary as every other device call. */
+describe('DeviceCallSchema — dump (plan 60 §4.2)', () => {
+  test('a dump call takes no arguments', () => {
+    const result = DeviceCallSchema.safeParse({ method: 'dump', args: {} })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.method).toBe('dump')
+  })
+
+  test('the tree comes back through the parent’s reply, not through a schema of its own', () => {
+    // `dump` is answered by `device.result`, whose `value` is `z.unknown()` —
+    // the same channel `find` already uses. A UiNode is JSON, so a tree with
+    // children round-trips unchanged.
+    const tree = {
+      resourceId: '',
+      text: '',
+      desc: '',
+      className: 'android.widget.FrameLayout',
+      packageName: 'com.android.chrome',
+      bounds: { left: 0, top: 0, right: 720, bottom: 1640 },
+      clickable: false,
+      enabled: true,
+      focused: false,
+      index: 0,
+      children: [
+        {
+          resourceId: 'lite-your-ip-value',
+          text: '',
+          desc: '',
+          className: 'android.view.View',
+          packageName: 'com.android.chrome',
+          bounds: { left: 48, top: 620, right: 672, bottom: 700 },
+          clickable: false,
+          enabled: true,
+          focused: false,
+          index: 0,
+          children: [],
+        },
+      ],
+    }
+    const parsed = ParentToChildSchema.safeParse({ t: 'device.result', callId: 'c1', ok: true, value: tree })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'device.result') expect(parsed.data.value).toEqual(tree)
   })
 })
 

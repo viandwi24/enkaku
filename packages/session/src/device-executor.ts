@@ -229,6 +229,13 @@ export function createDeviceExecutor(deps: {
       case 'find': {
         return inspector.find(call.args.sel)
       }
+      case 'dump': {
+        // The same tree the Inspect panel shows (plan 60 §3.2) — `Inspector`
+        // has always had this method; nothing but the script ever asked for
+        // it. The four-shape selector grammar cannot reach a node that has a
+        // resource id and no text, and ordinary TypeScript over the tree can.
+        return inspector.dump()
+      }
       case 'waitFor': {
         // The polling loop lives in the parent — one call, one meaning, pacing in
         // one place. The interval follows the active engine: ui-server is cheap

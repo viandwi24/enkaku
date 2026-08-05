@@ -13,6 +13,7 @@ Why it exists: `uiautomator dump` takes 0.5–2 seconds per query and fails whil
 | Verifier | `verify.ts` | reads `dumpsys package` and compares versionCode/signature against the toolchain manifest (plan 41) |
 | Watchdog | `watchdog.ts` | `starting → healthy ⇄ restarting(n) → dead` |
 | Selector | `selector.ts` | Enkaku selector → uiautomator UiSelector |
+| Find guard | `find-guard.ts` | rejects a viewport-sized container as an answer to a specific selector (plan 60) |
 | Inspector | `index.ts` | implements `Inspector` and `InspectorElementActions` |
 
 The APK is pinned to a specific version and managed by the Toolchain Manager (`swappable: false`, checksum required) — the client↔server protocol is coupled, exactly as scrcpy-server is treated.
@@ -28,6 +29,18 @@ Instrumentation dies easily: the low-memory killer, vendor battery optimisation 
 - No expectation recorded (an older manifest) → the check verifies installed-presence only and never blocks the inspector.
 - A mismatch (wrong version or wrong signing certificate) → `pm uninstall`, reinstall, re-verify **once**. If it still mismatches, `ensureInstalled()` throws, `onMismatch` fires (the core records `device.artifact.mismatch` on the Plan 18 main stream), and the session falls through to the `uiautomator-dump` fallback below — it does not retry a second time, so a device where something keeps reinstalling a conflicting package cannot burn farm time forever.
 - A signature line `dumpsys package` cannot make sense of is `unreadable`, treated the same as "skip" — Android's output for signatures is not stable across versions/OEMs, and a false mismatch would be worse than not checking at all.
+
+## The find guard (plan 60 §3.1)
+
+Measured on a moto g06 power: `find({ id: 'com.android.chrome:id/url_bar' })` came back as a `FrameLayout` covering the whole 720×1640 screen, `clickable: false`, while the Inspect panel dumping the same screen at the same moment showed that id as an `EditText` at the top. `tap` aims at a node's centre, so the tap landed in the middle of the page — on an advertisement — and every assertion after it measured a different page. The job was green.
+
+So `find` checks the answer it was handed: a node whose bounds cover **≥ 95% of the viewport's area** is a container, not a match for a specific selector, and `find` returns `null` — the same answer it already gives for a genuine miss, so callers need no new branch. The rejection is logged once per selector at `warn` (once, because `waitFor` polls this path every 80 ms).
+
+- Area, not an exact match: a node one pixel short of the full screen is the same container. Comparing areas also makes rotation a non-case.
+- Bounds only. `clickable` is deliberately not part of it: `find` cannot know whether its caller is about to tap, and the value a script most wants to read may well be inert.
+- `{ point }` selectors never reach the guard — a point is a coordinate, not a claim about a node.
+- The viewport comes from `screenSize()`, supplied by the caller (`@enkaku/session`'s `inspector-factory.ts` reads `wm size`) and cached for the inspector's lifetime — one probe per session, nothing per find. With no screen size the guard stays off rather than guessing.
+- A caller that genuinely wants the root node can `dump()` and read it.
 
 ## Fallback
 

@@ -69,7 +69,22 @@ export function DeviceCard({
       <div className="space-y-3 p-4 pl-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="truncate text-[14px] font-semibold tracking-tight">{device.label}</h3>
+            {/* The label is a link in every state, offline included (plan 59
+                §3.6). `Control` is correctly disabled for an offline device —
+                you cannot drive a phone that is not there — but that was the
+                card's ONLY route to the page, so an offline device became
+                unreachable without knowing the URL. Its logs, jobs, crashes,
+                settings and past artifacts are exactly what an operator wants
+                when a device drops off; that is usually why they are looking.
+                It is also where people already try to click. */}
+            <h3 className="truncate text-[14px] font-semibold tracking-tight">
+              <Link
+                href={`/device?id=${encodeURIComponent(device.id)}`}
+                className="transition-colors hover:text-accent-strong"
+              >
+                {device.label}
+              </Link>
+            </h3>
             <p className="readout mt-0.5 truncate text-[11px] text-fg-subtle">{device.serial}</p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -189,16 +204,31 @@ export function DeviceCard({
           </div>
         )}
 
-        {/* An offline device gets a genuinely disabled button, not a link that
-            looks dead but is still clickable. */}
+        {/* An offline device gets genuinely disabled buttons, not links that
+            look dead but are still clickable — each naming the state it needs
+            (plan 59 §3.6). The way in to the page itself is the label above:
+            not being able to CONTROL an offline phone is not a reason to be
+            unable to READ about it. */}
         <div className="flex gap-2 pt-0.5">
           {offline ? (
             <>
-              <Button size="sm" variant="secondary" className="h-8 flex-1 text-[12px]" disabled>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-8 flex-1 text-[12px]"
+                disabled
+                title="The device is not connected to this farm — open it to read its logs, jobs and settings"
+              >
                 <ScreenShare className="size-3.5" aria-hidden />
                 Control
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 text-[12px]" disabled>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 text-[12px]"
+                disabled
+                title="The device is not connected to this farm — a script needs a device that is online"
+              >
                 <Play className="size-3.5" aria-hidden />
                 Run
               </Button>

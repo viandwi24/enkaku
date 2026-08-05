@@ -111,6 +111,61 @@ function normaliseLegacyPrep(raw: unknown): unknown {
 }
 
 /**
+ * A spoofed GPS fix (plan 58 §4.1). Bounds are the real-world ranges — a
+ * latitude outside ±90 or a longitude outside ±180 is a typo, not a place.
+ * `accuracy` is the radius the OS reports alongside the fix; social apps weigh
+ * it, so it is surfaced rather than hardcoded.
+ */
+export const DeviceGpsSchema = z.object({
+  lat: z.number().min(-90).max(90).describe('Latitude, in decimal degrees').meta({ title: 'Latitude' }),
+  lng: z.number().min(-180).max(180).describe('Longitude, in decimal degrees').meta({ title: 'Longitude' }),
+  accuracy: z
+    .number()
+    .positive()
+    .max(10_000)
+    .default(100)
+    .describe('Reported fix accuracy in metres — a phone on WiFi is roughly 20–100m')
+    .meta({ title: 'Accuracy (m)' }),
+})
+export type DeviceGps = z.infer<typeof DeviceGpsSchema>
+
+/**
+ * Device identity (plan 58) — the signals a device presents to an app besides
+ * its network path: timezone, locale, and GPS location. A route that exits in
+ * New York while the device still reports `Asia/Jakarta` and Jakarta GPS is
+ * exactly the mismatch social platforms flag, so this block exists to align all
+ * three with the route's observed exit (the "sync with proxy" affordance, plan
+ * 56 §3.4). Every field is optional: an absent field means "leave the device's
+ * own value alone", never a guessed default — same honesty rule as the network
+ * layer's `expect` (never inferred, never defaulted).
+ *
+ * This is NOT a driver layer (plan 58 §3.1): it has no lease-scoped
+ * apply/revert lifecycle, no capability negotiation, and persists across leases
+ * like `timing` and `prep`. It lives in `DeviceSettingsSchema` alongside them.
+ */
+export const DeviceIdentitySchema = z
+  .object({
+    timezone: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('IANA timezone the device presents, e.g. "America/New_York". Absent: the device keeps its own timezone.')
+      .meta({ title: 'Timezone' }),
+    locale: z
+      .string()
+      .min(2)
+      .optional()
+      .describe('Locale the device presents, e.g. "en-US" or "ja-JP". Absent: the device keeps its own locale.')
+      .meta({ title: 'Locale' }),
+    gps: DeviceGpsSchema.optional().describe('A mock GPS fix the guest agent reports as the device location.').meta({ title: 'GPS location' }),
+  })
+  .meta({
+    title: 'Identity',
+    description: 'What the device presents to apps besides its network path — timezone, locale, GPS. Align these with the route exit so the signals agree.',
+  })
+export type DeviceIdentity = z.infer<typeof DeviceIdentitySchema>
+
+/**
  * Everything that is scoped to a single device (spec §12).
  *
  * This is the ONE schema for device-scoped settings, and `FarmSettings.defaults`
@@ -216,6 +271,13 @@ export const DeviceSettingsSchema = z
       .default(false)
       .describe('Store the literal typed text in the input log, instead of just its length. Turning this on is recorded in the audit log — anything typed on this device (including passwords) becomes readable by any farm user who opens the Logs tab.')
       .meta({ title: 'Log typed text in the clear' }),
+    /**
+     * Plan 58 §4.1 — device identity (timezone/locale/GPS), persisted per
+     * device exactly like `timing`/`prep`. A thunk default (plan 40 §4.3) keeps
+     * this in lockstep with `DeviceIdentitySchema`'s own shape; every inner
+     * field is optional so an empty object parses to "leave everything alone".
+     */
+    identity: DeviceIdentitySchema.default(() => DeviceIdentitySchema.parse({})),
   })
   .meta({ title: 'Device settings' })
 export type DeviceSettings = z.infer<typeof DeviceSettingsSchema>

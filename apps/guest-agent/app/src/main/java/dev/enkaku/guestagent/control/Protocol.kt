@@ -28,8 +28,15 @@ object Protocol {
    * (the host gates on it rather than assuming) is defeated.
    *
    * `route-hold` (plan 55 §3.5, §4.1, §5.6): added now that [METHOD_ROUTE_HOLD] is handled below.
+   *
+   * `mock-location` (plan 58 §4.4, §5.4): added now that [METHOD_LOCATION_SET]/
+   * [METHOD_LOCATION_CLEAR] are handled below and back by
+   * [dev.enkaku.guestagent.identity.MockLocation]. An installed build that predates this still
+   * answers `E_UNKNOWN_METHOD` for both, which the host treats as "identity GPS cannot be
+   * applied" — never a spoofed value the device never actually received.
    */
-  val CAPABILITIES: List<String> = listOf("socks5-route", "vpn-status", "egress-probe", "route-hold")
+  val CAPABILITIES: List<String> =
+    listOf("socks5-route", "vpn-status", "egress-probe", "route-hold", "mock-location")
 
   // Requests
   const val METHOD_HELLO = "hello"
@@ -39,6 +46,8 @@ object Protocol {
   const val METHOD_ROUTE_STATUS = "route.status"
   const val METHOD_EGRESS_PROBE = "egress.probe"
   const val METHOD_ROUTE_HOLD = "route.hold"
+  const val METHOD_LOCATION_SET = "location.set"
+  const val METHOD_LOCATION_CLEAR = "location.clear"
 
   // Error codes. Mirrored on the host so failures are matched on a code, never on message text.
   const val ERR_UNAUTHORISED = "E_UNAUTHORISED"

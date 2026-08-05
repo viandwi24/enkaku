@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import dev.enkaku.guestagent.R
+import dev.enkaku.guestagent.identity.MockLocation
 import dev.enkaku.guestagent.route.DeadMansSwitch
 import dev.enkaku.guestagent.route.EgressProbe
 import dev.enkaku.guestagent.route.Ipv6Leak
@@ -260,6 +261,42 @@ class ControlService : Service() {
           put("tunnelled", result.tunnelled.toJson())
           put("direct", result.direct.toJson())
         }
+      }
+
+      // Plan 58 §4.4, §5.4 — installs a mock GPS fix via MockLocation's test-provider wrapper.
+      // `lat`/`lng` are re-validated here (never trust the wire even though the host's own Zod
+      // schema already bounds them) because this socket is reached by anything that knows the
+      // token, same reasoning as ROUTE_START's port check.
+      Protocol.METHOD_LOCATION_SET -> {
+        if (!request.has("lat") || !request.has("lng")) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "missing lat/lng")
+        }
+        val lat = request.optDouble("lat", Double.NaN)
+        val lng = request.optDouble("lng", Double.NaN)
+        if (lat.isNaN() || lat < -90.0 || lat > 90.0) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "lat must be -90..90")
+        }
+        if (lng.isNaN() || lng < -180.0 || lng > 180.0) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "lng must be -180..180")
+        }
+        val accuracy = request.optDouble("accuracy", 100.0).toFloat()
+        try {
+          MockLocation.set(this, lat, lng, accuracy)
+        } catch (se: SecurityException) {
+          // Same code RouteVpnService's missing-VPN-consent path uses (METHOD_ROUTE_START above)
+          // — an operator precondition is missing, not a malformed request.
+          return error(
+            id,
+            Protocol.ERR_NOT_PREPARED,
+            "not the device's mock-location app — grant it first (adb shell appops set <pkg> android:mock_location allow)",
+          )
+        }
+        ok(id) { put("set", true) }
+      }
+
+      Protocol.METHOD_LOCATION_CLEAR -> {
+        MockLocation.clear(this)
+        ok(id) { put("cleared", true) }
       }
 
       else -> error(id, Protocol.ERR_UNKNOWN_METHOD, "unknown method: $method")

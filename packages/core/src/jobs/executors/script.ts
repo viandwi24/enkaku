@@ -45,6 +45,10 @@ export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: Jo
         const err = result.error ?? { code: 'SCRIPT_FAILED', message: 'the script failed', phase: 'run' }
         throw Object.assign(new EnkakuError(err.code, err.message), {
           code: err.code === 'CANCELLED' ? 'job_cancelled' : err.code,
+          // The runner has always known which phase failed and this boundary
+          // used to drop it (plan 60 §3.4), which is why "why did this fail"
+          // could only be answered by opening the log.
+          phase: err.phase,
         })
       }
       return result.value ?? null

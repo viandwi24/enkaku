@@ -42,7 +42,7 @@ export const GUEST_AGENT_PROTOCOL = 1
  * answers `E_UNKNOWN_METHOD`; the host gates on this the same way it gates `egress.probe` on
  * `egress-probe`, rather than finding out from a failed call.
  */
-export const GuestAgentCapabilitySchema = z.enum(['socks5-route', 'vpn-status', 'egress-probe', 'route-hold'])
+export const GuestAgentCapabilitySchema = z.enum(['socks5-route', 'vpn-status', 'egress-probe', 'route-hold', 'mock-location'])
 export type GuestAgentCapability = z.infer<typeof GuestAgentCapabilitySchema>
 
 /** Mirrors Protocol.kt's `ERR_*` constants. Failures are matched on `code`, never on message text. */
@@ -123,6 +123,27 @@ export const RouteHoldRequestSchema = GuestAgentRequestBaseSchema.extend({
 })
 export type RouteHoldRequest = z.infer<typeof RouteHoldRequestSchema>
 
+/**
+ * Plan 58 §4.4 — reports a mock GPS fix as the device location. Only meaningful
+ * once the agent advertises the `mock-location` capability; an older build
+ * answers `E_UNKNOWN_METHOD`, which the host treats as "identity GPS cannot be
+ * applied" rather than a route failure (same gate as `egress.probe`). The fix
+ * is installed via Android's test-provider API — no root, stock Android.
+ */
+export const LocationSetRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('location.set'),
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  accuracy: z.number().positive().max(10_000).default(100),
+})
+export type LocationSetRequest = z.infer<typeof LocationSetRequestSchema>
+
+/** Plan 58 §4.4 — removes the mock provider, restoring real location. */
+export const LocationClearRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('location.clear'),
+})
+export type LocationClearRequest = z.infer<typeof LocationClearRequestSchema>
+
 /** The full request union, discriminated on `method` — mirrors `Protocol.METHOD_*`. */
 export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   HelloRequestSchema,
@@ -132,6 +153,8 @@ export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   RouteStatusRequestSchema,
   EgressProbeRequestSchema,
   RouteHoldRequestSchema,
+  LocationSetRequestSchema,
+  LocationClearRequestSchema,
 ])
 export type GuestAgentRequest = z.infer<typeof GuestAgentRequestSchema>
 
@@ -165,6 +188,18 @@ export const RouteHoldResultSchema = z.object({
   held: z.literal(true),
 })
 export type RouteHoldResult = z.infer<typeof RouteHoldResultSchema>
+
+/** Plan 58 §4.4. Plain acknowledgement that the mock fix was installed. */
+export const LocationSetResultSchema = z.object({
+  set: z.literal(true),
+})
+export type LocationSetResult = z.infer<typeof LocationSetResultSchema>
+
+/** Plan 58 §4.4. Plain acknowledgement that the mock provider was removed. */
+export const LocationClearResultSchema = z.object({
+  cleared: z.literal(true),
+})
+export type LocationClearResult = z.infer<typeof LocationClearResultSchema>
 
 /**
  * `upstream`, `stats`, and `lastError` are ABSENT from the frame when there
@@ -254,6 +289,8 @@ export const GuestAgentOkResponseSchema = z.object({
     RouteStatusResultSchema,
     EgressProbeResultSchema,
     RouteHoldResultSchema,
+    LocationSetResultSchema,
+    LocationClearResultSchema,
   ]),
 })
 export type GuestAgentOkResponse = z.infer<typeof GuestAgentOkResponseSchema>

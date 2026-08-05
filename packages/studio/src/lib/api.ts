@@ -312,3 +312,90 @@ export function enableNetworkRoute(deviceId: string): Promise<NetworkStatus> {
 export function disableNetworkRoute(deviceId: string): Promise<NetworkStatus> {
   return postNetworkAction(deviceId, 'disable')
 }
+
+// ---- Identity: timezone, locale, GPS (plan 58 §4.3, §5.7) ----
+
+/** A spoofed GPS fix — mirrors `DeviceGpsSchema` in `@enkaku/protocol`. */
+export interface DeviceGps {
+  lat: number
+  lng: number
+  accuracy?: number
+}
+
+/**
+ * What a device presents besides its network path. Every field optional: absent means "leave the
+ * device's own value alone", never a guessed default — mirrors `DeviceIdentitySchema`.
+ */
+export interface DeviceIdentity {
+  timezone?: string
+  locale?: string
+  gps?: DeviceGps
+}
+
+/**
+ * What a PUT actually did to the device, field by field — distinct from what got PERSISTED
+ * (`DeviceIdentity` itself): a declared GPS fix is always saved, but `gps` here can still read
+ * `'unavailable'` when the guest agent could not carry it out. Mirrors `device-identity.ts`'s
+ * `ApplyResult`.
+ */
+export interface IdentityApplyResult {
+  timezone?: 'applied'
+  locale?: 'applied'
+  gps?: 'applied' | 'unavailable'
+  /** Only present when `gps === 'unavailable'` — always says WHY in plain language (plan 58 §4's scoping note: never silence). */
+  gpsDetail?: string
+}
+
+export async function fetchDeviceIdentity(deviceId: string): Promise<DeviceIdentity> {
+  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/identity`)
+  if (!res.ok) throw new Error(`GET /api/devices/${deviceId}/identity → ${res.status}`)
+  const body = (await res.json()) as { identity: DeviceIdentity }
+  return body.identity
+}
+
+/** A full replace, not a merge (plan 58 §5.3): omitted fields are cleared, not left alone. Studio's form always sends the complete current state. */
+export async function applyDeviceIdentity(
+  deviceId: string,
+  identity: DeviceIdentity,
+): Promise<{ identity: DeviceIdentity; result: IdentityApplyResult }> {
+  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/identity`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(identity),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: { code: string; message?: string } } | null
+    throw Object.assign(
+      new Error(body?.error?.message ?? `PUT /api/devices/${deviceId}/identity → ${res.status}`),
+      { code: body?.error?.code },
+    )
+  }
+  return (await res.json()) as { identity: DeviceIdentity; result: IdentityApplyResult }
+}
+
+/** Reverts timezone/locale to the device's own default and removes the mock location, then clears the stored settings. */
+export async function clearDeviceIdentity(deviceId: string): Promise<void> {
+  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/identity`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`DELETE /api/devices/${deviceId}/identity → ${res.status}`)
+}
+
+/** What the most recent geo observation suggests — a pre-fill, never applied on its own (plan 58 §3.4). */
+export interface IdentitySyncSuggestion {
+  suggestion: DeviceIdentity
+  observedAt: number
+  country: string | null
+  city: string | null
+}
+
+/** 409s with `E_NO_GEO_OBSERVATION` when no route has ever observed an exit for this device. */
+export async function syncDeviceIdentity(deviceId: string): Promise<IdentitySyncSuggestion> {
+  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/identity/sync`, { method: 'POST' })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: { code: string; message?: string } } | null
+    throw Object.assign(
+      new Error(body?.error?.message ?? `POST /api/devices/${deviceId}/identity/sync → ${res.status}`),
+      { code: body?.error?.code },
+    )
+  }
+  return (await res.json()) as IdentitySyncSuggestion
+}

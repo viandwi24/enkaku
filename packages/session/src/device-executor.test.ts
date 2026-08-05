@@ -250,3 +250,46 @@ describe('createDeviceExecutor — scroll and fling geometry (plan 40 §4.4, acc
     expect(calls.swipe.length).toBe(1)
   })
 })
+
+/**
+ * `dump` (plan 60 §3.2, §4.2): `Inspector.dump()` has existed since M4.5 and
+ * is what the Inspect panel renders — the executor simply never exposed it,
+ * so the loop the inspector exists to serve (look at the tree, learn the
+ * structure, write the script) stopped at the last step.
+ */
+describe('createDeviceExecutor — dump (plan 60 §4.2)', () => {
+  const tree = {
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'android.widget.FrameLayout',
+    packageName: 'com.android.chrome',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1640 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+  }
+
+  test('it returns the session inspector’s own tree, untouched', async () => {
+    let dumps = 0
+    const session = {
+      deviceId: 'dev-1',
+      inspector: {
+        id: 'ui-server',
+        dump: async () => {
+          dumps += 1
+          return tree
+        },
+        find: async () => null,
+        screenshot: async () => new Uint8Array(),
+      },
+      transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
+    } as unknown as DeviceSession
+
+    const execute = createDeviceExecutor({ session })
+    expect(await execute(call('dump', {}))).toEqual(tree)
+    expect(dumps).toBe(1)
+  })
+})

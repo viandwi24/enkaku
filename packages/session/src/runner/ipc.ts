@@ -59,6 +59,12 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
   }),
   z.object({ method: z.literal('key'), args: z.object({ code: z.union([z.number().int(), z.string()]) }) }),
   z.object({ method: z.literal('find'), args: z.object({ sel: SelectorSchema }) }),
+  /**
+   * The whole accessibility tree, the same one the Inspect panel renders
+   * (plan 60 §3.2). No arguments: a dump is a dump, and everything a script
+   * wants to do with it is ordinary TypeScript over the returned nodes.
+   */
+  z.object({ method: z.literal('dump'), args: z.object({}) }),
   z.object({
     method: z.literal('waitFor'),
     args: z.object({

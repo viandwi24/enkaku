@@ -46,6 +46,19 @@ export interface DeviceApi {
   type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }): Promise<void>
   key(code: KeyCode): Promise<void>
   find(sel: Selector): Promise<UiNode | null>
+  /**
+   * The whole accessibility tree — the same one the Inspect panel renders
+   * (plan 60 §3.2). This is how a script reads something the four-shape
+   * selector grammar cannot reach: a node carrying a resource id and no text,
+   * a value that only makes sense relative to its neighbours, a count of
+   * matching rows. Ordinary TypeScript over `node.children` does all of it.
+   *
+   * **It costs a full dump: 334–584 ms measured on a moto g06 power** (a
+   * `find` is ~80 ms by comparison). Fetch it once and walk the result; do
+   * not call it per assertion. Nothing stops you paying repeatedly if you
+   * mean to — the cost is stated here rather than enforced.
+   */
+  dump(): Promise<UiNode>
   /** Polls the inspector — rejects with ScriptError('WAITFOR_TIMEOUT') when time runs out. */
   waitFor(sel: Selector, opts?: WaitForOptions): Promise<UiNode>
   /** Raw PNG (without saving an artifact). */

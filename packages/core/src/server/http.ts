@@ -25,6 +25,8 @@ export interface HttpDeps {
   deviceRoutes: Hono<AuthEnv>
   /** `GET/POST/DELETE /:id/guest-agent` and `GET/PUT/DELETE /:id/network` (plan 44 §5.8) — mounted at the same `/api/devices` prefix as `deviceRoutes`, from its own Hono app so `packages/core/src/api/devices.ts` stays untouched beyond the registry fallout fix. */
   guestAgentRoutes: Hono<AuthEnv>
+  /** `GET/PUT/DELETE /:id/identity` and `POST /:id/identity/sync` (plan 58 §4.3, §5.3) — a third Hono app at the same `/api/devices` prefix, same reasoning as `guestAgentRoutes`. */
+  deviceIdentityRoutes: Hono<AuthEnv>
   tagRoutes: Hono
   clusterRoutes: Hono<AuthEnv>
   topologyRoutes: Hono
@@ -111,6 +113,12 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // pattern `deviceRoutes` itself uses internally for the adb-endpoint and
   // transfer routes (`api/devices.ts`'s `app.route('/', ...)` calls).
   app.route('/api/devices', deps.guestAgentRoutes)
+
+  // Plan 58 §4.3, §5.3 — a third Hono app at the same base path, same reasoning as
+  // `guestAgentRoutes` above: identity is a device-settings extension living beside the network
+  // route, not part of it (plan 58 §3.1), so it gets its own route file rather than growing
+  // `guest-agent.ts` or `devices.ts` further.
+  app.route('/api/devices', deps.deviceIdentityRoutes)
 
   app.route('/api/tags', deps.tagRoutes)
 

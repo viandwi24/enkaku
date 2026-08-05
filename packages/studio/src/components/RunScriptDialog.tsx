@@ -45,6 +45,33 @@ function ConsequenceNote({ count, concurrency, order }: { count: number; concurr
   )
 }
 
+/** Numeric semver compare, newest first. `10.0.0` must beat `9.0.0`, which a string sort gets wrong. */
+function byVersionDesc(a: ScriptRow, b: ScriptRow): number {
+  const pa = a.version.split('.').map((n) => Number.parseInt(n, 10) || 0)
+  const pb = b.version.split('.').map((n) => Number.parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pb[i] ?? 0) - (pa[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/**
+ * One entry per script NAME, newest version first inside each.
+ *
+ * Every publish creates its own row, so a script iterated on during a debugging
+ * session has a dozen of them. Listing those as a dozen choices is not a picker,
+ * it is a changelog — and it buries the eleven other scripts the operator might
+ * actually want. Name first, version second, newest preselected.
+ */
+function groupByName(scripts: ScriptRow[]): Array<{ name: string; versions: ScriptRow[] }> {
+  const byName = new Map<string, ScriptRow[]>()
+  for (const s of scripts) byName.set(s.name, [...(byName.get(s.name) ?? []), s])
+  return [...byName.entries()]
+    .map(([name, versions]) => ({ name, versions: versions.sort(byVersionDesc) }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
 /**
  * Running a script: pick a target — a single device, a saved cluster, or an
  * ad-hoc multi-device list — fill in the parameters, run (plan 20 §4.8).
@@ -56,6 +83,7 @@ function ConsequenceNote({ count, concurrency, order }: { count: number; concurr
  */
 export function RunScriptDialog({
   script,
+  scripts,
   devices,
   initialDevice,
   initialCluster,
@@ -63,7 +91,15 @@ export function RunScriptDialog({
   onLaunched,
   onClose,
 }: {
+  /** The script, when the surrounding screen already decided it (the Scripts pages). */
   script: ScriptRow | null
+  /**
+   * The choices, when it did NOT — the device page, where the device is the
+   * given and the script is the question. Exactly the inverse of `lockedDevice`
+   * below, and the case this dialog was missing: the device page used to pass
+   * `scripts[0]` and run whatever happened to sort first.
+   */
+  scripts?: ScriptRow[]
   devices: DeviceInfo[]
   initialDevice?: string | null
   initialCluster?: string | null
@@ -82,6 +118,11 @@ export function RunScriptDialog({
   onLaunched?: (result: { jobId?: string; batchId?: string }) => void
   onClose: () => void
 }) {
+  // When `scripts` is supplied the dialog owns the choice; otherwise `script`
+  // decides and these stay unused.
+  const groups = groupByName(scripts ?? [])
+  const [pickedName, setPickedName] = useState<string>('')
+  const [pickedId, setPickedId] = useState<string>('')
   const [target, setTarget] = useState<Target>('single')
   const locked = lockedDevice ?? null
   const [deviceId, setDeviceId] = useState('')
@@ -99,15 +140,26 @@ export function RunScriptDialog({
   // disabled, with the reason (plan 19 §3.2) — never silently removed.
   const usable = devices.filter((d) => d.status !== 'offline' && d.status !== 'quarantined')
 
+  // Preselect the newest version of the first script. A picker that opens on
+  // nothing makes the operator do work the screen could have done.
   useEffect(() => {
-    if (!script) return
+    if (!scripts || scripts.length === 0 || pickedId) return
+    const first = groupByName(scripts)[0]
+    if (!first?.versions[0]) return
+    setPickedName(first.name)
+    setPickedId(first.versions[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scripts])
+
+  useEffect(() => {
+    if (!script && !scripts) return
     void fetchAllPages<ClusterInfo>('/api/clusters')
       .then(setClusters)
       .catch(() => setClusters([]))
   }, [script])
 
   useEffect(() => {
-    if (!script) return
+    if (!script && !scripts) return
     setParams(undefined)
     setDeviceIds([])
     setConcurrency(0)
@@ -120,9 +172,31 @@ export function RunScriptDialog({
       setDeviceId(initialDevice && usable.some((d) => d.id === initialDevice) ? initialDevice : (usable[0]?.id ?? ''))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, initialDevice, initialCluster, devices.length])
+  }, [script, scripts, initialDevice, initialCluster, devices.length])
 
-  if (!script) return null
+  // Resolved synchronously so the rest of the render never has to ask whether
+  // a script exists: the explicit pick, else the newest of the first script.
+  // The preselect effect above only persists what this already shows, which
+  // keeps the first paint and the state in agreement.
+  const chosen = script ?? (scripts ?? []).find((s) => s.id === pickedId) ?? groups[0]?.versions[0] ?? null
+
+  if (!chosen) {
+    // Not "no script yet" — no scripts at all. Say which, and how to fix it.
+    if (!scripts) return null
+    return (
+      <Dialog open onOpenChange={(v) => !v && onClose()}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Run a script</DialogTitle>
+            <DialogDescription>Nothing is published to this farm yet.</DialogDescription>
+          </DialogHeader>
+          <p className="text-[12.5px] leading-relaxed text-fg-muted">
+            Publish one with <span className="readout">enkaku publish &lt;script.ts&gt;</span>, then run it from here.
+          </p>
+        </DialogContent>
+      </Dialog>
+    )
+  }
 
   const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
   const canSubmit =
@@ -135,12 +209,12 @@ export function RunScriptDialog({
         target === 'single'
           ? api<{ job: { jobId: string } }>('/api/jobs', {
               method: 'POST',
-              json: { scriptId: script.id, deviceId, params: params ?? {} },
+              json: { scriptId: chosen.id, deviceId, params: params ?? {} },
             })
           : api<{ batch: { id: string } }>('/api/batches', {
               method: 'POST',
               json: {
-                scriptId: script.id,
+                scriptId: chosen.id,
                 params: params ?? {},
                 target: target === 'cluster' ? { clusterId } : { deviceIds },
                 concurrency,
@@ -168,13 +242,77 @@ export function RunScriptDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            Run {script.name}
-            <span className="readout ml-1.5 text-[12px] font-normal text-fg-muted">@{script.version}</span>
+            Run {chosen.name}
+            <span className="readout ml-1.5 text-[12px] font-normal text-fg-muted">@{chosen.version}</span>
           </DialogTitle>
           <DialogDescription>A single device joins its queue directly; a cluster or list creates a batch.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          {scripts && (
+            <div className="grid gap-2.5 sm:grid-cols-[1fr_auto]">
+              <div className="space-y-1.5">
+                <Label className="text-[13px] font-normal">Script</Label>
+                <Select
+                  value={pickedName}
+                  onValueChange={(name) => {
+                    setPickedName(name)
+                    // Always land on the newest version of whatever was picked.
+                    const g = groups.find((x) => x.name === name)
+                    setPickedId(g?.versions[0]?.id ?? '')
+                    // Cleared HERE, not in an effect. Every version carries its
+                    // own params schema and its own defaults, and `SchemaForm`
+                    // seeds defaults from a `[schema]` effect — a child effect,
+                    // which React runs BEFORE the parent's. Resetting in a
+                    // parent effect would therefore wipe the defaults it had
+                    // just filled in, and the form would open blank.
+                    setParams(undefined)
+                  }}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue placeholder="Pick a script" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {groups.map((g) => (
+                      <SelectItem key={g.name} value={g.name}>
+                        {g.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Only when there is a choice to make. A version select showing
+                  one option is a control that cannot be used. */}
+              {(groups.find((g) => g.name === pickedName)?.versions.length ?? 0) > 1 && (
+                <div className="space-y-1.5">
+                  <Label className="text-[13px] font-normal">Version</Label>
+                  <Select
+                    value={pickedId}
+                    onValueChange={(id) => {
+                      setPickedId(id)
+                      // Same reason as above: a different version is a different
+                      // schema with different defaults.
+                      setParams(undefined)
+                    }}
+                  >
+                    <SelectTrigger className="readout h-9 min-w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(groups.find((g) => g.name === pickedName)?.versions ?? []).map((v, i) => (
+                        <SelectItem key={v.id} value={v.id} className="readout">
+                          {v.version}
+                          {i === 0 ? ' · latest' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          )}
+
           {locked ? (
             <div className="rounded-lg border bg-surface-2 px-3 py-2">
               <p className="rack-label mb-0.5">running on</p>
@@ -271,8 +409,16 @@ export function RunScriptDialog({
             </div>
           )}
 
-          {script.paramsSchema ? (
-            <SchemaForm schema={script.paramsSchema} value={params} onChange={setParams} />
+          {chosen.paramsSchema ? (
+            <SchemaForm
+              // Keyed on the exact version: a remount guarantees the previous
+              // version's answers cannot leak into the next one's fields, even
+              // if two versions happen to share a field name.
+              key={chosen.id}
+              schema={chosen.paramsSchema}
+              value={params}
+              onChange={setParams}
+            />
           ) : (
             <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
           )}

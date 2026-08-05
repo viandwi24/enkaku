@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type {
   EgressProbeResult,
   HelloResult,
+  LocationClearResult,
+  LocationSetResult,
   PingResult,
   RouteHoldResult,
   RouteStartResult,
@@ -62,6 +64,8 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): { client: GuestA
       direct: { ok: true, status: 200, body: '', ms: 1 },
     }),
     routeHold: async (): Promise<RouteHoldResult> => ({ held: true }),
+    locationSet: async (): Promise<LocationSetResult> => ({ set: true }),
+    locationClear: async (): Promise<LocationClearResult> => ({ cleared: true }),
     ...overrides,
   }
   return { client, factory: () => client }

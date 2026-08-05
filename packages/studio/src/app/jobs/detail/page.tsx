@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft, ChevronDown, ChevronRight, Download } from 'lucide-react'
-import type { ArtifactInfo, JobInfo } from '@enkaku/protocol'
+import type { ArtifactInfo } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
 import { deviceRefLabel, fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
+import { formatResult, isRunnerLog, outcomeLine, producedArtifacts, type JobWithPhase } from '@/lib/jobs'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -23,10 +24,6 @@ interface LogLine {
   level: string
   source: string
   msg: string
-}
-
-interface JobWithPhase extends JobInfo {
-  phase?: 'reset' | 'prepare' | 'run' | 'finish' | null
 }
 
 /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
@@ -111,7 +108,10 @@ function JobDetail() {
 
   // A finished job's log lives in its job.log artifact. Without loading it, an
   // old job showed an empty panel even though every line had been kept.
-  const logArtifact = artifacts.find((a) => a.kind === 'log')
+  // Matched by label, not merely by kind: a crash trace (plan 37) is a `log`
+  // artifact too, and picking that one would render a stack trace as the job's
+  // log.
+  const logArtifact = artifacts.find(isRunnerLog)
   useEffect(() => {
     if (!logArtifact || savedLogs !== null) return
     void fetch(`${coreBase()}/api/artifacts/${logArtifact.id}/content`)
@@ -140,8 +140,16 @@ function JobDetail() {
     if (followLog) logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
   }, [logs, followLog])
 
-  const images = useMemo(() => artifacts.filter((a) => a.kind === 'screenshot'), [artifacts])
-  const files = useMemo(() => artifacts.filter((a) => a.kind !== 'screenshot'), [artifacts])
+  /**
+   * What the RUN produced (plan 60 §3.5). The runner's own `job` log is
+   * filtered out here and here only: the API still returns it, because the
+   * Logs tab above downloads that exact artefact to render a finished job's
+   * log. Listing it as a script output as well is what made every job look
+   * like it had saved a file nobody asked for.
+   */
+  const produced = useMemo(() => producedArtifacts(artifacts), [artifacts])
+  const images = useMemo(() => produced.filter((a) => a.kind === 'screenshot'), [produced])
+  const files = useMemo(() => produced.filter((a) => a.kind !== 'screenshot'), [produced])
   // `crash-<pkg>`/`anr-<pkg>` is the exact label `saveCrashTrace` in daemon.ts
   // gives the artifact when a job lease was held (plan 37 §3.6) — found
   // among the job's own artifacts, no separate device_events query needed.
@@ -166,6 +174,55 @@ function JobDetail() {
   const scriptName = job.scriptName ? `${job.scriptName}@${job.scriptVersion ?? '?'}` : job.scriptId
   // How long it waited for a free device, separate from how long it ran.
   const waited = job.startedAt ? job.startedAt - job.createdAt : null
+  const finished = ['success', 'failed', 'cancelled', 'expired'].includes(job.status)
+
+  /**
+   * Why it failed, with the failing line shown rather than described (plan 60
+   * §3.4). One definition, rendered in one place at a time: inside the
+   * Summary outcome card when that tab is open, above the tabs otherwise —
+   * so a failure is never more than a glance away and never printed twice.
+   */
+  const failureDetail =
+    job.status === 'failed' && job.error ? (
+      <div className="rounded-lg border border-led-danger/40 bg-led-danger/5 p-3.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="rack-label text-led-danger">
+            failure reason{job.errorPhase ? ` — during ${job.errorPhase}` : ''}
+          </p>
+          {/* Plan 36 §4.4 — infra vs script vs load, so "this suite is flaky" becomes an answerable question. */}
+          {job.failureClass && (
+            <span
+              className={cn(
+                'rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+                job.failureClass === 'infra' && 'border-led-warn/40 bg-led-warn/10 text-led-warn',
+                job.failureClass === 'load' && 'border-line bg-transparent text-fg-muted',
+                job.failureClass === 'script' && 'border-led-danger/40 bg-led-danger/10 text-led-danger',
+              )}
+            >
+              {job.failureClass}
+            </span>
+          )}
+        </div>
+        <p className="mt-1 break-words text-[13px]">{job.error}</p>
+        {crashTraceArtifact && (
+          <div className="mt-2.5 border-t border-led-danger/20 pt-2.5">
+            <button
+              type="button"
+              onClick={() => setTraceOpen((v) => !v)}
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-led-danger hover:underline"
+            >
+              {traceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+              {traceOpen ? 'Hide crash trace' : 'Show crash trace'}
+            </button>
+            {traceOpen && (
+              <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/20 bg-surface p-2.5 text-[11px] leading-relaxed">
+                {traceText ?? 'Loading…'}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    ) : null
 
   return (
     <>
@@ -205,56 +262,51 @@ function JobDetail() {
         tabs={[
           { key: 'summary', label: 'Summary' },
           { key: 'logs', label: 'Logs', count: logs.length || null },
-          { key: 'artifacts', label: 'Artifacts', count: artifacts.length || null },
+          { key: 'artifacts', label: 'Artifacts', count: produced.length || null },
           { key: 'script', label: 'Script' },
         ]}
         hrefFor={(k) => `/jobs/detail?id=${jobId}${k === 'summary' ? '' : `&tab=${k}`}`}
       />
 
-      {/* A failure is the first thing anyone opening a job needs, so it sits
-          above the tabs rather than inside one of them. */}
-      {job.status === 'failed' && job.error && (
-        <div className="mx-5 mt-4 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3.5">
-          <div className="flex items-center gap-2">
-            <p className="rack-label text-led-danger">failure reason</p>
-            {/* Plan 36 §4.4 — infra vs script vs load, so "this suite is flaky" becomes an answerable question. */}
-            {job.failureClass && (
-              <span
-                className={cn(
-                  'rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-                  job.failureClass === 'infra' && 'border-led-warn/40 bg-led-warn/10 text-led-warn',
-                  job.failureClass === 'load' && 'border-line bg-transparent text-fg-muted',
-                  job.failureClass === 'script' && 'border-led-danger/40 bg-led-danger/10 text-led-danger',
-                )}
-              >
-                {job.failureClass}
-              </span>
-            )}
-          </div>
-          <p className="mt-1 break-words text-[13px]">{job.error}</p>
-          {crashTraceArtifact && (
-            <div className="mt-2.5 border-t border-led-danger/20 pt-2.5">
-              <button
-                type="button"
-                onClick={() => setTraceOpen((v) => !v)}
-                className="inline-flex items-center gap-1 text-[12px] font-medium text-led-danger hover:underline"
-              >
-                {traceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-                {traceOpen ? 'Hide crash trace' : 'Show crash trace'}
-              </button>
-              {traceOpen && (
-                <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/20 bg-surface p-2.5 text-[11px] leading-relaxed">
-                  {traceText ?? 'Loading…'}
-                </pre>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {/* On every tab but Summary, where it has a card of its own. */}
+      {tab !== 'summary' && failureDetail && <div className="mx-5 mt-4">{failureDetail}</div>}
 
       {tab === 'summary' && (
         <div className="grid gap-4 px-5 py-4 xl:grid-cols-[1fr_20rem]">
           <div className="space-y-4">
+            {/* What happened, and what the script reported (plan 60 §3.3, §3.4) —
+                the two things the person who ran it came here for. */}
+            <div className="rounded-lg border bg-surface p-4">
+              <h2 className="rack-label mb-3">outcome</h2>
+              <p
+                className={cn(
+                  'text-[13.5px]',
+                  job.status === 'success' && 'text-led-ok',
+                  job.status === 'failed' && 'text-led-danger',
+                  job.status === 'expired' && 'text-led-warn',
+                )}
+              >
+                {outcomeLine(job)}
+              </p>
+              {failureDetail && <div className="mt-3">{failureDetail}</div>}
+
+              <div className="mt-4 border-t pt-3">
+                <h3 className="rack-label mb-2">returned</h3>
+                {!finished ? (
+                  <p className="text-[12.5px] text-fg-subtle">A script reports its result when it finishes.</p>
+                ) : job.result === null || job.result === undefined ? (
+                  <p className="text-[12.5px] text-fg-subtle">
+                    This script returned nothing. A script that should report something — an exit IP, a version,
+                    whether an element was there — returns it from <span className="readout">run()</span>.
+                  </p>
+                ) : (
+                  <pre className="readout max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
+                    {formatResult(job.result)}
+                  </pre>
+                )}
+              </div>
+            </div>
+
             <div className="rounded-lg border bg-surface p-4">
               <h2 className="rack-label mb-3">phases</h2>
               <div className="flex flex-wrap items-center gap-2">
@@ -368,10 +420,10 @@ function JobDetail() {
 
       {tab === 'artifacts' && (
         <div className="px-5 py-4">
-          {artifacts.length === 0 ? (
+          {produced.length === 0 ? (
             <EmptyState
               title="No artifacts"
-              description="Screenshots and files a script saves with ctx.artifact appear here, alongside the job log."
+              description="Screenshots and files a script saves with ctx.artifact appear here. The run's own log is on the Logs tab."
             />
           ) : (
             <div className="space-y-4">

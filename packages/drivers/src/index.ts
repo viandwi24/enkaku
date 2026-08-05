@@ -12,6 +12,8 @@ export {
   UiServerInspector,
   supportsElementActions,
   createUiServerLauncher,
+  isImplausibleMatch,
+  IMPLAUSIBLE_AREA_RATIO,
   toUiSelector,
   UI_SERVER_PACKAGE,
   UI_SERVER_DEVICE_PORT,
@@ -56,3 +58,8 @@ export {
   type GuestAgentSocketHandlers,
   type NetworkRoute,
 } from './network/guest-agent/index'
+export {
+  createMockLocationDriver,
+  type GuestAgentClientRunner,
+  type MockLocationDriver,
+} from './identity/mock-location'

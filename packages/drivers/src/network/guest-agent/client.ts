@@ -16,6 +16,10 @@ import {
   EgressProbeResultSchema,
   RouteHoldRequestSchema,
   RouteHoldResultSchema,
+  LocationSetRequestSchema,
+  LocationSetResultSchema,
+  LocationClearRequestSchema,
+  LocationClearResultSchema,
   type GuestAgentErrorCode,
   type GuestAgentRequest,
   type HelloResult,
@@ -25,6 +29,8 @@ import {
   type RouteStopResult,
   type EgressProbeResult,
   type RouteHoldResult,
+  type LocationSetResult,
+  type LocationClearResult,
   type Socks5RouteConfig,
 } from '@enkaku/protocol'
 
@@ -123,6 +129,15 @@ export interface GuestAgentClient {
    * treat as "cannot force a hold" rather than a route failure.
    */
   routeHold(reason: string): Promise<RouteHoldResult>
+  /**
+   * Plan 58 §4.4. Installs a mock GPS fix on the device via the guest agent's
+   * test-provider API (no root). Gated on `hello().capabilities` including
+   * `mock-location`; an older build answers `E_UNKNOWN_METHOD`, which callers
+   * treat as "identity GPS cannot be applied" rather than a route failure.
+   */
+  locationSet(lat: number, lng: number, accuracy?: number): Promise<LocationSetResult>
+  /** Plan 58 §4.4. Removes the mock provider, restoring real location. Same capability gate as `locationSet`. */
+  locationClear(): Promise<LocationClearResult>
 }
 
 /** One connect → write one line → read one line → close, with a hard timeout. */
@@ -332,6 +347,27 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
         reason,
       })
       return call(connect, opts.port, timeoutMs, req, RouteHoldResultSchema)
+    },
+
+    locationSet(lat, lng, accuracy) {
+      const req = LocationSetRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'location.set',
+        lat,
+        lng,
+        ...(accuracy !== undefined ? { accuracy } : {}),
+      })
+      return call(connect, opts.port, timeoutMs, req, LocationSetResultSchema)
+    },
+
+    locationClear() {
+      const req = LocationClearRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'location.clear',
+      })
+      return call(connect, opts.port, timeoutMs, req, LocationClearResultSchema)
     },
   }
 }

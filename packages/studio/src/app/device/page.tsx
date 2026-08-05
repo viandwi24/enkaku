@@ -3,27 +3,24 @@
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft, Hand, Play, Trash2 } from 'lucide-react'
-import type { BatteryState, DeviceInfo, DeviceStatus, JobInfo, RegistryResponse, ShellMode, Viewer } from '@enkaku/protocol'
-import { LiveView } from '@/components/LiveView'
-import { ClipboardCard } from '@/components/ClipboardCard'
+import type { BatteryState, DeviceStatus, JobInfo, RegistryResponse, ShellMode, Viewer } from '@enkaku/protocol'
 import { DeviceLog } from '@/components/DeviceLog'
 import { CrashesPanel } from '@/components/CrashesPanel'
-import { InspectorPanel } from '@/components/InspectorPanel'
 import { MonitorPane } from '@/components/monitor/MonitorPane'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
 import { FilesPanel } from '@/components/FilesPanel'
 import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
-import { ViewerList, labelFor } from '@/components/ViewerList'
-import { DEVICE_LABEL, DeviceStatusBadge } from '@/components/StatusBadge'
-import { PageHeader } from '@/components/layout/PageHeader'
+import { IdentityPanel } from '@/components/identity/IdentityPanel'
+import { DeviceHeader, type DeviceDetailInfo } from '@/components/device/DeviceHeader'
+import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
 import { EntityTabs } from '@/components/layout/EntityTabs'
+import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
+import { labelFor } from '@/components/ViewerList'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
-import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { relativeTime, duration } from '@/lib/format'
@@ -36,29 +33,9 @@ import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { deviceSections } from '@/components/settings/deviceSections'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
-
-/** The device's effective engines — from GET /api/devices/:id. */
-interface DeviceDetailInfo extends DeviceInfo {
-  transport: string
-  display: string
-  input: string
-  inspection: string
-  settings: unknown
-  /** Set only for an agent-owned (cloud) device — there is no local `Inspector` to attach to (plan 56 §2 non-goals), so the Inspect tab is disabled rather than left to dead-end at a server refusal. */
-  agentId: string | null
-}
-
-const ENGINE_ROWS = [
-  { key: 'transport', label: 'transport', reg: 'transports' },
-  { key: 'display', label: 'video', reg: 'displays' },
-  { key: 'input', label: 'input', reg: 'inputs' },
-  { key: 'inspection', label: 'inspection', reg: 'inspectors' },
-] as const
 
 function DeviceDetail() {
   // A query param rather than a dynamic route, because a static export cannot
@@ -66,7 +43,13 @@ function DeviceDetail() {
   const params = useSearchParams()
   const router = useRouter()
   const deviceId = params.get('id')
-  const tab = params.get('tab') ?? 'control'
+  // `Inspect` stopped being a tab (plan 57 §3.1) and became a mode of the
+  // screen card. Links printed before that — a bookmark, a chat message —
+  // still say `tab=inspect`, so they land on Control with that mode selected
+  // rather than on a page with no active panel at all.
+  const requestedTab = params.get('tab') ?? 'control'
+  const tab = requestedTab === 'inspect' ? 'control' : requestedTab
+  const [mode, setMode] = useState<ScreenMode>(requestedTab === 'inspect' ? 'inspect' : 'live')
   // The Settings tab's active sub-section (plan 46 §3.4, §4.3) — an
   // unknown or absent value falls back to the first section, resolved
   // below once the schema (and therefore the section list) has loaded.
@@ -91,7 +74,6 @@ function DeviceDetail() {
   const [jobsCount, setJobsCount] = useState<number | null>(null)
   const jobsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   const [scripts, setScripts] = useState<ScriptRow[]>([])
-  const [runScript, setRunScript] = useState<ScriptRow | null>(null)
   const [runOpen, setRunOpen] = useState(false)
   // Removal (plan 47 §4.5) — the smallest additive hook into this page: a
   // single dialog, no new tab, no restructuring of what is already here.
@@ -126,15 +108,14 @@ function DeviceDetail() {
 
   /**
    * The published fact (plan 31 §4.3), not an inference from local state: the
-   * viewer list is the single thing both the button and the banner read, so
-   * there is no way for this tab to render "release control" for a lease it
-   * does not hold — the button reads what the server published.
+   * viewer list is the single thing the header's button and its viewer popover
+   * both read, so there is no way for this tab to render "release control" for
+   * a lease it does not hold — the button reads what the server published.
    */
   const holder = viewers.find((v) => v.holdsControl) ?? null
   const iHoldControl = holder !== null && holder.sessionId === mySessionId
   /** Someone else is driving: a viewer holds control, and it is not us. */
   const heldByOther = holder !== null && !iHoldControl
-  const holderLabel = holder ? labelFor(holder) : null
   // Kept in sync every render (not just on the events that flip it) so the
   // ws.on callback below — created once per deviceId, not per render — can
   // still ask "was I the one who just lost control" without a stale closure.
@@ -306,8 +287,24 @@ function DeviceDetail() {
 
   const currentStatus = status ?? device.status
   const busy = currentStatus === 'busy'
-  const canTakeControl = currentStatus === 'idle'
   const inputEnabled = iHoldControl && !busy
+  /**
+   * Why `Take control` cannot be pressed right now, or null when it can — the
+   * same rule the header's own button follows, so a panel that offers the
+   * action inline (plan 59 §3.1) never offers one that would bounce. A
+   * precondition the operator can satisfy stays a live button; one they
+   * cannot is genuinely disabled and names the state it needs.
+   */
+  const takeControlReason = iHoldControl
+    ? null
+    : heldByOther
+      ? `Control is held by ${holder ? labelFor(holder) : 'another viewer'}.`
+      : currentStatus === 'idle'
+        ? null
+        : (UNAVAILABLE_REASON[currentStatus] ?? 'The device is unavailable')
+  // An agent-owned device has no local inspector to attach to, so it can never
+  // be in `Inspect` — not even by way of an old `tab=inspect` link.
+  const screenMode: ScreenMode = device.agentId ? 'live' : mode
 
   // The Settings tab's vertical sub-sections (plan 46 §3.3, §4.2): derived
   // from `DeviceSettingsSchema`'s own top-level keys via `deviceSections`,
@@ -335,90 +332,37 @@ function DeviceDetail() {
 
   return (
     <>
-      <PageHeader
-        title={device.label}
-        description={`${device.serial} · ${device.androidVersion ? `Android ${device.androidVersion}` : 'Android version unknown'}`}
-        meta={<DeviceStatusBadge status={currentStatus} />}
-        actions={
-          <>
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/">
-                <ArrowLeft className="size-4" aria-hidden />
-                All devices
-              </Link>
-            </Button>
-            {/* Removal (plan 47 §4.5) — the dialog itself states what is
-                removed vs. kept, and handles the "still connected" refusal
-                with a Block instead offer; this button only opens it. */}
-            <Button variant="ghost" size="sm" onClick={() => setForgetOpen(true)}>
-              <Trash2 className="size-4" aria-hidden />
-              Remove device
-            </Button>
-            {currentStatus === 'offline' || currentStatus === 'quarantined' ? (
-              <Button variant="outline" size="sm" disabled>
-                <Play className="size-4" aria-hidden />
-                Run a script
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={scripts.length === 0}
-                onClick={() => {
-                  setRunScript(scripts[0] ?? null)
-                  setRunOpen(true)
-                }}
-              >
-                <Play className="size-4" aria-hidden />
-                Run a script
-              </Button>
-            )}
-            {iHoldControl ? (
-              <Button size="sm" variant="secondary" onClick={releaseControl}>
-                Release control
-              </Button>
-            ) : heldByOther ? (
-              // Reads a fact the server published (the viewer list), not a
-              // local inference — this is what makes the reported two-browser
-              // symptom impossible by construction (plan 31 §4.3).
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    tabIndex={0}
-                    onMouseEnter={() => holder && setHoveredSessionId(holder.sessionId)}
-                    onMouseLeave={() => setHoveredSessionId(null)}
-                  >
-                    <Button size="sm" variant="outline" disabled>
-                      <Hand className="size-4" aria-hidden />
-                      Take control
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>Held by {holderLabel}</TooltipContent>
-              </Tooltip>
-            ) : canTakeControl ? (
-              <Button size="sm" disabled={acquiring} onClick={() => void takeControl()}>
-                <Hand className="size-4" aria-hidden />
-                {acquiring ? 'Taking…' : 'Take control'}
-              </Button>
-            ) : (
-              // A lit-up primary button that cannot be pressed is a trap — when
-              // control genuinely is not available, show a clearly disabled
-              // button and say why.
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={0}>
-                    <Button size="sm" variant="outline" disabled>
-                      <Hand className="size-4" aria-hidden />
-                      Take control
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{UNAVAILABLE_REASON[currentStatus] ?? 'The device is unavailable'}</TooltipContent>
-              </Tooltip>
-            )}
-          </>
-        }
+      {/* Everything the right column used to hold, placed by how it is used
+          (plan 57 §3.3): battery and temperature inline, viewers as a count,
+          the static facts and the engines behind `ⓘ`, and `Remove device`
+          behind `⋮` — not sitting in the toolbar with the same weight as
+          `Run a script` (§3.6). `All devices` is gone: the sidebar's Devices
+          entry already goes there. */}
+      <DeviceHeader
+        device={device}
+        status={currentStatus}
+        battery={liveBattery}
+        registry={registry}
+        inspectorFallback={inspectorFallback}
+        viewers={viewers}
+        mySessionId={mySessionId}
+        hoveredSessionId={hoveredSessionId}
+        onHoverSession={setHoveredSessionId}
+        now={now}
+        secondsLeft={secondsLeft}
+        holder={holder}
+        iHoldControl={iHoldControl}
+        heldByOther={heldByOther}
+        acquiring={acquiring}
+        canRunScript={scripts.length > 0}
+        // The dialog picks the script now. This used to hand it `scripts[0]` —
+        // whichever the API happened to sort first — so every other published
+        // script was unreachable from a device's own page, and the version
+        // moved on its own whenever anything was republished.
+        onRunScript={() => setRunOpen(true)}
+        onTakeControl={() => void takeControl()}
+        onReleaseControl={releaseControl}
+        onRemove={() => setForgetOpen(true)}
       />
 
       <EntityTabs
@@ -428,14 +372,6 @@ function DeviceDetail() {
           { key: 'jobs', label: 'Jobs', count: jobsCount },
           { key: 'monitor', label: 'Monitor' },
           { key: 'crashes', label: 'Crashes' },
-          // Agent-owned (cloud) devices have no local Inspector to attach to
-          // (plan 56 §2 non-goals) — disabled with a stated reason rather
-          // than a dead end (design.md's quality floor).
-          {
-            key: 'inspect',
-            label: 'Inspect',
-            ...(device.agentId ? { disabledReason: 'Inspecting an agent-owned device is not available yet.' } : {}),
-          },
           // Hidden entirely when the farm switches the terminal off (plan 26
           // §5, 26.1) — server-authoritative either way: even a forced
           // `tab=terminal` in the address bar still gets refused by the WS
@@ -443,6 +379,7 @@ function DeviceDetail() {
           ...(shellMode === 'off' ? [] : [{ key: 'terminal', label: 'Terminal' }]),
           ...(transferEnabled ? [{ key: 'files', label: 'Files' }] : []),
           { key: 'network', label: 'Network' },
+          { key: 'identity', label: 'Identity' },
           { key: 'logs', label: 'Logs' },
           { key: 'settings', label: 'Settings' },
         ]}
@@ -461,140 +398,35 @@ function DeviceDetail() {
       )}
 
       <TabPanel active={tab === 'control'}>
-        <div className="grid gap-4 px-5 py-4 xl:grid-cols-[1fr_18rem]">
-          <div className="min-w-0 space-y-3">
-            {/* One line of control status, three possibilities — always in the
-                same place so nobody has to hunt for it. */}
-            <div
-              className={cn(
-                'rounded-lg border px-3.5 py-2.5 text-[12.5px] leading-relaxed transition-colors',
-                busy
-                  ? 'border-led-active/40 bg-led-active/5 text-led-active'
-                  : iHoldControl
-                    ? 'border-led-ok/35 bg-led-ok/5'
-                    : heldByOther && holder && hoveredSessionId === holder.sessionId
-                      ? 'border-accent/40 bg-accent/5'
-                      : 'bg-surface text-fg-muted',
-              )}
-              role="status"
-            >
-              {busy ? (
-                <>An automation job is running. Video keeps streaming, but input stays off until the job finishes.</>
-              ) : heldByOther ? (
-                // Derived from `device.viewers`, the same server-published fact
-                // the button reads (plan 31 §4.3) — no local inference, and the
-                // holder's name is hoverable so it lights up its row below too.
-                <span className="flex flex-wrap items-center gap-x-1">
-                  <span
-                    className="cursor-default rounded font-medium text-fg"
-                    onMouseEnter={() => holder && setHoveredSessionId(holder.sessionId)}
-                    onMouseLeave={() => setHoveredSessionId(null)}
-                  >
-                    {holderLabel}
-                  </span>
-                  <span>is controlling this device. You can keep watching; input stays off until they release it.</span>
-                </span>
-              ) : iHoldControl ? (
-                <span className="flex flex-wrap items-center gap-x-2">
-                  You have control.
-                  {secondsLeft !== null && (
-                    <span className="readout text-fg-muted">
-                      released automatically in {mmss(secondsLeft)} without activity
-                    </span>
-                  )}
-                </span>
-              ) : canTakeControl ? (
-                <>Take control before sending input. The core rejects taps and typing without a lease.</>
-              ) : (
-                <>This device is {DEVICE_LABEL[currentStatus]}. Manual control is only available once it is ready.</>
-              )}
-            </div>
-
-            <LiveView
-              deviceId={device.id}
-              inputEnabled={inputEnabled}
-              onActivity={noteActivity}
-              autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
-              active={tab === 'control'}
-            />
-          </div>
-
-          {/* Hardware facts sit beside the screen because they are read while
-              controlling — "is it hot, is the battery dying". Configuration
-              does not belong here; it has its own tab. */}
-          <aside>
-            <Panel title="hardware">
-              <dl className="space-y-1.5">
-                {/* Always shown, even unclustered — a field, not an omission (plan 22.0 §4.5). */}
-                <Row label="cluster" value={device.cluster ? device.cluster.name : 'Unclustered'} />
-                <Row label="stable id" value={device.stableId} />
-                <Row label="serial" value={device.serial} />
-                <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />
-                <Row
-                  label="screen"
-                  value={device.screenW && device.screenH ? `${device.screenW}×${device.screenH}` : '—'}
-                />
-                <Row label="density" value={device.density ? `${device.density} dpi` : '—'} />
-                {liveBattery && (
-                  <>
-                    <Row label="battery" value={`${liveBattery.level}%`} />
-                    {liveBattery.temperatureC !== null && liveBattery.temperatureC !== undefined && (
-                      <Row label="temperature" value={`${liveBattery.temperatureC.toFixed(1)}°C`} />
-                    )}
-                  </>
-                )}
-              </dl>
-            </Panel>
-
-            <ViewerList
-              viewers={viewers}
-              now={now}
-              mySessionId={mySessionId}
-              hoveredSessionId={hoveredSessionId}
-              onHoverSession={setHoveredSessionId}
-            />
-
-            <div className="mt-3 rounded-lg border bg-surface p-3.5">
-              <h2 className="rack-label mb-2.5">active engines</h2>
-              <dl className="space-y-2">
-                {ENGINE_ROWS.map((r) => {
-                  // The `inspection` row reports the EFFECTIVE engine, not
-                  // just what is configured (plan 34 §3.1, §4.6): a session
-                  // that fell back to `uiautomator-dump` is running the slow
-                  // path, and an operator who only sees "ui-server" here has
-                  // no way to know that.
-                  const fallback = r.key === 'inspection' ? inspectorFallback : null
-                  return (
-                    <div key={r.key}>
-                      <dt className="rack-label">{r.label}</dt>
-                      <dd className="mt-0.5 text-[12.5px] leading-snug">
-                        {fallback ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="cursor-default text-led-warn">
-                                {engineName(registry, r.reg, fallback.to)} (fallback)
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              Configured as {engineName(registry, r.reg, device[r.key])}, but this session dropped to{' '}
-                              {engineName(registry, r.reg, fallback.to)}: {fallback.reason}
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : (
-                          engineName(registry, r.reg, device[r.key])
-                        )}
-                      </dd>
-                    </div>
-                  )
-                })}
-              </dl>
-              <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
-                <Link href={`/device?id=${encodeURIComponent(device.id)}&tab=settings`}>Change</Link>
-              </Button>
-            </div>
-
-            <ClipboardCard deviceId={device.id} canSend={inputEnabled} />
-          </aside>
+        <div className="px-5 py-4">
+          {/* The Control tab is the screen and its controls, and nothing that
+              repeats them (plan 57 §3.2): the status banner that used to sit
+              here said "Take control before sending input" one screen region
+              away from the video footer's own "Input is off — watching only."
+              Only the job-running state carried something nothing else said,
+              and it is a badge on the card now. */}
+          <ScreenCard
+            deviceId={device.id}
+            mode={screenMode}
+            onModeChange={setMode}
+            // Agent-owned (cloud) devices have no local Inspector to attach to
+            // (plan 56 §2 non-goals) — disabled with a stated reason rather
+            // than a dead end (design.md's quality floor).
+            {...(device.agentId ? { inspectDisabledReason: 'Inspecting an agent-owned device is not available yet.' } : {})}
+            jobRunning={busy}
+            inputEnabled={inputEnabled}
+            // The same server-published fact every other panel on this page
+            // reads (plan 31 §4.3) — the inspector needs a manual lease
+            // (plan 56 §3.7), and the core checks it on every message
+            // regardless. This only decides what the panel says (plan 59 §3.1)
+            // and whether it holds an engine (§3.3).
+            canInspect={iHoldControl && !busy}
+            onTakeControl={() => void takeControl()}
+            {...(takeControlReason ? { takeControlDisabledReason: takeControlReason } : {})}
+            onActivity={noteActivity}
+            autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
+            visible={tab === 'control'}
+          />
         </div>
       </TabPanel>
 
@@ -644,10 +476,7 @@ function DeviceDetail() {
               action: (
                 <Button
                   disabled={scripts.length === 0}
-                  onClick={() => {
-                    setRunScript(scripts[0] ?? null)
-                    setRunOpen(true)
-                  }}
+                  onClick={() => setRunOpen(true)}
                 >
                   Run a script
                 </Button>
@@ -668,15 +497,6 @@ function DeviceDetail() {
       {tab === 'monitor' && <MonitorPane deviceId={device.id} />}
 
       {tab === 'crashes' && <CrashesPanel deviceId={device.id} />}
-
-      {tab === 'inspect' &&
-        (device.agentId ? (
-          <div className="px-5 py-4">
-            <ErrorState message="Inspecting an agent-owned device is not available yet." />
-          </div>
-        ) : (
-          <InspectorPanel deviceId={device.id} />
-        ))}
 
       {shellMode !== 'off' && (
         <TabPanel active={tab === 'terminal'}>
@@ -713,6 +533,10 @@ function DeviceDetail() {
 
       <TabPanel active={tab === 'network'}>
         <NetworkPanel deviceId={device.id} deviceLabel={device.label} canUse={iHoldControl && !busy} />
+      </TabPanel>
+
+      <TabPanel active={tab === 'identity'}>
+        <IdentityPanel deviceId={device.id} canUse={iHoldControl && !busy} />
       </TabPanel>
 
       <TabPanel active={tab === 'logs'}>
@@ -752,7 +576,8 @@ function DeviceDetail() {
       </TabPanel>
 
       <RunScriptDialog
-        script={runOpen ? runScript : null}
+        script={null}
+        scripts={runOpen ? scripts : undefined}
         devices={device ? [device] : []}
         initialDevice={device?.id ?? null}
         lockedDevice={device}
@@ -793,37 +618,6 @@ function TabPanel({ active, children }: { active: boolean; children: ReactNode }
       {children}
     </div>
   )
-}
-
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-surface p-3.5">
-      <h2 className="rack-label mb-2.5">{title}</h2>
-      {children}
-    </div>
-  )
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[12px] text-fg-muted">{label}</dt>
-      <dd className="readout min-w-0 truncate text-[12px]" title={value}>
-        {value}
-      </dd>
-    </div>
-  )
-}
-
-function engineName(registry: RegistryResponse | null, key: string, id: string): string {
-  const entries = registry?.[key as keyof RegistryResponse] as
-    | Array<{ id: string; displayName: string }>
-    | undefined
-  return entries?.find((e) => e.id === id)?.displayName ?? id
-}
-
-function mmss(seconds: number): string {
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 export default function DevicePage() {

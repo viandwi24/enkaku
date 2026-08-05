@@ -1,9 +1,9 @@
-import type { JobInfo, JobStatus } from '@enkaku/protocol'
+import type { JobDetail, JobInfo, JobStatus } from '@enkaku/protocol'
 import { canUseDevice } from '../auth/acl'
 import type { Role } from '../auth/service'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { ExecutorHost } from '../jobs/executor-host'
-import { rowToJobInfo, type JobCursor, type JobStore } from '../queue/job-store'
+import { rowToJobDetail, rowToJobInfo, type JobCursor, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -25,7 +25,12 @@ export interface JobService {
     actor?: { id: string; role: Role } | null
   }): JobInfo
   cancel(jobId: string): JobInfo
-  get(jobId: string): JobInfo | null
+  /**
+   * One job, in full (plan 60 §4.3) — including `result`, the script's own
+   * return value. `list` deliberately does not: a result can be large, and
+   * fifty of them is not what a list is for.
+   */
+  get(jobId: string): JobDetail | null
   list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null }): {
     jobs: JobInfo[]
     nextCursor: JobCursor | null
@@ -98,7 +103,7 @@ export function createJobService(deps: {
     get(jobId) {
       const row = deps.jobStore.get(jobId)
       if (!row) return null
-      return rowToJobInfo(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
+      return rowToJobDetail(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
     },
 
     list(filter) {

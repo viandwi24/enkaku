@@ -25,4 +25,18 @@ Two things the panel is explicit about, because scripts get bitten by them silen
 - `{ text }` and `{ desc }` compare **exactly**, after trimming — `{ text: 'Follow' }` never matches "Following".
 - `{ point }` never touches the inspector: it is a synthetic coordinate, always "truthy", and can never be used as an existence check. The panel offers it last, and only as a fallback when nothing else on the node has a usable id, description, or text.
 
+## When no selector reaches it
+
+Four shapes cannot address everything, and no amount of extra shapes would. On whoer.net the node holding the exit IP carries a resource id and **no text at all** — the text lives on a child — while the hostname beside it reads `FAST-INTERNET-103-186-169-250.solnet.net.id`: the same address with dashes for dots. Nothing selector-shaped reads that; ordinary TypeScript over the tree does.
+
+So a script can ask for the tree the Inspect panel is showing it:
+
+```ts
+const tree = await ctx.device.dump()
+```
+
+It returns the same `UiNode` root, children and all. **It costs 334–584 ms** (a `find` is around 80 ms), so fetch it once per screen and walk the result rather than calling it per assertion.
+
+`find` is the other half of the same honesty: a selector that only resolves to a viewport-sized container now returns `null` instead of a node whose centre is the middle of the page. If a `find` you expected to work starts coming back empty, the job log says which selector was rejected and what it matched — dump the tree and look.
+
 An agent-owned (cloud) device has no local inspector to attach to yet — the tab says so and stays disabled there; copy-paste from a locally enrolled device of the same build in the meantime.

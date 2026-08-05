@@ -38,6 +38,7 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     batchSeq: null,
     expiresAt: null,
     failureClass: null,
+    errorPhase: null,
     infraAttempts: 0,
     ...overrides,
   }

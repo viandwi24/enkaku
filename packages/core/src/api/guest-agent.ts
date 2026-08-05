@@ -5,6 +5,9 @@ import {
   Socks5RouteConfigSchema,
   CreateNetworkCredentialRequestSchema,
   GeoProviderResponseSchema,
+  DeviceIdentitySchema,
+  DeviceSettingsSchema,
+  defaultDeviceSettings,
   redactRouteConfig,
   renderStickyUsername,
   deriveHealth,
@@ -18,6 +21,7 @@ import {
   type RouteCheck,
   type EgressProbeResult,
   type GeoObservation,
+  type DeviceIdentity,
   type ShellResult,
 } from '@enkaku/protocol'
 import {
@@ -722,6 +726,15 @@ export interface GuestAgentRoutesHandle {
    * fire-and-forget call.
    */
   reconcileNetworkRoutes: () => Promise<void>
+  /**
+   * Plan 58 §4.5, §5.5 — lets `device-identity.ts` (a separate route file: identity is a
+   * device-settings extension, not part of the network route, plan 58 §3.1) run a guest-agent
+   * call through the EXACT SAME per-device session a network route already owns, instead of
+   * bootstrapping a second, independent one. Identical contract to `withEphemeralSession` above,
+   * which this wraps directly — see its doc comment for why sharing the session matters (plan 44
+   * §8b's "Bug 1": two independent bootstraps mint two tokens and invalidate each other).
+   */
+  withGuestAgentClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
 }
 
 export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRoutesHandle {
@@ -2208,5 +2221,12 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     throw err
   })
 
-  return { routes: app, revertNetwork, restoreDeviceRoute, handleDeviceOffline, reconcileNetworkRoutes }
+  return {
+    routes: app,
+    revertNetwork,
+    restoreDeviceRoute,
+    handleDeviceOffline,
+    reconcileNetworkRoutes,
+    withGuestAgentClient: (deviceId, fn) => withEphemeralSession(mustGet(deviceId), fn),
+  }
 }

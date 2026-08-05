@@ -538,6 +538,7 @@ export default defineScript({
 - **`params` is a Zod schema** → Studio auto-generates the input form.
 - **`waitFor` polls the inspector** (`ui-server`, fast), it is not a sleep.
 - **Selectors are layered** (stable → fragile): `{ id }` → `{ desc }` → `{ text }` → `{ point }`.
+- **`find` answers `null` when it cannot answer** (plan 60 §3.1). A selector that only resolves to a viewport-sized container is not a match: `tap` aims at a node's centre, so acting on one presses the middle of the page. The grammar stays at four shapes — `ctx.device.dump()` returns the whole tree (334–584 ms) for everything a selector cannot reach.
 - **Artifacts per job**: screenshots, logs, results, stored against the job id → auditable.
 
 ### 11.3 Trust model and isolation (HONEST CORRECTION in v0.2)

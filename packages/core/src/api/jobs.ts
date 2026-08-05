@@ -56,6 +56,13 @@ export function createJobRoutes(service: JobService, deps?: { log?: Logger }): H
     })
   })
 
+  /**
+   * The detail response carries `result` — the script's own return value
+   * (plan 60 §3.3, §4.3). It has been on the row since M4 and reached nobody:
+   * a farm whose scripts exist to report an exit IP, a version, or whether an
+   * element was there had no way to show what they reported. The list above
+   * still omits it on purpose.
+   */
   app.get('/:id', (c) => {
     const job = service.get(c.req.param('id'))
     if (!job) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)

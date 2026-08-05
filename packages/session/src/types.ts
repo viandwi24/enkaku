@@ -26,6 +26,16 @@ export interface DeviceSnapshot {
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff (Plan 17 §3.5). */
   standbyScreenOff?: boolean
+  /**
+   * DeviceSettings.identity (plan 58 §4.2) — the spoofed identity the device
+   * presents (timezone/locale/GPS). Carried so a session/job can read what the
+   * device claims to be, mirroring how `keepAwake`/`standbyScreenOff` flow.
+   */
+  identity?: {
+    timezone?: string
+    locale?: string
+    gps?: { lat: number; lng: number; accuracy?: number }
+  }
 }
 
 export interface DeviceSnapshotSource {

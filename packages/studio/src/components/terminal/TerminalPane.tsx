@@ -65,11 +65,17 @@ const HIGH_CONSEQUENCE_PATTERNS: RegExp[] = [
   /\breboot\b/i,
   /\bsvc\s+power\b/i,
   /\bsettings\s+put\s+global\s+adb_enabled\b/i,
-  /(^|[\s;&|])(stop|start)([\s;&|]|$)/i,
+  // Android's own `start`/`stop` restart the entire framework, so they belong
+  // here — but ONLY as a command in their own right. Anchoring to a separator
+  // rather than to any whitespace is what stops `am start -a … -d <url>` from
+  // being flagged: opening a page is not a device-wide act, and a warning that
+  // cries wolf on an everyday command teaches people to dismiss every warning.
+  /(^|[;&|]\s*)(stop|start)([\s;&|]|$)/i,
   /\brm\s+-rf\s+\//i,
 ]
 
-function isHighConsequence(cmd: string): boolean {
+/** Exported for `high-consequence.test.ts` — the patterns are easy to widen by accident. */
+export function isHighConsequence(cmd: string): boolean {
   return HIGH_CONSEQUENCE_PATTERNS.some((re) => re.test(cmd))
 }
 

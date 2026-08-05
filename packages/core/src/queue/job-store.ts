@@ -1,4 +1,4 @@
-import type { JobInfo, JobStatus } from '@enkaku/protocol'
+import type { JobDetail, JobInfo, JobStatus } from '@enkaku/protocol'
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
 import { devices, jobs, scripts, type JobRow } from '../db/schema'
@@ -31,7 +31,19 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
     // Plan 21 §4.1 — a plain integer column (unix seconds), like leaseExpiresAt,
     // not a Drizzle `timestamp` column, so no Date conversion here.
     expiresAt: row.expiresAt ?? null,
+    /** Plan 60 §3.4 — where a failure happened, so Summary can say it. */
+    errorPhase: row.errorPhase ?? null,
   }
+}
+
+/**
+ * One job in full, for the detail endpoint only (plan 60 §4.3): the same
+ * fields plus the script's own return value. `result` is a JSON column, so
+ * Drizzle hands it back already parsed — it is whatever the script returned
+ * and is deliberately not narrowed further.
+ */
+export function rowToJobDetail(row: JobRow, script?: { name: string; version: string } | null): JobDetail {
+  return { ...rowToJobInfo(row, script), result: row.result ?? null }
 }
 
 export interface ClaimedJob {
@@ -62,8 +74,16 @@ export interface JobStore {
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string }>
   /** Single-writer transaction: claim a queued job for an idle device (spec §10.3, plan 20 §4.2). */
   claimNext(jobTtlSec: number): ClaimedJob | null
-  /** `failureClass` (plan 36 §4.3) is only meaningful for `status: 'failed'`; omitted/undefined leaves the column untouched. */
-  finish(jobId: string, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string; failureClass?: string | null }): JobRow | null
+  /**
+   * `failureClass` (plan 36 §4.3) is only meaningful for `status: 'failed'`;
+   * omitted/undefined leaves the column untouched. So is `errorPhase` (plan
+   * 60 §3.4) — the script phase the failure happened in.
+   */
+  finish(
+    jobId: string,
+    status: 'success' | 'failed' | 'cancelled',
+    data: { result?: unknown; error?: string; failureClass?: string | null; errorPhase?: string | null },
+  ): JobRow | null
   cancelQueued(jobId: string): JobRow | null
   /**
    * Plan 36 §3.6, §4.3 — a batch member's infra failure returns to the
@@ -118,6 +138,7 @@ export function createJobStore(db: Db): JobStore {
         batchSeq: input.batchSeq ?? null,
         expiresAt: input.expiresAt ?? null,
         failureClass: null,
+        errorPhase: null,
         infraAttempts: 0,
       }
       db.insert(jobs).values(row).run()
@@ -238,6 +259,7 @@ export function createJobStore(db: Db): JobStore {
             ...(data.result !== undefined ? { result: data.result } : {}),
             ...(data.error !== undefined ? { error: data.error } : {}),
             ...(data.failureClass !== undefined ? { failureClass: data.failureClass } : {}),
+            ...(data.errorPhase !== undefined ? { errorPhase: data.errorPhase } : {}),
           })
           .where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
           .run(),

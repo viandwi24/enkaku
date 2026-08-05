@@ -97,6 +97,7 @@ function toJobRow(input: {
     batchSeq: input.batchSeq,
     expiresAt: input.expiresAt,
     failureClass: null,
+    errorPhase: null,
     infraAttempts: 0,
   }
 }

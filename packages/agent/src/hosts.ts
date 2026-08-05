@@ -335,7 +335,9 @@ export function createAgentHosts(deps: {
                 result: {
                   ok: result.ok,
                   ...(result.value !== undefined ? { value: result.value } : {}),
-                  ...(result.error ? { error: { code: result.error.code, message: result.error.message } } : {}),
+                  ...(result.error
+                    ? { error: { code: result.error.code, message: result.error.message, phase: result.error.phase } }
+                    : {}),
                 },
               },
             })

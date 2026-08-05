@@ -29,7 +29,7 @@ export interface RemoteJobBridge {
     attempt?: number
     log?: { level: string; source: string; msg: string; ts: number }
     artifact?: { label: string; kind: string; ext?: string; dataBase64: string }
-    result?: { ok: boolean; value?: unknown; error?: { code: string; message: string } }
+    result?: { ok: boolean; value?: unknown; error?: { code: string; message: string; phase?: string } }
   }): void
 }
 
@@ -118,6 +118,9 @@ export function createRemoteJobBridge(deps: {
           waiter.reject(
             Object.assign(new EnkakuError(err.code, err.message), {
               code: err.code === 'CANCELLED' ? 'job_cancelled' : err.code,
+              // Same as the local executor (plan 60 §3.4): a cloud job's
+              // Summary must be able to say where it failed too.
+              ...('phase' in err && err.phase ? { phase: err.phase } : {}),
             }),
           )
         }

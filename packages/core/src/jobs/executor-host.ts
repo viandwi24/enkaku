@@ -122,7 +122,11 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
     deps.onFinished()
   }
 
-  function settle(job: JobRow, status: 'success' | 'failed' | 'cancelled', data: { result?: unknown; error?: string; code?: string }) {
+  function settle(
+    job: JobRow,
+    status: 'success' | 'failed' | 'cancelled',
+    data: { result?: unknown; error?: string; code?: string; phase?: string },
+  ) {
     const entry = running.get(job.id)
     if (entry) {
       clearInterval(entry.heartbeat)
@@ -159,7 +163,15 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       }
     }
 
-    const updated = deps.jobStore.finish(job.id, status, { result: data.result, error: data.error, failureClass })
+    const updated = deps.jobStore.finish(job.id, status, {
+      result: data.result,
+      error: data.error,
+      failureClass,
+      // Plan 60 §3.4 — recorded so the Summary tab can say WHERE it failed.
+      // Only ever set from what the executor reported; a settle with no phase
+      // (an external finish, a cancel) leaves the column untouched.
+      ...(data.phase !== undefined ? { errorPhase: data.phase } : {}),
+    })
     deps.leases().clearJobLease(job.deviceId)
     deps.states.apply(job.deviceId, 'JOB_FINISHED')
     if (updated) deps.onJobStatus(rowToJobInfo(updated))
@@ -220,7 +232,14 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
           if (!running.has(job.id)) return
           const message = err instanceof Error ? err.message : String(err)
           const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : undefined
-          settle(job, code === 'job_cancelled' ? 'cancelled' : 'failed', { error: message, code })
+          // The script phase the failure happened in (plan 60 §3.4), attached
+          // by the script executor onto the error it throws.
+          const phase = err instanceof Error && 'phase' in err ? String((err as { phase: unknown }).phase) : undefined
+          settle(job, code === 'job_cancelled' ? 'cancelled' : 'failed', {
+            error: message,
+            code,
+            ...(phase && phase !== 'undefined' ? { phase } : {}),
+          })
         })
     },
 

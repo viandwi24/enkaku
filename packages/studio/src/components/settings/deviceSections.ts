@@ -17,6 +17,12 @@ const NAMED_GROUPS: readonly { id: string; title: string; keys: readonly string[
   { id: 'power', title: 'Power & readiness', keys: ['prep'] },
   { id: 'engines', title: 'Engines', keys: ['engines', 'input'] },
   { id: 'timing', title: 'Timing', keys: ['timing'] },
+  // Plan 58 §4.1, §5.7 — named on its own rather than falling into General: `identity` is a
+  // nested object (timezone/locale/gps), not a flat toggle like `autoReconnect`, and the device
+  // page also has a dedicated Identity tab (`IdentityPanel.tsx`) for it — this keeps the
+  // schema-driven Settings tab's fallback copy in one clearly-labelled place instead of dumping a
+  // nested object next to unrelated booleans.
+  { id: 'identity', title: 'Identity', keys: ['identity'] },
 ]
 
 /**

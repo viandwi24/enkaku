@@ -75,6 +75,7 @@ const deviceApi = {
     } as never),
   key: (code: unknown) => request<void>({ method: 'key', args: { code } } as never),
   find: (sel: unknown) => request<unknown>({ method: 'find', args: { sel } } as never),
+  dump: () => request<unknown>({ method: 'dump', args: {} } as never),
   waitFor: (sel: unknown, opts?: { timeout?: number; intervalMs?: number }) =>
     request<unknown>({
       method: 'waitFor',

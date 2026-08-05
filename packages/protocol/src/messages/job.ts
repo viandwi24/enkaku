@@ -75,8 +75,31 @@ export const JobInfoSchema = z.object({
   batchSeq: z.number().int().nullable().default(null),
   /** Plan 21 §3.3, §4.1 — unix seconds; null means "wait forever". */
   expiresAt: z.number().nullable().default(null),
+  /**
+   * Plan 60 §3.4, §4.4 — the script phase a failure happened in ('prepare' |
+   * 'run' | 'finish' | 'reset' | 'timeout' | 'acquire'), so "why did this
+   * fail" is answerable on the Summary tab instead of by reading the log.
+   * A free string rather than an enum: it carries whatever the runner
+   * reported, including the pre-script phases ('acquire') that are not part
+   * of the script's own lifecycle. Null for a job that never failed.
+   */
+  errorPhase: z.string().nullable().default(null),
 })
 export type JobInfo = z.infer<typeof JobInfoSchema>
+
+/**
+ * One job, in full (plan 60 §4.3). `result` is the script's own return value
+ * — documented since M4 as "Return value → jobs.result", stored on the row
+ * ever since, and until this plan visible only to whoever opened SQLite.
+ *
+ * Detail only, never the list: a result can be large, and fifty of them is
+ * not what a list is for.
+ */
+export const JobDetailSchema = JobInfoSchema.extend({
+  /** Whatever `run()` returned. `unknown` on purpose — a script may return anything JSON can carry. */
+  result: z.unknown(),
+})
+export type JobDetail = z.infer<typeof JobDetailSchema>
 
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
