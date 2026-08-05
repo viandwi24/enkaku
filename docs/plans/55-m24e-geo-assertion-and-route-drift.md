@@ -2,7 +2,7 @@
 
 > Status: implemented except the §5.8 geo stages — `matchGeoExpectation` compares at the narrowest declared level, `geo`/`dns`/`leak` are real checks rather than permanent `skip`s, exit history is kept per device, and `onGeoFail: 'hold'` reaches Plan 54's hold-closed through a new `route.hold` wire method.
 > **§5.8's geo/dns smoke stages are NOT added, deliberately.** Those checks are computed by the core, but `scripts/smoke-guest-agent.ts` talks straight to the agent's control socket and never starts a core — asserting them there would mean turning the smoke script into a core WS+REST client (lease acquisition is WS-only). That belongs in an integration test against a running core, not in the agent smoke script; Plan 50 §4.2's stage table should say so.
-> Ships: packages/protocol/src/network.ts (`matchGeoExpectation`), packages/probe-server/
+> Ships: packages/probe-server/src/location-source.ts
 > **Depends on:** Plan 51 (the checks and the egress probe), Plan 52 (sticky identity, which this measures), Plan 54 (hold-closed, which this can trigger).
 > **Spec references:** §7.9 (network layer), §17 (positioning).
 > **Completes:** Plan 51 §4.1's `geo` check, which shipped as a permanent `skip`.

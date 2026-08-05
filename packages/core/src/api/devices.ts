@@ -6,6 +6,8 @@ import {
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
+  type DeviceSettings,
+  type Readiness,
   type RegistryResponse,
   type ServerMessage,
   type ShellMode,
@@ -17,7 +19,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { deletedDevices, devices } from '../db/schema'
+import { deletedDevices, devices, discoveredDevices } from '../db/schema'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { BatteryMonitor } from '../device/battery'
 import type { DeviceLifecycle } from '../device/lifecycle'
@@ -25,6 +27,7 @@ import { staticReadinessFallback, type ReadinessManager } from '../device/readin
 import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
 import { assignDevices, unassignDevices } from '../clusters/membership'
+import { admitDevice } from '../registry/admission'
 import { clusterRefFor, loadClusterNames, rowToDeviceInfo } from '../registry/device-registry'
 import { loadDeviceTags, replaceDeviceTags } from '../registry/device-tags'
 import { saveForDevice } from '../runner/artifact-store'
@@ -89,6 +92,12 @@ const ReadinessSetBody = z.object({
   clientId: z.string().min(1).optional(),
 })
 
+/** `POST /discovered/:stableId/admit` (plan 56 §4.3) — every field optional; a bodyless call admits with the probed label. */
+const AdmitDeviceBodySchema = z.object({
+  label: z.string().trim().min(1).max(120).optional(),
+  clusterId: z.string().optional(),
+})
+
 export function createDeviceRoutes(deps: {
   db: Db
   registry: () => Promise<RegistryResponse>
@@ -135,6 +144,16 @@ export function createDeviceRoutes(deps: {
    * including the orchestrator (constructed before that mode's early return
    * in daemon.ts).
    */
+  /**
+   * Farm defaults, applied when a device is ADMITTED (plan 56 §4.3). They used
+   * to be applied by the registry on first enrolment; admission moved that
+   * moment, because the registry no longer creates rows.
+   */
+  /** Bring a just-admitted device online if it is currently connected (plan 56) — see `DeviceRegistry.admitted`. */
+  onAdmitted?: (stableId: string) => void
+  deviceDefaults?: () => DeviceSettings
+  /** `readiness.defaultDesired` (plan 43 §4.4) — a separate accessor for the same reason it is one in the registry. */
+  defaultDesiredReadiness?: () => Readiness
   lifecycle: DeviceLifecycle
   /** `device.removed` on Forget/Block (plan 47 §4.4) — the same broadcast the Studio fleet list already listens for, previously never sent by anything. */
   broadcast: (msg: ServerMessage) => void
@@ -180,6 +199,67 @@ export function createDeviceRoutes(deps: {
     const stableId = c.req.param('stableId')
     await deps.lifecycle.unblock(stableId, { userId: c.get('user')?.id ?? null })
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.unblock', target: stableId })
+    return c.json({ ok: true })
+  })
+
+  /**
+   * The Discovered tray (plan 56 §4.3). Static routes, mounted before `/:id`
+   * for the same shadowing reason as `/blocked` above.
+   *
+   * These are keyed on `stableId`, not on a device id, because a discovered
+   * phone has no device row — that is the entire point of the plan.
+   */
+  app.get('/discovered', requirePermission('device.settings'), (c) => {
+    const rows = deps.db.select().from(discoveredDevices).all()
+    return c.json({
+      discovered: rows
+        .map((r) => ({
+          stableId: r.stableId,
+          serial: r.serial,
+          label: r.label,
+          androidVersion: r.androidVersion,
+          firstSeen: r.firstSeen ? Math.floor(r.firstSeen.getTime() / 1000) : null,
+          lastSeen: r.lastSeen ? Math.floor(r.lastSeen.getTime() / 1000) : null,
+        }))
+        // Longest-waiting first: the tray is a queue of decisions, and the
+        // phone that has been waiting since Tuesday is the one to deal with.
+        .sort((a, b) => (a.firstSeen ?? 0) - (b.firstSeen ?? 0)),
+    })
+  })
+
+  app.post('/discovered/:stableId/admit', requirePermission('device.settings'), async (c) => {
+    const stableId = c.req.param('stableId')
+    const body = AdmitDeviceBodySchema.parse(await c.req.json().catch(() => ({})))
+    const row = admitDevice(deps.db, stableId, {
+      ...(body.label ? { label: body.label } : {}),
+      ...(body.clusterId ? { clusterId: body.clusterId } : {}),
+      ...(deps.deviceDefaults ? { deviceDefaults: deps.deviceDefaults } : {}),
+      ...(deps.defaultDesiredReadiness ? { defaultDesiredReadiness: deps.defaultDesiredReadiness } : {}),
+    })
+    if (!row) {
+      // Either blocked, or dismissed/admitted by someone else between the
+      // operator loading the tray and pressing the button. Both are "there is
+      // nothing here to admit", which is a 404 and not a server error.
+      return c.json({ error: { code: 'E_NOT_DISCOVERED', message: `no device awaiting admission with stableId ${stableId}` } }, 404)
+    }
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.admit', target: stableId })
+    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.admitted', meta: { stableId, label: row.label } })
+    deps.broadcast({ type: 'device.added', payload: rowToDeviceInfo(row) })
+    // Ask the registry to bring it online if the phone is plugged in right
+    // now; otherwise the card would read `disconnected` about a device on the
+    // desk until it was physically unplugged and replugged.
+    deps.onAdmitted?.(stableId)
+    return c.json({ device: rowToDeviceInfo(row) })
+  })
+
+  app.delete('/discovered/:stableId', requirePermission('device.settings'), (c) => {
+    const stableId = c.req.param('stableId')
+    // Dismiss is NOT a block (plan 56 §3.5): the entry goes away and the phone
+    // reappears the next time it connects. A dismissal that quietly persisted
+    // would be a block wearing a lighter word, and an operator who means
+    // "never again" already has a control that says exactly that.
+    deps.db.delete(discoveredDevices).where(eq(discoveredDevices.stableId, stableId)).run()
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.dismiss', target: stableId })
     return c.json({ ok: true })
   })
 
@@ -284,6 +364,10 @@ export function createDeviceRoutes(deps: {
         settings: parsedSettings.success ? parsedSettings.data : row.settings,
         quarantineReason: row.quarantineReason,
         ownerId: row.ownerId,
+        // Agent-owned (cloud) devices have no local Inspector to attach to
+        // (plan 56 §2 non-goals) — Studio uses this to disable the Inspect
+        // tab with a stated reason rather than let it dead-end at a refusal.
+        agentId: row.agentId,
       },
     })
   })

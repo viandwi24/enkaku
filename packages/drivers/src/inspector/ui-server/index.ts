@@ -1,5 +1,4 @@
-import type { Inspector, Selector, UiNode } from '@enkaku/protocol'
-import { matchSelector } from '../selector'
+import { matchSelector, type Inspector, type Selector, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from '../xml-parser'
 import { UiServerClient, UiServerClientError } from './client'
 import type { UiServerLauncher } from './launcher'
@@ -81,8 +80,24 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
   }
 
   async dump(): Promise<UiNode> {
-    const xml = await this.call(() => this.client.dumpWindowHierarchy(false))
-    return parseUiDump(xml)
+    try {
+      return parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+    } catch (err) {
+      // uiautomator's own `dumpWindowHierarchy` throws — in practice a
+      // NullPointerException — when the window it is asked about is
+      // mid-transition: straight after a wake, during an animation, on the
+      // keyguard. Observed on a moto g06 power (Android 15): the first dump
+      // after waking failed, the very next one returned 103 nodes in 584 ms.
+      //
+      // So the failure is retried once, and once only. A device that cannot
+      // dump twice in a row has a real problem, and looping would just hide
+      // it behind a spinner. `UI_SERVER_UNREACHABLE` is rethrown immediately
+      // instead — the watchdog is already restarting the server, and a retry
+      // 300 ms later would land in the same hole.
+      if (err instanceof UiServerClientError && err.code === 'UI_SERVER_UNREACHABLE') throw err
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      return parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+    }
   }
 
   async find(sel: Selector): Promise<UiNode | null> {

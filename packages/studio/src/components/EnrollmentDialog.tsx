@@ -18,6 +18,16 @@ import { cn } from '@/lib/utils'
  * to arrive and advances on its own; people used to have to guess whether it
  * had worked.
  */
+/**
+ * What the wizard saw. `admitted: false` means the phone reached the
+ * Discovered tray — connected, identified, and one deliberate step short of
+ * being a farm device (plan 56).
+ */
+interface Detected {
+  label: string
+  admitted: boolean
+}
+
 export function EnrollmentDialog({
   open,
   onOpenChange,
@@ -27,13 +37,18 @@ export function EnrollmentDialog({
   onOpenChange: (v: boolean) => void
   unauthorizedSerials: string[]
 }) {
-  const [detected, setDetected] = useState<string | null>(null)
+  const [detected, setDetected] = useState<Detected | null>(null)
 
   useEffect(() => {
     if (!open) return
     setDetected(null)
     const off = ws.on((m) => {
-      if (m.type === 'device.added') setDetected(m.payload.label)
+      // `device.discovered` is what a freshly connected phone now emits (plan
+      // 56): connecting no longer enrols, so waiting only for `device.added`
+      // would leave this wizard spinning forever while the phone sat in the
+      // Discovered tray — the step is done, and it must say so.
+      if (m.type === 'device.discovered') setDetected({ label: m.payload.label ?? m.payload.stableId, admitted: false })
+      if (m.type === 'device.added') setDetected({ label: m.payload.label, admitted: true })
     })
     return off
   }, [open])
@@ -69,12 +84,16 @@ export function EnrollmentDialog({
   )
 }
 
-function UsbSteps({ unauthorizedSerials, detected }: { unauthorizedSerials: string[]; detected: string | null }) {
+function UsbSteps({ unauthorizedSerials, detected }: { unauthorizedSerials: string[]; detected: Detected | null }) {
   const steps = [
     'On the phone: Settings → About phone → tap "Build number" seven times.',
     'Open Developer options and turn on USB debugging.',
     'Plug the phone into the machine running the core.',
     'The phone shows "Allow USB debugging?" — tick "Always allow", then tap Allow.',
+    // Plan 56: connecting is no longer the last step. Ending the list at
+    // "Allow" would tell an operator the job is done while the phone is still
+    // sitting in the tray, unusable and apparently ignored.
+    'Open Discovered and add the phone to the farm.',
   ]
 
   return (
@@ -101,7 +120,7 @@ function UsbSteps({ unauthorizedSerials, detected }: { unauthorizedSerials: stri
   )
 }
 
-function WirelessSteps({ detected }: { detected: string | null }) {
+function WirelessSteps({ detected }: { detected: Detected | null }) {
   const [host, setHost] = useState('')
   const [pairPort, setPairPort] = useState('')
   const [code, setCode] = useState('')
@@ -204,11 +223,13 @@ function WirelessSteps({ detected }: { detected: string | null }) {
   )
 }
 
-function DetectionStatus({ detected, waiting }: { detected: string | null; waiting: string }) {
+function DetectionStatus({ detected, waiting }: { detected: Detected | null; waiting: string }) {
   return detected ? (
     <p className="flex items-center gap-2 rounded border border-led-ok/30 bg-led-ok/5 px-2.5 py-2 text-[12.5px] text-led-ok">
       <Check className="size-4" aria-hidden />
-      {detected} is enrolled.
+      {detected.admitted
+        ? `${detected.label} is in the farm.`
+        : `${detected.label} is connected. Add it from Discovered to finish.`}
     </p>
   ) : (
     <p className="flex items-center gap-2 text-[12px] text-fg-subtle">

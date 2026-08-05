@@ -119,6 +119,30 @@ export const blockedDevices = sqliteTable('blocked_devices', {
 export type BlockedDeviceRow = typeof blockedDevices.$inferSelect
 
 /**
+ * Phones adb has seen that nobody has admitted to the farm yet (plan 56 §3.3).
+ *
+ * A separate table rather than a sixth `DeviceStatus` on purpose: `devices`
+ * rows ARE farm members — the scheduler picks from them, the lease manager
+ * leases them, the wall renders them. A status would mean every one of those
+ * paths has to remember to exclude it, a filter that must be right in a dozen
+ * places and only has to be wrong once to hand someone's personal phone to a
+ * job. Keyed on `stableId`, exactly like `blocked_devices` above, because
+ * identity is the hardware serial and not the adb address (spec §7.5).
+ */
+export const discoveredDevices = sqliteTable('discovered_devices', {
+  stableId: text('stable_id').primaryKey(),
+  /** Transport address at last sight — informational only; identity is `stableId`. */
+  serial: text('serial').notNull(),
+  /** Best-effort `ro.product.model`, so the tray reads as a phone and not a barcode. */
+  label: text('label'),
+  androidVersion: text('android_version'),
+  firstSeen: integer('first_seen', { mode: 'timestamp' }).notNull(),
+  lastSeen: integer('last_seen', { mode: 'timestamp' }).notNull(),
+})
+
+export type DiscoveredDeviceRow = typeof discoveredDevices.$inferSelect
+
+/**
  * Just enough to label a dangling reference (plan 47 §3.4): forgetting a
  * device removes its `devices` row but deliberately keeps `jobs`,
  * `artifacts`, and `device_events` pointing at the old `deviceId` — this

@@ -38,6 +38,10 @@ export const MAIN_EVENT_KINDS = [
   'device.artifact.mismatch',
   /** `desired` readiness changed, by a human or a policy (plan 43 §4.5) — carries { from, to }. */
   'device.readiness',
+  /** The inspector engine was started (or joined) for the Inspect tab (plan 56 §3.7) — carries { engineId }. Individual dumps are NOT recorded here (§3.7): they are reads, many per minute, and would drown the log. */
+  'inspect.attached',
+  /** The last Inspect tab viewer left and the inspector engine was released (plan 56 §3.7). */
+  'inspect.detached',
 ] as const
 
 /** Input-stream kinds (§4.2). */

@@ -1,7 +1,7 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, jobs, type DeviceRow } from '../db/schema'
+import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
@@ -36,10 +36,12 @@ export interface BlockedDevice {
 }
 
 /**
- * Device lifecycle (plan 47 §4.3): two verbs, not one (§3.2) — a plain
- * delete cannot work for a device that is still physically connected, since
- * the registry would re-insert it within milliseconds with a fresh id,
- * losing its tags and cluster while the clutter stays.
+ * Device lifecycle (plan 47 §4.3): two verbs, not one.
+ *
+ * They no longer differ in what they CAN remove — plan 56 made forget work on
+ * a connected device too, since an unadmitted phone falls into the Discovered
+ * tray instead of being re-enrolled. They differ in what they MEAN: forget
+ * takes a device out of the farm and lets it ask again; block says never.
  */
 export interface DeviceLifecycle {
   forget(deviceId: string, opts: { deleteHistory: boolean; actor: Actor }): Promise<ForgetResult>
@@ -55,6 +57,19 @@ export interface DeviceLifecycleDeps {
   leases: LeaseManager
   /** Main-stream device events: device.forgotten / device.blocked (plan 47 §3.5, §18 §4.2 pattern). No event for unblock — see the comment on `unblock` below. */
   record?: EventRecorder['record']
+  /**
+   * Tears down a network route because the OPERATOR explicitly removed this
+   * device (plan 56 §3.6). `GuestAgentRoutesHandle.revertNetwork`, which is
+   * documented for exactly this: an operator's explicit act, never an
+   * automatic reaction to a lease ending or a device going quiet.
+   *
+   * That distinction is the whole safety argument. A core that crashes,
+   * disconnects, or simply stops talking must leave the tunnel HELD CLOSED —
+   * that is the dead-man's switch's job (plan 54), it is verified on hardware,
+   * and nothing here touches it. Only a human saying "remove this device"
+   * reaches this call.
+   */
+  revertNetwork?: (deviceId: string, actor?: string | null) => Promise<void>
   log: Logger
 }
 
@@ -86,13 +101,15 @@ function checkRemovable(
   if (status === 'manual' || (lease && lease.type === 'manual')) {
     return { ok: false, code: 'device_in_use', message: `${row.label} has an active manual lease — release control first` }
   }
-  if (op === 'forget' && status !== 'offline' && status !== 'quarantined') {
-    // 'idle' (online) — the only remaining live status once busy/manual are
-    // ruled out. Forgetting it would be pointless (§3.2): the registry would
-    // re-insert it within milliseconds, with a fresh id, losing its tags and
-    // cluster while the clutter stays. Block is the supported path instead.
-    return { ok: false, code: 'device_online', message: `${row.label} is still connected; block it instead` }
-  }
+  // Forgetting a CONNECTED device used to be refused here, with a one-click
+  // offer to block instead, because the registry would have re-enrolled it
+  // within milliseconds and the delete would have achieved nothing.
+  //
+  // Plan 56 removed that premise: an unadmitted phone now lands in the
+  // Discovered tray rather than back in the fleet. So forget is allowed at
+  // any status, and an operator who only wants a device OUT of the farm no
+  // longer has to declare it permanently unwelcome to get there. Block still
+  // exists and still means "never again" — a different sentence.
   return { ok: true }
 }
 
@@ -129,6 +146,41 @@ function countArtifacts(db: Db, deviceId: string, jobIds: string[]): number {
 export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycle {
   const { db, leases, log } = deps
 
+  /**
+   * Takes the device's network route down before it stops being a device.
+   *
+   * Ordering is the point: the route must be released while the row still
+   * exists, because everything that knows how to reach the phone is keyed on
+   * it. Removing the row first is what stranded a tunnel on a phone with no
+   * record of who put it there.
+   *
+   * A failure here does NOT abort the removal. Refusing would rebuild the very
+   * trap this work removed — an operator unable to get a device out of the
+   * farm. And the failure mode is safe on its own: a route that could not be
+   * torn down stays held closed by the device's own dead-man's switch, so the
+   * phone blocks traffic rather than leaking it. Blocked-and-noisy is an
+   * acceptable outcome; leaking quietly is not. It is recorded either way, so
+   * the state is answerable later instead of invisible.
+   */
+  async function releaseRoute(row: DeviceRow, actor: Actor): Promise<void> {
+    if (!deps.revertNetwork) return
+    try {
+      await deps.revertNetwork(row.id, actor.userId)
+    } catch (err) {
+      log.warn(
+        `could not take the network route down for ${row.label} (${row.stableId}) before removing it: ${String(err)} — ` +
+          'the device holds its route closed until it is admitted again, so it blocks traffic rather than leaking',
+      )
+      deps.record?.({
+        deviceId: row.id,
+        stream: 'main',
+        kind: 'network.orphaned',
+        actor: actor.userId,
+        meta: { stableId: row.stableId, reason: String(err) },
+      })
+    }
+  }
+
   const mustGet = (deviceId: string): DeviceRow => {
     const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
     if (!row) throw new EnkakuError('device_not_found', `no such device: ${deviceId}`)
@@ -147,6 +199,9 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
       const row = mustGet(deviceId)
       const check = checkRemovable('forget', row, leases)
       if (!check.ok) throw new EnkakuError(check.code, check.message)
+
+      // Before the row goes: hand the phone back its own network.
+      await releaseRoute(row, opts.actor)
 
       let counts: HistoryCounts | null = null
       // ONE transaction (plan 47 §4.3): the check above already ran, so
@@ -174,6 +229,29 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         // §3.2) — deleting the row itself is the whole of "clear cluster
         // membership"; there is no separate membership table to also clean.
         tx.delete(devices).where(eq(devices.id, row.id)).run()
+        // A device forgotten while still plugged in has somewhere to go now
+        // (plan 56 §3.2): straight into the Discovered tray, in the same
+        // transaction, so it never spends an instant belonging to nothing.
+        // Without this the phone would stay invisible until it was unplugged
+        // and replugged, which is precisely the dead end that made blocking
+        // feel like the only way out.
+        if ((row.status ?? 'offline') !== 'offline') {
+          const now = new Date()
+          tx.insert(discoveredDevices)
+            .values({
+              stableId: row.stableId,
+              serial: row.serial,
+              label: row.label,
+              androidVersion: row.androidVersion,
+              firstSeen: now,
+              lastSeen: now,
+            })
+            .onConflictDoUpdate({
+              target: discoveredDevices.stableId,
+              set: { serial: row.serial, label: row.label, androidVersion: row.androidVersion, lastSeen: now },
+            })
+            .run()
+        }
       })
 
       log.info(`device forgotten: ${row.label} (${row.stableId})${opts.deleteHistory ? ' with history' : ''}`)
@@ -192,6 +270,11 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
       const row = mustGet(deviceId)
       const check = checkRemovable('block', row, leases)
       if (!check.ok) throw new EnkakuError(check.code, check.message)
+
+      // Block removes the device too, so it strands a route exactly the same
+      // way forget does — and a blocked phone is never coming back to be
+      // cleaned up later, which makes this the more important of the two.
+      await releaseRoute(row, opts.actor)
 
       const blockedAt = new Date()
       const reason = opts.reason ?? null

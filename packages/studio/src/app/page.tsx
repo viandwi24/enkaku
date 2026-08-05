@@ -2,10 +2,11 @@
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { LayoutGrid, List, Plus, Search, Smartphone, Trash2, Upload } from 'lucide-react'
+import { Inbox, LayoutGrid, List, Plus, Search, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import type { ClusterInfo, DeviceInfo, DeviceStatus, JobInfo, Readiness } from '@enkaku/protocol'
 import { DeviceCard } from '@/components/DeviceCard'
+import { DiscoveredTray } from '@/components/DiscoveredTray'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
@@ -17,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, useAction } from '@/lib/actions'
-import { fetchAllPages, fetchDevices } from '@/lib/api'
+import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -83,7 +84,15 @@ function DashboardView() {
   const [forgetTarget, setForgetTarget] = useState<DeviceInfo | null>(null)
   const [forgetOpen, setForgetOpen] = useState(false)
   const [bulkForgetOpen, setBulkForgetOpen] = useState(false)
+  // Discovered tray (plan 56 §4.5): phones adb has seen that nobody has
+  // admitted yet. Its own entry point, not a third List/Wall view — it is
+  // rendered only once `discovered.length > 0` so an empty tray costs
+  // nothing visually.
+  const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([])
+  const [trayOpen, setTrayOpen] = useState(false)
   const { run } = useAction()
+
+  const loadDiscovered = () => void fetchDiscoveredDevices().then(setDiscovered).catch(() => undefined)
 
   const load = async () => {
     setError(null)
@@ -110,10 +119,20 @@ function DashboardView() {
 
   useEffect(() => {
     void load()
+    loadDiscovered()
     const off = ws.on((m) => {
-      if (m.type === 'device.added' || m.type === 'device.removed' || m.type === 'device.status') void load()
+      if (m.type === 'device.added') {
+        void load()
+        // Admitted here or by another operator — either way it just left the tray.
+        loadDiscovered()
+      } else if (m.type === 'device.removed' || m.type === 'device.status') void load()
       else if (m.type === 'job.status') void load()
-      else if (m.type === 'device.battery') {
+      else if (m.type === 'device.discovered') {
+        // The REST snapshot is the source of truth for the tray: this payload
+        // carries no `firstSeen`/`lastSeen` (plan 56 §4.4), and the count has
+        // to move live the same way the fleet list already does from `device.added`.
+        loadDiscovered()
+      } else if (m.type === 'device.battery') {
         setDevices((prev) =>
           prev
             ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, battery: m.payload.battery } : d))
@@ -342,6 +361,15 @@ function DashboardView() {
                   Select devices
                 </Button>
               ))}
+            {/* Discovered tray entry point (plan 56 §4.5) — deliberately
+                absent, not disabled, when the tray is empty: a queue with
+                nothing in it should cost nothing visually. */}
+            {discovered.length > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setTrayOpen(true)}>
+                <Inbox className="size-3.5" aria-hidden />
+                Discovered ({discovered.length})
+              </Button>
+            )}
             <Button size="sm" onClick={() => setEnrollOpen(true)}>
               <Plus className="size-4" aria-hidden />
               Add device
@@ -506,6 +534,17 @@ function DashboardView() {
           <ErrorState message={error} onRetry={load} />
         ) : devices === null ? (
           <LoadingRows rows={4} />
+        ) : devices.length === 0 && discovered.length > 0 ? (
+          // The farm is empty but a phone IS plugged in, waiting to be
+          // admitted (plan 56). Telling that operator to "plug in a phone"
+          // would be answering a question they did not ask, about a thing
+          // they already did.
+          <EmptyState
+            icon={<Smartphone className="size-4" aria-hidden />}
+            title={discovered.length === 1 ? 'One phone is waiting to be added' : `${discovered.length} phones are waiting to be added`}
+            description={<>Connecting a phone does not add it to the farm. Open Discovered to name it and add it.</>}
+            action={<Button onClick={() => setTrayOpen(true)}>Open Discovered</Button>}
+          />
         ) : devices.length === 0 ? (
           <EmptyState
             icon={<Smartphone className="size-4" aria-hidden />}
@@ -584,6 +623,16 @@ function DashboardView() {
         )}
       </div>
 
+      <DiscoveredTray
+        discovered={discovered}
+        clusters={clusters}
+        open={trayOpen}
+        onOpenChange={setTrayOpen}
+        onChanged={() => {
+          loadDiscovered()
+          void load()
+        }}
+      />
       <EnrollmentDialog open={enrollOpen} onOpenChange={setEnrollOpen} unauthorizedSerials={unauthorized} />
       <InstallBatchDialog
         open={installBatchOpen}

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, clusters, deletedDevices, deviceEvents, deviceTags, devices, jobs } from '../db/schema'
+import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs } from '../db/schema'
 import { createJobStore } from '../queue/job-store'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
@@ -72,15 +72,16 @@ describe('checkRemovable — the §3.5 safety matrix', () => {
     expect(checkRemovable('block', row, leases).ok).toBe(false)
   })
 
-  test('device online, idle: forget refused (offering block), block allowed', () => {
+  test('device online, idle: BOTH forget and block are allowed (plan 56 §3.2)', () => {
+    // This used to refuse forget and offer block instead, because the registry
+    // would have re-enrolled the device immediately. Plan 56 removed that
+    // premise — an unadmitted phone falls into the Discovered tray — so an
+    // operator who wants a device out of the farm no longer has to declare it
+    // permanently unwelcome to get there.
     const { db, leases } = setUp()
     seedDevice(db, 'd1', 'idle')
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(checkRemovable('forget', row, leases)).toEqual({
-      ok: false,
-      code: 'device_online',
-      message: expect.stringContaining('block it instead'),
-    })
+    expect(checkRemovable('forget', row, leases)).toEqual({ ok: true })
     expect(checkRemovable('block', row, leases)).toEqual({ ok: true })
   })
 
@@ -130,15 +131,122 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     )
   })
 
-  test('forgetting an online, idle device is refused and touches nothing', async () => {
+  test('forgetting an online device returns it to the tray instead of demanding a block (plan 56 §3.2)', async () => {
     const { db, lifecycle } = setUp()
     seedDevice(db, 'd1', 'idle')
-    await expect(lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })).rejects.toMatchObject({
-      code: 'device_online',
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })
+
+    // Out of the farm...
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()).toBeUndefined()
+    // ...and waiting to be admitted again, immediately — not invisible until
+    // someone unplugs and replugs the phone.
+    const pending = db.select().from(discoveredDevices).all()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.stableId).toBe('stable-d1')
+    // And emphatically NOT blocked: forget and block stay different sentences.
+    expect(db.select().from(blockedDevices).all()).toHaveLength(0)
+  })
+
+  test('forgetting an OFFLINE device does not put it in the tray — nothing is connected to discover', async () => {
+    const { db, lifecycle } = setUp()
+    seedDevice(db, 'd1', 'offline')
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })
+
+    expect(db.select().from(devices).all()).toHaveLength(0)
+    expect(db.select().from(discoveredDevices).all()).toHaveLength(0)
+  })
+
+  test('removing a device takes its network route down first, while the row still exists', async () => {
+    // Ordering is the whole fix: everything that knows how to reach the phone
+    // is keyed on the device row. Deleting it first is what stranded a tunnel
+    // on a phone with no record of who put it there.
+    const calls: Array<{ deviceId: string; rowStillThere: boolean }> = []
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
     })
-    // Nothing half-removed: the row is exactly as it was before the attempt.
-    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
-    expect(row?.status).toBe('idle')
+    const lifecycle = createDeviceLifecycle({
+      db,
+      leases,
+      log,
+      revertNetwork: async (deviceId) => {
+        calls.push({ deviceId, rowStillThere: db.select().from(devices).where(eq(devices.id, deviceId)).get() !== undefined })
+      },
+    })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+
+    expect(calls).toEqual([{ deviceId: 'd1', rowStillThere: true }])
+  })
+
+  test('block takes the route down too — a blocked phone never comes back to be cleaned up later', async () => {
+    const calls: string[] = []
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const lifecycle = createDeviceLifecycle({ db, leases, log, revertNetwork: async (id) => void calls.push(id) })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.block('d1', { actor: { userId: 'u1' } })
+
+    expect(calls).toEqual(['d1'])
+  })
+
+  test('a teardown that fails still removes the device, and says so — blocked-and-noisy beats leaking quietly', async () => {
+    // Refusing here would rebuild the trap this work removed: an operator
+    // unable to get a device out of the farm. And the failure is safe on its
+    // own — a route that could not be torn down stays held closed by the
+    // device's own dead-man's switch (verified on hardware), so the phone
+    // blocks traffic rather than leaking it.
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const events: Recorded[] = []
+    const lifecycle = createDeviceLifecycle({
+      db,
+      leases,
+      log,
+      record: (e) => events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta }),
+      revertNetwork: async () => {
+        throw new Error('device unreachable')
+      },
+    })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()).toBeUndefined()
+    // Not silent: the stranded route is answerable later instead of invisible.
+    expect(events).toContainEqual(expect.objectContaining({ deviceId: 'd1', kind: 'network.orphaned' }))
   })
 
   test('forgetting a busy device is refused', async () => {

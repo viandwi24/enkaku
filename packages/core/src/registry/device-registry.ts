@@ -2,13 +2,14 @@ import type { AdbClient, TrackerEvent } from '@enkaku/adb'
 import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type Readiness } from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
-import { blockedDevices, clusters, devices, deviceEvents, type DeviceRow } from '../db/schema'
+import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import { staticReadinessFallback } from '../device/readiness'
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
 import { loadDeviceTags } from './device-tags'
+import { classify, recordSighting } from './admission'
 import type { EventRecorder } from '../events/recorder'
 
 export interface DeviceRegistryDeps {
@@ -43,6 +44,13 @@ export interface DeviceRegistry {
   stop(): Promise<void>
   listDevices(): DeviceInfo[]
   deviceCount(): number
+  /**
+   * A device was just admitted from the Discovered tray (plan 56). If that
+   * phone is connected right now, bring it online immediately instead of
+   * waiting for the next tracker event — which, for a phone that never gets
+   * unplugged, may never come.
+   */
+  admitted(stableId: string): void
 }
 
 /**
@@ -204,9 +212,47 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       // or a switch to adb-tcp, both of which change only the serial. Logged
       // once at `debug` (not `info`) since a blocked device reappearing is
       // expected, ongoing behaviour, not a noteworthy event.
-      const blocked = db.select({ stableId: blockedDevices.stableId }).from(blockedDevices).where(eq(blockedDevices.stableId, probe.stableId)).get()
-      if (blocked) {
+      //
+      // Admission (plan 56 §4.2) folds that block check into one decision, so
+      // the three outcomes live in a single place rather than as separate
+      // guards that could drift apart.
+      const admission = classify(db, probe.stableId)
+      if (admission === 'blocked') {
         log.debug(`skipping blocked device ${probe.stableId} (serial ${serial}) — not probing further`)
+        return
+      }
+      if (admission === 'discovered') {
+        // Seen, identified, and deliberately NOT enrolled: no `devices` row
+        // means nothing to schedule, nothing to lease, and nothing for the
+        // wall to draw. It waits in the tray until someone admits it.
+        const firstSighting = !db
+          .select({ stableId: discoveredDevices.stableId })
+          .from(discoveredDevices)
+          .where(eq(discoveredDevices.stableId, probe.stableId))
+          .get()
+        recordSighting(db, {
+          stableId: probe.stableId,
+          serial,
+          label: probe.model ?? null,
+          androidVersion: probe.androidVersion ?? null,
+        })
+        serialToStableId.set(serial, probe.stableId)
+        hub.broadcast({
+          type: 'device.discovered',
+          payload: {
+            stableId: probe.stableId,
+            serial,
+            label: probe.model ?? null,
+            androidVersion: probe.androidVersion ?? null,
+          },
+        })
+        // `info` on the first sighting only. A phone that is plugged in daily
+        // and never admitted should not narrate itself into the log forever.
+        if (firstSighting) {
+          log.info(`device discovered, awaiting admission: ${probe.model ?? probe.stableId} (${probe.stableId}) via ${serial}`)
+        } else {
+          log.debug(`device ${probe.stableId} seen again, still awaiting admission`)
+        }
         return
       }
       const now = new Date()
@@ -328,6 +374,24 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     },
     deviceCount() {
       return db.select().from(devices).all().length
+    },
+    admitted(stableId) {
+      // A phone admitted from the tray (plan 56) is usually plugged in RIGHT
+      // NOW — but the tracker only speaks on change, so without this the new
+      // device would sit there reading `disconnected` until someone unplugged
+      // and replugged it. A card that says disconnected about a phone on the
+      // desk is worse than no card.
+      //
+      // `serialToStableId` is the live view of what adb currently reports, so
+      // it answers "is this phone actually here?" without a probe. Re-running
+      // `onOnline` then takes the ordinary enrolment path, which now upserts
+      // and transitions rather than discovering, because the row exists.
+      for (const [serial, sid] of serialToStableId) {
+        if (sid === stableId) {
+          void onOnline(serial)
+          return
+        }
+      }
     },
   }
 }

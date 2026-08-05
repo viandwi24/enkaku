@@ -68,6 +68,36 @@ export function deviceRefLabel(ref: DeviceRef | undefined, fallbackId: string): 
   return ref.label ?? ref.stableId
 }
 
+// ---- Discovered devices (plan 56 §4.3, §4.5) ----
+
+/**
+ * A phone adb has seen that nobody has admitted to the farm yet (plan 56
+ * §3.3, §4.1). Deliberately not a `DeviceInfo` — it has no id, no status, no
+ * cluster: there is no `devices` row behind it at all. Mirrors the WS
+ * `device.discovered` payload plus the two timestamps only this REST
+ * snapshot carries (`firstSeen` is what makes the tray a queue: longest
+ * waiting first).
+ */
+export interface DiscoveredDevice {
+  stableId: string
+  serial: string
+  /** `ro.product.model`, when the probe could read it. */
+  label: string | null
+  androidVersion: string | null
+  /** Unix seconds. */
+  firstSeen: number | null
+  /** Unix seconds. */
+  lastSeen: number | null
+}
+
+/** `GET /api/devices/discovered` — the core returns it longest-waiting first. */
+export async function fetchDiscoveredDevices(): Promise<DiscoveredDevice[]> {
+  const res = await fetch(`${coreBase()}/api/devices/discovered`)
+  if (!res.ok) throw new Error(`GET /api/devices/discovered → ${res.status}`)
+  const body = (await res.json()) as { discovered: DiscoveredDevice[] }
+  return body.discovered
+}
+
 export interface HealthResponse {
   ok: boolean
   version: string

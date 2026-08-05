@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 export interface EntityTab {
@@ -8,6 +9,13 @@ export interface EntityTab {
   label: string
   /** Shown as a small count next to the label, like GitHub's issue counts. */
   count?: number | null
+  /**
+   * When set, the tab renders disabled (not a dead-looking but still
+   * clickable link — design.md's quality floor) with this text in a
+   * tooltip explaining why (plan 56 §5.8 — an agent-owned device has no
+   * local inspector to attach to).
+   */
+  disabledReason?: string
 }
 
 /**
@@ -37,6 +45,22 @@ export function EntityTabs({
       <nav className="-mb-px flex gap-1" aria-label="Sections">
         {tabs.map((t) => {
           const isActive = t.key === active
+          if (t.disabledReason) {
+            return (
+              <Tooltip key={t.key}>
+                <TooltipTrigger asChild>
+                  <span
+                    tabIndex={0}
+                    aria-disabled="true"
+                    className="flex cursor-not-allowed items-center gap-2 border-b-2 border-transparent px-3 py-2.5 text-[13px] text-fg-subtle"
+                  >
+                    {t.label}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{t.disabledReason}</TooltipContent>
+              </Tooltip>
+            )
+          }
           return (
             <Link
               key={t.key}

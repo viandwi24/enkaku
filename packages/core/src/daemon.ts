@@ -254,6 +254,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // handled below in `onManualRevoked`, which fires before the WS router
       // exists.
       let releaseShellSession: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: a device going offline must clear its
+      // Inspect tab ref-count bookkeeping (plan 56 §4.2 step 7) — the
+      // inspector itself is already released as part of the session's own
+      // `close()`, this only resets what the WS router tracks so a later
+      // `inspect.attach` does not inherit a stale count.
+      let resetInspectForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a manual lease's readiness hold (plan 43
       // §5 step 43.7) must not outlive the lease however it ends either —
       // an explicit `lease.release`/WS disconnect already release it inline
@@ -670,11 +676,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // on `db` and `leases`, both of which exist in every mode, including
       // the orchestrator (this line runs before that mode's early return,
       // further below in this function).
+      /**
+       * Bound once `createGuestAgentRoutes` exists, further down this same
+       * boot — the lifecycle is constructed well before it. Null until then,
+       * which is correct rather than merely convenient: nothing can have a
+       * route before the network subsystem is up, so there is nothing to take
+       * down (plan 56 §3.6).
+       */
+      let revertNetworkForRemoval: ((deviceId: string, actor?: string | null) => Promise<void>) | null = null
       const deviceLifecycle = createDeviceLifecycle({
         db,
         leases,
         record: recorder!.record,
         log: log.child('device-lifecycle'),
+        // An operator removing a device hands the phone its network back
+        // (plan 56 §3.6). Deliberate acts only — a core that crashes or goes
+        // quiet must still leave the tunnel HELD CLOSED, which is the device's
+        // own dead-man's switch (plan 54) and is untouched by this.
+        revertNetwork: (deviceId, actor) => revertNetworkForRemoval?.(deviceId, actor) ?? Promise.resolve(),
       })
 
       // Device readiness (plan 43): a second, orthogonal axis to
@@ -877,6 +896,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       handleNetworkDeviceOffline = guestAgent.handleDeviceOffline
       restoreNetworkRoute = guestAgent.restoreDeviceRoute
+      // An operator removing a device now hands the phone its network back
+      // (plan 56 §3.6). Deliberate acts only: a core that crashes or goes
+      // quiet still leaves the tunnel held closed by the device's own
+      // dead-man's switch, which nothing here touches.
+      revertNetworkForRemoval = guestAgent.revertNetwork
 
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
@@ -898,6 +922,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           audit,
           dataDir: cfg.dataDir,
           record: recorder!.record,
+          // Farm defaults now land at admission rather than at first sight
+          // (plan 56 §4.3) — same accessors the registry is given below, so
+          // the two cannot disagree about what a new device inherits.
+          deviceDefaults: () => settingsStore.get().defaults,
+          defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
+          // `registry` is assigned later in boot, so this reads it at call
+          // time rather than capturing a null — admitting a device cannot
+          // happen before the registry exists anyway.
+          onAdmitted: (stableId) => registry?.admitted(stableId),
           // Presence's snapshot half (plan 31 §3.4): `/ws` has no replay, so a
           // client GETs the current list before subscribing to `device.viewers`.
           viewersOf: (deviceId) => viewersOfDevice?.(deviceId) ?? [],
@@ -1168,6 +1201,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         viewersOfDevice = handler.viewersOf
         stopMonitorsForDevice = handler.stopMonitorsForDevice
         releaseShellSession = handler.releaseShellSession
+        resetInspectForDevice = handler.resetInspectForDevice
         releaseLeaseReadinessHold = handler.releaseLeaseHold
         watchCrashesForDevice = handler.watchDevice
         unwatchCrashesForDevice = handler.unwatchDevice
@@ -1455,6 +1489,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // force-dropped outside the lease manager's own bookkeeping
             // (plan 26 §3.7, §4.4) — harmless if there was none.
             releaseShellSession?.(deviceId)
+            // Nor a stale Inspect tab ref count (plan 56 §4.2 step 7) — the
+            // inspector engine itself already went down with the session.
+            resetInspectForDevice?.(deviceId)
             // A device that just went offline cannot usefully carry an adb
             // endpoint either (plan 27 §4.2) — the smartsocket backend it
             // bridges to is gone regardless of whether the lease itself

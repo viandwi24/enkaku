@@ -1,8 +1,10 @@
 import type { ServerWebSocket } from 'bun'
 import type { AdbClient } from '@enkaku/adb'
+import { engineDescriptors } from '@enkaku/drivers'
 import { eq } from 'drizzle-orm'
 import {
   ClientMessageSchema,
+  encodeSnapshot,
   encodeVideoFrame,
   KEYCODES,
   type ArtifactInfo,
@@ -46,6 +48,31 @@ const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_AGENT_TIMEOUT'])
 
 /** Backpressure limit: past this, frames are dropped (only the newest one matters). */
 const MAX_BUFFERED = 4 * 1024 * 1024
+
+/** The Inspect tab's `dump`/`find` deadline (plan 56 §4.2 step 5, acceptance #9) — `ui-server` targets well under this; `uiautomator-dump` can legitimately take 1-2s, so this is generous, not tight. */
+const INSPECT_DEADLINE_MS = 20_000
+
+/** Races `promise` against a timer, rejecting with a coded `EnkakuError` rather than hanging forever (plan 56 §4.2 step 5). */
+function withDeadline<T>(promise: Promise<T>, ms: number, code: string, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new EnkakuError(code, message)), ms)
+    promise.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+/** `EngineDescriptor.capabilities` for an inspector engine id, or `[]` for one the registry does not know (plan 56 §4.2 step 4). */
+function inspectorCapabilities(engineId: string): string[] {
+  return engineDescriptors.find((d) => d.kind === 'inspector' && d.id === engineId)?.capabilities ?? []
+}
 
 /** Numeric keycode → its symbolic name, when one exists (plan 18 §4.2, input.key meta). */
 const KEYCODE_NAMES: Record<number, string> = Object.fromEntries(
@@ -113,6 +140,8 @@ interface ConnState {
    * `LeaseManager.releaseAllForClient` handles for the lease itself.
    */
   shellDevices: Set<string>
+  /** Devices this connection currently holds an `inspect.attach` on (plan 56 §3.2) — used to release its share of the ref count on `inspect.detach`, WS close, or a second attach being a harmless no-op. */
+  inspectAttached: Set<string>
 }
 
 /**
@@ -248,6 +277,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         logSubs: new Map(),
         monitorSubs: new Set(),
         shellDevices: new Set(),
+        inspectAttached: new Set(),
       }
       conns.set(ws, s)
     }
@@ -317,6 +347,32 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     if (!entry) return
     leaseHolds.delete(deviceId)
     entry.hold.release()
+  }
+
+  /**
+   * Ref-counted per device across every attached Inspect tab (plan 56 §3.2,
+   * §4.2 step 4/7): `inspect.attach` starts (or joins) the engine,
+   * `inspect.detach` — from an explicit message, a WS close, or the device
+   * going away — releases this connection's share, and the engine itself is
+   * given back only once the count reaches zero. A `Map` (not a per-`state`
+   * count) because two different connections both attaching to the SAME
+   * device must share one count, the same reasoning `MonitorHub` already
+   * uses for one logcat stream serving several viewers.
+   */
+  const inspectorRefCounts = new Map<string, number>()
+
+  /** One connection's share of a device's inspector attachment, released on `inspect.detach`, WS close, or the device going away (`resetInspectForDevice`). Idempotent — a connection that never attached (or already detached) is a harmless no-op. */
+  const detachInspector = async (deviceId: string, state: ConnState): Promise<void> => {
+    if (!state.inspectAttached.delete(deviceId)) return
+    const remaining = Math.max(0, (inspectorRefCounts.get(deviceId) ?? 1) - 1)
+    if (remaining > 0) {
+      inspectorRefCounts.set(deviceId, remaining)
+      return
+    }
+    inspectorRefCounts.delete(deviceId)
+    const session = deps.sessions?.get(deviceId) ?? null
+    await session?.releaseInspector().catch((err) => deps.log.warn(`releaseInspector failed for ${deviceId}: ${String(err)}`))
+    deps.recorder.record({ deviceId, stream: 'main', kind: 'inspect.detached', actor: state.userId })
   }
 
   /**
@@ -1094,6 +1150,170 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          case 'inspect.attach':
+          case 'inspect.dump':
+          case 'inspect.find': {
+            // Reading the screen is a control-grade action (plan 56 §3.7): it
+            // can carry whatever text is on screen (passwords included) and
+            // seizes the `instrumentation` lock, so it is gated exactly like
+            // `input.*` — the SAME server-authoritative lease check, never
+            // merely a disabled button (spec §10.1).
+            const { deviceId } = msg.payload
+            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
+            if (!allowed.ok) {
+              sendError(ws, allowed.code, allowed.message, msgId)
+              return
+            }
+            // Agent-owned devices have no local `Inspector` to call (§2
+            // non-goals) — `RemoteSessions` exposes only `frameSize` and
+            // `input`. Reported honestly, never a fabricated empty tree.
+            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
+            if (remoteAgent) {
+              if (msg.type === 'inspect.attach') {
+                send(ws, {
+                  type: 'inspect.status',
+                  ...(msgId ? { id: msgId } : {}),
+                  payload: {
+                    deviceId,
+                    state: 'unavailable',
+                    engineId: '',
+                    capabilities: [],
+                    reason: 'inspection is not available for cloud (agent-owned) devices yet',
+                  },
+                })
+              } else {
+                sendError(ws, 'E_NOT_SUPPORTED', 'inspection is not available for cloud (agent-owned) devices yet', msgId)
+              }
+              return
+            }
+            const session = deps.sessions?.get(deviceId) ?? null
+            if (!session) {
+              sendError(ws, 'E_DEVICE_NOT_READY', 'no active session for this device (start the stream first)', msgId)
+              return
+            }
+            deps.leases.touchManual(deviceId, state.clientId)
+
+            if (msg.type === 'inspect.attach') {
+              send(ws, {
+                type: 'inspect.status',
+                payload: { deviceId, state: 'starting', engineId: session.inspectorEngineId, capabilities: [] },
+              })
+              try {
+                await session.whenInspectorReady()
+              } catch (err) {
+                send(ws, {
+                  type: 'inspect.status',
+                  ...(msgId ? { id: msgId } : {}),
+                  payload: {
+                    deviceId,
+                    state: 'unavailable',
+                    engineId: session.inspectorEngineId,
+                    capabilities: [],
+                    reason: `the inspector could not start: ${err instanceof Error ? err.message : String(err)}`,
+                  },
+                })
+                return
+              }
+              const engineId = session.inspectorEngineId
+              const capabilities = inspectorCapabilities(engineId)
+              if (!session.inspector || !capabilities.includes('dump')) {
+                send(ws, {
+                  type: 'inspect.status',
+                  ...(msgId ? { id: msgId } : {}),
+                  payload: {
+                    deviceId,
+                    state: 'unavailable',
+                    engineId,
+                    capabilities,
+                    reason: `the ${engineId} engine does not support reading the UI tree (no "dump" capability)`,
+                  },
+                })
+                return
+              }
+              // Ref-counted, and idempotent per connection: a tab that calls
+              // attach twice (e.g. a reconnect) must not inflate the count.
+              if (!state.inspectAttached.has(deviceId)) {
+                state.inspectAttached.add(deviceId)
+                const count = (inspectorRefCounts.get(deviceId) ?? 0) + 1
+                inspectorRefCounts.set(deviceId, count)
+                // Recorded once per device going from zero viewers to one —
+                // never once per dump, which would drown the log (§3.7).
+                if (count === 1) {
+                  deps.recorder.record({ deviceId, stream: 'main', kind: 'inspect.attached', actor: state.userId, meta: { engineId } })
+                }
+              }
+              send(ws, {
+                type: 'inspect.status',
+                ...(msgId ? { id: msgId } : {}),
+                payload: { deviceId, state: 'ready', engineId, capabilities },
+              })
+              return
+            }
+
+            const inspector = session.inspector
+            if (!inspector) {
+              sendError(ws, 'E_INSPECT_UNAVAILABLE', 'attach to the inspector first (inspect.attach)', msgId)
+              return
+            }
+
+            if (msg.type === 'inspect.dump') {
+              const startedAt = Date.now()
+              const root = await withDeadline(
+                inspector.dump(),
+                INSPECT_DEADLINE_MS,
+                'E_INSPECT_TIMEOUT',
+                'reading the UI tree took too long',
+              )
+              const tookMs = Date.now() - startedAt
+              const requestId = msg.payload.requestId
+              let png: Uint8Array | null = null
+              if (msg.payload.screenshot) {
+                // Best-effort: a screenshot failure must not lose the tree
+                // that already succeeded — `inspect.tree.snapshot` reports
+                // honestly whether one is actually following.
+                png = await inspector.screenshot().catch((err) => {
+                  deps.log.warn(`inspect screenshot failed for ${deviceId}: ${String(err)}`)
+                  return null
+                })
+              }
+              send(ws, {
+                type: 'inspect.tree',
+                ...(msgId ? { id: msgId } : {}),
+                payload: {
+                  deviceId,
+                  requestId,
+                  root,
+                  frameSize: session.frameSize,
+                  at: Math.floor(Date.now() / 1000),
+                  tookMs,
+                  snapshot: png !== null,
+                },
+              })
+              if (png) ws.send(encodeSnapshot(requestId, png))
+              return
+            }
+
+            // inspect.find — the "Test on device" round trip (§4.4).
+            const startedAt = Date.now()
+            const node = await withDeadline(
+              inspector.find(msg.payload.selector),
+              INSPECT_DEADLINE_MS,
+              'E_INSPECT_TIMEOUT',
+              'the on-device find took too long',
+            )
+            send(ws, {
+              type: 'inspect.match',
+              ...(msgId ? { id: msgId } : {}),
+              payload: { deviceId, requestId: msg.payload.requestId, node, tookMs: Date.now() - startedAt },
+            })
+            return
+          }
+
+          case 'inspect.detach': {
+            await detachInspector(msg.payload.deviceId, state)
+            return
+          }
+
           case 'clipboard.get': {
             // Read-only, no lease (plan 38 §4.5, acceptance #5) — same
             // "no state change, no gate" reasoning `monitor.start` uses.
@@ -1311,6 +1531,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // the same session id `hello` sent) opened must not outlive it either
       // (plan 27 §4.2 — "a WS disconnect" is one of the three teardown triggers).
       deps.adbEndpoint.closeAllForClient(state.clientId)
+      // A dropped tab must not leave the inspector engine running forever
+      // (plan 56 §3.2, acceptance #8) — released for real once this was the
+      // last attached viewer. Fire-and-forget: `handleClose` itself stays
+      // synchronous, matching every other cleanup call above.
+      for (const deviceId of [...state.inspectAttached]) {
+        void detachInspector(deviceId, state).catch((err) => deps.log.warn(`inspect detach on close failed for ${deviceId}: ${String(err)}`))
+      }
       // A WS disconnect does NOT revert any `vpn-helper` route this
       // connection's manual lease(s) were covering, for the same reason as
       // the `lease.release` handler above (plan 52 §0, §3.1, §4.1): the
@@ -1326,6 +1553,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // just drops now-stale bookkeeping (plan 37 §3.3: detection resumes
       // the next time a session opens for this device).
       crashWatcher?.unwatch(deviceId)
+    },
+
+    /**
+     * The device went away entirely (plan 56 §4.2 step 7) — `DeviceSession.close()`
+     * (called from `sessions.closeDevice()`) already released whatever
+     * inspector the session owned as part of tearing itself down, so this
+     * only clears OUR bookkeeping (the ref count and every connection's
+     * `inspectAttached` entry) rather than releasing a second time against a
+     * session that no longer exists. A later `inspect.attach` on this device
+     * then starts clean instead of inheriting a stale count.
+     */
+    resetInspectForDevice(deviceId: string): void {
+      inspectorRefCounts.delete(deviceId)
+      for (const s of conns.values()) s.inspectAttached.delete(deviceId)
     },
 
     /** A session opened for this device (plan 37 §3.3, §4.3) — detection is always on, independent of jobs. Idempotent. */

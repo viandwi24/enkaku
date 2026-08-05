@@ -8,7 +8,6 @@ export { escapeInputText, InputTextError } from './input/escape'
 export { engineDescriptors } from './descriptors'
 export { UiautomatorDumpInspector, InspectorError } from './inspector/uiautomator-dump'
 export { parseUiDump, parseBounds } from './inspector/xml-parser'
-export { matchSelector, centerOf } from './inspector/selector'
 export {
   UiServerInspector,
   supportsElementActions,

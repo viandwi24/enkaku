@@ -668,6 +668,8 @@ export interface GuestAgentRoutesDeps {
    * real wall-clock minutes.
    */
   recoveryBackoffS?: number[]
+  /** Seconds an exhausted recovery bound stays given-up before re-arming (see `RECOVERY_REARM_S`). Tests set 0; production leaves it derived. */
+  recoveryRearmS?: number
   /**
    * Plan 55 §3.2, §5.1 — the geo-lookup half of `FarmSettingsSchema.network`, read fresh on every
    * call (mirrors `settingsStore.get()`'s own always-current contract — this is a getter, not a
@@ -1139,9 +1141,26 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     exhausted: boolean
     /** Set alongside `exhausted` — re-applied to the entry on every subsequent tick (see below), since a cold probe would otherwise overwrite it with its own `lastError: null` before the next `maybeRecoverRoute` call ever runs. */
     exhaustedMessage: string | null
+    /** Unix seconds the bound was reached, so it can be re-armed after `RECOVERY_REARM_S` — see there for why permanent exhaustion was wrong. */
+    exhaustedAt: number
     /** True while an attempt is actually in flight — guards against `restoreDeviceRoute` and `heartbeatTick` racing onto two concurrent applies for the same device. */
     pending: boolean
   }
+  /**
+   * How long an exhausted bound stays exhausted before the schedule re-arms and recovery is tried
+   * again from scratch (plan 54 §9 open question 2, answered by hardware).
+   *
+   * `exhausted` used to be permanent for as long as the process lived. A device hit the bound
+   * against a transient failure, gave up, and was still sitting there **six hours later** — route
+   * enabled, not carrying traffic, nothing ever retrying, an operator none the wiser. Plan 54 §3.2
+   * asked for recovery that is *bounded*, not recovery that stops forever: the point of the bound
+   * is to avoid hammering a dead proxy every 20 s, and a slow re-arm keeps that property while
+   * still healing a device whose upstream came back.
+   *
+   * `deps.recoveryBackoffS` is what tests shrink to keep this quick; the re-arm scales off the last
+   * backoff step so an accelerated test schedule does not sit here for five real minutes.
+   */
+  const RECOVERY_REARM_S = deps.recoveryRearmS ?? Math.max(backoffAt(RECOVERY_MAX_ATTEMPTS - 1) * 5, 60)
   const recoveryByDevice = new Map<string, RecoveryState>()
 
   function resetRecovery(deviceId: string): boolean {
@@ -1171,8 +1190,17 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       // device that just reconnected may still be settling (the same reasoning `applySettleTimeoutMs`
       // already applies to a fresh apply), and hammering it the instant it is noticed down serves
       // nobody.
-      r = { attempts: 0, nextAttemptAt: now + backoffAt(0), exhausted: false, exhaustedMessage: null, pending: false }
+      r = { attempts: 0, nextAttemptAt: now + backoffAt(0), exhausted: false, exhaustedMessage: null, exhaustedAt: 0, pending: false }
       recoveryByDevice.set(deviceId, r)
+    }
+    if (r.exhausted && now - r.exhaustedAt >= RECOVERY_REARM_S) {
+      // Re-arm rather than stay given-up forever (see RECOVERY_REARM_S). The message is left in
+      // place until an attempt actually succeeds, so the UI keeps saying why it is not routed
+      // instead of flickering back to a bare "not up" the moment the schedule resets.
+      r.attempts = 0
+      r.exhausted = false
+      r.nextAttemptAt = now + backoffAt(0)
+      deps.log.info(`network restore: device ${deviceId} — retry window re-armed after ${RECOVERY_REARM_S}s`)
     }
     if (r.exhausted) {
       // `entry` reflects THIS tick's own fresh probe/observe (a cold probe's own successful read
@@ -1214,7 +1242,8 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     } catch (err) {
       if (attempt >= RECOVERY_MAX_ATTEMPTS) {
         r.exhausted = true
-        r.exhaustedMessage = `automatic recovery gave up after ${RECOVERY_MAX_ATTEMPTS} attempts; the route stays enabled — apply manually once the upstream is reachable`
+        r.exhaustedAt = nowSeconds()
+        r.exhaustedMessage = `automatic recovery gave up after ${RECOVERY_MAX_ATTEMPTS} attempts; the route stays enabled and will be retried in ${RECOVERY_REARM_S}s — apply manually to try sooner`
         deps.log.warn(`network restore: device ${deviceId}: ${r.exhaustedMessage} (${err instanceof Error ? err.message : String(err)})`)
         // `applyRoute` already set its own entry's `lastError` to the raw apply failure — this
         // OVERWRITES it with the "gave up" message, since that is now the more honest answer to

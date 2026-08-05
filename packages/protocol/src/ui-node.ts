@@ -17,14 +17,22 @@ export const SelectorSchema = z.union([
 ])
 export type Selector = z.infer<typeof SelectorSchema>
 
-export interface Bounds {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
+export const BoundsSchema = z.object({
+  left: z.number(),
+  top: z.number(),
+  right: z.number(),
+  bottom: z.number(),
+})
+export type Bounds = z.infer<typeof BoundsSchema>
 
-export interface UiNode {
+/**
+ * A node of the on-device UI tree (plan 56 §4.1). Was a bare TypeScript
+ * interface before this plan — which cannot validate a tree arriving over
+ * the wire, and the rule is Zod at every boundary. `z.ZodType<UiNode>` makes
+ * the type annotation explicit because the schema is recursive (`children`
+ * references `UiNodeSchema` itself) and `z.lazy` alone cannot infer it.
+ */
+export type UiNode = {
   resourceId: string
   text: string
   desc: string
@@ -37,6 +45,22 @@ export interface UiNode {
   index: number
   children: UiNode[]
 }
+
+export const UiNodeSchema: z.ZodType<UiNode> = z.lazy(() =>
+  z.object({
+    resourceId: z.string(),
+    text: z.string(),
+    desc: z.string(),
+    className: z.string(),
+    packageName: z.string(),
+    bounds: BoundsSchema,
+    clickable: z.boolean(),
+    enabled: z.boolean(),
+    focused: z.boolean(),
+    index: z.number().int(),
+    children: z.array(UiNodeSchema),
+  }),
+)
 
 /** Common Android keycodes (name → number) so scripts never memorise numbers. */
 export const KEYCODES = {

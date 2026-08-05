@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, devices, deviceEvents, deviceTags } from '../db/schema'
+import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices } from '../db/schema'
 import { createDeviceLifecycle } from '../device/lifecycle'
 import type { Lease, LeaseManager } from '../lease/lease-manager'
 import { deleteDeviceTags } from '../registry/device-tags'
@@ -469,15 +469,66 @@ describe('DELETE /api/devices/:id — Forget (plan 47 §4.4, §6)', () => {
     expect(auditRows[0]?.target).toBe('a')
   })
 
-  test('forgetting an online, idle device is refused with device_online — calling the API directly is refused exactly like the UI (acceptance #12)', async () => {
+  test('the round trip: forget a connected device, then admit it again — the loop the old refusal made impossible', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+
+    expect((await app.request('/a', { method: 'DELETE' })).status).toBe(200)
+
+    const tray = (await (await app.request('/discovered')).json()) as { discovered: Array<{ stableId: string }> }
+    expect(tray.discovered.map((d) => d.stableId)).toEqual(['stable-a'])
+
+    const admitted = await app.request('/discovered/stable-a/admit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Rack 3 slot 2' }),
+    })
+    expect(admitted.status).toBe(200)
+
+    const rows = db.select().from(devices).all()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.label).toBe('Rack 3 slot 2')
+    // The device kept its identity across the whole loop, which is the promise
+    // `stableId` makes (spec §7.5) — only the row id is new.
+    expect(rows[0]?.stableId).toBe('stable-a')
+    expect(db.select().from(discoveredDevices).all()).toHaveLength(0)
+  })
+
+  test('admitting something that is not in the tray is a 404, not a server error', async () => {
+    const { app } = makeApp()
+    const res = await app.request('/discovered/never-seen/admit', { method: 'POST' })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NOT_DISCOVERED')
+  })
+
+  test('dismiss removes the entry without blocking anything (plan 56 §3.5)', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    await app.request('/a', { method: 'DELETE' })
+    expect(db.select().from(discoveredDevices).all()).toHaveLength(1)
+
+    expect((await app.request('/discovered/stable-a', { method: 'DELETE' })).status).toBe(200)
+
+    expect(db.select().from(discoveredDevices).all()).toHaveLength(0)
+    // Dismissal is not a quiet block — nothing was added to the block list, so
+    // the phone is free to reappear the next time it connects.
+    expect(db.select().from(blockedDevices).all()).toHaveLength(0)
+  })
+
+  test('forgetting an online device succeeds and lands it in the Discovered tray (plan 56 §3.2)', async () => {
+    // Until plan 56 this was a 409 `device_online` with an offer to block
+    // instead — the trap that made an operator declare a phone permanently
+    // unwelcome just to take it out of the farm.
     const { db, app } = makeApp()
     seedDevice(db, 'a') // seedDevice leaves status: 'idle'
+
     const res = await app.request('/a', { method: 'DELETE' })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('device_online')
-    // Untouched.
-    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(1)
+
+    expect(res.status).toBe(200)
+    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
+    expect(db.select().from(discoveredDevices).all()).toHaveLength(1)
+    expect(db.select().from(blockedDevices).all()).toHaveLength(0)
   })
 
   test('?deleteHistory=true deletes exactly the counts GET /:id/history-counts promised', async () => {

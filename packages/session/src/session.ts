@@ -54,10 +54,21 @@ export interface DeviceSession {
   inspector: Inspector | null
   /**
    * Starts the inspector if it is not running yet, and resolves when it is
-   * ready (or has given up). Jobs call this; manual control never does, so the
-   * adb queue stays free for video.
+   * ready (or has given up). Jobs call this; manual control never starts it
+   * IMPLICITLY — the Inspect tab (plan 56 §4.3) is the one caller that starts
+   * it explicitly, through `inspect.attach`, so the adb queue stays free for
+   * video the rest of the time.
    */
   whenInspectorReady(): Promise<void>
+  /**
+   * Gives the inspector engine back (plan 56 §3.2, §4.3) — releases the
+   * handle's own `release()` (stops the watchdog, frees its port/lock) and
+   * resets `inspector`/`inspectorEngineId` so the NEXT `whenInspectorReady()`
+   * builds a fresh engine rather than resolving against a dead handle. The
+   * Inspect tab calls this once its last viewer detaches; jobs never call it
+   * — a script's inspector lives for the session, not for one `find`.
+   */
+  releaseInspector(): Promise<void>
   /** The effective engine id — it can differ from the DB column after a fallback. */
   inspectorEngineId: string
   /** The waitFor polling interval that suits the active engine. */
@@ -144,7 +155,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   await transport.connect()
 
   /**
-   * The inspector is started lazily, on first use, and never for manual control.
+   * The inspector is started lazily, on first use, and never IMPLICITLY for
+   * manual control.
    *
    * Two measurements on a real moto g06 power (Android 15) drove this:
    *   - awaiting it up front delayed the first video frame by ~50 s, because
@@ -153,8 +165,14 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    *     access is serialised per device, so the watchdog's installs starved the
    *     screencap loop: 1 frame in 20 s, versus 11 once it gave up.
    *
-   * Only scripts need an inspector, through waitFor/find. So it starts when the
-   * job runner asks for it, and manual control gets the adb queue to itself.
+   * Scripts need an inspector through waitFor/find, so the job runner starts
+   * it. Manual control never starts it on its own either — but the Inspect
+   * tab (plan 56 §3.2, §4.3) DOES, explicitly, through `inspect.attach`: an
+   * operator who opens that tab has consciously chosen to pay the
+   * instrumentation-lock and adb-queue cost `whenInspectorReady` was written
+   * to avoid paying by default. `releaseInspector` below is what lets that
+   * cost be given back once the tab closes, rather than being paid for the
+   * rest of the session.
    */
   let inspectorHandle: Awaited<ReturnType<NonNullable<CreateSessionDeps['makeInspector']>>> | null = null
   let inspectorPromise: Promise<void> | null = null
@@ -172,6 +190,14 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
         log.warn(`inspector could not start: ${String(err)} — scripts will use an ad-hoc dump`)
       })
     return inspectorPromise
+  }
+  const releaseInspector = async (): Promise<void> => {
+    const handle = inspectorHandle
+    inspectorHandle = null
+    inspectorPromise = null
+    session.inspector = null
+    session.inspectorEngineId = 'starting'
+    await handle?.release()
   }
 
   onPhase('waking')
@@ -295,6 +321,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
+    releaseInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,
     async close() {

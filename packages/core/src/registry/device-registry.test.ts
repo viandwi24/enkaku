@@ -7,6 +7,7 @@ import { blockedDevices, clusters, deviceEvents, devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
+import { admitDevice } from './admission'
 import { createDeviceRegistry, listDevicesWithTags } from './device-registry'
 
 /**
@@ -64,7 +65,12 @@ async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
   for (const cb of listeners) cb({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
   // The probe chain is async; give it a moment to land.
   await new Promise((r) => setTimeout(r, 150))
-  const row = db.select().from(devices).where(eq(devices.stableId, 'HW-SERIAL-1')).get()
+
+  // Plan 56: connecting no longer enrols. The device waits in the tray, and
+  // the farm defaults are applied at the moment an operator admits it — which
+  // is the moment this helper is really about.
+  expect(db.select().from(devices).where(eq(devices.stableId, 'HW-SERIAL-1')).get()).toBeUndefined()
+  const row = admitDevice(db, 'HW-SERIAL-1', { ...(deviceDefaults ? { deviceDefaults } : {}) })
   await registry.stop()
   return row
 }

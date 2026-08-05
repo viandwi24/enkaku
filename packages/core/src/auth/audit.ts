@@ -20,6 +20,11 @@ export type AuditAction =
   | 'device.forget'
   | 'device.block'
   | 'device.unblock'
+  // Admission (plan 56 §4.4) — letting a phone into a shared farm is exactly
+  // the kind of act that should be answerable later, the same argument plan 47
+  // makes for block.
+  | 'device.admit'
+  | 'device.dismiss'
   | 'script.publish'
   | 'script.delete'
   | 'script.toggle'

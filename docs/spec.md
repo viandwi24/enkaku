@@ -306,6 +306,16 @@ interface ToolVersion {
 
 The effect: the "plug in over USB to enroll, then move to WiFi for daily use" flow produces no duplicate records. `devices.stableId` becomes the primary identity (see §12).
 
+**Admission (v0.5, plan 56).** Resolving an identity does **not** make a phone a farm device. A `stableId` that has no `devices` row lands in a **Discovered** tray and waits for an operator to admit it by name.
+
+The farm is therefore an allowlist, not a denylist. This matters because the adb server is usually shared — with Android Studio, with a developer's own phone, with whatever is plugged in to charge — and the previous behaviour made every one of those schedulable until somebody noticed. Blocking (§ plan 47) remains the outer layer and still wins over everything: a blocked `stableId` never reaches the tray.
+
+Three consequences worth stating:
+
+- A discovered phone **is** probed — `getprop` for the model, the Android version, and the identity itself — because a tray listing bare serial numbers cannot be acted on. Nothing else runs against it: no scrcpy, no guest agent, no ui-server, no network route.
+- Discovered devices live in their own table rather than as a sixth `DeviceStatus`, so the scheduler, lease manager, wall, clusters and topology need no filter of their own — they query `devices`, which only ever holds members.
+- **Forget** now works on a connected device, returning it to the tray. It previously had to be refused, because the registry would have re-enrolled it immediately, which forced an operator who only wanted a device *out of the farm* to declare it permanently unwelcome instead.
+
 ### 7.6 The scrcpy-server rule: PINNED to the core (critical v0.2 revision)
 
 **Why this differs from adb:** the protocol between scrcpy-server.jar and the client is **not stable between versions** and is deliberately "internal" per Genymobile — their own documentation states the protocol *may (and will) change at any time, with no backward or forward compatibility, and the client must always run against a matching server version*. A concrete example: v3.1 required **client code changes** for coordinate mapping, not just a version bump. If the Tools UI let users freely pick a scrcpy-server version, one update would mean **video and control stop working entirely**.

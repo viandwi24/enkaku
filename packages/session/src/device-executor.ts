@@ -1,6 +1,8 @@
 import { shellQuote } from '@enkaku/adb'
-import { buildGesturePath, centerOf, matchSelector, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
+import { buildGesturePath, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
 import {
+  centerOf,
+  matchSelector,
   resolveKeyCode,
   TimingSettingsSchema,
   type Inspector,

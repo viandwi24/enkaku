@@ -140,6 +140,8 @@ function makeHarness(opts: {
   makeClient?: (opts: GuestAgentClientOptions) => GuestAgentClient
   /** Plan 54 §3.2, §4.2 test seam — the bounded-recovery backoff, overridden in recovery tests so they need not sit out real wall-clock delays. */
   recoveryBackoffS?: number[]
+  /** Seconds an exhausted bound waits before re-arming — 0 in the re-arm test so it need not sit out the real cool-off. */
+  recoveryRearmS?: number
   /** Plan 55 §3.2, §5.1 — the geo half of `FarmSettingsSchema.network`, overridden in the geo/dns tests below. Defaults to no provider configured, matching a farm that never touched Settings → Network. */
   networkSettings?: () => { geoProvider?: string; geoIntervalSec: number }
 }): Harness {
@@ -166,6 +168,7 @@ function makeHarness(opts: {
     // suite slow and flaky.
     routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
     ...(opts.recoveryBackoffS ? { recoveryBackoffS: opts.recoveryBackoffS } : {}),
+    ...(opts.recoveryRearmS !== undefined ? { recoveryRearmS: opts.recoveryRearmS } : {}),
     ...(opts.launcher ? { makeLauncher: () => opts.launcher! } : {}),
     makeClient: opts.makeClient ?? (() => opts.client ?? fakeClient()),
     ...(opts.networkSettings ? { networkSettings: opts.networkSettings } : {}),
@@ -1981,6 +1984,34 @@ describe('plan 54 §3.2, §4.2 — restore actually applies, bounded and shared 
     const res2 = await app.request('/dev-1/network')
     const body2 = (await res2.json()) as { lastError: { code: string } | null }
     expect(body2.lastError?.code).toBe('E_NETWORK_RECOVERY_EXHAUSTED')
+  })
+
+  test('an exhausted bound re-arms after the cool-off — giving up is temporary, not permanent', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'held' as const }),
+    })
+    // `recoveryRearmS: 0` — the cool-off itself is not what this asserts; that it EVER re-arms is.
+    const { db, restoreDeviceRoute } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0], recoveryRearmS: 0 })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    for (let i = 0; i < 3; i++) await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3) // bound reached
+
+    // Observed on hardware: a device that hit the bound was still sitting there six hours later,
+    // route enabled, nothing retrying. Bounded recovery must mean "not every 20s", not "never
+    // again" — so the next tick past the cool-off tries a fresh schedule.
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(4)
   })
 
   test('turning the route off mid-recovery resets the bound — a route re-enabled later gets a fresh three attempts', async () => {

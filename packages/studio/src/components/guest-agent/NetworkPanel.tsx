@@ -54,17 +54,18 @@ export function NetworkPanel({
   useEffect(load, [deviceId])
 
   /**
-   * Installing pushes a ~31 MB APK and then provisions it — measured at
-   * ~2m40s on hardware, and the HTTP response only lands at the very end. One
-   * hanging request was the panel's ONLY source of truth for that whole
-   * window, so anything that lost it (a hidden tab, a WS reconnect, the lease
-   * idle-releasing mid-install) left the agent installed on the device while
-   * the panel still offered an Install button. It took a page refresh to see
-   * the truth, which is how it was reported.
+   * Installing pushes a ~31 MB APK and provisions it, and the HTTP response
+   * only lands at the very end. That one request used to be the panel's ONLY
+   * source of truth, and **a request dying is not the same as the operation
+   * failing** — observed directly: an install that finished fine on the device
+   * answered the browser with `Failed to fetch`, so the panel toasted an error
+   * and went on offering an Install button for an agent that was already
+   * installed. Only a page refresh showed the truth, which is how it was
+   * reported.
    *
-   * So while an action is in flight the panel re-reads the server on a timer
-   * rather than waiting on the response: it converges on what the device
-   * actually reports even when the request that started it never comes back.
+   * So the panel never treats the response as authoritative. It polls while an
+   * action is in flight, and re-reads once it settles **whichever way it went**
+   * — the device's own state is the answer, not what happened to the fetch.
    */
   useEffect(() => {
     if (!pending) return
@@ -73,30 +74,32 @@ export function NetworkPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, deviceId])
 
+  /** `run()` never rejects — it resolves to null on failure — so this re-reads on both paths. */
+  const settle = (p: Promise<unknown>) => void p.then(load)
+
   const install = () =>
-    run('install', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
-      success: `Guest agent installed on ${deviceLabel}`,
-      failure: 'Could not install the guest agent',
-      // Re-read rather than trust the response body, for the same reason the
-      // poll above exists — the server is the authority on what is on the device.
-      onSuccess: load,
-    })
+    settle(
+      run('install', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
+        success: `Guest agent installed on ${deviceLabel}`,
+        failure: 'Could not install the guest agent',
+      }),
+    )
 
   const repair = () =>
-    run('repair', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
-      success: `Guest agent repaired on ${deviceLabel}`,
-      failure: 'Could not repair the guest agent',
-      onSuccess: load,
-    })
+    settle(
+      run('repair', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
+        success: `Guest agent repaired on ${deviceLabel}`,
+        failure: 'Could not repair the guest agent',
+      }),
+    )
 
   const uninstall = () =>
-    run('uninstall', () => api(`/api/devices/${deviceId}/guest-agent`, { method: 'DELETE' }), {
-      success: `Guest agent uninstalled from ${deviceLabel}`,
-      failure: 'Could not uninstall the guest agent',
-      // Re-read rather than assume: the same "show what the device
-      // reported" principle the network status panel follows.
-      onSuccess: load,
-    })
+    settle(
+      run('uninstall', () => api(`/api/devices/${deviceId}/guest-agent`, { method: 'DELETE' }), {
+        success: `Guest agent uninstalled from ${deviceLabel}`,
+        failure: 'Could not uninstall the guest agent',
+      }),
+    )
 
   // A gated panel always renders its controls, disabled, with one line
   // saying why — never a sentence INSTEAD of the panel (Plan 42 §3.2,
@@ -141,11 +144,12 @@ export function NetworkPanel({
                   {isPending('install') ? 'Installing…' : 'Install'}
                 </Button>
               )}
-              {/* Measured at ~2m40s on hardware. Without saying so the panel looks stuck,
-                  which is what led to it being reported as a broken button. */}
+              {/* Observed anywhere from seconds to ~2m40s on the same device, so the copy commits
+                  to no number. Without it the panel looks stuck, which is what led to this being
+                  reported as a broken button. */}
               {isPending('install') && (
                 <span className="text-[12px] text-fg-muted">
-                  Pushing the APK and provisioning it — this takes a couple of minutes. Safe to leave this tab.
+                  Pushing the APK and provisioning it — this can take a couple of minutes. Safe to leave this tab.
                 </span>
               )}
               {(status.state === 'installed' || status.state === 'unreachable') && (

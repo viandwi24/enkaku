@@ -1,8 +1,12 @@
 # Plan 51 — M24b : Verified egress, and a route that fails closed
 
 > Status: implemented except §5.1 — named `RouteCheck`s with `deriveHealth()` replace the single enum, the `egress.probe` capability and control method exist end to end, Studio surfaces per-check state, and §5.3 (the self-hosted probe endpoint, `packages/probe-server`, with its authoritative-resolver hook) and §5.7 (IPv6 blocked explicitly and *asserted* by the `leak` check) landed under Plan 55.
+> **§4.5/§5.7 were implemented wrong once and corrected on hardware.** Capturing `::/0` into the TUN did block IPv6 — by swallowing it, which also killed DNS for every app on the device (`DNS_PROBE_FINISHED_NO_INTERNET` in Chrome) while this plan's own `egress` check still read `pass`. Blocking must mean *refused*, not *silently lost*: the route now leaves Android's `::/0 unreachable` in place and `Ipv6Leak.isBlocked()` **asserts** it (no global IPv6 address AND no IPv6 default route). Assert the property; do not force it by breaking the datapath.
+>
+> **Known gap in §3.2's premise.** The agent must exclude itself from its own tunnel (`addDisallowedApplication`), so `egress.probe` measures the SOCKS5 upstream, **not** the `tun0` datapath other apps use. It cannot see a tunnel that is up and carrying nothing for everyone else — exactly the failure above. A check measured from outside the agent's own uid is still missing.
+>
 > **§5.1 remains an unverified gate.** Always-on VPN + lockdown via `settings put secure` needs a device reboot to confirm, and no device has been free to test it. Until it is settled, `failClosed` is Plan 54's hold-closed only: it protects a live agent whose upstream failed, not an agent that was force-stopped. §4.4's lockdown wording still describes the unbuilt version.
-> Ships: packages/protocol/src/network.ts, packages/probe-server/
+> Ships: packages/probe-server/src/http.ts
 > **Depends on:** Plan 44 (the working route), Plan 50 (CI and the device smoke test — its stage 8 becomes real here).
 > **Spec references:** §7.9 (network layer — this plan makes rule 3 true), §17 (positioning).
 > **Research:** `docs/research/android-guest-agent.md` §6 (always-on VPN), and the VpnService findings behind it.

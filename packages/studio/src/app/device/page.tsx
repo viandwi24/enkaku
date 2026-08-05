@@ -9,6 +9,7 @@ import { LiveView } from '@/components/LiveView'
 import { ClipboardCard } from '@/components/ClipboardCard'
 import { DeviceLog } from '@/components/DeviceLog'
 import { CrashesPanel } from '@/components/CrashesPanel'
+import { InspectorPanel } from '@/components/InspectorPanel'
 import { MonitorPane } from '@/components/monitor/MonitorPane'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
@@ -48,6 +49,8 @@ interface DeviceDetailInfo extends DeviceInfo {
   input: string
   inspection: string
   settings: unknown
+  /** Set only for an agent-owned (cloud) device — there is no local `Inspector` to attach to (plan 56 §2 non-goals), so the Inspect tab is disabled rather than left to dead-end at a server refusal. */
+  agentId: string | null
 }
 
 const ENGINE_ROWS = [
@@ -425,6 +428,14 @@ function DeviceDetail() {
           { key: 'jobs', label: 'Jobs', count: jobsCount },
           { key: 'monitor', label: 'Monitor' },
           { key: 'crashes', label: 'Crashes' },
+          // Agent-owned (cloud) devices have no local Inspector to attach to
+          // (plan 56 §2 non-goals) — disabled with a stated reason rather
+          // than a dead end (design.md's quality floor).
+          {
+            key: 'inspect',
+            label: 'Inspect',
+            ...(device.agentId ? { disabledReason: 'Inspecting an agent-owned device is not available yet.' } : {}),
+          },
           // Hidden entirely when the farm switches the terminal off (plan 26
           // §5, 26.1) — server-authoritative either way: even a forced
           // `tab=terminal` in the address bar still gets refused by the WS
@@ -657,6 +668,15 @@ function DeviceDetail() {
       {tab === 'monitor' && <MonitorPane deviceId={device.id} />}
 
       {tab === 'crashes' && <CrashesPanel deviceId={device.id} />}
+
+      {tab === 'inspect' &&
+        (device.agentId ? (
+          <div className="px-5 py-4">
+            <ErrorState message="Inspecting an agent-owned device is not available yet." />
+          </div>
+        ) : (
+          <InspectorPanel deviceId={device.id} />
+        ))}
 
       {shellMode !== 'off' && (
         <TabPanel active={tab === 'terminal'}>

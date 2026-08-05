@@ -67,6 +67,28 @@ export const DeviceRemovedMessage = z.object({
 })
 export type DeviceRemoved = z.infer<typeof DeviceRemovedMessage>
 
+/**
+ * A phone adb has seen that nobody has admitted to the farm (plan 56).
+ *
+ * Deliberately NOT a `DeviceInfo`: a discovered device has no id, no status,
+ * no cluster, no readiness and no tags, because it has no `devices` row at
+ * all. Reusing the device shape would mean inventing values for all of those,
+ * and an invented status is exactly how something unadmitted ends up looking
+ * schedulable.
+ */
+export const DeviceDiscoveredMessage = z.object({
+  type: z.literal('device.discovered'),
+  payload: z.object({
+    stableId: z.string(),
+    /** Transport address at last sight — informational; identity is `stableId`. */
+    serial: z.string(),
+    /** `ro.product.model` when the probe could read it. */
+    label: z.string().nullable(),
+    androidVersion: z.string().nullable(),
+  }),
+})
+export type DeviceDiscovered = z.infer<typeof DeviceDiscoveredMessage>
+
 export const DeviceStatusMessage = z.object({
   type: z.literal('device.status'),
   payload: z.object({

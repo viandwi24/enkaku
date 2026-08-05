@@ -64,6 +64,7 @@ function fakeSession(deviceId: string, cached: { config: Uint8Array | null; keyf
     },
     inspector: null,
     whenInspectorReady: async () => {},
+    releaseInspector: async () => {},
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },

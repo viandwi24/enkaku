@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceAddedMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
+import { DeviceAddedMessage, DeviceDiscoveredMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
 import {
   DevicePairingCodeMessage,
   DevicePairingCodeResultMessage,
@@ -66,6 +66,15 @@ import {
 } from './messages/shell'
 import { ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
 import { TransferCancelMessage, TransferDoneMessage, TransferProgressMessage } from './messages/transfer'
+import {
+  InspectAttachMessage,
+  InspectDetachMessage,
+  InspectDumpMessage,
+  InspectFindMessage,
+  InspectMatchMessage,
+  InspectStatusMessage,
+  InspectTreeMessage,
+} from './messages/inspect'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
 export { normaliseTag, TagSchema } from './tags'
@@ -74,6 +83,7 @@ export {
   DeviceInfoSchema,
   DeviceAddedMessage,
   DeviceRemovedMessage,
+  DeviceDiscoveredMessage,
   DeviceStatusMessage,
   DeviceReadinessSetMessage,
   DeviceReadinessMessage,
@@ -81,6 +91,7 @@ export {
   type DeviceInfo,
   type DeviceAdded,
   type DeviceRemoved,
+  type DeviceDiscovered,
   type DeviceStatusEvent,
   type DeviceReadinessSet,
   type DeviceReadinessEvent,
@@ -184,7 +195,10 @@ export {
   encodeVideoFrame,
   decodeVideoFrame,
   isH264Keyframe,
+  encodeSnapshot,
+  decodeSnapshot,
   type DecodedVideoFrame,
+  type DecodedSnapshot,
 } from './binary'
 export {
   JobStatusSchema,
@@ -303,6 +317,8 @@ export {
 export {
   PointSchema,
   SelectorSchema,
+  UiNodeSchema,
+  BoundsSchema,
   KeyCodeSchema,
   KEYCODES,
   resolveKeyCode,
@@ -312,6 +328,26 @@ export {
   type KeyCode,
   type KeyName,
 } from './ui-node'
+export { matchSelector, centerOf } from './selector-match'
+export {
+  countMatches,
+  proposeSelectors,
+  type SelectorCandidate,
+  type SelectorCandidateKind,
+} from './selector-analysis'
+export {
+  InspectRequestIdSchema,
+  FrameSizeSchema,
+  InspectAttachMessage,
+  InspectDetachMessage,
+  InspectDumpMessage,
+  InspectFindMessage,
+  InspectStateSchema,
+  InspectStatusMessage,
+  InspectTreeMessage,
+  InspectMatchMessage,
+  type InspectState,
+} from './messages/inspect'
 
 export {
   RoutedEnvelopeSchema,
@@ -455,6 +491,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceViewersMessage,
   DeviceAddedMessage,
   DeviceRemovedMessage,
+  DeviceDiscoveredMessage,
   DeviceStatusMessage,
   DeviceReadinessMessage,
   DeviceUnauthorizedMessage,
@@ -494,6 +531,9 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ClipboardOkMessage,
   TransferProgressMessage,
   TransferDoneMessage,
+  InspectStatusMessage,
+  InspectTreeMessage,
+  InspectMatchMessage,
   ErrorMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
@@ -529,5 +569,9 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   ClipboardGetMessage,
   ClipboardSetMessage,
   TransferCancelMessage,
+  InspectAttachMessage,
+  InspectDetachMessage,
+  InspectDumpMessage,
+  InspectFindMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>

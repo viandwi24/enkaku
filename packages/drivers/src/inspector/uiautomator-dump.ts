@@ -1,5 +1,4 @@
-import type { Inspector, Selector, Transport, UiNode } from '@enkaku/protocol'
-import { matchSelector } from './selector'
+import { matchSelector, type Inspector, type Selector, type Transport, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from './xml-parser'
 
 export class InspectorError extends Error {

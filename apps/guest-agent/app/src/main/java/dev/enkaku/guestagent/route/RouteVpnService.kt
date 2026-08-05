@@ -174,16 +174,23 @@ class RouteVpnService : VpnService() {
         .addAddress(Socks5Config.TUN_IPV4, Socks5Config.TUN_PREFIX_LENGTH)
         // Default route: everything goes through the tunnel. That is the point of this engine.
         .addRoute("0.0.0.0", 0)
-        // Plan 51 §4.5, §5.7 — EXPLICIT, not incidental. Without an IPv6 address on this
-        // interface, Android already refuses to route IPv6 anywhere (`dumpsys` shows
-        // `::/0 unreachable`) — but that is the platform's own behaviour for a VPN with no IPv6
-        // address, not something this app asked for, and it could change under us with no test
-        // ever noticing. Capturing `::/0` into this TUN ourselves makes the intent ours: every
-        // IPv6 packet on the device is funnelled in here, where `hev-socks5-tunnel` — configured
-        // IPv4-only above (`Socks5Config.TUN_IPV4`) — has nowhere to forward it and it simply
-        // goes nowhere. `Ipv6Leak.isBlocked()` (asked from `route.status`) reads this route back
-        // from `LinkProperties` rather than assuming this call did what it asked.
-        .addRoute("::", 0)
+        // Plan 51 §4.5, §5.7 asked for IPv6 to be blocked EXPLICITLY rather than incidentally, and
+        // this used to be `.addRoute("::", 0)` — capturing every IPv6 packet into this TUN, where
+        // `hev-socks5-tunnel` (IPv4-only, `Socks5Config.TUN_IPV4`) has nowhere to forward it.
+        //
+        // That is REMOVED because it broke the device. Swallowed packets are not the same as
+        // refused ones: with `::/0` pointed here, Android's resolver kept issuing AAAA queries
+        // into a hole instead of failing fast, and every browser on the device died on
+        // `DNS_PROBE_FINISHED_NO_INTERNET` while this app's own probe — excluded from the TUN
+        // below — still reported a healthy exit. Blocking a protocol has to mean the traffic is
+        // REFUSED, not silently lost.
+        //
+        // Without an IPv6 address on this interface Android already refuses to route IPv6 at all
+        // (`dumpsys` shows `::/0 unreachable`), which is the correct behaviour. The plan's real
+        // concern — that it is the platform's choice and not ours, and could change unnoticed — is
+        // answered by ASSERTING it: `Ipv6Leak.isBlocked()` reads `LinkProperties` back and the
+        // `leak` check fails if a usable IPv6 path ever appears. Assert the property; do not force
+        // it by breaking the datapath.
         // The tunnel's own resolver, not a real one — see Socks5Config.MAPPED_DNS_IPV4 for why
         // a real resolver breaks browsing through a TCP-only SOCKS5 proxy.
         .addDnsServer(Socks5Config.MAPPED_DNS_IPV4)
@@ -250,11 +257,26 @@ class RouteVpnService : VpnService() {
     }
     if (currentUpstreamRef.get()?.failClosed != false) {
       // The default, and the safe one: leave the TUN exactly as it is (still `0.0.0.0/0 → tun0`)
-      // and only stop forwarding. No teardown work happens here, so this is safe to run inline off
-      // any thread — see `RouteState.markHeld`'s doc comment for what this promises.
-      worker.set(null)
+      // and stop forwarding, so packets keep entering the interface and go nowhere.
+      //
+      // This used to be `worker.set(null)` alone, which was a LIE: dropping the Kotlin reference
+      // does not stop `hev-socks5-tunnel`: it runs in native code until `TProxyStopService()` is
+      // called. The route reported `held` — "traffic is being blocked on purpose" — while every
+      // packet kept flowing exactly as before. Observed on hardware: a device sat in `held` for
+      // six hours and browsed the whole time. Stopping forwarding for real is the entire content
+      // of the promise, so it has to be the thing that actually happens.
+      //
+      // Marked held FIRST so `route.status` never reports `up` for the window in which forwarding
+      // is already going away. The native stop and the thread join both block, so they go on `ops`
+      // like every other route mutation — never inline, since this can be called from the tunnel
+      // thread's own catch block (joining itself would deadlock; `ops` is a different thread).
       RouteState.markHeld(reason)
       Log.w(TAG, "route held closed: $reason")
+      val stopping = worker.getAndSet(null)
+      ops.execute {
+        runCatching { Tun2Socks.TProxyStopService() }
+        stopping?.join(STOP_TIMEOUT_MS)
+      }
     } else {
       // failClosed explicitly false: preserve the pre-plan-54 tear-down behaviour for an operator
       // debugging by hand (plan 54 §4.2). Routed through `ops` so it serialises against a

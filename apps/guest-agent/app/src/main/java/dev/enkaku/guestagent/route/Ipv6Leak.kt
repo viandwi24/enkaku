@@ -9,12 +9,12 @@ import java.net.Inet6Address
  * Plan 51 §4.5, §5.7 — asserts IPv6 is actually blocked rather than assuming a `Builder` call
  * that returned a non-null descriptor did exactly what was asked.
  *
- * `RouteVpnService.start()` now calls `addRoute("::", 0)` explicitly (see its own comment for
- * why: this captures ALL IPv6 traffic system-wide into a TUN interface `hev-socks5-tunnel` does
- * not understand, turning "IPv6 happens to be unreachable" — Android's own incidental behaviour
- * for a VPN with no IPv6 address — into "we deliberately swallow it"). This object reads that
- * request back rather than trusting it: it inspects `LinkProperties` on the network the OS
- * actually established, and confirms the `::/0` route is really there.
+ * The property being asserted is that **no app can carry IPv6 off this device while the route is
+ * up**. `RouteVpnService` deliberately does NOT force that by capturing `::/0` into the TUN — that
+ * swallows packets instead of refusing them and broke every browser on the device (see its own
+ * comment). It relies on Android refusing to route IPv6 through a VPN that has no IPv6 address,
+ * and this object is what stops that from being an unexamined assumption: it reads the established
+ * network back and fails the `leak` check the moment a usable IPv6 path appears.
  *
  * Deliberately does NOT use `ConnectivityManager.getActiveNetwork()`: called from THIS process
  * (the guest agent app), that would return whatever network THIS app itself is routed over —
@@ -26,12 +26,12 @@ import java.net.Inet6Address
  */
 object Ipv6Leak {
   /**
-   * True when the currently-established VPN network's routes capture `::/0` — i.e. no app on
-   * this device (other than this one, excluded from its own tunnel) can reach the public
-   * internet over IPv6 except through a TUN that cannot forward it. Null when no VPN network
-   * can currently be found to ask (nothing established, or the system service is unavailable) —
-   * the caller (`ControlService`) omits the field entirely in that case rather than reporting a
-   * guessed answer.
+   * True when the established VPN carries no usable IPv6 path — it has no IPv6 address of its own
+   * AND no IPv6 default route an app could send over. Either one alone is not enough: an address
+   * without a route cannot leave, and a route without an address is the swallowing behaviour this
+   * deliberately does not do. Null when no VPN network can be found to ask (nothing established,
+   * or the system service is unavailable) — the caller (`ControlService`) omits the field entirely
+   * rather than reporting a guessed answer.
    *
    * Android runs at most one active `VpnService` connection at a time system-wide, so finding a
    * network with `TRANSPORT_VPN` is safe to treat as "ours".
@@ -46,9 +46,11 @@ object Ipv6Leak {
       val caps = cm.getNetworkCapabilities(network) ?: continue
       if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
       val props = cm.getLinkProperties(network) ?: continue
-      // `RouteInfo` has no `isIPv6Default()` — a default route (`isDefaultRoute()`, prefix length
-      // 0) is family-agnostic, so the IPv6-ness comes from the destination's own address type.
-      return props.routes.any { it.isDefaultRoute && it.destination.address is Inet6Address }
+      val hasIpv6Address = props.linkAddresses.any { it.address is Inet6Address && !it.address.isLinkLocalAddress }
+      // `RouteInfo` has no `isIPv6Default()` — a default route (`isDefaultRoute`, prefix length 0)
+      // is family-agnostic, so the IPv6-ness comes from the destination's own address type.
+      val hasIpv6Default = props.routes.any { it.isDefaultRoute && it.destination.address is Inet6Address }
+      return !hasIpv6Address && !hasIpv6Default
     }
     return null
   }

@@ -4,8 +4,8 @@ import type { FrameMeta } from './driver'
  * WS binary framing (plan 03 §4.8) — applies to EVERY binary stream,
  * scrcpy in Plan 08 included. Bytes 0–1 NEVER change meaning:
  *
- *   byte 0    : u8  channel  — 0x01 VIDEO, 0x02 AUDIO (P08), 0x03 CONTROL (P08)
- *   byte 1    : u8  streamId — allocated by the core at stream.started
+ *   byte 0    : u8  channel  — 0x01 VIDEO, 0x02 AUDIO (P08), 0x03 CONTROL (P08), 0x04 SNAPSHOT (P56)
+ *   byte 1    : u8  streamId — allocated by the core at stream.started (VIDEO/AUDIO/CONTROL)
  *   byte 2..  : payload per (channel, codec)
  *
  * Payload VIDEO codec PNG (M2):
@@ -20,8 +20,16 @@ import type { FrameMeta } from './driver'
  * anything else right after `configure()` — so the receiver has to be able to
  * tell one from the other. Reusing the spare bit keeps the header at 11 bytes.
  * PNG frames are all keyframes and set it too.
+ *
+ * Payload SNAPSHOT (plan 56 §3.8) — the Inspect tab's dump screenshot,
+ * always PNG. Byte 1 here is NOT a `stream.started` streamId; it carries the
+ * `requestId` from the `inspect.dump` message this frame answers, so the
+ * client can pair it with the `inspect.tree` reply that names `snapshot: true`.
+ *
+ *   byte 1    : u8 requestId (`inspect.dump`'s payload.requestId)
+ *   byte 2..  : data PNG utuh
  */
-export const CHANNEL = { VIDEO: 0x01, AUDIO: 0x02, CONTROL: 0x03 } as const
+export const CHANNEL = { VIDEO: 0x01, AUDIO: 0x02, CONTROL: 0x03, SNAPSHOT: 0x04 } as const
 export const VIDEO_CODEC = { PNG: 0x01, H264: 0x02 } as const
 export const VIDEO_FLAG_KEYFRAME = 0x80
 
@@ -60,6 +68,29 @@ export function isH264Keyframe(buf: Uint8Array): boolean {
     i += startCode4 ? 4 : 3
   }
   return false
+}
+
+const SNAPSHOT_HEADER_LEN = 2
+
+/** Encodes a dump screenshot for `CHANNEL.SNAPSHOT` (plan 56 §3.8) — always PNG, no width/height/seq: `inspect.tree`'s own `frameSize` already carries the geometry. */
+export function encodeSnapshot(requestId: number, data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(SNAPSHOT_HEADER_LEN + data.length)
+  out[0] = CHANNEL.SNAPSHOT
+  out[1] = requestId & 0xff
+  out.set(data, SNAPSHOT_HEADER_LEN)
+  return out
+}
+
+export interface DecodedSnapshot {
+  requestId: number
+  data: Uint8Array
+}
+
+export function decodeSnapshot(buf: Uint8Array): DecodedSnapshot {
+  if (buf.length < SNAPSHOT_HEADER_LEN) throw new Error(`snapshot frame too short: ${buf.length} bytes`)
+  const channel = buf[0]
+  if (channel !== CHANNEL.SNAPSHOT) throw new Error(`channel is not SNAPSHOT: 0x${(channel ?? 0).toString(16)}`)
+  return { requestId: buf[1] ?? 0, data: buf.subarray(SNAPSHOT_HEADER_LEN) }
 }
 
 export interface DecodedVideoFrame {
