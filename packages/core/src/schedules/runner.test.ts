@@ -364,6 +364,49 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
     expect((failure?.meta as { code?: string } | null)?.code).toBe('script_not_found')
   })
 
+  test('plan 82 §3.3, §3.5 — with a registry wired, a schedule targeting a DEV-ONLY plugin script is refused with script_is_dev (criterion 18), never silently runs it', async () => {
+    const { createScriptRegistry } = await import('../scripts/registry')
+    const { createDevSlotStore } = await import('../plugins/dev-slots')
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const devSlots = createDevSlotStore()
+    devSlots.put({
+      pluginName: 'tiktok',
+      declaredVersion: '1.0.0',
+      bundlePath: '/tmp/tiktok.mjs',
+      scripts: [{ exportId: 'login', paramsSchema: {} }],
+      owner: { kind: 'workspace', label: '/scripts/tiktok' },
+    })
+    const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-schedule-runner-test', devSlots })
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'tiktok/login@latest', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db, { registry }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.detail).toContain('script_is_dev')
+    expect(db.select().from(batches).all()).toHaveLength(0) // never ran the unreviewed dev build
+  })
+
+  test('plan 82 §3.3 — with a registry wired, a schedule targeting a PUBLISHED plugin script resolves and dispatches, same as a standalone script (one of the 8 call sites, criterion 14)', async () => {
+    const { createScriptRegistry } = await import('../scripts/registry')
+    const { createDevSlotStore } = await import('../plugins/dev-slots')
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.insert(scripts)
+      .values({ id: 'plugin-script-1', name: 'tiktok/login', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(), pluginId: 'p1', exportId: 'login' })
+      .run()
+    const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-schedule-runner-test', devSlots: createDevSlotStore() })
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'tiktok/login@1.0.0', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db, { registry }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs[0]?.scriptId).toBe('plugin-script-1')
+  })
+
   test('a schedule disabled at its exact pinned version fails with script_disabled, audited', async () => {
     const db = setUp()
     seedDevice(db, 'd1')

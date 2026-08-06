@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { FindOutcome, KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
+import type { FindOutcome, JobStatus, JobSummary, KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
 
 export interface WaitForOptions {
   /** Default 10_000 ms. */
@@ -110,6 +110,131 @@ export interface ArtifactApi {
   file(label: string, data: Uint8Array | string, opts?: { ext?: string }): Promise<void>
 }
 
+/** One entry as `kv.list` returns it (plan 79 §4.1, §4.4) — a secret's `value` is always `null`
+ * here; use `kv.get` for the decrypted plaintext. */
+export interface KvListItem {
+  key: string
+  value: unknown
+  secret: boolean
+  hint: string | null
+  version: number
+  expiresAt: number | null
+  updatedAt: number
+}
+
+export interface KvListResult {
+  items: KvListItem[]
+  /** Pass back as `cursor` for the next page. `null` when this is the last one. */
+  nextCursor: string | null
+}
+
+export interface KvSetOptions {
+  /** Encrypted at rest and never returned by the HTTP API or a job log — see the SDK README. */
+  secret?: boolean
+  /** Seconds until this value stops being readable — swept lazily, but never returned once past. */
+  ttlSec?: number
+}
+
+/**
+ * The durable key/value store (plan 79) — `ctx.kv.device` is this job's device (keyed on its
+ * stableId, not the row that could change on a re-enrol); `ctx.kv.global` is the whole farm. The
+ * key is namespaced to this script automatically: a script never types its own namespace, so two
+ * scripts choosing the same key cannot collide.
+ */
+export interface KvApi {
+  /** Validates the stored JSON against `schema` before returning it — throws, naming the key, when
+   * an older version of this script wrote a shape that no longer matches. `null` when the key (or
+   * an unexpired TTL) does not exist. */
+  get<T>(key: string, schema: z.ZodType<T>): Promise<T | null>
+  /** `get`, without validating the shape — for a caller that genuinely wants `unknown`. */
+  getRaw(key: string): Promise<unknown>
+  set(key: string, value: unknown, opts?: KvSetOptions): Promise<{ version: number }>
+  /** Compare-and-swap: fails (returns `null`, leaves the stored value unchanged) when `expectedVersion`
+   * no longer matches — the caller learns it lost a race instead of silently overwriting another
+   * writer's value. */
+  setIfVersion(key: string, value: unknown, expectedVersion: number, opts?: KvSetOptions): Promise<{ version: number } | null>
+  /** Atomic; two overlapping calls never drop one. Defaults `by` to 1. */
+  increment(key: string, by?: number): Promise<number>
+  /** `false` when the key does not exist, or when `ifVersion` was given and did not match. */
+  delete(key: string, opts?: { ifVersion?: number }): Promise<boolean>
+  list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<KvListResult>
+}
+
+export interface JobsListResult {
+  items: JobSummary[]
+  /** Pass back as `cursor` for the next page. `null` when this is the last one. */
+  nextCursor: string | null
+  total: number
+}
+
+/**
+ * `ctx.jobs.trigger()`'s input (plan 81 §3.6, §4.2). `script` is a reference
+ * (`name`, `name@version`, or `name@latest`) resolved and pinned the instant
+ * `trigger()` runs — publishing a newer version afterward never changes what
+ * the queued job runs (§3.4).
+ */
+export interface TriggerInput {
+  script: string
+  params?: unknown
+  /** Defaults to this job's own device. */
+  deviceId?: string
+  /** Defaults to 0 — a triggered job never jumps the queue. */
+  priority?: number
+  /**
+   * Omitted, the runtime derives one from this job's own id, attempt, and
+   * how many `trigger()` calls have happened so far this attempt — which
+   * makes a re-run `finish()` (or a retried `run()` that calls `trigger()`
+   * the same number of times) reproduce the SAME key, so the second call
+   * dedupes instead of enqueueing a duplicate (§3.3). Set this explicitly
+   * only for "enqueue this at most once, ever, across every attempt and
+   * every device" — something only the script itself can know.
+   */
+  key?: string
+  /** Defaults to this job's own `expiresAt` — a chain cannot outlive its root's expiry window unless a caller opts out explicitly. Explicit `null` means no expiry. */
+  expiresAt?: number | null
+}
+
+/** `ctx.jobs.trigger()`'s return. `deduped` is required, never optional, so destructuring it is unavoidable — a script cannot mistake "already queued" for "queued". */
+export interface TriggerResult {
+  jobId: string
+  deduped: boolean
+}
+
+/**
+ * A running script's own view of the queue on its own device (plan 80,
+ * extended by plan 81 §3.6 with `trigger`) — `ctx.jobs.list()` is fixed to
+ * `ctx.job.deviceId`; there is no parameter that widens it (§3.2).
+ * `params`/`result` are never on a listed `JobSummary` — both are
+ * script-authored JSON a neighbouring script must never read directly
+ * (§3.3); `resultOf` is the separate, narrow door to a result, and only for
+ * a job whose script shares this one's namespace.
+ */
+export interface JobsApi {
+  list(opts?: { status?: JobStatus; limit?: number; cursor?: string }): Promise<JobsListResult>
+  /** The most recent job on this device that finished before this one started — not a happens-before guarantee (another device, or a manual run, can interleave). Null on a device's first-ever job. */
+  previous(): Promise<JobSummary | null>
+  /** Jobs still queued on this device, in claim order. */
+  queuedAfter(opts?: { limit?: number }): Promise<JobSummary[]>
+  /**
+   * `null` for every refusal — not found, a different script's namespace, or
+   * not finished yet — never four separate error codes: a script cannot act
+   * differently on "foreign namespace" than on "not found", and telling it
+   * which would itself disclose that a job exists. The refusal reason is
+   * logged parent-side, where an operator can see it.
+   */
+  resultOf(jobId: string): Promise<unknown | null>
+  /**
+   * Fire-and-forget (plan 81 §3.6): resolves with the new job's id the
+   * instant it is QUEUED — never once it runs, never with its result.
+   * Rejects (a real throw the script sees, never a null) when the chain is
+   * too deep, the chain or this job's own fan-out is at its farm-configured
+   * limit, or the target device is missing/blocked/quarantined — a runaway
+   * chain is stopped by the system, not by remembering to check a return
+   * value.
+   */
+  trigger(input: TriggerInput): Promise<TriggerResult>
+}
+
 export interface ScriptLogger {
   debug(msg: string, fields?: Record<string, unknown>): void
   info(msg: string, fields?: Record<string, unknown>): void
@@ -132,6 +257,10 @@ export interface ScriptContext<P = unknown> {
   job: { id: string; attempt: number; deviceId: string }
   /** Only set when finish runs after a failure. */
   error?: ScriptError
+  /** The durable key/value store (plan 79) — `device` for this job's device, `global` for the farm. */
+  kv: { device: KvApi; global: KvApi }
+  /** A running script's own view of the queue on its own device (plan 80). */
+  jobs: JobsApi
 }
 
 export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {

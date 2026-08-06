@@ -56,6 +56,11 @@ if (process.argv.includes('--job-child')) {
   // dispatch happens here, before any daemon code runs (see @enkaku/session
   // isolation.ts).
   await import('@enkaku/session/child-entry')
+} else if (process.argv.includes('--plugin-verify')) {
+  // Plan 82 §3.7 — the SAME re-exec trick as `--job-child`, for the bounded
+  // throwaway child that imports a staged plugin bundle and reports its
+  // shape (`plugins/verify-child.ts`).
+  await import('./plugins/verify-child-entry')
 } else {
   const [, , cmd] = process.argv
   if (cmd === 'doctor') {

@@ -445,6 +445,46 @@ export const JobSettingsSchema = z
       .default(null)
       .describe("An optional ceiling on what a script may request. Null means no ceiling — a script's own timeout is honoured however long. A clamp is logged, never silent.")
       .meta({ title: 'Maximum job timeout (ms)' }),
+    /**
+     * Bounds on `ctx.jobs.trigger()` (plan 81 §3.2) — the mechanism, not
+     * guidance, that stops a runaway chain: every bound is a refusal
+     * (`E_TRIGGER_TOO_DEEP` / `E_TRIGGER_CHAIN_FULL` / `E_TRIGGER_FAN_OUT`),
+     * never a silent drop, and every check fails CLOSED — no parse failure,
+     * timeout, or missing row may produce a deeper or longer chain (plan 67
+     * §3.6's precedent, applied here).
+     */
+    trigger: z
+      .object({
+        maxDepth: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .default(5)
+          .describe('How many links a trigger chain may have. A job that triggers a job that triggers a job... is refused past this depth.')
+          .meta({ title: 'Maximum trigger depth' }),
+        maxPerChain: z
+          .number()
+          .int()
+          .min(1)
+          .max(10_000)
+          .default(200)
+          .describe("The most jobs one chain may ever contain, counted from its root — the bound that actually stops a self-triggering script, since a chain that keeps re-rooting itself would otherwise never hit the depth limit.")
+          .meta({ title: 'Maximum jobs per chain' }),
+        maxPerJob: z
+          .number()
+          .int()
+          .min(1)
+          .max(1_000)
+          .default(10)
+          .describe('How many jobs a single job may directly trigger, so one script cannot queue a thousand jobs in a loop.')
+          .meta({ title: 'Maximum jobs triggered by one job' }),
+      })
+      .default({ maxDepth: 5, maxPerChain: 200, maxPerJob: 10 })
+      .meta({
+        title: 'Job triggering',
+        description: "Bounds on a running script's own ctx.jobs.trigger() calls — every one is a refusal a script sees as a throw, never a silent drop.",
+      }),
   })
   .default({
     resetPolicy: 'home',
@@ -457,6 +497,7 @@ export const JobSettingsSchema = z
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 60_000,
     maxTimeoutMs: null,
+    trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
   })
   .meta({
     title: 'Jobs',
@@ -900,6 +941,49 @@ export const FarmSettingsSchema = z.object({
       description: 'Limits on the database-backed workspace agents and people share (plan 64).',
     }),
   /**
+   * The durable key/value store scripts use across jobs (plan 79 §4.3) —
+   * quotas so a retry loop cannot turn it into a place to keep a 40 MB
+   * screenshot. `E_KV_QUOTA_EXCEEDED`/`E_KV_VALUE_TOO_LARGE`/`E_KV_KEY_INVALID`
+   * name whichever of these was exceeded, the same "name the limit" pattern
+   * `workspace` above already established.
+   */
+  kv: z
+    .object({
+      maxValueBytes: z
+        .number()
+        .int()
+        .min(1)
+        .default(65_536)
+        .describe('Largest single stored value, in bytes (the JSON-encoded plaintext — measured before encryption for a secret).')
+        .meta({ title: 'Max value size (bytes)' }),
+      maxKeyLength: z
+        .number()
+        .int()
+        .min(1)
+        .default(256)
+        .describe('Longest key allowed, in characters. A key is [A-Za-z0-9._:-]+ — no whitespace, no "/", so it never needs escaping in a log line or a URL.')
+        .meta({ title: 'Max key length' }),
+      maxEntriesPerNamespace: z
+        .number()
+        .int()
+        .min(1)
+        .default(1_000)
+        .describe('Largest number of keys one (scope, namespace) pair may hold.')
+        .meta({ title: 'Max entries per namespace' }),
+      maxEntriesPerDevice: z
+        .number()
+        .int()
+        .min(1)
+        .default(5_000)
+        .describe('Largest number of device-scoped entries one device (across every namespace) may hold.')
+        .meta({ title: 'Max entries per device' }),
+    })
+    .default({ maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 })
+    .meta({
+      title: 'KV store',
+      description: 'Limits on the durable key/value store scripts use across jobs (plan 79) — global and per-device.',
+    }),
+  /**
    * AI agent defaults (plan 65 §3.1, §3.7) — model, provider connector, and
    * context budgets an agent inherits unless it overrides them
    * (`AgentSettingsSchema` in `./agent.ts`). Same pattern as `defaults`
@@ -949,6 +1033,7 @@ export type SessionSettings = FarmSettings['session']
 export type WallSettings = FarmSettings['wall']
 export type ReadinessSettings = FarmSettings['readiness']
 export type WorkspaceSettings = FarmSettings['workspace']
+export type KvSettings = FarmSettings['kv']
 
 export const defaultFarmSettings = (): FarmSettings => FarmSettingsSchema.parse({})
 export const defaultDeviceSettings = (): DeviceSettings => DeviceSettingsSchema.parse({})

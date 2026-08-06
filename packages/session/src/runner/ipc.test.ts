@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { DeviceCallSchema, ParentToChildSchema } from './ipc'
+import { ChildToParentSchema, DeviceCallSchema, JobsCallSchema, ParentToChildSchema } from './ipc'
 
 /**
  * `app.launch`/`app.forceStop` package and activity validation (plan 34 §3.4,
@@ -180,5 +180,94 @@ describe('DeviceCallSchema — scroll, fling, and swipe/type options (plan 40 §
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: { direction: 'up', strength: 'hard' } }).success).toBe(true)
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: { direction: 'up', strength: 'extreme' } }).success).toBe(false)
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: {} }).success).toBe(false)
+  })
+})
+
+/** `ctx.jobs`'s `jobs.call`/`jobs.result` (plan 80 §4.2) — the same `{ t, callId }` framing `kv.call`/`kv.result` already use. */
+describe('JobsCallSchema and its framing on ChildToParentSchema/ParentToChildSchema (plan 80 §4.2)', () => {
+  test('list accepts no arguments, or status/limit/cursor', () => {
+    expect(JobsCallSchema.safeParse({ method: 'list' }).success).toBe(true)
+    expect(JobsCallSchema.safeParse({ method: 'list', status: 'queued', limit: 10, cursor: 'abc' }).success).toBe(true)
+    expect(JobsCallSchema.safeParse({ method: 'list', status: 'bogus' }).success).toBe(false)
+  })
+
+  test('previous takes no arguments', () => {
+    expect(JobsCallSchema.safeParse({ method: 'previous' }).success).toBe(true)
+  })
+
+  test('queuedAfter accepts an optional limit', () => {
+    expect(JobsCallSchema.safeParse({ method: 'queuedAfter' }).success).toBe(true)
+    expect(JobsCallSchema.safeParse({ method: 'queuedAfter', limit: 5 }).success).toBe(true)
+    expect(JobsCallSchema.safeParse({ method: 'queuedAfter', limit: -1 }).success).toBe(false)
+  })
+
+  test('resultOf requires a jobId', () => {
+    expect(JobsCallSchema.safeParse({ method: 'resultOf', jobId: 'j1' }).success).toBe(true)
+    expect(JobsCallSchema.safeParse({ method: 'resultOf' }).success).toBe(false)
+  })
+
+  /** `trigger` (plan 81 §4.2) — `script` must be a real ref shape, `key` is REQUIRED at this wire boundary (§3.3: `jobs-client.ts` always resolves one before sending). */
+  describe('trigger', () => {
+    test('requires script and key; params/deviceId/priority/expiresAt are optional', () => {
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'checkout@1.0.0', key: 'k1' }).success).toBe(true)
+      expect(
+        JobsCallSchema.safeParse({
+          method: 'trigger',
+          script: 'checkout@1.0.0',
+          key: 'k1',
+          params: { a: 1 },
+          deviceId: 'd2',
+          priority: 3,
+          expiresAt: 500,
+        }).success,
+      ).toBe(true)
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'checkout@1.0.0' }).success).toBe(false) // no key
+      expect(JobsCallSchema.safeParse({ method: 'trigger', key: 'k1' }).success).toBe(false) // no script
+    })
+
+    test('script must match the ScriptRef shape (name@version or name@latest, plan 62)', () => {
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'checkout@latest', key: 'k1' }).success).toBe(true)
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'tiktok/warmup@1.2.0', key: 'k1' }).success).toBe(true)
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'not-a-ref', key: 'k1' }).success).toBe(false)
+    })
+
+    test('expiresAt accepts null explicitly (no expiry) as well as a number', () => {
+      expect(JobsCallSchema.safeParse({ method: 'trigger', script: 'checkout@1.0.0', key: 'k1', expiresAt: null }).success).toBe(true)
+    })
+
+    test('a jobs.call { method: trigger } frames onto ChildToParentSchema like every other jobs.call', () => {
+      const parsed = ChildToParentSchema.safeParse({ t: 'jobs.call', callId: 'c1', method: 'trigger', script: 'checkout@1.0.0', key: 'k1' })
+      expect(parsed.success).toBe(true)
+      if (parsed.success && parsed.data.t === 'jobs.call' && parsed.data.method === 'trigger') {
+        expect(parsed.data.script).toBe('checkout@1.0.0')
+      }
+    })
+  })
+
+  test('a jobs.call frames onto ChildToParentSchema exactly like kv.call/device.call do', () => {
+    const parsed = ChildToParentSchema.safeParse({ t: 'jobs.call', callId: 'c1', method: 'previous' })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'jobs.call') expect(parsed.data.method).toBe('previous')
+  })
+
+  test('a jobs.result reply round-trips an arbitrary JobSummary-shaped value', () => {
+    const value = { jobId: 'j1', status: 'success' }
+    const parsed = ParentToChildSchema.safeParse({ t: 'jobs.result', callId: 'c1', ok: true, value })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'jobs.result') expect(parsed.data.value).toEqual(value)
+  })
+
+  test('a jobs.result refusal carries a code and message, never the value key', () => {
+    const parsed = ParentToChildSchema.safeParse({
+      t: 'jobs.result',
+      callId: 'c1',
+      ok: false,
+      error: { code: 'E_JOBS_UNAVAILABLE', message: 'not available' },
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'jobs.result') {
+      expect(parsed.data.error?.code).toBe('E_JOBS_UNAVAILABLE')
+      expect(parsed.data.value).toBeUndefined()
+    }
   })
 })

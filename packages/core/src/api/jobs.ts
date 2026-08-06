@@ -114,8 +114,13 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
   // plan 72.5's first pass found (Studio's own call site originally claimed the full-`JobDetail`
   // `JobResponseSchema` here, which would have thrown `E_BAD_RESPONSE` on every cancel in
   // production). `JobCancelResponseSchema` is the schema that actually matches this route; both
-  // sides now point at it.
-  app.post('/:id/cancel', (c) => typedJson(c, JobCancelResponseSchema, { job: service.cancel(c.req.param('id')) }))
+  // sides now point at it. `?cancelDescendants=1` (plan 81 §4.4) is opt-in, never automatic — an
+  // operator cancelling a runaway chain's root asks for it explicitly.
+  app.post('/:id/cancel', (c) => {
+    const cancelDescendants = ['1', 'true'].includes(c.req.query('cancelDescendants') ?? '')
+    const result = service.cancel(c.req.param('id'), { cancelDescendants })
+    return typedJson(c, JobCancelResponseSchema, result)
+  })
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) {

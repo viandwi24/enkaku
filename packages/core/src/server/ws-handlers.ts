@@ -1470,7 +1470,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'job.cancel': {
-            const info = deps.jobs.cancel(msg.payload.jobId)
+            // The WS message has no way to ask for cancel-with-descendants
+            // (plan 81 §4.4) — that opt-in lives only on the REST route.
+            const { job: info } = deps.jobs.cancel(msg.payload.jobId)
             send(ws, { type: 'job.status', payload: info })
             return
           }

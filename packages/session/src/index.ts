@@ -3,17 +3,34 @@ export { createSessionManager, type SessionManager, type SessionManagerDeps } fr
 export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
 export { PortAllocator, parsePortRange } from './port-allocator'
 export { createDeviceExecutor, DEFAULT_TIMING, type TimingSettings } from './device-executor'
-export { createJobRunner, type JobRunner, type JobRunnerDeps, type JobSpec, type ScriptFailure, type AbortReason } from './runner/job-runner'
+export {
+  createJobRunner,
+  type JobRunner,
+  type JobRunnerDeps,
+  type JobSpec,
+  type ScriptFailure,
+  type AbortReason,
+  type KvRunnerDeps,
+  type JobsRunnerDeps,
+} from './runner/job-runner'
 export { resetDevice, parseForegroundPackages, type ResetPolicy, type ResetPlan, type ResetOutcome } from './reset'
 export { createJobLogger, type JobLogger, type JobLogEntry } from './runner/job-logger'
 export {
   ChildToParentSchema,
   ParentToChildSchema,
   DeviceCallSchema,
+  KvCallSchema,
+  KvScopeSchema,
+  JobsCallSchema,
   type ChildToParent,
   type ParentToChild,
   type DeviceCall,
+  type KvCall,
+  type KvScopeKind,
+  type JobsCall,
 } from './runner/ipc'
+export { createKvApiFor, type KvApiClient, type KvListItem, type KvListResult, type KvSetResult } from './runner/kv-client'
+export { createJobsApiFor, type JobsApiClient, type JobsListResult } from './runner/jobs-client'
 export {
   resolveIsolation,
   createChildProcessIsolation,

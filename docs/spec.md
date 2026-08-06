@@ -566,6 +566,12 @@ Scripts are stored as source in the DB — but what about npm packages? The flow
 
 CRUD through Studio: create, edit, version, enable/disable, delete, run with parameters. Script authors write in their own editor with `@enkaku/sdk`, then publish to the farm.
 
+### 11.6 Plugins — many scripts, one bundle (plan 82)
+
+A **plugin** is one TypeScript project — an `index.ts` calling `definePlugin` — that publishes many scripts sharing helpers, types, and constants by ordinary import, as one bundle instead of one per script. Publishing a plugin writes one `plugins` row (identity plus version, so a farm can say what it is running and roll back) and N ordinary `scripts` rows, one per script it defines, each pointing at the same bundle blob and named `<plugin>/<script>` (e.g. `tiktok/login`). A plugin is a grouping and build concept, not a new execution path: a job still runs through the existing executor and still pins a concrete, resolved entry at enqueue, so publishing a new plugin version never changes what an already-queued job runs (§11.2's rules apply unchanged). A plugin may also occupy a **dev slot** — a built-but-unpublished bundle, runnable immediately for iteration, never a database row, and gone on a core restart.
+
+**`definePlugin` and `defineAgentPlugin` are two different, deliberately unrelated things that happen to share a word.** `definePlugin` (`@enkaku/sdk`) is the public authoring API described above — a script author's `index.ts` calls it, and it is the only one of the two ever exported from the SDK a script project depends on. `defineAgentPlugin` (`packages/core/src/agent/plugins/`, plan 77) is core-internal: it groups the AI agent's own built-in capabilities (device control, workspace, skills, and so on) into named sections of the agent's system prompt, compiled into the core binary. A script author has no way to reach `defineAgentPlugin` and never sees its output; an agent capability author never touches `definePlugin`. The two names collide in English, not in any code path either type of author can reach.
+
 ---
 
 ## 12. Data model (SQLite + Drizzle)

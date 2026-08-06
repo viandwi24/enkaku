@@ -85,6 +85,19 @@ export type AuditAction =
   | 'webhook.create'
   | 'webhook.update'
   | 'webhook.delete'
+  // The durable KV store's admin surface (plan 79 §4.3, step 4) — never carries a secret's plaintext in `meta`.
+  | 'kv.set'
+  | 'kv.delete'
+  // Plugins (plan 82 §5 step 11) — publish/stage, the explicit activate/rollback/reload/restart
+  // that §3.9 keeps separate from any bundle upload, delete, and the dev slot lifecycle.
+  | 'plugin.publish'
+  | 'plugin.activate'
+  | 'plugin.rollback'
+  | 'plugin.disable'
+  | 'plugin.reload'
+  | 'plugin.restart'
+  | 'plugin.delete'
+  | 'plugin.dev'
 
 export interface AuditLogger {
   record(input: { userId: string | null; action: AuditAction; target?: string; meta?: unknown }): void

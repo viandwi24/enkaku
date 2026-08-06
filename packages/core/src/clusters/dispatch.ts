@@ -99,6 +99,20 @@ function toJobRow(input: {
     failureClass: null,
     errorPhase: null,
     infraAttempts: 0,
+    // Plan 82 §3.4 — a batch member does not denormalise its script name at
+    // dispatch today (`createBatch` has no `ScriptRegistry` in its
+    // dependency graph); it still resolves the old way, through
+    // `scriptNames()`'s `scripts` table lookup. Left as an explicit `null`
+    // rather than silently omitted.
+    scriptName: null,
+    scriptVersion: null,
+    // Plan 81 §4.1 — a batch member is created directly, never via
+    // `ctx.jobs.trigger()`, so it has no lineage: it is its own root, at
+    // depth 0, with no trigger key.
+    triggeredByJobId: null,
+    rootJobId: null,
+    depth: 0,
+    triggerKey: null,
   }
 }
 

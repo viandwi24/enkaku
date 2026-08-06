@@ -9,7 +9,9 @@
  * the bundle has full fs and network access as the core's OS user.
  */
 import { FindOutcomeSchema } from '@enkaku/protocol'
-import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type ParentToChild } from './ipc'
+import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type JobsCall, type KvCall, type ParentToChild } from './ipc'
+import { createJobsApiFor } from './jobs-client'
+import { createKvApiFor } from './kv-client'
 
 const HEARTBEAT_MS = 10_000
 
@@ -23,6 +25,8 @@ function send(msg: ChildToParent): void {
 
 const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingArtifact = new Map<string, { resolve: () => void; reject: (e: unknown) => void }>()
+const pendingKv = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
+const pendingJobs = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const abortController = new AbortController()
 let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
 
@@ -37,6 +41,37 @@ function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't'
     send({ t: 'device.call', callId, ...call } as ChildToParent)
   })
 }
+
+function kvRequest<T>(call: KvCall): Promise<T> {
+  const callId = crypto.randomUUID()
+  return new Promise<T>((resolve, reject) => {
+    if (aborted) {
+      reject(new Error(`job di-abort (${aborted})`))
+      return
+    }
+    pendingKv.set(callId, { resolve: resolve as (v: unknown) => void, reject })
+    send({ t: 'kv.call', callId, ...call } as ChildToParent)
+  })
+}
+
+const kvApi = { device: createKvApiFor('device', kvRequest), global: createKvApiFor('global', kvRequest) }
+
+function jobsRequest<T>(call: JobsCall): Promise<T> {
+  const callId = crypto.randomUUID()
+  return new Promise<T>((resolve, reject) => {
+    if (aborted) {
+      reject(new Error(`job di-abort (${aborted})`))
+      return
+    }
+    pendingJobs.set(callId, { resolve: resolve as (v: unknown) => void, reject })
+    send({ t: 'jobs.call', callId, ...call } as ChildToParent)
+  })
+}
+
+// `jobsApi` is built inside `runScript`, once `init.job` is known — NOT here
+// at module scope like `kvApi` above — because `ctx.jobs.trigger()`'s
+// default idempotency key needs the caller's own `{ id, attempt }` (plan 81
+// §3.3, §4.2), which does not exist until the `init` message arrives.
 
 function saveArtifact(kind: 'screenshot' | 'file', label: string, dataBase64?: string, ext?: string): Promise<void> {
   const callId = crypto.randomUUID()
@@ -138,12 +173,28 @@ process.on('message', (raw: unknown) => {
     pendingArtifact.delete(msg.callId)
     if (msg.ok) waiter.resolve()
     else waiter.reject(new Error(msg.error?.message ?? 'failed to save the artifact'))
+  } else if (msg.t === 'kv.result') {
+    const waiter = pendingKv.get(msg.callId)
+    if (!waiter) return
+    pendingKv.delete(msg.callId)
+    if (msg.ok) waiter.resolve(msg.value)
+    else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'kv call failed'), { code: msg.error?.code }))
+  } else if (msg.t === 'jobs.result') {
+    const waiter = pendingJobs.get(msg.callId)
+    if (!waiter) return
+    pendingJobs.delete(msg.callId)
+    if (msg.ok) waiter.resolve(msg.value)
+    else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'jobs call failed'), { code: msg.error?.code }))
   } else if (msg.t === 'abort') {
     aborted = msg.reason
     abortController.abort()
     // Every pending device call is cancelled so the active phase stops quickly.
     for (const [, waiter] of pendingDevice) waiter.reject(new Error(`job di-abort (${msg.reason})`))
     pendingDevice.clear()
+    for (const [, waiter] of pendingKv) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    pendingKv.clear()
+    for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    pendingJobs.clear()
   } else if (msg.t === 'init') {
     void runScript(msg)
   }
@@ -196,6 +247,39 @@ interface BundleDef {
 }
 
 /**
+ * A `definePlugin()` bundle's default export (plan 82 §3.2, §4.1) — `scripts`
+ * is the tell: a standalone `ScriptDefinition` has `run`, a plugin has
+ * `scripts` (an array of members, each shaped like `BundleDef` minus its own
+ * `id`/`version`, which the plugin stamps at build time — see
+ * `@enkaku/sdk`'s `definePlugin`). Duplicated here as a small structural
+ * check rather than adding `@enkaku/sdk` as a dependency of this package for
+ * one shape test — `@enkaku/sdk`'s own `isPlugin()` does the identical
+ * check.
+ */
+interface PluginDef {
+  id: string
+  version: string
+  scripts: BundleDef[]
+  reset?: { packages?: string[] }
+}
+
+function isPluginBundle(def: unknown): def is PluginDef {
+  return !!def && typeof def === 'object' && Array.isArray((def as { scripts?: unknown }).scripts)
+}
+
+/**
+ * Which member of a plugin bundle to run (plan 82 §3.2) — set by the
+ * process that spawns this child (`@enkaku/session`'s `isolation.ts`,
+ * `SpawnRequest.scriptExportId`, threaded into `req.env`). Undefined for
+ * EVERY standalone bundle, and for a plugin bundle spawned by a caller that
+ * has not been updated to set it yet — see this file's own module doc and
+ * `isolation.ts`'s for the current state of that wiring.
+ */
+function resolveScriptExportId(): string | undefined {
+  return process.env.ENKAKU_SCRIPT_EXPORT_ID || undefined
+}
+
+/**
  * Import the bundle and report `ready` — done ONCE, at process start, rather
  * than gated on the `init` message (plan 35 §4.3 ordering problem). The
  * bundle path is already known from argv, so the child does not need any IPC
@@ -213,17 +297,43 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
   try {
     if (!bundlePath) throw new Error('no bundlePath was given to the child')
     const mod = (await import(bundlePath)) as { default?: unknown }
-    const def = mod.default as BundleDef | undefined
+    const rawDef = mod.default
+
+    // Plan 82 §3.2 — a pre-plan bundle (`rawDef.run` is a function, no
+    // `scripts` array) takes the standalone branch exactly as before this
+    // plan (criterion 27); a plugin bundle selects one member by
+    // `scriptExportId` and its `reset.packages` are the PLUGIN's own merged
+    // with the selected member's (§3.10, criterion 5) — deduplicated, order
+    // preserved, plugin-level packages first.
+    let def: BundleDef | undefined
+    let pluginResetPackages: string[] = []
+    if (isPluginBundle(rawDef)) {
+      const exportId = resolveScriptExportId()
+      const selected = exportId ? rawDef.scripts.find((s) => s.id === exportId) : undefined
+      if (!selected) {
+        throw Object.assign(
+          new Error(exportId ? `plugin bundle has no script "${exportId}"` : 'a plugin bundle requires ENKAKU_SCRIPT_EXPORT_ID to select a script'),
+          { code: 'BAD_BUNDLE' },
+        )
+      }
+      def = selected
+      pluginResetPackages = rawDef.reset?.packages ?? []
+    } else {
+      def = rawDef as BundleDef | undefined
+    }
+
     if (!def || typeof def.run !== 'function') {
       throw Object.assign(new Error('the bundle has no default ScriptDefinition export'), { code: 'BAD_BUNDLE' })
     }
+    const mergedResetPackages = [...new Set([...pluginResetPackages, ...(def.reset?.packages ?? [])])]
+    const reset = def.reset || pluginResetPackages.length > 0 ? { packages: mergedResetPackages, ...(def.reset?.clearData !== undefined ? { clearData: def.reset.clearData } : {}) } : undefined
     send({
       t: 'ready',
       scriptId: def.id,
       version: def.version,
       ...(typeof def.timeout === 'number' ? { timeoutMs: def.timeout } : {}),
       ...(typeof def.retries === 'number' ? { retries: def.retries } : {}),
-      ...(def.reset ? { reset: { packages: def.reset.packages, ...(def.reset.clearData !== undefined ? { clearData: def.reset.clearData } : {}) } } : {}),
+      ...(reset ? { reset } : {}),
     })
     return { bundlePath, def }
   } catch (err) {
@@ -255,6 +365,10 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       log: { debug: log('debug'), info: log('info'), warn: log('warn'), error: log('error') },
       job: init.job,
       params: undefined,
+      kv: kvApi,
+      // Bound to THIS attempt (plan 81 §3.3, §4.2) — see the module-level
+      // comment above `jobsRequest` for why this cannot be built earlier.
+      jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt }),
     }
 
     if (init.mode === 'finish-only') {

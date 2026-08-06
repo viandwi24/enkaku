@@ -1,4 +1,4 @@
-import { DEVICE_CALL_ARGS } from '@enkaku/protocol'
+import { DEVICE_CALL_ARGS, JobStatusSchema, ScriptRefSchema } from '@enkaku/protocol'
 import { z } from 'zod'
 
 /**
@@ -51,6 +51,93 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
 ])
 export type DeviceCall = z.infer<typeof DeviceCallSchema>
 
+/**
+ * The KV store's child⇄parent protocol (plan 79 §4.4) — a `kv.call` /
+ * `kv.result` round trip, the SAME shape `device.call` / `device.result`
+ * already use. Declared here, self-contained, rather than sourced from
+ * `@enkaku/protocol` the way `DeviceCallSchema` is: unlike `device.*`, the kv
+ * store is never exposed as an `invoke()` capability (plan 79 is IPC + a
+ * REST admin surface only), so there is no second definition anywhere else
+ * in the registry this would need to stay identical to.
+ */
+export const KvScopeSchema = z.enum(['global', 'device'])
+export type KvScopeKind = z.infer<typeof KvScopeSchema>
+
+export const KvCallSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('get'), scope: KvScopeSchema, key: z.string() }),
+  z.object({
+    op: z.literal('set'),
+    scope: KvScopeSchema,
+    key: z.string(),
+    value: z.unknown(),
+    secret: z.boolean().optional(),
+    ttlSec: z.number().int().positive().optional(),
+  }),
+  z.object({
+    op: z.literal('setIfVersion'),
+    scope: KvScopeSchema,
+    key: z.string(),
+    value: z.unknown(),
+    expectedVersion: z.number().int(),
+    secret: z.boolean().optional(),
+    ttlSec: z.number().int().positive().optional(),
+  }),
+  z.object({ op: z.literal('increment'), scope: KvScopeSchema, key: z.string(), by: z.number().optional() }),
+  z.object({ op: z.literal('delete'), scope: KvScopeSchema, key: z.string(), ifVersion: z.number().int().optional() }),
+  z.object({
+    op: z.literal('list'),
+    scope: KvScopeSchema,
+    prefix: z.string().optional(),
+    limit: z.number().int().positive().max(1000).optional(),
+    cursor: z.string().optional(),
+  }),
+])
+export type KvCall = z.infer<typeof KvCallSchema>
+
+/**
+ * `ctx.jobs`'s child⇄parent protocol (plan 80 §4.2) — a `jobs.call` /
+ * `jobs.result` round trip, the SAME shape `kv.call` above already uses.
+ * Self-contained here rather than sourced from `@enkaku/protocol`, for the
+ * same reason `KvCallSchema` is: `ctx.jobs` is never an `invoke()`
+ * capability, so there is no second definition anywhere in the registry this
+ * would need to stay identical to. `JobStatusSchema` is the one piece that
+ * DOES come from `@enkaku/protocol` — it is already the shared source for
+ * every job-status literal in the codebase, and duplicating its six values
+ * here would be exactly the drift plan 63 §3.7 removed from `DeviceCallSchema`.
+ */
+export const JobsCallSchema = z.discriminatedUnion('method', [
+  z.object({
+    method: z.literal('list'),
+    status: JobStatusSchema.optional(),
+    limit: z.number().int().positive().optional(),
+    cursor: z.string().nullable().optional(),
+  }),
+  z.object({ method: z.literal('previous') }),
+  z.object({ method: z.literal('queuedAfter'), limit: z.number().int().positive().optional() }),
+  z.object({ method: z.literal('resultOf'), jobId: z.string() }),
+  /**
+   * `ctx.jobs.trigger()` (plan 81 §4.2, §4.3) — fire-and-forget: enqueues
+   * another job and returns its id, never its result. `key` is REQUIRED at
+   * this wire boundary (never optional here) because the default derivation
+   * described in plan 81 §3.3 (`${jobId}:${attempt}:${callIndex}`) needs the
+   * caller's own attempt number, which is only known CHILD-side (`ctx.job`)
+   * — `jobs-client.ts`'s `trigger()` always resolves a concrete key, whether
+   * the script supplied one or not, before this message is ever sent, so the
+   * parent never has to guess at an attempt number it does not track on the
+   * `jobs` row at all (attempts are never persisted — see `job-runner.ts`).
+   */
+  z.object({
+    method: z.literal('trigger'),
+    script: ScriptRefSchema,
+    params: z.unknown().optional(),
+    deviceId: z.string().optional(),
+    priority: z.number().int().optional(),
+    key: z.string().min(1),
+    expiresAt: z.number().int().nullable().optional(),
+  }),
+])
+export type JobsCall = z.infer<typeof JobsCallSchema>
+
 const ScriptErrorSchema = z.object({
   code: z.string(),
   message: z.string(),
@@ -80,6 +167,8 @@ export const ChildToParentSchema = z.union([
   }),
   z.object({ t: z.literal('phase'), phase: z.enum(['prepare', 'run', 'finish']) }),
   z.intersection(z.object({ t: z.literal('device.call'), callId: z.string() }), DeviceCallSchema),
+  z.intersection(z.object({ t: z.literal('kv.call'), callId: z.string() }), KvCallSchema),
+  z.intersection(z.object({ t: z.literal('jobs.call'), callId: z.string() }), JobsCallSchema),
   z.object({
     t: z.literal('artifact.save'),
     callId: z.string(),
@@ -126,6 +215,20 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
     t: z.literal('artifact.result'),
     callId: z.string(),
     ok: z.boolean(),
+    error: z.object({ code: z.string(), message: z.string() }).optional(),
+  }),
+  z.object({
+    t: z.literal('kv.result'),
+    callId: z.string(),
+    ok: z.boolean(),
+    value: z.unknown().optional(),
+    error: z.object({ code: z.string(), message: z.string() }).optional(),
+  }),
+  z.object({
+    t: z.literal('jobs.result'),
+    callId: z.string(),
+    ok: z.boolean(),
+    value: z.unknown().optional(),
     error: z.object({ code: z.string(), message: z.string() }).optional(),
   }),
   // 'crashed' (plan 37 §3.5, §4.4): the target application crashed mid-run —

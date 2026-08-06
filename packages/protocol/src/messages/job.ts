@@ -114,6 +114,42 @@ export const JobDetailSchema = JobInfoSchema.extend({
 })
 export type JobDetail = z.infer<typeof JobDetailSchema>
 
+/**
+ * One job as `ctx.jobs` sees it (plan 80 §3.3, §4.1) — a projection over the
+ * SAME row `JobInfo` reads, deliberately narrower: no `params`, no `result`.
+ * Both are script-authored JSON a neighbouring script must never be able to
+ * read directly (§3.3) — `ctx.jobs.resultOf()` is the separate, narrowly
+ * scoped door to a result.
+ *
+ * `triggeredByJobId`/`rootJobId`/`depth` are populated from plan 81's
+ * lineage columns (null for a job nothing triggered — a pre-plan-81 row, or
+ * any job a human/schedule/batch created directly). `origin`/`pluginName`
+ * are still always `null`: the plan 82 columns they would read from
+ * (plugin/origin on `jobs`) do not exist yet. Declared now so plan 82
+ * extends this shape additively instead of widening it later.
+ */
+export const JobSummarySchema = z.object({
+  jobId: z.string(),
+  scriptName: z.string().nullable(),
+  scriptVersion: z.string().nullable(),
+  /** 'standalone' | 'plugin' | 'dev' (plan 82 §3.3) once that column exists. */
+  origin: z.string().nullable(),
+  pluginName: z.string().nullable(),
+  status: JobStatusSchema,
+  createdAt: z.number(),
+  startedAt: z.number().nullable(),
+  finishedAt: z.number().nullable(),
+  durationMs: z.number().nullable(),
+  failureClass: z.string().nullable(),
+  errorPhase: z.string().nullable(),
+  error: z.string().nullable(),
+  /** Plan 81 — lineage; null until it lands. */
+  triggeredByJobId: z.string().nullable(),
+  rootJobId: z.string().nullable(),
+  depth: z.number().int().nullable(),
+})
+export type JobSummary = z.infer<typeof JobSummarySchema>
+
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
   payload: JobInfoSchema.extend({

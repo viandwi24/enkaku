@@ -12,6 +12,7 @@ import type { LeaseManager } from '../lease/lease-manager'
 import type { DeviceStateMachine } from '../device/state-machine'
 import type { ReadinessManager } from '../device/readiness'
 import { resolveScriptRef } from '../scripts/resolve'
+import type { ScriptRegistry } from '../scripts/registry'
 import { getScriptDetail, listScriptGroups, publishScript, type PublishScriptInput, type ScriptDetail, type ScriptGroupInfo } from '../scripts/service'
 import type { JobService } from '../services/job-service'
 import { clusterRefFor, listDevicesWithTags, rowToDeviceInfo } from '../registry/device-registry'
@@ -226,6 +227,15 @@ export interface CapabilityContextDeps {
   workspace: WorkspaceStore
   /** Plan 68 §4.3, §4.4 — one instance per boot, exactly like `workspace` above. Optional for the same reason `CapabilityContext.notify` is (see its comment). */
   notify?: NotifyService
+  /**
+   * Plan 82 §3.3 — replaces the raw `resolveScriptRef(deps.db, ref)` call
+   * below with the registry's merge of persisted scripts (standalone AND
+   * plugin members — an ordinary `scripts` row either way) plus dev slots.
+   * Optional, like `notify`/`workspace` before it were introduced: every
+   * pre-plan-82 test that hand-builds a `CapabilityContextDeps` literal
+   * keeps compiling unedited, and falls back to the exact old behaviour.
+   */
+  registry?: ScriptRegistry
 }
 
 function buildScriptService(db: Db): ScriptCapabilityService {
@@ -334,8 +344,13 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     // `ScriptRef` (`@enkaku/protocol`) is `z.string().regex(...)` — the
     // inferred TS type is plain `string`, so no cast is involved here; the
     // regex itself is enforced by the capability's OWN input schema at
-    // `invoke`'s parse step (step 1), before this is ever called.
-    resolveScriptRef: (ref) => resolveScriptRef(deps.db, ref),
+    // `invoke`'s parse step (step 1), before this is ever called. Plan 82
+    // §3.3 — goes through the registry when one is wired (`daemon.ts`
+    // always wires it), so a capability caller (e.g. `job.enqueue`'s
+    // `scriptRef` form, `capability/job.ts`) resolves a plugin member the
+    // same as a standalone script; a test with no registry keeps the exact
+    // pre-plan-82 behaviour.
+    resolveScriptRef: (ref) => (deps.registry ? deps.registry.resolve(ref) : resolveScriptRef(deps.db, ref)),
 
     workspace: deps.workspace,
     // Plan 64 §3.2, §4.2: every human actor gets the whole tree both ways

@@ -279,3 +279,62 @@ describe('claimNext — restart continuation (plan 20 §7)', () => {
     expect(c1?.job.id).not.toBe(j2)
   })
 })
+
+describe('cancelQueuedDescendants (plan 81 §4.4, criterion 11)', () => {
+  function trigger(db: Db, parentId: string, id: string, status: string) {
+    db.insert(jobs)
+      .values({ id, scriptId: 'internal:sleep', deviceId: 'd1', status, priority: 0, createdAt: new Date(), triggeredByJobId: parentId, depth: 1 })
+      .run()
+  }
+
+  test('cancels every still-queued descendant, transitively, and leaves unrelated jobs alone', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const root = seedJob(db, { deviceId: 'd1' })
+    // root -> c1 (queued) -> gc1 (queued)
+    //      -> c2 (queued)
+    trigger(db, root, 'c1', 'queued')
+    trigger(db, 'c1', 'gc1', 'queued')
+    trigger(db, root, 'c2', 'queued')
+    // An unrelated standalone job — never triggered by anything.
+    const unrelated = seedJob(db, { deviceId: 'd1' })
+
+    const cancelled = store.cancelQueuedDescendants(root)
+    expect(cancelled).toBe(3)
+    expect(store.get('c1')?.status).toBe('cancelled')
+    expect(store.get('gc1')?.status).toBe('cancelled')
+    expect(store.get('c2')?.status).toBe('cancelled')
+    expect(store.get(unrelated)?.status).toBe('queued') // untouched
+    expect(store.get(root)?.status).toBe('queued') // the root itself is never touched by this call
+  })
+
+  test('a non-queued descendant (already running/finished) is left alone, not cancelled', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const root = seedJob(db, { deviceId: 'd1' })
+    trigger(db, root, 'c1', 'running')
+    trigger(db, root, 'c2', 'success')
+    trigger(db, root, 'c3', 'queued')
+
+    const cancelled = store.cancelQueuedDescendants(root)
+    expect(cancelled).toBe(1)
+    expect(store.get('c1')?.status).toBe('running')
+    expect(store.get('c2')?.status).toBe('success')
+    expect(store.get('c3')?.status).toBe('cancelled')
+  })
+
+  test('a sibling subtree (same root, different parent) is left alone — this walks triggeredByJobId, not rootJobId', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const root = seedJob(db, { deviceId: 'd1' })
+    trigger(db, root, 'c1', 'queued')
+    trigger(db, root, 'c2', 'queued') // c1's SIBLING — not a descendant of c1
+
+    const cancelled = store.cancelQueuedDescendants('c1')
+    expect(cancelled).toBe(0)
+    expect(store.get('c2')?.status).toBe('queued')
+  })
+})

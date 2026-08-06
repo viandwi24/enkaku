@@ -20,6 +20,7 @@ import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type 
 import type { JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { resolveScriptRef } from '../scripts/resolve'
+import type { ScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { nextFire, occurrencesBetween } from './cron'
@@ -95,6 +96,15 @@ export interface ScheduleRunnerDeps {
   scheduledAgentCeilings?: () => ScheduledAgentCeilings
   /** Plan 68 §3.3, §3.5 — a SYSTEM-generated notification (never rate-limited; not a `notify.send` capability call): a spend-cap refusal or an auto-denied approval. Optional so every pre-plan-68 test keeps compiling unedited. */
   notifySystem?: (input: { level: 'info' | 'warn' | 'error'; title: string; body?: string; context?: NotificationContext }) => void
+  /**
+   * Plan 82 §3.3, §3.5 — resolving through the registry (rather than the
+   * raw `resolveScriptRef`) is what makes a schedule refuse a dev-only
+   * target with the named `script_is_dev` error (criterion 18): `resolve()`
+   * called with no `allowDev` throws exactly that when a reference would
+   * only match an unpublished dev slot. Optional so every pre-plan-82 test
+   * keeps compiling unedited and falls back to the old direct call.
+   */
+  registry?: ScriptRegistry
 }
 
 interface ResolvedDeps extends ScheduleRunnerDeps {
@@ -196,7 +206,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       if (!parsedRef.success) {
         throw new EnkakuError('script_ref_unresolved', `"${schedule.scriptRef}" is not a valid script reference`)
       }
-      const resolved = resolveScriptRef(deps.db, parsedRef.data)
+      const resolved = deps.registry ? deps.registry.resolve(parsedRef.data) : resolveScriptRef(deps.db, parsedRef.data)
 
       // The queue timeout lives on the job, set from whatever created it
       // (plan 21 §3.3) — a schedule is simply the first caller to set it.

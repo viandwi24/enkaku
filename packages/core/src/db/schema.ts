@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm'
 import { blob, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
@@ -252,6 +253,43 @@ export const jobs = sqliteTable(
      * that has never rebound.
      */
     infraAttempts: integer('infra_attempts').default(0),
+    /**
+     * Plan 82 §3.4 — denormalised at enqueue from the resolving registry
+     * entry, so a job's script name survives even the script row it
+     * pointed at disappearing (a deleted publish, or — the case this plan
+     * adds — a dev slot that has since been dropped, criterion 13). Both
+     * nullable: a pre-existing row has neither, and keeps resolving its
+     * name the old way, through `jobs.scriptId` → the `scripts` table
+     * (`queue/job-store.ts`'s `scriptNames()` falls back to that lookup
+     * whenever these are null). Also read by plan 80's `jobs/script-jobs.ts`
+     * (`JobSummary.scriptName`/`.scriptVersion`) for a running script's own
+     * view of its neighbours on the queue.
+     */
+    scriptName: text('script_name'),
+    scriptVersion: text('script_version'),
+    /**
+     * Plan 81 §3.2, §4.1 — lineage. `triggeredByJobId` is the job whose
+     * script called `ctx.jobs.trigger()`; null for a job a human, schedule,
+     * or batch created. `rootJobId` is the origin of the chain — null on the
+     * origin's OWN row (a job with no trigger IS its own root, but that is
+     * never written back onto it; every existing pre-plan-81 row already
+     * satisfies "null root, depth 0", which is exactly true of it). `depth`
+     * is 0 for a root, parent's depth + 1 otherwise — both `rootJobId` and
+     * `depth` are set by the PARENT at enqueue time from the triggering
+     * job's own row, never from anything the child sends (`jobs/triggers.ts`
+     * §3.2) — a child that could name its own depth could name zero.
+     */
+    triggeredByJobId: text('triggered_by_job_id'),
+    rootJobId: text('root_job_id'),
+    depth: integer('depth').default(0),
+    /**
+     * Plan 81 §3.3 — idempotency key for a trigger call, scoped by
+     * `rootJobId` via the unique index below. A second trigger with the same
+     * key (root, key) pair returns the existing row instead of inserting —
+     * the mechanism that makes a re-run `finish()` (or a retried `run()`
+     * that derives the same key) a no-op rather than a duplicate job.
+     */
+    triggerKey: text('trigger_key'),
   },
   (t) => [
     index('idx_jobs_claim').on(t.status, t.deviceId, t.priority, t.createdAt),
@@ -260,6 +298,14 @@ export const jobs = sqliteTable(
     // The unfiltered `/api/jobs` keyset list — `(createdAt DESC, id DESC)`
     // (plan 30 §4.2). idx_jobs_device only helps once a deviceId is given.
     index('idx_jobs_created').on(t.createdAt, t.id),
+    // Plan 81 §4.1 — idempotency (a partial unique index: SQLite only
+    // enforces uniqueness among rows where `trigger_key IS NOT NULL`, so
+    // every job with no trigger key at all — which is most jobs — never
+    // collides) and the chain-size/descendant lookups (`triggers.ts`,
+    // `script-jobs.ts`, cancel-with-descendants).
+    uniqueIndex('idx_jobs_trigger_key').on(t.rootJobId, t.triggerKey).where(sql`${t.triggerKey} is not null`),
+    index('idx_jobs_root').on(t.rootJobId),
+    index('idx_jobs_triggered_by').on(t.triggeredByJobId),
   ],
 )
 
@@ -331,10 +377,22 @@ export const scripts = sqliteTable(
     enabled: integer('enabled', { mode: 'boolean' }).default(true),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
+    /**
+     * Plan 82 §4.2 — set together, both null, or both non-null. `pluginId`
+     * is `plugins.id` this row's bundle came from (the row's own `bundle`
+     * column holds the FULL plugin bundle, identical across every member —
+     * see `plugins/runtime.ts`'s `activate`); `exportId` is which member of
+     * `mod.default.scripts` the child selects (`child-entry.ts`). Null for
+     * every standalone script, including every row published before this
+     * plan.
+     */
+    pluginId: text('plugin_id'),
+    exportId: text('export_id'),
   },
   (t) => [
     uniqueIndex('idx_scripts_name_version').on(t.name, t.version),
     index('idx_scripts_created').on(t.createdAt, t.id),
+    index('idx_scripts_plugin').on(t.pluginId),
   ],
 )
 
@@ -650,6 +708,64 @@ export const agentBlobs = sqliteTable('agent_blobs', {
 
 export type AgentBlobRow = typeof agentBlobs.$inferSelect
 export type AgentBlobInsert = typeof agentBlobs.$inferInsert
+
+/**
+ * The durable key/value store scripts use across jobs (plan 79 §3.2, §3.3,
+ * §4.2) — global (the whole farm) or device-scoped. The identity is THREE
+ * parts, not two (§3.2): `(scope, scopeId, namespace, key)`. `namespace` is
+ * the owning plugin's id, or a standalone script's own name — the runtime
+ * injects it; a script never types it, which is what makes two plugins both
+ * picking the key `token` impossible to collide rather than merely
+ * discouraged from colliding. The unique index below IS that rule, enforced
+ * by the database.
+ *
+ * `scopeId` is the device's `stableId` for a device-scoped row, NEVER
+ * `devices.id` (§3.3, CLAUDE.md: device identity is stableId; the adb serial
+ * is a transport address) — keying on the row id would orphan a device's
+ * values the moment it is forgotten and re-admitted with a fresh row.
+ * `''` for a global-scoped row (there is no device to name).
+ *
+ * `value` is a plain TEXT column, not `{mode:'json'}` (a deviation from the
+ * plan's own §4.2 illustration, recorded here rather than silently): a
+ * secret row does not hold JSON at all, it holds the
+ * `secrets/store.ts` AEAD envelope (`iv.tag.ciphertext`) under the `'kv'`
+ * namespace, so the column has to accept either shape uniformly as a string.
+ * A non-secret row holds `JSON.stringify(value)`.
+ */
+export const kvEntries = sqliteTable(
+  'kv_entries',
+  {
+    id: text('id').primaryKey(),
+    /** 'global' | 'device'. */
+    scope: text('scope').notNull(),
+    /** The device's stableId for a device-scoped row; '' for global. NOT devices.id — see the table comment. */
+    scopeId: text('scope_id').notNull().default(''),
+    /** The owning plugin id, or a standalone script's own name (§3.2). Injected by the runtime, never typed by a script. */
+    namespace: text('namespace').notNull(),
+    key: text('key').notNull(),
+    /** JSON text for a plain value; the `secrets/store.ts` `'kv'`-namespace envelope for a secret. */
+    value: text('value').notNull(),
+    secret: integer('secret', { mode: 'boolean' }).notNull().default(false),
+    /** A masked tail computed once at write time (`secretHint`) — null unless `secret`. */
+    hint: text('hint'),
+    /** Bumped on every write — the compare-and-swap token (§3.5). */
+    version: integer('version').notNull().default(1),
+    /** Unix seconds; null never expires. Filtered out on every read the moment it is past, regardless of whether `sweepExpired` has run yet (§4.5). */
+    expiresAt: integer('expires_at'),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+    /** The job that made the most recent write, if any — informational only. */
+    updatedByJobId: text('updated_by_job_id'),
+  },
+  (t) => [
+    // The identity rule from §3.2, enforced by the database rather than convention.
+    uniqueIndex('idx_kv_identity').on(t.scope, t.scopeId, t.namespace, t.key),
+    index('idx_kv_scan').on(t.scope, t.scopeId, t.namespace),
+    index('idx_kv_expiry').on(t.expiresAt),
+  ],
+)
+
+export type KvEntryRow = typeof kvEntries.$inferSelect
+export type KvEntryInsert = typeof kvEntries.$inferInsert
 
 /**
  * A configured provider endpoint plus credential (plan 65 §3.2, §3.6, §4.1)
@@ -976,3 +1092,53 @@ export const webhookEndpoints = sqliteTable('webhook_endpoints', {
 })
 export type WebhookEndpointRow = typeof webhookEndpoints.$inferSelect
 export type WebhookEndpointInsert = typeof webhookEndpoints.$inferInsert
+
+/**
+ * One published VERSION of a plugin (plan 82 §4.2) — a plugin is a grouping
+ * and build concept, not a runtime one (§3.1): activating a version writes
+ * N ordinary `scripts` rows (named `<name>/<scriptId>`) alongside this row;
+ * a job never references this table, only the `scripts` row it produced,
+ * which is why rolling back or removing a plugin never touches a queued or
+ * running job (§3.9, §4.4).
+ *
+ * `(name, version)` is unique, exactly like `scripts` (plan 62 §3.1) — the
+ * property that makes a pinned reference mean something. `bundle` is
+ * duplicated per version (not de-duplicated across the plugin's history) so
+ * `rollback` (§4.3) works without a re-publish: the old bundle is still
+ * sitting in its own row.
+ */
+export const plugins = sqliteTable(
+  'plugins',
+  {
+    id: text('id').primaryKey(),
+    /** `tiktok` — stable across versions; NOT unique alone, `(name, version)` is. */
+    name: text('name').notNull(),
+    version: text('version').notNull(),
+    title: text('title'),
+    description: text('description'),
+    /** The single bundle every one of this version's scripts rows points at (§3.2). */
+    bundle: text('bundle').notNull(),
+    source: text('source'),
+    /** sha256 of `bundle` — what the materialised-file cache keys on (§4.5). */
+    bundleHash: text('bundle_hash').notNull(),
+    /** staged | verifying | active | superseded | failed | disabled (§3.7, §3.8, §4.4). */
+    status: text('status').notNull().default('staged'),
+    verifiedAt: integer('verified_at', { mode: 'timestamp' }),
+    /** Human-readable, verbatim from the verification child (§3.7 step 2). Shown in the UI (§4.6). */
+    verifyError: text('verify_error'),
+    verifyErrorCode: text('verify_error_code'),
+    /** What the bundle declared once verified: script ids and their JSON-Schema params. Null until verified. */
+    manifest: text('manifest', { mode: 'json' }),
+    /** `{ packages: string[] }` — merged with each script's own at the runner (§3.10). Null if the plugin declares none. */
+    resetPackages: text('reset_packages', { mode: 'json' }),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('idx_plugins_name_version').on(t.name, t.version),
+    index('idx_plugins_status').on(t.name, t.status),
+  ],
+)
+
+export type PluginRow = typeof plugins.$inferSelect
+export type PluginInsert = typeof plugins.$inferInsert

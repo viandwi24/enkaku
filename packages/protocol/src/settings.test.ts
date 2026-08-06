@@ -157,6 +157,7 @@ describe('FarmSettingsSchema.job — session hygiene between jobs (plan 35 §4.1
       defaultTimeoutMs: 3_600_000,
       startupTimeoutMs: 60_000,
       maxTimeoutMs: null,
+      trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
     })
   })
 

@@ -23,8 +23,14 @@ export const JobResponseSchema = z.object({ job: JobDetailSchema })
 /** `POST /api/jobs` — `{job}` is a full `JobInfo`, not just `{jobId}`. */
 export const JobCreateResponseSchema = z.object({ job: JobInfoSchema })
 
-/** `POST /api/jobs/:id/cancel` — `service.cancel()` returns a bare `JobInfo`, not a `JobDetail`. */
-export const JobCancelResponseSchema = z.object({ job: JobInfoSchema })
+/**
+ * `POST /api/jobs/:id/cancel` — `service.cancel()` returns a bare `JobInfo`,
+ * not a `JobDetail`. `cancelledDescendants` (plan 81 §4.4) counts queued
+ * jobs cancelled because `?cancelDescendants=1` was passed — 0 whenever the
+ * option was not used, never omitted, so a caller does not have to guess
+ * whether the field is simply absent from an older server.
+ */
+export const JobCancelResponseSchema = z.object({ job: JobInfoSchema, cancelledDescendants: z.number().int().min(0).default(0) })
 
 /** `GET /api/jobs?...` (keyset). */
 export const JobsPageResponseSchema = pageSchema(JobInfoSchema)

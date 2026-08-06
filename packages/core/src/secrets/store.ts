@@ -28,7 +28,7 @@ import { EnkakuError } from '../util/errors'
  * the database", nothing stronger.
  */
 
-export type SecretNamespace = 'network' | 'connector' | 'webhook'
+export type SecretNamespace = 'network' | 'connector' | 'webhook' | 'kv'
 
 const KEY_FILE = 'secrets.key'
 /**

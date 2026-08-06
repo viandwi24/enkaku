@@ -17,8 +17,13 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
     jobId: row.id,
     deviceId: row.deviceId,
     scriptId: row.scriptId,
-    scriptName: script?.name ?? null,
-    scriptVersion: script?.version ?? null,
+    // Plan 82 §3.4 — the row's OWN denormalised name/version wins when
+    // present (set at enqueue time; survives the `scripts` row it pointed
+    // at disappearing, including a dropped dev slot, criterion 13); a
+    // pre-existing row has neither and falls back to the table lookup
+    // exactly as before this plan.
+    scriptName: row.scriptName ?? script?.name ?? null,
+    scriptVersion: row.scriptVersion ?? script?.version ?? null,
     status: (row.status ?? 'queued') as JobStatus,
     error: row.error,
     failureClass: row.failureClass,
@@ -62,6 +67,15 @@ export interface JobStore {
     batchSeq?: number
     /** Plan 21 §3.3 — unix seconds; the reaper expires the job if it has not started by then. */
     expiresAt?: number | null
+    /**
+     * Plan 82 §3.4 — denormalised onto the row at enqueue, from whatever
+     * resolved `scriptId` (typically `ScriptRegistry.resolve()`'s entry).
+     * Omitted/undefined stores `null`, exactly like a pre-existing row that
+     * predates this column — `scriptNames()` below falls back to the
+     * `scripts` table lookup whenever it reads null here.
+     */
+    scriptName?: string | null
+    scriptVersion?: string | null
   }): JobRow
   get(jobId: string): JobRow | null
   /** Keyset paging — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2). */
@@ -108,6 +122,15 @@ export interface JobStore {
   listByBatch(batchId: string): JobRow[]
   /** Cancel every queued job in a batch in one statement — used by the batch cancel endpoint (plan 20 §4.6). */
   cancelQueuedInBatch(batchId: string): number
+  /**
+   * Cancel every still-`queued` descendant of `jobId` — walked transitively
+   * through `triggeredByJobId` (plan 81 §4.4), not merely `rootJobId`, so a
+   * non-root job's siblings (and their own descendants) are left alone;
+   * "leaves unrelated jobs alone" is a property of the ACTUAL trigger tree,
+   * not a same-chain heuristic. Opt-in on the cancel call, never automatic.
+   * Returns the number actually cancelled.
+   */
+  cancelQueuedDescendants(jobId: string): number
   renewLease(jobId: string, ttlSec: number): boolean
   expiredRunning(): JobRow[]
   /**
@@ -150,6 +173,16 @@ export function createJobStore(db: Db): JobStore {
         failureClass: null,
         errorPhase: null,
         infraAttempts: 0,
+        scriptName: input.scriptName ?? null,
+        scriptVersion: input.scriptVersion ?? null,
+        // Plan 81 §4.1 — a job enqueued through this ordinary path (a
+        // human, a schedule, a batch) has no lineage: it is its own root,
+        // at depth 0, with no trigger key. Only `jobs/triggers.ts`'s own
+        // dedicated insert ever writes non-default values here.
+        triggeredByJobId: null,
+        rootJobId: null,
+        depth: 0,
+        triggerKey: null,
       }
       db.insert(jobs).values(row).run()
       return row
@@ -351,6 +384,41 @@ export function createJobStore(db: Db): JobStore {
           .where(and(eq(jobs.batchId, batchId), eq(jobs.status, 'queued')))
           .run(),
       )
+    },
+
+    cancelQueuedDescendants(jobId) {
+      // A level-by-level BFS over `triggeredByJobId` rather than a single
+      // recursive query — chain sizes are bounded (`jobs.trigger.maxPerChain`,
+      // 200 by default) so this is a handful of small, indexed queries, and
+      // each level's UPDATE is its own atomic statement: a descendant
+      // claimed by the scheduler between levels simply is not `queued`
+      // anymore and is left alone, which is correct, not a race to guard
+      // against.
+      let cancelled = 0
+      let frontier = [jobId]
+      const visited = new Set<string>()
+      while (frontier.length > 0) {
+        const children = db.select({ id: jobs.id, status: jobs.status }).from(jobs).where(inArray(jobs.triggeredByJobId, frontier)).all()
+        const nextFrontier: string[] = []
+        const queuedIds: string[] = []
+        for (const c of children) {
+          if (visited.has(c.id)) continue
+          visited.add(c.id)
+          nextFrontier.push(c.id)
+          if (c.status === 'queued') queuedIds.push(c.id)
+        }
+        if (queuedIds.length > 0) {
+          cancelled += changedRows(
+            db
+              .update(jobs)
+              .set({ status: 'cancelled', finishedAt: new Date() })
+              .where(and(inArray(jobs.id, queuedIds), eq(jobs.status, 'queued')))
+              .run(),
+          )
+        }
+        frontier = nextFrontier
+      }
+      return cancelled
     },
 
     renewLease(jobId, ttlSec) {

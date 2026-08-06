@@ -10,7 +10,16 @@ import type { SessionManager } from '../manager'
 import { resetDevice, type ResetOutcome, type ResetPlan } from '../reset'
 import type { DeviceSession } from '../session'
 import type { ArtifactSink, TransferPort } from '../types'
-import { ChildToParentSchema, DeviceCallSchema, type ChildToParent, type ParentToChild } from './ipc'
+import {
+  ChildToParentSchema,
+  DeviceCallSchema,
+  JobsCallSchema,
+  KvCallSchema,
+  type ChildToParent,
+  type JobsCall,
+  type KvCall,
+  type ParentToChild,
+} from './ipc'
 import { createJobLogger, type JobLogEntry } from './job-logger'
 import { resolveIsolation, type IsolationProvider } from './isolation'
 
@@ -61,6 +70,34 @@ export interface JobSpec {
   /** Path to the ESM bundle file the child will import. */
   bundlePath: string
   params: unknown
+}
+
+/**
+ * `ctx.kv`'s parent-side port (plan 79 §4.4, §4.7) — kept local, like
+ * `ClassifiedFailure` above, because `@enkaku/session` cannot depend on
+ * `@enkaku/core` (the kv store itself lives in `packages/core/src/kv/`).
+ * `KvCall` is the wire shape (`./ipc.ts`); `namespace` is the script's own
+ * id (`ready`'s `scriptId`) — the runtime injects it, a script never types
+ * it (plan 79 §3.2).
+ */
+export interface KvRunnerDeps {
+  call(ctx: { jobId: string; deviceId: string; namespace: string }, call: KvCall): Promise<unknown>
+  /** Best-effort secret redaction for one job-log line (plan 79 §4.7) — returns `text` unchanged
+   * when nothing readable by `namespace`/`deviceId` is currently a secret, or `namespace` is not
+   * known yet (before the child's `ready` message has arrived). */
+  redact(ctx: { deviceId: string; namespace: string | undefined }, text: string): string
+}
+
+/**
+ * `ctx.jobs`'s parent-side port (plan 80 §4.2) — kept local, like
+ * `KvRunnerDeps` above, because `@enkaku/session` cannot depend on
+ * `@enkaku/core` (the queue/`JobStore` itself lives in `packages/core/src/queue/`).
+ * `JobsCall` is the wire shape (`./ipc.ts`); the caller's own `{ jobId,
+ * deviceId }` is enough for the core side to look up its full `JobRow` and
+ * scope every read to it — the runner never resolves scope itself.
+ */
+export interface JobsRunnerDeps {
+  call(ctx: { jobId: string; deviceId: string }, call: JobsCall): Promise<unknown>
 }
 
 export interface JobRunnerDeps {
@@ -126,6 +163,12 @@ export interface JobRunnerDeps {
    * falls back to `DEFAULT_TIMING`, matching pre-plan-34 behaviour exactly).
    */
   timing?: () => TimingSettings
+  /** `ctx.kv` (plan 79 §4.4) — undefined when the host has not wired a kv store (`kv.call` then
+   * refuses cleanly with `E_KV_UNAVAILABLE`, the same pattern `transfer` above already uses). */
+  kv?: KvRunnerDeps
+  /** `ctx.jobs` (plan 80 §4.2) — undefined when the host has not wired one (`jobs.call` then
+   * refuses cleanly with `E_JOBS_UNAVAILABLE`, the same pattern `kv`/`transfer` above already use). */
+  jobs?: JobsRunnerDeps
 }
 
 /**
@@ -467,6 +510,59 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                     : 'DEVICE_CALL_FAILED'
               send({ t: 'device.result', callId: msg.callId, ok: false, error: { code, message } })
             })
+        } else if (msg.t === 'kv.call') {
+          const call = KvCallSchema.safeParse(msg)
+          if (!call.success) {
+            send({ t: 'kv.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'invalid call' } })
+            return
+          }
+          if (!deps.kv) {
+            send({ t: 'kv.result', callId: msg.callId, ok: false, error: { code: 'E_KV_UNAVAILABLE', message: 'the kv store is not available on this host' } })
+            return
+          }
+          // The namespace is the script's own id, known from its `ready` message (plan 79 §3.2) —
+          // always populated by the time a script can be running `prepare`/`run`/`finish`, since
+          // `ready` is handled before `init` (and therefore before the script can issue any call)
+          // is ever sent.
+          const namespace = opts.meta?.scriptId ?? job.id
+          void deps
+            .kv
+            .call({ jobId: job.id, deviceId: job.deviceId, namespace }, call.data)
+            .then((value) => send({ t: 'kv.result', callId: msg.callId, ok: true, value }))
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err)
+              const code =
+                err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string'
+                  ? (err as { code: string }).code
+                  : 'KV_CALL_FAILED'
+              send({ t: 'kv.result', callId: msg.callId, ok: false, error: { code, message } })
+            })
+        } else if (msg.t === 'jobs.call') {
+          const call = JobsCallSchema.safeParse(msg)
+          if (!call.success) {
+            send({ t: 'jobs.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'invalid call' } })
+            return
+          }
+          if (!deps.jobs) {
+            send({
+              t: 'jobs.result',
+              callId: msg.callId,
+              ok: false,
+              error: { code: 'E_JOBS_UNAVAILABLE', message: 'job listing is not available on this host' },
+            })
+            return
+          }
+          void deps.jobs
+            .call({ jobId: job.id, deviceId: job.deviceId }, call.data)
+            .then((value) => send({ t: 'jobs.result', callId: msg.callId, ok: true, value }))
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err)
+              const code =
+                err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string'
+                  ? (err as { code: string }).code
+                  : 'JOBS_CALL_FAILED'
+              send({ t: 'jobs.result', callId: msg.callId, ok: false, error: { code, message } })
+            })
         } else if (msg.t === 'artifact.save') {
           void (async () => {
             try {
@@ -555,7 +651,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     },
 
     async execute(job) {
-      const logger = createJobLogger({ dataDir: deps.logDir, jobId: job.id, onEntry: deps.onLog })
+      // timeout, retries, and the kv namespace (plan 79 §3.2) are only known
+      // once the child has imported the bundle; it sends them in the `ready`
+      // message. Declared BEFORE the logger, so `redact` below can close over
+      // `meta.scriptId` and see it update once `ready` arrives — a job-log
+      // line from before that point has nothing to redact against anyway.
+      const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string } = {}
+      const logger = createJobLogger({
+        dataDir: deps.logDir,
+        jobId: job.id,
+        onEntry: deps.onLog,
+        redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.scriptId }, text) : undefined,
+      })
       const artifacts = deps.artifacts(job.id)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
       active.set(job.id, { abort: (reason, detail) => aborter.current?.(reason, detail) })
@@ -575,11 +682,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
       try {
         const bundlePath = job.bundlePath
-
-        // timeout and retries are only known once the child has imported the
-        // bundle; it sends them in the `ready` message, and they are used for
-        // the next attempt.
-        const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string } = {}
         let attempt = 0
         for (;;) {
           attempt += 1
@@ -660,6 +762,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
+              // `finish()` may call ctx.kv too — carry the namespace already learned from this job's
+              // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
+              // no namespace at all.
+              meta,
             }).catch(() => undefined)
           }
 

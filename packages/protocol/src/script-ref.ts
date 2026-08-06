@@ -5,10 +5,16 @@ import { z } from 'zod'
  * §4.1). Declared here, not in core, so core, the SDK, Studio, and (from plan
  * 63) the capability registry all trust the same shape — the same reasoning
  * that put `TagSchema` in this package rather than duplicated per consumer.
+ *
+ * `name` may carry ONE `/` (plan 82 §4.2) — a plugin member's name is
+ * `<plugin>/<script>` (`tiktok/login`), written that way in the `scripts`
+ * table so this schema, `parseScriptRef`, and `resolveScriptRef` all work on
+ * a plugin's scripts completely unmodified: there is exactly one name shape,
+ * a standalone script's just never has a slash in it.
  */
 export const ScriptRefSchema = z
   .string()
-  .regex(/^[a-z0-9][a-z0-9._-]*@(?:latest|\d+\.\d+\.\d+(?:[-+].+)?)$/)
+  .regex(/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?@(?:latest|\d+\.\d+\.\d+(?:[-+].+)?)$/)
 export type ScriptRef = z.infer<typeof ScriptRefSchema>
 
 /** Split an already-validated reference into its name and version parts. */

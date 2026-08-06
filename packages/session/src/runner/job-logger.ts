@@ -27,14 +27,38 @@ export function createJobLogger(deps: {
   dataDir: string
   jobId: string
   onEntry: (entry: JobLogEntry) => void
+  /**
+   * Best-effort secret redaction (plan 79 §4.7) — applied to `msg` and to every string value
+   * inside `fields` BEFORE a line is written to disk or broadcast, so a script that does
+   * `ctx.log.info('token', { token })` does not put the plaintext the encryption was protecting
+   * it from into the exact place that encryption cannot reach. Undefined on a host with no kv
+   * store wired (matches every other optional dependency in this package).
+   */
+  redact?: (text: string) => string
 }): JobLogger {
   const dir = join(deps.dataDir, 'artifacts', deps.jobId)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'job.log')
   const lines: string[] = []
 
+  /** Applies `deps.redact` to `fields`' string values via a JSON round-trip — simple, and it
+   * covers the common case (`ctx.log.info('token', { token })`) without walking every nested
+   * shape by hand. If the round-trip somehow fails to parse back (a redaction landed on a JSON
+   * structural character), `fields` is dropped rather than risk emitting the ORIGINAL, unredacted
+   * object — correctness of the redaction matters more than keeping the extra fields. */
+  function redactFields(fields: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    if (!fields || !deps.redact) return fields
+    try {
+      return JSON.parse(deps.redact!(JSON.stringify(fields))) as Record<string, unknown>
+    } catch {
+      return { redacted: true }
+    }
+  }
+
   return {
-    append(level, source, msg, fields) {
+    append(level, source, rawMsg, rawFields) {
+      const msg = deps.redact ? deps.redact(rawMsg) : rawMsg
+      const fields = redactFields(rawFields)
       const entry: JobLogEntry = {
         jobId: deps.jobId,
         ts: Date.now(),

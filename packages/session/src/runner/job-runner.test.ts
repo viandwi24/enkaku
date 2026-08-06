@@ -121,6 +121,7 @@ const HOME_SETTINGS: JobSettings = {
   defaultTimeoutMs: 3_600_000,
   startupTimeoutMs: 60_000,
   maxTimeoutMs: null,
+  trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
 }
 
 function successBehavior(reset?: { packages: string[]; clearData?: boolean }): ChildBehavior {
@@ -222,6 +223,7 @@ describe('createJobRunner — the ready → reset → init ordering (plan 35 §4
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
+        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
       }),
       onReset: () => phases.push('onReset-should-not-fire'),
     })
@@ -269,6 +271,7 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
+        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
       }),
     })
 
@@ -305,6 +308,7 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
+        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
       }),
     })
 
@@ -537,6 +541,7 @@ function settingsWithRetry(retry: Partial<JobSettings['retry']>): JobSettings {
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 60_000,
     maxTimeoutMs: null,
+    trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
   }
 }
 

@@ -220,6 +220,12 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       failureClass: null,
       errorPhase: null,
       infraAttempts: 0,
+      scriptName: null,
+      scriptVersion: null,
+      triggeredByJobId: null,
+      rootJobId: null,
+      depth: 0,
+      triggerKey: null,
     }
     expect(pickRebindDevice(db, standalone)).toBeNull()
   })

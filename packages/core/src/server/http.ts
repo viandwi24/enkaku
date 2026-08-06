@@ -24,6 +24,8 @@ export interface HttpDeps {
   toolchain: ToolchainManager
   jobRoutes: Hono<AuthEnv>
   scriptRoutes: Hono<AuthEnv>
+  /** Stage/verify/activate/rollback/disable/remove/reload/restart, and the dev slot lifecycle (plan 82 §4.6, step 11). */
+  pluginRoutes: Hono<AuthEnv>
   /** `POST /api/v1/cap/:id` and `GET /api/v1/cap` (plan 63 §3.6, §4.5). */
   capRoutes: Hono<AuthEnv>
   /** Generated once at boot from the same registry `capRoutes` reads
@@ -37,6 +39,8 @@ export interface HttpDeps {
   agentRoutes: Hono<AuthEnv>
   /** `GET/POST/PATCH/DELETE /api/connectors`, `GET /:id/models`, `POST /:id/test` (plan 65 §4.5). */
   connectorRoutes: Hono<AuthEnv>
+  /** `GET/PUT/DELETE /api/kv` — admin-scoped (`kv.manage`), secrets rendered as a hint only (plan 79 §4.3, step 4). */
+  kvRoutes: Hono<AuthEnv>
   /** `POST /api/v1/threads`, `GET /threads/:id/messages`, `POST /threads/:id/messages`, `GET /runs/:id`, `POST /runs/:id/cancel`, `POST /approvals/:id` (plan 66 §4.4). */
   threadRoutes: Hono<AuthEnv>
   /** `POST /api/v1/blobs`, `GET /api/v1/blobs/:id` (plan 70 §4.6) — content-addressed image storage; the only way base64 ever reaches Studio. */
@@ -174,9 +178,14 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/scripts', deps.scriptRoutes)
 
+  app.route('/api/plugins', deps.pluginRoutes)
+
   // AI agents and their farm-level connectors (plan 65 §4.5).
   app.route('/api/agents', deps.agentRoutes)
   app.route('/api/connectors', deps.connectorRoutes)
+
+  // The durable kv store's admin surface (plan 79 §4.3, step 4).
+  app.route('/api/kv', deps.kvRoutes)
 
   // The capability registry's three generated surfaces (plan 63 §3.5, §3.6,
   // §4.4, §4.5). `capRoutes` and `GET /api/openapi.json` sit under `/api/*`

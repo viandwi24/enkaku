@@ -1,8 +1,12 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs } from '../db/schema'
 import { createJobStore } from '../queue/job-store'
+import { createKvStore } from '../kv/store'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
 import { createLogger } from '../util/logger'
@@ -112,7 +116,9 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     db.insert(deviceEvents).values({ id: 'e1', deviceId: 'd1', stream: 'main', kind: 'device.online', at: new Date() }).run()
 
     const result = await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
-    expect(result).toEqual({ deviceId: 'd1', stableId: 'stable-d1', historyDeleted: false, counts: null })
+    // `kvDeleted: 0` — this `setUp()` wires no `kv` dependency (plan 79 §3.3, §4.6); a host with
+    // one wired is covered by the dedicated kv-deletion test below.
+    expect(result).toEqual({ deviceId: 'd1', stableId: 'stable-d1', historyDeleted: false, counts: null, kvDeleted: 0 })
 
     expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()).toBeUndefined()
     expect(db.select().from(deviceTags).where(eq(deviceTags.deviceId, 'd1')).all()).toEqual([])
@@ -300,6 +306,43 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     expect(db.select().from(artifacts).where(eq(artifacts.jobId, 'j1')).all()).toEqual([])
     expect(db.select().from(artifacts).where(eq(artifacts.deviceId, 'd1')).all()).toEqual([])
     expect(db.select().from(deviceEvents).where(eq(deviceEvents.deviceId, 'd1')).all()).toEqual([])
+  })
+
+  // Criterion 9 (plan 79): forgetting a device deletes its kv values, and the summary counts them
+  // — UNCONDITIONALLY, even when `deleteHistory` is false, because a kv value is live state
+  // (often a login session), not a historical record.
+  test('forget deletes the device\'s kv-store values and reports the count, even with deleteHistory: false', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const jobStore = createJobStore(db)
+    const leases = createLeaseManager({
+      states,
+      jobStore,
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-lifecycle-kv-'))
+    const kv = createKvStore(db, dataDir, () => ({ maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 }))
+    const lifecycle = createDeviceLifecycle({ db, leases, log, kv })
+
+    seedDevice(db, 'd1', 'offline')
+    kv.set({ kind: 'device', stableId: 'stable-d1' }, 'tiktok-login', 'session', { userId: 'u1' })
+    kv.set({ kind: 'device', stableId: 'stable-d1' }, 'tiktok-login', 'token', 'sk-secret', { secret: true })
+    // A different device's value must survive.
+    seedDevice(db, 'd2', 'offline')
+    kv.set({ kind: 'device', stableId: 'stable-d2' }, 'tiktok-login', 'session', { userId: 'u2' })
+
+    const result = await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+    expect(result.kvDeleted).toBe(2)
+    expect(kv.get({ kind: 'device', stableId: 'stable-d1' }, 'tiktok-login', 'session')).toBeNull()
+    expect(kv.get({ kind: 'device', stableId: 'stable-d1' }, 'tiktok-login', 'token')).toBeNull()
+    expect(kv.get({ kind: 'device', stableId: 'stable-d2' }, 'tiktok-login', 'session')?.value).toEqual({ userId: 'u2' })
+
+    rmSync(dataDir, { recursive: true, force: true })
   })
 })
 

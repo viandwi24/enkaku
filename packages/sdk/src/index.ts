@@ -8,5 +8,15 @@ export type {
   ArtifactApi,
   WaitForOptions,
   GestureEasing,
+  KvApi,
+  KvListItem,
+  KvListResult,
+  KvSetOptions,
+  JobsApi,
+  JobsListResult,
+  TriggerInput,
+  TriggerResult,
 } from './types'
-export { KEYCODES, type Selector, type UiNode, type Point, type KeyCode } from '@enkaku/protocol'
+export { definePlugin, isPlugin } from './plugin'
+export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
+export { KEYCODES, type Selector, type UiNode, type Point, type KeyCode, type JobStatus, type JobSummary } from '@enkaku/protocol'

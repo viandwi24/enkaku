@@ -24,7 +24,13 @@ export interface JobService {
      */
     actor?: { id: string; role: Role } | null
   }): JobInfo
-  cancel(jobId: string): JobInfo
+  /**
+   * `opts.cancelDescendants` (plan 81 §4.4) — opt-in, never automatic:
+   * also cancels every still-queued job transitively triggered by `jobId`.
+   * `cancelledDescendants` is always present, 0 when the option was not
+   * used, so a caller never has to guess whether an older server omitted it.
+   */
+  cancel(jobId: string, opts?: { cancelDescendants?: boolean }): { job: JobInfo; cancelledDescendants: number }
   /**
    * One job, in full (plan 60 §4.3) — including `result`, the script's own
    * return value. `list` deliberately does not: a result can be large, and
@@ -48,6 +54,15 @@ export function createJobService(deps: {
   onJobStatus: (info: JobInfo) => void
   /** Check the `scripts` table for a non-built-in scriptId (M4). */
   findScript?: (scriptId: string) => { enabled: boolean } | null
+  /**
+   * Plan 82 §3.4 — denormalises `jobs.scriptName`/`.scriptVersion` at
+   * enqueue, from whatever resolved `scriptId` (the entry a
+   * `ScriptRegistry.resolve()` returned, in the host that has one wired —
+   * `daemon.ts`). Optional and additive: omitted, a job enqueues exactly as
+   * it did before this plan, and its name keeps resolving through
+   * `scriptNames()`'s `scripts` table lookup.
+   */
+  scriptNameOf?: (scriptId: string) => { name: string; version: string } | null
   /** A batch member job was cancelled while still queued — recompute the batch (plan 20 §4.5). */
   onBatchChanged?: (batchId: string) => void
   /**
@@ -67,10 +82,13 @@ export function createJobService(deps: {
         }
       }
       const params = validateScriptForRun(deps, input.scriptId, input.params)
+      const named = deps.scriptNameOf?.(input.scriptId) ?? null
       const row = deps.jobStore.enqueue({
         scriptId: input.scriptId,
         deviceId: input.deviceId,
         params,
+        scriptName: named?.name,
+        scriptVersion: named?.version,
         priority: input.priority ?? 0,
       })
       const info = rowToJobInfo(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
@@ -79,23 +97,28 @@ export function createJobService(deps: {
       return info
     },
 
-    cancel(jobId) {
+    cancel(jobId, opts) {
       const job = deps.jobStore.get(jobId)
       if (!job) throw new EnkakuError('job_not_found', `no such job: ${jobId}`)
+      // Cancel-with-descendants (plan 81 §4.4) runs regardless of the
+      // caller's own status branch below — a RUNNING job can still have
+      // queued descendants (it triggered them and kept going), so this is
+      // not folded into either branch.
+      const cancelledDescendants = opts?.cancelDescendants ? deps.jobStore.cancelQueuedDescendants(jobId) : 0
       if (job.status === 'queued') {
         const cancelled = deps.jobStore.cancelQueued(jobId)
         if (!cancelled) throw new EnkakuError('job_not_cancellable', 'the job changed status first')
         const info = rowToJobInfo(cancelled)
         deps.onJobStatus(info)
         if (cancelled.batchId) deps.onBatchChanged?.(cancelled.batchId)
-        return info
+        return { job: info, cancelledDescendants }
       }
       if (job.status === 'running') {
         if (!deps.host.abort(jobId)) {
           // No live executor (after a restart, say) → close it immediately.
           deps.host.finishExternally(jobId, 'cancelled', 'cancelled (no executor was running)')
         }
-        return rowToJobInfo(deps.jobStore.get(jobId) ?? job)
+        return { job: rowToJobInfo(deps.jobStore.get(jobId) ?? job), cancelledDescendants }
       }
       throw new EnkakuError('job_not_cancellable', `the job is ${job.status}`)
     },

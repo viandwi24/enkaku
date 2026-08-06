@@ -40,6 +40,17 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     failureClass: null,
     errorPhase: null,
     infraAttempts: 0,
+    // Denormalised at enqueue (plan 82 §3.4) so a job can name its script
+    // without a join. Null here: this helper builds a bare row, and nothing
+    // in these tests reads either field.
+    scriptName: null,
+    scriptVersion: null,
+    // Plan 81 §4.1 lineage — null/0 here: this helper builds a bare row,
+    // and nothing in these tests reads any of these fields either.
+    triggeredByJobId: null,
+    rootJobId: null,
+    depth: 0,
+    triggerKey: null,
     ...overrides,
   }
 }
@@ -76,6 +87,7 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
       return { ...job, status: 'queued', deviceId: newDeviceId, infraAttempts: (job.infraAttempts ?? 0) + 1 }
     },
     cancelQueued: () => null,
+    cancelQueuedDescendants: () => 0,
     listByBatch: () => [],
     cancelQueuedInBatch: () => 0,
     renewLease: () => true,

@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { DEFAULT_TIMING, type DeviceSession } from '@enkaku/session'
 import { openDb, runMigrations, type Db } from '../db'
-import { devices } from '../db/schema'
+import { devices, scripts } from '../db/schema'
+import { createDevSlotStore } from '../plugins/dev-slots'
+import { createScriptRegistry } from '../scripts/registry'
 import { createCapabilityContext } from './context'
 import { deviceTap } from './device-input'
 import { deviceFind, deviceWaitFor } from './device-inspect'
@@ -330,5 +332,30 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     // call's own duration, exactly as `invoke.ts`'s comment describes.
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(calls.release).toBe(1)
+  })
+})
+
+describe('createCapabilityContext — resolveScriptRef through the registry (plan 82 §3.3, criterion 14)', () => {
+  test('with no registry wired, falls back to the pre-plan-82 direct resolveScriptRef (unchanged behaviour)', () => {
+    const db = setUp()
+    db.insert(scripts).values({ id: 's1', name: 'checkout', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    const ctx = createCapabilityContext(
+      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { id: 'u1', role: 'operator' },
+    )
+    expect(ctx.resolveScriptRef('checkout@1.0.0').id).toBe('s1')
+  })
+
+  test('with a registry wired, resolves a PLUGIN member the same way a standalone script resolves — one of the 8 call sites plan 82 §3.3 names', () => {
+    const db = setUp()
+    db.insert(scripts)
+      .values({ id: 's1', name: 'tiktok/login', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date(), pluginId: 'p1', exportId: 'login' })
+      .run()
+    const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-context-test', devSlots: createDevSlotStore() })
+    const ctx = createCapabilityContext(
+      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, registry },
+      { id: 'u1', role: 'operator' },
+    )
+    expect(ctx.resolveScriptRef('tiktok/login@1.0.0').id).toBe('s1')
   })
 })

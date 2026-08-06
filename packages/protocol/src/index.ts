@@ -304,6 +304,7 @@ export {
   SleepJobParamsSchema,
   JobInfoSchema,
   JobDetailSchema,
+  JobSummarySchema,
   ArtifactInfoSchema,
   JobLogMessage,
   JobArtifactMessage,
@@ -320,6 +321,7 @@ export {
   type JobStatus,
   type JobInfo,
   type JobDetail,
+  type JobSummary,
   type ArtifactInfo,
   type SleepJobParams,
 } from './messages/job'

@@ -18,6 +18,21 @@ function seedPreMigrationSchedule(db: ReturnType<typeof openDb>['db'], opts: { i
   )
 }
 
+/**
+ * Seeds a `scripts` row the way it would have looked at `SCHEDULE_SCRIPT_REF_RENAME_TAG`
+ * (plan 62) — raw SQL, deliberately, exactly like `seedPreMigrationSchedule` above and for the
+ * SAME reason: `db.insert(scripts)` (the Drizzle query builder) is generated from the CURRENT
+ * `schema.ts`, which now also declares `plugin_id`/`export_id` (plan 82) — columns that do not
+ * exist yet on a database frozen at this old migration point via `runMigrationsUpTo`. A raw
+ * INSERT naming only the columns that existed THEN stays correct no matter how many columns a
+ * later plan adds to the live schema.
+ */
+function seedPreMigrationScript(db: ReturnType<typeof openDb>['db'], opts: { id: string; name: string; version: string }) {
+  db.run(
+    sql`INSERT INTO scripts (id, name, version, bundle, enabled, created_at) VALUES (${opts.id}, ${opts.name}, ${opts.version}, 'x', 1, 1700000000)`,
+  )
+}
+
 describe('backfillScheduleScriptRefs (plan 62 §4.3)', () => {
   test('three pre-existing schedules on three versions become three pinned references, not @latest (acceptance #9)', () => {
     const opened = openDb(':memory:')
@@ -25,13 +40,9 @@ describe('backfillScheduleScriptRefs (plan 62 §4.3)', () => {
     runMigrationsUpTo(opened.db, SCHEDULE_SCRIPT_REF_RENAME_TAG)
     const db = opened.db
 
-    db.insert(scripts)
-      .values([
-        { id: 's-checkout-100', name: 'checkout', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date() },
-        { id: 's-checkout-200', name: 'checkout', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() },
-        { id: 's-login-050', name: 'login', version: '0.5.0', bundle: 'x', enabled: true, createdAt: new Date() },
-      ])
-      .run()
+    seedPreMigrationScript(db, { id: 's-checkout-100', name: 'checkout', version: '1.0.0' })
+    seedPreMigrationScript(db, { id: 's-checkout-200', name: 'checkout', version: '2.0.0' })
+    seedPreMigrationScript(db, { id: 's-login-050', name: 'login', version: '0.5.0' })
 
     // Three schedules, each pinned to a DIFFERENT version — including one
     // pinned to the OLDER checkout version, so a naive "just resolve latest"
@@ -62,7 +73,7 @@ describe('backfillScheduleScriptRefs (plan 62 §4.3)', () => {
     runMigrationsUpTo(opened.db, SCHEDULE_SCRIPT_REF_RENAME_TAG)
     const db = opened.db
 
-    db.insert(scripts).values({ id: 's1', name: 'checkout', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    seedPreMigrationScript(db, { id: 's1', name: 'checkout', version: '1.0.0' })
     seedPreMigrationSchedule(db, { id: 'sched-1', name: 'nightly', scriptId: 's1' })
     // A second, brand-new version published AFTER the migration ran once —
     // if the marker did not hold, a second backfill pass would have nothing

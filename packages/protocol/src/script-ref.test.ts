@@ -10,6 +10,8 @@ describe('ScriptRefSchema', () => {
     'checkout@1.0.0-beta.1+build.5',
     'a@1.0.0',
     'a.b_c-d@1.0.0',
+    'tiktok/login@1.0.0', // plan 82 §4.2 — a plugin member's name
+    'tiktok/switch-account@latest',
   ])('accepts %s', (ref) => {
     expect(ScriptRefSchema.safeParse(ref).success).toBe(true)
   })
@@ -27,6 +29,10 @@ describe('ScriptRefSchema', () => {
     'checkout@stable', // only 'latest' is a valid alias
     ' checkout@1.0.0', // leading whitespace
     'checkout@1.0.0 ', // trailing whitespace
+    'tiktok/login/extra@1.0.0', // at most one slash
+    '/login@1.0.0', // nothing before the slash
+    'tiktok/@1.0.0', // nothing after the slash
+    'tiktok//login@1.0.0', // doubled slash
   ])('rejects %s', (ref) => {
     expect(ScriptRefSchema.safeParse(ref).success).toBe(false)
   })
@@ -43,6 +49,10 @@ describe('parseScriptRef', () => {
 
   test('a hyphenated name is not mistaken for extra structure', () => {
     expect(parseScriptRef('my-checkout-script@2.3.4')).toEqual({ name: 'my-checkout-script', version: '2.3.4' })
+  })
+
+  test('a plugin member name keeps its slash intact (plan 82 §4.2)', () => {
+    expect(parseScriptRef('tiktok/login@1.0.0')).toEqual({ name: 'tiktok/login', version: '1.0.0' })
   })
 })
 

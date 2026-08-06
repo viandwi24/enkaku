@@ -524,8 +524,13 @@ describe('DELETE /api/devices/:id — Forget (plan 47 §4.4, §6)', () => {
 
     const res = await app.request('/a', { method: 'DELETE' })
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { forgotten: { deviceId: string; stableId: string; historyDeleted: boolean; counts: unknown } }
-    expect(body.forgotten).toEqual({ deviceId: 'a', stableId: 'stable-a', historyDeleted: false, counts: null })
+    const body = (await res.json()) as {
+      forgotten: { deviceId: string; stableId: string; historyDeleted: boolean; counts: unknown; kvDeleted: number }
+    }
+    // `kvDeleted: 0` — this test's `makeApp()` wires no `kv` dependency into `createDeviceLifecycle`
+    // (plan 79 §3.3, §4.6); the kv store's own lifecycle integration is covered directly in
+    // `device/lifecycle.test.ts`.
+    expect(body.forgotten).toEqual({ deviceId: 'a', stableId: 'stable-a', historyDeleted: false, counts: null, kvDeleted: 0 })
 
     expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
     expect(db.select().from(deletedDevices).where(eq(deletedDevices.id, 'a')).get()?.stableId).toBe('stable-a')

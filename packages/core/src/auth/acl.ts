@@ -90,6 +90,16 @@ export type Permission =
   | 'settings.manage'
   | 'user.manage'
   | 'audit.view'
+  /**
+   * The durable key/value store's admin surface (plan 79 §4.3, step 4) —
+   * `GET/PUT/DELETE /api/kv`. Deliberately admin-scoped from the start,
+   * matching the plan's own wording: a KV value can hold a secret readable
+   * in plaintext through this exact route (`get`), so it sits OUTSIDE the
+   * `OPERATOR` set below, the same way `device.shell`/`device.adb` do,
+   * rather than getting a `settings.manage`-style split gated on a farm
+   * setting — nothing here widens it for an operator.
+   */
+  | 'kv.manage'
 
 const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.view',
@@ -110,6 +120,7 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'tool.view',
   'settings.view',
 ])
+// 'kv.manage' is deliberately NOT in OPERATOR (see its comment) — admin only.
 
 /** Every permission the ACL matrix knows about — used to validate a caller-supplied permission NAME (e.g. an agent's `permissions` list, plan 65 §4.5) is real rather than a typo that would silently never match anything. */
 export const ALL_PERMISSIONS: readonly Permission[] = [
@@ -140,6 +151,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'settings.manage',
   'user.manage',
   'audit.view',
+  'kv.manage',
 ]
 
 export function isPermission(value: string): value is Permission {

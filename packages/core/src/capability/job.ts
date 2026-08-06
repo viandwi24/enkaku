@@ -109,7 +109,10 @@ export const jobCancel = defineCapability({
   deadline: 10_000,
   effect: 'write',
   description: 'Cancel a queued or running job.',
-  handler: (ctx, { jobId }) => Promise.resolve(ctx.jobService.cancel(jobId)),
+  // `cancelDescendants` (plan 81 §4.4) is deliberately not exposed here —
+  // this is the agent-facing capability surface (plan 63), out of this
+  // plan's scope; only the REST route below gained the opt-in.
+  handler: (ctx, { jobId }) => Promise.resolve(ctx.jobService.cancel(jobId).job),
 })
 
 export const JOB_CAPABILITIES = [jobRun, jobGet, jobList, jobCancel]

@@ -26,15 +26,23 @@ function fakeJobInfo(scriptId: string): JobInfo {
 }
 
 /** Records exactly what `enqueue` was called with, so the route's resolution logic is what's under test — not the service. */
-function fakeService(): JobService & { calls: Parameters<JobService['enqueue']>[0][] } {
+function fakeService(): JobService & {
+  calls: Parameters<JobService['enqueue']>[0][]
+  cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }>
+} {
   const calls: Parameters<JobService['enqueue']>[0][] = []
+  const cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }> = []
   return {
     calls,
+    cancelCalls,
     enqueue(input) {
       calls.push(input)
       return fakeJobInfo(input.scriptId)
     },
-    cancel: () => fakeJobInfo('x'),
+    cancel(jobId, opts) {
+      cancelCalls.push({ jobId, opts })
+      return { job: fakeJobInfo('x'), cancelledDescendants: opts?.cancelDescendants ? 4 : 0 }
+    },
     get: (): JobDetail | null => null,
     list: () => ({ jobs: [], nextCursor: null, total: 0 }),
   }
@@ -119,5 +127,27 @@ describe('POST /api/jobs — scriptId vs scriptRef (plan 62 §4.4)', () => {
     })
     expect(res.status).toBe(400)
     expect(resolverCalled).toBe(false)
+  })
+})
+
+describe('POST /api/jobs/:id/cancel — cancelDescendants (plan 81 §4.4)', () => {
+  test('without the query param, cancelDescendants is false and the response carries 0', async () => {
+    const service = fakeService()
+    const app = createJobRoutes(service)
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(service.cancelCalls).toEqual([{ jobId: 'job-1', opts: { cancelDescendants: false } }])
+    const body = (await res.json()) as { cancelledDescendants: number }
+    expect(body.cancelledDescendants).toBe(0)
+  })
+
+  test('?cancelDescendants=1 is opt-in and forwarded to the service, whose count reaches the response', async () => {
+    const service = fakeService()
+    const app = createJobRoutes(service)
+    const res = await app.request('/job-1/cancel?cancelDescendants=1', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(service.cancelCalls).toEqual([{ jobId: 'job-1', opts: { cancelDescendants: true } }])
+    const body = (await res.json()) as { cancelledDescendants: number }
+    expect(body.cancelledDescendants).toBe(4)
   })
 })

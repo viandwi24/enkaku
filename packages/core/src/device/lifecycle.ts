@@ -24,6 +24,14 @@ export interface ForgetResult {
   historyDeleted: boolean
   /** Populated only when `historyDeleted` — exactly what was deleted (plan 47 §3.4, §4.3). */
   counts: HistoryCounts | null
+  /**
+   * How many kv-store values this device's stableId owned, now deleted (plan 79 §3.3, §4.6) —
+   * ALWAYS populated, regardless of `deleteHistory`: unlike jobs/artifacts/events (a historical
+   * record an operator may choose to keep), a kv value is live state — often a login session or
+   * another secret — and "a phone leaving the farm does not leave its sessions behind" is not
+   * conditional on the history checkbox. 0 when this host has no kv store wired.
+   */
+  kvDeleted: number
 }
 
 export interface BlockedDevice {
@@ -71,6 +79,14 @@ export interface DeviceLifecycleDeps {
    */
   revertNetwork?: (deviceId: string, actor?: string | null) => Promise<void>
   log: Logger
+  /**
+   * The kv store's own device teardown (plan 79 §3.3, §4.6) — joins `forget`'s existing
+   * transaction (both operate on the same underlying SQLite connection, so this genuinely
+   * participates in the same atomic commit, not a second one). Optional so a host that has not
+   * wired a kv store (or a test that predates this plan) keeps compiling; `forget` then reports
+   * `kvDeleted: 0`, honestly, rather than pretending the deletion happened.
+   */
+  kv?: { deleteDevice(stableId: string): number }
 }
 
 type LifecycleOp = 'forget' | 'block'
@@ -204,12 +220,18 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
       await releaseRoute(row, opts.actor)
 
       let counts: HistoryCounts | null = null
+      let kvDeleted = 0
       // ONE transaction (plan 47 §4.3): the check above already ran, so
       // nothing here can be refused — either every write below lands, or (on
       // a thrown error) none of them do. `deletedDevices` is written FIRST,
       // inside the same transaction, so the dangling-reference label exists
       // the instant the row disappears — never a window with neither.
       db.transaction((tx) => {
+        // The device's kv-store values (plan 79 §3.3, §4.6) — UNCONDITIONAL, unlike the
+        // `deleteHistory`-gated block below: a stored session token is live state, not history.
+        // `deps.kv` reads/writes through the SAME `db` this transaction runs on (one SQLite
+        // connection), so this genuinely joins the transaction rather than opening a second one.
+        kvDeleted = deps.kv?.deleteDevice(row.stableId) ?? 0
         if (opts.deleteHistory) {
           const jobIds = tx.select({ id: jobs.id }).from(jobs).where(eq(jobs.deviceId, row.id)).all().map((r) => r.id)
           const deviceScopedArtifacts = tx.select().from(artifacts).where(eq(artifacts.deviceId, row.id)).all().length
@@ -254,16 +276,16 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         }
       })
 
-      log.info(`device forgotten: ${row.label} (${row.stableId})${opts.deleteHistory ? ' with history' : ''}`)
+      log.info(`device forgotten: ${row.label} (${row.stableId})${opts.deleteHistory ? ' with history' : ''}${kvDeleted > 0 ? `, ${kvDeleted} kv value(s)` : ''}`)
       deps.record?.({
         deviceId: row.id,
         stream: 'main',
         kind: 'device.forgotten',
         actor: opts.actor.userId,
-        meta: { stableId: row.stableId, deleteHistory: opts.deleteHistory, ...(counts ? { counts } : {}) },
+        meta: { stableId: row.stableId, deleteHistory: opts.deleteHistory, kvDeleted, ...(counts ? { counts } : {}) },
       })
 
-      return { deviceId: row.id, stableId: row.stableId, historyDeleted: opts.deleteHistory, counts }
+      return { deviceId: row.id, stableId: row.stableId, historyDeleted: opts.deleteHistory, counts, kvDeleted }
     },
 
     async block(deviceId, opts) {

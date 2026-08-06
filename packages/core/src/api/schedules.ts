@@ -37,6 +37,7 @@ import type { Scheduler } from '../queue/scheduler'
 import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
 import { resolveScriptRef } from '../scripts/resolve'
+import type { ScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -103,11 +104,11 @@ interface ResolvesTo {
 }
 
 /** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). */
-function tryResolve(db: Db, scriptRef: string): ResolvesTo | null {
+function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): ResolvesTo | null {
   const parsed = ScriptRefSchema.safeParse(scriptRef)
   if (!parsed.success) return null
   try {
-    const row = resolveScriptRef(db, parsed.data)
+    const row = registry ? registry.resolve(parsed.data) : resolveScriptRef(db, parsed.data)
     return { scriptId: row.id, name: row.name, version: row.version }
   } catch {
     return null
@@ -193,6 +194,8 @@ export interface ScheduleRoutesDeps {
   agentExists?: (agentId: string) => boolean
   scheduledAgentCeilings?: () => ScheduledAgentCeilings
   notifySystem?: ScheduleRunnerDeps['notifySystem']
+  /** Plan 82 §3.3, §3.5 — resolves through the registry so a schedule can target a plugin script and is refused (`script_is_dev`) for a dev-only one (criterion 18). `registry` above is the unrelated job EXECUTOR registry (`jobs/executor.ts`) — named `scriptRegistry` here to avoid colliding with it. Optional so every pre-plan-82 test keeps compiling unedited. */
+  scriptRegistry?: ScriptRegistry
 }
 
 /** One `scheduleAgentTargets` row, or null for a script-kind schedule (plan 68 §4.1's companion-table discriminator). */
@@ -363,7 +366,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     // dispatcher branches on the presence of a `scheduleAgentTargets` row
     // before this column is ever read (plan 68 §4.2, `db/schema.ts`'s
     // `scheduleAgentTargets` doc comment).
-    const resolved = workTarget.kind === 'script' ? resolveScriptRef(db, workTarget.ref) : null
+    const resolved = workTarget.kind === 'script' ? (deps.scriptRegistry ? deps.scriptRegistry.resolve(workTarget.ref) : resolveScriptRef(db, workTarget.ref)) : null
     const validatedParams = workTarget.kind === 'script' ? validateScriptForRun(deps, resolved!.id, workTarget.params) : null
 
     const row: ScheduleRow = {
@@ -418,7 +421,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   app.get('/:id', (c) => {
     const row = mustGet(c.req.param('id'))
     const agentTarget = getAgentTargetRow(db, row.id)
-    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTarget), resolvesTo: agentTarget ? null : tryResolve(db, row.scriptRef) })
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTarget), resolvesTo: agentTarget ? null : tryResolve(db, row.scriptRef, deps.scriptRegistry) })
   })
 
   app.patch('/:id', requirePermission('job.run'), async (c) => {
@@ -450,7 +453,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.workTarget !== undefined) {
       const wt = body.data.workTarget
       if (wt.kind === 'script') {
-        const resolved = resolveScriptRef(db, wt.ref)
+        const resolved = deps.scriptRegistry ? deps.scriptRegistry.resolve(wt.ref) : resolveScriptRef(db, wt.ref)
         patch.scriptRef = wt.ref
         patch.params = validateScriptForRun(deps, resolved.id, wt.params) ?? null
         if (existingAgentTarget) {
@@ -483,7 +486,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       // Legacy path (plan 62) — unchanged behaviour for an already-script-kind schedule.
       const scriptRef = body.data.scriptRef ?? row.scriptRef
       // Resolved BEFORE the row is written, same reasoning as POST above.
-      const resolved = resolveScriptRef(db, scriptRef as ScriptRef)
+      const resolved = deps.scriptRegistry ? deps.scriptRegistry.resolve(scriptRef as ScriptRef) : resolveScriptRef(db, scriptRef as ScriptRef)
       patch.scriptRef = scriptRef
       patch.params = validateScriptForRun(deps, resolved.id, body.data.params ?? row.params) ?? null
     }
@@ -508,7 +511,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.update', target: row.id, meta: { patch: Object.keys(patch) } })
     const finalRow = mustGet(row.id)
     const finalAgentTarget = getAgentTargetRow(db, row.id)
-    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, finalRow, finalAgentTarget), resolvesTo: finalAgentTarget ? null : tryResolve(db, finalRow.scriptRef) })
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, finalRow, finalAgentTarget), resolvesTo: finalAgentTarget ? null : tryResolve(db, finalRow.scriptRef, deps.scriptRegistry) })
   })
 
   app.delete('/:id', requirePermission('job.run'), (c) => {

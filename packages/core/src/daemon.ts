@@ -47,12 +47,19 @@ import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
-import { resolveScriptRef } from './scripts/resolve'
+import { createScriptRegistry } from './scripts/registry'
+import { createDevSlotStore } from './plugins/dev-slots'
+import { createPluginRuntime } from './plugins/runtime'
+import { createPluginRoutes } from './api/plugins'
 import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
 import { createMcpServer } from './mcp/server'
 import { createWorkspaceStore } from './workspace/store'
+import { createKvStore } from './kv/store'
+import { createKvRunnerPort } from './kv/runner-port'
+import { createJobsRunnerPort } from './jobs/jobs-runner-port'
+import { createKvRoutes } from './api/kv'
 import { createAgentStore, type AgentStore } from './agent/agent-store'
 import { createConnectorStore } from './agent/connector-store'
 import { createModelListCache } from './agent/provider'
@@ -89,7 +96,7 @@ import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/mig
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
-import { devices, scripts } from './db/schema'
+import { devices } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
 import { redactShellCommand } from './device/redact'
@@ -645,12 +652,22 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       executors.register('internal:sleep', sleepExecutor)
       executors.register('internal:install', createInstallExecutor({ transfer: transferService, broadcast: transferBroadcast }))
 
+      // The script registry (plan 82 §3.3) — the merge point between persisted `scripts` rows
+      // (standalone AND published plugin members, both ordinary rows) and in-memory dev slots.
+      // Built early, alongside `executors`, since `findScript` right below and every
+      // `resolveScriptRef` call site further down this function reads through it.
+      const pluginDevSlots = createDevSlotStore()
+      const scriptRegistry = createScriptRegistry({ db, dataDir: cfg.dataDir, devSlots: pluginDevSlots })
+
       // Check the `scripts` table for a non-built-in scriptId (M4) — shared by
       // the job service, batch dispatch and schedule dispatch (plans 04, 20, 21)
-      // so an unknown/disabled script fails once, the same way, everywhere.
+      // so an unknown/disabled script fails once, the same way, everywhere. Goes
+      // through the registry (plan 82 §3.3) so a dev-origin scriptId (a job's
+      // `scriptId` can be `dev:<plugin>/<script>`) resolves too, not just a
+      // persisted row.
       const findScript = (scriptId: string): { enabled: boolean } | null => {
-        const row = db.select().from(scripts).where(eq(scripts.id, scriptId)).get()
-        return row ? { enabled: row.enabled ?? true } : null
+        const entry = scriptRegistry.get(scriptId)
+        return entry ? { enabled: entry.enabled } : null
       }
 
       let scheduler: ReturnType<typeof createScheduler> | null = null
@@ -823,6 +840,42 @@ export function createDaemon(cfg: CoreConfig): Daemon {
        * down (plan 56 §3.6).
        */
       let revertNetworkForRemoval: ((deviceId: string, actor?: string | null) => Promise<void>) | null = null
+      // The durable kv store (plan 79 §4.1) — constructed here, right beside
+      // `deviceLifecycle` below (which needs it for its own teardown), and
+      // well before the workspace/agent stores further down: it depends only
+      // on `db` and `cfg.dataDir`, both available from the very top of this
+      // function, in every mode.
+      const kvStore = createKvStore(db, cfg.dataDir, () => settingsStore.get().kv)
+      // The plugin runtime (plan 82 §4.3) — stage/verify/activate/rollback/disable/remove/
+      // reload/restart, plus the dev slot lifecycle. Built right here: it needs `kvStore`
+      // (a plugin's KV namespace, §3.10) and `scriptRegistry` (built earlier, alongside
+      // `executors`), and nothing else — well before the workspace/agent stores further down.
+      const pluginRuntime = createPluginRuntime({ db, dataDir: cfg.dataDir, registry: scriptRegistry, kv: kvStore, devSlots: pluginDevSlots })
+      const kvRunnerPort = createKvRunnerPort({ db, store: kvStore })
+      // `ctx.jobs` (plan 80 §4.2, extended by plan 81 §4.2 with `trigger`) —
+      // needs only `db` and `jobStore`, both already constructed above;
+      // built here, right beside `kvRunnerPort`, for the same reason: both
+      // are `JobRunnerDeps` ports wired into `createJobRunner` far below,
+      // well before the child process exists. `registry` is the same
+      // `scriptRegistry` every other trigger-shaped caller (a schedule, an
+      // ad-hoc run) resolves through; `triggerBudgets` is read fresh per
+      // call, the same freshness pattern `resetPolicy`/`adb.maxConcurrent`
+      // already use, so a Settings change reaches the very next trigger.
+      const jobsRunnerPort = createJobsRunnerPort({
+        db,
+        jobStore,
+        registry: scriptRegistry,
+        triggerBudgets: () => settingsStore.get().job.trigger,
+        onTriggered: (from, targetDeviceId, result) =>
+          recorder?.record({
+            deviceId: targetDeviceId,
+            stream: 'main',
+            kind: 'job.triggered',
+            actor: `job:${from.id}`,
+            meta: { fromJobId: from.id, toJobId: result.jobId, rootJobId: from.rootJobId ?? from.id, depth: (from.depth ?? 0) + 1 },
+          }),
+        log: log.child('jobs-runner-port'),
+      })
       const deviceLifecycle = createDeviceLifecycle({
         db,
         leases,
@@ -833,6 +886,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // quiet must still leave the tunnel HELD CLOSED, which is the device's
         // own dead-man's switch (plan 54) and is untouched by this.
         revertNetwork: (deviceId, actor) => revertNetworkForRemoval?.(deviceId, actor) ?? Promise.resolve(),
+        // Forget deletes the device's kv values, in the same transaction (plan 79 §3.3, §4.6).
+        kv: kvStore,
       })
 
       // Device readiness (plan 43): a second, orthogonal axis to
@@ -902,6 +957,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         onBatchChanged,
         // `canUseDevice` (plan 34 §3.5, §4.4).
         getDeviceOwner,
+        // Plan 82 §3.4 — denormalises `jobs.scriptName`/`.scriptVersion` at enqueue.
+        scriptNameOf: (scriptId) => scriptRegistry.get(scriptId),
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its
@@ -953,6 +1010,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         notifySystem: (input) => {
           notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
         },
+        // Plan 82 §3.3, §3.5 — a schedule refuses a dev-only target (criterion 18) and resolves
+        // a plugin's `@latest` to its ACTIVE version, not merely the highest published semver.
+        registry: scriptRegistry,
       })
 
       // Remote jobs: a device owned by a node runs on that node (plan 12 §4.5).
@@ -1121,6 +1181,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // Plan 68 §4.3 — `notify.send`'s one-line delegation. The SAME instance for every actor:
         // a human via REST/MCP and an agent via the loop both reach the identical service.
         notify: notifyService,
+        // Plan 82 §3.3 — `ctx.resolveScriptRef` (used by `job.enqueue`'s `scriptRef` form,
+        // `capability/job.ts`) resolves a plugin member the same as a standalone script.
+        registry: scriptRegistry,
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
@@ -1202,7 +1265,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         toolchain,
         // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
         // is written, so `jobs.scriptId` is always concrete.
-        jobRoutes: createJobRoutes(jobService, { log: log.child('jobs'), resolveScriptRef: (ref) => resolveScriptRef(db, ref) }),
+        jobRoutes: createJobRoutes(jobService, { log: log.child('jobs'), resolveScriptRef: (ref) => scriptRegistry.resolve(ref) }),
         deviceRoutes: createDeviceRoutes({
           db,
           registry: () => buildRegistryResponse(toolchain),
@@ -1294,6 +1357,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           notifySystem: (input) => {
             notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
           },
+          // Plan 82 §3.3, §3.5 — see `scheduleRunner`'s own construction above for why.
+          scriptRegistry,
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
         artifactRoutes: createArtifactRoutes({
@@ -1342,6 +1407,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         auth,
         authMode,
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
+        pluginRoutes: createPluginRoutes({ runtime: pluginRuntime, audit, workspace: workspaceStore }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
         // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
         // are all built just above, before this call.
@@ -1351,6 +1417,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // AI agents and connectors (plan 65 §4.5) — `agentStore`/`connectorStore`/`modelListCache` are built just above.
         // `tree: agentTreeStore` (plan 67 §4.1) backs `/:id/spawn-grants`.
         agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit }),
+        // The durable kv store's admin surface (plan 79 §4.3, step 4) — `kvStore` is built early,
+        // alongside `deviceLifecycle`, since the job runner also needs it.
+        kvRoutes: createKvRoutes({ store: kvStore, audit }),
         connectorRoutes: createConnectorRoutes({ store: connectorStore, audit, modelCache: modelListCache }),
         // The agent loop's REST surface (plan 66 §4.4) — `agentRunner`/`agentThreadStore`/`agentApprovalStore`/`agentWsHandler` are all built just above.
         threadRoutes: createThreadRoutes({ runner: agentRunner, threads: agentThreadStore, approvals: agentApprovalStore, agentWs: agentWsHandler, audit }),
@@ -1767,6 +1836,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // and reused verbatim by `FarmSettingsSchema.defaults` (settings.ts) —
           // there is no separate top-level `timing` field.
           timing: () => settingsStore.get().defaults.timing,
+          // `ctx.kv` (plan 79 §4.4, §4.7) — the same store `deviceLifecycle` and
+          // `kvRoutes` share; `call`/`redact` are the two things a job actually needs.
+          kv: kvRunnerPort,
+          // `ctx.jobs` (plan 80 §4.2) — a running script's own view of the queue.
+          jobs: jobsRunnerPort,
         })
         const localExecutor = createScriptExecutor({ db, dataDir: cfg.dataDir, runner })
         executors.setFallback({
