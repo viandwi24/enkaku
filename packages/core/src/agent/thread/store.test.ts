@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../../db'
-import { agentMessages } from '../../db/schema'
+import { agentApprovals, agentInbox, agentMessages, agentRuns, agentThreads } from '../../db/schema'
 import { createThreadStore } from './store'
 
 function setUp() {
@@ -100,5 +101,50 @@ describe('thread store (plan 66 §3.1, §4.1, §7)', () => {
     // `createdAt` has one-second resolution, so two threads created in the same test tick can tie;
     // the ordering tiebreak is not the property under test here — completeness and scoping are.
     expect(threads.map((t) => t.id).sort()).toEqual([t1.id, t2.id].sort())
+  })
+})
+
+describe('deleteThread (plan 83 §3.6, §4.3)', () => {
+  test('cascades runs, messages, approvals, and inbox rows in one transaction, then the thread itself', () => {
+    const { db, store } = setUp()
+    const thread = store.createThread({ agentId: 'a1' })
+    store.appendMessage({ threadId: thread.id, runId: null, role: 'user', content: [{ type: 'text', text: 'hi' }] })
+    const run = store.createRun(thread.id)
+    store.updateRun(run.id, { status: 'succeeded', finishedAt: new Date() })
+    store.appendMessage({ threadId: thread.id, runId: run.id, role: 'assistant', content: [{ type: 'text', text: 'hello' }] })
+    db.insert(agentApprovals)
+      .values({ id: 'appr-1', runId: run.id, capabilityId: 'test.cap', toolCallId: 'call-1', input: {}, status: 'approved', decidedBy: 'u1', decidedAt: new Date(), expiresAt: 9_999_999_999, createdAt: new Date() })
+      .run()
+    db.insert(agentInbox).values({ id: 'inbox-1', targetRunId: run.id, fromRunId: null, kind: 'message', body: {}, createdAt: new Date() }).run()
+
+    const counts = store.deleteThread(thread.id)
+    expect(counts).toEqual({ messages: 2, runs: 1 })
+
+    expect(store.getThread(thread.id)).toBeNull()
+    expect(db.select().from(agentRuns).where(eq(agentRuns.threadId, thread.id)).all()).toEqual([])
+    expect(db.select().from(agentMessages).where(eq(agentMessages.threadId, thread.id)).all()).toEqual([])
+    expect(db.select().from(agentApprovals).where(eq(agentApprovals.runId, run.id)).all()).toEqual([])
+    expect(db.select().from(agentInbox).where(eq(agentInbox.targetRunId, run.id)).all()).toEqual([])
+    expect(db.select().from(agentThreads).where(eq(agentThreads.id, thread.id)).all()).toEqual([])
+  })
+
+  test('a thread with an active (running/paused/queued) run is refused, and the thread survives intact', () => {
+    const { store } = setUp()
+    const thread = store.createThread({ agentId: 'a1' })
+    const run = store.createRun(thread.id) // queued by default
+    store.updateRun(run.id, { status: 'running', startedAt: new Date() })
+
+    expect(() => store.deleteThread(thread.id)).toThrow(/active run/)
+    expect(store.getThread(thread.id)).not.toBeNull()
+    expect(store.getRun(run.id)?.status).toBe('running')
+  })
+
+  test('countsForThread matches exactly what deleteThread reports, computed the same way', () => {
+    const { store } = setUp()
+    const thread = store.createThread({ agentId: 'a1' })
+    store.appendMessage({ threadId: thread.id, runId: null, role: 'user', content: [{ type: 'text', text: 'a' }] })
+    store.appendMessage({ threadId: thread.id, runId: null, role: 'user', content: [{ type: 'text', text: 'b' }] })
+    store.createRun(thread.id)
+    expect(store.countsForThread(thread.id)).toEqual({ messages: 2, runs: 1 })
   })
 })

@@ -103,6 +103,63 @@ describe('AgentDetailPage — Tools section (plan 72 regression pin)', () => {
   })
 })
 
+describe('AgentDetailPage — Tools section bulk selection (plan 83 §3.7, criteria 18-20)', () => {
+  const twoCapsSameGroup = [
+    { ...validCapability, id: 'device.tap' },
+    { ...validCapability, id: 'device.swipe', description: 'Swipe the screen.' },
+  ]
+
+  test('"Select all" checks every tool in one click; the group header reflects it', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, baseResponses({ body: { capabilities: twoCapsSameGroup } }))
+    await openToolsSection()
+    await waitFor(() => expect(screen.getByText('device.tap')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: 'Select all' }))
+    const tapCheckbox = screen.getByText('device.tap').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+    const swipeCheckbox = screen.getByText('device.swipe').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+    await waitFor(() => expect(tapCheckbox.checked).toBe(true))
+    expect(swipeCheckbox.checked).toBe(true)
+    // The button becomes "Clear all" once everything is selected.
+    expect(screen.getByRole('button', { name: 'Clear all' })).toBeTruthy()
+  })
+
+  test('checking only ONE tool in a group renders the group header indeterminate (criterion 19)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, baseResponses({ body: { capabilities: twoCapsSameGroup } }))
+    await openToolsSection()
+    await waitFor(() => expect(screen.getByText('device.tap')).toBeTruthy())
+
+    const tapCheckbox = screen.getByText('device.tap').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+    await user.click(tapCheckbox)
+
+    const groupCheckbox = screen.getByRole('checkbox', { name: /Select all device tools/i }) as HTMLInputElement
+    await waitFor(() => expect(groupCheckbox.indeterminate).toBe(true))
+    expect(groupCheckbox.checked).toBe(false)
+  })
+
+  test('the group header checkbox selects the WHOLE group in one click (criterion 18)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, baseResponses({ body: { capabilities: twoCapsSameGroup } }))
+    await openToolsSection()
+    await waitFor(() => expect(screen.getByText('device.tap')).toBeTruthy())
+
+    const groupCheckbox = screen.getByRole('checkbox', { name: /Select all device tools/i }) as HTMLInputElement
+    await user.click(groupCheckbox)
+
+    const tapCheckbox = screen.getByText('device.tap').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+    const swipeCheckbox = screen.getByText('device.swipe').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+    await waitFor(() => expect(tapCheckbox.checked).toBe(true))
+    expect(swipeCheckbox.checked).toBe(true)
+  })
+})
+
 describe('AgentDetailPage — smoke render', () => {
   test('loaded: shows the agent name once every fetch resolves', async () => {
     setSearchParams({ id: 'agent-1' })

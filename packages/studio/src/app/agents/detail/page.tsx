@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
@@ -45,6 +45,7 @@ import { Chat } from '@/components/agent/Chat'
 import { ContextPanel } from '@/components/agent/ContextPanel'
 import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
+import { useBulkSelection } from '@/hooks/use-bulk-selection'
 import { subtreeOf } from '@/lib/agent-tree'
 import { ALL_PERMISSIONS, capabilityGroup, looksVolatile, resolveForDisplay, type Agent, type AgentDefaults, type CapabilityInfo, type Connector, type ModelInfo } from '@/lib/agents'
 
@@ -107,16 +108,33 @@ function OverrideRow({ label, overridden, farmValueLabel, onEnable, onClear, chi
   )
 }
 
-function SectionCard({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+function SectionCard({ title, description, actions, children }: { title: string; description?: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="max-w-2xl space-y-4 pb-8">
-      <div>
-        <h2 className="text-[13.5px] font-medium">{title}</h2>
-        {description && <p className="mt-0.5 text-[12px] text-fg-muted">{description}</p>}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[13.5px] font-medium">{title}</h2>
+          {description && <p className="mt-0.5 text-[12px] text-fg-muted">{description}</p>}
+        </div>
+        {actions}
       </div>
       {children}
     </div>
   )
+}
+
+/**
+ * Plan 83 §3.7, §4.4 — a tri-state checkbox (checked / unchecked /
+ * indeterminate) for a group header. Native `<input type="checkbox">` has
+ * no `indeterminate` ATTRIBUTE — only a DOM PROPERTY, set imperatively —
+ * which is why this needs a ref rather than a plain `checked` prop.
+ */
+function TriStateCheckbox({ state, onChange, ...props }: { state: 'all' | 'some' | 'none'; onChange(): void } & Omit<ComponentProps<'input'>, 'type' | 'checked' | 'onChange'>) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = state === 'some'
+  }, [state])
+  return <input ref={ref} type="checkbox" checked={state === 'all'} onChange={onChange} {...props} />
 }
 
 function AgentDetail() {
@@ -256,6 +274,14 @@ function AgentDetail() {
       },
     })
 
+  // Plan 83 §3.6 — `ThreadList`'s per-row Delete already did the DELETE call and confirmed with
+  // the operator; this drops the row from the sidebar's own list and, if the deleted thread was
+  // the one open, navigates away from a thread that no longer exists.
+  const onThreadDeleted = (deletedId: string) => {
+    setThreads((prev) => prev?.filter((t) => t.id !== deletedId) ?? prev)
+    if (threadId === deletedId) router.push(`/agents/detail?id=${id}&tab=workbench`)
+  }
+
   const cancelRun = () => {
     if (!run) return
     void doAction('cancel', () => api(`/api/v1/runs/${run.id}/cancel`, RunResponseSchema, { method: 'POST' }), {
@@ -382,7 +408,14 @@ function AgentDetail() {
       <div className="min-h-0 flex-1">
         <TabPanel active={tab === 'workbench'}>
           <div className="flex h-full">
-            <ThreadList agentId={id} threads={threads} activeThreadId={threadId} onNewThread={() => void startThread()} newThreadPending={isPending('create-thread')} />
+            <ThreadList
+              agentId={id}
+              threads={threads}
+              activeThreadId={threadId}
+              onNewThread={() => void startThread()}
+              newThreadPending={isPending('create-thread')}
+              onThreadDeleted={onThreadDeleted}
+            />
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               {!threadId ? (
                 <div className="flex flex-1 items-center justify-center">
@@ -635,33 +668,55 @@ function ToolsSection({
     setDraft({ ...draft, tools: has ? draft.tools.filter((t) => t !== id) : [...draft.tools, id] })
   }
 
+  // Plan 83 §3.7, §4.4 — the registry is already grouped by prefix, so the natural bulk-select
+  // unit is the group: a tri-state header checkbox per group, plus one Select all / Clear all for
+  // the whole section.
+  const allIds = useMemo(() => capabilities.map((c) => c.id), [capabilities])
+  const bulk = useBulkSelection(allIds, draft.tools, (ids) => setDraft({ ...draft, tools: ids }))
+
   return (
-    <SectionCard title="Tools" description="The registry, grouped by prefix — checked capabilities are this agent's allowlist.">
+    <SectionCard
+      title="Tools"
+      description="The registry, grouped by prefix — checked capabilities are this agent's allowlist."
+      actions={
+        capabilities.length > 0 ? (
+          <Button type="button" variant="ghost" size="sm" onClick={bulk.toggleAll} className="text-[12px]">
+            {bulk.allChecked ? 'Clear all' : 'Select all'}
+          </Button>
+        ) : undefined
+      }
+    >
       {error ? (
         <ErrorState message={`The capability list could not be understood — ${error}`} />
       ) : capabilities.length === 0 ? (
         <LoadingRows rows={3} />
       ) : (
         <div className="space-y-4">
-          {groups.map(([group, caps]) => (
-            <div key={group} className="rounded-md border p-3">
-              <p className="mb-2 text-[12.5px] font-medium capitalize">{group}</p>
-              <div className="space-y-1.5">
-                {caps.map((cap) => (
-                  <label key={cap.id} className="flex items-start gap-2 text-[12.5px]">
-                    <input type="checkbox" className="mt-0.5" checked={draft.tools.includes(cap.id)} onChange={() => toggle(cap.id)} />
-                    <span className="flex-1">
-                      <span className="readout font-medium">{cap.id}</span>{' '}
-                      <Badge variant={cap.effect === 'destructive' ? 'destructive' : cap.effect === 'write' ? 'secondary' : 'outline'} className="align-middle text-[10px]">
-                        {cap.effect}
-                      </Badge>
-                      <span className="block text-fg-muted">{cap.description}</span>
-                    </span>
-                  </label>
-                ))}
+          {groups.map(([group, caps]) => {
+            const groupIds = caps.map((c) => c.id)
+            return (
+              <div key={group} className="rounded-md border p-3">
+                <label className="mb-2 flex items-center gap-2 text-[12.5px] font-medium capitalize">
+                  <TriStateCheckbox state={bulk.groupState(groupIds)} onChange={() => bulk.toggleGroup(groupIds)} aria-label={`Select all ${group} tools`} />
+                  {group}
+                </label>
+                <div className="space-y-1.5">
+                  {caps.map((cap) => (
+                    <label key={cap.id} className="flex items-start gap-2 text-[12.5px]">
+                      <input type="checkbox" className="mt-0.5" checked={draft.tools.includes(cap.id)} onChange={() => toggle(cap.id)} />
+                      <span className="flex-1">
+                        <span className="readout font-medium">{cap.id}</span>{' '}
+                        <Badge variant={cap.effect === 'destructive' ? 'destructive' : cap.effect === 'write' ? 'secondary' : 'outline'} className="align-middle text-[10px]">
+                          {cap.effect}
+                        </Badge>
+                        <span className="block text-fg-muted">{cap.description}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </SectionCard>
@@ -685,12 +740,34 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
     setDraft({ ...draft, workspaceScope: { ...draft.workspaceScope, [kind]: list } })
   }
 
+  // Plan 83 §3.7, §4.4 — device grants and permissions have the same "checkbox list with no bulk
+  // action" shape ToolsSection had, and the same absence. Permissions are additionally grouped by
+  // their own dot-prefix (`device.*`, `agent.*`, …), same as capabilities.
+  const deviceIds = useMemo(() => devices.map((d) => d.id), [devices])
+  const deviceBulk = useBulkSelection(deviceIds, draft.deviceGrants, (ids) => setDraft({ ...draft, deviceGrants: ids }))
+  const permissionGroups = useMemo(() => {
+    const byGroup = new Map<string, string[]>()
+    for (const p of ALL_PERMISSIONS) {
+      const g = capabilityGroup(p)
+      byGroup.set(g, [...(byGroup.get(g) ?? []), p])
+    }
+    return [...byGroup.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [])
+  const permissionBulk = useBulkSelection(ALL_PERMISSIONS as unknown as string[], draft.permissions, (ids) => setDraft({ ...draft, permissions: ids }))
+
   return (
     <SectionCard title="Access" description="Which devices, tools' permissions, and workspace paths this agent may touch.">
       <div>
         <div className="mb-2 flex items-center justify-between">
           <Label className="text-[13px] font-normal">Device grants</Label>
-          {draft.deviceGrants.length === 0 && <Badge variant="outline">All devices (no restriction)</Badge>}
+          <div className="flex items-center gap-2">
+            {draft.deviceGrants.length === 0 && <Badge variant="outline">All devices (no restriction)</Badge>}
+            {devices.length > 0 && (
+              <Button type="button" variant="ghost" size="sm" onClick={deviceBulk.toggleAll} className="h-6 px-1.5 text-[11.5px]">
+                {deviceBulk.allChecked ? 'Clear all' : 'Select all'}
+              </Button>
+            )}
+          </div>
         </div>
         <p className="mb-2 text-[11.5px] text-fg-muted">
           An agent with no grants may reach every device — this is deliberate (plan 65 §3.5). Check specific devices to narrow it.
@@ -726,14 +803,29 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
       </div>
 
       <div>
-        <Label className="mb-2 block text-[13px] font-normal">Permissions</Label>
+        <div className="mb-2 flex items-center justify-between">
+          <Label className="text-[13px] font-normal">Permissions</Label>
+          <Button type="button" variant="ghost" size="sm" onClick={permissionBulk.toggleAll} className="h-6 px-1.5 text-[11.5px]">
+            {permissionBulk.allChecked ? 'Clear all' : 'Select all'}
+          </Button>
+        </div>
         <p className="mb-2 text-[11.5px] text-fg-muted">A ceiling, not a default — never more than this agent's owner already holds, checked again every time it runs.</p>
-        <div className="grid max-h-56 grid-cols-2 gap-1 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
-          {ALL_PERMISSIONS.map((p) => (
-            <label key={p} className="flex items-center gap-1.5 px-1 py-0.5 text-[12px]">
-              <input type="checkbox" checked={draft.permissions.includes(p)} onChange={() => togglePermission(p)} />
-              <span className="readout truncate">{p}</span>
-            </label>
+        <div className="max-h-56 space-y-2 overflow-y-auto rounded-md border p-2">
+          {permissionGroups.map(([group, perms]) => (
+            <div key={group}>
+              <label className="mb-1 flex items-center gap-1.5 px-1 py-0.5 text-[11px] font-medium capitalize text-fg-muted">
+                <TriStateCheckbox state={permissionBulk.groupState(perms)} onChange={() => permissionBulk.toggleGroup(perms)} aria-label={`Select all ${group} permissions`} />
+                {group}
+              </label>
+              <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                {perms.map((p) => (
+                  <label key={p} className="flex items-center gap-1.5 px-1 py-0.5 text-[12px]">
+                    <input type="checkbox" checked={draft.permissions.includes(p)} onChange={() => togglePermission(p)} />
+                    <span className="readout truncate">{p}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </div>

@@ -16,7 +16,13 @@ import '../../../happydom'
 import type { ReactElement } from 'react'
 import { cleanup, render, type RenderResult } from '@testing-library/react'
 
-export type MockResult = { status?: number; body?: unknown }
+/**
+ * `raw`, when given, is returned AS THE RESPONSE VERBATIM instead of being
+ * JSON-encoded — the only way to mock a streaming body (e.g. `useChat`'s
+ * `text/event-stream` chat transport, plan 83 §4.2/§7), which is not a JSON
+ * document at all. `status`/`body` are ignored when `raw` is present.
+ */
+export type MockResult = { status?: number; body?: unknown; raw?: Response }
 export type MockEntry = MockResult | ((req: { method: string; path: string; body: unknown }) => MockResult | Promise<MockResult>)
 
 export interface ApiMockCall {
@@ -64,6 +70,7 @@ export function installApiMock(responses: Record<string, MockEntry> = {}, opts: 
     }
     const entry = responses[key]!
     const resolved = typeof entry === 'function' ? await entry({ method, path, body }) : entry
+    if (resolved.raw) return resolved.raw
     const status = resolved.status ?? 200
     return new Response(resolved.body === undefined ? null : JSON.stringify(resolved.body), {
       status,

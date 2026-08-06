@@ -69,6 +69,7 @@ export type AuditAction =
   // `agent.create`/`.update`/`.delete` above (editing the RECORD).
   | 'agent.thread.create'
   | 'agent.thread.message'
+  | 'agent.thread.delete'
   | 'agent.run.cancel'
   | 'agent.approval.decide'
   // Plan 68 §3.5 — a destructive call auto-denied because its thread's

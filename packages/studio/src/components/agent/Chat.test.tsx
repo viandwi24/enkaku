@@ -88,6 +88,77 @@ describe('Chat — smoke render', () => {
     await waitFor(() => expect(screen.getByPlaceholderText('Message the agent… (/ for commands)')).toBeTruthy())
   })
 
+  test('criteria 6/7 (plan 83 §3.3): a failed send shows an error naming the failure, and Retry re-sends the same message', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    let chatCalls = 0
+    renderWithApi(<Wrapped threadId="thread-1" />, {
+      '/api/v1/threads/thread-1/messages*': { body: { messages: [] } },
+      '/api/settings': { body: settingsBody },
+      '/api/v1/agent-commands': noCommands,
+      '/api/v1/threads/thread-1/chat': () => {
+        chatCalls++
+        return { raw: new Response('server exploded', { status: 500 }) }
+      },
+    })
+    const textarea = await screen.findByPlaceholderText('Message the agent… (/ for commands)')
+    await user.type(textarea, 'hello agent')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText('The message failed to send')).toBeTruthy())
+    expect(screen.getByText('server exploded')).toBeTruthy()
+    expect(chatCalls).toBe(1)
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(chatCalls).toBe(2))
+  })
+
+  test('criterion 9 (plan 83 §3.2): the composer clears the instant a message is sent, without waiting for the reply', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    // A chat POST that never resolves is the sharpest possible proof that clearing does not wait
+    // on it: if `submit` awaited `sendMessage` (the old bug — §3.2), the composer would sit stuck
+    // FOREVER against this mock. It clears anyway because `submit`'s own returned promise resolves
+    // the instant the (empty, here) attachment-upload step is done, never touching this call.
+    renderWithApi(<Wrapped threadId="thread-1" />, {
+      '/api/v1/threads/thread-1/messages*': { body: { messages: [] } },
+      '/api/settings': { body: settingsBody },
+      '/api/v1/agent-commands': noCommands,
+      '/api/v1/threads/thread-1/chat': () => new Promise<never>(() => {}),
+    })
+    const textarea = (await screen.findByPlaceholderText('Message the agent… (/ for commands)')) as HTMLTextAreaElement
+    await user.type(textarea, 'while streaming')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(textarea.value).toBe(''))
+    // And the "request sent, nothing back yet" state (Shimmer) is visible — proving the send
+    // genuinely went out, this isn't just an early-return with nothing happening.
+    await waitFor(() => expect(screen.getByText('Thinking…')).toBeTruthy())
+  })
+
+  test('criterion 10 (plan 83 §3.2): an attachment upload failure keeps the composer text, rather than clearing it', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    renderWithApi(<Wrapped threadId="thread-1" />, {
+      '/api/v1/threads/thread-1/messages*': { body: { messages: [] } },
+      '/api/settings': { body: settingsBody },
+      '/api/v1/agent-commands': noCommands,
+      '/api/v1/blobs': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'upload boom' } } },
+    })
+    const textarea = (await screen.findByPlaceholderText('Message the agent… (/ for commands)')) as HTMLTextAreaElement
+    await user.type(textarea, 'keep me')
+    const fileInput = screen.getByLabelText('Upload files') as HTMLInputElement
+    const file = new File(['abc'], 'a.png', { type: 'image/png' })
+    await user.upload(fileInput, file)
+    await user.keyboard('{Enter}')
+
+    // `submit` (`Chat.tsx`) awaits the upload BEFORE clearing anything — it throws here, and
+    // `PromptInput`'s own async-path `catch` (`prompt-input.tsx`, unedited) deliberately does not
+    // call `clear()` on a thrown `onSubmit`, so the typed text survives for a retry.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(textarea.value).toBe('keep me')
+  })
+
   test('slash commands (plan 78 §3.6): typing "/" shows the assembled list, filtered live, and selecting one completes the text', async () => {
     renderWithApi(<Wrapped threadId="thread-1" />, {
       '/api/v1/threads/thread-1/messages*': { body: { messages: [] } },

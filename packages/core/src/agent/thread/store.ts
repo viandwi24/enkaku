@@ -16,7 +16,7 @@ import {
   type AgentUsage,
 } from '@enkaku/protocol'
 import type { Db } from '../../db'
-import { agentMessages, agentRuns, agentThreads, type AgentMessageRow, type AgentRunRow, type AgentThreadRow } from '../../db/schema'
+import { agentApprovals, agentInbox, agentMessages, agentRuns, agentThreads, type AgentMessageRow, type AgentRunRow, type AgentThreadRow } from '../../db/schema'
 import { EnkakuError } from '../../util/errors'
 
 /**
@@ -337,6 +337,62 @@ export function createThreadStore(db: Db) {
     return total
   }
 
+  /** How many messages and runs a thread carries — used both to preview a delete (plan 83 §3.6,
+   * criterion 16: "the confirm names how many messages and runs will be deleted") and as the
+   * summary `deleteThread` itself returns, so the two numbers can never drift apart. */
+  function countsForThread(id: string): { messages: number; runs: number } {
+    mustGetThread(id)
+    const messages = db.select({ id: agentMessages.id }).from(agentMessages).where(eq(agentMessages.threadId, id)).all().length
+    const runs = db.select({ id: agentRuns.id }).from(agentRuns).where(eq(agentRuns.threadId, id)).all().length
+    return { messages, runs }
+  }
+
+  /**
+   * Deletes a thread and everything that points at it — its runs, its
+   * messages, its approvals, and its tree nodes (the run tree IS
+   * `agentRuns`/`agentInbox`, keyed by `parentRunId`/`rootRunId` and
+   * `targetRunId`/`fromRunId` — there is no separate "tree node" table) —
+   * in ONE transaction, the same discipline `device/lifecycle.ts` already
+   * applies to a forgotten device (plan 83 §3.6).
+   *
+   * Refused, not force-killed, while any run is still active (`queued` /
+   * `running` / `paused`): cancel first, then delete. A delete that
+   * silently aborts an agent mid-tool-call is the kind of surprise that
+   * costs an operator a device left in a strange state.
+   *
+   * Blobs (plan 70) are deliberately NOT touched — they are content-
+   * addressed and may be shared across threads; deleting them here would
+   * risk breaking another thread's transcript. That is the retention GC's
+   * problem, not this one.
+   */
+  function deleteThread(id: string): { messages: number; runs: number } {
+    mustGetThread(id)
+    const activeRuns = db
+      .select({ id: agentRuns.id })
+      .from(agentRuns)
+      .where(and(eq(agentRuns.threadId, id), inArray(agentRuns.status, ['queued', 'running', 'paused'])))
+      .all()
+    if (activeRuns.length > 0) {
+      throw new EnkakuError('E_THREAD_RUN_ACTIVE', `thread ${id} has an active run — cancel it before deleting the thread`)
+    }
+
+    const counts = countsForThread(id)
+    const runIds = db.select({ id: agentRuns.id }).from(agentRuns).where(eq(agentRuns.threadId, id)).all().map((r) => r.id)
+
+    db.transaction((tx) => {
+      if (runIds.length > 0) {
+        tx.delete(agentApprovals).where(inArray(agentApprovals.runId, runIds)).run()
+        tx.delete(agentInbox).where(inArray(agentInbox.targetRunId, runIds)).run()
+        tx.delete(agentInbox).where(inArray(agentInbox.fromRunId, runIds)).run()
+      }
+      tx.delete(agentMessages).where(eq(agentMessages.threadId, id)).run()
+      tx.delete(agentRuns).where(eq(agentRuns.threadId, id)).run()
+      tx.delete(agentThreads).where(eq(agentThreads.id, id)).run()
+    })
+
+    return counts
+  }
+
   return {
     createThread,
     getThread,
@@ -355,6 +411,8 @@ export function createThreadStore(db: Db) {
     recoverInterruptedRuns,
     countActiveScheduledRuns,
     spentOutputTokensLast24h,
+    countsForThread,
+    deleteThread,
   }
 }
 

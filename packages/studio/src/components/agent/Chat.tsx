@@ -49,8 +49,10 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { ApprovalCard } from './ApprovalCard'
 import { ChildRunCard } from './ChildRunCard'
+import { ModelCombobox } from './ModelCombobox'
 import { ToolCallCard } from './ToolCallCard'
 import { UsageBadge } from './UsageBadge'
+import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { api, useAction } from '@/lib/actions'
 import {
@@ -164,7 +166,22 @@ export function Chat({
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null)
   const [farmDefaults, setFarmDefaults] = useState<AgentDefaults | null>(null)
   const [models, setModels] = useState<{ models: ModelInfo[]; fallback: boolean } | null>(null)
+  const [modelsError, setModelsError] = useState<string | null>(null)
   const [commands, setCommands] = useState<AgentCommand[]>([])
+  // Plan 83 §3.3 — a failed STREAM (a transport-level failure: bad URL, network drop, a non-2xx
+  // response, or `agent-chat-stream.ts`'s own `execute()` throwing before any run exists — e.g. a
+  // disabled agent) previously said NOTHING at all: `useChat` never had `onError` wired, and
+  // nothing ever read `chat.error`. `streamError` is that missing surface; `lastUserMessage` is
+  // what Retry re-sends.
+  const [streamError, setStreamError] = useState<string | null>(null)
+  const [lastUserMessage, setLastUserMessage] = useState<{ text: string; attachments: string[] } | null>(null)
+  // Plan 83 §3.3 — the four background fetches (commands, farm defaults, the model list, the run
+  // tree) used to `.catch(() => undefined)`: a failure was genuinely invisible, not merely
+  // unobtrusive. `backgroundError` is a single, low-emphasis note for the three of those four that
+  // have no dedicated failed-state UI of their own; the model list gets its OWN distinct state
+  // (`modelsError`, above) because criterion 8 asks for it specifically — an empty dropdown reads
+  // as "no models exist", which is a different (and false) claim from "the fetch failed".
+  const [backgroundError, setBackgroundError] = useState<string | null>(null)
   const { run: doAction, isPending } = useAction()
 
   // Plan 78 §3.6 — the assembled slash-command list every `AgentPlugin.commands` contributes
@@ -173,7 +190,7 @@ export function Chat({
   useEffect(() => {
     void api('/api/v1/agent-commands', AgentCommandsResponseSchema)
       .then((b) => setCommands(b.commands))
-      .catch(() => undefined)
+      .catch((e) => setBackgroundError(`Slash commands failed to load — ${e instanceof Error ? e.message : String(e)}`))
   }, [])
 
   const transport = useMemo(
@@ -195,7 +212,15 @@ export function Chat({
     [threadId],
   )
 
-  const chat = useChat<AgentChatUIMessage>({ transport })
+  const chat = useChat<AgentChatUIMessage>({
+    transport,
+    // Plan 83 §3.3 — the whole point of this plan's finding: a rejected/errored stream previously
+    // left the UI in exactly the state a slow one leaves it in (nothing). `err` here is a genuine
+    // transport-level failure (the fetch itself failing, a non-2xx response, or a malformed chunk)
+    // — an agent RUN failing is a different, already-visible thing (`run.status`/`errorClass`,
+    // rendered below).
+    onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
+  })
   const { messages, setMessages, sendMessage, status, stop } = chat
 
   // Fetch-then-subscribe (plan 78 §3.5, `CLAUDE.md`) — history over HTTP, THEN `useChat` streams
@@ -223,18 +248,26 @@ export function Chat({
   useEffect(() => {
     void api('/api/settings', SettingsResponseSchema)
       .then((b) => setFarmDefaults(b.settings.agentDefaults))
-      .catch(() => undefined)
+      .catch((e) => setBackgroundError(`Farm defaults failed to load — ${e instanceof Error ? e.message : String(e)}`))
   }, [])
 
   const connectorId = agent?.connectorId ?? farmDefaults?.connectorId ?? null
   useEffect(() => {
     if (!connectorId) {
       setModels(null)
+      setModelsError(null)
       return
     }
+    setModelsError(null)
     void api(`/api/connectors/${connectorId}/models`, ConnectorModelsResponseSchema)
-      .then(setModels)
-      .catch(() => setModels(null))
+      .then((b) => {
+        setModels(b)
+        setModelsError(null)
+      })
+      // Criterion 8 — a failed fetch sets a DISTINCT error state rather than `setModels(null)`,
+      // which is indistinguishable from "still loading" or "this connector genuinely has no
+      // models" (`ModelCombobox` renders `modelsError` as a named failure, not an empty list).
+      .catch((e) => setModelsError(e instanceof Error ? e.message : String(e)))
   }, [connectorId])
 
   const runState = useMemo(() => deriveRunState(messages), [messages])
@@ -250,7 +283,7 @@ export function Chat({
         setTreeNodes(b.nodes)
         onTreeChange?.(b.nodes, b.rootRunId)
       })
-      .catch(() => undefined)
+      .catch((e) => setBackgroundError(`The run tree failed to load — ${e instanceof Error ? e.message : String(e)}`))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.id, run?.status, childSignal])
 
@@ -278,6 +311,14 @@ export function Chat({
     })
   }
 
+  // Plan 83 §3.2, §4.2 — `submit` awaits only what must happen BEFORE the send (attachment
+  // uploads): `PromptInput` (`prompt-input.tsx`, unedited) clears the composer once its own
+  // `onSubmit` resolves, and — on the async path — deliberately does NOT clear if it throws, so an
+  // upload failure keeps the typed text for a retry (criterion 10). `sendMessage` itself resolves
+  // only once the WHOLE turn finishes, so awaiting it here would hold the composer hostage for the
+  // entire reply (§3.2's own diagnosis) — it is fired and left to stream in the background instead
+  // (criterion 9), with `onError` above as the failure channel now that the text is no longer the
+  // only sign something is wrong.
   const submit = async (message: PromptInputMessage) => {
     const attachmentIds: string[] = []
     for (const f of message.files) {
@@ -286,7 +327,15 @@ export function Chat({
       const info = await api('/api/v1/blobs', UploadBlobResponseSchema, { method: 'POST', body: file })
       attachmentIds.push(info.blobId)
     }
-    await sendMessage({ text: message.text }, { body: { attachments: attachmentIds } })
+    setStreamError(null)
+    setLastUserMessage({ text: message.text ?? '', attachments: attachmentIds })
+    void sendMessage({ text: message.text }, { body: { attachments: attachmentIds } }).catch(() => undefined) // failures surface via onError above, not here
+  }
+
+  const retry = () => {
+    if (!lastUserMessage) return
+    setStreamError(null)
+    void sendMessage({ text: lastUserMessage.text }, { body: { attachments: lastUserMessage.attachments } }).catch(() => undefined)
   }
 
   const directChildren = treeNodes.filter((n) => n.parentRunId === run?.id)
@@ -346,6 +395,26 @@ export function Chat({
         <ConversationScrollButton />
       </Conversation>
 
+      {/* Plan 83 §3.3 — a failed stream now says something, immediately, in the chat, rather than
+          leaving the UI indistinguishable from a slow one. `Retry` re-sends the exact last user
+          message via the same non-awaited `sendMessage` path `submit` uses. */}
+      {streamError && (
+        <div className="mx-2 mb-2 flex items-start justify-between gap-3 rounded-md border border-led-danger/30 bg-led-danger/10 px-3 py-2 text-[12.5px]">
+          <div>
+            <p className="font-medium text-led-danger">The message failed to send</p>
+            <p className="text-fg-muted">{streamError}</p>
+          </div>
+          {lastUserMessage && (
+            <Button variant="outline" size="sm" onClick={retry} className="shrink-0">
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+      {backgroundError && !streamError && (
+        <p className="mx-2 mb-1.5 text-[11px] text-fg-subtle">{backgroundError}</p>
+      )}
+
       <PromptInputProvider>
       <PromptInput
         className="p-2 pt-0"
@@ -358,7 +427,13 @@ export function Chat({
         <AttachmentStrip />
         <div className="relative">
           <SlashCommandMenu commands={commands} />
-          <PromptInputTextarea placeholder="Message the agent… (/ for commands)" />
+          {/* Plan 83 §3.4 — `flex` on the shared `Textarea` (`components/ui/textarea.tsx`) vertically
+              centres a single line of placeholder inside its 4rem `min-h-16`, which is what makes
+              the composer look wrong before anything is typed. Fixed HERE, in this call site's own
+              className, rather than in the shared base (used elsewhere where a taller default is
+              fine) or in `prompt-input.tsx` itself (not edited — §2). `items-start` un-centres it;
+              `min-h-11` is sized for one line instead of four. */}
+          <PromptInputTextarea placeholder="Message the agent… (/ for commands)" className="min-h-11 items-start" />
         </div>
         <PromptInputFooter>
           <PromptInputTools>
@@ -367,18 +442,13 @@ export function Chat({
           <div className="flex items-center gap-1">
             {agent && resolved && (
               <>
-                <PromptInputSelect value={resolved.model} onValueChange={(v) => patchAgent({ model: v })} disabled={isPending('composer-agent-patch')}>
-                  <PromptInputSelectTrigger aria-label="Model">
-                    <PromptInputSelectValue />
-                  </PromptInputSelectTrigger>
-                  <PromptInputSelectContent>
-                    {[...new Set([resolved.model, ...(models?.models.map((m) => m.id) ?? [])])].map((id) => (
-                      <PromptInputSelectItem key={id} value={id}>
-                        {id}
-                      </PromptInputSelectItem>
-                    ))}
-                  </PromptInputSelectContent>
-                </PromptInputSelect>
+                <ModelCombobox
+                  value={resolved.model}
+                  options={models?.models.map((m) => m.id) ?? []}
+                  onValueChange={(v) => patchAgent({ model: v })}
+                  disabled={isPending('composer-agent-patch')}
+                  error={modelsError}
+                />
                 <PromptInputSelect
                   value={resolved.effort}
                   onValueChange={(v) => patchAgent({ settings: { ...agent.settings, effort: v as 'low' | 'medium' | 'high' } })}

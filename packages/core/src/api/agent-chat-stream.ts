@@ -2,6 +2,7 @@ import { createUIMessageStream, type UIMessage } from 'ai'
 import type { AgentRun, ServerMessage, ToolResultContent } from '@enkaku/protocol'
 import type { ServerWebSocket } from 'bun'
 import type { AgentWsHandler } from '../server/ws-handlers-agent'
+import { EnkakuError } from '../util/errors'
 
 /**
  * Plan 78 §4.3/§4.4 — the bridge from Enkaku's own run machinery to the AI
@@ -107,8 +108,25 @@ function createRelayWs(onMessage: (raw: string) => void): ServerWebSocket<unknow
   return { readyState: 1, send: (data: string) => onMessage(data) } as unknown as ServerWebSocket<unknown>
 }
 
+/**
+ * `createUIMessageStream`'s own `onError` defaults to `() => 'An error occurred.'` — a deliberate
+ * redaction so a stray internal error never leaks a stack trace or a DB path to a browser tab. That
+ * default also swallows the ONE case this bridge can throw before any run exists: `opts.start()`
+ * (`runner.postMessage`) rejecting synchronously — no connector configured, no stored credential, a
+ * disabled agent (`E_NO_CONNECTOR`/`E_NO_CREDENTIAL`/`E_AGENT_DISABLED`, `runner.ts`). Those
+ * `EnkakuError`s already carry an operator-safe message (the same text `POST /threads/:id/messages`
+ * — the non-streaming route — returns as `{error:{code,message}}`), so redacting it here only makes
+ * a misconfigured agent look like a dead chat instead of naming the fix. An error that is NOT an
+ * `EnkakuError` (a genuine internal fault) keeps the generic message — nothing new is leaked.
+ */
+function chatStreamErrorText(error: unknown): string {
+  if (error instanceof EnkakuError) return error.message
+  return 'An error occurred.'
+}
+
 export function createAgentChatStream(opts: CreateAgentChatStreamOptions) {
   return createUIMessageStream<AgentChatUIMessage>({
+    onError: chatStreamErrorText,
     execute: async ({ writer }) => {
       await new Promise<void>((resolve) => {
         // Declared before `relayWs` (which closes over it) so there is no ambiguity about

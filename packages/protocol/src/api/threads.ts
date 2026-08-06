@@ -41,3 +41,13 @@ export const TreeResponseSchema = AgentTreeResponseSchema
 export const AgentCommandSchema = z.object({ name: z.string(), description: z.string() })
 export const AgentCommandsResponseSchema = z.object({ commands: z.array(AgentCommandSchema) })
 export type AgentCommand = z.infer<typeof AgentCommandSchema>
+
+/** Plan 83 §3.6, §4.3 — how much a thread carries, read BEFORE a delete is confirmed (criterion 16)
+ * and returned again as the delete's own summary, so the two numbers can never drift apart. */
+export const ThreadCountsSchema = z.object({ messages: z.number().int().nonnegative(), runs: z.number().int().nonnegative() })
+
+/** `GET /api/v1/threads/:id/delete-preview` — read-only, names what a delete would remove. */
+export const ThreadDeletePreviewResponseSchema = z.object({ counts: ThreadCountsSchema })
+
+/** `DELETE /api/v1/threads/:id` — refused (not force-killed) while a run is still active. */
+export const ThreadDeleteResponseSchema = z.object({ deleted: z.literal(true), counts: ThreadCountsSchema })

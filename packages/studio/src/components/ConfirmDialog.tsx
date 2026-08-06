@@ -27,6 +27,8 @@ export function ConfirmDialog({
   confirmLabel = 'Delete',
   destructive = true,
   onConfirm,
+  open: openProp,
+  onOpenChange: onOpenChangeProp,
 }: {
   trigger: ReactNode
   title: string
@@ -34,8 +36,20 @@ export function ConfirmDialog({
   confirmLabel?: string
   destructive?: boolean
   onConfirm: () => unknown
+  /**
+   * Controlled open state — for the (rare) case a dialog must open from
+   * somewhere OTHER than its own `trigger` node, e.g. a `DropdownMenuItem`
+   * (plan 83 §3.6): Radix closes the menu the instant an item is selected,
+   * which would unmount a `trigger`-nested `AlertDialog` before it ever
+   * showed. Omit both for the ordinary, self-contained case every existing
+   * call site already uses — internal state takes over unchanged.
+   */
+  open?: boolean
+  onOpenChange?(open: boolean): void
 }) {
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const open = openProp ?? uncontrolledOpen
+  const setOpen = onOpenChangeProp ?? setUncontrolledOpen
   const [busy, setBusy] = useState(false)
 
   return (

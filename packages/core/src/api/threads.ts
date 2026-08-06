@@ -9,6 +9,8 @@ import {
   ListThreadsResponseSchema,
   PostThreadMessageInputSchema,
   RunResponseSchema,
+  ThreadDeletePreviewResponseSchema,
+  ThreadDeleteResponseSchema,
   ThreadMessagesResponseSchema,
   ThreadResponseSchema,
   TreeResponseSchema,
@@ -69,6 +71,25 @@ export function createThreadRoutes(deps: { runner: AgentRunner; threads: ThreadS
     const thread = threads.getThread(c.req.param('id'))
     if (!thread) throw new EnkakuError('thread_not_found', `no such thread: ${c.req.param('id')}`)
     return typedJson(c, ThreadResponseSchema, { thread })
+  })
+
+  // Plan 83 §3.6, §4.3 — read BEFORE a delete is confirmed, so the confirm dialog can name exactly
+  // how many messages and runs are at stake (criterion 16) with the SAME count `deleteThread` itself
+  // returns (never a second, possibly-stale computation).
+  app.get('/threads/:id/delete-preview', requirePermission('agent.run'), (c) => {
+    const counts = threads.countsForThread(c.req.param('id'))
+    return typedJson(c, ThreadDeletePreviewResponseSchema, { counts })
+  })
+
+  // Plan 83 §3.6, §4.3 — deletes a thread and everything that points at it (runs, messages,
+  // approvals, tree nodes) in one transaction. Refused, not force-killed, while a run is still
+  // active — `deleteThread` throws `E_THREAD_RUN_ACTIVE` (mapped to 409 below), and the thread
+  // survives intact (criterion 15). Blobs are deliberately untouched (§3.6).
+  app.delete('/threads/:id', requirePermission('agent.run'), (c) => {
+    const id = c.req.param('id')
+    const counts = threads.deleteThread(id)
+    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.thread.delete', target: id, meta: counts })
+    return typedJson(c, ThreadDeleteResponseSchema, { deleted: true, counts })
   })
 
   // The fetch half of fetch-then-subscribe (plan 66 §3.4) — a client GETs history, THEN sends
@@ -165,7 +186,7 @@ export function createThreadRoutes(deps: { runner: AgentRunner; threads: ThreadS
       const status =
         err.code === 'thread_not_found' || err.code === 'run_not_found' || err.code === 'approval_not_found' || err.code === 'agent_not_found'
           ? 404
-          : err.code === 'E_ALREADY_DECIDED'
+          : err.code === 'E_ALREADY_DECIDED' || err.code === 'E_THREAD_RUN_ACTIVE'
             ? 409
             : ['E_BAD_REQUEST', 'E_AGENT_DISABLED', 'E_NO_CONNECTOR', 'E_NO_CREDENTIAL'].includes(err.code)
               ? 400
