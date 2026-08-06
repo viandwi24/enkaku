@@ -3,9 +3,9 @@
 import { useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Boxes } from 'lucide-react'
-import type { BatchInfo } from '@enkaku/protocol'
+import { BatchesPageResponseSchema, type BatchInfo } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { TableCell, TableHead } from '@/components/ui/table'
@@ -68,7 +68,7 @@ export default function BatchesPage() {
       <div className="space-y-4 px-5 py-4">
         <PaginatedTable<BatchInfo>
           ref={tableRef}
-          fetchPage={(cursor) => api<Page<BatchInfo>>(`/api/batches?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          fetchPage={(cursor) => api(`/api/batches?limit=50${cursor ? `&cursor=${cursor}` : ''}`, BatchesPageResponseSchema)}
           rowKey={(b) => b.id}
           sort={(list) =>
             [...list].sort((a, b) => {

@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Layers, Plus } from 'lucide-react'
-import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
+import { z } from 'zod'
+import { ClusterInfoSchema, pageSchema, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
 import { ClusterEditorDialog, type ClusterRow } from '@/components/ClusterEditorDialog'
 import { ClusterMembersDialog } from '@/components/ClusterMembersDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -14,6 +15,15 @@ import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
+
+/**
+ * `GET /api/clusters` (`packages/core/src/api/clusters.ts`) replies with the
+ * usual keyset envelope over `ClusterInfo` — no dedicated
+ * `ClustersPageResponseSchema` export exists in protocol (plan 72 §3.4's
+ * report flags this as a gap), so it is composed here from the exported
+ * `pageSchema` helper and `ClusterInfoSchema`, both already in protocol.
+ */
+const ClustersPageResponseSchema = pageSchema(ClusterInfoSchema)
 
 export default function ClustersPage() {
   const tableRef = useRef<PaginatedTableHandle<ClusterInfo>>(null)
@@ -30,7 +40,7 @@ export default function ClustersPage() {
   useEffect(loadDevices, [])
 
   const remove = (cl: ClusterInfo) =>
-    run('del-' + cl.id, () => api(`/api/clusters/${cl.id}`, { method: 'DELETE' }), {
+    run('del-' + cl.id, () => api(`/api/clusters/${cl.id}`, z.void(), { method: 'DELETE' }), {
       success: `${cl.name} deleted — its devices are unclustered, not deleted`,
       failure: 'Could not delete the cluster',
       onSuccess: () => tableRef.current?.reload(),
@@ -57,7 +67,7 @@ export default function ClustersPage() {
       <div className="space-y-4 px-5 py-4">
         <PaginatedTable<ClusterInfo>
           ref={tableRef}
-          fetchPage={(cursor) => api(`/api/clusters?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          fetchPage={(cursor) => api(`/api/clusters?limit=50${cursor ? `&cursor=${cursor}` : ''}`, ClustersPageResponseSchema)}
           rowKey={(cl) => cl.id}
           header={
             <>

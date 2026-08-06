@@ -1,0 +1,1 @@
+ALTER TABLE `connectors` ADD `credential_hint` text;

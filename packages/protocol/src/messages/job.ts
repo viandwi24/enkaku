@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { LeaseHolderSchema } from '../device'
 
 /** Jobs and leases (spec §10, §13). */
 
@@ -43,7 +44,19 @@ export const JobCancelMessage = z.object({
 export const LeaseAcquireMessage = z.object({
   type: z.literal('lease.acquire'),
   id: z.string().optional(),
-  payload: z.object({ deviceId: z.string() }),
+  payload: z.object({
+    deviceId: z.string(),
+    /**
+     * The id of the holder the CALLER BELIEVES currently holds the device
+     * (plan 71 §3.4) — a person's clientId/userId or an agent's root run id
+     * (`LeaseHolder.id`). Omitted for an ordinary acquire (device believed
+     * free). When present and the device is actually held by someone else,
+     * this is a takeover attempt: refused with `lease_holder_changed` if the
+     * real holder no longer matches (compare-and-swap, same reasoning as
+     * plan 64 §3.4's `ifMatch`), refused unconditionally for a job's lease.
+     */
+    takeOverFrom: z.string().optional(),
+  }),
 })
 
 export const LeaseReleaseMessage = z.object({
@@ -175,7 +188,14 @@ export const LeaseChangedMessage = z.object({
   type: z.literal('lease.changed'),
   payload: z.object({
     deviceId: z.string(),
-    held: z.boolean(),
+    /**
+     * The full holder (plan 71 §3.2), or `null` when the device is free —
+     * replaces the plain `held: boolean` this message used to carry. A
+     * consumer that only needs the boolean computes `heldBy !== null`;
+     * nothing is lost, and the wire stops carrying a fact ("held") that was
+     * never sufficient to draw a badge or a takeover dialog.
+     */
+    heldBy: LeaseHolderSchema.nullable(),
     expiresAt: z.number().nullable(),
   }),
 })
@@ -184,6 +204,32 @@ export const LeaseRevokedMessage = z.object({
   type: z.literal('lease.revoked'),
   payload: z.object({
     deviceId: z.string(),
-    reason: z.enum(['idle_timeout', 'disconnected', 'quarantined']),
+    reason: z.enum(['idle_timeout', 'disconnected', 'quarantined', 'taken-over']),
+    /**
+     * Who took the lease (plan 71 §3.5) — a resolved label, e.g. "Rina" or
+     * "checkout-bot". Null for every reason other than `taken-over` (an idle
+     * timeout, a disconnect, or a quarantine has no taker).
+     */
+    takenBy: z.string().nullable().default(null),
+  }),
+})
+
+/**
+ * A queued job is waiting for its target device to go quiet before claiming
+ * it (plan 71 §3.7) — broadcast while the wait is in progress so it is
+ * legible rather than looking stuck, and once more with `waiting: false`
+ * the moment the job actually claims the device (or the wait's own
+ * `maxWaitSec` cap expires and the job proceeds anyway).
+ */
+export const JobWaitingMessage = z.object({
+  type: z.literal('job.waiting'),
+  payload: z.object({
+    jobId: z.string(),
+    deviceId: z.string(),
+    waiting: z.boolean(),
+    /** Who the device is waiting to go quiet from — null once free. */
+    heldBy: LeaseHolderSchema.nullable(),
+    /** Seconds remaining before the quiet gate is satisfied, or the `maxWaitSec` cap forces a claim. */
+    remainingSec: z.number().int().min(0),
   }),
 })

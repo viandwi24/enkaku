@@ -23,7 +23,7 @@ import type { Logger } from '../util/logger'
  * device goes away (the tab closes, the job finishes, the endpoint idles
  * out, ...). NEVER changes `desired` (§3.6) — see `hold()` below.
  */
-export type HoldReason = 'viewer' | 'lease' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer'
+export type HoldReason = 'viewer' | 'lease' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer' | 'capability'
 
 export interface Hold {
   readonly id: string
@@ -62,7 +62,7 @@ export interface ReadinessManagerDeps {
   /** `readiness.maxHot`, read fresh (the same freshness pattern every other farm setting in this codebase uses). */
   maxHot: () => number
   /**
-   * Cloud/agent-owned devices are out of scope for this plan (§2, §9 open
+   * Cloud/node-owned devices are out of scope for this plan (§2, §9 open
    * question #2) — a local `Transport`/`SessionManager` acquire against one
    * would silently talk to nothing. `ensureAwake`/`reconcile` no-op for any
    * device this reports true for; `hold()` still resolves normally (a
@@ -81,7 +81,7 @@ const RANK: Record<Readiness, number> = { asleep: 0, awake: 1, hot: 2 }
  * A pure, manager-free fallback (Plan 43 §4.1): `offline` always reads
  * `asleep`; otherwise `actual` mirrors `desired` as a best guess — used only
  * where no live `ReadinessManager` is wired (orchestrator mode's
- * agent-owned devices, or a test that constructs `DeviceInfo` directly).
+ * node-owned devices, or a test that constructs `DeviceInfo` directly).
  * Every production local-device call site passes the manager's real `get()`
  * instead.
  */

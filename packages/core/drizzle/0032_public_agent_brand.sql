@@ -1,0 +1,1 @@
+ALTER TABLE `ai_agents` ADD `wake_on_message` text;

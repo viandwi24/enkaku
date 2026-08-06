@@ -21,7 +21,7 @@ interface PendingJob {
 
 export interface RemoteJobBridge {
   executor: JobExecutor
-  /** Called by the router on receiving job.progress from an agent. */
+  /** Called by the router on receiving job.progress from a node. */
   handleProgress(payload: {
     jobId: string
     kind: 'phase' | 'log' | 'artifact' | 'result'
@@ -34,9 +34,9 @@ export interface RemoteJobBridge {
 }
 
 /**
- * The executor for agent-owned devices (plan 12 §4.5).
+ * The executor for node-owned devices (plan 12 §4.5).
  *
- * The bundle is shipped to the agent and **the exact same runner** as local
+ * The bundle is shipped to the node and **the exact same runner** as local
  * mode executes it there — timeouts, retries, and the guarantee that `finish`
  * always runs included. The control plane only waits for word and writes it to
  * the DB, so Studio cannot tell a local job from a remote one.
@@ -67,7 +67,7 @@ export function createRemoteJobBridge(deps: {
           type: 'job.dispatch',
           payload: { jobId: job.id, deviceId: job.deviceId, bundle: script.bundle, params: job.params ?? {} },
         } as never)
-        if (!sent) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+        if (!sent) throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
 
         ctx.signal.addEventListener('abort', () => {
           deps.router.sendToDevice(job.deviceId, {
@@ -114,7 +114,7 @@ export function createRemoteJobBridge(deps: {
         if (payload.result.ok) {
           waiter.resolve(payload.result.value ?? null)
         } else {
-          const err = payload.result.error ?? { code: 'SCRIPT_FAILED', message: 'the job failed on the agent' }
+          const err = payload.result.error ?? { code: 'SCRIPT_FAILED', message: 'the job failed on the node' }
           waiter.reject(
             Object.assign(new EnkakuError(err.code, err.message), {
               code: err.code === 'CANCELLED' ? 'job_cancelled' : err.code,

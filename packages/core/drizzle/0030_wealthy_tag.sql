@@ -1,0 +1,1 @@
+ALTER TABLE `agent_approvals` ADD `tool_call_id` text NOT NULL;

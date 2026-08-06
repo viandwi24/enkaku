@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
+import { TagsResponseSchema } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { tagCounts } from '../registry/device-tags'
+import { typedJson } from './typed-json'
 
 /**
  * `GET /api/tags` (plan 19 §4.3) — every tag in use, with a count, so the
@@ -10,7 +12,7 @@ import { tagCounts } from '../registry/device-tags'
 export function createTagRoutes(deps: { db: Db }): Hono {
   const app = new Hono()
 
-  app.get('/', (c) => c.json({ tags: tagCounts(deps.db) }))
+  app.get('/', (c) => typedJson(c, TagsResponseSchema, { tags: tagCounts(deps.db) }))
 
   return app
 }

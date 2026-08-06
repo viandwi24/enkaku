@@ -1,12 +1,20 @@
 import { Hono } from 'hono'
 import {
+  DeviceHistoryCountsResponseSchema,
+  DeviceReadinessResponseSchema,
+  DeviceResponseSchema,
   DeviceSettingsSchema,
+  DeviceTagsResponseSchema,
+  DeviceViewersResponseSchema,
+  DevicesBlockedResponseSchema,
   MonitorKindSchema,
+  MonitorSaveResponseSchema,
   ReadinessSchema,
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
   type DeviceSettings,
+  type LeaseHolder,
   type Readiness,
   type RegistryResponse,
   type ServerMessage,
@@ -36,6 +44,7 @@ import { createAdbEndpointRoutes } from './adb-endpoint'
 import { createDeviceEventsRoutes } from './device-events'
 import { createTransferRoutes, type TransferRoutesDeps } from './transfer'
 import { decodeStringCursor, encodeCursor, parsePageQuery } from './pagination'
+import { typedJson } from './typed-json'
 
 const DriversBody = z.object({
   transport: z.string(),
@@ -138,6 +147,13 @@ export function createDeviceRoutes(deps: {
    */
   readiness?: Pick<ReadinessManager, 'get' | 'set'>
   /**
+   * Who currently holds a device's manual lease (plan 71 §3.2, §4.4) — the
+   * lease manager's `getHolder`, threaded through so every `DeviceInfo` this
+   * router builds carries it (criterion 1). Required, unlike `readiness`:
+   * the lease manager exists in every mode this router is mounted in.
+   */
+  heldByOf: (deviceId: string) => LeaseHolder | null
+  /**
    * Device lifecycle — Forget and Block (plan 47 §4.3, §4.4). Required
    * (unlike `adbEndpoint`/`transfer`/`readiness` above): it depends only on
    * `db` and the lease manager, both of which exist in every mode,
@@ -192,7 +208,7 @@ export function createDeviceRoutes(deps: {
   // devices list in farm Settings. Static routes, mounted before `/:id`
   // below for the same shadowing reason as `/refs` above.
   app.get('/blocked', requirePermission('device.settings'), async (c) => {
-    return c.json({ blocked: await deps.lifecycle.listBlocked() })
+    return typedJson(c, DevicesBlockedResponseSchema, { blocked: await deps.lifecycle.listBlocked() })
   })
 
   app.delete('/blocked/:stableId', requirePermission('device.settings'), async (c) => {
@@ -249,7 +265,7 @@ export function createDeviceRoutes(deps: {
     // now; otherwise the card would read `disconnected` about a device on the
     // desk until it was physically unplugged and replugged.
     deps.onAdmitted?.(stableId)
-    return c.json({ device: rowToDeviceInfo(row) })
+    return typedJson(c, DeviceResponseSchema, { device: rowToDeviceInfo(row) })
   })
 
   app.delete('/discovered/:stableId', requirePermission('device.settings'), (c) => {
@@ -293,7 +309,7 @@ export function createDeviceRoutes(deps: {
 
   const infoWithTags = (id: string) => {
     const row = mustGet(id)
-    return rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row))
+    return rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row), deps.heldByOf(row.id))
   }
 
   // `?tag=a&tag=b` narrows to devices carrying ALL of them (plan 19 §4.3) — one
@@ -317,6 +333,7 @@ export function createDeviceRoutes(deps: {
         r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
         null,
         readinessOf(r),
+        deps.heldByOf(r.id),
       ),
     )
 
@@ -353,36 +370,41 @@ export function createDeviceRoutes(deps: {
     // shape. Sending the canonical value means a blind save keeps the row's
     // original intent instead of silently applying the new field's default.
     const parsedSettings = DeviceSettingsSchema.safeParse(row.settings ?? {})
-    return c.json({
-      device: {
-        ...rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row)),
-        transport: row.transport,
-        display: row.display,
-        input: row.input,
-        inspection: row.inspection,
-        battery: row.battery,
-        settings: parsedSettings.success ? parsedSettings.data : row.settings,
-        quarantineReason: row.quarantineReason,
-        ownerId: row.ownerId,
-        // Agent-owned (cloud) devices have no local Inspector to attach to
-        // (plan 56 §2 non-goals) — Studio uses this to disable the Inspect
-        // tab with a stated reason rather than let it dead-end at a refusal.
-        agentId: row.agentId,
-      },
-    })
+    const device = {
+      ...rowToDeviceInfo(row, loadDeviceTags(db, [row.id]).get(row.id) ?? [], clusterRefFor(db, row.clusterId), null, readinessOf(row), deps.heldByOf(row.id)),
+      transport: row.transport,
+      display: row.display,
+      input: row.input,
+      inspection: row.inspection,
+      battery: row.battery,
+      settings: parsedSettings.success ? parsedSettings.data : row.settings,
+      quarantineReason: row.quarantineReason,
+      ownerId: row.ownerId,
+      // Node-owned (cloud) devices have no local Inspector to attach to
+      // (plan 56 §2 non-goals) — Studio uses this to disable the Inspect
+      // tab with a stated reason rather than let it dead-end at a refusal.
+      nodeId: row.nodeId,
+    }
+    // NOT wired to `typedJson`/`DeviceDetailResponseSchema` (plan 72.5): `battery: row.battery`
+    // above re-overwrites the already-correctly-typed `battery` the `rowToDeviceInfo` spread just
+    // computed with the raw `unknown`-typed DB json column, which does not structurally satisfy
+    // `DeviceDetailSchema`'s `battery: BatteryStateSchema.nullable()`. Fixing the route (dropping
+    // the redundant override, or typing the column) is out of scope for a response-envelope wiring
+    // pass — flagged in the plan 72.5 report instead.
+    return c.json({ device })
   })
 
   // Small and bounded by nature (a farm's concurrent viewers of one device),
   // so this deliberately skips the Plan 30 pagination envelope (plan 31 §31.3).
   app.get('/:id/viewers', (c) => {
     const row = mustGet(c.req.param('id'))
-    return c.json({ viewers: deps.viewersOf?.(row.id) ?? [] })
+    return typedJson(c, DeviceViewersResponseSchema, { viewers: deps.viewersOf?.(row.id) ?? [] })
   })
 
   /** `GET /:id/readiness` (plan 43 §4.5) — the same shape `device.readiness` broadcasts. */
   app.get('/:id/readiness', (c) => {
     const row = mustGet(c.req.param('id'))
-    return c.json({ readiness: readinessOf(row) })
+    return typedJson(c, DeviceReadinessResponseSchema, { readiness: readinessOf(row) })
   })
 
   /**
@@ -403,7 +425,7 @@ export function createDeviceRoutes(deps: {
       userId: c.get('user')?.id ?? null,
       clientId: body.data.clientId ?? null,
     })
-    return c.json({ readiness })
+    return typedJson(c, DeviceReadinessResponseSchema, { readiness })
   })
 
   app.patch('/:id', async (c) => {
@@ -459,7 +481,7 @@ export function createDeviceRoutes(deps: {
       // the whole point of the setting (plan 18 §3.4).
       deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.settings', target: row.id, meta: { logInputText: true } })
     }
-    return c.json({ device: infoWithTags(row.id) })
+    return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
   })
 
   /** Per-device engine choice — validated server-side (capabilities and locks, spec §8). */
@@ -481,7 +503,7 @@ export function createDeviceRoutes(deps: {
     if (!monitor || !monitor.unquarantine(row.id)) {
       throw new EnkakuError('not_quarantined', `device ${row.label} is not quarantined`)
     }
-    return c.json({ device: infoWithTags(row.id) })
+    return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
   })
 
   /**
@@ -496,7 +518,7 @@ export function createDeviceRoutes(deps: {
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { kind, lines } (1..5000 lines) is required')
     const text = body.data.lines.join('\n')
     const info = await saveForDevice({ db, dataDir: deps.dataDir }, row.id, body.data.kind, new TextEncoder().encode(text))
-    return c.json({ artifact: info })
+    return typedJson(c, MonitorSaveResponseSchema, { artifact: info })
   })
 
   /**
@@ -516,7 +538,7 @@ export function createDeviceRoutes(deps: {
       target: row.id,
       meta: { tags: diff },
     })
-    return c.json({ tags })
+    return typedJson(c, DeviceTagsResponseSchema, { tags })
   })
 
   /**
@@ -551,7 +573,7 @@ export function createDeviceRoutes(deps: {
   app.get('/:id/history-counts', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const counts = await deps.lifecycle.historyCounts(row.id)
-    return c.json({ counts })
+    return typedJson(c, DeviceHistoryCountsResponseSchema, { counts })
   })
 
   /**

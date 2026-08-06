@@ -3,21 +3,27 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, FileCode2, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server } from 'lucide-react'
+import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { NotificationBell } from '@/components/NotificationBell'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
   { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
+  { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
   { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
   { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
   { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },
   { href: '/tools', label: 'Tools', icon: Wrench, countKey: null },
-  { href: '/agents', label: 'Agents', icon: Server, countKey: null },
+  { href: '/nodes', label: 'Nodes', icon: Server, countKey: null },
+  // AI agents (plan 65) — reuses the `/agents` path plan 61 freed by moving
+  // the tunnel process to "node"; its interim redirect-to-/nodes page is
+  // removed by this plan rather than waiting for its v0.1.7 target.
+  { href: '/agents', label: 'Agents', icon: Bot, countKey: null },
   { href: '/settings', label: 'Settings', icon: SlidersHorizontal, countKey: null },
 ]
 
@@ -93,7 +99,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   )
 
   return (
-    <div className="flex min-h-dvh">
+    <div className="flex h-dvh overflow-hidden">
       <aside className="hidden w-56 shrink-0 flex-col border-r bg-surface lg:flex">{body}</aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -110,9 +116,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             </SheetContent>
           </Sheet>
           <Brand />
+          <div className="ml-auto">
+            <NotificationBell />
+          </div>
         </div>
 
-        <main className="min-w-0 flex-1">{children}</main>
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
       </div>
     </div>
   )
@@ -144,8 +153,11 @@ function SidebarBody({
 }) {
   return (
     <>
-      <div className="flex h-12 items-center border-b px-4">
+      <div className="flex h-12 items-center gap-2 border-b px-4">
         <Brand />
+        <div className="ml-auto">
+          <NotificationBell />
+        </div>
       </div>
 
       <nav className="flex-1 space-y-0.5 p-2" aria-label="Main navigation">

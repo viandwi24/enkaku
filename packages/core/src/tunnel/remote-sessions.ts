@@ -9,16 +9,16 @@ import type { TunnelRegistry } from './registry'
 import type { TunnelRouter } from './router'
 
 export interface RemoteSessionManager {
-  /** Is this device owned by an agent? (null means local — handle it normally) */
-  agentIdFor(deviceId: string): string | null
+  /** Is this device owned by a node? (null means local — handle it normally) */
+  nodeIdFor(deviceId: string): string | null
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<RemoteSession>
   release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
   get(deviceId: string): RemoteSession | null
-  /** Called by the router on receiving session.started from an agent. */
+  /** Called by the router on receiving session.started from a node. */
   onStarted(deviceId: string, info: { codec: 'png' | 'h264'; width: number; height: number }): void
   onFailed(deviceId: string, code: string, message: string): void
-  /** An agent's tunnel dropped → every session for its devices is void. */
-  dropAgent(agentId: string): void
+  /** A node's tunnel dropped → every session for its devices is void. */
+  dropNode(nodeId: string): void
   closeAll(): Promise<void>
 }
 
@@ -40,26 +40,26 @@ export function createRemoteSessionManager(deps: {
   const pending = new Map<string, { resolve: () => void; reject: (e: Error) => void }>()
 
   return {
-    agentIdFor(deviceId) {
+    nodeIdFor(deviceId) {
       const row = deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
-      return row?.agentId ?? null
+      return row?.nodeId ?? null
     },
 
     async acquire(deviceId, onFrame) {
       let session = sessions.get(deviceId)
       if (!session) {
         if (!deps.registry.forDevice(deviceId)) {
-          throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+          throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
         }
         session = createDeviceProxy({ router: deps.router, deviceId })
         sessions.set(deviceId, session)
 
-        // Wait for the agent to report readiness; without it we do not know the
+        // Wait for the node to report readiness; without it we do not know the
         // codec or dimensions, and the viewer would get undecodable frames.
         const started = new Promise<void>((resolve, reject) => {
           pending.set(deviceId, { resolve, reject })
           setTimeout(() => {
-            if (pending.delete(deviceId)) reject(new EnkakuError('session_failed', 'the agent did not respond to session.start'))
+            if (pending.delete(deviceId)) reject(new EnkakuError('session_failed', 'the node did not respond to session.start'))
           }, START_TIMEOUT_MS)
         })
         deps.router.sendToDevice(deviceId, {
@@ -108,14 +108,14 @@ export function createRemoteSessionManager(deps: {
       sessions.delete(deviceId)
     },
 
-    dropAgent(agentId) {
+    dropNode(nodeId) {
       for (const deviceId of [...sessions.keys()]) {
         const row = deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
-        if (row?.agentId !== agentId) continue
-        deps.log.info(`remote session cancelled because agent ${agentId} disconnected: ${deviceId}`)
+        if (row?.nodeId !== nodeId) continue
+        deps.log.info(`remote session cancelled because node ${nodeId} disconnected: ${deviceId}`)
         sessions.delete(deviceId)
         unsubs.delete(deviceId)
-        pending.get(deviceId)?.reject(new EnkakuError('agent_offline', 'the agent disconnected while the session was being created'))
+        pending.get(deviceId)?.reject(new EnkakuError('node_offline', 'the node disconnected while the session was being created'))
         pending.delete(deviceId)
       }
     },

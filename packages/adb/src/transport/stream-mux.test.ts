@@ -328,7 +328,7 @@ describe('createStreamMux — deferred WRTE ack (plan 28 §3.3)', () => {
   test('a backend whose write() returns a pending promise withholds the OKAY until it settles', async () => {
     // A "remote" backend: write() hands the chunk off (synchronously
     // recorded here) but does not resolve until the test says so — modelling
-    // a write that is still waiting on the agent's `adb.ack`.
+    // a write that is still waiting on the node's `adb.ack`.
     // A plain mutable box (the same pattern the "arrives before openService
     // resolves" test above uses) rather than a bare `let` — sidesteps a TS
     // narrowing quirk when a `let` is only ever assigned from inside a

@@ -28,7 +28,7 @@ import { validateRemotePath } from './path-validate'
  * Scoped to LOCAL devices only. Plan 39 depends on plans 22.1/24/27 — never
  * 25/28, which establish cloud parity — and every acceptance criterion and
  * manual smoke test in the plan targets a device reachable through the
- * local `AdbClient`. An agent-owned device refuses with a clear, coded
+ * local `AdbClient`. A node-owned device refuses with a clear, coded
  * error rather than silently degrading; extending this to the cloud tunnel
  * (mirroring `adb-endpoint.ts`'s local/remote split) is recorded as an open
  * question rather than built speculatively and left untested.
@@ -70,7 +70,7 @@ export interface TransferServiceDeps {
   db: Db
   dataDir: string
   adb: () => AdbBackend | null
-  /** True for an agent-owned device (plan 39 §9 open question — cloud is out of scope for this plan). */
+  /** True for a node-owned device (plan 39 §9 open question — cloud is out of scope for this plan). */
   isRemote?: (deviceId: string) => boolean
   settings: () => { maxPushBytes: number; maxPullBytes: number; installTimeoutMs: number }
 }

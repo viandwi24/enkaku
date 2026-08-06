@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Upload } from 'lucide-react'
-import type { InstallResult } from '@enkaku/protocol'
+import { InstallResponseSchema, PullResponseSchema, type InstallResult } from '@enkaku/protocol'
+import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
@@ -103,7 +104,7 @@ export function FilesPanel({
       'files-install',
       async () => {
         const uploaded = await uploadArtifact(file, file.name)
-        const body = await api<{ result: InstallResult }>(`/api/devices/${deviceId}/install`, {
+        const body = await api(`/api/devices/${deviceId}/install`, InstallResponseSchema, {
           method: 'POST',
           json: { artifactId: uploaded.id, clientId },
         })
@@ -121,7 +122,10 @@ export function FilesPanel({
       'files-push',
       async () => {
         const uploaded = await uploadArtifact(file, file.name)
-        await api(`/api/devices/${deviceId}/push`, {
+        // `POST /:id/push` returns `{ ok: true }` (`packages/core/src/api/transfer.ts`) — no
+        // envelope for that exists in `@enkaku/protocol` yet and this call site never reads the
+        // body, so a small ad-hoc schema rather than a new export for a value nothing reads.
+        await api(`/api/devices/${deviceId}/push`, z.object({ ok: z.boolean() }), {
           method: 'POST',
           json: { artifactId: uploaded.id, remotePath: pushPath.trim(), clientId },
         })
@@ -137,7 +141,7 @@ export function FilesPanel({
     await run(
       'files-pull',
       async () => {
-        const body = await api<{ result: { artifactId: string; bytes: number } }>(`/api/devices/${deviceId}/pull`, {
+        const body = await api(`/api/devices/${deviceId}/pull`, PullResponseSchema, {
           method: 'POST',
           json: { remotePath: pullPath.trim(), clientId },
         })

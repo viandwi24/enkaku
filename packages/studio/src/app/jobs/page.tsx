@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ListChecks, Search } from 'lucide-react'
-import type { DeviceInfo, JobInfo, JobStatus } from '@enkaku/protocol'
+import { JobResponseSchema, JobsPageResponseSchema, type DeviceInfo, type JobInfo, type JobStatus } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -51,7 +51,7 @@ export default function JobsPage() {
     j.scriptName ? `${j.scriptName}${j.scriptVersion ? `@${j.scriptVersion}` : ''}` : j.scriptId
 
   const cancel = (j: Job) =>
-    run('cancel-' + j.jobId, () => api(`/api/jobs/${j.jobId}/cancel`, { method: 'POST' }), {
+    run('cancel-' + j.jobId, () => api(`/api/jobs/${j.jobId}/cancel`, JobResponseSchema, { method: 'POST' }), {
       success: 'Job cancelled',
       failure: 'Could not cancel the job',
     })
@@ -93,7 +93,7 @@ export default function JobsPage() {
 
         <PaginatedTable<Job>
           ref={tableRef}
-          fetchPage={(cursor) => api<Page<Job>>(`/api/jobs?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          fetchPage={(cursor) => api(`/api/jobs?limit=50${cursor ? `&cursor=${cursor}` : ''}`, JobsPageResponseSchema)}
           rowKey={(j) => j.jobId}
           sort={(list) => {
             let filtered = list

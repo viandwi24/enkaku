@@ -1,5 +1,5 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
-import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type Readiness } from '@enkaku/protocol'
+import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type LeaseHolder, type Readiness } from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
@@ -84,6 +84,13 @@ export function rowToDeviceInfo(
    * exists there at all) and tests that construct a row directly.
    */
   readiness: DeviceReadiness | null = null,
+  /**
+   * Who currently holds this device's manual lease (plan 71 §3.2, §4.4) — the
+   * single field that replaced Plan 69's three polling workarounds. `null`
+   * when nobody does, which is also what every call site that has no lease
+   * manager to hand (orchestrator mode, most tests) gets by default.
+   */
+  heldBy: LeaseHolder | null = null,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
@@ -103,6 +110,7 @@ export function rowToDeviceInfo(
     cluster,
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
+    heldBy,
   })
 }
 
@@ -135,6 +143,8 @@ export function listDevicesWithTags(
   db: Db,
   /** Readiness (plan 43 §4.1) — omitted call sites fall back to `staticReadinessFallback` per-row, same as `rowToDeviceInfo` itself. */
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
+  /** Lease holder (plan 71 §4.4) — omitted call sites fall back to `null` (unheld), same as `rowToDeviceInfo` itself. */
+  heldByOf?: (deviceId: string) => LeaseHolder | null,
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
@@ -149,6 +159,7 @@ export function listDevicesWithTags(
       r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
+      heldByOf?.(r.id) ?? null,
     ),
   )
 }

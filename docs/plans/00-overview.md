@@ -87,6 +87,15 @@
 | 67 | `67-m33c-the-run-tree.md` | M33c | **Spawning, messages, cascading cancellation**: an agent spawns another, waits or leaves it running, and messages it mid-flight — delivered at a turn boundary, never inside a tool call, because interrupting a gesture leaves a phone in an undefined state. A child's authority is the *intersection* of its own and its parent's, so spawning is not an escalation path. Depth, run count and a shared token budget all fail closed. There is no orchestrator type: an orchestrator is an agent with `agent.spawn`. |
 | 68 | `68-m33d-triggers-and-notifications.md` | M33d | **Running while nobody is watching**: Plan 21's scheduler gains an agent target, so one scheduling model covers both. A farm-wide spend cap that never blocks an interactive run, `skip` as the default overlap, and `onApprovalRequired: 'deny'` so an unattended run degrades into a report instead of a one-hour wait. Notifications land in-app first and are then signed and posted to a webhook — two channels, and no SMTP. |
 | 69 | `69-m34-agent-workbench.md` | M34 | **The workbench**: threads, transcript, and a context panel answering the four questions someone has while watching an agent — which phones, which tools, what did it write, what did it cost. Tool calls are the transcript's substance, not a footnote; screenshots render inline; child runs nest. Approvals get an inbox with untruncated inputs, because that is where an injected instruction becomes visible. A phone driven by an agent says so. |
+| 70 | `70-m35-agents-can-see.md` | M35 | **An agent that can actually see**: a screenshot reached the model as ~1.4 M base64 characters of *text*, so it saw nothing and paid ~350k tokens for the privilege. A tool result carries blocks instead of a string; images are stored once, content-addressed, and referenced rather than inlined into every row and pushed over `/ws`; a person can attach one; and an image too large is refused by name rather than dropped. As a proper image block the same screenshot costs ~3.5k tokens, which is why resizing is an optimisation and not a prerequisite. |
+| 71 | `71-m36-who-holds-this-device.md` | M36 | **Who holds this device**: `lease.changed` carried a boolean, and `DeviceInfo` had no holder at all — so an agent driving a phone was invisible to every surface and Plan 69 had to poll a tree endpoint every 15 s to guess. One `heldBy` field fixes the badge, the takeover dialog, and the wall, and deletes the polling. Control becomes takeable from a person or an agent with a warning that names the consequence, never from a job, and a job waits for the device to be quiet before claiming it. |
+| 72 | `72-m37-studio-stops-guessing.md` | M37 | **Studio stops guessing what the core returns**: `api<T>()` ends in `return body as T` — an `as`-cast at the network boundary, 99 call sites, the single largest violation of the repo's own rule. It already cost the Tools tab, which crashes because `/api/v1/cap` returns a bare array. Response envelopes move into `@enkaku/protocol` so both sides share one definition, `api()` requires a schema, and Studio gains a DOM renderer — because fourteen test files rendered nothing, which is why 2091 passing tests said nothing about a broken screen. |
+| 73 | `73-m38-the-workbench-earns-its-name.md` | M38 | **The workbench earns its name**: the shell never locked the viewport height and the agent page compensated with `calc(100vh-91px)` — a hard-coded guess at the header — so two scrollbars fought. Fixed at the shell, once, and every viewport `calc()` in Studio removed. The composer reaches the bar the user set: auto-grow, attachments, model and effort inline, Stop where your hands already are. Delete moves onto the list, AI settings group into one section, and `agentDefaults` — built by Plan 65 and editable nowhere — finally has a screen. |
+| 74 | `74-m39-job-timeout-and-honest-find.md` | M39 | **A timeout you can set, and a `find` that says why**: `DEFAULT_TIMEOUT_MS = 300_000` was hard-coded in the runner; it becomes a farm setting defaulting to 60 minutes, with a script's own `timeout` still winning and a new startup timeout so raising the default does not make a hung child twelve times slower to surface. Completes Plan 60: the find guard has always known whether it refused an oversized container or simply found nothing, and has never been able to say — which for an agent is a retry loop. |
+| 75 | `75-m40-harness-adoption.md` | M40 | **Adopting the harness**: `packages/harness` is copied in verbatim from `bitorex-algo@9eab029` (28 files, 3,166 lines) and made a first-class package. The copy already typechecks clean against TS 7 **and Zod 4** — the predicted Zod 3 conflict did not materialise, because Zod 4 ships a v3 compat subpath and only four files import zod at all — and its own 15 tests pass. Wires the Vercel AI SDK behind Plan 65's `ProviderAdapter`, with `@ai-sdk/anthropic` and `@openrouter/ai-sdk-provider` replacing the direct Anthropic SDK. |
+| 76 | `76-m41-harness-loop.md` | M41 | **Running on the harness loop**: `runAgentLoop` replaces `packages/core/src/agent/loop/`, which is deleted rather than left beside it. The decision the rest hangs on: the capability registry **generates** the AI SDK `ToolSet`, so every tool call still lands in `invoke()` with its permission, lease, deadline and audit. Enkaku's additions — approval gates, leases, budgets that fail closed, the run tree — attach to `LoopConfig`'s existing hooks. `onCheckpoint` is deliberately left unset: upstream's audited step budget fails open in two places, which with its shipped settings is 550 model turns. |
+| 77 | `77-m42-vfs-skills-plugins.md` | M42 | **VFS, skills, and the plugin system**: the harness's `VFS` interface driven by Plan 64's workspace store, exactly as upstream drives it with `PostgresVFS` — and `writeIfVersion` turns out to be the compare-and-swap Plan 64 already built. File tools and smart-replace port with their bodies intact and become capabilities. Skills work from `/skills/`, read-only to agents so one cannot rewrite its own instructions mid-run. The plugin system — one feature, one prompt section, its capabilities, its commands, merged fail-fast with a boot dry run — is the piece worth the most. |
+| 78 | `78-m43-harness-ui.md` | M43 | **The chat UI, ported**: five `ai-elements` (the five upstream actually imports, not all 48) plus `chat-panel`'s shape replace the from-scratch `Transcript`/`Composer`. Streaming moves to the AI SDK's `fetch` transport — not upstream's `EventSource`, which cannot set headers and would force the session token into a URL. Enkaku's own cards (approval, child run, holder badge) are kept and re-mounted, because they render concepts the source project has no notion of. |
 
 Linear dependencies: `01 → … → 11 → 12 → 13 → 14`, then `15 → 16` for the interface layer. (07 and 06 can partly run in parallel, but the default is sequential.)
 
@@ -156,6 +165,25 @@ Two properties are worth protecting across the whole series because they are che
 
 Plans 61 and 62 have no dependency on each other and neither blocks the other; 62 can land whenever it is convenient.
 
+### The repair series (70–74)
+
+Plans 61–69 shipped with a green suite and a broken product. The defects were found by a person opening the pages, and every one of them was invisible to 2091 passing tests — which is the finding that shapes this series: **typecheck and unit tests never proved a screen worked, and treating them as verification was the mistake.** Plan 72 exists to make that class of defect catchable at all.
+
+```
+70 (vision — an agent can see)     ← FIRST: until it lands, the core feature does not work
+71 (heldBy — who holds a device)   ← independent of 70; deletes plan 69's polling workarounds
+72 (Studio parses; a DOM renderer) ← independent; land BEFORE 73, which is a large UI change
+ └─ 73 (workbench UI/UX surgery)   ← needs 70 (attachments), 71 (device affordances), 72 (verifiability)
+74 (job timeout + honest find)     ← independent of all of the above; completes plan 60
+```
+
+Only 73 has hard prerequisites. 70, 71, 72 and 74 can be worked in any order, and 70 is first by importance rather than by dependency: an agent that cannot see a phone screen is not an agent for a phone farm.
+
+Two things this series establishes and later plans should hold to:
+
+- **A response shape is declared once, in `@enkaku/protocol`, and parsed on both sides.** The Tools tab crashed because `api<T>()` ends in `return body as T` at 99 call sites — an `as`-cast at the exact boundary the repo's own rule was written for. No new endpoint may reintroduce it.
+- **A UI plan is not verified until its screens have been rendered.** Plan 72 supplies the renderer; after it, "typecheck and tests pass" is a necessary claim and never a sufficient one.
+
 **Plan 29 is a draft, not a work item.** Its status line says `DRAFT — NEEDS DISCUSSION. DO NOT EXECUTE`, and it deliberately has no implementation steps or acceptance criteria. It becomes executable only when a human answers its §9 and changes the status line. "Work the plans in order" does not include it.
 
 ## 3. Stack and decisions that must NOT change
@@ -168,7 +196,7 @@ These are settled in the spec (§4, §10.3, and the §21 closing note). No plan 
 | Web UI | **Next.js** (Studio), reached through a browser; either served by the core (static export) or hosted. |
 | DB | **SQLite** (zero setup) plus **Drizzle ORM**. The DB driver stays abstracted, but SQLite is the default. |
 | Validation/schema | **Zod** at every boundary (protocol messages, script params, engine config, DeviceSettings). The JSON Schema for UI forms is generated from Zod. |
-| Monorepo | Bun workspaces, laid out exactly as spec §4 (`packages/core|studio|sdk|protocol|adb|scrcpy|toolchain|drivers|agent`, `apps/desktop`). |
+| Monorepo | Bun workspaces, laid out exactly as spec §4 (`packages/core|studio|sdk|protocol|adb|scrcpy|toolchain|drivers|node`, `apps/desktop`). `packages/node` was `packages/agent` before plan 61 renamed it. |
 | scrcpy-server | **Genymobile's official vanilla .jar**, pinned to the core version (`swappable: false`). Never fork the Java. (spec §7.6) |
 | Default input | `scrcpy-uhid`; falling back to `scrcpy-sdk`; `adb-input` is only a crude MVP fallback. (spec §9) |
 | Default inspector (final) | A persistent on-device `ui-server`; `uiautomator dump` is only a bridge in M4. (spec §7.4) |
@@ -195,7 +223,7 @@ openpf/
     scrcpy/                   # @enkaku/scrcpy — the protocol client (demux, meta decode), version-locked
     toolchain/                # @enkaku/toolchain — tool provisioning (download, sha256, versions)
     drivers/                  # @enkaku/drivers — Transport/DisplaySource/InputSink/Inspector implementations
-    agent/                    # @enkaku/agent — the cloud tunnel mini-core (Plan 11)
+    node/                     # @enkaku/node — the cloud tunnel mini-core (Plan 11, renamed from "agent" in Plan 61)
   apps/
     desktop/                  # the Tauri shell (Plan 09)
   docs/
@@ -304,3 +332,11 @@ Every plan follows this structure, at a depth where "the AI builder just follows
 - **swappable** — a tool flag: whether users may freely pick a version (scrcpy-server: `false`).
 
 The **M24 series is a chain, and the order is load-bearing**: `50 → 51 → 52`. Plan 50 exists because the proxy bring-up found six defects that unit tests could not see, so 51 and 52 are built on a foundation that can be checked. Plan 51 must precede 52 because a route that persists across leases and reboots but cannot be verified is *worse* than one that dies — it fails silently for longer. Plan 52 deliberately reverses Plan 44's lease-scoped route lifetime; the reasoning is in its §0 and §3.1, and spec §7.9 rule 1 is amended by its step 5.7.
+
+## 9. Tracked removals (dated follow-ups)
+
+Compatibility windows are the one exception §4.3 "Replace, never version" allows — data already on disk, or a binary already deployed in the field. Every one opened here gets a removal target written down at the same time, so it does not quietly become permanent (§4.3's own cautionary example: Plan 30's "kept for one release" lasted far longer than one release).
+
+| Opened by | What | Remove when |
+|---|---|---|
+| Plan 61 §3.3 | The control plane accepts the pre-rename `agent.hello`/`agent.devices` tunnel messages (logged `warn`) alongside `node.hello`/`node.devices`; a node adopts an existing `<data-dir>/agent.json` once and rewrites it as `node.json`; the control plane's WS upgrade also accepts the pre-rename `/agent/ws` path alongside `/node/ws`; ~~Studio's `/agents` route redirects to `/nodes`~~ **removed early by Plan 65** — `/agents` now hosts the real AI agents list Plan 65 §4.6 builds, so the redirect and the feature could not coexist at the same route; `/nodes` remains reachable via its own `AppShell` nav entry; the root `dev:agent` script alias calls `dev:node` with a deprecation line. | By v0.1.7 (two releases after the v0.1.5 this plan lands alongside) — remove the `agent.hello`/`agent.devices` schema variants and their router branch, the `agent.json` fallback in `packages/node/src/state.ts`, the `/agent/ws` path in `daemon.ts`, ~~the `/agents` Studio redirect page~~ (done, Plan 65), and the `dev:agent` package.json script. |

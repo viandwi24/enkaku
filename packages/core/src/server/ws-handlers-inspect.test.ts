@@ -12,7 +12,7 @@ import { createWsMessageHandler, type RemoteSessions, type WsHandlerDeps } from 
 
 /**
  * The Inspect tab's WS wiring (plan 56 §4.2, §5.4, acceptance #6, #8, #9):
- * the refusal matrix (no lease / no session / agent-owned / no dump
+ * the refusal matrix (no lease / no session / node-owned / no dump
  * capability), ref-counting across two viewers of the same device, and
  * release-on-close. Exercised against the REAL `createWsMessageHandler` and
  * REAL `LeaseManager`, with only the session and its inspector faked —
@@ -224,12 +224,12 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
     if (err?.type === 'error') expect(err.payload.code).toBe('E_DEVICE_NOT_READY')
   })
 
-  test('an agent-owned device reports inspect.status unavailable, naming the reason — never a fabricated tree', async () => {
+  test('a node-owned device reports inspect.status unavailable, naming the reason — never a fabricated tree', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
     const { session } = fakeSession('dev-1')
     const remote: RemoteSessions = {
-      agentIdFor: (id) => (id === 'dev-1' ? 'agent-1' : null),
+      nodeIdFor: (id) => (id === 'dev-1' ? 'node-1' : null),
       acquire: async () => {
         throw new Error('not used')
       },

@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { BatchOrder, CatchUp, ClusterInfo, DeviceInfo, OnOverlap, ScheduleInfo } from '@enkaku/protocol'
+import { compareSemver, isPrereleaseVersion, ListAgentsResponseSchema, parseScriptRef, ScheduleResponseSchema, ValidateResponseSchema } from '@enkaku/protocol'
+import type { Agent, BatchOrder, CatchUp, ClusterInfo, DeviceInfo, OnApprovalRequired, OnOverlap, ScheduleInfo, ScheduleThreadMode } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -12,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
 import { api, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
 
@@ -31,6 +33,19 @@ interface ValidatePreview {
   error?: string
 }
 
+/**
+ * What `name@latest` resolves to RIGHT NOW, computed from the already-fetched
+ * script list — the exact same rule `resolve.ts` applies server-side (plan 62
+ * §3.2): highest semver among ENABLED, NON-PRERELEASE versions. Computed
+ * client-side rather than round-tripping on every keystroke, since the full
+ * version list is already in hand.
+ */
+function resolveLatest(scripts: ScriptOption[], name: string): ScriptOption | null {
+  const candidates = scripts.filter((s) => s.name === name && s.enabled && !isPrereleaseVersion(s.version))
+  if (candidates.length === 0) return null
+  return [...candidates].sort((a, b) => compareSemver(b.version, a.version))[0] ?? null
+}
+
 const ONOVERLAP_NOTE: Record<OnOverlap, string> = {
   skip: 'If the previous run is still going, this one is skipped.',
   queue: 'If the previous run is still going, this one still starts and waits its turn.',
@@ -42,7 +57,21 @@ const CATCHUP_NOTE: Record<CatchUp, string> = {
   once: 'If the core was off when this was due, it runs once on startup, whatever was missed.',
 }
 
+/** Plan 68 §3.2 — a fresh thread per firing, or one long-lived thread. */
+const THREAD_MODE_NOTE: Record<ScheduleThreadMode, string> = {
+  new: 'Each firing gets its own thread: independently readable, and a bad run cannot poison tomorrow.',
+  continue: 'One thread across every firing — the agent remembers what it saw last time. Grows over time.',
+}
+
+/** Plan 68 §3.5 — the interesting choice at 3 a.m., stated in plain words. */
+const APPROVAL_NOTE: Record<OnApprovalRequired, string> = {
+  deny: 'A destructive tool call is refused at once and the run continues — it can report that it was blocked. Nobody is paged to decide.',
+  pause: 'A destructive tool call waits for a human to approve, exactly like a chat run — and expires unanswered like any other approval.',
+}
+
 type Target = 'cluster' | 'devices'
+/** Plan 68 §3.1 — the work this schedule triggers. */
+type WorkKind = 'script' | 'agent'
 
 function defaultTimezone(): string {
   try {
@@ -73,8 +102,20 @@ export function ScheduleEditorDialog({
   const [enabled, setEnabled] = useState(true)
   const [cron, setCron] = useState('0 * * * *')
   const [timezone, setTimezone] = useState(defaultTimezone())
+  // Plan 68 §3.1 — the work this schedule triggers, and the agent-only fields.
+  const [workKind, setWorkKind] = useState<WorkKind>('script')
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [agentId, setAgentId] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [threadMode, setThreadMode] = useState<ScheduleThreadMode>('new')
+  const [onApprovalRequired, setOnApprovalRequired] = useState<OnApprovalRequired>('deny')
   const [scripts, setScripts] = useState<ScriptOption[]>([])
-  const [scriptId, setScriptId] = useState('')
+  const [scriptName, setScriptName] = useState('')
+  // `@latest` by default (plan 62 §3.3) — a NEW schedule floats unless the
+  // operator deliberately pins it; an EXISTING one keeps whatever it was
+  // saved as (set in the load effect below).
+  const [useLatest, setUseLatest] = useState(true)
+  const [pinnedVersion, setPinnedVersion] = useState('')
   const [params, setParams] = useState<unknown>(undefined)
   const [target, setTarget] = useState<Target>('cluster')
   const [clusters, setClusters] = useState<ClusterInfo[]>([])
@@ -101,6 +142,9 @@ export function ScheduleEditorDialog({
     void fetchAllPages<ClusterInfo>('/api/clusters')
       .then(setClusters)
       .catch(() => setClusters([]))
+    void api('/api/agents', ListAgentsResponseSchema)
+      .then((res) => setAgents(res.agents.filter((a) => a.enabled)))
+      .catch(() => setAgents([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -110,7 +154,14 @@ export function ScheduleEditorDialog({
       setEnabled(true)
       setCron('0 * * * *')
       setTimezone(defaultTimezone())
-      setScriptId('')
+      setWorkKind('script')
+      setAgentId('')
+      setPrompt('')
+      setThreadMode('new')
+      setOnApprovalRequired('deny')
+      setScriptName('')
+      setUseLatest(true)
+      setPinnedVersion('')
       setParams(undefined)
       setTarget('cluster')
       setClusterId('')
@@ -127,8 +178,23 @@ export function ScheduleEditorDialog({
       setEnabled(schedule.enabled)
       setCron(schedule.cron)
       setTimezone(schedule.timezone)
-      setScriptId(schedule.scriptId)
-      setParams(schedule.params)
+      setWorkKind(schedule.target.kind)
+      if (schedule.target.kind === 'agent') {
+        setAgentId(schedule.target.agentId)
+        setPrompt(schedule.target.prompt)
+        setThreadMode(schedule.threadMode)
+        setOnApprovalRequired(schedule.onApprovalRequired)
+        setScriptName('')
+        setUseLatest(true)
+        setPinnedVersion('')
+        setParams(undefined)
+      } else {
+        const ref = parseScriptRef(schedule.target.ref)
+        setScriptName(ref.name)
+        setUseLatest(ref.version === 'latest')
+        setPinnedVersion(ref.version === 'latest' ? '' : ref.version)
+        setParams(schedule.params)
+      }
       setTarget(schedule.clusterId ? 'cluster' : 'devices')
       setClusterId(schedule.clusterId ?? '')
       setDeviceIds(schedule.deviceIds)
@@ -147,7 +213,7 @@ export function ScheduleEditorDialog({
   useEffect(() => {
     if (!open || !cron.trim() || !timezone.trim()) return
     const timer = setTimeout(() => {
-      void api<ValidatePreview>('/api/schedules/validate', { method: 'POST', json: { cron, timezone } })
+      void api('/api/schedules/validate', ValidateResponseSchema, { method: 'POST', json: { cron, timezone } })
         .then(setPreview)
         .catch(() => setPreview({ valid: false, nextFires: [], error: 'could not reach the core' }))
     }, 300)
@@ -156,21 +222,37 @@ export function ScheduleEditorDialog({
 
   if (!open) return null
 
-  const script = scripts.find((s) => s.id === scriptId) ?? null
+  // The names available to pick from, one entry each (plan 62 §4.6) — the
+  // version choice is a second, separate control below.
+  const scriptNames = [...new Set(scripts.map((s) => s.name))].sort((a, b) => a.localeCompare(b))
+  const versionsForName = scripts.filter((s) => s.name === scriptName).sort((a, b) => compareSemver(b.version, a.version))
+  const resolved = scriptName ? resolveLatest(scripts, scriptName) : null
+  // The version whose params schema actually drives the form below: the
+  // live resolution when floating on @latest, the exact pinned row otherwise.
+  const effectiveVersion = useLatest ? resolved : (versionsForName.find((v) => v.version === pinnedVersion) ?? null)
+
   const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
   const canSubmit =
     name.trim().length > 0 &&
-    !!scriptId &&
     (preview?.valid ?? false) &&
-    (target === 'cluster' ? !!clusterId : deviceIds.length > 0)
+    (target === 'cluster' ? !!clusterId : deviceIds.length > 0) &&
+    (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName && (useLatest || !!pinnedVersion))
+
+  const scriptRef = `${scriptName}@${useLatest ? 'latest' : pinnedVersion}`
+
+  // Plan 68 §3.1 — the work this schedule triggers, sent explicitly (not
+  // just the legacy `scriptRef`) so a PATCH that switches kind actually
+  // switches it: `api/schedules.ts`'s PATCH handler only removes/creates the
+  // `scheduleAgentTargets` companion row when `workTarget` itself is present
+  // in the body.
+  const workTarget = workKind === 'agent' ? { kind: 'agent' as const, agentId, prompt } : { kind: 'script' as const, ref: scriptRef, params: params ?? {} }
 
   const body = () => ({
     name,
     enabled,
     cron,
     timezone,
-    scriptId,
-    params: params ?? {},
+    workTarget,
     target: target === 'cluster' ? { clusterId } : { deviceIds },
     concurrency,
     order,
@@ -179,6 +261,10 @@ export function ScheduleEditorDialog({
     catchUp,
     jitterSec,
     priority,
+    // Plan 68 §3.2, §3.5 — meaningful only for an agent target; harmless to
+    // include (and defaulted server-side) for a script one.
+    threadMode,
+    onApprovalRequired,
   })
 
   const save = () =>
@@ -186,8 +272,8 @@ export function ScheduleEditorDialog({
       'save',
       () =>
         schedule === 'new'
-          ? api<{ schedule: ScheduleInfo }>('/api/schedules', { method: 'POST', json: body() })
-          : api<{ schedule: ScheduleInfo }>(`/api/schedules/${schedule.id}`, { method: 'PATCH', json: body() }),
+          ? api('/api/schedules', ScheduleResponseSchema, { method: 'POST', json: body() })
+          : api(`/api/schedules/${schedule.id}`, ScheduleResponseSchema, { method: 'PATCH', json: body() }),
       {
         success: isNew ? 'Schedule created' : 'Schedule saved',
         failure: 'Could not save the schedule',
@@ -240,27 +326,164 @@ export function ScheduleEditorDialog({
             </div>
           </div>
 
+          {/* Plan 68 §3.1, §4.5 — the target-kind toggle: one scheduling model
+              (cron, overlap, jitter, priority, expiry) covers either a
+              script or an agent. */}
           <div className="space-y-1.5">
-            <Label className="text-[13px] font-normal">Script</Label>
-            <Select value={scriptId} onValueChange={(v) => { setScriptId(v); setParams(undefined) }}>
-              <SelectTrigger className="h-8 w-full text-[12.5px]">
-                <SelectValue placeholder="Pick a script" />
-              </SelectTrigger>
-              <SelectContent>
-                {scripts.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name} <span className="readout text-fg-subtle">@{s.version}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label className="text-[13px] font-normal">Runs</Label>
+            <Tabs value={workKind} onValueChange={(v) => setWorkKind(v as WorkKind)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="script">A script</TabsTrigger>
+                <TabsTrigger value="agent">An agent</TabsTrigger>
+              </TabsList>
+            </Tabs>
           </div>
 
-          {script?.paramsSchema ? (
-            <SchemaForm schema={script.paramsSchema} value={params} onChange={setParams} />
-          ) : script ? (
-            <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
-          ) : null}
+          {workKind === 'script' && (
+            <>
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <div className="space-y-1.5">
+                  <Label className="text-[13px] font-normal">Script</Label>
+                  <Select
+                    value={scriptName}
+                    onValueChange={(v) => {
+                      setScriptName(v)
+                      setPinnedVersion('')
+                      setParams(undefined)
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-full text-[12.5px]">
+                      <SelectValue placeholder="Pick a script" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {scriptNames.map((n) => (
+                        <SelectItem key={n} value={n}>
+                          {n}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Only when there is a choice — a single-version script has
+                    nothing to pin against, so pinning is pointless to offer. */}
+                {!useLatest && versionsForName.length > 0 && (
+                  <div className="space-y-1.5">
+                    <Label className="text-[13px] font-normal">Version</Label>
+                    <Select value={pinnedVersion} onValueChange={(v) => { setPinnedVersion(v); setParams(undefined) }}>
+                      <SelectTrigger className="readout h-8 min-w-28 text-[12.5px]">
+                        <SelectValue placeholder="Pick a version" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {versionsForName.map((v) => (
+                          <SelectItem key={v.id} value={v.version} className="readout">
+                            {v.version}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+
+              {/* Plan 62 §3.2, §4.6 — the toggle IS the design: `@latest` picks up
+                  a new publish on every future firing; pinning freezes it at one
+                  exact version. The consequence is stated in plain text right
+                  here, before saving, not discovered at the next 3 a.m. run. */}
+              <div className="flex items-center justify-between gap-4 rounded-lg border bg-surface-2/40 p-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium">Float on the latest version</p>
+                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+                    {useLatest
+                      ? 'Every firing re-checks for the newest published, non-prerelease version — a new publish takes effect with no edit here.'
+                      : 'Pinned to one exact version. It keeps running that version even after a newer one is published, until you change this.'}
+                  </p>
+                </div>
+                <Switch checked={useLatest} onCheckedChange={(v) => { setUseLatest(v); if (v) setPinnedVersion('') }} aria-label="Float on the latest version" />
+              </div>
+
+              {scriptName && useLatest && (
+                <p className="readout text-[12px] text-fg-muted">
+                  {resolved ? (
+                    <>→ resolves to <span className="text-fg">{resolved.version}</span> today</>
+                  ) : (
+                    <span className="text-led-warn">→ no enabled, non-prerelease version to resolve to right now</span>
+                  )}
+                </p>
+              )}
+
+              {effectiveVersion?.paramsSchema ? (
+                <SchemaForm key={effectiveVersion.id} schema={effectiveVersion.paramsSchema} value={params} onChange={setParams} />
+              ) : effectiveVersion ? (
+                <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
+              ) : null}
+            </>
+          )}
+
+          {workKind === 'agent' && (
+            <div className="space-y-3">
+              {agents.length === 0 ? (
+                <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+                  No enabled agent exists yet — create one from the Agents page.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label className="text-[13px] font-normal">Agent</Label>
+                  <Select value={agentId} onValueChange={setAgentId}>
+                    <SelectTrigger className="h-8 w-full text-[12.5px]">
+                      <SelectValue placeholder="Pick an agent" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {agents.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label className="text-[13px] font-normal">Prompt</Label>
+                <Textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Check the checkout flow on every device in this target and report anything broken."
+                  className="min-h-20 text-[12.5px]"
+                />
+                <p className="text-[11px] leading-relaxed text-fg-muted">Posted as the firing's message, every time this schedule fires.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-[12.5px] font-normal">Thread</Label>
+                <Select value={threadMode} onValueChange={(v) => setThreadMode(v as ScheduleThreadMode)}>
+                  <SelectTrigger className="h-8 w-full text-[12.5px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new">A new thread every firing</SelectItem>
+                    <SelectItem value="continue">One continuing thread</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-relaxed text-fg-muted">{THREAD_MODE_NOTE[threadMode]}</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-[12.5px] font-normal">If a destructive tool call needs approval</Label>
+                <Select value={onApprovalRequired} onValueChange={(v) => setOnApprovalRequired(v as OnApprovalRequired)}>
+                  <SelectTrigger className="h-8 w-full text-[12.5px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="deny">Deny it at once</SelectItem>
+                    <SelectItem value="pause">Pause and wait for a human</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-relaxed text-fg-muted">{APPROVAL_NOTE[onApprovalRequired]}</p>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <Label className="text-[13px] font-normal">Target</Label>

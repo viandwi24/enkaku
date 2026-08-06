@@ -1,84 +1,57 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db'
 import { devices, networkCredentials, type NetworkCredentialRow } from '../db/schema'
+import { decryptNamespacedSecret, encryptNamespacedSecret, isLegacySecret } from '../secrets/store'
 import { EnkakuError } from '../util/errors'
 
 /**
  * A small named-credential store for `vpn-helper` upstreams (plan 52 §4.2, §5.1), replacing the
  * plaintext `username`/`password` plan 44 stored inline in `devices.network_route`. A secret
- * here is encrypted at rest with a key derived from a file that lives next to `enkaku.db` in the
- * data directory, created on first use with file mode `0600`.
+ * here is encrypted at rest under the `'network'` namespace of `../secrets/store.ts`'s shared
+ * AES-256-GCM store (generalised from this module's own original design by plan 65 §4.4 — same
+ * key file, same behaviour, now also used by connector credentials).
  *
  * This is NOT a KMS, and it does not claim to be one: anyone with read access to the data
  * directory can read the key file sitting right beside the database and decrypt every secret.
  * The honest claim — repeated in `devices.network_route`'s schema comment and in Studio — is
  * that a secret here is "not readable by grepping the database", nothing stronger. A farm that
  * needs real secret management should not treat this as one.
+ *
+ * `encryptSecret`/`decryptSecret` keep their pre-plan-65 signatures (no `namespace` parameter)
+ * so every existing call site — `api/guest-agent.ts` chief among them — needs no change; they
+ * are thin wrappers pinned to the `'network'` namespace.
  */
 
-const KEY_FILE = 'network-credentials.key'
-const ALGO = 'aes-256-gcm'
-const KEY_BYTES = 32
-
-/** One cached key per data dir — re-reading a 32-byte file off disk on every encrypt/decrypt would be silly, and the key never changes while a process runs. */
-const keyCache = new Map<string, Buffer>()
-
-function loadOrCreateKey(dataDir: string): Buffer {
-  const cached = keyCache.get(dataDir)
-  if (cached) return cached
-  const path = join(dataDir, KEY_FILE)
-  let key: Buffer
-  if (existsSync(path)) {
-    const raw = readFileSync(path)
-    // A key file that is not exactly 32 bytes is corrupt (truncated write, wrong file) — refusing
-    // to use it is safer than silently deriving something from the wrong number of bytes. This
-    // throws `E_CREDENTIAL_KEY_CORRUPT` the first time anything touches the credential store,
-    // rather than failing the whole daemon at boot — every credential encrypted under the
-    // original key becomes undecryptable either way, and that is a per-credential problem to
-    // surface, not a reason to refuse starting the core.
-    if (raw.length !== KEY_BYTES) {
-      throw new EnkakuError('E_CREDENTIAL_KEY_CORRUPT', `${path} is not a valid ${KEY_BYTES}-byte key file`)
-    }
-    key = raw
-  } else {
-    key = randomBytes(KEY_BYTES)
-    writeFileSync(path, key, { mode: 0o600 })
-    // Belt-and-braces: `writeFileSync`'s `mode` option is not honoured on every platform/umask
-    // combination when the file already exists from a previous (failed) run.
-    chmodSync(path, 0o600)
-  }
-  keyCache.set(dataDir, key)
-  return key
-}
-
-/** Encrypts `plaintext` with the farm key for `dataDir`. Format: `iv.tag.ciphertext`, each segment base64. */
+/** Encrypts `plaintext` with the farm key for `dataDir`, under the `'network'` namespace. Format: `iv.tag.ciphertext`, each segment base64. Re-codes `E_SECRET_KEY_CORRUPT` back to `E_CREDENTIAL_KEY_CORRUPT` for the same reason `decryptSecret` does below. */
 export function encryptSecret(dataDir: string, plaintext: string): string {
-  const key = loadOrCreateKey(dataDir)
-  const iv = randomBytes(12)
-  const cipher = createCipheriv(ALGO, key, iv)
-  const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return [iv.toString('base64'), tag.toString('base64'), enc.toString('base64')].join('.')
+  try {
+    return encryptNamespacedSecret(dataDir, 'network', plaintext)
+  } catch (err) {
+    if (err instanceof EnkakuError && err.code === 'E_SECRET_KEY_CORRUPT') {
+      throw new EnkakuError('E_CREDENTIAL_KEY_CORRUPT', err.message)
+    }
+    throw err
+  }
 }
 
-/** The inverse of `encryptSecret`. Throws a coded error on anything malformed or tampered — never returns a partial/garbage plaintext. */
+/**
+ * The inverse of `encryptSecret`. Throws a coded error on anything malformed or tampered — never
+ * returns a partial/garbage plaintext. Re-codes the shared store's generic `E_SECRET_CORRUPT` /
+ * `E_SECRET_KEY_CORRUPT` back to this module's original `E_CREDENTIAL_*` codes, because
+ * `api/guest-agent.ts`'s `ERROR_STATUS` map (untouched by plan 65, per the task's constraints)
+ * keys on those exact strings.
+ */
 export function decryptSecret(dataDir: string, stored: string): string {
-  const key = loadOrCreateKey(dataDir)
-  const parts = stored.split('.')
-  if (parts.length !== 3) throw new EnkakuError('E_CREDENTIAL_CORRUPT', 'stored credential is malformed')
-  const [ivB64, tagB64, encB64] = parts as [string, string, string]
   try {
-    const iv = Buffer.from(ivB64, 'base64')
-    const tag = Buffer.from(tagB64, 'base64')
-    const enc = Buffer.from(encB64, 'base64')
-    const decipher = createDecipheriv(ALGO, key, iv)
-    decipher.setAuthTag(tag)
-    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8')
+    return decryptNamespacedSecret(dataDir, 'network', stored)
   } catch (err) {
-    throw new EnkakuError('E_CREDENTIAL_CORRUPT', `credential could not be decrypted: ${err instanceof Error ? err.message : String(err)}`)
+    if (err instanceof EnkakuError && err.code === 'E_SECRET_KEY_CORRUPT') {
+      throw new EnkakuError('E_CREDENTIAL_KEY_CORRUPT', err.message)
+    }
+    if (err instanceof EnkakuError && err.code === 'E_SECRET_CORRUPT') {
+      throw new EnkakuError('E_CREDENTIAL_CORRUPT', err.message)
+    }
+    throw err
   }
 }
 
@@ -177,7 +150,21 @@ export function createCredentialStore(deps: CredentialStoreDeps) {
   function resolve(name: string): { username?: string; password: string } {
     const row = findByName(name)
     if (!row) throw new EnkakuError('E_CREDENTIAL_NOT_FOUND', `no stored credential named "${name}"`)
-    return { ...(row.username !== null ? { username: row.username } : {}), password: decryptSecret(dataDir, row.secret) }
+    const password = decryptSecret(dataDir, row.secret)
+    // Heals a secret written before plan 65 folded the namespace in as AAD (see
+    // `decryptNamespacedSecret`'s own comment for what that broke). Re-encrypting on the first
+    // successful legacy read means the fallback is reached once per credential, ever — and a
+    // failure here is deliberately swallowed: the caller already HAS the password it asked for,
+    // and refusing to route a device because a housekeeping write failed would turn a fixed bug
+    // back into the outage it was fixing.
+    if (isLegacySecret(dataDir, 'network', row.secret)) {
+      try {
+        db.update(networkCredentials).set({ secret: encryptSecret(dataDir, password) }).where(eq(networkCredentials.id, row.id)).run()
+      } catch {
+        // Intentionally ignored — see above.
+      }
+    }
+    return { ...(row.username !== null ? { username: row.username } : {}), password }
   }
 
   /** Every device whose persisted route currently references `name` — used to refuse deleting a credential still in use (a device would otherwise be left pointing at nothing on its next restore). */

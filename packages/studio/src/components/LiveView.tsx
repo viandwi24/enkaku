@@ -550,7 +550,10 @@ export function LiveView({
           className={cn(
             compact
               ? 'h-full w-full rounded-md bg-black object-contain pointer-events-none'
-              : 'max-h-[calc(100vh-19rem)] min-h-[18rem] rounded-md bg-black shadow-[0_0_0_1px_var(--color-border)] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
+              // A plain viewport fraction (plan 73 §3.1), not an arithmetic guess at the
+              // header/toolbar's own height subtracted from the full viewport — it does not need
+              // to know that number, and does not go stale the moment it changes.
+              : 'max-h-[70dvh] min-h-[18rem] rounded-md bg-black shadow-[0_0_0_1px_var(--color-border)] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
             stopped && 'opacity-40',
           )}
           style={{

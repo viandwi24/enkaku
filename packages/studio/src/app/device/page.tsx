@@ -3,7 +3,20 @@
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import type { BatteryState, DeviceStatus, JobInfo, RegistryResponse, ShellMode, Viewer } from '@enkaku/protocol'
+import {
+  DeviceDetailResponseSchema,
+  DeviceResponseSchema,
+  DeviceViewersResponseSchema,
+  JobsPageResponseSchema,
+  SettingsResponseSchema,
+  type BatteryState,
+  type DeviceStatus,
+  type JobInfo,
+  type LeaseHolder,
+  type RegistryResponse,
+  type ShellMode,
+  type Viewer,
+} from '@enkaku/protocol'
 import { DeviceLog } from '@/components/DeviceLog'
 import { CrashesPanel } from '@/components/CrashesPanel'
 import { MonitorPane } from '@/components/monitor/MonitorPane'
@@ -16,12 +29,11 @@ import { DeviceHeader, type DeviceDetailInfo } from '@/components/device/DeviceH
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
-import { labelFor } from '@/components/ViewerList'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
-import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { relativeTime, duration } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
@@ -58,6 +70,12 @@ function DeviceDetail() {
   const [registry, setRegistry] = useState<RegistryResponse | null>(null)
   const [status, setStatus] = useState<DeviceStatus | null>(null)
   const [expiresAt, setExpiresAt] = useState<number | null>(null)
+  // Lifted out of `DeviceHeader` (plan 71 §3.6) — that component keeps no
+  // hooks of its own, so it can be called directly in its own test.
+  const [takeOverOpen, setTakeOverOpen] = useState(false)
+  // Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, the same lifted-to-the-caller pattern
+  // `takeOverOpen` already uses (`DeviceHeader` keeps no hooks of its own).
+  const [askAgentOpen, setAskAgentOpen] = useState(false)
   // Presence (plan 31): who is watching, and who — server-published, not
   // inferred locally — actually holds control.
   const [viewers, setViewers] = useState<Viewer[]>([])
@@ -105,6 +123,12 @@ function DeviceDetail() {
   const { run, isPending } = useAction()
   // The lease countdown and the jobs tab tick without a refresh (Plan 17 §4.6).
   const now = useNow()
+  // Who holds the device's manual lease — a person, an agent, or a job, or
+  // null when free (plan 71 §3.2). Server-published on `DeviceInfo.heldBy`
+  // and kept live by `lease.changed` below; this is what makes an agent
+  // driving the phone visible here without polling (plan 69 §3.5's old
+  // `lib/agent-holders.ts`, deleted).
+  const [heldBy, setHeldBy] = useState<LeaseHolder | null>(null)
 
   /**
    * The published fact (plan 31 §4.3), not an inference from local state: the
@@ -114,8 +138,6 @@ function DeviceDetail() {
    */
   const holder = viewers.find((v) => v.holdsControl) ?? null
   const iHoldControl = holder !== null && holder.sessionId === mySessionId
-  /** Someone else is driving: a viewer holds control, and it is not us. */
-  const heldByOther = holder !== null && !iHoldControl
   // Kept in sync every render (not just on the events that flip it) so the
   // ws.on callback below — created once per deviceId, not per render — can
   // still ask "was I the one who just lost control" without a stale closure.
@@ -126,10 +148,11 @@ function DeviceDetail() {
 
   useEffect(() => {
     if (!deviceId) return
-    void api<{ device: DeviceDetailInfo }>(`/api/devices/${deviceId}`)
+    void api(`/api/devices/${deviceId}`, DeviceDetailResponseSchema)
       .then((b) => {
         setDevice(b.device)
         setStatus(b.device.status)
+        setHeldBy(b.device.heldBy)
         setSavedSettings(b.device.settings ?? undefined)
         setDraftSettings(b.device.settings ?? undefined)
         // A fresh load has no session-scoped fallback to report yet.
@@ -146,12 +169,17 @@ function DeviceDetail() {
     void fetchRegistry().then(setRegistry)
     // The very same schema the farm defaults are rendered from, so a field can
     // never exist in one place and be missing in the other.
-    void api<{
-      deviceSchema: JsonSchemaNode
-      settings: { shell: { mode: ShellMode; endpointEnabled: boolean }; transfer: { enabled: boolean } }
-    }>('/api/settings')
+    void api('/api/settings', SettingsResponseSchema)
       .then((b) => {
-        setSchema(b.deviceSchema)
+        // `SettingsResponseSchema.deviceSchema` already parsed through
+        // `JsonSchemaNodeSchema` (`z.record(z.string(), z.unknown())` — a
+        // deliberately permissive placeholder for a recursive JSON Schema
+        // node, per its own comment in `@enkaku/protocol`). This studio-local
+        // `JsonSchemaNode` is the SAME permissive shape, independently typed
+        // for the form renderer's own narrowing — the cast below reconciles
+        // two parallel type definitions of already-validated data, not a
+        // bypass of validation.
+        setSchema(b.deviceSchema as JsonSchemaNode)
         setShellMode(b.settings.shell.mode)
         setEndpointEnabled(b.settings.shell.endpointEnabled)
         setTransferEnabled(b.settings.transfer.enabled)
@@ -163,7 +191,7 @@ function DeviceDetail() {
     // The presence snapshot (plan 31 §3.4): `/ws` has no replay, so the
     // current viewer list is fetched once here and kept live by
     // `device.viewers` below.
-    void api<{ viewers: Viewer[] }>(`/api/devices/${deviceId}/viewers`)
+    void api(`/api/devices/${deviceId}/viewers`, DeviceViewersResponseSchema)
       .then((b) => setViewers(b.viewers))
       .catch(() => undefined)
 
@@ -175,6 +203,11 @@ function DeviceDetail() {
       } else if (msg.type === 'device.status' && msg.payload.id === deviceId) {
         setStatus(msg.payload.status)
         if (msg.payload.status !== 'manual') setExpiresAt(null)
+      } else if (msg.type === 'lease.changed' && msg.payload.deviceId === deviceId) {
+        // The single source of truth for who holds control (plan 71 §3.2) —
+        // live, for a person, an agent, or a job alike, replacing the old
+        // agent-only poll.
+        setHeldBy(msg.payload.heldBy)
       } else if (msg.type === 'device.battery' && msg.payload.deviceId === deviceId) {
         // The panel used to show whatever the first fetch returned; a device
         // that heats up or drains while you watch it looked frozen.
@@ -201,7 +234,9 @@ function DeviceDetail() {
           setNotice(
             msg.payload.reason === 'idle_timeout'
               ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
-              : `Control was released automatically (${msg.payload.reason}).`,
+              : msg.payload.reason === 'taken-over'
+                ? `${msg.payload.takenBy ?? 'Someone else'} took control from you.`
+                : `Control was released automatically (${msg.payload.reason}).`,
           )
         }
       }
@@ -239,6 +274,15 @@ function DeviceDetail() {
     setExpiresAt(null)
   }
 
+  /** A takeover succeeded via `TakeControlDialog` (plan 71 §3.4) — the same bookkeeping `takeControl`'s own success branch does. */
+  function onControlTaken(expiresAtSec: number) {
+    setError(null)
+    setNotice(null)
+    const ms = expiresAtSec * 1000
+    idleTimeoutRef.current = Math.max(30, Math.round((ms - Date.now()) / 1000))
+    setExpiresAt(ms)
+  }
+
   // Every input refreshes the lease on the server (touchManual); mirror that
   // here so the countdown stays honest instead of alarming for no reason.
   const noteActivity = () => {
@@ -246,11 +290,20 @@ function DeviceDetail() {
   }
 
   const saveSettings = () =>
-    run('settings', () => api(`/api/devices/${deviceId}`, { method: 'PATCH', json: { settings: draftSettings } }), {
-      success: 'Device settings saved',
-      failure: 'Could not save the device settings',
-      onSuccess: () => setSavedSettings(draftSettings),
-    })
+    // Not one of the call sites the plan named for this file — found while
+    // migrating: `PATCH /:id` returns `{ device }` (plain `DeviceInfo`, not
+    // the detail shape — `packages/core/src/api/devices.ts`), so
+    // `DeviceResponseSchema` is the match, even though the result here is
+    // discarded (the draft is trusted locally on success).
+    run(
+      'settings',
+      () => api(`/api/devices/${deviceId}`, DeviceResponseSchema, { method: 'PATCH', json: { settings: draftSettings } }),
+      {
+        success: 'Device settings saved',
+        failure: 'Could not save the device settings',
+        onSuccess: () => setSavedSettings(draftSettings),
+      },
+    )
 
   if (!deviceId) {
     return (
@@ -297,14 +350,17 @@ function DeviceDetail() {
    */
   const takeControlReason = iHoldControl
     ? null
-    : heldByOther
-      ? `Control is held by ${holder ? labelFor(holder) : 'another viewer'}.`
+    : heldBy
+      ? // The full takeover flow lives on the header's own button (plan 71
+        // §3.4) — this inline one only explains why it cannot be pressed
+        // here, naming who holds it exactly as the header's badge does.
+        `Control is held by ${heldBy.label}. Use "Take control" above to take it over.`
       : currentStatus === 'idle'
         ? null
         : (UNAVAILABLE_REASON[currentStatus] ?? 'The device is unavailable')
-  // An agent-owned device has no local inspector to attach to, so it can never
+  // A node-owned device has no local inspector to attach to, so it can never
   // be in `Inspect` — not even by way of an old `tab=inspect` link.
-  const screenMode: ScreenMode = device.agentId ? 'live' : mode
+  const screenMode: ScreenMode = device.nodeId ? 'live' : mode
 
   // The Settings tab's vertical sub-sections (plan 46 §3.3, §4.2): derived
   // from `DeviceSettingsSchema`'s own top-level keys via `deviceSections`,
@@ -351,8 +407,8 @@ function DeviceDetail() {
         now={now}
         secondsLeft={secondsLeft}
         holder={holder}
+        heldBy={heldBy}
         iHoldControl={iHoldControl}
-        heldByOther={heldByOther}
         acquiring={acquiring}
         canRunScript={scripts.length > 0}
         // The dialog picks the script now. This used to hand it `scripts[0]` —
@@ -361,8 +417,13 @@ function DeviceDetail() {
         // moved on its own whenever anything was republished.
         onRunScript={() => setRunOpen(true)}
         onTakeControl={() => void takeControl()}
+        onControlTaken={onControlTaken}
         onReleaseControl={releaseControl}
         onRemove={() => setForgetOpen(true)}
+        takeOverOpen={takeOverOpen}
+        onTakeOverOpenChange={setTakeOverOpen}
+        askAgentOpen={askAgentOpen}
+        onAskAgentOpenChange={setAskAgentOpen}
       />
 
       <EntityTabs
@@ -409,10 +470,10 @@ function DeviceDetail() {
             deviceId={device.id}
             mode={screenMode}
             onModeChange={setMode}
-            // Agent-owned (cloud) devices have no local Inspector to attach to
+            // Node-owned (cloud) devices have no local Inspector to attach to
             // (plan 56 §2 non-goals) — disabled with a stated reason rather
             // than a dead end (design.md's quality floor).
-            {...(device.agentId ? { inspectDisabledReason: 'Inspecting an agent-owned device is not available yet.' } : {})}
+            {...(device.nodeId ? { inspectDisabledReason: 'Inspecting a node-owned device is not available yet.' } : {})}
             jobRunning={busy}
             inputEnabled={inputEnabled}
             // The same server-published fact every other panel on this page
@@ -436,7 +497,7 @@ function DeviceDetail() {
             ref={jobsRef}
             resetKey={deviceId}
             fetchPage={(cursor) =>
-              api<Page<JobInfo>>(`/api/jobs?deviceId=${deviceId}&limit=50${cursor ? `&cursor=${cursor}` : ''}`).then(
+              api(`/api/jobs?deviceId=${deviceId}&limit=50${cursor ? `&cursor=${cursor}` : ''}`, JobsPageResponseSchema).then(
                 (page) => {
                   if (cursor === null) setJobsCount(page.total)
                   return page

@@ -7,7 +7,7 @@ import type { TunnelRpc } from './rpc'
  * Cloud mode's `AdbdShimDeps.openService` (plan 28 §4.2) — the ONE seam Plan
  * 27's shim exposes (plan 27 §4.1). Local mode implements it with
  * `AdbClient.openRaw`; this is the remote implementation: each call opens a
- * tunnel channel (`kind: 'adb-raw'`), asks the agent to run the same
+ * tunnel channel (`kind: 'adb-raw'`), asks the node to run the same
  * `host:transport:<serial>` + `<service>` call against its OWN adb server
  * (`adb.open.request`/`adb.open.reply`, correlated by `TunnelRpc` exactly
  * like `shell.exec.request`), then returns a `RawStream` whose reads and
@@ -15,7 +15,7 @@ import type { TunnelRpc } from './rpc'
  *
  * The delivery-acknowledged write (§3.3, the plan's single most important
  * correctness detail): `write()` returns a `Promise<void>` that resolves
- * only once the agent's `adb.ack` confirms the bytes were actually written
+ * only once the node's `adb.ack` confirms the bytes were actually written
  * downstream — never merely because they were handed to the tunnel. The
  * modified `stream-mux.ts` `handleWrte` awaits exactly this promise before
  * sending the WRTE's OKAY back to the user's adb client, so the whole path
@@ -32,7 +32,7 @@ export function createRemoteOpenService(deps: {
   return async (_serial: string, service: string): Promise<RawStream> => {
     const channelId = deps.router.openChannel(deps.deviceId, 'adb-raw')
     if (channelId === null) {
-      throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+      throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
     }
 
     let released = false
@@ -55,10 +55,10 @@ export function createRemoteOpenService(deps: {
         { deviceId: deps.deviceId, service, channelId },
       )
       if (!reply.ok) {
-        throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the agent refused to open the service')
+        throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the node refused to open the service')
       }
     } catch (err) {
-      // The channel was opened optimistically before we knew the agent would
+      // The channel was opened optimistically before we knew the node would
       // accept — offline, timeout, or an explicit refusal must not leak it.
       releaseChannel()
       throw err
@@ -115,7 +115,7 @@ export function createRemoteOpenService(deps: {
     unsubscribeData = deps.router.subscribeChannel(channelId, (payload) => onDataCb?.(payload))
     unwatchClose = deps.rpc.watch(deps.deviceId, `adb:${channelId}:close`, (payload) => {
       const p = payload as { reason?: string }
-      end(p.reason ?? 'agent_offline')
+      end(p.reason ?? 'node_offline')
     })
 
     return {

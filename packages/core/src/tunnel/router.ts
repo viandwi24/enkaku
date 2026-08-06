@@ -1,9 +1,9 @@
 import type { ServerWebSocket } from 'bun'
 import {
-  AgentToControlSchema,
+  NodeToControlSchema,
   decodeTunnelFrame,
   encodeTunnelFrame,
-  type ControlToAgent,
+  type ControlToNode,
   type TunnelChannelKind,
 } from '@enkaku/protocol'
 import type { Logger } from '../util/logger'
@@ -24,39 +24,39 @@ export interface TunnelRouterHooks {
 }
 
 export interface TunnelRouter {
-  handleAgentMessage(ws: ServerWebSocket<unknown>, agentId: string, raw: string): void
-  handleAgentFrame(agentId: string, buf: Uint8Array): void
-  /** Send a control-plane command to the agent that owns the device. */
-  sendToDevice(deviceId: string, msg: ControlToAgent): boolean
+  handleNodeMessage(ws: ServerWebSocket<unknown>, nodeId: string, raw: string): void
+  handleNodeFrame(nodeId: string, buf: Uint8Array): void
+  /** Send a control-plane command to the node that owns the device. */
+  sendToDevice(deviceId: string, msg: ControlToNode): boolean
   /** The viewers receiving video frames for a given device. */
   subscribeVideo(deviceId: string, cb: (payload: Uint8Array) => void): () => void
   openChannel(deviceId: string, kind: TunnelChannelKind): number | null
   /** Generic binary channel subscription (plan 25 §4.3) — `subscribeVideo` above is the video-specific case built on the same map. */
   subscribeChannel(channelId: number, cb: (payload: Uint8Array) => void): () => void
   /**
-   * Send a binary tunnel frame TO the agent on an already-open channel (plan
-   * 28 §4.2 point 3) — the control-plane-to-agent counterpart of
-   * `handleAgentFrame`/`subscribeChannel`, which only ever carried
-   * agent-to-control-plane data before the cloud adb endpoint needed the
-   * other direction too (a `WRTE`'s payload, forwarded to the agent to write
-   * downstream). A no-op if the channel or its agent is gone.
+   * Send a binary tunnel frame TO the node on an already-open channel (plan
+   * 28 §4.2 point 3) — the control-plane-to-node counterpart of
+   * `handleNodeFrame`/`subscribeChannel`, which only ever carried
+   * node-to-control-plane data before the cloud adb endpoint needed the
+   * other direction too (a `WRTE`'s payload, forwarded to the node to write
+   * downstream). A no-op if the channel or its node is gone.
    */
   sendFrame(channelId: number, payload: Uint8Array): void
-  /** Explicitly close a channel: tells the agent, drops the local bookkeeping, and returns the id to the allocator. */
+  /** Explicitly close a channel: tells the node, drops the local bookkeeping, and returns the id to the allocator. */
   closeChannel(channelId: number): void
 }
 
 /**
- * Router tunnel di control plane (plan 11 §4.3).
+ * Tunnel router in the control plane (plan 11 §4.3).
  *
  * Authoritative decisions (leases, busy rejection, lock validation) stay in the
- * control plane BEFORE a message is forwarded to an agent — the agent's local
+ * control plane BEFORE a message is forwarded to a node — the node's local
  * re-validation is defence in depth, nothing more.
  */
 export function createTunnelRouter(deps: {
   registry: TunnelRegistry
   log: Logger
-  /** Diisi setelah remote session manager & job bridge dibuat (siklus wiring). */
+  /** Filled in after the remote session manager and job bridge are built (a cyclic-construction wiring). */
   onSessionStarted?: (deviceId: string, info: { codec: 'png' | 'h264'; width: number; height: number }) => void
   onSessionFailed?: (deviceId: string, code: string, message: string) => void
   onJobProgress?: (payload: Parameters<NonNullable<TunnelRouterHooks['onJobProgress']>>[0]) => void
@@ -80,7 +80,7 @@ export function createTunnelRouter(deps: {
   const deviceVideoChannel = new Map<string, number>()
 
   /** Shared by the CP-initiated close path (`closeChannel`/`subscribeVideo`'s
-   * last-unsubscribe) and the agent-initiated one (`tunnel.channel.close`
+   * last-unsubscribe) and the node-initiated one (`tunnel.channel.close`
    * inbound) — every path releases the id back to the allocator (plan 25
    * §4.5, §6.6). */
   function releaseChannel(channelId: number): void {
@@ -91,31 +91,48 @@ export function createTunnelRouter(deps: {
   }
 
   return {
-    handleAgentMessage(ws, agentId, raw) {
+    handleNodeMessage(ws, nodeId, raw) {
       let json: unknown
       try {
         json = JSON.parse(raw)
       } catch {
         return
       }
-      const parsed = AgentToControlSchema.safeParse(json)
+      const parsed = NodeToControlSchema.safeParse(json)
       if (!parsed.success) return // unknown message → ignore it (forward-compatible)
       const msg = parsed.data
 
-      if (msg.type === 'agent.hello') {
-        const conn = deps.registry.byAgent(agentId)
+      if (msg.type === 'node.hello') {
+        const conn = deps.registry.byNode(nodeId)
+        if (conn) {
+          conn.version = msg.payload.nodeVersion
+          conn.platform = msg.payload.platform
+        }
+        ws.send(
+          JSON.stringify({
+            type: 'node.hello.ack',
+            payload: { nodeId, serverTime: Date.now(), pinnedScrcpyVersion: '3.3.1' },
+          }),
+        )
+      } else if (msg.type === 'agent.hello') {
+        // Plan 61 §3.3 compatibility window: a pre-rename node build still
+        // sends `agent.hello`. Accepted for one release with a warn-level log
+        // naming the node, so an operator can see which nodes still need
+        // upgrading — removed per the dated follow-up in `00-overview.md`.
+        deps.log.warn(`node ${nodeId} sent the deprecated 'agent.hello' — it needs upgrading past plan 61`)
+        const conn = deps.registry.byNode(nodeId)
         if (conn) {
           conn.version = msg.payload.agentVersion
           conn.platform = msg.payload.platform
         }
         ws.send(
           JSON.stringify({
-            type: 'agent.hello.ack',
-            payload: { agentId, serverTime: Date.now(), pinnedScrcpyVersion: '3.3.1' },
+            type: 'node.hello.ack',
+            payload: { nodeId, serverTime: Date.now(), pinnedScrcpyVersion: '3.3.1' },
           }),
         )
-      } else if (msg.type === 'agent.devices') {
-        deps.registry.syncDevices(agentId, msg.payload.devices)
+      } else if (msg.type === 'node.devices' || msg.type === 'agent.devices') {
+        deps.registry.syncDevices(nodeId, msg.payload.devices)
       } else if (msg.type === 'session.started') {
         deps.onSessionStarted?.(msg.payload.deviceId, {
           codec: msg.payload.codec,
@@ -129,8 +146,8 @@ export function createTunnelRouter(deps: {
       } else if (msg.type === 'tunnel.ping') {
         ws.send(JSON.stringify({ type: 'tunnel.pong', payload: msg.payload }))
       } else if (msg.type === 'tunnel.channel.close') {
-        // The agent closed it from its side — still release the id here,
-        // otherwise a channel the agent proactively drops (rather than the
+        // The node closed it from its side — still release the id here,
+        // otherwise a channel the node proactively drops (rather than the
         // core) would leak forever (plan 25 §4.5, §8 risks).
         releaseChannel(msg.payload.channelId)
       } else if (
@@ -150,7 +167,7 @@ export function createTunnelRouter(deps: {
       }
     },
 
-    handleAgentFrame(agentId, buf) {
+    handleNodeFrame(nodeId, buf) {
       let frame
       try {
         frame = decodeTunnelFrame(buf)
@@ -165,7 +182,7 @@ export function createTunnelRouter(deps: {
     sendToDevice(deviceId, msg) {
       const conn = deps.registry.forDevice(deviceId)
       if (!conn) {
-        deps.log.warn(`no agent online for device ${deviceId}`)
+        deps.log.warn(`no node online for device ${deviceId}`)
         return false
       }
       conn.ws.send(JSON.stringify(msg))
@@ -194,7 +211,7 @@ export function createTunnelRouter(deps: {
       return () => {
         const ch = channels.get(channelId!)
         ch?.subscribers.delete(cb)
-        // A channel with no viewers is closed on the agent (saves encoder and bandwidth).
+        // A channel with no viewers is closed on the node (saves encoder and bandwidth).
         if (ch && ch.subscribers.size === 0) {
           const conn = deps.registry.forDevice(deviceId)
           conn?.ws.send(JSON.stringify({ type: 'tunnel.channel.close', payload: { channelId } }))

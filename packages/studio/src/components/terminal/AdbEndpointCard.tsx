@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { Copy } from 'lucide-react'
+import { AdbEndpointCreateResponseSchema, AdbEndpointResponseSchema, AdbEndpointStateSchema } from '@enkaku/protocol'
+import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { api, useAction } from '@/lib/actions'
 import { useNow } from '@/lib/useNow'
@@ -15,14 +17,8 @@ import { useNow } from '@/lib/useNow'
  * them the same way it does for the Terminal tab itself.
  */
 
-interface EndpointState {
-  host: string
-  port: number
-  connections: number
-  openedAt: number
-  /** Unix seconds — when the endpoint closes itself with no connection (plan §3.4.5). Refreshed on every poll. */
-  expiresAt: number
-}
+/** Unix seconds `expiresAt` — when the endpoint closes itself with no connection (plan §3.4.5). Refreshed on every poll. */
+type EndpointState = z.infer<typeof AdbEndpointStateSchema>
 
 const POLL_MS = 5_000
 
@@ -52,7 +48,7 @@ export function AdbEndpointCard({
   useEffect(() => {
     if (!clientId) return
     let cancelled = false
-    void api<{ endpoint: EndpointState | null }>(`/api/devices/${deviceId}/adb-endpoint${qs}`)
+    void api(`/api/devices/${deviceId}/adb-endpoint${qs}`, AdbEndpointResponseSchema)
       .then((b) => {
         if (!cancelled) setEndpoint(b.endpoint)
       })
@@ -71,7 +67,7 @@ export function AdbEndpointCard({
   useEffect(() => {
     if (!endpoint || !clientId) return
     const id = setInterval(() => {
-      void api<{ endpoint: EndpointState | null }>(`/api/devices/${deviceId}/adb-endpoint${qs}`)
+      void api(`/api/devices/${deviceId}/adb-endpoint${qs}`, AdbEndpointResponseSchema)
         .then((b) => setEndpoint(b.endpoint))
         .catch(() => undefined)
     }, POLL_MS)
@@ -96,10 +92,9 @@ export function AdbEndpointCard({
     await run(
       'adb-endpoint-open',
       async () => {
-        const result = await api<{ host: string; port: number; expiresAt: number; command: string }>(
-          `/api/devices/${deviceId}/adb-endpoint`,
-          { json: { clientId } },
-        )
+        const result = await api(`/api/devices/${deviceId}/adb-endpoint`, AdbEndpointCreateResponseSchema, {
+          json: { clientId },
+        })
         setEndpoint({ host: result.host, port: result.port, connections: 0, openedAt: Math.floor(Date.now() / 1000), expiresAt: result.expiresAt })
       },
       { failure: 'Could not open the adb endpoint' },
@@ -111,7 +106,11 @@ export function AdbEndpointCard({
     await run(
       'adb-endpoint-close',
       async () => {
-        await api(`/api/devices/${deviceId}/adb-endpoint${qs}`, { method: 'DELETE' })
+        // `DELETE /:id/adb-endpoint` returns `{ ok: true }` (`packages/core/src/api/adb-endpoint.ts`) —
+        // no envelope for that exists in `@enkaku/protocol` yet, and the plan is silent on this
+        // call site (it only names the two GETs and the POST create), so this is a small ad-hoc
+        // schema rather than a new export for a value nothing here reads.
+        await api(`/api/devices/${deviceId}/adb-endpoint${qs}`, z.object({ ok: z.boolean() }), { method: 'DELETE' })
         setEndpoint(null)
       },
       { failure: 'Could not close the adb endpoint' },

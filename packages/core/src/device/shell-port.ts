@@ -13,8 +13,8 @@ export interface ShellExecResult {
 
 export interface ShellStreamOptions {
   onData(chunk: Uint8Array): void
-  /** A loose string, not `MonitorEndReason` — an agent can report reasons
-   * (`agent_offline`, `backpressure`) the local vocabulary does not have.
+  /** A loose string, not `MonitorEndReason` — a node can report reasons
+   * (`node_offline`, `backpressure`) the local vocabulary does not have.
    * The caller (`MonitorHub`) narrows it before it reaches the WS protocol. */
   onEnd(reason: string): void
   idleTimeoutMs?: number
@@ -30,9 +30,9 @@ export interface ShellStreamHandle {
 /**
  * One interface, two implementations (plan 25 §3.4, §4.3) — `MonitorHub`
  * talks to this and never needs to know whether a device is local or
- * agent-owned. The local/remote CHOICE still has to be made somewhere; that
+ * node-owned. The local/remote CHOICE still has to be made somewhere; that
  * happens in `ws-handlers.ts`, mirroring the existing `stream.start` pattern
- * (`deps.remote?.agentIdFor(deviceId)`), not inside the hub itself.
+ * (`deps.remote?.nodeIdFor(deviceId)`), not inside the hub itself.
  */
 export interface ShellPort {
   exec(cmd: string, opts?: { profile?: AdbTimeoutProfile; timeoutMs?: number; maxOutputBytes?: number }): Promise<ShellExecResult>
@@ -74,8 +74,8 @@ export function createLocalShellPort(deps: { client: AdbClient; serial: string }
 }
 
 /**
- * Agent-owned devices: `exec` rides `TunnelRpc.request`; `stream` opens a
- * `shell` binary channel first (plan 25 §4.5 step 1), then asks the agent to
+ * Node-owned devices: `exec` rides `TunnelRpc.request`; `stream` opens a
+ * `shell` binary channel first (plan 25 §4.5 step 1), then asks the node to
  * start writing into it (step 2). Every exit path — success, rejection,
  * timeout, or an explicit `stop()` — releases the channel it opened; nothing
  * here lets one leak (plan 25 §6.6).
@@ -86,7 +86,7 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
       const reply = await deps.rpc.request<{
         ok: boolean
         stdout?: string
-        /** Absent on an older agent build that predates plan 53 — defaults to `''`, never crashes the core. */
+        /** Absent on an older node build that predates plan 53 — defaults to `''`, never crashes the core. */
         stderr?: string
         exitCode?: number | null
         truncated?: boolean
@@ -99,7 +99,7 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
         ...(opts?.maxOutputBytes !== undefined ? { maxOutputBytes: opts.maxOutputBytes } : {}),
       })
       if (!reply.ok) {
-        throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the agent failed to run the command')
+        throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the node failed to run the command')
       }
       return {
         stdout: reply.stdout ?? '',
@@ -112,7 +112,7 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
     async stream(cmd, opts) {
       const channelId = deps.router.openChannel(deps.deviceId, 'shell')
       if (channelId === null) {
-        throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+        throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
       }
       const unsubscribeData = deps.router.subscribeChannel(channelId, opts.onData)
       let ended = false
@@ -141,7 +141,7 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
           ...(opts.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
         })
         if (!reply.ok || !reply.streamId) {
-          throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the agent rejected the stream request')
+          throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the node rejected the stream request')
         }
         const streamId = reply.streamId
         unwatch = deps.rpc.watch(deps.deviceId, streamId, (payload) => {

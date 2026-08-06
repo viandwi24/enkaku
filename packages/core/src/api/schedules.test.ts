@@ -3,13 +3,21 @@ import { describe, expect, test } from 'bun:test'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { devices, scheduleRuns, schedules } from '../db/schema'
+import { devices, scheduleAgentTargets, scheduleRuns, schedules, scripts } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
+import type { ScheduleAgentDispatch } from '../schedules/runner'
 import { createScheduleRoutes, queryScheduleRunsRows, querySchedulesRows, type ScheduleRoutesDeps } from './schedules'
 
 function setUp() {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
+  // Every schedule below references `test-script@1.0.0` by default (plan 62
+  // §4.4) — the route resolves the reference against the real `scripts`
+  // table before writing or reading a schedule row.
+  opened.db
+    .insert(scripts)
+    .values({ id: 'test-script-1.0.0', name: 'test-script', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() })
+    .run()
   return opened.db
 }
 
@@ -26,7 +34,7 @@ function seedSchedule(db: Db, n: number) {
         name: `job-${i}`,
         cron: '0 0 * * *',
         timezone: 'UTC',
-        scriptId: 'internal:sleep',
+        scriptRef: 'test-script@1.0.0',
         clusterId: null,
         deviceIds: ['d1'],
         createdAt: new Date((base + i) * 1000),
@@ -131,10 +139,13 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function makeApp(db: Db, role: 'admin' | 'operator' | null) {
+function makeApp(db: Db, role: 'admin' | 'operator' | null, overrides: Partial<ScheduleRoutesDeps> = {}) {
   const audit = createAuditLogger(db)
   const registry = new ExecutorRegistry()
-  registry.register('internal:sleep', { validateParams: (p) => p, run: async () => undefined })
+  // Not `internal:sleep` — routes resolve `scriptRef` against real
+  // `scripts.id`s now, so the fallback executor covers every real script
+  // (plan 62 §4.4), the same as the daemon's actual wiring.
+  registry.setFallback({ validateParams: (p) => p, run: async () => undefined })
   const deps: ScheduleRoutesDeps = {
     db,
     jobStore: {} as ScheduleRoutesDeps['jobStore'],
@@ -143,11 +154,12 @@ function makeApp(db: Db, role: 'admin' | 'operator' | null) {
     log: { debug() {}, info() {}, warn() {}, error() {}, child() { return this } } as ScheduleRoutesDeps['log'],
     runner: { start: () => {}, stop: () => {}, reload: () => {}, nextFires: () => new Map() },
     registry,
-    findScript: () => null,
+    findScript: () => ({ enabled: true }),
     scriptNames: () => new Map(),
     onJobStatus: () => {},
     broadcastBatchStatus: () => {},
     broadcastFired: () => {},
+    ...overrides,
   }
   return withUser(role, createScheduleRoutes(deps))
 }
@@ -163,7 +175,7 @@ describe('requirePermission("job.run") on /api/schedules mutations (plan 34 §4.
     name: 'nightly',
     cron: '0 0 * * *',
     timezone: 'UTC',
-    scriptId: 'internal:sleep',
+    scriptRef: 'test-script@1.0.0',
     params: {},
     target: { deviceIds: ['d1'] },
   }
@@ -198,5 +210,224 @@ describe('requirePermission("job.run") on /api/schedules mutations (plan 34 §4.
     const app = makeApp(db, null)
     const res = await app.request('/')
     expect(res.status).toBe(200)
+  })
+})
+
+describe('scriptRef on POST/PATCH /api/schedules (plan 62 §4.4)', () => {
+  test('stores the reference verbatim; the response echoes what it resolves to right now (acceptance #6)', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    const app = makeApp(db, 'operator')
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'nightly', cron: '0 0 * * *', timezone: 'UTC', scriptRef: 'test-script@latest', params: {}, target: { deviceIds: ['d1'] } }),
+    })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { schedule: { scriptRef: string }; resolvesTo: { scriptId: string; name: string; version: string } | null }
+    expect(body.schedule.scriptRef).toBe('test-script@latest') // verbatim, never resolved-and-stored
+    expect(body.resolvesTo).toEqual({ scriptId: 'test-script-2.0.0', name: 'test-script', version: '2.0.0' })
+  })
+
+  test('a reference that cannot resolve is refused at creation, before any row is written', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator')
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'nightly', cron: '0 0 * * *', timezone: 'UTC', scriptRef: 'no-such-script@1.0.0', params: {}, target: { deviceIds: ['d1'] } }),
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('script_not_found')
+
+    const list = await (await app.request('/')).json() as { total: number }
+    expect(list.total).toBe(0)
+  })
+
+  test('PATCH can re-pin an existing schedule to a different reference', async () => {
+    const db = setUp()
+    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    const [id] = seedSchedule(db, 1) // starts on test-script@1.0.0
+    const app = makeApp(db, 'operator')
+
+    const res = await app.request(`/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scriptRef: 'test-script@2.0.0' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { schedule: { scriptRef: string }; resolvesTo: { version: string } | null }
+    expect(body.schedule.scriptRef).toBe('test-script@2.0.0')
+    expect(body.resolvesTo?.version).toBe('2.0.0')
+  })
+
+  test('the schedules list shows the raw reference verbatim', async () => {
+    const db = setUp()
+    seedSchedule(db, 1)
+    const app = makeApp(db, null)
+    const res = await app.request('/')
+    const body = (await res.json()) as { items: Array<{ scriptRef: string }> }
+    expect(body.items[0]?.scriptRef).toBe('test-script@1.0.0')
+  })
+})
+
+/**
+ * The agent target (plan 68 §3.1, §4.1, §4.2) — `workTarget` as a
+ * discriminated pair alongside the legacy `scriptRef` shape. Every test
+ * above never sends `workTarget`, which is exactly what keeps them, and the
+ * `scheduleAgentTargets` companion table, out of each other's way
+ * (acceptance #2: the tests above stay byte-for-byte unedited).
+ */
+function fakeAgentDispatch(overrides: Partial<ScheduleAgentDispatch> = {}): ScheduleAgentDispatch {
+  return {
+    agentExists: overrides.agentExists ?? (() => true),
+    runStatus: overrides.runStatus ?? (() => null),
+    cancelRun: overrides.cancelRun ?? (() => {}),
+    countActiveScheduledRuns: overrides.countActiveScheduledRuns ?? (() => 0),
+    spentOutputTokensSince: overrides.spentOutputTokensSince ?? (() => 0),
+    dispatch: overrides.dispatch ?? (() => ({ runId: 'run-1', threadId: 'thread-1' })),
+  }
+}
+
+describe('workTarget: agent on POST/PATCH /api/schedules (plan 68 §3.1, §4.1, §4.2)', () => {
+  test('POST with an agent target creates a schedule whose GET reflects target.kind "agent"', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator', { agentExists: () => true })
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'nightly agent check',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        workTarget: { kind: 'agent', agentId: 'agent-1', prompt: 'check the checkout flow' },
+        target: { deviceIds: ['d1'] },
+        threadMode: 'continue',
+        onApprovalRequired: 'pause',
+      }),
+    })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { schedule: { target: { kind: string; agentId?: string; prompt?: string }; scriptRef: string | null; threadMode: string; onApprovalRequired: string } }
+    expect(body.schedule.target).toEqual({ kind: 'agent', agentId: 'agent-1', prompt: 'check the checkout flow' })
+    expect(body.schedule.scriptRef).toBeNull() // legacy field is null for an agent target
+    expect(body.schedule.threadMode).toBe('continue')
+    expect(body.schedule.onApprovalRequired).toBe('pause')
+
+    const agentRow = db.select().from(scheduleAgentTargets).all()[0]
+    expect(agentRow?.agentId).toBe('agent-1')
+  })
+
+  test('POST with an unknown agentId is refused with agent_not_found — never silently saved', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator', { agentExists: () => false })
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'bad agent',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        workTarget: { kind: 'agent', agentId: 'no-such-agent', prompt: 'x' },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('agent_not_found')
+    expect(db.select().from(scheduleAgentTargets).all()).toHaveLength(0)
+    expect(db.select().from(schedules).all()).toHaveLength(0)
+  })
+
+  test('PATCH can switch an existing SCRIPT schedule to an agent target', async () => {
+    const db = setUp()
+    const [id] = seedSchedule(db, 1)
+    const app = makeApp(db, 'operator', { agentExists: () => true })
+
+    const res = await app.request(`/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workTarget: { kind: 'agent', agentId: 'agent-2', prompt: 'watch for regressions' } }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { schedule: { target: { kind: string } } }
+    expect(body.schedule.target.kind).toBe('agent')
+    expect(db.select().from(scheduleAgentTargets).all()).toHaveLength(1)
+  })
+
+  test('PATCH can switch an existing AGENT schedule back to a script target, removing the companion row', async () => {
+    const db = setUp()
+    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    const app = makeApp(db, 'operator', { agentExists: () => true })
+    const createdRes = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'switch-me',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        workTarget: { kind: 'agent', agentId: 'agent-1', prompt: 'x' },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+    const created = (await createdRes.json()) as { schedule: { id: string } }
+
+    const res = await app.request(`/${created.schedule.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workTarget: { kind: 'script', ref: 'test-script@2.0.0' } }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { schedule: { target: { kind: string }; scriptRef: string | null } }
+    expect(body.schedule.target.kind).toBe('script')
+    expect(body.schedule.scriptRef).toBe('test-script@2.0.0')
+    expect(db.select().from(scheduleAgentTargets).all()).toHaveLength(0)
+  })
+
+  test('run-now on an agent-kind schedule dispatches through agentDispatch and returns a run, never a batch', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    let dispatchCalls = 0
+    const app = makeApp(db, 'operator', {
+      agentExists: () => true,
+      agentDispatch: fakeAgentDispatch({
+        dispatch: () => {
+          dispatchCalls++
+          return { runId: 'run-99', threadId: 'thread-99' }
+        },
+      }),
+    })
+
+    const createdRes = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'run-now agent',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        workTarget: { kind: 'agent', agentId: 'agent-1', prompt: 'check now' },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+    const created = (await createdRes.json()) as { schedule: { id: string } }
+
+    const res = await app.request(`/${created.schedule.id}/run-now`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { run?: { runId: string; threadId: string | null }; batch?: unknown }
+    // `threadId` on the SCHEDULE ROW only tracks a 'continue'-mode thread (§3.2); this schedule
+    // defaulted to 'new', so each firing gets its own thread and there is no single "the" thread to
+    // persist — `run.runId` is still exactly what `agentDispatch.dispatch` returned.
+    expect(body.run?.runId).toBe('run-99')
+    expect(body.run?.threadId).toBeNull()
+    expect(body.batch).toBeUndefined()
+    expect(dispatchCalls).toBe(1)
   })
 })

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Inbox, X } from 'lucide-react'
+import { z } from 'zod'
 import type { ClusterInfo } from '@enkaku/protocol'
 import { AdmitDeviceDialog } from '@/components/AdmitDeviceDialog'
 import { EmptyState } from '@/components/states'
@@ -45,7 +46,7 @@ export function DiscoveredTray({
   const dismiss = (d: DiscoveredDevice) =>
     run(
       'dismiss-' + d.stableId,
-      () => api(`/api/devices/discovered/${encodeURIComponent(d.stableId)}`, { method: 'DELETE' }),
+      () => api(`/api/devices/discovered/${encodeURIComponent(d.stableId)}`, z.object({ ok: z.literal(true) }), { method: 'DELETE' }),
       {
         success: `${d.label ?? d.stableId} dismissed — it reappears here if it connects again`,
         failure: 'Could not dismiss the phone',

@@ -24,6 +24,8 @@ apps/desktop/src-tauri/gen/schemas/
 
 # data dev
 .dev-data/
+# Stray per-test data dirs (a subagent left one under packages/core once).
+**/.dev-data-*/
 .dev-cloud/
 .dev-agent/
 .agent-data/

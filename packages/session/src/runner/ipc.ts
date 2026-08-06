@@ -1,4 +1,4 @@
-import { PointSchema, SelectorSchema } from '@enkaku/protocol'
+import { DEVICE_CALL_ARGS } from '@enkaku/protocol'
 import { z } from 'zod'
 
 /**
@@ -7,113 +7,47 @@ import { z } from 'zod'
  *
  * The child NEVER opens adb itself — every device action travels as a
  * `device.call` to the parent, so the per-device queue and lease still hold.
+ *
+ * Each variant's `args` shape comes from `@enkaku/protocol`'s
+ * `DEVICE_CALL_ARGS` (plan 63 §3.7) — the SAME schema `@enkaku/core`'s
+ * `device.*` capabilities extend with `{ deviceId }`. `@enkaku/session`
+ * cannot import the capability registry itself (core depends on session,
+ * never the reverse), so the shared source sits one level below both,
+ * in protocol; only the `{ method: literal, args }` IPC framing stays here.
+ * The seventeen device operations are declared once either way.
  */
-
-/** The gesture engine's easing options (plan 40 §4.1) — mirrored here rather
- * than imported from `@enkaku/drivers`, since `@enkaku/protocol` (where this
- * schema effectively lives, through `DeviceCallSchema`'s consumers) sits
- * below `drivers` in the dependency graph. */
-const GestureEasingSchema = z.enum(['linear', 'easeOutQuad', 'easeInOutCubic'])
-const ScrollDirectionSchema = z.enum(['up', 'down', 'left', 'right'])
-
 export const DeviceCallSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.literal('tap'), args: z.object({ target: SelectorSchema }) }),
-  z.object({
-    method: z.literal('swipe'),
-    args: z.object({
-      from: PointSchema,
-      to: PointSchema,
-      ms: z.number().int().positive().default(300),
-      /** Overrides `TimingSettings.gestureCurvature` for this call (plan 40 §4.4). */
-      curvature: z.number().min(0).max(0.5).optional(),
-      easing: GestureEasingSchema.optional(),
-    }),
-  }),
+  z.object({ method: z.literal('tap'), args: DEVICE_CALL_ARGS.tap }),
+  z.object({ method: z.literal('swipe'), args: DEVICE_CALL_ARGS.swipe }),
   /** A controlled drag that ends at low velocity and stops where it is put (plan 40 §3.4, §4.4). */
-  z.object({
-    method: z.literal('scroll'),
-    args: z.object({
-      direction: ScrollDirectionSchema,
-      /** Pixels; defaults to 60% of the relevant viewport axis. */
-      distance: z.number().positive().optional(),
-      from: PointSchema.optional(),
-    }),
-  }),
+  z.object({ method: z.literal('scroll'), args: DEVICE_CALL_ARGS.scroll }),
   /** A short, fast gesture that ends at high velocity and lets the list coast (plan 40 §3.4, §4.4). */
-  z.object({
-    method: z.literal('fling'),
-    args: z.object({
-      direction: ScrollDirectionSchema,
-      strength: z.enum(['soft', 'normal', 'hard']).optional(),
-    }),
-  }),
-  z.object({
-    method: z.literal('type'),
-    args: z.object({
-      text: z.string(),
-      /** Overrides `TimingSettings.perCharMs` for this call (plan 40 §4.4). */
-      perCharMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
-      /** Forces the pre-plan-40 bulk delivery for this call regardless of the timing profile (a long token, a paste target). */
-      instant: z.boolean().optional(),
-    }),
-  }),
-  z.object({ method: z.literal('key'), args: z.object({ code: z.union([z.number().int(), z.string()]) }) }),
-  z.object({ method: z.literal('find'), args: z.object({ sel: SelectorSchema }) }),
+  z.object({ method: z.literal('fling'), args: DEVICE_CALL_ARGS.fling }),
+  z.object({ method: z.literal('type'), args: DEVICE_CALL_ARGS.type }),
+  z.object({ method: z.literal('key'), args: DEVICE_CALL_ARGS.key }),
+  z.object({ method: z.literal('find'), args: DEVICE_CALL_ARGS.find }),
   /**
    * The whole accessibility tree, the same one the Inspect panel renders
    * (plan 60 §3.2). No arguments: a dump is a dump, and everything a script
    * wants to do with it is ordinary TypeScript over the returned nodes.
    */
-  z.object({ method: z.literal('dump'), args: z.object({}) }),
-  z.object({
-    method: z.literal('waitFor'),
-    args: z.object({
-      sel: SelectorSchema,
-      timeout: z.number().int().positive(),
-      intervalMs: z.number().int().positive(),
-    }),
-  }),
-  z.object({ method: z.literal('screenshot'), args: z.object({}) }),
-  z.object({
-    method: z.literal('app.launch'),
-    // A package name is not a free string (plan 34 §3.4, §4.3) — the regex
-    // mirrors Android's own package-name rules and rejects metacharacters
-    // early with a clear error; `shellQuote` at the call site
-    // (`device-executor.ts`) is what actually guarantees injection safety.
-    args: z.object({
-      pkg: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/),
-      activity: z.string().regex(/^[a-zA-Z0-9_.$/]+$/).optional(),
-    }),
-  }),
-  z.object({
-    method: z.literal('app.forceStop'),
-    args: z.object({ pkg: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/) }),
-  }),
-  z.object({ method: z.literal('clipboard.get'), args: z.object({}) }),
-  z.object({
-    method: z.literal('clipboard.set'),
-    args: z.object({ text: z.string(), paste: z.boolean().default(false) }),
-  }),
+  z.object({ method: z.literal('dump'), args: DEVICE_CALL_ARGS.dump }),
+  z.object({ method: z.literal('waitFor'), args: DEVICE_CALL_ARGS.waitFor }),
+  z.object({ method: z.literal('screenshot'), args: DEVICE_CALL_ARGS.screenshot }),
+  // A package name is not a free string (plan 34 §3.4, §4.3) — the regex
+  // mirrors Android's own package-name rules and rejects metacharacters
+  // early with a clear error; `shellQuote` at the call site
+  // (`device-executor.ts`) is what actually guarantees injection safety.
+  z.object({ method: z.literal('app.launch'), args: DEVICE_CALL_ARGS['app.launch'] }),
+  z.object({ method: z.literal('app.forceStop'), args: DEVICE_CALL_ARGS['app.forceStop'] }),
+  z.object({ method: z.literal('clipboard.get'), args: DEVICE_CALL_ARGS['clipboard.get'] }),
+  z.object({ method: z.literal('clipboard.set'), args: DEVICE_CALL_ARGS['clipboard.set'] }),
   // File transfer and APK install (plan 39 §4.6) — the child never touches
   // adb or the artifact store itself; `TransferPort` (see `../types.ts`) is
   // the parent-side implementation, exactly like every other device.call.
-  z.object({
-    method: z.literal('install'),
-    args: z.object({
-      artifactId: z.string().min(1),
-      reinstall: z.boolean().optional(),
-      grantPermissions: z.boolean().optional(),
-      allowDowngrade: z.boolean().optional(),
-    }),
-  }),
-  z.object({
-    method: z.literal('push'),
-    args: z.object({ artifactId: z.string().min(1), remotePath: z.string().min(1) }),
-  }),
-  z.object({
-    method: z.literal('pull'),
-    args: z.object({ remotePath: z.string().min(1) }),
-  }),
+  z.object({ method: z.literal('install'), args: DEVICE_CALL_ARGS.install }),
+  z.object({ method: z.literal('push'), args: DEVICE_CALL_ARGS.push }),
+  z.object({ method: z.literal('pull'), args: DEVICE_CALL_ARGS.pull }),
 ])
 export type DeviceCall = z.infer<typeof DeviceCallSchema>
 
@@ -197,6 +131,9 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
   // 'crashed' (plan 37 §3.5, §4.4): the target application crashed mid-run —
   // the runner (`job-runner.ts`) maps this to `APP_CRASHED` and still runs
   // `finish()`, exactly like every other abort reason (spec §11.3).
-  z.object({ t: z.literal('abort'), reason: z.enum(['timeout', 'cancelled', 'hung', 'crashed']) }),
+  // 'startup-timeout' (plan 74 §3.2, §4.2): the child never sent `ready` —
+  // it is not slow, it is broken, and this fires long before the run
+  // timeout would.
+  z.object({ t: z.literal('abort'), reason: z.enum(['timeout', 'cancelled', 'hung', 'crashed', 'startup-timeout']) }),
 ])
 export type ParentToChild = z.infer<typeof ParentToChildSchema>

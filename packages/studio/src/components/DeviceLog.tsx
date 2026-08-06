@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Pause, Play } from 'lucide-react'
-import type { DeviceEvent, DeviceEventStream } from '@enkaku/protocol'
+import { DeviceEventsResponseSchema, type DeviceEvent, type DeviceEventStream } from '@enkaku/protocol'
 import { api } from '@/lib/actions'
 import { ws } from '@/lib/ws'
 import { relativeTime } from '@/lib/format'
@@ -201,7 +201,7 @@ export function DeviceLog({ deviceId, deviceOffline }: { deviceId: string; devic
     // Adopts the plan 30 §3.3 envelope (`items`/`nextCursor`) — this view
     // keeps its own scroll-triggered paging rather than PaginatedTable's
     // load-more button, since a log is read top-to-bottom, not paged.
-    void api<{ items: DeviceEvent[]; nextCursor: string | null }>(`/api/devices/${deviceId}/events?${qs.toString()}`)
+    void api(`/api/devices/${deviceId}/events?${qs.toString()}`, DeviceEventsResponseSchema)
       .then((body) => {
         setSlots((s) => {
           const prev = s[stream]

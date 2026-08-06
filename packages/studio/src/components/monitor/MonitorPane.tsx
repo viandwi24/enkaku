@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Download, Pause, Play, RefreshCw, Users } from 'lucide-react'
 import {
   MonitorKindSchema,
+  MonitorSaveResponseSchema,
   type LogcatOptions,
   type MonitorEndReason,
   type MonitorKind,
@@ -194,7 +195,7 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
     }
     setSaving(true)
     try {
-      const res = await api<{ artifact: { id: string } }>(`/api/devices/${deviceId}/monitor/save`, {
+      const res = await api(`/api/devices/${deviceId}/monitor/save`, MonitorSaveResponseSchema, {
         method: 'POST',
         json: { kind, lines: toSave },
       })

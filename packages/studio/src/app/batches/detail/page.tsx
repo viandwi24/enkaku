@@ -5,7 +5,14 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
-import type { BatchInfo, DeviceInfo, JobInfo } from '@enkaku/protocol'
+import {
+  BatchCancelResponseSchema,
+  BatchResponseSchema,
+  BatchWithJobsResponseSchema,
+  type BatchInfo,
+  type DeviceInfo,
+  type JobInfo,
+} from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
@@ -56,7 +63,7 @@ function BatchDetail() {
   const loadBatch = () => {
     if (!batchId) return
     setError(null)
-    void api<{ batch: BatchInfo }>(`/api/batches/${batchId}`)
+    void api(`/api/batches/${batchId}`, BatchResponseSchema)
       .then((b) => setBatch(b.batch))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
@@ -86,7 +93,7 @@ function BatchDetail() {
 
   const fetchJobs = async (): Promise<Page<JobInfo>> => {
     if (!batchId) return { items: [], nextCursor: null, total: 0 }
-    const b = await api<{ batch: BatchInfo; jobs: JobInfo[] }>(`/api/batches/${batchId}`)
+    const b = await api(`/api/batches/${batchId}`, BatchWithJobsResponseSchema)
     setBatch(b.batch)
     const sorted = [...b.jobs].sort((a, z) => (a.batchSeq ?? 0) - (z.batchSeq ?? 0))
     // A member's device may have been forgotten since this batch ran (plan
@@ -112,7 +119,7 @@ function BatchDetail() {
   const canRerun = batch.status !== 'queued' && batch.status !== 'running' && batch.counts.failed > 0
 
   const cancel = () =>
-    run('cancel', () => api<{ cancelled: number }>(`/api/batches/${batchId}/cancel`, { method: 'POST' }), {
+    run('cancel', () => api(`/api/batches/${batchId}/cancel`, BatchCancelResponseSchema, { method: 'POST' }), {
       failure: 'Could not cancel the batch',
       onSuccess: (b) => {
         toast.success(b.cancelled === 1 ? '1 queued job cancelled' : `${b.cancelled} queued jobs cancelled`)
@@ -122,7 +129,7 @@ function BatchDetail() {
     })
 
   const rerunFailed = () =>
-    run('rerun', () => api<{ batch: BatchInfo }>(`/api/batches/${batchId}/rerun-failed`, { method: 'POST' }), {
+    run('rerun', () => api(`/api/batches/${batchId}/rerun-failed`, BatchResponseSchema, { method: 'POST' }), {
       success: 'A new batch was created over the failed devices',
       failure: 'Could not re-run the failed devices',
       onSuccess: (b) => router.push(`/batches/detail?id=${b.batch.id}`),

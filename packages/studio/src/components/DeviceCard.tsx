@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ReadinessControl } from '@/components/ReadinessControl'
+import { HolderBadge } from '@/components/HolderBadge'
 import { cn } from '@/lib/utils'
 
 /**
@@ -118,6 +119,16 @@ export function DeviceCard({
             )}
           </div>
         </div>
+
+        {/* Who holds this device — a person, an agent, or a job (plan 71
+            §3.2, §3.8) — read straight off `DeviceInfo.heldBy`, server-
+            published and kept live by `device.added`/`device.status`, never
+            polled (replaces `lib/agent-holders.ts`, deleted). */}
+        {device.heldBy && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <HolderBadge holder={device.heldBy} />
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-1">
           {/* Readiness — a second, orthogonal axis to status (plan 43 §4.6). */}

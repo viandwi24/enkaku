@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
-import type { ShellMode } from '@enkaku/protocol'
+import { AdbEndpointCreateResponseSchema, AdbEndpointResponseSchema, type ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseAdbEndpoint, canUseDevice } from '../auth/acl'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = {
   'auth.forbidden': 403,
@@ -75,7 +76,7 @@ export function createAdbEndpointRoutes(deps: {
     authorize(c.get('user'), deviceId, body.data.clientId)
     const userId = c.get('user')?.id ?? null
     const { host, port, expiresAt } = await deps.manager.open(deviceId, body.data.clientId, userId)
-    return c.json({ host, port, expiresAt, command: `adb connect ${host}:${port}` })
+    return typedJson(c, AdbEndpointCreateResponseSchema, { host, port, expiresAt, command: `adb connect ${host}:${port}` })
   })
 
   app.delete('/:id/adb-endpoint', (c) => {
@@ -92,7 +93,7 @@ export function createAdbEndpointRoutes(deps: {
     const clientId = c.req.query('clientId')
     if (!clientId) throw new EnkakuError('E_BAD_REQUEST', 'a clientId query parameter is required')
     authorize(c.get('user'), deviceId, clientId)
-    return c.json({ endpoint: deps.manager.get(deviceId) })
+    return typedJson(c, AdbEndpointResponseSchema, { endpoint: deps.manager.get(deviceId) })
   })
 
   app.onError((err, c) => {

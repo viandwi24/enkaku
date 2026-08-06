@@ -152,3 +152,73 @@ describe('requirePermission on /api/scripts mutations (plan 34 §4.4, §4.5, acc
     expect(res.status).toBe(200)
   })
 })
+
+function publish(db: Db, name: string, version: string, opts: { enabled?: boolean; createdAt?: number } = {}): string {
+  const id = `${name}-${version}-${crypto.randomUUID().slice(0, 8)}`
+  db.insert(scripts)
+    .values({
+      id,
+      name,
+      version,
+      bundle: 'export {}',
+      enabled: opts.enabled ?? true,
+      createdAt: new Date((opts.createdAt ?? 1_700_000_000) * 1000),
+    })
+    .run()
+  return id
+}
+
+describe('GET /api/scripts?group=name (plan 62 §4.4, acceptance #10)', () => {
+  test('groups multiple published versions into one row', async () => {
+    const db = setUp()
+    publish(db, 'checkout', '1.0.0')
+    const idLatest = publish(db, 'checkout', '1.2.0')
+    publish(db, 'checkout', '1.1.0')
+    publish(db, 'login', '0.1.0')
+    const app = createScriptRoutes({ db })
+
+    const res = await app.request('/?group=name')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ id: string; name: string; latestVersion: string; versionCount: number; enabled: boolean }>; total: number }
+    expect(body.total).toBe(2) // two NAMES, not three versions plus one
+    const checkout = body.items.find((i) => i.name === 'checkout')
+    expect(checkout).toMatchObject({ id: idLatest, latestVersion: '1.2.0', versionCount: 3, enabled: true })
+    const login = body.items.find((i) => i.name === 'login')
+    expect(login).toMatchObject({ latestVersion: '0.1.0', versionCount: 1 })
+  })
+
+  test('the grouped latest matches the resolver — a disabled highest version falls through', async () => {
+    const db = setUp()
+    const idEnabled = publish(db, 'checkout', '1.0.0')
+    publish(db, 'checkout', '2.0.0', { enabled: false })
+    const app = createScriptRoutes({ db })
+
+    const res = await app.request('/?group=name')
+    const body = (await res.json()) as { items: Array<{ id: string; latestVersion: string }> }
+    expect(body.items[0]).toMatchObject({ id: idEnabled, latestVersion: '1.0.0' })
+  })
+})
+
+describe('GET /api/scripts/:name/versions (plan 62 §4.4)', () => {
+  test('newest semver first, regardless of publish order', async () => {
+    const db = setUp()
+    publish(db, 'checkout', '1.0.9', { createdAt: 1_700_000_000 })
+    publish(db, 'checkout', '1.0.10', { createdAt: 1_700_000_050 })
+    publish(db, 'checkout', '1.0.2', { createdAt: 1_700_000_100 }) // published LAST, sorts LOWEST
+    const app = createScriptRoutes({ db })
+
+    const res = await app.request('/checkout/versions')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ version: string }> }
+    expect(body.items.map((i) => i.version)).toEqual(['1.0.10', '1.0.9', '1.0.2'])
+  })
+
+  test('an unknown name returns an empty list, not an error', async () => {
+    const db = setUp()
+    const app = createScriptRoutes({ db })
+    const res = await app.request('/nope/versions')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: unknown[] }
+    expect(body.items).toEqual([])
+  })
+})

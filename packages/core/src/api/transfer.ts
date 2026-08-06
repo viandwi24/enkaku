@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { ShellMode } from '@enkaku/protocol'
+import { InstallResponseSchema, PullResponseSchema, type ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseFiles } from '../auth/acl'
@@ -8,6 +8,7 @@ import type { EventRecorder } from '../events/recorder'
 import type { TransferService } from '../device/transfer'
 import { runTransfer, type TransferBroadcast } from '../device/transfer-dispatch'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = {
   'auth.forbidden': 403,
@@ -111,7 +112,7 @@ export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
         actor: userId,
         meta: { artifactId: body.data.artifactId, package: result.package, ok: true },
       })
-      return c.json({ result })
+      return typedJson(c, InstallResponseSchema, { result })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       deps.record({
@@ -185,7 +186,7 @@ export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
         actor: userId,
         meta: { remotePath: body.data.remotePath, bytes: result.bytes, ok: true },
       })
-      return c.json({ result })
+      return typedJson(c, PullResponseSchema, { result })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       deps.record({

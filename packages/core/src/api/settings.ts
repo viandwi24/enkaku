@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
-import { DeviceSettingsSchema, FarmSettingsSchema } from '@enkaku/protocol'
+import { DeviceSettingsSchema, FarmSettingsSchema, SettingsResponseSchema, UpdateSettingsResponseSchema } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { FarmSettingsStore } from '../settings/farm-settings'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 /**
  * Farm-wide settings plus the JSON Schema for the schema-driven form renderer
@@ -14,7 +15,7 @@ export function createSettingsRoutes(store: FarmSettingsStore): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
   app.get('/', (c) =>
-    c.json({
+    typedJson(c, SettingsResponseSchema, {
       settings: store.get(),
       schema: z.toJSONSchema(FarmSettingsSchema),
       // The per-device schema ships alongside, because the device screen renders
@@ -28,7 +29,7 @@ export function createSettingsRoutes(store: FarmSettingsStore): Hono<AuthEnv> {
   // that is where the permission is applied.
   app.patch('/', requirePermission('settings.manage'), async (c) => {
     const body = await c.req.json().catch(() => null)
-    return c.json({ settings: store.update(body) })
+    return typedJson(c, UpdateSettingsResponseSchema, { settings: store.update(body) })
   })
 
   /** The DeviceSettings schema for per-device forms. */

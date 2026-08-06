@@ -3,7 +3,16 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { CalendarClock, Plus } from 'lucide-react'
-import type { DeviceInfo, ScheduleFiredEvent, ScheduleInfo } from '@enkaku/protocol'
+import { z } from 'zod'
+import {
+  BatchInfoSchema,
+  pageSchema,
+  ScheduleInfoSchema,
+  ScheduleResponseSchema,
+  type DeviceInfo,
+  type ScheduleFiredEvent,
+  type ScheduleInfo,
+} from '@enkaku/protocol'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
@@ -21,7 +30,13 @@ const OUTCOME_LABEL: Record<string, string> = {
   'skipped-overlap': 'skipped (previous run still going)',
   'skipped-missed': 'skipped (missed while stopped)',
   'no-targets': 'no usable devices',
+  'spend-cap': 'refused (spend cap reached)',
   error: 'error',
+}
+
+/** Plan 68 §3.1 — a schedule triggers a script or an agent; the list's "Runs" column reads either. */
+function workSummary(s: ScheduleInfo): string {
+  return s.target.kind === 'agent' ? `agent · ${s.target.prompt.slice(0, 40)}${s.target.prompt.length > 40 ? '…' : ''}` : s.scriptRef ?? '—'
 }
 
 /** "Every day at 02:00 Asia/Jakarta" — good enough for the common cases without a full cron-to-English library. */
@@ -33,6 +48,26 @@ function humanCron(cron: string, timezone: string): string {
   }
   return `${cron} (${timezone})`
 }
+
+/**
+ * `GET /api/schedules` replies with the usual keyset envelope over
+ * `ScheduleInfo` — no dedicated `SchedulesPageResponseSchema` export exists
+ * in protocol (plan 72 §3.4's report flags this as a gap, same as
+ * `clusters/page.tsx`), so it is composed here from the exported
+ * `pageSchema` helper and `ScheduleInfoSchema`, both already in protocol.
+ */
+const SchedulesPageResponseSchema = pageSchema(ScheduleInfoSchema)
+
+/**
+ * `POST /api/schedules/:id/run-now` replies `{ run: {...} }` for an
+ * agent-target schedule or `{ batch: BatchInfo }` for a script-target one —
+ * the same genuine union documented in `schedules/detail/page.tsx`. Neither
+ * call site here reads the result, but the body must still parse.
+ */
+const RunNowResponseSchema = z.union([
+  z.object({ batch: BatchInfoSchema }),
+  z.object({ run: z.object({ runId: z.string(), threadId: z.string().nullable() }) }),
+])
 
 function countdown(nextFireAt: number | null, now: number): string {
   if (nextFireAt === null) return '—'
@@ -64,7 +99,7 @@ export default function SchedulesPage() {
     const off = ws.on((m) => {
       if (m.type !== 'schedule.fired') return
       setLastOutcome((prev) => new Map(prev).set(m.payload.scheduleId, m.payload))
-      void api<{ schedule: ScheduleInfo }>(`/api/schedules/${m.payload.scheduleId}`)
+      void api(`/api/schedules/${m.payload.scheduleId}`, ScheduleResponseSchema)
         .then((b) => tableRef.current?.pushLive(b.schedule))
         .catch(() => undefined)
     })
@@ -72,14 +107,14 @@ export default function SchedulesPage() {
   }, [])
 
   const toggle = (s: ScheduleInfo) =>
-    run('toggle-' + s.id, () => api(`/api/schedules/${s.id}`, { method: 'PATCH', json: { enabled: !s.enabled } }), {
+    run('toggle-' + s.id, () => api(`/api/schedules/${s.id}`, ScheduleResponseSchema, { method: 'PATCH', json: { enabled: !s.enabled } }), {
       success: s.enabled ? `${s.name} disabled` : `${s.name} enabled`,
       failure: 'Could not change the schedule',
       onSuccess: () => tableRef.current?.reload(),
     })
 
   const runNow = (s: ScheduleInfo) =>
-    run('run-' + s.id, () => api(`/api/schedules/${s.id}/run-now`, { method: 'POST', json: {} }), {
+    run('run-' + s.id, () => api(`/api/schedules/${s.id}/run-now`, RunNowResponseSchema, { method: 'POST', json: {} }), {
       success: `${s.name} started`,
       failure: 'Could not run the schedule now',
       onSuccess: () => tableRef.current?.reload(),
@@ -101,11 +136,12 @@ export default function SchedulesPage() {
       <div className="space-y-4 px-5 py-4">
         <PaginatedTable<ScheduleInfo>
           ref={tableRef}
-          fetchPage={(cursor) => api(`/api/schedules?limit=50${cursor ? `&cursor=${cursor}` : ''}`)}
+          fetchPage={(cursor) => api(`/api/schedules?limit=50${cursor ? `&cursor=${cursor}` : ''}`, SchedulesPageResponseSchema)}
           rowKey={(s) => s.id}
           header={
             <>
-              <TableHead className="w-[26%]">Name</TableHead>
+              <TableHead className="w-[22%]">Name</TableHead>
+              <TableHead>Runs</TableHead>
               <TableHead>Cron</TableHead>
               <TableHead>Next fire</TableHead>
               <TableHead>Last outcome</TableHead>
@@ -122,6 +158,11 @@ export default function SchedulesPage() {
                     {s.name}
                   </Link>
                 </TableCell>
+                {/* A script target shows the raw reference, verbatim (plan 62
+                    §4.6) — self-documenting ("checkout@latest" vs
+                    "checkout@1.0.1"). An agent target shows a prompt preview
+                    (plan 68 §3.1). */}
+                <TableCell className="readout text-[12px] text-fg-muted">{workSummary(s)}</TableCell>
                 <TableCell className="text-[12px] text-fg-muted">{humanCron(s.cron, s.timezone)}</TableCell>
                 <TableCell className="readout text-[12px]">{s.enabled ? countdown(s.nextFireAt, now) : '—'}</TableCell>
                 <TableCell className="text-[12px] text-fg-muted">

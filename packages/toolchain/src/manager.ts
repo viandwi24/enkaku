@@ -1,9 +1,10 @@
-import { mkdirSync, renameSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { downloadVerified } from './download'
 import { entrypointRelPath } from './entrypoints'
 import { ToolchainError } from './errors'
 import { extractZip, placeRaw } from './extract'
+import { moveDir, rmPath } from './fs-safe'
 import { checkAdbBinary, checkFileHash } from './health'
 import { ManifestStore } from './manifest'
 import { ActivePointerStore, createPaths, ensureLayout, type ToolchainPaths } from './paths'
@@ -103,7 +104,7 @@ export class ToolchainManager {
   }
 
   async init(): Promise<void> {
-    ensureLayout(this.paths)
+    await ensureLayout(this.paths)
     await this.manifests.loadCache()
     await this.reconcile()
   }
@@ -230,8 +231,12 @@ export class ToolchainManager {
 
       this.inFlight.add(toolId)
       const emit = this.opts.emit
+      const warn = { onWarn: (m: string) => this.opts.onLog?.('warn', m) }
       const partPath = join(this.paths.stagingDir, `${toolId}-${version}.part`)
       const stageDir = join(this.paths.stagingDir, `${toolId}-${version}`)
+      const finalDir = this.paths.versionDir(toolId, version)
+      /** Set once the final folder may hold a half-written install worth cleaning up. */
+      let touchedFinalDir = false
       try {
         // 1. download + sha256 (streaming, progress ter-throttle)
         await downloadVerified({
@@ -250,21 +255,26 @@ export class ToolchainManager {
               percent: p.totalBytes ? Math.min(100, Math.round((p.bytesReceived / p.totalBytes) * 100)) : null,
             }),
         })
-        // 2. extract ke staging
+        // 2. place the payload — a zip is extracted into staging and moved as one
+        //    directory; a raw artifact is a single file and goes straight into the
+        //    final folder, so no directory rename is involved (fs-safe.ts explains
+        //    why that distinction matters on Windows).
         emit?.({ kind: 'install-progress', toolId, version, phase: 'extract' })
-        rmSync(stageDir, { recursive: true, force: true })
-        mkdirSync(stageDir, { recursive: true })
+        mkdirSync(this.paths.toolDir(toolId), { recursive: true })
         if (tool.format === 'zip') {
+          await rmPath(stageDir)
+          mkdirSync(stageDir, { recursive: true })
           await extractZip(partPath, stageDir)
           rmSync(partPath, { force: true })
+          // 3. move into the final folder (atomic when the rename wins)
+          touchedFinalDir = true
+          await rmPath(finalDir)
+          await moveDir(stageDir, finalDir, warn)
         } else {
-          placeRaw(partPath, stageDir, entrypointRelPath(toolId, this.platform))
+          touchedFinalDir = true
+          await rmPath(finalDir)
+          await placeRaw(partPath, finalDir, entrypointRelPath(toolId, this.platform), warn)
         }
-        // 3. rename atomik ke folder final
-        const finalDir = this.paths.versionDir(toolId, version)
-        mkdirSync(this.paths.toolDir(toolId), { recursive: true })
-        rmSync(finalDir, { recursive: true, force: true })
-        renameSync(stageDir, finalDir)
         // 4. record it in the DB (active=false — activation is a separate step)
         this.opts.store.insert({
           id: crypto.randomUUID(),
@@ -279,7 +289,11 @@ export class ToolchainManager {
         this.opts.onLog?.('info', `installed: ${toolId}@${version}`)
       } catch (err) {
         rmSync(partPath, { force: true })
-        rmSync(stageDir, { recursive: true, force: true })
+        await rmPath(stageDir).catch(() => {})
+        // The move is no longer guaranteed atomic (a copy fallback, or a raw
+        // artifact landing straight in place), so a failed install must not
+        // leave a half-populated version folder for reconcile() to adopt.
+        if (touchedFinalDir) await rmPath(finalDir).catch(() => {})
         const e = err instanceof ToolchainError ? err : new ToolchainError('E_DOWNLOAD_FAILED', String(err), err)
         emit?.({
           kind: 'install-progress',
@@ -351,7 +365,7 @@ export class ToolchainManager {
       }
       const installed = this.opts.store.listByTool(toolId).find((r) => r.version === version)
       if (!installed) throw new ToolchainError('E_NOT_INSTALLED', `${toolId}@${version} is not installed`)
-      rmSync(this.paths.versionDir(toolId, version), { recursive: true, force: true })
+      await rmPath(this.paths.versionDir(toolId, version))
       this.opts.store.delete(toolId, version)
       this.opts.emit?.({ kind: 'changed', toolId, change: 'deleted' })
       this.opts.onLog?.('info', `deleted: ${toolId}@${version}`)

@@ -152,6 +152,11 @@ describe('FarmSettingsSchema.job — session hygiene between jobs (plan 35 §4.1
       resetStrict: false,
       retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
       crashPolicy: 'declared',
+      quietPeriodSec: 10,
+      maxWaitSec: 120,
+      defaultTimeoutMs: 3_600_000,
+      startupTimeoutMs: 60_000,
+      maxTimeoutMs: null,
     })
   })
 

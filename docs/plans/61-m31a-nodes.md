@@ -1,7 +1,7 @@
 # Plan 61 — M31a : Nodes, and the Word "Agent" Set Free
 
-> Status: not started
-> Ships: `packages/node` (renamed from `packages/agent`), `packages/core/src/tunnel/*`, `packages/core/src/api/nodes.ts`, `packages/studio/src/app/nodes/`, a Drizzle migration
+> Status: implemented — `packages/agent` renamed to `packages/node` (`@enkaku/node`), the `agents` table renamed to `nodes` and `devices.agent_id` to `devices.node_id` via a hand-written `ALTER TABLE`/`RENAME COLUMN` migration (verified against a copy of a real `.dev-cloud/enkaku.db`), the tunnel wire messages renamed to `node.hello`/`node.hello.ack`/`node.devices` with the pre-rename `agent.hello`/`agent.devices` accepted for one release (warn-logged, one warning per hello), a node adopts an existing `agent.json` and rewrites it as `node.json`, `/api/agents` is gone in favour of `/api/nodes` (no alias — a bare 404), and Studio's `/agents` route redirects to `/nodes` with the sidebar showing one entry, "Nodes". The plan's §3.4 misidentifies the renamed device column as `deviceEvents.agentId`; it is actually `devices.agentId` (schema.ts:36) — corrected during implementation, noted here rather than silently.
+> Ships: packages/core/src/api/nodes.ts
 > Depends on: nothing. **Hard prerequisite for Plans 63–68** — every one of them uses the word "agent" for the AI feature, and it cannot mean two things.
 > Spec references: §14 (cloud mode), §14.2 (enrollment).
 

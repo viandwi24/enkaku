@@ -1,0 +1,10 @@
+# Scoped to this package: only takes effect when `bun test` is invoked with a
+# cwd of `packages/studio` (`bun run --cwd packages/studio test`, or `cd
+# packages/studio && bun test`) — Bun reads a single bunfig.toml, resolved
+# from the invocation's own cwd, and does not merge with or override the root
+# `bunfig.toml`. The root `bunfig.toml` excludes this package from its own
+# `bun test` scan for exactly this reason — see its comment, and
+# `happydom.ts`, for why a real preload (not a same-file `import`) is
+# required here at all.
+[test]
+preload = ["./happydom.ts"]

@@ -1,7 +1,8 @@
-import { chmodSync, mkdirSync, renameSync, statSync, readdirSync } from 'node:fs'
+import { chmodSync, mkdirSync, statSync, readdirSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize } from 'node:path'
 import { unzipSync } from 'fflate'
 import { ToolchainError } from './errors'
+import { moveFile, type FsSafeOptions } from './fs-safe'
 
 /**
  * Extracts zips with fflate (pure JS — self-contained, no `unzip`
@@ -39,8 +40,18 @@ function chmodTreeExec(dir: string): void {
   }
 }
 
-/** Raw artifact (jar/apk): move it into destDir under its canonical name. */
-export function placeRaw(srcFile: string, destDir: string, canonicalName: string): void {
+/**
+ * Raw artifact (jar/apk): move it into destDir under its canonical name. A raw
+ * tool is a single file, so this moves the FILE into its final folder — it
+ * never renames a directory, which is the operation Windows fails on when an
+ * antivirus is scanning what was just written (see fs-safe.ts).
+ */
+export async function placeRaw(
+  srcFile: string,
+  destDir: string,
+  canonicalName: string,
+  opts: FsSafeOptions = {},
+): Promise<void> {
   mkdirSync(destDir, { recursive: true })
-  renameSync(srcFile, join(destDir, canonicalName))
+  await moveFile(srcFile, join(destDir, canonicalName), opts)
 }

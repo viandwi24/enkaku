@@ -4,11 +4,21 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import type { ClusterPreview, DeviceInfo, ScheduleInfo, ScheduleRunInfo } from '@enkaku/protocol'
+import { z } from 'zod'
+import {
+  BatchInfoSchema,
+  ScheduleResponseSchema,
+  ScheduleRunsPageResponseSchema,
+  ValidateResponseSchema,
+  type ClusterPreview,
+  type DeviceInfo,
+  type ScheduleInfo,
+  type ScheduleRunInfo,
+} from '@enkaku/protocol'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { TableCell, TableHead } from '@/components/ui/table'
@@ -33,14 +43,40 @@ const OUTCOME_LABEL: Record<string, string> = {
   'skipped-overlap': 'skipped — previous run still going',
   'skipped-missed': 'skipped — missed while the core was stopped',
   'no-targets': 'no usable devices',
+  'spend-cap': 'refused — spend cap reached',
   error: 'error',
 }
+
+/** Plan 68 §3.5 — the interesting choice at 3 a.m., stated in plain words (same copy as the editor). */
+const APPROVAL_SENTENCE: Record<string, string> = {
+  deny: 'A destructive tool call is refused at once and the run continues — nobody is paged to decide.',
+  pause: 'A destructive tool call waits for a human to approve, and expires unanswered like any other approval.',
+}
+
+const THREAD_MODE_SENTENCE: Record<string, string> = {
+  new: 'Each firing gets its own thread.',
+  continue: 'One thread carries across every firing.',
+}
+
+/**
+ * `POST /api/schedules/:id/run-now` (`packages/core/src/api/schedules.ts`)
+ * replies `{ run: { runId, threadId } }` for an agent-target schedule, or
+ * `{ batch: BatchInfo }` for a script-target one — a genuine union no single
+ * protocol export covers (plan 72 §3.4). Neither call site in this file
+ * reads the result, but the body must still parse. Declared inline since it
+ * does not fit `ScheduleResponseSchema`/`BatchResponseSchema` alone.
+ */
+const RunNowResponseSchema = z.union([
+  z.object({ batch: BatchInfoSchema }),
+  z.object({ run: z.object({ runId: z.string(), threadId: z.string().nullable() }) }),
+])
 
 function ScheduleDetail() {
   const scheduleId = useSearchParams().get('id')
   const tab = useSearchParams().get('tab') ?? 'overview'
 
   const [schedule, setSchedule] = useState<ScheduleInfo | null>(null)
+  const [resolvesTo, setResolvesTo] = useState<{ scriptId: string; name: string; version: string } | null>(null)
   const [runsTotal, setRunsTotal] = useState<number | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [preview, setPreview] = useState<ClusterPreview | null>(null)
@@ -53,8 +89,11 @@ function ScheduleDetail() {
   const load = () => {
     if (!scheduleId) return
     setError(null)
-    void api<{ schedule: ScheduleInfo }>(`/api/schedules/${scheduleId}`)
-      .then((b) => setSchedule(b.schedule))
+    void api(`/api/schedules/${scheduleId}`, ScheduleResponseSchema)
+      .then((b) => {
+        setSchedule(b.schedule)
+        setResolvesTo(b.resolvesTo ?? null)
+      })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
 
@@ -86,7 +125,7 @@ function ScheduleDetail() {
     } else {
       setPreview(null)
     }
-    void api<{ valid: boolean; nextFires: number[] }>('/api/schedules/validate', {
+    void api('/api/schedules/validate', ValidateResponseSchema, {
       method: 'POST',
       json: { cron: schedule.cron, timezone: schedule.timezone },
     })
@@ -118,7 +157,7 @@ function ScheduleDetail() {
     : `${schedule.deviceIds.length} explicit device${schedule.deviceIds.length === 1 ? '' : 's'}`
 
   const runNow = () =>
-    run('run-now', () => api(`/api/schedules/${schedule.id}/run-now`, { method: 'POST', json: {} }), {
+    run('run-now', () => api(`/api/schedules/${schedule.id}/run-now`, RunNowResponseSchema, { method: 'POST', json: {} }), {
       success: `${schedule.name} started`,
       failure: 'Could not run the schedule now',
       onSuccess: load,
@@ -166,6 +205,33 @@ function ScheduleDetail() {
 
       {tab === 'overview' && (
         <div className="max-w-3xl space-y-4 px-5 py-4">
+          {schedule.target.kind === 'agent' ? (
+            <div className="rounded-lg border bg-surface p-4">
+              <h2 className="text-[14px] font-semibold tracking-tight">Agent</h2>
+              <p className="readout mt-1 text-[12.5px]">{schedule.target.agentId}</p>
+              <p className="mt-2 whitespace-pre-wrap text-[12.5px] text-fg-muted">{schedule.target.prompt}</p>
+              <ul className="mt-3 space-y-1 text-[12px] text-fg-muted">
+                <li>{THREAD_MODE_SENTENCE[schedule.threadMode] ?? schedule.threadMode}</li>
+                <li>{APPROVAL_SENTENCE[schedule.onApprovalRequired] ?? schedule.onApprovalRequired}</li>
+              </ul>
+            </div>
+          ) : (
+            <div className="rounded-lg border bg-surface p-4">
+              <h2 className="text-[14px] font-semibold tracking-tight">Script</h2>
+              {/* The raw reference is self-documenting (plan 62 §3.5, §4.6):
+                  "checkout@latest" already says it floats, "checkout@1.0.1"
+                  already says it is pinned — no separate staleness badge. */}
+              <p className="readout mt-1 text-[12.5px]">{schedule.scriptRef}</p>
+              <p className="mt-2 text-[12px] text-fg-muted">
+                {resolvesTo ? (
+                  <>→ resolves to <span className="readout text-fg">{resolvesTo.name}@{resolvesTo.version}</span> right now</>
+                ) : (
+                  <span className="text-led-warn">→ does not resolve right now — check that the script exists, is enabled, and (for @latest) has a non-prerelease version</span>
+                )}
+              </p>
+            </div>
+          )}
+
           <div className="rounded-lg border bg-surface p-4">
             <h2 className="text-[14px] font-semibold tracking-tight">Target</h2>
             <p className="mt-1 text-[12.5px] text-fg-muted">{targetSummary}</p>
@@ -220,8 +286,9 @@ function ScheduleDetail() {
             ref={runsRef}
             resetKey={scheduleId}
             fetchPage={(cursor) =>
-              api<Page<ScheduleRunInfo>>(
+              api(
                 `/api/schedules/${scheduleId}/runs?limit=50${cursor ? `&cursor=${cursor}` : ''}`,
+                ScheduleRunsPageResponseSchema,
               ).then((page) => {
                 setRunsTotal(page.total)
                 return page

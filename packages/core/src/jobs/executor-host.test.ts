@@ -65,6 +65,8 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
     list: () => ({ rows: [], nextCursor: null, total: 0 }),
     scriptNames: () => new Map(),
     claimNext: () => null,
+    queuedDeviceIds: () => [],
+    nextQueuedJobId: () => null,
     finish: (jobId, status, data) => {
       recorded.finishCalls.push({ jobId, status, data })
       return { ...job, status, error: data.error ?? null, failureClass: data.failureClass ?? null }
@@ -101,6 +103,9 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
     noteJobLease: () => {},
     clearJobLease: (deviceId) => recorded.clearedLeases.push(deviceId),
     getLease: () => null,
+    getHolder: () => null,
+    lastManualReleaseAt: () => null,
+    lastManualHolder: () => null,
     checkInputAllowed: () => ({ ok: true }),
     startReaper: () => {},
     stopReaper: () => {},

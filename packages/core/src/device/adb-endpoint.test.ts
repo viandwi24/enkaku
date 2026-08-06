@@ -81,7 +81,7 @@ function makeManager(overrides: Partial<AdbEndpointManagerDeps> = {}) {
   seedDevice(db, 'dev-2')
 
   const fake = makeFakeListenAndShim()
-  const opened: Array<{ deviceId: string; userId: string | null; port: number; agentId?: string | null }> = []
+  const opened: Array<{ deviceId: string; userId: string | null; port: number; nodeId?: string | null }> = []
   const closed: Array<{ deviceId: string; reason: string }> = []
   const streamsOpened: Array<{ deviceId: string; service: string }> = []
 
@@ -259,11 +259,11 @@ describe('createAdbEndpointManager — cloud devices (plan 28 §4.4)', () => {
       handleReply: () => false,
       watch: () => () => {},
       dispatch: () => false,
-      failAllForAgent: () => {},
+      failAllForNode: () => {},
     }
     const router: TunnelRouter = {
-      handleAgentMessage: () => {},
-      handleAgentFrame: () => {},
+      handleNodeMessage: () => {},
+      handleNodeFrame: () => {},
       sendToDevice: () => true,
       subscribeVideo: () => () => {},
       openChannel: () => 1,
@@ -274,23 +274,23 @@ describe('createAdbEndpointManager — cloud devices (plan 28 §4.4)', () => {
     return { rpc, router }
   }
 
-  test('an agent-owned device gets a remote openService and onEndpointOpened receives the agent id', async () => {
+  test('a node-owned device gets a remote openService and onEndpointOpened receives the node id', async () => {
     const tunnel = fakeTunnel()
     const { manager, opened } = makeManager({
-      remoteAgentIdFor: (deviceId) => (deviceId === 'dev-1' ? 'agent-1' : null),
+      remoteNodeIdFor: (deviceId) => (deviceId === 'dev-1' ? 'node-1' : null),
       rpc: () => tunnel.rpc,
       router: () => tunnel.router,
-      onEndpointOpened: (deviceId, userId, port, agentId) => opened.push({ deviceId, userId, port, agentId }),
+      onEndpointOpened: (deviceId, userId, port, nodeId) => opened.push({ deviceId, userId, port, nodeId }),
     })
     const result = await manager.open('dev-1', 'client-a', 'user-1')
     expect(result.port).toBeGreaterThan(0)
-    expect(opened).toEqual([{ deviceId: 'dev-1', userId: 'user-1', port: result.port, agentId: 'agent-1' }])
+    expect(opened).toEqual([{ deviceId: 'dev-1', userId: 'user-1', port: result.port, nodeId: 'node-1' }])
   })
 
-  test('a local device (no remoteAgentIdFor match) still uses the local AdbClient path, unaffected', async () => {
+  test('a local device (no remoteNodeIdFor match) still uses the local AdbClient path, unaffected', async () => {
     const tunnel = fakeTunnel()
     const { manager, opened } = makeManager({
-      remoteAgentIdFor: () => null, // no device is agent-owned
+      remoteNodeIdFor: () => null, // no device is node-owned
       rpc: () => tunnel.rpc,
       router: () => tunnel.router,
     })
@@ -299,9 +299,9 @@ describe('createAdbEndpointManager — cloud devices (plan 28 §4.4)', () => {
     expect(opened).toEqual([{ deviceId: 'dev-1', userId: null, port: result.port }])
   })
 
-  test('an agent-owned device with the tunnel not yet ready throws E_ADB_UNAVAILABLE', async () => {
+  test('a node-owned device with the tunnel not yet ready throws E_ADB_UNAVAILABLE', async () => {
     const { manager } = makeManager({
-      remoteAgentIdFor: () => 'agent-1',
+      remoteNodeIdFor: () => 'node-1',
       rpc: () => null,
       router: () => null,
     })

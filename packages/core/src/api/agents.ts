@@ -1,104 +1,105 @@
 import { Hono } from 'hono'
-import { desc } from 'drizzle-orm'
 import { z } from 'zod'
-import { can } from '../auth/acl'
+import { AgentResponseSchema, AgentUpdateInputSchema, AgentWriteInputSchema, ListAgentsResponseSchema } from '@enkaku/protocol'
+import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
-import type { Db } from '../db'
-import { agents } from '../db/schema'
-import { buildIceServers } from '../relay/ice-credentials'
-import type { AgentAuth } from '../tunnel/agent-auth'
+import { requirePermission } from '../auth/middleware'
+import type { AgentStore } from '../agent/agent-store'
+import type { TreeStore } from '../agent/tree/store'
 import { EnkakuError } from '../util/errors'
-import { type Page, decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
-
-const EnrollBody = z.object({ token: z.string().min(1), name: z.string().min(1), platform: z.string() })
-const CreateBody = z.object({ name: z.string().min(1) })
-
-const ERROR_STATUS: Record<string, number> = {
-  'agent.invalid_token': 401,
-  'auth.forbidden': 403,
-}
-
-export interface AgentInfo {
-  id: string
-  name: string
-  status: string
-  platform: string | null
-  lastSeen: number | null
-}
-
-/** Keyset over `agents` (`createdAt DESC, id DESC`, plan 30 §4.2) — a plain function so it is testable without the auth layer. */
-export function queryAgentsPage(db: Db, opts: { cursor: string | null; limit: number }): Page<AgentInfo> {
-  const cursor = decodeCursor(opts.cursor)
-  const keyset = keysetWhere(
-    cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
-    agents.createdAt,
-    agents.id,
-  )
-  const page = db
-    .select()
-    .from(agents)
-    .where(keyset)
-    .orderBy(desc(agents.createdAt), desc(agents.id))
-    .limit(opts.limit + 1)
-    .all()
-  const hasMore = page.length > opts.limit
-  const rows = hasMore ? page.slice(0, opts.limit) : page
-  const last = rows[rows.length - 1]
-  const nextCursor =
-    hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
-  const total = db.select().from(agents).all().length
-
-  const items = rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    status: r.status ?? 'pending',
-    platform: r.platform,
-    lastSeen: r.lastSeen ? Math.floor(r.lastSeen.getTime() / 1000) : null,
-  }))
-  return { items, nextCursor, total }
-}
+import { typedJson } from './typed-json'
 
 /**
- * Manajemen agent cloud (plan 11 §4.2). Endpoint `/enroll` sengaja publik:
- * the enrollment token itself is the authentication (single-use), the same
- * join-token pattern other orchestrators use.
+ * `GET/POST/PATCH/DELETE /api/agents` (plan 65 §4.5, §5.5). Reading is
+ * `agent.view`; every write is `agent.manage` — that permission gates
+ * whether a caller may create/edit/delete an AGENT RECORD, which is
+ * different from what the agent itself is permitted to DO once it runs
+ * (`agent.permissions`, capped at the owner's own set by the store).
+ *
+ * `/:id/spawn-grants` (plan 67 §3.4, §4.1) — which agents `:id` may spawn via
+ * `agent.spawn`. Opt-in per pair, defaulting to none; gated the same way as
+ * every other agent-record edit (`agent.manage`), since granting a spawn
+ * target is exactly as consequential as widening `tools`/`deviceGrants`.
  */
-export function createAgentRoutes(deps: { agentAuth: AgentAuth; db: Db }): Hono<AuthEnv> {
+export function createAgentRoutes(deps: { store: AgentStore; tree?: TreeStore; audit: AuditLogger }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
+  const { store, tree, audit } = deps
 
-  app.post('/enroll', async (c) => {
-    const body = EnrollBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('agent.invalid_token', 'a body of { token, name, platform } is required')
-    const result = deps.agentAuth.redeem(body.data.token, { name: body.data.name, platform: body.data.platform })
-    return c.json(result, 201)
+  function mustGetTree(): TreeStore {
+    if (!tree) throw new EnkakuError('E_INTERNAL', 'spawn grants are unavailable on this host')
+    return tree
+  }
+
+  app.get('/', requirePermission('agent.view'), (c) => typedJson(c, ListAgentsResponseSchema, { agents: store.list() }))
+
+  app.get('/:id', requirePermission('agent.view'), (c) => {
+    const agent = store.get(c.req.param('id'))
+    if (!agent) throw new EnkakuError('agent_not_found', `no such agent: ${c.req.param('id')}`)
+    return typedJson(c, AgentResponseSchema, { agent })
   })
 
-  app.get('/', (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
-    const { cursor, limit } = parsePageQuery(c)
-    const result = queryAgentsPage(deps.db, { cursor, limit })
-    return c.json(result)
+  app.post('/', requirePermission('agent.manage'), async (c) => {
+    const body = AgentWriteInputSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
+    const user = c.get('user')
+    const agent = store.create(body.data, user?.id ?? null)
+    audit.record({ userId: user?.id ?? null, action: 'agent.create', target: agent.id, meta: { slug: agent.slug } })
+    return typedJson(c, AgentResponseSchema, { agent }, 201)
   })
 
-  app.post('/', async (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
-    const body = CreateBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('auth.forbidden', 'a body of { name } is required')
-    // The token is shown once only — the DB stores its hash.
-    return c.json(deps.agentAuth.createEnrollment(body.data.name), 201)
+  app.patch('/:id', requirePermission('agent.manage'), async (c) => {
+    const id = c.req.param('id')
+    const body = AgentUpdateInputSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
+    const agent = store.update(id, body.data)
+    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.update', target: id, meta: { patch: Object.keys(body.data) } })
+    return typedJson(c, AgentResponseSchema, { agent })
   })
 
-  app.delete('/:id', (c) => {
-    if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
-    deps.agentAuth.disable(c.req.param('id'))
-    return c.json({ ok: true })
+  app.delete('/:id', requirePermission('agent.manage'), (c) => {
+    const id = c.req.param('id')
+    store.remove(id)
+    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.delete', target: id, meta: {} })
+    return c.body(null, 204)
   })
 
-  /** ICE configuration for the browser (self-hosted STUN/TURN, time-limited credentials). */
-  app.get('/ice-config', (c) => c.json({ iceServers: buildIceServers(c.get('user')?.id ?? 'anon') }))
+  app.get('/:id/spawn-grants', requirePermission('agent.view'), (c) => {
+    const id = c.req.param('id')
+    if (!store.get(id)) throw new EnkakuError('agent_not_found', `no such agent: ${id}`)
+    return c.json({ childAgentIds: mustGetTree().listSpawnable(id) })
+  })
+
+  app.post('/:id/spawn-grants', requirePermission('agent.manage'), async (c) => {
+    const id = c.req.param('id')
+    if (!store.get(id)) throw new EnkakuError('agent_not_found', `no such agent: ${id}`)
+    const body = z.object({ childAgentId: z.string() }).safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
+    if (!store.get(body.data.childAgentId)) throw new EnkakuError('agent_not_found', `no such agent: ${body.data.childAgentId}`)
+    mustGetTree().grantSpawn(id, body.data.childAgentId)
+    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.spawn-grant.create', target: id, meta: { childAgentId: body.data.childAgentId } })
+    return c.json({ childAgentIds: mustGetTree().listSpawnable(id) }, 201)
+  })
+
+  app.delete('/:id/spawn-grants/:childId', requirePermission('agent.manage'), (c) => {
+    const id = c.req.param('id')
+    const childId = c.req.param('childId')
+    mustGetTree().revokeSpawn(id, childId)
+    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.spawn-grant.delete', target: id, meta: { childAgentId: childId } })
+    return c.body(null, 204)
+  })
 
   app.onError((err, c) => {
-    if (err instanceof EnkakuError) return c.json(err.toJSON(), (ERROR_STATUS[err.code] ?? 400) as 400)
+    if (err instanceof EnkakuError) {
+      const status =
+        err.code === 'agent_not_found'
+          ? 404
+          : err.code === 'E_OVER_PRIVILEGED'
+            ? 403
+            : ['E_BAD_REQUEST', 'E_SLUG_TAKEN', 'E_UNKNOWN_CAPABILITY', 'E_UNKNOWN_DEVICE', 'E_UNKNOWN_PERMISSION', 'E_BAD_PATH'].includes(err.code)
+              ? 400
+              : 500
+      return c.json(err.toJSON(), status as 400)
+    }
     throw err
   })
 

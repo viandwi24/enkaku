@@ -4,7 +4,15 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Play } from 'lucide-react'
-import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
+import {
+  JobsPageResponseSchema,
+  ScriptDeleteResponseSchema,
+  ScriptResponseSchema,
+  ScriptToggleResponseSchema,
+  ScriptVersionsResponseSchema,
+  type DeviceInfo,
+  type JobInfo,
+} from '@enkaku/protocol'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { JobStatusBadge } from '@/components/StatusBadge'
@@ -13,12 +21,20 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { duration, relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
+
+interface VersionOption {
+  id: string
+  version: string
+  enabled: boolean
+  createdAt: number | null
+}
 
 /**
  * A published script is an object with real depth — its parameter contract, the
@@ -32,6 +48,7 @@ function ScriptDetail() {
   const router = useRouter()
 
   const [script, setScript] = useState<ScriptRow | null>(null)
+  const [versions, setVersions] = useState<VersionOption[]>([])
   const [runsCount, setRunsCount] = useState<number | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [runOpen, setRunOpen] = useState(false)
@@ -44,7 +61,7 @@ function ScriptDetail() {
   const load = () => {
     if (!scriptId) return
     setError(null)
-    void api<{ script: ScriptRow }>(`/api/scripts/${scriptId}`)
+    void api(`/api/scripts/${scriptId}`, ScriptResponseSchema)
       .then((b) => setScript(b.script))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
     void fetchDevices()
@@ -53,6 +70,18 @@ function ScriptDetail() {
   }
 
   useEffect(load, [scriptId])
+
+  // The version selector's options (plan 62 §4.6) — re-fetched whenever the
+  // script's NAME changes (switching versions keeps the same name, so this
+  // does not re-fire on every version switch, only when arriving at a
+  // different script family entirely).
+  useEffect(() => {
+    if (!script) return
+    void api(`/api/scripts/${encodeURIComponent(script.name)}/versions`, ScriptVersionsResponseSchema)
+      .then((b) => setVersions(b.items))
+      .catch(() => setVersions([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [script?.name])
 
   /**
    * `/api/jobs` has no per-script filter (plan 30 non-goals — pagination
@@ -67,7 +96,7 @@ function ScriptDetail() {
     const matches: JobInfo[] = []
     let cursor: string | null = null
     for (let scan = 0; scan < 25; scan++) {
-      const jobsPage: Page<JobInfo> = await api(`/api/jobs?limit=200${cursor ? `&cursor=${cursor}` : ''}`)
+      const jobsPage: Page<JobInfo> = await api(`/api/jobs?limit=200${cursor ? `&cursor=${cursor}` : ''}`, JobsPageResponseSchema)
       matches.push(...jobsPage.items.filter((j) => j.scriptId === scriptId))
       cursor = jobsPage.nextCursor
       if (!cursor) break
@@ -107,7 +136,33 @@ function ScriptDetail() {
     <>
       <PageHeader
         title={script.name}
-        description={`Version ${script.version} · published ${relativeTime(script.createdAt)}`}
+        description={`published ${relativeTime(script.createdAt)}`}
+        meta={
+          // Only when there is a choice — a script with one version has
+          // nothing to select between (plan 62 §4.6, acceptance #10:
+          // "the detail page's selector defaults to latest").
+          versions.length > 1 ? (
+            <Select
+              value={script.id}
+              onValueChange={(id) => router.push(`/scripts/detail?id=${encodeURIComponent(id)}${tab === 'overview' ? '' : `&tab=${tab}`}`)}
+            >
+              <SelectTrigger className="readout h-8 w-32 text-[12.5px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {versions.map((v, i) => (
+                  <SelectItem key={v.id} value={v.id} className="readout">
+                    {v.version}
+                    {i === 0 ? ' · latest' : ''}
+                    {!v.enabled ? ' · disabled' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <span className="readout text-[12.5px] text-fg-muted">v{script.version}</span>
+          )
+        }
         actions={
           <>
             <Button asChild variant="ghost" size="sm">
@@ -270,7 +325,7 @@ function ScriptDetail() {
               disabled={isPending('toggle')}
               aria-label="Enable this script"
               onCheckedChange={() =>
-                void run('toggle', () => api(`/api/scripts/${script.id}`, { method: 'PATCH', json: { enabled: !script.enabled } }), {
+                void run('toggle', () => api(`/api/scripts/${script.id}`, ScriptToggleResponseSchema, { method: 'PATCH', json: { enabled: !script.enabled } }), {
                   success: script.enabled ? `${script.name} disabled` : `${script.name} enabled`,
                   failure: 'Could not change the script status',
                   onSuccess: load,
@@ -290,7 +345,7 @@ function ScriptDetail() {
               title={`Delete ${script.name}@${script.version}?`}
               description="This cannot be undone. Publish it again to bring it back."
               onConfirm={() =>
-                run('delete', () => api(`/api/scripts/${script.id}`, { method: 'DELETE' }), {
+                run('delete', () => api(`/api/scripts/${script.id}`, ScriptDeleteResponseSchema, { method: 'DELETE' }), {
                   success: `${script.name}@${script.version} deleted`,
                   failure: 'Could not delete the script',
                   onSuccess: () => router.push('/scripts'),

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentDefaultsSchema } from './agent'
 import { ReadinessSchema } from './readiness'
 
 /** Per-device battery and thermal state (spec §15.2). */
@@ -375,6 +376,75 @@ export const JobSettingsSchema = z
         'Whether an application crash can fail a running job. "ignore" only records the event; "declared" fails the job when the script\'s own target package crashes; "any" fails it on any non-system crash.',
       )
       .meta({ title: 'Fail jobs on app crash' }),
+    /**
+     * A job waits for the device to go quiet before claiming it (plan 71
+     * §3.7) instead of interrupting whatever a person is mid-gesture on.
+     * Bounded by `maxWaitSec` so one person cannot starve the queue.
+     */
+    quietPeriodSec: z
+      .number()
+      .int()
+      .min(0)
+      .max(600)
+      .default(10)
+      .describe('How long a device must have had no manual lease before a queued job may claim it.')
+      .meta({ title: 'Quiet period before claiming (sec)' }),
+    maxWaitSec: z
+      .number()
+      .int()
+      .min(0)
+      .max(3_600)
+      .default(120)
+      .describe('The most a job will wait for a quiet gap before claiming the device anyway.')
+      .meta({ title: 'Maximum wait for quiet (sec)' }),
+    /**
+     * Plan 74 §3.1, §4.1 — replaces the hard-coded `DEFAULT_TIMEOUT_MS`
+     * (`job-runner.ts`, 300_000) that appeared in no settings screen, no
+     * config file, and no environment variable. A script's own
+     * `ScriptDefinition.timeout` still wins whenever it declares one; this is
+     * only what applies when it does not.
+     */
+    defaultTimeoutMs: z
+      .number()
+      .int()
+      .min(30_000)
+      .max(86_400_000)
+      .default(3_600_000)
+      .describe("How long a job may run before it is killed, when its script does not declare its own timeout. A script's own `timeout` always wins.")
+      .meta({ title: 'Default job timeout (ms)' }),
+    /**
+     * Plan 74 §3.2 — raising `defaultTimeoutMs` from the old 5-minute
+     * hard-code to 60 minutes makes the pre-`ready` window twelve times
+     * looser: the run timer used to be the only backstop for a child that
+     * never starts. This is the real, short backstop for exactly that case,
+     * armed at spawn and cleared the moment `ready` arrives — separate from
+     * the run timeout, and classified as infrastructure (plan 36), never the
+     * script's fault.
+     */
+    startupTimeoutMs: z
+      .number()
+      .int()
+      .min(5_000)
+      .max(600_000)
+      .default(60_000)
+      .describe("How long a job's process has to start and report ready before it is treated as broken. Separate from the run timeout.")
+      .meta({ title: 'Job startup timeout (ms)' }),
+    /**
+     * Plan 74 §3.3 — off by default (`null`, no ceiling) because the user's
+     * instruction is explicit: a script's own timeout has priority. Setting
+     * this clamps a script's request, and the clamp is ALWAYS logged, naming
+     * the script and both numbers — a job that dies early for an unexplained
+     * reason is worse than one that runs long.
+     */
+    maxTimeoutMs: z
+      .number()
+      .int()
+      .min(30_000)
+      .max(86_400_000)
+      .nullable()
+      .default(null)
+      .describe("An optional ceiling on what a script may request. Null means no ceiling — a script's own timeout is honoured however long. A clamp is logged, never silent.")
+      .meta({ title: 'Maximum job timeout (ms)' }),
   })
   .default({
     resetPolicy: 'home',
@@ -382,6 +452,11 @@ export const JobSettingsSchema = z
     resetStrict: false,
     retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
     crashPolicy: 'declared',
+    quietPeriodSec: 10,
+    maxWaitSec: 120,
+    defaultTimeoutMs: 3_600_000,
+    startupTimeoutMs: 60_000,
+    maxTimeoutMs: null,
   })
   .meta({
     title: 'Jobs',
@@ -789,11 +864,91 @@ export const FarmSettingsSchema = z.object({
       title: 'Network geo verification',
       description: 'Where the geo check looks up an exit address\'s location, and how often it re-checks a route already applied.',
     }),
+  /**
+   * The database-backed workspace (plan 64 §3.3) — three quotas so an agent
+   * in a retry loop is not a fine way to fill a disk. `E_QUOTA` names
+   * whichever of these was exceeded, plus current usage, so a caller that
+   * hits one can act on it (delete something) rather than just retry.
+   */
+  workspace: z
+    .object({
+      maxFileBytes: z
+        .number()
+        .int()
+        .min(1)
+        .default(1_048_576)
+        .describe('Largest single workspace file, in bytes.')
+        .meta({ title: 'Max file size (bytes)' }),
+      maxFilesPerScope: z
+        .number()
+        .int()
+        .min(1)
+        .default(1_000)
+        .describe('Largest number of files inside one top-level scope (a directory like /shared/, or one agent\'s /agents/<slug>/ home).')
+        .meta({ title: 'Max files per scope' }),
+      maxTotalBytesPerScope: z
+        .number()
+        .int()
+        .min(1)
+        .default(67_108_864)
+        .describe('Largest total size of one scope\'s files, in bytes.')
+        .meta({ title: 'Max total bytes per scope' }),
+    })
+    .default({ maxFileBytes: 1_048_576, maxFilesPerScope: 1_000, maxTotalBytesPerScope: 67_108_864 })
+    .meta({
+      title: 'Workspace',
+      description: 'Limits on the database-backed workspace agents and people share (plan 64).',
+    }),
+  /**
+   * AI agent defaults (plan 65 §3.1, §3.7) — model, provider connector, and
+   * context budgets an agent inherits unless it overrides them
+   * (`AgentSettingsSchema` in `./agent.ts`). Same pattern as `defaults`
+   * above: one schema, reused for both the farm-wide row and the per-entity
+   * override.
+   */
+  agentDefaults: AgentDefaultsSchema.default(() => AgentDefaultsSchema.parse({})).meta({
+    title: 'Agent defaults',
+    description: 'Model, provider connector, and budgets a new agent inherits until it overrides them.',
+  }),
+  /**
+   * Ceilings that apply ONLY to a SCHEDULED agent run (plan 68 §3.3) — an
+   * interactive run started from Studio is never blocked by either of
+   * these, on purpose: a cost control that can stop a person at a keyboard
+   * turns into an outage. The spend cap is off by default (a ceiling
+   * somebody did not choose, silently stopping their overnight work, is its
+   * own failure) but offered prominently here with its reason, because the
+   * first time anyone points a five-minute cron at an agent with a high
+   * step budget they will want it.
+   */
+  scheduledAgents: z
+    .object({
+      spendCapOutputTokensPer24h: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .default(null)
+        .describe('Farm-wide output tokens allowed for SCHEDULED agent runs in a rolling 24 hours. Unset (off) by default. Never applies to an interactive chat run.')
+        .meta({ title: 'Spend cap — scheduled runs only' }),
+      maxConcurrentScheduledRuns: z
+        .number()
+        .int()
+        .min(1)
+        .default(3)
+        .describe('Scheduled agent runs allowed at once, farm-wide. A firing beyond this follows its own overlap policy.')
+        .meta({ title: 'Max concurrent scheduled runs' }),
+    })
+    .default({ spendCapOutputTokensPer24h: null, maxConcurrentScheduledRuns: 3 })
+    .meta({
+      title: 'Scheduled agents',
+      description: 'A spend ceiling and a concurrency ceiling for UNATTENDED agent runs (plan 68 §3.3) — an interactive run is never blocked by either.',
+    }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>
 export type SessionSettings = FarmSettings['session']
 export type WallSettings = FarmSettings['wall']
 export type ReadinessSettings = FarmSettings['readiness']
+export type WorkspaceSettings = FarmSettings['workspace']
 
 export const defaultFarmSettings = (): FarmSettings => FarmSettingsSchema.parse({})
 export const defaultDeviceSettings = (): DeviceSettings => DeviceSettingsSchema.parse({})

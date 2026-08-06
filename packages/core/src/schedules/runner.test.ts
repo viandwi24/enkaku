@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
-import type { ScheduleFiredEvent } from '@enkaku/protocol'
+import type { NotificationContext, ScheduleFiredEvent } from '@enkaku/protocol'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, devices, jobs, schedules, scheduleRuns, type ScheduleRow } from '../db/schema'
+import { batches, devices, jobs, schedules, scheduleAgentTargets, scheduleRuns, scripts, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
 import { createJobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { createLogger } from '../util/logger'
-import { fireOnce, pickJitterMs, runStartupCatchUp, type ScheduleRunnerDeps } from './runner'
+import { fireOnce, pickJitterMs, runStartupCatchUp, type ScheduleAgentDispatch, type ScheduleRunnerDeps } from './runner'
 
 /**
  * Every test here supplies a fixed `clock` (and, where relevant, a fixed
@@ -16,9 +16,18 @@ import { fireOnce, pickJitterMs, runStartupCatchUp, type ScheduleRunnerDeps } fr
  * the same clock instead of actually waiting.
  */
 
+function seedScript(db: Db, name = 'test-script', version = '1.0.0') {
+  db.insert(scripts).values({ id: `${name}-${version}`, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+}
+
 function setUp() {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
+  // Every schedule below dispatches against `test-script@1.0.0` by default
+  // (plan 62 §4.5) — `fireOnce` resolves the reference before building the
+  // batch, so it must exist even for tests that only assert around overlap
+  // or target resolution.
+  seedScript(opened.db)
   return opened.db
 }
 
@@ -47,7 +56,7 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     enabled: overrides.enabled ?? true,
     cron: overrides.cron ?? '0 * * * *',
     timezone: overrides.timezone ?? 'UTC',
-    scriptId: overrides.scriptId ?? 'internal:sleep',
+    scriptRef: overrides.scriptRef ?? 'test-script@1.0.0',
     params: overrides.params ?? {},
     clusterId: overrides.clusterId ?? null,
     deviceIds: overrides.deviceIds ?? ['d1'],
@@ -276,5 +285,408 @@ describe('every fire decision leaves exactly one schedule_runs row (plan 21 §4.
 
     const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
     expect(runs.length).toBe(2)
+  })
+})
+
+describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
+  test('a schedule on @latest dispatches the newest version on its next firing after a publish, with no edit (acceptance #7)', async () => {
+    const db = setUp() // seeds test-script@1.0.0
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@latest', deviceIds: ['d1'], onOverlap: 'queue' })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+    let batchId = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()?.batchId
+    expect(db.select().from(jobs).where(eq(jobs.batchId, batchId!)).all()[0]?.scriptId).toBe('test-script-1.0.0')
+
+    // Publish a newer version — the schedule itself is untouched.
+    seedScript(db, 'test-script', '2.0.0')
+    const reloaded = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    await fireOnce(baseDeps(db), reloaded, new Date('2024-01-01T01:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    batchId = runs[runs.length - 1]?.batchId
+    expect(db.select().from(jobs).where(eq(jobs.batchId, batchId!)).all()[0]?.scriptId).toBe('test-script-2.0.0')
+  })
+
+  test('one firing resolves ONCE — every job in the batch shares the same scriptId even with several devices (acceptance #8)', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    seedDevice(db, 'd3')
+    seedScript(db, 'test-script', '2.0.0')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@latest', deviceIds: ['d1', 'd2', 'd3'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs).toHaveLength(3)
+    expect(new Set(batchJobs.map((j) => j.scriptId)).size).toBe(1)
+    expect(batchJobs[0]?.scriptId).toBe('test-script-2.0.0')
+  })
+
+  test('an exact pinned reference always dispatches that version, never @latest', async () => {
+    const db = setUp() // test-script@1.0.0
+    seedDevice(db, 'd1')
+    seedScript(db, 'test-script', '2.0.0')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs[0]?.scriptId).toBe('test-script-1.0.0')
+  })
+
+  test('a reference that cannot resolve enqueues nothing and records a schedule.failed audit entry naming the code (acceptance #12)', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'no-such-script@latest', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.batchId).toBeNull()
+    expect(runs[0]?.detail).toContain('script_not_found')
+
+    // Nothing was enqueued.
+    expect(db.select().from(batches).all()).toHaveLength(0)
+    expect(db.select().from(jobs).all()).toHaveLength(0)
+
+    // And the failure is audited, naming the code.
+    const audit = createAuditLogger(db)
+    const entries = audit.list(10)
+    const failure = entries.find((e) => e.action === 'schedule.failed')
+    expect(failure).toBeDefined()
+    expect(failure?.target).toBe('s1')
+    expect((failure?.meta as { code?: string } | null)?.code).toBe('script_not_found')
+  })
+
+  test('a schedule disabled at its exact pinned version fails with script_disabled, audited', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.update(scripts).set({ enabled: false }).where(eq(scripts.id, 'test-script-1.0.0')).run()
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.detail).toContain('script_disabled')
+  })
+})
+
+/**
+ * Plan 68 §3.1, §4.2 — the AGENT branch of `fireOnce`. Presence of a
+ * `scheduleAgentTargets` row is the discriminator (`db/schema.ts`'s own doc
+ * comment): every test above never inserts one, which is exactly what keeps
+ * them — and their behaviour — untouched (acceptance #2). These tests share
+ * the SAME `fireOnce`, the same overlap/jitter mechanics, proving §3.1's
+ * "both branches share the overlap check, the concurrency ceiling, the
+ * spend cap, and the jitter."
+ */
+function seedAgentTarget(db: Db, overrides: Partial<ScheduleAgentTargetRow> & { scheduleId: string }): ScheduleAgentTargetRow {
+  const row: ScheduleAgentTargetRow = {
+    scheduleId: overrides.scheduleId,
+    agentId: overrides.agentId ?? 'agent-1',
+    prompt: overrides.prompt ?? 'check the checkout flow',
+    threadMode: overrides.threadMode ?? 'new',
+    threadId: overrides.threadId ?? null,
+    onApprovalRequired: overrides.onApprovalRequired ?? 'deny',
+    lastAgentRunId: overrides.lastAgentRunId ?? null,
+    createdAt: overrides.createdAt ?? new Date(),
+  }
+  db.insert(scheduleAgentTargets).values(row).run()
+  return row
+}
+
+interface FakeAgentDispatchOpts {
+  agentExists?: boolean
+  runStatuses?: Record<string, 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'>
+  countActiveScheduledRuns?: number
+  spentOutputTokensSince?: number
+  dispatchResult?: { runId: string; threadId: string }
+  dispatchThrows?: Error
+}
+
+function fakeAgentDispatch(opts: FakeAgentDispatchOpts = {}) {
+  const calls: { dispatch: Array<Parameters<ScheduleAgentDispatch['dispatch']>[0]>; cancelRun: string[] } = { dispatch: [], cancelRun: [] }
+  const dispatch: ScheduleAgentDispatch = {
+    agentExists: () => opts.agentExists ?? true,
+    runStatus: (runId) => opts.runStatuses?.[runId] ?? null,
+    cancelRun: (runId) => calls.cancelRun.push(runId),
+    countActiveScheduledRuns: () => opts.countActiveScheduledRuns ?? 0,
+    spentOutputTokensSince: () => opts.spentOutputTokensSince ?? 0,
+    dispatch: (input) => {
+      calls.dispatch.push(input)
+      if (opts.dispatchThrows) throw opts.dispatchThrows
+      return opts.dispatchResult ?? { runId: 'run-1', threadId: 'thread-1' }
+    },
+  }
+  return { dispatch, calls }
+}
+
+describe('fireOnce — the agent branch (plan 68 §3.1, §4.2)', () => {
+  test('dispatches an agent run, records lastAgentRunId, and threadId on a fresh "continue" thread', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1' })
+    seedDevice(db, 'd1')
+    seedAgentTarget(db, { scheduleId: 's1', agentId: 'agent-1', prompt: 'nightly check', threadMode: 'continue' })
+    const { dispatch, calls } = fakeAgentDispatch({ dispatchResult: { runId: 'run-42', threadId: 'thread-42' } })
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    expect(calls.dispatch).toHaveLength(1)
+    expect(calls.dispatch[0]).toMatchObject({ scheduleId: 's1', agentId: 'agent-1', prompt: 'nightly check', threadMode: 'continue', onApprovalRequired: 'deny' })
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.outcome).toBe('dispatched')
+    expect(runs[0]?.batchId).toBeNull() // an agent firing produces a RUN, never a batch
+
+    const target = db.select().from(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, 's1')).get()
+    expect(target?.lastAgentRunId).toBe('run-42')
+    expect(target?.threadId).toBe('thread-42') // persisted on the FIRST continue firing
+  })
+
+  test('a "continue" thread already established is reused, never overwritten', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1' })
+    seedDevice(db, 'd1')
+    seedAgentTarget(db, { scheduleId: 's1', threadMode: 'continue', threadId: 'existing-thread' })
+    const { dispatch, calls } = fakeAgentDispatch({ dispatchResult: { runId: 'run-2', threadId: 'existing-thread' } })
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    expect(calls.dispatch[0]?.existingThreadId).toBe('existing-thread')
+    const target = db.select().from(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, 's1')).get()
+    expect(target?.threadId).toBe('existing-thread')
+  })
+
+  test('a schedule with a cluster/device target narrows the run to those resolved devices (criterion 3)', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['d1', 'd2'] })
+    seedAgentTarget(db, { scheduleId: 's1' })
+    const { dispatch, calls } = fakeAgentDispatch()
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    expect(calls.dispatch[0]?.deviceIds?.sort()).toEqual(['d1', 'd2'])
+  })
+
+  test('a device target resolving to nothing usable is no-targets, not thrown (mirrors the script branch)', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['does-not-exist'] })
+    seedAgentTarget(db, { scheduleId: 's1' })
+    const { dispatch, calls } = fakeAgentDispatch()
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    expect(calls.dispatch).toHaveLength(0) // never reached — devices did not resolve first
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs[0]?.outcome).toBe('no-targets')
+  })
+
+  test('no dispatcher wired (defensive): the fire is dropped, not thrown, and nothing is recorded', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1' })
+    seedDevice(db, 'd1')
+    seedAgentTarget(db, { scheduleId: 's1' })
+    await expect(fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))).resolves.toBeUndefined()
+    expect(db.select().from(scheduleRuns).all()).toHaveLength(0)
+  })
+
+  test('an agent that no longer exists (or is disabled) fails the firing with agent_not_found', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1' })
+    seedDevice(db, 'd1')
+    seedAgentTarget(db, { scheduleId: 's1' })
+    const { dispatch } = fakeAgentDispatch({ agentExists: false })
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.detail).toContain('agent_not_found')
+  })
+
+  describe('onOverlap applies identically to an agent target (criterion 5)', () => {
+    test('skip: a still-active previous run is skipped and recorded, not silently', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', onOverlap: 'skip' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1', lastAgentRunId: 'prev-run' })
+      const { dispatch, calls } = fakeAgentDispatch({ runStatuses: { 'prev-run': 'running' } })
+
+      await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+      expect(calls.dispatch).toHaveLength(0)
+      const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+      expect(runs[0]?.outcome).toBe('skipped-overlap')
+      expect(runs[0]?.detail).toContain('prev-run')
+    })
+
+    test('queue: dispatches a new run even while the previous one is still going', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', onOverlap: 'queue' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1', lastAgentRunId: 'prev-run' })
+      const { dispatch, calls } = fakeAgentDispatch({ runStatuses: { 'prev-run': 'running' } })
+
+      await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+      expect(calls.dispatch).toHaveLength(1)
+      const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+      expect(runs[0]?.outcome).toBe('dispatched')
+    })
+
+    test('cancel-previous: cancels the still-running run, then dispatches a new one', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', onOverlap: 'cancel-previous' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1', lastAgentRunId: 'prev-run' })
+      const { dispatch, calls } = fakeAgentDispatch({ runStatuses: { 'prev-run': 'paused' } })
+
+      await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+      expect(calls.cancelRun).toEqual(['prev-run'])
+      expect(calls.dispatch).toHaveLength(1)
+    })
+
+    test('a terminal previous run (succeeded) is never treated as active', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', onOverlap: 'skip' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1', lastAgentRunId: 'prev-run' })
+      const { dispatch, calls } = fakeAgentDispatch({ runStatuses: { 'prev-run': 'succeeded' } })
+
+      await fireOnce(baseDeps(db, { agentDispatch: dispatch }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+      expect(calls.dispatch).toHaveLength(1)
+    })
+  })
+
+  describe('the scheduled-concurrency ceiling (plan 68 §3.3, criterion 6)', () => {
+    test('reached: follows onOverlap (skip) exactly like an active previous run', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', onOverlap: 'skip' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1' })
+      const { dispatch, calls } = fakeAgentDispatch({ countActiveScheduledRuns: 3 })
+
+      await fireOnce(
+        baseDeps(db, { agentDispatch: dispatch, scheduledAgentCeilings: () => ({ spendCapOutputTokensPer24h: null, maxConcurrentScheduledRuns: 3 }) }),
+        schedule,
+        new Date('2024-01-01T00:00:00Z'),
+      )
+
+      expect(calls.dispatch).toHaveLength(0)
+      const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+      expect(runs[0]?.outcome).toBe('skipped-overlap')
+      expect(runs[0]?.detail).toContain('ceiling')
+    })
+
+    test('under the ceiling: dispatches normally', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1' })
+      const { dispatch, calls } = fakeAgentDispatch({ countActiveScheduledRuns: 2 })
+
+      await fireOnce(
+        baseDeps(db, { agentDispatch: dispatch, scheduledAgentCeilings: () => ({ spendCapOutputTokensPer24h: null, maxConcurrentScheduledRuns: 3 }) }),
+        schedule,
+        new Date('2024-01-01T00:00:00Z'),
+      )
+
+      expect(calls.dispatch).toHaveLength(1)
+    })
+  })
+
+  describe('the farm-wide spend cap refuses only the scheduled firing (plan 68 §3.3, criterion 7)', () => {
+    test('reached: refused with the spend-cap outcome, a system notification, and an audited E_SPEND_CAP', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1', createdBy: 'u1' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1' })
+      const { dispatch, calls } = fakeAgentDispatch({ spentOutputTokensSince: 1500 })
+      const notified: Array<{ level: string; title: string; context?: NotificationContext }> = []
+
+      await fireOnce(
+        baseDeps(db, {
+          agentDispatch: dispatch,
+          scheduledAgentCeilings: () => ({ spendCapOutputTokensPer24h: 1000, maxConcurrentScheduledRuns: 3 }),
+          notifySystem: (input) => notified.push(input),
+        }),
+        schedule,
+        new Date('2024-01-01T00:00:00Z'),
+      )
+
+      expect(calls.dispatch).toHaveLength(0) // the run is genuinely never started
+      const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+      expect(runs[0]?.outcome).toBe('spend-cap')
+      expect(notified).toHaveLength(1)
+      expect(notified[0]?.context).toMatchObject({ scheduleId: 's1' })
+
+      const audit = createAuditLogger(db)
+      const failure = audit.list(10).find((e) => e.action === 'schedule.failed')
+      expect((failure?.meta as { code?: string } | null)?.code).toBe('E_SPEND_CAP')
+    })
+
+    test('unset (null) cap never refuses, however much has been spent', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1' })
+      const { dispatch, calls } = fakeAgentDispatch({ spentOutputTokensSince: 999_999_999 })
+
+      await fireOnce(
+        baseDeps(db, { agentDispatch: dispatch, scheduledAgentCeilings: () => ({ spendCapOutputTokensPer24h: null, maxConcurrentScheduledRuns: 3 }) }),
+        schedule,
+        new Date('2024-01-01T00:00:00Z'),
+      )
+
+      expect(calls.dispatch).toHaveLength(1)
+    })
+
+    test('under the cap: dispatches normally', async () => {
+      const db = setUp()
+      const schedule = seedSchedule(db, { id: 's1' })
+      seedDevice(db, 'd1')
+      seedAgentTarget(db, { scheduleId: 's1' })
+      const { dispatch, calls } = fakeAgentDispatch({ spentOutputTokensSince: 100 })
+
+      await fireOnce(
+        baseDeps(db, { agentDispatch: dispatch, scheduledAgentCeilings: () => ({ spendCapOutputTokensPer24h: 1000, maxConcurrentScheduledRuns: 3 }) }),
+        schedule,
+        new Date('2024-01-01T00:00:00Z'),
+      )
+
+      expect(calls.dispatch).toHaveLength(1)
+    })
+  })
+
+  test('jitter shifts firedAt for an agent firing exactly as it does for a script firing (§3.1: shared, not duplicated)', async () => {
+    const db = setUp()
+    const schedule = seedSchedule(db, { id: 's1', jitterSec: 10 })
+    seedDevice(db, 'd1')
+    seedAgentTarget(db, { scheduleId: 's1' })
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+    let clockMs = dueAt.getTime()
+    const clock = () => new Date(clockMs)
+    const sleep = async (ms: number) => {
+      clockMs += ms
+    }
+    const { dispatch } = fakeAgentDispatch()
+
+    await fireOnce(baseDeps(db, { agentDispatch: dispatch, clock, random: () => 0.5, sleep }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.dueAt.getTime()).toBe(dueAt.getTime())
+    expect(run?.firedAt?.getTime()).toBe(dueAt.getTime() + 5000)
   })
 })

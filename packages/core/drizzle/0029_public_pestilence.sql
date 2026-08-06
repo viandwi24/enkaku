@@ -1,0 +1,1 @@
+ALTER TABLE `ai_agents` ADD `requires_approval` text;

@@ -3,7 +3,7 @@ import type { DeviceStatus, KeepAwakeMode } from '@enkaku/protocol'
 /**
  * The data contract the session needs, **with no knowledge of any database**.
  *
- * The core supplies a Drizzle/SQLite implementation; the agent supplies
+ * The core supplies a Drizzle/SQLite implementation; the node supplies
  * an in-memory one. One session implementation serves both (plan 12 §3.2).
  */
 export interface DeviceSnapshot {
@@ -49,7 +49,7 @@ export interface SavedArtifact {
 }
 
 /**
- * Tujuan penyimpanan artifact. Core menulis ke disk + baris DB; agent
+ * Tujuan penyimpanan artifact. Core menulis ke disk + baris DB; node
  * uploads them to the control plane over the tunnel.
  */
 export interface ArtifactSink {

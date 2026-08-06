@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Smartphone } from 'lucide-react'
-import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
+import { SettingsResponseSchema, type DeviceInfo, type JobInfo } from '@enkaku/protocol'
 import { WallTile } from './WallTile'
 import { TileGrid } from './TileGrid'
 import { EmptyState, LoadingRows } from '@/components/states'
@@ -46,7 +46,7 @@ export function Wall({
   const [liveIds, setLiveIds] = useState<string[]>([])
 
   useEffect(() => {
-    void api<{ settings: { wall: { maxTiles: number } } }>('/api/settings')
+    void api('/api/settings', SettingsResponseSchema)
       .then((b) => setMaxTiles(b.settings.wall.maxTiles))
       .catch(() => undefined)
   }, [])

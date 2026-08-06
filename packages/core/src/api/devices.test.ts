@@ -31,6 +31,9 @@ function fakeLeases(): LeaseManager {
     noteJobLease: () => {},
     clearJobLease: () => {},
     getLease: () => null,
+    getHolder: () => null,
+    lastManualReleaseAt: () => null,
+    lastManualHolder: () => null,
     checkInputAllowed: () => ({ ok: true }),
     startReaper: () => {},
     stopReaper: () => {},
@@ -78,6 +81,7 @@ function makeApp(role: 'admin' | 'operator' | null = 'admin') {
       audit,
       dataDir,
       lifecycle,
+      heldByOf: () => null,
       broadcast: (msg) => broadcast.push(msg),
     }),
   )
@@ -122,6 +126,7 @@ describe('GET /api/devices tag filtering', () => {
       audit,
       dataDir,
       lifecycle,
+      heldByOf: () => null,
       broadcast: () => {},
     })
 
@@ -139,6 +144,67 @@ describe('GET /api/devices tag filtering', () => {
     const body = (await res.json()) as { items: unknown[] }
     expect(body.items).toHaveLength(50)
     expect(tagQueries).toBe(1)
+  })
+})
+
+/**
+ * Plan 71 §4.4, criterion 1 — `heldBy` on every `DeviceInfo` this router
+ * builds: the list endpoint, the single-device endpoint, and everywhere else
+ * `rowToDeviceInfo`/`listDevicesWithTags` are called from here.
+ */
+describe('GET /api/devices — heldBy (plan 71 §3.2, §4.4, criterion 1)', () => {
+  const holder = {
+    kind: 'agent' as const,
+    id: 'agent-7',
+    label: 'checkout-bot',
+    runId: 'run-1',
+    takeable: true,
+    acquiredAt: 100,
+    expiresAt: 200,
+  }
+
+  function appWithHeldBy(db: Db, heldByOf: (deviceId: string) => typeof holder | null) {
+    const audit = createAuditLogger(db)
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
+    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
+    return createDeviceRoutes({
+      db,
+      registry: async () => emptyRegistry(),
+      battery: () => null,
+      audit,
+      dataDir,
+      lifecycle,
+      heldByOf,
+      broadcast: () => {},
+    })
+  }
+
+  test('a held device carries heldBy on the list endpoint; an unheld one carries null', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'a')
+    seedDevice(db, 'b')
+    const app = appWithHeldBy(db, (deviceId) => (deviceId === 'a' ? holder : null))
+
+    const res = await app.request('/')
+    const body = (await res.json()) as { items: Array<{ id: string; heldBy: unknown }> }
+    const a = body.items.find((d) => d.id === 'a')!
+    const b = body.items.find((d) => d.id === 'b')!
+    expect(a.heldBy).toEqual(holder)
+    expect(b.heldBy).toBeNull()
+  })
+
+  test('the single-device endpoint carries the same heldBy', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'a')
+    const app = appWithHeldBy(db, () => holder)
+
+    const res = await app.request('/a')
+    const body = (await res.json()) as { device: { heldBy: unknown } }
+    expect(body.device.heldBy).toEqual(holder)
   })
 })
 

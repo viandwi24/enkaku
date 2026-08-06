@@ -1,4 +1,4 @@
-import { matchSelector, type Inspector, type Selector, type Transport, type UiNode } from '@enkaku/protocol'
+import { countMatches, matchSelector, type FindOutcome, type Inspector, type Selector, type Transport, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from './xml-parser'
 
 export class InspectorError extends Error {
@@ -79,6 +79,34 @@ export class UiautomatorDumpInspector implements Inspector {
     if ('point' in sel) return matchSelector({} as UiNode, sel)
     const root = await this.dump()
     return matchSelector(root, sel)
+  }
+
+  /**
+   * `find`, honest about why (plan 74 §3.4, §4.3) — a deliberately separate
+   * implementation from `find()` above, NOT a refactor of it into this
+   * method: `find()` has always returned the first depth-first match
+   * regardless of how many nodes matched, and a previously published script
+   * bundle must keep getting exactly that (criterion 10, plan 62 §3.1). This
+   * dumps the same tree `find()` would and additionally counts matches
+   * (`countMatches`, shared with the Inspect tab's own match-count promise),
+   * so an ambiguous selector — 2+ matches — is reported as such here without
+   * changing what plain `find()` does for the same selector.
+   *
+   * No oversized-container guard: that check needs a known viewport
+   * (plan 60 §3.1), which this bridge engine — unlike `ui-server` — has no
+   * plumbing to read; it only ever answers `not-found`/`ambiguous`/`ok`.
+   */
+  async findDetailed(sel: Selector): Promise<FindOutcome> {
+    if ('point' in sel) {
+      const synthetic = matchSelector({} as UiNode, sel)
+      return synthetic ? { ok: true, node: synthetic } : { ok: false, reason: 'not-found', matches: 0 }
+    }
+    const root = await this.dump()
+    const count = countMatches(root, sel)
+    if (count === 0) return { ok: false, reason: 'not-found', matches: 0 }
+    if (count > 1) return { ok: false, reason: 'ambiguous', matches: count }
+    const node = matchSelector(root, sel)
+    return node ? { ok: true, node } : { ok: false, reason: 'not-found', matches: 0 }
   }
 
   screenshot(): Promise<Uint8Array> {

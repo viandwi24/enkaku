@@ -1,12 +1,14 @@
 import { Hono, type Context } from 'hono'
 import { deleteCookie, setCookie } from 'hono/cookie'
 import { z } from 'zod'
+import { AuditResponseSchema, UsersResponseSchema } from '@enkaku/protocol'
 import type { AuthMode } from '../config'
 import { EnkakuError } from '../util/errors'
 import { can } from './acl'
 import type { AuditLogger } from './audit'
 import { SESSION_COOKIE, type AuthEnv } from './middleware'
 import type { AuthService } from './service'
+import { typedJson } from '../api/typed-json'
 
 const Credentials = z.object({ email: z.string().email(), password: z.string().min(1) })
 const PasswordChange = z.object({ current: z.string().min(1), next: z.string().min(8) })
@@ -112,7 +114,7 @@ export function createAuthRoutes(deps: {
 
   app.get('/users', (c) => {
     if (!can(c.get('user').role, 'user.manage')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
-    return c.json({ users: deps.auth.listUsers() })
+    return typedJson(c, UsersResponseSchema, { users: deps.auth.listUsers() })
   })
 
   app.post('/users', async (c) => {
@@ -134,7 +136,7 @@ export function createAuthRoutes(deps: {
   app.get('/audit', (c) => {
     if (!can(c.get('user').role, 'audit.view')) throw new EnkakuError('auth.forbidden', 'requires the admin role')
     const limit = Number.parseInt(c.req.query('limit') ?? '100', 10) || 100
-    return c.json({ entries: deps.audit.list(Math.min(limit, 500)) })
+    return typedJson(c, AuditResponseSchema, { entries: deps.audit.list(Math.min(limit, 500)) })
   })
 
   app.onError((err, c) => {

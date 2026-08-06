@@ -5,6 +5,7 @@ import {
   matchSelector,
   resolveKeyCode,
   TimingSettingsSchema,
+  type FindOutcome,
   type Inspector,
   type KeyCode,
   type Point,
@@ -130,6 +131,19 @@ export function createDeviceExecutor(deps: {
     return centerOf(node.bounds)
   }
 
+  /**
+   * Plan 74 §3.4, §4.3 — the executor is where `FindOutcome` is produced:
+   * `inspector.findDetailed` when the engine has it (ui-server, the dump
+   * bridge), else a plain fallback built from `find()` that can only ever
+   * report `ok`/`not-found` — an engine with no richer signal (e.g. Appium)
+   * still gets an honest, if less specific, outcome rather than an error.
+   */
+  async function findOutcome(sel: Selector): Promise<FindOutcome> {
+    if (inspector.findDetailed) return inspector.findDetailed(sel)
+    const node = await inspector.find(sel)
+    return node ? { ok: true, node } : { ok: false, reason: 'not-found', matches: 0 }
+  }
+
   /** The last selector tapped — the implicit target for `type`. */
   let lastTarget: Selector | null = null
 
@@ -227,7 +241,11 @@ export function createDeviceExecutor(deps: {
         return undefined
       }
       case 'find': {
-        return inspector.find(call.args.sel)
+        // Returns the FULL FindOutcome (plan 74 §4.3) — the child's own
+        // `find()` narrows it to `node | null`, `findDetailed()` returns it
+        // whole, and `job-runner.ts` inspects the very same value to log a
+        // refusal, so a script using plain `find()` is still diagnosable.
+        return findOutcome(call.args.sel)
       }
       case 'dump': {
         // The same tree the Inspect panel shows (plan 60 §3.2) — `Inspector`
@@ -242,13 +260,19 @@ export function createDeviceExecutor(deps: {
         // (~80ms), a dump is expensive.
         const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         const deadline = Date.now() + call.args.timeout
+        // Plan 74 §3.5, §4.3 — carries the LAST outcome into the timeout
+        // error, so "every match was refused as rejected-oversized" reports
+        // as that, not a bare timeout (criterion 9).
+        let last: FindOutcome = { ok: false, reason: 'not-found', matches: 0 }
         for (;;) {
-          const node = await inspector.find(call.args.sel).catch(() => null)
-          if (node) return node
+          const outcome = await findOutcome(call.args.sel).catch((): FindOutcome => ({ ok: false, reason: 'not-found', matches: 0 }))
+          if (outcome.ok) return outcome.node
+          last = outcome
           if (Date.now() >= deadline) {
             throw new SessionError(
               'waitfor_timeout',
-              `menunggu ${JSON.stringify(call.args.sel)} melewati ${call.args.timeout}ms`,
+              `waiting for ${JSON.stringify(call.args.sel)} exceeded ${call.args.timeout}ms (last: ${last.reason}, ${last.matches} matches)`,
+              { reason: last.reason, matches: last.matches },
             )
           }
           await Bun.sleep(interval)

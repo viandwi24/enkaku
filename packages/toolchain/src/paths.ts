@@ -1,5 +1,6 @@
-import { mkdirSync, renameSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { moveFile, rmPath } from './fs-safe'
 import { ActivePointerSchema, type ActivePointer } from './types'
 
 export interface ToolchainPaths {
@@ -23,9 +24,9 @@ export function createPaths(dataDir: string): ToolchainPaths {
 }
 
 /** Create the layout and clear .staging (crash leftovers) at boot. */
-export function ensureLayout(paths: ToolchainPaths): void {
+export async function ensureLayout(paths: ToolchainPaths): Promise<void> {
   mkdirSync(paths.toolsDir, { recursive: true })
-  rmSync(paths.stagingDir, { recursive: true, force: true })
+  await rmPath(paths.stagingDir)
   mkdirSync(paths.stagingDir, { recursive: true })
 }
 
@@ -64,7 +65,7 @@ export class ActivePointerStore {
     const dest = this.paths.pointerPath(toolId)
     const tmp = `${dest}.tmp`
     await Bun.write(tmp, JSON.stringify(ActivePointerSchema.parse(ptr), null, 2))
-    renameSync(tmp, dest)
+    await moveFile(tmp, dest, { onWarn: this.onWarn })
     this.cache.set(toolId, ptr)
   }
 

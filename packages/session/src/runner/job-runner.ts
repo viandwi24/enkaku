@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { UiautomatorDumpInspector } from '@enkaku/drivers'
-import { defaultFarmSettings, type JobSettings } from '@enkaku/protocol'
+import { defaultFarmSettings, FindOutcomeSchema, type JobSettings } from '@enkaku/protocol'
 import type { Subprocess } from 'bun'
 import { backoffDelayMs } from './backoff'
 import { createDeviceExecutor, type TimingSettings } from '../device-executor'
@@ -32,7 +32,6 @@ export interface ClassifiedFailure {
   blameDevice: boolean
 }
 
-const DEFAULT_TIMEOUT_MS = 300_000
 const FINISH_GRACE_MS = 30_000
 const FINISH_ONLY_TIMEOUT_MS = 30_000
 const SIGKILL_DELAY_MS = 5_000
@@ -84,7 +83,7 @@ export interface JobRunnerDeps {
    * same pattern Plan 23 established with `adb.maxConcurrent` — so a settings
    * change applies to the next job with no restart. Defaults to the farm
    * schema's own defaults (policy `'home'`) when the host does not supply one,
-   * which is what lets the cloud agent (no FarmSettings store of its own)
+   * which is what lets the cloud node (no FarmSettings store of its own)
    * share this exact code path (plan 35 §2).
    */
   resetPolicy?: () => JobSettings
@@ -134,8 +133,13 @@ export interface JobRunnerDeps {
  * Carried alongside the existing three reasons rather than as a parallel
  * mechanism, so it gets the same "abort the phase, still run finish()"
  * handling `timeout`/`hung` already have (spec §11.3).
+ *
+ * `'startup-timeout'` (plan 74 §3.2, §4.2): the child never sent `ready` —
+ * fires from a SEPARATE, shorter timer than the run timeout (§4.2), so
+ * raising the run timeout's default from 5 minutes to 60 does not also make
+ * a child that never starts twelve times slower to notice.
  */
-export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed'
+export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout'
 
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
@@ -150,11 +154,31 @@ export interface JobRunner {
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
 const defaultIsolation = resolveIsolation()
 
-/** The `ScriptFailure.code` an abort reason settles as (plan 37 §4.4). */
+/** The `ScriptFailure.code` an abort reason settles as (plan 37 §4.4, plan 74 §4.2). */
 function abortErrorCode(reason: AbortReason): string {
   if (reason === 'cancelled') return 'CANCELLED'
   if (reason === 'crashed') return 'APP_CRASHED'
+  // A distinct code from 'TIMEOUT' (plan 74 §3.2, criterion 5) — a child
+  // that never started is the farm's problem, not the script's, and this is
+  // what lets `failure-class.ts` classify it as infrastructure unconditionally
+  // rather than depending on the operator's `timeoutIsInfra` flag.
+  if (reason === 'startup-timeout') return 'STARTUP_TIMEOUT'
   return 'TIMEOUT'
+}
+
+/**
+ * Clamps a requested job timeout against the farm's optional ceiling (plan
+ * 74 §3.3, §4.2). `maxTimeoutMs: null` means no ceiling — the script's
+ * request is honoured however long, because the user's instruction is that
+ * a script has priority. When a ceiling IS set and a request exceeds it, the
+ * clamp is logged NAMING the script and both numbers — never silent, because
+ * a job that dies early for an unexplained reason is worse than one that
+ * runs long (§3.3).
+ */
+function clampTimeoutMs(requested: number, maxTimeoutMs: number | null, scriptLabel: string, log: (line: string) => void): number {
+  if (maxTimeoutMs === null || requested <= maxTimeoutMs) return requested
+  log(`timeout clamp: ${scriptLabel} requested ${requested}ms, but maxTimeoutMs is ${maxTimeoutMs}ms — using ${maxTimeoutMs}ms`)
+  return maxTimeoutMs
 }
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
@@ -167,13 +191,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     bundlePath: string
     session: DeviceSession
     timeoutMs: number
+    /** Plan 74 §3.2, §4.2 — the pre-`ready` backstop; `undefined` for a finish-only attempt (its own short `timeoutMs` already covers it). */
+    startupTimeoutMs?: number
+    /** Plan 74 §3.3, §4.2 — `null` means no ceiling. Applied to the script's own re-armed timeout at `ready`, not to the initial farm-default arm. */
+    maxTimeoutMs?: number | null
     mode: 'full' | 'finish-only'
     priorError?: ScriptFailure
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
-    meta?: { timeoutMs?: number; retries?: number }
+    meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string }
   }): Promise<AttemptOutcome> {
     const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
 
@@ -206,6 +234,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       let finishRan = false
       let killTimer: ReturnType<typeof setTimeout> | null = null
       let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+      // Plan 74 §3.2, §4.2 — the short pre-`ready` backstop; cleared the
+      // moment `ready` arrives, below.
+      let startupTimer: ReturnType<typeof setTimeout> | null = null
       let graceTimer: ReturnType<typeof setTimeout> | null = null
       let silenceTimer: ReturnType<typeof setTimeout> | null = null
       let abortReason: AbortReason | null = null
@@ -228,7 +259,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const finish = (outcome: AttemptOutcome) => {
         if (settled) return
         settled = true
-        for (const t of [killTimer, timeoutTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
+        for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
         try {
           child.kill()
@@ -355,14 +386,33 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
         if (msg.t === 'ready') {
           logger.append('debug', 'runner', `child ready: ${msg.scriptId}@${msg.version}`)
+          // The startup backstop's job is done the moment the child has
+          // spoken at all (plan 74 §3.2) — a slow-but-alive child is not
+          // what it exists to catch.
+          if (startupTimer) {
+            clearTimeout(startupTimer)
+            startupTimer = null
+          }
           if (opts.meta) {
             if (msg.timeoutMs !== undefined) opts.meta.timeoutMs = msg.timeoutMs
             if (msg.retries !== undefined) opts.meta.retries = msg.retries
+            opts.meta.scriptId = msg.scriptId
+            opts.meta.version = msg.version
           }
-          // Effective timeout is def.timeout when the script sets one.
-          if (mode === 'full' && msg.timeoutMs !== undefined && msg.timeoutMs !== timeoutMs) {
-            if (timeoutTimer) clearTimeout(timeoutTimer)
-            timeoutTimer = setTimeout(() => doAbort('timeout'), msg.timeoutMs)
+          // Effective timeout is def.timeout when the script sets one,
+          // clamped against the farm's optional ceiling (plan 74 §3.3, §4.2)
+          // — logged by name whenever the clamp actually changes the value.
+          if (mode === 'full' && msg.timeoutMs !== undefined) {
+            const effective = clampTimeoutMs(
+              msg.timeoutMs,
+              opts.maxTimeoutMs ?? null,
+              `${msg.scriptId}@${msg.version}`,
+              (line) => logger.append('warn', 'runner', line),
+            )
+            if (effective !== timeoutMs) {
+              if (timeoutTimer) clearTimeout(timeoutTimer)
+              timeoutTimer = setTimeout(() => doAbort('timeout'), effective)
+            }
           }
           // The declared crash-policy target (plan 37 §3.4) — known as soon
           // as `ready` arrives, before `init` is even sent.
@@ -384,7 +434,24 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             return
           }
           void execDevice(call.data)
-            .then((value) => send({ t: 'device.result', callId: msg.callId, ok: true, value }))
+            .then((value) => {
+              // Plan 74 §3.5, §4.3, criterion 12 — a `find` refusal is
+              // diagnosable from the job log even for a script that only
+              // ever called plain `find()` and never saw the reason itself:
+              // the IPC value is the SAME `FindOutcome` regardless of which
+              // SDK call the script made.
+              if (call.data.method === 'find') {
+                const outcome = FindOutcomeSchema.safeParse(value)
+                if (outcome.success && !outcome.data.ok) {
+                  logger.append(
+                    'warn',
+                    'runner',
+                    `find refused: ${outcome.data.reason} (sel=${JSON.stringify(call.data.args.sel)}, matches=${outcome.data.matches})`,
+                  )
+                }
+              }
+              send({ t: 'device.result', callId: msg.callId, ok: true, value })
+            })
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err)
               // Plan 36 §3.2's classifier needs the REAL code (an AdbError's
@@ -464,6 +531,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
       resetSilenceTimer()
       timeoutTimer = setTimeout(() => doAbort('timeout'), timeoutMs)
+      // Plan 74 §3.2, §4.2 — armed alongside the run timer, cleared the
+      // moment `ready` arrives (above). This is the SHORT backstop for a
+      // child that never starts at all; the run timer above is the real
+      // budget once it has. `undefined` (a finish-only attempt) arms nothing
+      // extra — `FINISH_ONLY_TIMEOUT_MS` is already short enough.
+      if (opts.startupTimeoutMs !== undefined) {
+        startupTimer = setTimeout(() => doAbort('startup-timeout'), opts.startupTimeoutMs)
+      }
 
       // `init` is no longer sent here — the child holds until its `ready`
       // message has been read and (for a 'full' attempt) the pre-job reset
@@ -504,7 +579,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         // timeout and retries are only known once the child has imported the
         // bundle; it sends them in the `ready` message, and they are used for
         // the next attempt.
-        const meta: { timeoutMs?: number; retries?: number } = {}
+        const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string } = {}
         let attempt = 0
         for (;;) {
           attempt += 1
@@ -530,7 +605,22 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           if (acquireFailure) {
             outcome = { ok: false, finishRan: false, error: acquireFailure }
           } else {
-            const timeoutMs = meta.timeoutMs ?? DEFAULT_TIMEOUT_MS
+            // Fresh per attempt, not captured at daemon start (plan 74 §4.2)
+            // — the same pattern `resetPolicy`/`timing` already use, so a
+            // Settings change applies to the very next job with no restart.
+            const settings = getResetSettings()
+            // `DEFAULT_TIMEOUT_MS` no longer exists (criterion 3): the farm
+            // default IS the settings value. The clamp (§3.3) applies only to
+            // a SCRIPT's own request — `meta.timeoutMs`, known from a prior
+            // attempt's `ready` — never to the farm default itself: the
+            // default is the operator's own setting, not something to warn
+            // the operator about relative to their OTHER setting.
+            const timeoutMs =
+              meta.timeoutMs !== undefined
+                ? clampTimeoutMs(meta.timeoutMs, settings.maxTimeoutMs, `${meta.scriptId}@${meta.version}`, (line) =>
+                    logger.append('warn', 'runner', line),
+                  )
+                : settings.defaultTimeoutMs
             logger.append('info', 'runner', `attempt ${attempt} starting`)
             outcome = await runAttempt({
               job,
@@ -538,6 +628,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               bundlePath,
               session: session as DeviceSession,
               timeoutMs,
+              startupTimeoutMs: settings.startupTimeoutMs,
+              maxTimeoutMs: settings.maxTimeoutMs,
               mode: 'full',
               logger,
               artifacts,

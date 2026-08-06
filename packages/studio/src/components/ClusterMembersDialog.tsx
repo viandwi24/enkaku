@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { DeviceInfo } from '@enkaku/protocol'
+import { z } from 'zod'
+import { ClusterMoveResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,7 +73,7 @@ export function ClusterMembersDialog({
     run(
       'assign',
       () =>
-        api<{ moved: Array<{ deviceId: string; from: string | null }> }>(`/api/clusters/${activeCluster.id}/devices`, {
+        api(`/api/clusters/${activeCluster.id}/devices`, ClusterMoveResponseSchema, {
           method: 'POST',
           json: { deviceIds: ids },
         }),
@@ -100,7 +101,7 @@ export function ClusterMembersDialog({
   }
 
   const remove = (device: DeviceInfo) =>
-    run('remove-' + device.id, () => api(`/api/clusters/${activeCluster.id}/devices/${device.id}`, { method: 'DELETE' }), {
+    run('remove-' + device.id, () => api(`/api/clusters/${activeCluster.id}/devices/${device.id}`, z.void(), { method: 'DELETE' }), {
       success: `${device.label} removed from ${activeCluster.name}`,
       failure: 'Could not remove that device',
       onSuccess: () => {

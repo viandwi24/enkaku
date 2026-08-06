@@ -54,7 +54,7 @@ export function ScreenCard({
   deviceId: string
   mode: ScreenMode
   onModeChange: (mode: ScreenMode) => void
-  /** Why `Inspect` cannot be used here — an agent-owned device has no local inspector (plan 56 §2). */
+  /** Why `Inspect` cannot be used here — a node-owned device has no local inspector (plan 56 §2). */
   inspectDisabledReason?: string
   jobRunning: boolean
   inputEnabled: boolean
@@ -116,7 +116,7 @@ export function ScreenCard({
           anything appeared. `visible` is still passed through, because a
           mounted panel that nobody is looking at must stop *polling* even
           though it stays attached (§3.5). */}
-      {/* A device with no inspector at all (agent-owned) never mounts one:
+      {/* A device with no inspector at all (node-owned) never mounts one:
           `Inspect` is disabled above, so this panel could only ever sit hidden
           and attach an engine that does not exist. */}
       {!inspectDisabledReason && (

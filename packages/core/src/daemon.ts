@@ -12,8 +12,8 @@ import {
   type Viewer,
 } from '@enkaku/protocol'
 import type { Server } from 'bun'
-import { createAgentRoutes } from './api/agents'
-import { createAgentAuth } from './tunnel/agent-auth'
+import { createNodeRoutes } from './api/nodes'
+import { createNodeAuth } from './tunnel/node-auth'
 import { createTunnelRegistry } from './tunnel/registry'
 import { createTunnelRouter } from './tunnel/router'
 import { createTunnelRpc, type TunnelRpc } from './tunnel/rpc'
@@ -47,6 +47,31 @@ import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
+import { resolveScriptRef } from './scripts/resolve'
+import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
+import { createCapRoutes } from './api/cap'
+import { buildOpenApiDocument } from './api/openapi'
+import { createMcpServer } from './mcp/server'
+import { createWorkspaceStore } from './workspace/store'
+import { createAgentStore, type AgentStore } from './agent/agent-store'
+import { createConnectorStore } from './agent/connector-store'
+import { createModelListCache } from './agent/provider'
+import { createAgentRoutes } from './api/agents'
+import { createConnectorRoutes } from './api/connectors'
+import { createThreadRoutes } from './api/threads'
+import { createThreadStore } from './agent/thread/store'
+import { createApprovalStore } from './agent/approval/store'
+import { createTreeStore } from './agent/tree/store'
+import { createAgentRunner } from './agent/runner'
+import { createBlobStore } from './agent/blob/store'
+import { createBlobRoutes } from './api/blobs'
+import { createAgentWsHandler } from './server/ws-handlers-agent'
+import { createNotificationStore, type CreateNotificationInput } from './notify/store'
+import { createWebhookStore } from './notify/webhook-store'
+import { createNotifyRateLimiter, createNotifyService } from './notify/service'
+import { createNotificationRoutes } from './api/notifications'
+import { createWebhookRoutes } from './api/webhooks'
+import type { ScheduleAgentDispatch } from './schedules/runner'
 import {
   createJobRunner,
   createSessionManager,
@@ -61,6 +86,9 @@ import { createScriptExecutor } from './jobs/executors/script'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
 import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/cluster-materialise'
+import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
+import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
+import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
 import { devices, scripts } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
@@ -94,6 +122,7 @@ import { saveForDevice } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
+import { CRITICAL_TOOLS, REQUIRED_TOOLS } from './tools/required'
 import { createToolInstallStore } from './tools/store'
 import { createLogger } from './util/logger'
 import { acquireDataDirLock, type DataDirLock } from './util/data-dir-lock'
@@ -103,8 +132,6 @@ import pkg from '../package.json'
 
 export const CORE_VERSION = pkg.version
 
-/** Required tools: adb (M1) and the on-device inspector APKs (M4.5). M6 adds scrcpy-server. */
-const REQUIRED_TOOLS = ['adb', 'ui-server', 'ui-server-test', 'scrcpy-server']
 
 export interface Daemon {
   start(): Promise<void>
@@ -159,12 +186,57 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // (idempotent either way — see `cluster-materialise.test.ts`).
       runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
       materialiseClusters(opened.db, { dataDir: cfg.dataDir, log: log.child('cluster-materialise') })
-      runMigrations(opened.db)
+      // `opened.sqlite` is passed so the runner can realign a poisoned
+      // `__drizzle_migrations.created_at` watermark before drizzle reads it
+      // (see `runMigrations`'s own note — plans 61/62's hand-written
+      // migrations stamped synthetic timestamps that silently hid 0025–0036).
+      runMigrations(opened.db, opened.sqlite)
+      // `schedules.script_id` → `schedules.script_ref` (plan 62 §4.3): the
+      // generated migration above only renames the COLUMN — every
+      // pre-existing row still holds a raw `scripts.id` where a reference
+      // belongs. This one-shot step converts each to the EXACT version it
+      // was already pinned to, never to `@latest` (acceptance #9). No
+      // "up to" window is needed here (unlike cluster materialisation):
+      // nothing later drops data this step needs to read.
+      backfillScheduleScriptRefs(opened.db, { log: log.child('schedule-ref-backfill') })
+      // Plan 68 §4.1 — the `target` migration: every schedule already reads
+      // as `{kind: 'script'}` via the new column's own default, this pass is
+      // the explicit, auditable record of that (and a defensive
+      // normalisation), same marker-guarded pattern as the two calls above.
+      backfillScheduleTargets(opened.db, { log: log.child('schedule-target-backfill') })
+      // Plan 70 §4.1 — every pre-existing `agent_messages.content` tool_result's `content: string`
+      // becomes `[{type:'text', text}]`, lossless and marker-guarded, exactly like the two calls
+      // above. Must run before anything reads a message through the new `AgentMessageSchema` (which
+      // now requires `content` to be an array) — the very next line already does (`agentThreadStore`
+      // etc., built below), so this stays right here in migration order.
+      migrateToolResultContentBlocks(opened.db, { log: log.child('tool-result-content-blocks') })
       log.info('db ready (migrations applied)')
       const db = opened.db
 
       // 2. WS hub + Toolchain Manager (emit → broadcast)
       const hub = new WsHub(log.child('ws'))
+
+      // Notifications and webhooks (plan 68 §3.4, §4.1, §4.4) — built early: farm-wide, minimal
+      // deps (db, dataDir), and needed by both the capability registry (`notify.send`), the
+      // schedule runner (spend-cap refusals), and the agent runner (auto-denied approvals), all
+      // constructed later in this function. `notifyAndBroadcast` is the ONE place a notification is
+      // ever created — every caller (the capability, a spend-cap refusal, an auto-denied approval)
+      // goes through it, so `notification.created` is never forgotten for one of them.
+      const notificationStore = createNotificationStore(db)
+      const webhookStore = createWebhookStore({ db, dataDir: cfg.dataDir })
+      const notifyRateLimiter = createNotifyRateLimiter()
+      const notifyAndBroadcast = (input: CreateNotificationInput) => {
+        const notification = notificationStore.create(input)
+        hub.broadcast({ type: 'notification.created', payload: notification })
+        return notification
+      }
+      const notifyService = createNotifyService({
+        store: { ...notificationStore, create: notifyAndBroadcast },
+        webhooks: webhookStore,
+        rateLimiter: notifyRateLimiter,
+        log: log.child('notify'),
+      })
+
       const toolchain = new ToolchainManager({
         dataDir: cfg.dataDir,
         coreVersion: CORE_VERSION,
@@ -282,6 +354,16 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // before the WS router (which owns the actual `CrashWatcher`) exists.
       let watchCrashesForDevice: ((deviceId: string) => void) | null = null
       let unwatchCrashesForDevice: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: the shared reaper (`expiryReaper`, built well before the agent
+      // runner exists) sweeps overdue agent approvals on its own cadence (plan 66 §4.3) instead of
+      // a second scheduler.
+      let sweepAgentApprovals: (() => void) | null = null
+      // Same forward-ref pattern: the schedule runner (built well before the agent store/runner
+      // exist, since it sits alongside the queue scheduler early in this function) needs to check
+      // whether an agent exists and to launch/track scheduled agent runs (plan 68 §4.2). Resolved
+      // once `agentStore`/`agentRunner` are built further down.
+      let agentStoreRef: AgentStore | null = null
+      let scheduledAgentRunnerRef: ReturnType<typeof createAgentRunner> | null = null
       // The `declared` crash policy's target-package registry (plan 37 §3.4,
       // §4.4): written by `JobRunnerDeps.onTargetPackages` as a job's script
       // declares (or launches) packages, read by the crash watcher when a
@@ -305,25 +387,25 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       adbEndpointManager = createAdbEndpointManager({
         db,
         adb: () => adb,
-        remoteAgentIdFor: (deviceId) => remoteSessions?.agentIdFor(deviceId) ?? null,
+        remoteNodeIdFor: (deviceId) => remoteSessions?.nodeIdFor(deviceId) ?? null,
         rpc: () => tunnelRpc,
         router: () => tunnelRouter,
         shellSettings: () => settingsStore.get().shell,
         listen: bunAdbEndpointListen,
         createShim: createAdbdShim,
         // Readiness hold (plan 43 §5 step 43.7) — same forward-ref pattern as
-        // `remoteAgentIdFor`/`rpc`/`router` above: `readiness` is not built
+        // `remoteNodeIdFor`/`rpc`/`router` above: `readiness` is not built
         // until later in this function, read fresh on every `open()`.
         holdFor: (deviceId) => readiness?.hold(deviceId, 'adb-endpoint') ?? Promise.resolve({ release() {} }),
         onStreamOpen: (deviceId, service) =>
           recorder?.record({ deviceId, stream: 'input', kind: 'adb.open', meta: { service: redactShellCommand(service) } }),
-        onEndpointOpened: (deviceId, userId, port, agentId) =>
+        onEndpointOpened: (deviceId, userId, port, nodeId) =>
           recorder?.record({
             deviceId,
             stream: 'main',
             kind: 'adb.endpoint.opened',
             actor: userId,
-            meta: agentId ? { port, agentId } : { port },
+            meta: nodeId ? { port, nodeId } : { port },
           }),
         onEndpointClosed: (deviceId, reason) =>
           recorder?.record({ deviceId, stream: 'main', kind: 'adb.endpoint.closed', meta: { reason } }),
@@ -383,26 +465,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // (spec §14) — `authMode` itself was resolved earlier, above.
       assertTlsPolicy(cfg, authMode)
       const auth = createAuthService({ db, sessionTtlHours: cfg.auth.sessionTtlHours })
-      const agentAuth = createAgentAuth(db)
+      const nodeAuth = createNodeAuth(db)
 
       // Cloud mode (spec §5.3): the orchestrator holds no local devices;
-      // devices arrive from agents over their outbound tunnels.
+      // devices arrive from nodes over their outbound tunnels.
       const isOrchestrator = process.env.ENKAKU_MODE === 'orchestrator'
       const tunnelRegistry = createTunnelRegistry({
         db,
         log: log.child('tunnel'),
         onDevicesChanged: () => scheduler?.kick(),
-        onAgentGone: (agentId) => {
-          // The tunnel dropped → that agent's remote sessions are no longer valid...
-          remoteSessions?.dropAgent(agentId)
+        onNodeGone: (nodeId) => {
+          // The tunnel dropped → that node's remote sessions are no longer valid...
+          remoteSessions?.dropNode(nodeId)
           // ...and neither is anything awaiting a reply from it (plan 25 §4.1,
           // acceptance #3/#4): pending shell.exec/stream requests reject
           // immediately, and any stream it owned ends with a reason rather
           // than stalling until a timeout.
-          tunnelRpc?.failAllForAgent(agentId, 'the agent disconnected')
+          tunnelRpc?.failAllForNode(nodeId, 'the node disconnected')
         },
       })
-      // Hook di-set setelah remote manager & job bridge dibuat (siklus wiring).
+      // Hook set after the remote manager and job bridge are built (a cyclic-construction wiring).
       let onSessionStarted: ((d: string, i: { codec: 'png' | 'h264'; width: number; height: number }) => void) | null =
         null
       let onSessionFailed: ((d: string, c: string, m: string) => void) | null = null
@@ -427,13 +509,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       tunnelRpc = createTunnelRpc({ router: tunnelRouter, registry: tunnelRegistry })
 
-      // Pairing needs adb; in orchestrator mode enrollment happens on the agent.
+      // Pairing needs adb; in orchestrator mode enrollment happens on the node.
       let pairingService: PairingService = {
         async request() {
-          throw new EnkakuError('not_supported_in_mode', 'wireless pairing happens on the agent, not the control plane')
+          throw new EnkakuError('not_supported_in_mode', 'wireless pairing happens on the node, not the control plane')
         },
         async submitCode() {
-          return { success: false, message: 'wireless pairing happens on the agent, not the control plane' }
+          return { success: false, message: 'wireless pairing happens on the node, not the control plane' }
         },
       }
 
@@ -507,11 +589,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         db,
         dataDir: cfg.dataDir,
         adb: () => adb,
-        // Scoped to local devices for this plan (§9 open question) — an
-        // agent-owned device refuses with a clear `E_UNSUPPORTED` rather
+        // Scoped to local devices for this plan (§9 open question) — a
+        // node-owned device refuses with a clear `E_UNSUPPORTED` rather
         // than being silently attempted over a transport that does not
         // exist for it.
-        isRemote: (deviceId) => (remoteSessions?.agentIdFor(deviceId) ?? null) !== null,
+        isRemote: (deviceId) => (remoteSessions?.nodeIdFor(deviceId) ?? null) !== null,
         settings: () => settingsStore.get().transfer,
       })
       // The script API's `ctx.device.install`/`push`/`pull` (plan 39 §4.6) —
@@ -625,6 +707,30 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           }),
       })
 
+      // Resolves a lease holder's id to a display label (plan 71 §3.3) — the
+      // lease manager itself never learns about users, agents, or jobs
+      // directly; this closure is the one place that does. `agentStoreRef`
+      // is the same forward-ref pattern used throughout this function
+      // (`agentStore` is not built until later, well below this point) — by
+      // the time this is actually CALLED (a lease exists), boot has long
+      // finished and the ref is populated. A holder id this cannot resolve
+      // becomes a truthful, non-empty phrase — never an empty string, never
+      // the raw id (plan 71 §3.3, criterion 14).
+      const resolveLeaseLabel = (kind: 'user' | 'agent' | 'job', id: string): string => {
+        if (kind === 'user') {
+          const user = id ? auth.listUsers().find((u) => u.id === id) : null
+          return user?.email ?? 'a signed-out client'
+        }
+        if (kind === 'agent') {
+          const agent = agentStoreRef?.get(id)
+          return agent?.name ?? 'a deleted agent'
+        }
+        const job = jobStore.get(id)
+        if (!job) return 'a deleted job'
+        const script = jobStore.scriptNames([job.scriptId]).get(job.scriptId)
+        return script ? `${script.name}@${script.version}` : 'a job'
+      }
+
       const leases = createLeaseManager({
         states,
         jobStore,
@@ -634,15 +740,16 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           reaperIntervalMs: cfg.lease.reaperIntervalMs,
         },
         log: log.child('lease'),
+        resolveLabel: resolveLeaseLabel,
         // Plan 36 §3.2: a force-expired job lease is the farm's problem, not
         // the script's — coded so it classifies infra rather than falling to
         // the (safer, but less specific) unknown-code default.
         onJobLeaseExpired: (jobId, reason) => host.finishExternally(jobId, 'failed', reason, 'LEASE_FORCE_RELEASED'),
         onManualRevoked: (deviceId, reason, holderUserId) => {
-          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason } })
+          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason, takenBy: null } })
           // The holder learns why from lease.revoked; everyone else just needs
           // to know the device is free again.
-          hub.broadcast({ type: 'lease.changed', payload: { deviceId, held: false, expiresAt: null } })
+          hub.broadcast({ type: 'lease.changed', payload: { deviceId, heldBy: null, expiresAt: null } })
           broadcastDeviceViewers?.(deviceId)
           recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: holderUserId, meta: { reason } })
           // A forced release is security-relevant, not just a device fact
@@ -667,6 +774,37 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // held the lease, so an idle timeout, disconnect, or quarantine
           // must not tear it down. Turning a route off is now an explicit
           // act only (`/disable`, `DELETE /network`, agent uninstall).
+        },
+        // A takeover (plan 71 §3.4, §3.5) — the displaced holder is told (by
+        // name, of who took it) and it is recorded. Mirrors `onManualRevoked`
+        // above for every side effect that must not survive the lease ending,
+        // regardless of WHY it ended.
+        onManualTakenOver: ({ deviceId, from, toUserId, takenByLabel }) => {
+          // `lease.changed` (naming the NEW holder) is broadcast by the
+          // `lease.acquire` handler itself right after this call returns
+          // (`server/ws-handlers.ts`) — the same one unconditional broadcast
+          // a plain acquire already sends, so a takeover does not need a
+          // second copy of it here. `lease.revoked` (naming the reason and
+          // the taker) has no other sender, so it belongs here.
+          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason: 'taken-over', takenBy: takenByLabel } })
+          broadcastDeviceViewers?.(deviceId)
+          recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: toUserId, meta: { reason: 'taken-over', from: from?.label ?? null, to: takenByLabel } })
+          audit.record({
+            userId: toUserId,
+            action: 'device.control',
+            target: deviceId,
+            meta: { action: 'taken-over', from: from?.label ?? null, fromKind: from?.kind ?? null, to: takenByLabel },
+          })
+          releaseShellSession?.(deviceId)
+          releaseLeaseReadinessHold?.(deviceId)
+          adbEndpointManager?.close(deviceId, 'taken-over')
+          // An agent whose lease was taken over does NOT get pushed a
+          // notification here (plan 71 §3.5, §3.6): its next attempt to use
+          // the device detects the loss itself (`agent/loop/run.ts`'s
+          // `ensureControlLease` re-checks the real lease on every step) and
+          // reports it as an error `tool_result` — the same "the loop
+          // discovers it, nothing pushes it" shape plan 63's `invoke()` uses
+          // for every other refusal.
         },
         onDeviceFreed: () => scheduler?.kick(),
       })
@@ -709,10 +847,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         sessions: () => sessions,
         leases,
         maxHot: () => settingsStore.get().readiness.maxHot,
-        // Cloud/agent-owned devices are out of scope for this plan (§2, §9
+        // Cloud/node-owned devices are out of scope for this plan (§2, §9
         // open question #2) — never attempt a local wake/session acquire
         // against one.
-        isRemote: (deviceId) => (remoteSessions?.agentIdFor(deviceId) ?? null) !== null,
+        isRemote: (deviceId) => (remoteSessions?.nodeIdFor(deviceId) ?? null) !== null,
         broadcast: (deviceId, r) => hub.broadcast({ type: 'device.readiness', payload: { deviceId, readiness: r } }),
         record: (e) =>
           recorder?.record({ deviceId: e.deviceId, stream: 'main', kind: 'device.readiness', actor: e.actor, meta: { from: e.from, to: e.to } }),
@@ -740,6 +878,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         onJobStarted: (deviceId, jobId, scriptId) =>
           recorder?.record({ deviceId, stream: 'main', kind: 'job.started', actor: `job:${jobId}`, meta: { jobId, scriptId } }),
+        // A job waits for the device to go quiet before claiming it (plan 71
+        // §3.7) — both settings read fresh on every tick, the same pattern
+        // `adb.maxConcurrent` and every other settings-derived accessor in
+        // this function already uses.
+        quiet: {
+          quietPeriodSec: () => settingsStore.get().job.quietPeriodSec,
+          maxWaitSec: () => settingsStore.get().job.maxWaitSec,
+          lastManualReleaseAt: (deviceId) => leases.lastManualReleaseAt(deviceId),
+          lastManualHolder: (deviceId) => leases.lastManualHolder(deviceId),
+        },
+        onJobWaiting: (info) => hub.broadcast({ type: 'job.waiting', payload: info }),
       })
 
       const jobService = createJobService({
@@ -765,7 +914,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         log: log.child('expiry'),
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onBatchChanged,
+        sweepApprovals: () => sweepAgentApprovals?.(),
       })
+
+      // Plan 68 §4.2 — the agent side of schedule dispatch, read through the forward-refs above
+      // (`agentStoreRef`/`scheduledAgentRunnerRef`): the schedule runner is built here, well before
+      // `agentStore`/`agentRunner` exist further down this function.
+      const scheduleAgentDispatch: ScheduleAgentDispatch = {
+        agentExists: (agentId) => {
+          const agent = agentStoreRef?.get(agentId)
+          return !!agent && agent.enabled
+        },
+        runStatus: (runId) => scheduledAgentRunnerRef?.runStatus(runId) ?? null,
+        cancelRun: (runId, cancelledBy) => scheduledAgentRunnerRef?.cancelRun(runId, cancelledBy),
+        countActiveScheduledRuns: () => scheduledAgentRunnerRef?.countActiveScheduledRuns() ?? 0,
+        spentOutputTokensSince: (windowStart) => scheduledAgentRunnerRef?.spentOutputTokensSince(windowStart) ?? 0,
+        dispatch: (input) => {
+          if (!scheduledAgentRunnerRef) throw new EnkakuError('E_INTERNAL', 'the agent runner is not ready yet')
+          return scheduledAgentRunnerRef.runScheduledFiring(input)
+        },
+      }
 
       // The schedule runner (plan 21 §4.2) — separate from the queue
       // scheduler above: that one dispatches queued jobs to devices, this one
@@ -780,9 +948,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         broadcastBatchStatus: (msg) => hub.broadcast(msg),
         broadcastFired: (msg) => hub.broadcast(msg),
         validateScript: (scriptId, params) => validateScriptForRun({ registry: executors, findScript }, scriptId, params),
+        agentDispatch: scheduleAgentDispatch,
+        scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+        notifySystem: (input) => {
+          notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
+        },
       })
 
-      // Remote jobs: a device owned by an agent runs on that agent (plan 12 §4.5).
+      // Remote jobs: a device owned by a node runs on that node (plan 12 §4.5).
       const remoteBridge = createRemoteJobBridge({
         db,
         router: tunnelRouter,
@@ -832,11 +1005,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
       })
       onJobProgress = (p) => remoteBridge.handleProgress(p)
-      // Agent-owned devices use the remote executor; local devices use the
+      // Node-owned devices use the remote executor; local devices use the
       // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
 
-      // The WebRTC relay serves agent-owned devices (cloud mode). On a LAN,
+      // The WebRTC relay serves node-owned devices (cloud mode). On a LAN,
       // Studio stays on the simpler WS + WebCodecs path.
       const webrtcRelay = createWebRtcRelay({
         factory: createWeriftFactory(),
@@ -916,9 +1089,108 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         withGuestAgentClient: guestAgent.withGuestAgentClient,
       })
 
+      // The capability registry (plan 63 §4.2) — built once, at boot; a
+      // duplicate id or an unconvertible schema throws here and the
+      // process does not start (acceptance #1-3). `sessions`/`readiness`
+      // are read lazily (`() => sessions`), the same forward-ref pattern
+      // every other adb-dependent accessor in this function already uses,
+      // since neither exists yet at this point in boot.
+      const capabilityRegistry = buildCoreCapabilityRegistry()
+      // The database-backed workspace (plan 64 §3.1, §4.1) — one store per
+      // boot, quotas read fresh from settings on every call, the same
+      // pattern every other settings-derived accessor in this function uses.
+      const workspaceStore = createWorkspaceStore(db, () => settingsStore.get().workspace)
+      // AI agents and connectors (plan 65 §4.5) — `agentStore` validates an
+      // agent's tools against the SAME registry built just above, so a
+      // capability that does not exist can never be saved onto an agent.
+      // `modelListCache` is one instance for the process, exactly like
+      // `workspaceStore` above (a TTL cache over `GET /v1/models`, plan 65 §3.2).
+      const agentStore = createAgentStore({ db, registry: capabilityRegistry })
+      agentStoreRef = agentStore // plan 68 §4.2 — resolves the schedule runner's `agentDispatch.agentExists` forward-ref, built well before this point.
+      const connectorStore = createConnectorStore({ db, dataDir: cfg.dataDir })
+      const modelListCache = createModelListCache()
+      const capContextDeps: CapabilityContextDeps = {
+        db,
+        leases,
+        states,
+        sessions: () => sessions,
+        readiness: () => readiness,
+        transfer: transferPortForScripts,
+        jobService,
+        workspace: workspaceStore,
+        // Plan 68 §4.3 — `notify.send`'s one-line delegation. The SAME instance for every actor:
+        // a human via REST/MCP and an agent via the loop both reach the identical service.
+        notify: notifyService,
+      }
+      const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
+
+      // The agent loop (plan 66 §4.3, §4.4) — threads/runs/messages, approvals, and the
+      // orchestrator that runs them. Built once, here, right after the pieces it depends on
+      // (`capabilityRegistry`, `agentStore`, `connectorStore`, `modelListCache`, `capContextDeps`).
+      // `agentWsHandler` and `agentRunner` reference each other (the handler needs to forward
+      // `agent.run.cancel` to the runner; the runner needs to broadcast through the handler), so
+      // the handler is built against the SAME forward-ref pattern used throughout this function.
+      let agentRunnerRef: ReturnType<typeof createAgentRunner> | null = null
+      const agentThreadStore = createThreadStore(db)
+      const agentApprovalStore = createApprovalStore({ db })
+      // Plan 67 §4.1 — the run tree's inbox and spawn grants, alongside the thread/approval stores.
+      const agentTreeStore = createTreeStore(db)
+      // Plan 70 §4.1 — content-addressed image storage, alongside the other agent-loop stores. One
+      // instance for the whole boot: the loop (`executeRun`'s `blobs` dep) and the blob API
+      // (`POST`/`GET /api/v1/blobs`) both read and write through this SAME store, never two.
+      const agentBlobStore = createBlobStore(db)
+      const agentWsHandler = createAgentWsHandler({ runner: { cancelRun: (runId, by) => agentRunnerRef?.cancelRun(runId, by) } })
+      const agentRunner = createAgentRunner({
+        threads: agentThreadStore,
+        approvals: agentApprovalStore,
+        agents: agentStore,
+        connectors: connectorStore,
+        registry: capabilityRegistry,
+        capContextDeps,
+        leases,
+        settings: () => settingsStore.get(),
+        modelListCache,
+        tree: agentTreeStore,
+        // Plan 70 §4.1, §4.4 — threaded straight through to every `executeRun` call.
+        blobs: agentBlobStore,
+        // Plan 67 §3.3, §4.4 — `agent.message.queued`/`agent.child.started`/`.finished` are
+        // addressed to a DIFFERENT run's thread than the one whose execution produced them.
+        publishToThread: (threadId, msg) => agentWsHandler.publishRaw(threadId, msg),
+        audit,
+        // Same role-resolution expression the WS router below builds for its own `roleOf` dep
+        // (plan 26 §4.1, §4.3) — local mode's one implicit admin ignores the userId entirely.
+        roleOf: authMode === 'local' ? () => 'admin' : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
+        emit: (thread, run, event) => agentWsHandler.publish(thread, run, event),
+        onRunStarted: (thread, run) => agentWsHandler.publishRunStarted(thread, run),
+        onRunFinished: (thread, run) => agentWsHandler.publishRunFinished(thread, run),
+        // Plan 68 §3.5 — the record of an auto-denied destructive call (never rate-limited; not a
+        // `notify.send` capability call — a run does not choose whether this happens).
+        notifyAutoDenied: (info) => {
+          notifyAndBroadcast({
+            level: 'warn',
+            title: `${info.agent.name}: destructive capability auto-denied`,
+            body: `"${info.capabilityId}" was not run — this thread auto-denies destructive capabilities instead of pausing for approval (onApprovalRequired: deny).`,
+            context: { runId: info.run.id, threadId: info.thread.id, agentId: info.agent.id },
+            source: 'system',
+          })
+        },
+        log: log.child('agent'),
+      })
+      agentRunnerRef = agentRunner
+      scheduledAgentRunnerRef = agentRunner // plan 68 §4.2 — resolves the schedule runner's agentDispatch forward-refs, built well before this point.
+      // Restart recovery (plan 66 §4.3, criterion 9): a `running` row did not survive whatever
+      // stopped the previous process — mark it `failed`/`interrupted` rather than leave it
+      // claiming to be in progress forever. A `paused` row is untouched: that is exactly the
+      // state an approval exists to survive.
+      agentRunner.recoverAfterRestart()
+      // The shared reaper cadence sweeps overdue approvals too (plan 66 §4.3) — wired via the
+      // SAME forward-ref pattern as `publishDeviceEvent` and friends above: `expiryReaper` is
+      // constructed long before `agentRunner` exists.
+      sweepAgentApprovals = () => agentRunner.sweepExpiredApprovals()
+
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
-        listDevices: () => listDevicesWithTags(db),
+        listDevices: () => listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId)),
         deviceCount: () => db.select().from(devices).all().length,
         log: log.child('http'),
         version: CORE_VERSION,
@@ -928,7 +1200,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         adbState: () => adbState,
         toolchain,
-        jobRoutes: createJobRoutes(jobService, { log: log.child('jobs') }),
+        // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
+        // is written, so `jobs.scriptId` is always concrete.
+        jobRoutes: createJobRoutes(jobService, { log: log.child('jobs'), resolveScriptRef: (ref) => resolveScriptRef(db, ref) }),
         deviceRoutes: createDeviceRoutes({
           db,
           registry: () => buildRegistryResponse(toolchain),
@@ -951,6 +1225,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // Device readiness (plan 43 §4.5) — `readiness` is constructed
           // synchronously above, well before `createApp` is reached.
           readiness: readiness ?? undefined,
+          // Who holds a device's manual lease (plan 71 §4.4) — `leases` is
+          // constructed synchronously above too.
+          heldByOf: (deviceId) => leases.getHolder(deviceId),
           // The lease-scoped adb endpoint (plan 27 §4.3) — `manager` is
           // constructed unconditionally above, before this point is reached.
           adbEndpoint: { manager: adbEndpointManager!, leases, shellSettings: () => settingsStore.get().shell },
@@ -976,8 +1253,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // Plan 58 §5.3 — built just above, alongside `guestAgent`.
         deviceIdentityRoutes: deviceIdentity,
         tagRoutes: createTagRoutes({ db }),
-        clusterRoutes: createClusterRoutes({ db, audit }),
-        topologyRoutes: createTopologyRoutes({ db, readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row) }),
+        clusterRoutes: createClusterRoutes({ db, audit, heldByOf: (deviceId) => leases.getHolder(deviceId) }),
+        topologyRoutes: createTopologyRoutes({
+          db,
+          readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row),
+          heldByOf: (deviceId) => leases.getHolder(deviceId),
+        }),
         batchRoutes: createBatchRoutes({
           db,
           jobStore,
@@ -1001,6 +1282,18 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
           broadcastBatchStatus: (msg) => hub.broadcast(msg),
           broadcastFired: (msg) => hub.broadcast(msg),
+          // Plan 68 §4.2 — agent-target schedules: `agentStore`/`agentRunner` are already built by
+          // this point in the function (unlike `scheduleRunner`'s own construction, much earlier,
+          // which needed the forward-ref pair above).
+          agentDispatch: scheduleAgentDispatch,
+          agentExists: (agentId) => {
+            const agent = agentStore.get(agentId)
+            return !!agent && agent.enabled
+          },
+          scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+          notifySystem: (input) => {
+            notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
+          },
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
         artifactRoutes: createArtifactRoutes({
@@ -1045,10 +1338,29 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           maxAttempts: cfg.auth.loginMaxAttempts,
           lockoutSeconds: cfg.auth.loginLockoutSeconds,
         }),
-        agentRoutes: createAgentRoutes({ agentAuth, db }),
+        nodeRoutes: createNodeRoutes({ nodeAuth, db }),
         auth,
         authMode,
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
+        // The capability registry's three generated surfaces (plan 63 §3.5,
+        // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
+        // are all built just above, before this call.
+        capRoutes: createCapRoutes({ registry: capabilityRegistry, contextDeps: capContextDeps, audit }),
+        openApiDocument,
+        mcpRoutes: createMcpServer({ registry: capabilityRegistry, contextDeps: capContextDeps, audit, serverVersion: CORE_VERSION }),
+        // AI agents and connectors (plan 65 §4.5) — `agentStore`/`connectorStore`/`modelListCache` are built just above.
+        // `tree: agentTreeStore` (plan 67 §4.1) backs `/:id/spawn-grants`.
+        agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit }),
+        connectorRoutes: createConnectorRoutes({ store: connectorStore, audit, modelCache: modelListCache }),
+        // The agent loop's REST surface (plan 66 §4.4) — `agentRunner`/`agentThreadStore`/`agentApprovalStore`/`agentWsHandler` are all built just above.
+        threadRoutes: createThreadRoutes({ runner: agentRunner, threads: agentThreadStore, approvals: agentApprovalStore, agentWs: agentWsHandler, audit }),
+        // Content-addressed image blobs (plan 70 §4.6) — `agentBlobStore` is built just above,
+        // alongside the other agent-loop stores; the cap matches the farm's own per-image budget
+        // (`agentDefaults.maxImageBytes`) so an upload and a stored screenshot are held to the same limit.
+        blobRoutes: createBlobRoutes({ blobs: agentBlobStore, audit, maxUploadBytes: () => settingsStore.get().agentDefaults.maxImageBytes }),
+        // Notifications and webhooks (plan 68 §4.5) — `notificationStore`/`webhookStore` are built early, alongside `hub`.
+        notificationRoutes: createNotificationRoutes({ store: notificationStore }),
+        webhookRoutes: createWebhookRoutes({ store: webhookStore, audit }),
         startedAt,
       })
       const tlsOptions =
@@ -1062,11 +1374,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         ...tlsOptions,
         async fetch(req, srv) {
           const url = new URL(req.url)
-          // The agent tunnel authenticates with the credential from enrollment.
-          if (url.pathname === '/agent/ws') {
-            const agentId = await agentAuth.verify(req.headers.get('authorization'))
-            if (!agentId) return new Response('unauthorized', { status: 401 })
-            if (srv.upgrade(req, { data: { agentId } })) return undefined
+          // The node tunnel authenticates with the credential from enrollment.
+          // `/agent/ws` is the pre-plan-61 path — accepted alongside `/node/ws`
+          // for the same compatibility window as `agent.hello` (§3.3): a node
+          // binary already deployed in the field has this URL hardcoded and
+          // cannot be told to dial somewhere else.
+          if (url.pathname === '/node/ws' || url.pathname === '/agent/ws') {
+            const nodeId = await nodeAuth.verify(req.headers.get('authorization'))
+            if (!nodeId) return new Response('unauthorized', { status: 401 })
+            if (srv.upgrade(req, { data: { nodeId } })) return undefined
             return new Response('upgrade failed', { status: 400 })
           }
           if (url.pathname === '/ws') {
@@ -1091,26 +1407,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         websocket: {
           open: (ws) => {
-            const agentId = (ws.data as { agentId?: string } | null)?.agentId
-            if (agentId) {
-              tunnelRegistry.attach(agentId, ws)
+            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+            if (nodeId) {
+              tunnelRegistry.attach(nodeId, ws)
               return
             }
             hub.handlers.open?.(ws)
           },
           close: (ws, code, reason) => {
-            const agentId = (ws.data as { agentId?: string } | null)?.agentId
-            if (agentId) {
+            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+            if (nodeId) {
               tunnelRegistry.detach(ws)
               return
             }
             hub.handlers.close?.(ws, code, reason)
           },
           message: (ws, message) => {
-            const agentId = (ws.data as { agentId?: string } | null)?.agentId
-            if (agentId) {
-              if (typeof message === 'string') tunnelRouter.handleAgentMessage(ws, agentId, message)
-              else tunnelRouter.handleAgentFrame(agentId, new Uint8Array(message))
+            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+            if (nodeId) {
+              if (typeof message === 'string') tunnelRouter.handleNodeMessage(ws, nodeId, message)
+              else tunnelRouter.handleNodeFrame(nodeId, new Uint8Array(message))
               return
             }
             hub.handlers.message?.(ws, message)
@@ -1143,7 +1459,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       stopScheduleRunner = () => runner.stop()
 
       // The WS router is attached in EVERY mode. Under the orchestrator,
-      // `sessions` is null and all device work is served through agents —
+      // `sessions` is null and all device work is served through nodes —
       // without this, browser requests were silently ignored (the bug Plan 12 fixed).
       const attachWsRouter = (localSessions: SessionManager | null) => {
         const handler = createWsMessageHandler({
@@ -1153,7 +1469,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           pairing: pairingService,
           leases,
           jobs: jobService,
-          // The Monitor tab (plan 24) works on agent-owned devices too now
+          // The Monitor tab (plan 24) works on node-owned devices too now
           // (plan 25): `adb` still serves local devices; `rpc`/`router` are
           // what let `shellPortFor` build the remote `ShellPort` for the rest.
           adb: () => adb,
@@ -1207,6 +1523,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
+          // The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §4.4) — built
+          // once, above, before `attachWsRouter` is even defined (it does not depend on `sessions`).
+          agent: agentWsHandler,
           log: log.child('ws-handler'),
         })
         hub.setRouter(handler)
@@ -1227,13 +1546,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // The orchestrator never touches adb or a local device.
         adbState = 'orchestrator'
         attachWsRouter(null)
-        log.info('mode orchestrator: menunggu agent connect di /agent/ws')
+        log.info('mode orchestrator: waiting for a node to connect on /node/ws')
         return
       }
 
       // 5. Provision the required tools → only then may the adb subsystem start (a gate)
       try {
-        await provisionRequiredTools({ manager: toolchain, hub, log: log.child('provision'), required: REQUIRED_TOOLS })
+        await provisionRequiredTools({
+          manager: toolchain,
+          hub,
+          log: log.child('provision'),
+          required: REQUIRED_TOOLS,
+          critical: CRITICAL_TOOLS,
+        })
         const adbPath = await toolchain.resolveToolPath('adb')
         adb = new AdbClient({
           adbPath,
@@ -1447,8 +1772,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         executors.setFallback({
           validateParams: (params) => localExecutor.validateParams(params),
           run: (job, ctx) => {
-            // Agent-owned device → run it on the agent; otherwise run locally.
-            const owner = remoteSessions?.agentIdFor(job.deviceId) ?? null
+            // Node-owned device → run it on the node; otherwise run locally.
+            const owner = remoteSessions?.nodeIdFor(job.deviceId) ?? null
             return owner ? remoteBridge.executor.run(job, ctx) : localExecutor.run(job, ctx)
           },
         })
@@ -1539,7 +1864,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       } catch (err) {
         adbState = 'error'
         // The core stays up: the tools API can still be used to retry the install.
-        log.error(`adb subsystem failed to start: ${String(err)} — the core stays up, retry via /api/tools`)
+        log.error(
+          `adb subsystem failed to start: ${String(err)} — the core stays up, retry from the Tools page (POST /api/tools/repair)`,
+        )
       }
     },
 

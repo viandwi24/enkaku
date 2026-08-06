@@ -21,7 +21,7 @@ Everything is optional — `bun run dev` works with no configuration at all. To 
 cp .env.example .env
 ```
 
-Bun loads that file automatically for anything it runs as code: the core, the cloud agent, and the scripts. No dotenv package, no import. A real shell variable still wins over it (`ENKAKU_LOG_LEVEL=debug bun run dev`), matching the documented env > file > default precedence.
+Bun loads that file automatically for anything it runs as code: the core, the cloud node, and the scripts. No dotenv package, no import. A real shell variable still wins over it (`ENKAKU_LOG_LEVEL=debug bun run dev`), matching the documented env > file > default precedence.
 
 **One place it does not reach, and it is worth knowing before it costs you an hour:** Bun does not expand `.env` inside `package.json` script strings. `dev:studio` resolves `${NEXT_PUBLIC_ENKAKU_CORE_URL:-…}` in a shell that never saw the root file, so a value set there is silently ignored. Studio's own variables live in `packages/studio/.env`, which Next.js loads itself — see `packages/studio/.env.example`.
 
@@ -29,7 +29,7 @@ Both `.env` files are gitignored; both `.env.example` files are committed and ar
 
 ### Toolchains
 
-Bun is the only thing needed for the core, Studio, the SDK, and the cloud agent — which is nearly everything. Two apps carry their own toolchain, and you only need it if you are working on that app:
+Bun is the only thing needed for the core, Studio, the SDK, and the cloud node — which is nearly everything. Two apps carry their own toolchain, and you only need it if you are working on that app:
 
 | Toolchain | Needed for | Install |
 |---|---|---|
@@ -47,7 +47,7 @@ JDK 17 is the minimum *and* the default for AGP 9; newer JDKs are not a drop-in 
 | `bun run dev:studio` | Studio with hot reload on `:3001`, pointing at the core on `:7700` |
 | `bun run build:studio` | Build Studio so the core can serve it (single origin) |
 | `bun run dev:cloud` | Core in orchestrator mode (control plane, no local devices) |
-| `bun run dev:agent` | Cloud-mode agent (needs `ENKAKU_CP_URL`) |
+| `bun run dev:node` | Cloud-mode node (needs `ENKAKU_CP_URL`) |
 | `bun run dev:desktop` | The Tauri desktop app (needs Rust) |
 | `bun run build:guest-agent` | Build the on-device guest agent APK (needs JDK 17 plus the Android SDK) |
 | `bun run smoke:guest-agent -- --serial <S>` | Device smoke test for the guest agent (needs `ENKAKU_TEST_DEVICE=1` plus a real phone) |
@@ -72,14 +72,14 @@ Tests that need a physical device are gated behind `ENKAKU_TEST_DEVICE=1`, so `b
 bun run dev:cloud
 
 # create an enrollment token (once)
-curl -s -X POST localhost:7700/api/agents \
-  -H 'content-type: application/json' -d '{"name":"my-agent"}'
+curl -s -X POST localhost:7700/api/nodes \
+  -H 'content-type: application/json' -d '{"name":"my-node"}'
 
-# terminal 2 — the agent, on the machine the phones are plugged into
-ENKAKU_CP_URL=http://localhost:7700 ENKAKU_ENROLL_TOKEN=<token> bun run dev:agent
+# terminal 2 — the node, on the machine the phones are plugged into
+ENKAKU_CP_URL=http://localhost:7700 ENKAKU_ENROLL_TOKEN=<token> bun run dev:node
 ```
 
-The token is needed only once; after that `bun run dev:agent` is enough. Full guide: [`docs/guide/cloud.md`](docs/guide/cloud.md).
+The token is needed only once; after that `bun run dev:node` is enough. Full guide: [`docs/guide/cloud.md`](docs/guide/cloud.md).
 
 ### CI
 
@@ -127,7 +127,7 @@ Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/ins
 | `packages/sdk` | `@enkaku/sdk` — `defineScript` plus the `enkaku publish` CLI |
 | `packages/core` | The Bun + Hono daemon: registry, queue/lease, runner, auth/ACL, API and WS |
 | `packages/studio` | The Next.js web UI: dashboard, live control, scripts, jobs, clusters, schedules, topology, guest agents, tools, settings |
-| `packages/agent` | The cloud mini-core: enrollment plus an outbound tunnel (M8a) |
+| `packages/node` | The cloud mini-core: enrollment plus an outbound tunnel (M8a) |
 | `apps/desktop` | The Tauri desktop shell (Rust): native window, tray, the core as a child process |
 | `apps/guest-agent` | The on-device helper APK (Kotlin): a `localabstract` control channel, and the SOCKS5 route the `vpn-helper` engine drives |
 | `examples/` | Example automation scripts (mirroring a script author's project) |

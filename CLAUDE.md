@@ -25,19 +25,22 @@ Runtime and package manager: **Bun** (not Node/npm). From the root:
 bun run dev            # local core on :7700 (data in .dev-data/)
 bun run dev:studio     # Next dev on :3001, pointing at the core on :7700
 bun run dev:cloud      # control plane (ENKAKU_MODE=orchestrator, data in .dev-cloud/)
-bun run dev:agent      # cloud agent (needs ENKAKU_CP_URL; plus ENKAKU_ENROLL_TOKEN on first run)
+bun run dev:node       # cloud node (needs ENKAKU_CP_URL; plus ENKAKU_ENROLL_TOKEN on first run)
 bun run dev:desktop    # Tauri (needs Rust; usually ENKAKU_CORE_BIN=<path>)
 bun run typecheck      # every package — do NOT run scripts/typecheck.sh via `bun run <file.sh>` (Bun misreads the shebang); use this root script or `bash scripts/typecheck.sh`
 bun run build:studio   # static export to packages/studio/out (served by the core = single origin)
-bun run reset          # delete .dev-data/.dev-cloud/.dev-agent
+bun run reset          # delete .dev-data/.dev-cloud/.dev-node
 bun run --cwd packages/core db:generate   # generate a Drizzle migration after changing src/db/schema.ts
 bun run build:guest-agent   # on-device APK (needs JDK 17 + Android SDK; see apps/guest-agent/README.md)
 bun run doctor              # environment check: toolchain integrity, adb, egress
 bun run probe-server        # the self-hosted egress/geo/DNS probe endpoint (plan 51 §5.3); routes degrade to `skip` when it is unset, never to a false `ok`
-bun test                    # the suite; device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
+bun test                    # every package EXCEPT studio (which bun test cannot see — read below); device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
+bun run --cwd packages/studio test   # studio's own tests — a SEPARATE, REQUIRED command; see below before assuming a bare `bun test` covers Studio
 ```
 
 Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.
+
+**A bare `bun test` from the repo root never runs `packages/studio`'s tests — this is intentional, and `packages/studio` must be tested with the separate command above.** The root `bunfig.toml` excludes it via `[test].pathIgnorePatterns = ["packages/studio/**"]` (matched from the repo root, not from `[test].root` above it — that setting only changes where Bun *scans*, not what the ignore pattern is relative to). This exists because Studio's component/page tests render through `@testing-library/react` against a real DOM (`happy-dom`, registered by `packages/studio/bunfig.toml`'s own `[test].preload`), and Bun's preload is a single global list for the WHOLE invocation — there is no per-directory scoping within one `bun test` run. Preloading happy-dom globally was tried and broke core tests that stub `globalThis.fetch` themselves, because happy-dom's registration installs its own `fetch`/`WebSocket`/etc. `packages/studio/package.json`'s `test` script also passes `--isolate`, which is required, not cosmetic: several component tests use `mock.module('@/lib/ws', ...)`, and without `--isolate` a mock installed by one test FILE leaks into every file that runs after it in the same process (a documented Bun behavior), silently poisoning unrelated tests depending on file execution order. `.github/workflows/ci.yml` runs both commands — a green `check` job means both.
 
 **After cloning, run `git submodule update --init --recursive`** — `apps/guest-agent` vendors `hev-socks5-tunnel`, and without it the Android build fails on a missing `Android.mk`.
 
@@ -60,8 +63,8 @@ Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anythi
 ## Dev environment notes
 
 - Local dev works with no env vars at all (`bun run dev`). `.env.example` at the root is the reference for every variable the code reads; `docs/guide/install.md` has the prose.
-- Bun loads the root `.env` automatically for anything it runs as code (core, agent, `scripts/`), but **does NOT expand it inside `package.json` script strings** — so `dev:studio`'s `${NEXT_PUBLIC_ENKAKU_CORE_URL:-…}` never sees it. Studio's variables belong in `packages/studio/.env`, which Next loads itself.
+- Bun loads the root `.env` automatically for anything it runs as code (core, node, `scripts/`), but **does NOT expand it inside `package.json` script strings** — so `dev:studio`'s `${NEXT_PUBLIC_ENKAKU_CORE_URL:-…}` never sees it. Studio's variables belong in `packages/studio/.env`, which Next loads itself.
 - First run downloads the tools (adb, scrcpy-server, ui-server) in under a minute; the system adb on PATH is never used.
 - CORS for `localhost:*` is only active when `NODE_ENV !== 'production'` — that is what lets Studio dev on :3001 talk to the core on :7700.
-- `.github/workflows/ci.yml` runs `bun run typecheck` and `bun test` on every push and PR (job `check`), plus a path-conditional `android` job that builds the guest agent APK (debug) whenever `apps/guest-agent/**` or `scripts/build-guest-agent.sh` changes. `.github/workflows/release.yml` is separate: it builds per-OS binaries on a `v*` tag, boots each one and checks `/api/health` before publishing. Neither CI job touches a physical device — that gap is `bun run smoke:guest-agent`, gated behind `ENKAKU_TEST_DEVICE=1` (docs/plans/50-m24a-ci-and-device-smoke-test.md). A green CI badge says the workspace typechecks and tests; it says nothing about whether the guest agent works on hardware.
+- `.github/workflows/ci.yml` runs `bun run typecheck`, `bun test`, and (separately, per the note above) `bun run --cwd packages/studio test` on every push and PR (job `check`), plus a path-conditional `android` job that builds the guest agent APK (debug) whenever `apps/guest-agent/**` or `scripts/build-guest-agent.sh` changes. `.github/workflows/release.yml` is separate: it builds per-OS binaries on a `v*` tag, boots each one and checks `/api/health` before publishing. Neither CI job touches a physical device — that gap is `bun run smoke:guest-agent`, gated behind `ENKAKU_TEST_DEVICE=1` (docs/plans/50-m24a-ci-and-device-smoke-test.md). A green CI badge says the workspace typechecks and tests; it says nothing about whether the guest agent works on hardware.
 - The release workflow does **not** build the guest agent APK yet; publishing and pinning it is plan 43 §5.11.

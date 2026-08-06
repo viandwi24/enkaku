@@ -2,6 +2,7 @@
  * Interface 4 lapisan driver (spec §7) — lokasi kanonik shared types.
  * Engine implementations live in packages/drivers (from Plan 03 onward).
  */
+import type { FindOutcome } from './find-outcome'
 import type { Selector, UiNode } from './ui-node'
 
 /**
@@ -116,4 +117,14 @@ export interface Inspector {
   dump(): Promise<UiNode>
   find(sel: Selector): Promise<UiNode | null>
   screenshot(): Promise<Uint8Array>
+  /**
+   * `find`, but honest about WHY nothing usable came back (plan 74 §3.4,
+   * §4.3) — not-found / rejected-oversized / ambiguous, instead of a bare
+   * `null`. Optional, like `InspectorElementActions` above: an engine that
+   * cannot tell the difference (or cannot afford to, for a hot polling path)
+   * simply does not implement it, and `device-executor.ts` falls back to
+   * `find()`'s plain not-found/ok distinction — the union is still exhaustive
+   * at every consumer, just less informative for that engine.
+   */
+  findDetailed?(sel: Selector): Promise<FindOutcome>
 }

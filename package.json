@@ -10,7 +10,8 @@
     "dev": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-data} bun run packages/core/src/index.ts",
     "dev:studio": "bun run --cwd packages/studio dev",
     "dev:cloud": "ENKAKU_MODE=orchestrator ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-cloud} bun run packages/core/src/index.ts",
-    "dev:agent": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-agent} bun run packages/agent/src/cli.ts",
+    "dev:node": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-node} bun run packages/node/src/cli.ts",
+    "dev:agent": "echo '[deprecated] dev:agent was renamed to dev:node in plan 61 — this alias is removed in the release after next' >&2 && bun run dev:node",
     "dev:desktop": "bun run --cwd apps/desktop dev",
     "doctor": "bun run packages/core/src/index.ts doctor",
     "build:studio": "bash scripts/build-studio.sh",
@@ -20,7 +21,7 @@
     "dev:probe": "PROBE_HTTP_PORT=${PROBE_HTTP_PORT:-8080} PROBE_GEOIP_UPSTREAM_URL='http://ip-api.com/json/{ip}' bun run packages/probe-server/src/index.ts",
     "publish:example": "bun run packages/sdk/src/cli/index.ts publish examples/hello-no-device.ts",
     "typecheck": "bash scripts/typecheck.sh",
-    "reset": "rm -rf .dev-data .dev-cloud .dev-agent"
+    "reset": "rm -rf .dev-data .dev-cloud .dev-node .dev-agent"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

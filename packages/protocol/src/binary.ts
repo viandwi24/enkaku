@@ -53,7 +53,7 @@ export function encodeVideoFrame(streamId: number, meta: FrameMeta, data: Uint8A
 /**
  * Whether an Annex-B H.264 chunk can start a decode, judged from the bitstream.
  *
- * Frames relayed from an agent arrive as bare bytes — the tunnel carries no
+ * Frames relayed from a node arrive as bare bytes — the tunnel carries no
  * frame metadata — so the flag has to be recovered here rather than trusted.
  * An SPS (type 7) or IDR (type 5) is a valid entry point; anything else is a
  * delta.

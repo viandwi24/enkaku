@@ -5,7 +5,7 @@ import { EnkakuError } from '../util/errors'
 import type { TunnelRouter } from './router'
 
 /**
- * A session for an agent-owned device, wrapped to have **the same shape** as a
+ * A session for a node-owned device, wrapped to have **the same shape** as a
  * local `DeviceSession` (plan 12 §4.4). That way the WS handler never has to
  * branch on "local or remote" in a dozen places.
  *
@@ -25,7 +25,7 @@ export interface RemoteSession extends Pick<DeviceSession, 'deviceId' | 'frameSi
   videoConfig: null
   videoKeyframe: null
   close(): Promise<void>
-  /** Called by the router when an agent reports its session is ready. */
+  /** Called by the router when a node reports its session is ready. */
   applyStarted(info: { codec: 'png' | 'h264'; width: number; height: number }): void
   onFrame(cb: (chunk: Uint8Array, meta: FrameMeta) => void): () => void
   codec: 'png' | 'h264'
@@ -41,7 +41,7 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
       type: 'input.forward',
       payload: { deviceId: deps.deviceId, action },
     } as never)
-    if (!ok) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+    if (!ok) throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
   }
 
   const proxy: RemoteSession = {

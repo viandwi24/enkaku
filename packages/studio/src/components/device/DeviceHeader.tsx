@@ -5,6 +5,7 @@ import Link from 'next/link'
 import {
   Battery,
   BatteryCharging,
+  Bot,
   Check,
   Copy,
   Eye,
@@ -17,12 +18,15 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react'
-import type { BatteryState, DeviceInfo, DeviceStatus, RegistryResponse, Viewer } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { ViewerList, labelFor } from '@/components/ViewerList'
+import { ViewerList } from '@/components/ViewerList'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
+import { AskAnAgentDialog } from '@/components/AskAnAgentDialog'
+import { HolderBadge } from '@/components/HolderBadge'
+import { TakeControlDialog } from '@/components/TakeControlDialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -66,11 +70,11 @@ export interface DeviceDetailInfo extends DeviceInfo {
   inspection: string
   settings: unknown
   /**
-   * Set only for an agent-owned (cloud) device — there is no local `Inspector`
+   * Set only for a node-owned (cloud) device — there is no local `Inspector`
    * to attach to (plan 56 §2 non-goals), so the screen card's `Inspect` mode is
    * disabled rather than left to dead-end at a server refusal.
    */
-  agentId: string | null
+  nodeId: string | null
 }
 
 export const ENGINE_ROWS = [
@@ -106,14 +110,19 @@ export function DeviceHeader({
   now,
   secondsLeft,
   holder,
+  heldBy,
   iHoldControl,
-  heldByOther,
   acquiring,
   canRunScript,
   onRunScript,
   onTakeControl,
+  onControlTaken,
   onReleaseControl,
   onRemove,
+  takeOverOpen,
+  onTakeOverOpenChange,
+  askAgentOpen,
+  onAskAgentOpenChange,
 }: {
   device: DeviceDetailInfo
   status: DeviceStatus
@@ -129,30 +138,54 @@ export function DeviceHeader({
   now: number
   /** Seconds before an idle lease is released, or null when we hold none. */
   secondsLeft: number | null
+  /** The Plan 31 presence viewer who holds control, when it is a WS-connected browser tab — used only to highlight it in the viewer popover on hover. */
   holder: Viewer | null
+  /** Who holds the device's manual lease, server-published (plan 71 §3.2) — a person, an agent, or a job, or null when free. The single source of truth for the take-control button and dialog, replacing `heldByOther`/`agentHolder`. */
+  heldBy: LeaseHolder | null
   iHoldControl: boolean
-  heldByOther: boolean
   acquiring: boolean
   canRunScript: boolean
   onRunScript: () => void
+  /** Acquire an unheld device directly — no confirmation needed (nobody is displaced). */
   onTakeControl: () => void
+  /** A takeover succeeded via the confirmation dialog — the new lease's expiry. */
+  onControlTaken: (expiresAt: number) => void
   onReleaseControl: () => void
   onRemove: () => void
+  /**
+   * Whether the takeover confirmation dialog is open, and how to change that
+   * — lifted to the CALLER rather than kept as this component's own
+   * `useState` (this file's own doc comment: "No hooks of its own... so it
+   * can be called directly like any other function", which
+   * `DeviceHeader.test.tsx` relies on literally — a hook call inside a
+   * plain, un-rendered function call throws "Invalid hook call").
+   */
+  takeOverOpen: boolean
+  onTakeOverOpenChange: (open: boolean) => void
+  /** Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, lifted for the same reason as
+   * `takeOverOpen` above: this component keeps no hooks of its own. */
+  askAgentOpen: boolean
+  onAskAgentOpenChange: (open: boolean) => void
 }) {
   const canTakeControl = status === 'idle'
   const charging = battery?.status === 'charging'
   const hot = battery !== null && battery.temperatureC >= HOT_C
   const lowBattery = battery !== null && battery.level < LOW_BATTERY_PCT
-  const holderLabel = holder ? labelFor(holder) : null
   const settingsHref = `/device?id=${encodeURIComponent(device.id)}&tab=settings`
 
   return (
-    <PageHeader
+    <>
+      <PageHeader
       title={device.label}
       description={`${device.serial} · ${device.androidVersion ? `Android ${device.androidVersion}` : 'Android version unknown'}`}
       meta={
         <div className="flex flex-wrap items-center gap-2.5">
           <DeviceStatusBadge status={status} />
+
+          {/* "A device says who holds it" (plan 71 §3.2) — the lease already knows the holder;
+              this renders it (person, agent, or job) instead of leaving a `manual`/`busy` status
+              badge to speak for an actor nobody can identify. */}
+          {heldBy && !iHoldControl && <HolderBadge holder={heldBy} />}
 
           {/* Deliberately NOT behind a popover (§3.3): a swelling battery or a
               phone cooking itself is only useful as a warning if it is seen
@@ -297,25 +330,43 @@ export function DeviceHeader({
                 Release control
               </Button>
             </span>
-          ) : heldByOther ? (
-            // Reads a fact the server published (the viewer list), not a local
-            // inference — this is what makes the reported two-browser symptom
-            // impossible by construction (plan 31 §4.3).
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  tabIndex={0}
-                  onMouseEnter={() => holder && onHoverSession(holder.sessionId)}
-                  onMouseLeave={() => onHoverSession(null)}
-                >
-                  <Button size="sm" variant="outline" disabled>
-                    <Hand className="size-4" aria-hidden />
-                    Take control
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>Held by {holderLabel}</TooltipContent>
-            </Tooltip>
+          ) : heldBy && heldBy.takeable ? (
+            // Reads a fact the server published (`DeviceInfo.heldBy`, plan 71
+            // §3.2), not a local inference — the same reasoning that makes the
+            // reported two-browser symptom impossible by construction (plan
+            // 31 §4.3), now covering a person, an agent, or a job alike.
+            // ENABLED and visible (§3.6) — the button being disabled here was
+            // the actual defect: it presented an operator's own phone as
+            // unavailable to them. Clicking opens the confirmation dialog,
+            // never takes over silently.
+            <span onMouseEnter={() => holder && onHoverSession(holder.sessionId)} onMouseLeave={() => onHoverSession(null)}>
+              <Button size="sm" variant="outline" onClick={() => onTakeOverOpenChange(true)}>
+                <Hand className="size-4" aria-hidden />
+                Take control
+              </Button>
+            </span>
+          ) : heldBy && !heldBy.takeable ? (
+            // A job's hold is never takeable, whatever is passed (plan 71
+            // §3.4) — genuinely disabled, naming the job and its script, with
+            // a link to it (where Cancel lives) rather than a dead end.
+            <span className="flex items-center gap-1.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={0}>
+                    <Button size="sm" variant="outline" disabled>
+                      <Hand className="size-4" aria-hidden />
+                      Take control
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {heldBy.label} is running on this device — wait for it to finish or cancel it.
+                </TooltipContent>
+              </Tooltip>
+              <Button asChild size="sm" variant="ghost">
+                <Link href={`/jobs/detail?id=${encodeURIComponent(heldBy.id)}`}>View job</Link>
+              </Button>
+            </span>
           ) : canTakeControl ? (
             <Button size="sm" disabled={acquiring} onClick={onTakeControl}>
               <Hand className="size-4" aria-hidden />
@@ -351,6 +402,12 @@ export function DeviceHeader({
                   Device settings
                 </Link>
               </DropdownMenuItem>
+              {/* Plan 73 §3.5, §4.6 — a device page can hand the phone to an agent; the picker
+                  filters to agents that may actually reach it. */}
+              <DropdownMenuItem onSelect={() => onAskAgentOpenChange(true)}>
+                <Bot className="size-3.5" aria-hidden />
+                Ask an agent…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               {/* The same words the fleet card's menu uses, opening the same
                   dialog — a verb keeps its name through the whole flow. */}
@@ -362,7 +419,19 @@ export function DeviceHeader({
           </DropdownMenu>
         </>
       }
-    />
+      />
+      {heldBy && (
+        <TakeControlDialog
+          deviceId={device.id}
+          deviceLabel={device.label}
+          holder={heldBy}
+          open={takeOverOpen}
+          onOpenChange={onTakeOverOpenChange}
+          onTaken={onControlTaken}
+        />
+      )}
+      <AskAnAgentDialog deviceId={device.id} deviceLabel={device.label} open={askAgentOpen} onOpenChange={onAskAgentOpenChange} />
+    </>
   )
 }
 

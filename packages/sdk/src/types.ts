@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
+import type { FindOutcome, KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
 
 export interface WaitForOptions {
   /** Default 10_000 ms. */
@@ -45,7 +45,22 @@ export interface DeviceApi {
    */
   type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }): Promise<void>
   key(code: KeyCode): Promise<void>
+  /**
+   * `null` for both a genuine miss AND a selector refused as a viewport-sized
+   * container (plan 60 §3.1) — unchanged since before plan 74, so a bundle
+   * published earlier keeps running exactly as it did. Use `findDetailed()`
+   * to learn WHICH of the two (or "ambiguous" — several matches) it was.
+   */
   find(sel: Selector): Promise<UiNode | null>
+  /**
+   * `find`, but honest about why nothing usable came back (plan 74 §3.4,
+   * §4.3): `not-found`, `rejected-oversized` (the selector matched a
+   * container filling the screen — retrying will never help), or
+   * `ambiguous` (several matches — narrow the selector). For an agent this
+   * is the difference between retrying and giving up on the same selector;
+   * for a script author it is a better error message.
+   */
+  findDetailed(sel: Selector): Promise<FindOutcome>
   /**
    * The whole accessibility tree — the same one the Inspect panel renders
    * (plan 60 §3.2). This is how a script reads something the four-shape
@@ -124,7 +139,13 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
   /** Semver. */
   version: string
   params: S
-  /** ms per attempt; default 300_000. */
+  /**
+   * ms per attempt. Wins over the farm's own default whenever it is set
+   * (plan 74 §3.1, §3.2) — when it is not, the farm's `job.defaultTimeoutMs`
+   * setting applies instead (Settings → Jobs; 60 minutes out of the box).
+   * An operator-set `job.maxTimeoutMs` ceiling, if any, can still clamp this
+   * — always logged when it does, never silently.
+   */
   timeout?: number
   /** Extra attempts after a failure; defaults to 0. */
   retries?: number

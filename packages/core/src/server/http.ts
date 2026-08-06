@@ -4,12 +4,14 @@ import type { AuthMode } from '../config'
 import { authMiddleware, type AuthEnv } from '../auth/middleware'
 import type { AuthService } from '../auth/service'
 import type { DeviceInfo } from '@enkaku/protocol'
+import { HealthResponseSchema } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { buildRegistryResponse } from '../registry/engines'
 import { createToolsRoutes } from '../tools/routes'
 import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import { typedJson } from '../api/typed-json'
 
 export interface HttpDeps {
   listDevices: () => DeviceInfo[]
@@ -22,6 +24,27 @@ export interface HttpDeps {
   toolchain: ToolchainManager
   jobRoutes: Hono<AuthEnv>
   scriptRoutes: Hono<AuthEnv>
+  /** `POST /api/v1/cap/:id` and `GET /api/v1/cap` (plan 63 §3.6, §4.5). */
+  capRoutes: Hono<AuthEnv>
+  /** Generated once at boot from the same registry `capRoutes` reads
+   * (plan 63 §4.5) — served verbatim at `GET /api/openapi.json`. */
+  openApiDocument: unknown
+  /** MCP's `tools/list`/`tools/call` over `/mcp` (plan 63 §4.4) — mounted
+   * OUTSIDE `/api/*`, so it gets its OWN `authMiddleware` application
+   * below rather than inheriting the `/api/*` one. */
+  mcpRoutes: Hono<AuthEnv>
+  /** `GET/POST/PATCH/DELETE /api/agents` (plan 65 §4.5). */
+  agentRoutes: Hono<AuthEnv>
+  /** `GET/POST/PATCH/DELETE /api/connectors`, `GET /:id/models`, `POST /:id/test` (plan 65 §4.5). */
+  connectorRoutes: Hono<AuthEnv>
+  /** `POST /api/v1/threads`, `GET /threads/:id/messages`, `POST /threads/:id/messages`, `GET /runs/:id`, `POST /runs/:id/cancel`, `POST /approvals/:id` (plan 66 §4.4). */
+  threadRoutes: Hono<AuthEnv>
+  /** `POST /api/v1/blobs`, `GET /api/v1/blobs/:id` (plan 70 §4.6) — content-addressed image storage; the only way base64 ever reaches Studio. */
+  blobRoutes: Hono<AuthEnv>
+  /** `GET /api/notifications`, `.../unread-count`, `.../:id/read`, `.../read-all` (plan 68 §4.5). */
+  notificationRoutes: Hono<AuthEnv>
+  /** `GET/POST/PATCH/DELETE /api/webhooks` (plan 68 §4.1, §4.5). */
+  webhookRoutes: Hono<AuthEnv>
   deviceRoutes: Hono<AuthEnv>
   /** `GET/POST/DELETE /:id/guest-agent` and `GET/PUT/DELETE /:id/network` (plan 44 §5.8) — mounted at the same `/api/devices` prefix as `deviceRoutes`, from its own Hono app so `packages/core/src/api/devices.ts` stays untouched beyond the registry fallout fix. */
   guestAgentRoutes: Hono<AuthEnv>
@@ -38,7 +61,7 @@ export interface HttpDeps {
   /** `enkaku doctor`'s checks, rendered as JSON for the Tools page's diagnostics view (plan 41 §4.5). */
   doctorRoutes: Hono<AuthEnv>
   authRoutes: Hono<AuthEnv>
-  agentRoutes: Hono<AuthEnv>
+  nodeRoutes: Hono<AuthEnv>
   auth: AuthService
   authMode: AuthMode
   startedAt: number
@@ -93,14 +116,17 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/auth', deps.authRoutes)
 
-  app.route('/api/agents', deps.agentRoutes)
+  app.route('/api/nodes', deps.nodeRoutes)
 
+  // `deps.adbServerVersion()` resolves `string | null` — `HealthResponseSchema`'s
+  // `adb.serverVersion` was widened to `z.string().nullable().optional()` (plan 72.5) so this
+  // structurally matches rather than needing a silent `?? undefined`.
   app.get('/api/health', async (c) => {
-    return c.json({
+    return typedJson(c, HealthResponseSchema, {
       ok: true,
       version: deps.version,
       adb: { state: deps.adbState(), serverVersion: await deps.adbServerVersion() },
-      // Studio hides cloud-only screens (Agents) outside orchestrator mode.
+      // Studio hides cloud-only screens (Nodes) outside orchestrator mode.
       mode: process.env.ENKAKU_MODE === 'orchestrator' ? 'orchestrator' : 'local',
       deviceCount: deps.deviceCount(),
       uptimeMs: Date.now() - deps.startedAt,
@@ -147,6 +173,32 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.route('/api/jobs', deps.jobRoutes)
 
   app.route('/api/scripts', deps.scriptRoutes)
+
+  // AI agents and their farm-level connectors (plan 65 §4.5).
+  app.route('/api/agents', deps.agentRoutes)
+  app.route('/api/connectors', deps.connectorRoutes)
+
+  // The capability registry's three generated surfaces (plan 63 §3.5, §3.6,
+  // §4.4, §4.5). `capRoutes` and `GET /api/openapi.json` sit under `/api/*`
+  // and inherit the `authMiddleware` applied above; `/mcp` sits outside it,
+  // so it gets its own application of the SAME middleware (§4.4: "the same
+  // session token as everything else").
+  app.route('/api/v1/cap', deps.capRoutes)
+
+  app.get('/api/openapi.json', (c) => c.json(deps.openApiDocument))
+
+  // The agent chat protocol's REST surface (plan 66 §4.4) — threads, runs, approvals.
+  app.route('/api/v1', deps.threadRoutes)
+
+  // Content-addressed image blobs (plan 70 §4.6) — a screenshot's blob and a person's attachment both flow through here.
+  app.route('/api/v1/blobs', deps.blobRoutes)
+
+  // Notifications and webhooks (plan 68 §4.5) — the bell's data source and its farm-level endpoints.
+  app.route('/api/notifications', deps.notificationRoutes)
+  app.route('/api/webhooks', deps.webhookRoutes)
+
+  app.use('/mcp', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
+  app.route('/mcp', deps.mcpRoutes)
 
   // Static Studio (single-origin prod); /api/* and /ws are handled above.
   const serveStudio = createStudioServer(deps.log.child('studio'))

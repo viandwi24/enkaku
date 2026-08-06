@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
+import { DoctorResponseSchema } from '@enkaku/protocol'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import { createRealDoctorContext } from '../doctor/context'
 import { runChecks } from '../doctor/run'
 import type { CoreProbeResult, DoctorContext } from '../doctor/types'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = { 'auth.forbidden': 403 }
 
@@ -26,7 +28,7 @@ export function createDoctorRoutes(deps: { dataDir: string; coreProbe: () => Pro
     const base = await createRealDoctorContext(deps.dataDir)
     const ctx: DoctorContext = { ...base, core: { probe: deps.coreProbe } }
     const result = await runChecks(ctx)
-    return c.json(result)
+    return typedJson(c, DoctorResponseSchema, result)
   })
 
   app.onError((err, c) => {

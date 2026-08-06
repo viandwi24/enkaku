@@ -210,6 +210,7 @@ Catatan per spec: minimal **dua versi adb** di manifest supaya alur install/acti
 ```
 
 - **Atomicity**: download ke `.staging/<toolId>-<version>.part` → verifikasi sha256 → extract ke `.staging/<toolId>-<version>/` → `rename()` atomik ke `tools/<toolId>/<version>/`. `active.json` ditulis via temp+rename. Folder versi tanpa entry DB dan tanpa hasil verifikasi = dianggap korup saat reconcile → dihapus.
+- **Windows amendment** (`src/fs-safe.ts`): a rename fails with `EPERM`/`EACCES` whenever another process holds the target — Defender scanning the freshly written artifact, the search indexer, a sync client — and a *directory* rename fails if any single file inside it is held. So every move retries with a capped backoff and falls back to a copy, and a **raw** (single-file) artifact skips the staging directory entirely: it moves the file straight into `tools/<toolId>/<version>/`, which keeps the move atomic without ever renaming a directory. Because the copy fallback is not atomic, a failed install now removes its version folder.
 - **Entrypoint** (`entrypoints.ts`, hardcoded per tool — bukan di manifest, supaya schema §7.3 tetap persis):
 
 ```ts

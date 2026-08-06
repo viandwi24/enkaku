@@ -3,7 +3,7 @@ import type { TunnelRouter } from './router'
 import type { TunnelRpc } from './rpc'
 import { createRemoteOpenService } from './adb-remote'
 
-// ---- fakes: no real tunnel, no real agent — mirrors shell-port.test.ts's harness ----
+// ---- fakes: no real tunnel, no real node — mirrors shell-port.test.ts's harness ----
 
 interface FakeRpcRequest {
   deviceId: string
@@ -39,7 +39,7 @@ function createFakeRpc() {
       cb(payload)
       return true
     },
-    failAllForAgent: () => {},
+    failAllForNode: () => {},
   }
   return {
     rpc,
@@ -65,8 +65,8 @@ function createFakeRouter() {
   const dataSubs = new Map<number, (payload: Uint8Array) => void>()
 
   const router: TunnelRouter = {
-    handleAgentMessage: () => {},
-    handleAgentFrame: () => {},
+    handleNodeMessage: () => {},
+    handleNodeFrame: () => {},
     sendToDevice: (deviceId, msg) => {
       sentToDevice.push({ deviceId, msg })
       return true
@@ -136,26 +136,26 @@ describe('createRemoteOpenService (plan 28 §4.2) — against a fake rpc/router'
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     class Boom extends Error {
-      code = 'E_AGENT_TIMEOUT'
+      code = 'E_NODE_TIMEOUT'
     }
-    fakeRpc.setRejection(new Boom('agent did not reply'))
+    fakeRpc.setRejection(new Boom('node did not reply'))
     const openService = createRemoteOpenService({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
 
-    await expect(openService('SERIAL-1', 'shell:x')).rejects.toMatchObject({ code: 'E_AGENT_TIMEOUT' })
+    await expect(openService('SERIAL-1', 'shell:x')).rejects.toMatchObject({ code: 'E_NODE_TIMEOUT' })
     expect(fakeRouter.closed).toEqual([1])
   })
 
-  test('no channel available throws agent_offline without ever calling rpc.request', async () => {
+  test('no channel available throws node_offline without ever calling rpc.request', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRouter.setChannelsAvailable(false)
     const openService = createRemoteOpenService({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
 
-    await expect(openService('SERIAL-1', 'shell:x')).rejects.toMatchObject({ code: 'agent_offline' })
+    await expect(openService('SERIAL-1', 'shell:x')).rejects.toMatchObject({ code: 'node_offline' })
     expect(fakeRpc.calls).toHaveLength(0)
   })
 
-  test('inbound channel frames (device → agent → core) reach onData via subscribeChannel', async () => {
+  test('inbound channel frames (device → node → core) reach onData via subscribeChannel', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRpc.setReply({ ok: true })
@@ -201,7 +201,7 @@ describe('createRemoteOpenService — ack-driven delivery window (plan 28 §3.3,
     await Promise.resolve()
     expect(resolved).toBe(false)
 
-    // Only once the agent's adb.ack for this channel is dispatched does the
+    // Only once the node's adb.ack for this channel is dispatched does the
     // write settle.
     const matched = fakeRpc.rpc.dispatch('adb:1:ack', { bytes: 7 })
     expect(matched).toBe(true)
@@ -260,7 +260,7 @@ describe('createRemoteOpenService — ack-driven delivery window (plan 28 §3.3,
     expect(ended).toEqual(['closed'])
   })
 
-  test('a pending write is resolved (never left hanging) when the agent reports adb.close before acking', async () => {
+  test('a pending write is resolved (never left hanging) when the node reports adb.close before acking', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRpc.setReply({ ok: true })
@@ -278,14 +278,14 @@ describe('createRemoteOpenService — ack-driven delivery window (plan 28 §3.3,
     })
     expect(resolved).toBe(false)
 
-    // The agent (or `failAllForAgent`) reports the stream ending before ever
+    // The node (or `failAllForNode`) reports the stream ending before ever
     // acking — plan §3.5: "half-open streams that never resolve are the
     // worst possible failure for a file transfer."
-    fakeRpc.rpc.dispatch('adb:1:close', { reason: 'agent_offline' })
+    fakeRpc.rpc.dispatch('adb:1:close', { reason: 'node_offline' })
 
     await writePromise
     expect(resolved).toBe(true)
-    expect(ended).toEqual(['agent_offline'])
+    expect(ended).toEqual(['node_offline'])
     expect(fakeRouter.closed).toEqual([1])
   })
 })

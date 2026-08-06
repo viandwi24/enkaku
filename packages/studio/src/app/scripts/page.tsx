@@ -4,10 +4,9 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { FileCode2, Play } from 'lucide-react'
-import type { DeviceInfo } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ScriptGroupsPageResponseSchema, ScriptResponseSchema, ScriptToggleResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -18,11 +17,21 @@ import { fetchDevices } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
 import { coreBase } from '@/lib/ws'
 
+/** One row per script NAME (plan 62 §3.5, §4.4) — the version count is a link into the detail, where every version lives. */
+interface ScriptGroupRow {
+  id: string
+  name: string
+  latestVersion: string
+  versionCount: number
+  lastPublishedAt: number | null
+  enabled: boolean
+}
+
 function ScriptsView() {
   const params = useSearchParams()
   const initialDevice = params.get('device')
   const initialCluster = params.get('cluster')
-  const tableRef = useRef<PaginatedTableHandle<ScriptRow>>(null)
+  const tableRef = useRef<PaginatedTableHandle<ScriptGroupRow>>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [firstScript, setFirstScript] = useState<ScriptRow | null>(null)
   const [runTarget, setRunTarget] = useState<ScriptRow | null>(null)
@@ -46,22 +55,24 @@ function ScriptsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDevice, initialCluster, firstScript])
 
-  const toggleEnabled = (s: ScriptRow) =>
+  const toggleEnabled = (s: ScriptGroupRow) =>
     run(
       'toggle-' + s.id,
-      () => api(`/api/scripts/${s.id}`, { method: 'PATCH', json: { enabled: !s.enabled } }),
+      () => api(`/api/scripts/${s.id}`, ScriptToggleResponseSchema, { method: 'PATCH', json: { enabled: !s.enabled } }),
       {
-        success: s.enabled ? `${s.name} disabled` : `${s.name} enabled`,
+        success: s.enabled ? `${s.name}@${s.latestVersion} disabled` : `${s.name}@${s.latestVersion} enabled`,
         failure: 'Could not change the script status',
         onSuccess: () => tableRef.current?.reload(),
       },
     )
 
-  const remove = (s: ScriptRow) =>
-    run('del-' + s.id, () => api(`/api/scripts/${s.id}`, { method: 'DELETE' }), {
-      success: `${s.name}@${s.version} deleted`,
-      failure: 'Could not delete the script',
-      onSuccess: () => tableRef.current?.reload(),
+  // The list only ever shows the latest version's summary — opening the run
+  // dialog needs its full row (params schema included), which the grouped
+  // endpoint deliberately omits to keep the list payload small.
+  const openRun = (s: ScriptGroupRow) =>
+    run('run-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptResponseSchema), {
+      failure: 'Could not load this script',
+      onSuccess: (b) => setRunTarget(b.script),
     })
 
   return (
@@ -69,19 +80,28 @@ function ScriptsView() {
       <PageHeader title="Scripts" description="Automation scripts published to this farm" />
 
       <div className="space-y-4 px-5 py-4">
-        <PaginatedTable<ScriptRow>
+        <PaginatedTable<ScriptGroupRow>
           ref={tableRef}
           fetchPage={(cursor) =>
-            api<Page<ScriptRow>>(`/api/scripts?limit=50${cursor ? `&cursor=${cursor}` : ''}`).then((page) => {
-              if (cursor === null) setFirstScript(page.items[0] ?? null)
+            // Grouped: one row per name (plan 62 §4.4). The number of
+            // distinct script names is small, so the core returns every
+            // group in one page — `cursor` stays unused, kept in the call
+            // shape only because `PaginatedTable` always passes one.
+            api(`/api/scripts?group=name${cursor ? `&cursor=${cursor}` : ''}`, ScriptGroupsPageResponseSchema).then((page) => {
+              if (cursor === null && page.items[0]) {
+                void api(`/api/scripts/${page.items[0].id}`, ScriptResponseSchema)
+                  .then((b) => setFirstScript(b.script))
+                  .catch(() => undefined)
+              }
               return page
             })
           }
           rowKey={(s) => s.id}
           header={
             <>
-              <TableHead className="w-[40%]">Name</TableHead>
-              <TableHead>Version</TableHead>
+              <TableHead className="w-[32%]">Name</TableHead>
+              <TableHead>Latest</TableHead>
+              <TableHead>Versions</TableHead>
               <TableHead>Published</TableHead>
               <TableHead>Enabled</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -94,44 +114,33 @@ function ScriptsView() {
                   {s.name}
                 </Link>
               </TableCell>
-              <TableCell className="readout text-[12px] text-fg-muted">{s.version}</TableCell>
-              <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(s.createdAt)}</TableCell>
+              <TableCell className="readout text-[12px] text-fg-muted">{s.latestVersion}</TableCell>
+              <TableCell>
+                <Link href={`/scripts/detail?id=${s.id}`} className="readout text-[12px] text-fg-muted hover:text-accent">
+                  {s.versionCount} version{s.versionCount === 1 ? '' : 's'}
+                </Link>
+              </TableCell>
+              <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(s.lastPublishedAt)}</TableCell>
               <TableCell>
                 <Switch
                   checked={s.enabled}
                   disabled={isPending('toggle-' + s.id)}
                   onCheckedChange={() => void toggleEnabled(s)}
-                  aria-label={`Enable ${s.name}`}
+                  aria-label={`Enable ${s.name}@${s.latestVersion}`}
+                  title={`Affects ${s.latestVersion} — the version @latest resolves to`}
                 />
               </TableCell>
               <TableCell className="text-right">
-                <div className="flex justify-end gap-1">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-7 text-[12px]"
-                    disabled={!s.enabled}
-                    onClick={() => setRunTarget(s)}
-                  >
-                    <Play className="size-3.5" aria-hidden />
-                    Run
-                  </Button>
-                  <ConfirmDialog
-                    trigger={
-                      <Button size="sm" variant="ghost" className="h-7 text-[12px]">
-                        Delete
-                      </Button>
-                    }
-                    title={`Delete ${s.name}@${s.version}?`}
-                    description={
-                      <>
-                        The script disappears from this farm and can no longer be run. Jobs that already ran keep
-                        their history.
-                      </>
-                    }
-                    onConfirm={() => remove(s)}
-                  />
-                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 text-[12px]"
+                  disabled={!s.enabled || isPending('run-' + s.id)}
+                  onClick={() => void openRun(s)}
+                >
+                  <Play className="size-3.5" aria-hidden />
+                  Run
+                </Button>
               </TableCell>
             </>
           )}

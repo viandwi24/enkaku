@@ -1,33 +1,46 @@
 import { Hono } from 'hono'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   BatchOrderSchema,
   CatchUpSchema,
+  OnApprovalRequiredSchema,
   OnOverlapSchema,
+  ScheduleResponseSchema,
+  ScheduleRunsPageResponseSchema,
+  ScheduleThreadModeSchema,
+  ScheduleWorkTargetSchema,
+  ScriptRefSchema,
+  ValidateResponseSchema,
   type BatchOrder,
   type CatchUp,
   type JobInfo,
+  type OnApprovalRequired,
   type OnOverlap,
   type ScheduleFiredEvent,
   type ScheduleInfo,
   type ScheduleRunInfo,
+  type ScheduleThreadMode,
+  type ScheduleWorkTarget,
+  type ScriptRef,
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleRuns, type ScheduleRow } from '../db/schema'
+import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import type { JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { nextFires } from '../schedules/cron'
-import { fireOnce, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
+import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
+import { resolveScriptRef } from '../scripts/resolve'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
+import { typedJson } from './typed-json'
 
 const ScheduleTargetSchema = z.union([
   z.object({ clusterId: z.string().min(1) }),
@@ -40,8 +53,11 @@ const ScheduleBody = z.object({
   enabled: z.boolean().default(true),
   cron: z.string().min(1),
   timezone: z.string().min(1),
-  scriptId: z.string().min(1),
-  params: z.unknown(),
+  /** `name@version` or `name@latest` (plan 62 §4.4) — the LEGACY shape: a schedule stores the REFERENCE, never a resolved id. Superseded by `workTarget` below when given; kept so every pre-plan-68 caller (Studio, `POST /api/schedules`) needs no change. */
+  scriptRef: ScriptRefSchema.optional(),
+  params: z.unknown().optional(),
+  /** Plan 68 §3.1 — the work this schedule triggers. Omitted ⇒ derived from `scriptRef`/`params` above. */
+  workTarget: ScheduleWorkTargetSchema.optional(),
   target: ScheduleTargetSchema,
   concurrency: z.number().int().min(0).default(0),
   order: BatchOrderSchema.default('as-listed'),
@@ -50,6 +66,10 @@ const ScheduleBody = z.object({
   catchUp: CatchUpSchema.default('skip'),
   jitterSec: z.number().int().min(0).default(0),
   priority: z.number().int().default(0),
+  /** Plan 68 §3.2 — agent targets only. */
+  threadMode: ScheduleThreadModeSchema.default('new'),
+  /** Plan 68 §3.5 — agent targets only. */
+  onApprovalRequired: OnApprovalRequiredSchema.default('deny'),
 })
 
 const SchedulePatchBody = ScheduleBody.partial()
@@ -66,8 +86,32 @@ const ERROR_STATUS: Record<string, number> = {
   E_NO_TARGETS: 409,
   unknown_script: 400,
   script_disabled: 409,
+  script_not_found: 404,
+  script_version_not_found: 404,
+  script_ref_unresolved: 409,
   invalid_job_params: 400,
+  agent_not_found: 404,
+  E_AGENT_DISABLED: 409,
   E_DB: 500,
+}
+
+/** What a reference resolves to right now (plan 62 §4.4) — echoed alongside the schedule so the UI can show "→ 2.0.0" without a second call. */
+interface ResolvesTo {
+  scriptId: string
+  name: string
+  version: string
+}
+
+/** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). */
+function tryResolve(db: Db, scriptRef: string): ResolvesTo | null {
+  const parsed = ScriptRefSchema.safeParse(scriptRef)
+  if (!parsed.success) return null
+  try {
+    const row = resolveScriptRef(db, parsed.data)
+    return { scriptId: row.id, name: row.name, version: row.version }
+  } catch {
+    return null
+  }
 }
 
 function toSec(d: Date | null): number | null {
@@ -143,17 +187,42 @@ export interface ScheduleRoutesDeps {
   onJobStatus: (info: JobInfo) => void
   broadcastBatchStatus: BatchRoutesDeps['broadcastBatchStatus']
   broadcastFired: (msg: ScheduleFiredEvent) => void
+  /** Plan 68 §4.2 — the agent side of dispatch; passed straight through to `schedules/runner.ts`'s `fireOnce`. Optional so a host without the agent series wired (or a test) simply cannot create an agent-target schedule. */
+  agentDispatch?: ScheduleAgentDispatch
+  /** Validates an agent id/slug at schedule-write time (plan 68 §4.2) — a schedule saved against an agent that does not exist would otherwise fail silently at its first firing. */
+  agentExists?: (agentId: string) => boolean
+  scheduledAgentCeilings?: () => ScheduledAgentCeilings
+  notifySystem?: ScheduleRunnerDeps['notifySystem']
 }
 
-function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow): ScheduleInfo {
+/** One `scheduleAgentTargets` row, or null for a script-kind schedule (plan 68 §4.1's companion-table discriminator). */
+function getAgentTargetRow(db: Db, scheduleId: string): ScheduleAgentTargetRow | null {
+  return db.select().from(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, scheduleId)).get() ?? null
+}
+
+/** Batched, for the list endpoint — one query for a whole page rather than N. */
+function loadAgentTargets(db: Db, scheduleIds: string[]): Map<string, ScheduleAgentTargetRow> {
+  if (scheduleIds.length === 0) return new Map()
+  const rows = db.select().from(scheduleAgentTargets).where(inArray(scheduleAgentTargets.scheduleId, scheduleIds)).all()
+  return new Map(rows.map((r) => [r.scheduleId, r]))
+}
+
+function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleWorkTarget {
+  if (agentTarget) return { kind: 'agent', agentId: agentTarget.agentId, prompt: agentTarget.prompt }
+  return { kind: 'script', ref: row.scriptRef as ScriptRef, params: row.params ?? undefined }
+}
+
+function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleInfo {
   return {
     id: row.id,
     name: row.name,
     enabled: row.enabled ?? true,
     cron: row.cron,
     timezone: row.timezone,
-    scriptId: row.scriptId,
-    params: row.params,
+    target: workTargetFor(row, agentTarget),
+    // Legacy fields (plan 62) — populated only for a script target; null for an agent one.
+    scriptRef: agentTarget ? null : row.scriptRef,
+    params: agentTarget ? null : row.params,
     clusterId: row.clusterId,
     deviceIds: (row.deviceIds as string[] | null) ?? [],
     concurrency: row.concurrency,
@@ -163,8 +232,12 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow): Schedule
     catchUp: row.catchUp as CatchUp,
     jitterSec: row.jitterSec,
     priority: row.priority,
+    threadMode: (agentTarget?.threadMode as ScheduleThreadMode | undefined) ?? 'new',
+    threadId: agentTarget?.threadId ?? null,
+    onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
     lastFiredAt: toSec(row.lastFiredAt),
     lastBatchId: row.lastBatchId,
+    lastAgentRunId: agentTarget?.lastAgentRunId ?? null,
     createdBy: row.createdBy,
     createdAt: toSec(row.createdAt) ?? 0,
     nextFireAt: row.enabled ? (deps.runner.nextFires().get(row.id) ?? null) : null,
@@ -212,6 +285,9 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     broadcastBatchStatus: deps.broadcastBatchStatus,
     broadcastFired: deps.broadcastFired,
     validateScript: (scriptId, params) => validateScriptForRun(deps, scriptId, params),
+    ...(deps.agentDispatch ? { agentDispatch: deps.agentDispatch } : {}),
+    ...(deps.scheduledAgentCeilings ? { scheduledAgentCeilings: deps.scheduledAgentCeilings } : {}),
+    ...(deps.notifySystem ? { notifySystem: deps.notifySystem } : {}),
   }
 
   const batchDeps: BatchRoutesDeps = {
@@ -240,16 +316,31 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const body = ValidateBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { cron, timezone } is required')
     const result = nextFires(body.data.cron, body.data.timezone, 5)
-    if (!result.ok) return c.json({ valid: false, nextFires: [], error: result.error })
-    return c.json({ valid: true, nextFires: result.value })
+    if (!result.ok) return typedJson(c, ValidateResponseSchema, { valid: false, nextFires: [], error: result.error })
+    return typedJson(c, ValidateResponseSchema, { valid: true, nextFires: result.value })
   })
 
   app.get('/', (c) => {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = querySchedulesRows(db, { cursor, limit })
-    const items = rows.map((r) => rowToScheduleInfo(deps, r))
+    const agentTargets = loadAgentTargets(db, rows.map((r) => r.id))
+    const items = rows.map((r) => rowToScheduleInfo(deps, r, agentTargets.get(r.id) ?? null))
     return c.json({ items, nextCursor, total })
   })
+
+  /** Plan 68 §3.1, §4.2 — either the explicit `workTarget`, or (backward compatible) `scriptRef`/`params` treated as `{kind: 'script'}`. Exactly one of the two shapes must resolve, or the request is malformed. */
+  const resolveWorkTargetInput = (body: z.infer<typeof ScheduleBody>): ScheduleWorkTarget => {
+    if (body.workTarget) return body.workTarget
+    if (!body.scriptRef) throw new EnkakuError('E_BAD_REQUEST', 'either workTarget or scriptRef is required')
+    return { kind: 'script', ref: body.scriptRef, params: body.params }
+  }
+
+  const assertAgentTargetValid = (workTarget: ScheduleWorkTarget): void => {
+    if (workTarget.kind !== 'agent') return
+    if (!deps.agentExists || !deps.agentExists(workTarget.agentId)) {
+      throw new EnkakuError('agent_not_found', `no such agent: ${workTarget.agentId}`)
+    }
+  }
 
   // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
   // matrix; a schedule (and a batch, in `api/batches.ts`) is a way of
@@ -262,7 +353,18 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     }
     assertCronValid(body.data.cron, body.data.timezone)
     assertClusterExists(body.data.target)
-    const validatedParams = validateScriptForRun(deps, body.data.scriptId, body.data.params)
+    const workTarget = resolveWorkTargetInput(body.data)
+    assertAgentTargetValid(workTarget)
+
+    // Resolved BEFORE the row is written (plan 62 §4.4) — a schedule created
+    // on a reference that cannot resolve right now would be indistinguishable
+    // from one saved correctly, until its first (silent) firing failure.
+    // For an agent target, `scriptRef` is simply unused (`''`) — the
+    // dispatcher branches on the presence of a `scheduleAgentTargets` row
+    // before this column is ever read (plan 68 §4.2, `db/schema.ts`'s
+    // `scheduleAgentTargets` doc comment).
+    const resolved = workTarget.kind === 'script' ? resolveScriptRef(db, workTarget.ref) : null
+    const validatedParams = workTarget.kind === 'script' ? validateScriptForRun(deps, resolved!.id, workTarget.params) : null
 
     const row: ScheduleRow = {
       id: crypto.randomUUID(),
@@ -270,8 +372,10 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       enabled: body.data.enabled,
       cron: body.data.cron,
       timezone: body.data.timezone,
-      scriptId: body.data.scriptId,
-      params: validatedParams ?? null,
+      // Stored verbatim — never the resolved id (plan 62 §3.3, §3.2): a
+      // `@latest` reference is meant to float on every future firing.
+      scriptRef: workTarget.kind === 'script' ? workTarget.ref : '',
+      params: workTarget.kind === 'script' ? (validatedParams ?? null) : null,
       clusterId: 'clusterId' in body.data.target ? body.data.target.clusterId : null,
       deviceIds: 'deviceIds' in body.data.target ? body.data.target.deviceIds : null,
       concurrency: body.data.concurrency,
@@ -287,12 +391,35 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       createdAt: new Date(),
     }
     db.insert(schedules).values(row).run()
+
+    let agentTargetRow: ScheduleAgentTargetRow | null = null
+    if (workTarget.kind === 'agent') {
+      agentTargetRow = {
+        scheduleId: row.id,
+        agentId: workTarget.agentId,
+        prompt: workTarget.prompt,
+        threadMode: body.data.threadMode,
+        threadId: null,
+        onApprovalRequired: body.data.onApprovalRequired,
+        lastAgentRunId: null,
+        createdAt: new Date(),
+      }
+      db.insert(scheduleAgentTargets).values(agentTargetRow).run()
+    }
+
     deps.runner.reload()
-    deps.audit.record({ userId: row.createdBy, action: 'schedule.create', target: row.id, meta: { name: row.name, cron: row.cron } })
-    return c.json({ schedule: rowToScheduleInfo(deps, row) }, 201)
+    deps.audit.record({ userId: row.createdBy, action: 'schedule.create', target: row.id, meta: { name: row.name, cron: row.cron, kind: workTarget.kind } })
+    // Echoes what a script reference resolves to RIGHT NOW (plan 62 §4.4), so the UI can show
+    // "→ 2.0.0" without a second call — null for an agent target, which has nothing to resolve.
+    const resolvesTo: ResolvesTo | null = resolved ? { scriptId: resolved.id, name: resolved.name, version: resolved.version } : null
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTargetRow), resolvesTo }, 201)
   })
 
-  app.get('/:id', (c) => c.json({ schedule: rowToScheduleInfo(deps, mustGet(c.req.param('id'))) }))
+  app.get('/:id', (c) => {
+    const row = mustGet(c.req.param('id'))
+    const agentTarget = getAgentTargetRow(db, row.id)
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTarget), resolvesTo: agentTarget ? null : tryResolve(db, row.scriptRef) })
+  })
 
   app.patch('/:id', requirePermission('job.run'), async (c) => {
     const row = mustGet(c.req.param('id'))
@@ -314,11 +441,60 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       patch.clusterId = 'clusterId' in body.data.target ? body.data.target.clusterId : null
       patch.deviceIds = 'deviceIds' in body.data.target ? body.data.target.deviceIds : null
     }
-    if (body.data.scriptId !== undefined || body.data.params !== undefined) {
-      const scriptId = body.data.scriptId ?? row.scriptId
-      patch.scriptId = scriptId
-      patch.params = validateScriptForRun(deps, scriptId, body.data.params ?? row.params) ?? null
+
+    // Plan 68 §3.1, §4.2 — switching (or updating) the WORK target. `existingAgentTarget` tracks the
+    // live truth across this handler so the final response (and the trailing threadMode/
+    // onApprovalRequired patch below) reads correctly either way.
+    let existingAgentTarget = getAgentTargetRow(db, row.id)
+
+    if (body.data.workTarget !== undefined) {
+      const wt = body.data.workTarget
+      if (wt.kind === 'script') {
+        const resolved = resolveScriptRef(db, wt.ref)
+        patch.scriptRef = wt.ref
+        patch.params = validateScriptForRun(deps, resolved.id, wt.params) ?? null
+        if (existingAgentTarget) {
+          db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
+          existingAgentTarget = null
+        }
+      } else {
+        assertAgentTargetValid(wt)
+        if (existingAgentTarget) {
+          db.update(scheduleAgentTargets).set({ agentId: wt.agentId, prompt: wt.prompt }).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
+        } else {
+          patch.scriptRef = '' // no longer used — see `scheduleAgentTargets`'s doc comment
+          patch.params = null
+          db.insert(scheduleAgentTargets)
+            .values({
+              scheduleId: row.id,
+              agentId: wt.agentId,
+              prompt: wt.prompt,
+              threadMode: body.data.threadMode ?? 'new',
+              threadId: null,
+              onApprovalRequired: body.data.onApprovalRequired ?? 'deny',
+              lastAgentRunId: null,
+              createdAt: new Date(),
+            })
+            .run()
+        }
+        existingAgentTarget = getAgentTargetRow(db, row.id)
+      }
+    } else if ((body.data.scriptRef !== undefined || body.data.params !== undefined) && !existingAgentTarget) {
+      // Legacy path (plan 62) — unchanged behaviour for an already-script-kind schedule.
+      const scriptRef = body.data.scriptRef ?? row.scriptRef
+      // Resolved BEFORE the row is written, same reasoning as POST above.
+      const resolved = resolveScriptRef(db, scriptRef as ScriptRef)
+      patch.scriptRef = scriptRef
+      patch.params = validateScriptForRun(deps, resolved.id, body.data.params ?? row.params) ?? null
     }
+
+    if (existingAgentTarget && (body.data.threadMode !== undefined || body.data.onApprovalRequired !== undefined)) {
+      const agentPatch: Partial<ScheduleAgentTargetRow> = {}
+      if (body.data.threadMode !== undefined) agentPatch.threadMode = body.data.threadMode
+      if (body.data.onApprovalRequired !== undefined) agentPatch.onApprovalRequired = body.data.onApprovalRequired
+      db.update(scheduleAgentTargets).set(agentPatch).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
+    }
+
     if (body.data.concurrency !== undefined) patch.concurrency = body.data.concurrency
     if (body.data.order !== undefined) patch.order = body.data.order
     if (body.data.onOverlap !== undefined) patch.onOverlap = body.data.onOverlap
@@ -330,11 +506,14 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (Object.keys(patch).length > 0) db.update(schedules).set(patch).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.update', target: row.id, meta: { patch: Object.keys(patch) } })
-    return c.json({ schedule: rowToScheduleInfo(deps, mustGet(row.id)) })
+    const finalRow = mustGet(row.id)
+    const finalAgentTarget = getAgentTargetRow(db, row.id)
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, finalRow, finalAgentTarget), resolvesTo: finalAgentTarget ? null : tryResolve(db, finalRow.scriptRef) })
   })
 
   app.delete('/:id', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
+    db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
     db.delete(schedules).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.delete', target: row.id, meta: { name: row.name } })
@@ -346,13 +525,14 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = queryScheduleRunsRows(db, row.id, { cursor, limit })
     const items = rows.map(rowToScheduleRunInfo)
-    return c.json({ items, nextCursor, total })
+    return typedJson(c, ScheduleRunsPageResponseSchema, { items, nextCursor, total })
   })
 
   // Ignores the cron — fires right now — but still honours onOverlap unless
   // the operator explicitly overrides it (plan 21 §9 open question #2).
   app.post('/:id/run-now', requirePermission('job.run'), async (c) => {
     const row = mustGet(c.req.param('id'))
+    const agentTargetBefore = getAgentTargetRow(db, row.id)
     const body = RunNowBody.safeParse(await c.req.json().catch(() => ({})))
     const ignoreOverlap = body.success && body.data.ignoreOverlap
     // Never applies jitter to a manual "run now" — the operator asked for it now.
@@ -368,9 +548,19 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       .orderBy(desc(scheduleRuns.dueAt))
       .limit(1)
       .get()
-    if (!latest || latest.outcome !== 'dispatched' || !latest.batchId) {
+    if (!latest || latest.outcome !== 'dispatched') {
       throw new EnkakuError('E_NOT_DISPATCHED', latest?.detail ?? `run-now did not dispatch (${latest?.outcome ?? 'unknown'})`)
     }
+
+    if (agentTargetBefore) {
+      // Plan 68 §4.2 — an agent-target firing produces a RUN, not a batch.
+      const updatedTarget = getAgentTargetRow(db, row.id)
+      if (!updatedTarget?.lastAgentRunId) throw new EnkakuError('E_NOT_DISPATCHED', latest.detail ?? 'run-now did not dispatch')
+      deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.run-now', target: row.id, meta: { runId: updatedTarget.lastAgentRunId } })
+      return c.json({ run: { runId: updatedTarget.lastAgentRunId, threadId: updatedTarget.threadId } })
+    }
+
+    if (!latest.batchId) throw new EnkakuError('E_NOT_DISPATCHED', latest.detail ?? 'run-now did not dispatch')
     const batchRow = db.select().from(batches).where(eq(batches.id, latest.batchId)).get()
     if (!batchRow) throw new EnkakuError('E_DB', 'the dispatched batch did not persist')
 

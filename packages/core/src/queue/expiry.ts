@@ -25,10 +25,18 @@ export function createExpiryReaper(deps: {
   onJobStatus: (info: JobInfo) => void
   /** A batch member job expired → recompute the batch's cached status (plan 20 §4.5, plan 21 §4.3). */
   onBatchChanged: (batchId: string) => void
+  /**
+   * Expires overdue agent approvals on this SAME cadence (plan 66 §4.3:
+   * "a sweeper expires overdue approvals on the same timer the job reaper
+   * uses rather than adding a second scheduler"). Optional so every
+   * existing caller/test that predates Plan 66 keeps compiling unchanged.
+   */
+  sweepApprovals?: () => void
 }): ExpiryReaper {
   let timer: ReturnType<typeof setInterval> | null = null
 
   function sweepOnce(): JobRow[] {
+    deps.sweepApprovals?.()
     const expired = deps.jobStore.expireQueued()
     for (const row of expired) {
       deps.log.warn(`job ${row.id} expired: queue timeout (device ${row.deviceId})`)

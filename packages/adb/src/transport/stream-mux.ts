@@ -17,7 +17,7 @@ export interface RawStream {
    * A backend that carries the write across an additional hop (the cloud
    * adb endpoint, plan 28 §3.3) may instead return a `Promise<void>` that
    * resolves only once delivery is actually confirmed downstream (the
-   * agent's `adb.ack`). `handleWrte` below awaits that promise before
+   * node's `adb.ack`). `handleWrte` below awaits that promise before
    * sending the OKAY, so the ready-window genuinely survives the extra hop
    * instead of lying about delivery — the shim never acknowledges a WRTE
    * merely because it handed the bytes to the tunnel.
@@ -202,7 +202,7 @@ export function createStreamMux(deps: StreamMuxDeps): StreamMux {
     }
     if (isThenable(result)) {
       // Plan 28 §3.3: a remote backend's write does not settle until the
-      // agent has actually written the bytes downstream — the WRTE's OKAY
+      // node has actually written the bytes downstream — the WRTE's OKAY
       // follows THAT acknowledgement, not the mere handoff to the tunnel.
       // Settle either way (a rejection means the backend is ending; its own
       // `onEnd` — wired via `streamFrom` — is what sends the CLSE) so a

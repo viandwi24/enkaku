@@ -61,7 +61,17 @@ interface ChildBehavior {
    */
   onInit?: (init: Extract<ParentToChild, { t: 'init' }>, emit: (m: ChildToParent) => void, exit: (code: number) => void) => void
   /** Called when the parent sends `{ t: 'abort' }` (a cancel or timeout mid-run). */
-  onAbort?: (reason: 'timeout' | 'cancelled' | 'hung' | 'crashed', emit: (m: ChildToParent) => void, exit: (code: number) => void) => void
+  onAbort?: (
+    reason: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout',
+    emit: (m: ChildToParent) => void,
+    exit: (code: number) => void,
+  ) => void
+  /**
+   * Plan 74 §3.2, §4.2 — the child that `startupTimeoutMs` exists to catch:
+   * it never sends `ready` at all. `ready` above still has to be a valid
+   * `ChildToParent` literal (the type requires it), it is simply never sent.
+   */
+  neverReady?: boolean
 }
 
 /** One scripted fake child per array entry — spawn N gets behavior[N]. */
@@ -92,7 +102,7 @@ function fakeIsolation(behaviors: ChildBehavior[]): { isolation: IsolationProvid
         stdout: undefined,
         stderr: undefined,
       }
-      queueMicrotask(() => ipc(behavior.ready))
+      if (!behavior.neverReady) queueMicrotask(() => ipc(behavior.ready))
       return child as unknown as Subprocess<'ignore', 'pipe', 'pipe'>
     },
   }
@@ -100,7 +110,18 @@ function fakeIsolation(behaviors: ChildBehavior[]): { isolation: IsolationProvid
 }
 
 const DEFAULT_RETRY = { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true }
-const HOME_SETTINGS: JobSettings = { resetPolicy: 'home', resetTimeoutMs: 15_000, resetStrict: false, retry: DEFAULT_RETRY, crashPolicy: 'declared' }
+const HOME_SETTINGS: JobSettings = {
+  resetPolicy: 'home',
+  resetTimeoutMs: 15_000,
+  resetStrict: false,
+  retry: DEFAULT_RETRY,
+  crashPolicy: 'declared',
+  quietPeriodSec: 10,
+  maxWaitSec: 120,
+  defaultTimeoutMs: 3_600_000,
+  startupTimeoutMs: 60_000,
+  maxTimeoutMs: null,
+}
 
 function successBehavior(reset?: { packages: string[]; clearData?: boolean }): ChildBehavior {
   return {
@@ -190,7 +211,18 @@ describe('createJobRunner — the ready → reset → init ordering (plan 35 §4
       onArtifact: () => {},
       onPhase: (_jobId, _attempt, phase) => phases.push(phase),
       heartbeat: () => {},
-      resetPolicy: () => ({ resetPolicy: 'none', resetTimeoutMs: 15_000, resetStrict: false, retry: DEFAULT_RETRY, crashPolicy: 'declared' }),
+      resetPolicy: () => ({
+        resetPolicy: 'none',
+        resetTimeoutMs: 15_000,
+        resetStrict: false,
+        retry: DEFAULT_RETRY,
+        crashPolicy: 'declared',
+        quietPeriodSec: 10,
+        maxWaitSec: 120,
+        defaultTimeoutMs: 3_600_000,
+        startupTimeoutMs: 60_000,
+        maxTimeoutMs: null,
+      }),
       onReset: () => phases.push('onReset-should-not-fire'),
     })
 
@@ -226,7 +258,18 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
       onArtifact: () => {},
       onPhase: () => {},
       heartbeat: () => {},
-      resetPolicy: () => ({ resetPolicy: 'home', resetTimeoutMs: 15_000, resetStrict: true, retry: DEFAULT_RETRY, crashPolicy: 'declared' }),
+      resetPolicy: () => ({
+        resetPolicy: 'home',
+        resetTimeoutMs: 15_000,
+        resetStrict: true,
+        retry: DEFAULT_RETRY,
+        crashPolicy: 'declared',
+        quietPeriodSec: 10,
+        maxWaitSec: 120,
+        defaultTimeoutMs: 3_600_000,
+        startupTimeoutMs: 60_000,
+        maxTimeoutMs: null,
+      }),
     })
 
     const result = await runner.execute(JOB)
@@ -251,7 +294,18 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
       onArtifact: () => {},
       onPhase: () => {},
       heartbeat: () => {},
-      resetPolicy: () => ({ resetPolicy: 'home', resetTimeoutMs: 15_000, resetStrict: false, retry: DEFAULT_RETRY, crashPolicy: 'declared' }),
+      resetPolicy: () => ({
+        resetPolicy: 'home',
+        resetTimeoutMs: 15_000,
+        resetStrict: false,
+        retry: DEFAULT_RETRY,
+        crashPolicy: 'declared',
+        quietPeriodSec: 10,
+        maxWaitSec: 120,
+        defaultTimeoutMs: 3_600_000,
+        startupTimeoutMs: 60_000,
+        maxTimeoutMs: null,
+      }),
     })
 
     const result = await runner.execute(JOB)
@@ -478,13 +532,22 @@ function settingsWithRetry(retry: Partial<JobSettings['retry']>): JobSettings {
     resetStrict: false,
     retry: { ...DEFAULT_RETRY, ...retry },
     crashPolicy: 'declared',
+    quietPeriodSec: 10,
+    maxWaitSec: 120,
+    defaultTimeoutMs: 3_600_000,
+    startupTimeoutMs: 60_000,
+    maxTimeoutMs: null,
   }
 }
 
 /** A minimal stand-in for `packages/core/src/jobs/failure-class.ts`'s table — just enough to drive the tests. */
 function fakeClassify(err: unknown): ClassifiedFailure {
   const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : 'UNKNOWN'
-  if (code === 'E_ADB_TIMEOUT' || code === 'DEVICE_DISCONNECTED') return { class: 'infra', code, message: 'x', blameDevice: true }
+  // Mirrors the real table's plan 74 §3.2 addition: a child that never
+  // started is unconditionally infra — never depends on `timeoutIsInfra`.
+  if (code === 'E_ADB_TIMEOUT' || code === 'DEVICE_DISCONNECTED' || code === 'STARTUP_TIMEOUT') {
+    return { class: 'infra', code, message: 'x', blameDevice: true }
+  }
   if (code === 'E_ADB_BUSY') return { class: 'load', code, message: 'x', blameDevice: false }
   return { class: 'script', code, message: 'x', blameDevice: false }
 }
@@ -884,4 +947,178 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
     expect(Math.abs((point?.x ?? 10) - 10)).toBeLessThanOrEqual(2)
     expect(Math.abs((point?.y ?? 20) - 20)).toBeLessThanOrEqual(2)
   }, 10_000)
+})
+
+/**
+ * Plan 74 §3.2, §4.2 — `startupTimeoutMs`, criteria 3, 4, 5: `DEFAULT_TIMEOUT_MS`
+ * is gone, the farm default (`defaultTimeoutMs`) came from `settingsWithRetry`/
+ * `HOME_SETTINGS` throughout this file already (every prior test above this
+ * point depends on that, not a hard-coded constant), and a child that never
+ * reports `ready` is bounded by the SHORT startup timer, classified infra.
+ */
+describe('createJobRunner — startupTimeoutMs (plan 74 §3.2, §4.2, criteria 3, 4, 5)', () => {
+  test('a child that never sends ready fails after startupTimeoutMs — not the (much longer) run timeout', async () => {
+    const { isolation } = fakeIsolation([
+      { ready: { t: 'ready', scriptId: 's', version: '1.0.0' }, neverReady: true, onAbort: (_reason, _emit, exit) => exit(1) },
+    ])
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(async () => '')),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      // defaultTimeoutMs stays at HOME_SETTINGS' 3_600_000 — if the code
+      // still raced the RUN timer instead of a dedicated startup timer, this
+      // test would hang for an hour rather than settle in milliseconds.
+      resetPolicy: () => ({ ...settingsWithRetry({ maxInfraAttempts: 0 }), startupTimeoutMs: 20 }),
+      classify: fakeClassify,
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(false)
+    // Distinct from a run 'TIMEOUT' (criterion 4) — this is what lets
+    // failure-class.ts classify it unconditionally as infra (criterion 5),
+    // never spending the script's own retry budget.
+    expect(outcome.error?.code).toBe('STARTUP_TIMEOUT')
+  })
+
+  test('classified infra — an infra-only retry budget still recovers it, proving it never spent the script budget (criterion 5)', async () => {
+    const { isolation } = fakeIsolation([
+      { ready: { t: 'ready', scriptId: 's', version: '1.0.0' }, neverReady: true, onAbort: (_reason, _emit, exit) => exit(1) },
+      // The runner ALWAYS forces a finish-only attempt first when an attempt
+      // ends with `finishRan: false` (plan 05 §4.7, unrelated to this plan)
+      // — this behavior is consumed by that, not by the real retry below.
+      attemptBehavior('success', 0),
+      // retries: 0 — if STARTUP_TIMEOUT were misclassified as 'script', this
+      // real retry attempt would never be spent (the script budget is zero)
+      // and the job would fail outright instead of recovering.
+      attemptBehavior('success', 0),
+    ])
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(async () => '')),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...settingsWithRetry({ maxInfraAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 2 }), startupTimeoutMs: 20 }),
+      classify: fakeClassify,
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+  })
+
+  test('ready arriving before the startup timer fires clears it — a slow-but-alive child is not touched by it', async () => {
+    // successBehavior() reports `ready` immediately (the fake's normal
+    // path) and then completes — if the startup timer were left armed after
+    // `ready`, it would still be a no-op here since the job finishes long
+    // before 20ms, but this test exists to document the clearing explicitly
+    // rather than relying on that race.
+    const { isolation } = fakeIsolation([successBehavior()])
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(async () => '')),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, startupTimeoutMs: 20 }),
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+  })
+})
+
+/**
+ * Plan 74 §3.3, §4.2 — `maxTimeoutMs`, criteria 6, 7: `null` (the default)
+ * means no ceiling at all; when it IS set, a script's request above it is
+ * clamped and the clamp is logged NAMING the script and both numbers.
+ */
+describe('createJobRunner — maxTimeoutMs (plan 74 §3.3, §4.2, criteria 6, 7)', () => {
+  test('null (the default): a script requesting a timeout well above any sane ceiling is honoured, with no clamp log', async () => {
+    const logLines: string[] = []
+    const { isolation } = fakeIsolation([
+      {
+        ready: { t: 'ready', scriptId: 's', version: '1.0.0', timeoutMs: 150 },
+        onInit: () => {
+          // never resolves — the run timer (re-armed to the script's own
+          // 150ms, unclamped) is what ends this attempt.
+        },
+        onAbort: (_reason, _emit, exit) => exit(1),
+      },
+    ])
+    const started = Date.now()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(async () => '')),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: (entry) => logLines.push(entry.msg),
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, maxTimeoutMs: null }),
+    })
+
+    const outcome = await runner.execute(JOB)
+    const elapsed = Date.now() - started
+    expect(outcome.ok).toBe(false)
+    expect(outcome.error?.code).toBe('TIMEOUT')
+    // Honoured close to the requested 150ms, not clamped down to something
+    // much smaller.
+    expect(elapsed).toBeGreaterThanOrEqual(120)
+    expect(logLines.some((l) => l.includes('timeout clamp'))).toBe(false)
+  })
+
+  test('set: a script requesting more than the ceiling is clamped to it, and the clamp is logged naming the script and both numbers', async () => {
+    const logLines: string[] = []
+    const { isolation } = fakeIsolation([
+      {
+        ready: { t: 'ready', scriptId: 'checkout', version: '2.0.0', timeoutMs: 10_000 },
+        onInit: () => {
+          // never resolves — the CLAMPED timer (not the requested 10_000ms)
+          // is what ends this attempt.
+        },
+        onAbort: (_reason, _emit, exit) => exit(1),
+      },
+    ])
+    const started = Date.now()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(async () => '')),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: (entry) => logLines.push(entry.msg),
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, maxTimeoutMs: 30 }),
+    })
+
+    const outcome = await runner.execute(JOB)
+    const elapsed = Date.now() - started
+    expect(outcome.ok).toBe(false)
+    expect(outcome.error?.code).toBe('TIMEOUT')
+    // Clamped to ~30ms, nowhere near the requested 10_000ms.
+    expect(elapsed).toBeLessThan(2_000)
+    const clampLine = logLines.find((l) => l.includes('timeout clamp'))
+    expect(clampLine).toBeDefined()
+    expect(clampLine).toContain('checkout@2.0.0')
+    expect(clampLine).toContain('10000')
+    expect(clampLine).toContain('30')
+  })
 })

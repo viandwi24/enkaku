@@ -5,23 +5,40 @@
   "scripts": {
     "dev": "NEXT_PUBLIC_ENKAKU_CORE_URL=${NEXT_PUBLIC_ENKAKU_CORE_URL:-http://localhost:7700} next dev -p 3001",
     "build": "next build",
-    "start": "next start -p 3001"
+    "start": "next start -p 3001",
+    "test": "bun test --isolate"
   },
   "dependencies": {
+    "@ai-sdk/react": "^4.0.0",
     "@enkaku/protocol": "workspace:*",
+    "@radix-ui/react-use-controllable-state": "^1.2.3",
+    "@streamdown/cjk": "^1.0.3",
+    "@streamdown/code": "^1.1.1",
+    "@streamdown/math": "^1.0.2",
+    "@streamdown/mermaid": "^1.0.2",
+    "ai": "^7.0.7",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "lucide-react": "^1.28.0",
+    "motion": "^12.42.1",
+    "nanoid": "^5.1.16",
     "next": "^15.1.0",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.6.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^2.0.7",
-    "tailwind-merge": "^3.6.0"
+    "streamdown": "^2.5.0",
+    "tailwind-merge": "^3.6.0",
+    "use-stick-to-bottom": "^1.1.6",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^15",
     "@tailwindcss/postcss": "^4.3.3",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

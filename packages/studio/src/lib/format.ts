@@ -30,3 +30,17 @@ export function fileSize(bytes: number | null): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
+
+/** A token count from an `AgentUsage` figure (plan 66 §4.1) — `1.2k`/`3.4M`, exact below 1000. */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+  return `${(n / 1_000_000).toFixed(2)}M`
+}
+
+/** `costUsd` (plan 66 §4.1) — null means the provider adapter did not report a cost for this model. */
+export function formatUsd(costUsd: number | null): string {
+  if (costUsd === null) return '—'
+  if (costUsd < 0.01 && costUsd > 0) return `<$0.01`
+  return `$${costUsd.toFixed(2)}`
+}

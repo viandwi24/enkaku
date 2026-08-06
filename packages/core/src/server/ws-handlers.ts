@@ -39,12 +39,13 @@ import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import type { AgentWsHandler } from './ws-handlers-agent'
 
 /** Timeout-shaped error codes (plan 26 §3.6): a command that hit its
  * deadline is reported with the `stream_suggested` hint, whether the local
  * `AdbClient` timed it out directly (`E_ADB_TIMEOUT`) or the tunnel RPC gave
- * up waiting on an agent (`E_AGENT_TIMEOUT`, plan 25 §4.1). */
-const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_AGENT_TIMEOUT'])
+ * up waiting on a node (`E_NODE_TIMEOUT`, plan 25 §4.1). */
+const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
 
 /** Backpressure limit: past this, frames are dropped (only the newest one matters). */
 const MAX_BUFFERED = 4 * 1024 * 1024
@@ -147,10 +148,10 @@ interface ConnState {
 /**
  * Plan 40 §4.6's `input.gesture` needs a `gesture` member on this shape too,
  * so the manual-control handler below can treat a local `DeviceSession` and
- * an agent-owned remote session identically. It stays OPTIONAL and undefined
+ * a node-owned remote session identically. It stays OPTIONAL and undefined
  * here on purpose: the cloud tunnel does not carry curved gestures yet (out
  * of scope for this plan — Plan 08/M9 own the input engine wiring for
- * agent-owned devices), so a remote session always falls back to a linear
+ * node-owned devices), so a remote session always falls back to a linear
  * swipe, the same honest-absence contract `InputSink.gesture` uses locally.
  */
 interface RemoteInput {
@@ -162,7 +163,7 @@ interface RemoteInput {
 }
 
 export interface RemoteSessions {
-  agentIdFor(deviceId: string): string | null
+  nodeIdFor(deviceId: string): string | null
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): Promise<{
     frameSize: { width: number; height: number }
     codec: 'png' | 'h264'
@@ -184,7 +185,7 @@ export interface WsHandlerDeps {
   webrtc?: WebRtcSignaling
   /** null under the orchestrator: the control plane holds no local devices. */
   sessions: SessionManager | null
-  /** Sessions for agent-owned devices (cloud mode); null in pure local mode. */
+  /** Sessions for node-owned devices (cloud mode); null in pure local mode. */
   remote?: RemoteSessions
   pairing: PairingService
   leases: LeaseManager
@@ -252,6 +253,8 @@ export interface WsHandlerDeps {
   saveCrashTrace: (opts: { deviceId: string; jobId: string | null; label: string; text: string }) => Promise<ArtifactInfo>
   /** A crash matched the farm's policy for a running job — abort it (plan 37 §4.4), wired to `ExecutorHost.notifyCrash` in daemon.ts. */
   onJobCrash?: (jobId: string, e: { package: string; exception: string; message: string }) => void
+  /** The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §3.4, §4.4) — undefined only in a host or test that has not wired Plan 66. */
+  agent?: AgentWsHandler
   log: Logger
 }
 
@@ -379,13 +382,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
    * The ONE place local-vs-remote is decided for shell work (plan 25 §3.4,
    * §4.3) — `MonitorHub` and `runOneshotMonitor` just consume a `ShellPort`
    * and never branch on it themselves. Mirrors the existing `stream.start`
-   * resolution below (`deps.remote?.agentIdFor`) exactly.
+   * resolution below (`deps.remote?.nodeIdFor`) exactly.
    */
   const shellPortFor = (deviceId: string): ShellPort => {
-    const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
-    if (remoteAgent) {
+    const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
+    if (remoteNode) {
       if (!deps.rpc || !deps.router) {
-        throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+        throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
       }
       return createRemoteShellPort({ rpc: deps.rpc, router: deps.router, deviceId })
     }
@@ -581,16 +584,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             }
             // Video keeps running even while a device is `busy` (spec §10.1) —
             // only input is rejected.
-            const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
+            const remoteNode = deps.remote?.nodeIdFor(msg.payload.deviceId) ?? null
             // Defaults to `control` — every pre-plan-42 caller, and the
             // device page itself. Only the Wall asks for `wall` (Plan 42 §4.5).
             const requestedQuality = msg.payload.quality ?? 'control'
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
             let quality: Quality = 'control'
-            if (remoteAgent) {
+            if (remoteNode) {
               // The tunnel protocol does not carry a quality profile yet
-              // (Plan 42 §9 open question) — every remote-agent device
+              // (Plan 42 §9 open question) — every remote-node device
               // streams at its one existing profile regardless of what was
               // requested, which this reports honestly rather than claiming
               // an upgrade that never happened.
@@ -600,7 +603,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               binding.remote = true
             } else if (deps.sessions) {
               // Readiness hold (plan 43 §3.6, §5 step 43.7) — local devices
-              // only (remote/agent-owned devices are handled by the branch
+              // only (remote/node-owned devices are handled by the branch
               // above and are out of scope for this plan, §9 open question
               // #2). Ensures the device is at least `awake` before the
               // session itself is acquired; `sessions.acquire` below is what
@@ -615,11 +618,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               frameSize = session.frameSize
               quality = session.quality
             } else {
-              // The device belongs to no agent AND there is no local session.
+              // The device belongs to no node AND there is no local session.
               sendError(
                 ws,
                 'device_not_reachable',
-                'the device is connected neither to this control plane nor to any agent',
+                'the device is connected neither to this control plane nor to any node',
                 msg.id,
               )
               return
@@ -649,7 +652,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // leaves the canvas black until the encoder's next IDR — seconds
             // later — and the browser rejects the deltas that arrive meanwhile
             // ("a key frame is required after configure()").
-            const localSession = remoteAgent ? null : (deps.sessions?.get(msg.payload.deviceId) ?? null)
+            const localSession = remoteNode ? null : (deps.sessions?.get(msg.payload.deviceId) ?? null)
             const primer: FrameMeta = {
               width: frameSize.width,
               height: frameSize.height,
@@ -712,7 +715,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, 'auth.forbidden', 'this device belongs to another user', msgId)
               return
             }
-            const lease = deps.leases.acquireManual(msg.payload.deviceId, state.clientId, state.userId)
+            // A takeover (plan 71 §3.4) — `takeOverFrom` names the holder the
+            // caller BELIEVES holds it; `acquireManual` itself is the
+            // compare-and-swap and the atomic revoke-then-acquire. A stale
+            // dialog (the holder changed since it was drawn) is refused with
+            // `lease_holder_changed`, caught by the outer try/catch below
+            // exactly like any other coded refusal.
+            const lease = deps.leases.acquireManual(msg.payload.deviceId, state.clientId, state.userId, {
+              ...(msg.payload.takeOverFrom ? { takeOverFrom: msg.payload.takeOverFrom } : {}),
+            })
             // Readiness hold (plan 43 §3.6, §5 step 43.7) — taking manual
             // control is one of the acquisition paths listed in §3.6's
             // pseudocode. One hold per device (a device has at most one
@@ -733,7 +744,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // driven now, so their page stops offering control it cannot get.
             deps.broadcast({
               type: 'lease.changed',
-              payload: { deviceId: lease.deviceId, held: true, expiresAt: lease.expiresAt },
+              payload: { deviceId: lease.deviceId, heldBy: deps.leases.getHolder(lease.deviceId), expiresAt: lease.expiresAt },
             })
             broadcastViewers(lease.deviceId)
             deps.recorder.record({
@@ -759,7 +770,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             if (released) {
               deps.broadcast({
                 type: 'lease.changed',
-                payload: { deviceId: msg.payload.deviceId, held: false, expiresAt: null },
+                payload: { deviceId: msg.payload.deviceId, heldBy: null, expiresAt: null },
               })
               broadcastViewers(msg.payload.deviceId)
               deps.recorder.record({
@@ -830,6 +841,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          // The agent chat protocol (plan 66 §3.4, §4.4) — `deps.agent` is optional so a host or
+          // test that has not wired Plan 66 keeps compiling and running unchanged, the same
+          // pattern every other optional dep in this file uses.
+          case 'agent.subscribe': {
+            deps.agent?.subscribe(ws, msg.payload.threadId)
+            return
+          }
+
+          case 'agent.unsubscribe': {
+            deps.agent?.unsubscribe(ws, msg.payload.threadId)
+            return
+          }
+
+          case 'agent.run.cancel': {
+            deps.agent?.cancelRun(msg.payload.runId, deps.userLabel?.(state.userId) ?? state.userId)
+            return
+          }
+
           case 'monitor.start': {
             // Read-only, no lease, allowed while `busy` (plan 24 §4.4) —
             // watching a job's logcat is a primary use case, so this
@@ -886,7 +915,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, allowed.code, allowed.message, msgId)
               return
             }
-            // 3. Resolve local vs. remote — throws agent_offline/device_not_found/E_ADB_UNAVAILABLE,
+            // 3. Resolve local vs. remote — throws node_offline/device_not_found/E_ADB_UNAVAILABLE,
             // caught by the outer try/catch below, same as monitor.start/oneshot.
             const port = shellPortFor(deviceId)
             // 4. Keep the lease alive while the operator is thinking between commands (mirrors input.*).
@@ -1056,16 +1085,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, allowed.code, allowed.message, msgId)
               return
             }
-            const remoteAgent = deps.remote?.agentIdFor(msg.payload.deviceId) ?? null
-            const session = remoteAgent
+            const remoteNode = deps.remote?.nodeIdFor(msg.payload.deviceId) ?? null
+            const session = remoteNode
               ? deps.remote!.get(msg.payload.deviceId)
               : (deps.sessions?.get(msg.payload.deviceId) ?? null)
             if (!session) {
               sendError(
                 ws,
-                remoteAgent ? 'agent_offline' : 'E_DEVICE_NOT_READY',
-                remoteAgent
-                  ? 'the device belongs to an agent that is currently disconnected'
+                remoteNode ? 'node_offline' : 'E_DEVICE_NOT_READY',
+                remoteNode
+                  ? 'the device belongs to a node that is currently disconnected'
                   : 'no active session for this device (start the stream first)',
                 msgId,
               )
@@ -1164,11 +1193,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, allowed.code, allowed.message, msgId)
               return
             }
-            // Agent-owned devices have no local `Inspector` to call (§2
+            // Node-owned devices have no local `Inspector` to call (§2
             // non-goals) — `RemoteSessions` exposes only `frameSize` and
             // `input`. Reported honestly, never a fabricated empty tree.
-            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
-            if (remoteAgent) {
+            const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
+            if (remoteNode) {
               if (msg.type === 'inspect.attach') {
                 send(ws, {
                   type: 'inspect.status',
@@ -1178,11 +1207,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                     state: 'unavailable',
                     engineId: '',
                     capabilities: [],
-                    reason: 'inspection is not available for cloud (agent-owned) devices yet',
+                    reason: 'inspection is not available for cloud (node-owned) devices yet',
                   },
                 })
               } else {
-                sendError(ws, 'E_NOT_SUPPORTED', 'inspection is not available for cloud (agent-owned) devices yet', msgId)
+                sendError(ws, 'E_NOT_SUPPORTED', 'inspection is not available for cloud (node-owned) devices yet', msgId)
               }
               return
             }
@@ -1318,10 +1347,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // Read-only, no lease (plan 38 §4.5, acceptance #5) — same
             // "no state change, no gate" reasoning `monitor.start` uses.
             const { deviceId } = msg.payload
-            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
+            const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
             let text: string
-            if (remoteAgent) {
-              if (!deps.rpc) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+            if (remoteNode) {
+              if (!deps.rpc) throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
               const reply = await deps.rpc.request<{ ok: boolean; text?: string; error?: { code: string; message: string } }>(
                 deviceId,
                 'clipboard.get.request',
@@ -1330,7 +1359,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               if (!reply.ok) {
                 throw new EnkakuError(
                   reply.error?.code ?? 'E_CLIPBOARD_UNAVAILABLE',
-                  reply.error?.message ?? 'the agent could not read the clipboard',
+                  reply.error?.message ?? 'the node could not read the clipboard',
                 )
               }
               text = reply.text ?? ''
@@ -1367,10 +1396,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // anything (mirrors `shellPortFor`'s ordering, plan 25 §4.1 step
             // 3): a routing failure must never look like an accepted write
             // in the audit trail.
-            const remoteAgent = deps.remote?.agentIdFor(deviceId) ?? null
+            const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
             let localSession: DeviceSession | null = null
-            if (remoteAgent) {
-              if (!deps.rpc) throw new EnkakuError('agent_offline', 'the agent that owns this device is currently disconnected')
+            if (remoteNode) {
+              if (!deps.rpc) throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
             } else {
               localSession = deps.sessions?.get(deviceId) ?? null
               if (!localSession) {
@@ -1396,7 +1425,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               actor,
               meta: { length: text.length, paste },
             })
-            if (remoteAgent) {
+            if (remoteNode) {
               const reply = await deps.rpc!.request<{ ok: boolean; error?: { code: string; message: string } }>(
                 deviceId,
                 'clipboard.set.request',
@@ -1405,7 +1434,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               if (!reply.ok) {
                 throw new EnkakuError(
                   reply.error?.code ?? 'E_CLIPBOARD_UNAVAILABLE',
-                  reply.error?.message ?? 'the agent could not write the clipboard',
+                  reply.error?.message ?? 'the node could not write the clipboard',
                 )
               }
             } else {
@@ -1544,6 +1573,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // route belongs to the device, not the connection.
       conns.delete(ws)
       for (const deviceId of watchedDeviceIds) broadcastViewers(deviceId)
+      // Agent chat subscriptions are tracked independently of `ConnState` (plan 66 §4.4) — release
+      // this connection's share regardless of what else it was doing.
+      deps.agent?.handleClose(ws)
     },
 
     /** Device offline / session closed (plan 24 §4.5) — stops its monitor streams regardless of subscriber count. */

@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
+import { z } from 'zod'
 import { coreBase } from './ws'
 
 /**
@@ -16,10 +17,44 @@ export interface ApiError {
   message: string
 }
 
-export async function api<T = unknown>(
+/**
+ * `api()` used to end its body with an unchecked cast of the response to
+ * the caller's own generic type parameter (plan 72 §3.1) — a claim by the
+ * caller, checked by nothing. `GET /api/v1/cap`
+ * returned a bare array; the agent settings page asked for
+ * `{capabilities: [...]}`; TypeScript reported nothing because the claim
+ * type-checked against itself, and the Tools tab crashed on every load.
+ *
+ * A response that does NOT match its schema throws this — named so it is
+ * unambiguous that the bug is the page, not the network. It must never be
+ * presentable as a transient failure: there is nothing to retry, the server
+ * sent something this build of Studio does not understand.
+ */
+export class BadResponseError extends Error {
+  readonly code = 'E_BAD_RESPONSE'
+  readonly path: string
+  readonly issues: string
+
+  constructor(path: string, issues: string) {
+    super(`The server returned something this page did not understand (${path})`)
+    this.name = 'BadResponseError'
+    this.path = path
+    this.issues = issues
+  }
+}
+
+/**
+ * The schema is a REQUIRED positional argument, not an option (plan 72
+ * §3.3) — an optional one is one a caller forgets, and a forgotten one is
+ * exactly today's behaviour with extra ceremony. Pass `z.void()` when a
+ * response body genuinely does not matter, so "I do not care" is written
+ * down rather than defaulted into.
+ */
+export async function api<S extends z.ZodType>(
   path: string,
+  schema: S,
   init?: RequestInit & { json?: unknown },
-): Promise<T> {
+): Promise<z.infer<S>> {
   const { json, ...rest } = init ?? {}
   const res = await fetch(`${coreBase()}${path}`, {
     // Default to POST whenever a body is present — spread BEFORE `...rest` so
@@ -41,7 +76,14 @@ export async function api<T = unknown>(
       code: err?.code ?? 'unknown',
     })
   }
-  return body as T
+  // `body` is `null` for "no JSON came back" — normalised to `undefined` so
+  // `z.void()` (the explicit "no body" schema) parses it successfully rather
+  // than failing on `null !== undefined`.
+  const parsed = schema.safeParse(body === null ? undefined : body)
+  if (!parsed.success) {
+    throw new BadResponseError(path, z.prettifyError(parsed.error))
+  }
+  return parsed.data
 }
 
 export function useAction() {

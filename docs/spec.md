@@ -334,7 +334,14 @@ POST /api/tools/:id/activate         → { version } move the active pointer (re
 DELETE /api/tools/:id/:version       → delete a version (rejected when active or in use)
 POST /api/tools/:id/check            → health check (`adb version`, for instance)
 POST /api/tools/manifest/refresh     → fetch the latest manifest
+POST /api/tools/repair               → re-provision every required tool (the recovery path for the
+                                       pinned ones, which /:id/install rejects)
 ```
+
+Provisioning is only a boot gate for **adb**. A device-side tool (the inspector
+APKs, scrcpy-server) that fails to install degrades its feature and is reported
+on the Tools page; the farm keeps running and the operator retries with
+`/api/tools/repair`.
 
 ### 7.8 Tool security rules
 
@@ -695,7 +702,7 @@ REST handles ordinary request-response (script and tool CRUD). WebSocket handles
 - **Server-authoritative**: leases, resource conflicts, and ACL live in the core.
 - **Auth (REVISED in v0.2):**
   - Local single-user (the non-expert mode): may **auto-create an admin** and skip login for zero-config — BUT only when bound to `localhost`.
-  - Server/cloud mode: login is **mandatory** (argon2 hashes), with session tokens. The agent tunnel uses a token.
+  - Server/cloud mode: login is **mandatory** (argon2 hashes), with session tokens. The node tunnel uses a token (the process was called an "agent" before plan 61 renamed it).
   - **TLS is mandatory** in server and cloud modes (do not repeat the ws-scrcpy mistake: "no encryption, no auth, listening on all interfaces").
 - **Crash containment (not a sandbox)**: every job is a child process with a hard-timeout kill (§11.3). A real security boundary (container or microVM) is multi-tenant cloud work (§18).
 - **Tool integrity**: sha256 is mandatory.

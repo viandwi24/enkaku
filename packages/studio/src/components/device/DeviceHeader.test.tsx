@@ -99,7 +99,7 @@ const device: DeviceDetailInfo = {
   input: 'adb-input',
   inspection: 'ui-server',
   settings: null,
-  agentId: null,
+  nodeId: null,
 }
 
 function viewer(sessionId: string, holdsControl = false): Viewer {
@@ -121,13 +121,25 @@ function render(overrides: Partial<Parameters<typeof DeviceHeader>[0]> = {}) {
     secondsLeft: null,
     holder: null,
     iHoldControl: false,
-    heldByOther: false,
+    // Who holds the device's manual lease (plan 71 §3.2) — replaces the old
+    // `heldByOther: boolean`, which could not say WHO or whether the hold
+    // was takeable.
+    heldBy: null,
     acquiring: false,
     canRunScript: true,
     onRunScript: () => undefined,
     onTakeControl: () => undefined,
+    onControlTaken: () => undefined,
     onReleaseControl: () => undefined,
     onRemove: () => undefined,
+    // Lifted out of the component itself (plan 71 §3.6) — see the comment on
+    // `DeviceHeader`'s own props for why: no hooks of its own, so this stays
+    // callable directly, exactly like every test below does.
+    takeOverOpen: false,
+    onTakeOverOpenChange: () => undefined,
+    // Plan 73 §3.5, §4.6 — same lifted-state pattern as `takeOverOpen` above.
+    askAgentOpen: false,
+    onAskAgentOpenChange: () => undefined,
     ...overrides,
   })
 }

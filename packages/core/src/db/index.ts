@@ -70,11 +70,64 @@ function materialiseMigrationsFolder(): { dir: string; cleanup: () => void } {
 }
 
 /**
+ * Realign `__drizzle_migrations.created_at` with the journal's own `when`
+ * values, in application order.
+ *
+ * Drizzle decides what is still pending by comparing each journal entry's
+ * `when` against the HIGHEST `created_at` already recorded — see
+ * `runMigrationsUpTo`'s note. So a single recorded row carrying a timestamp
+ * larger than every later entry's `when` permanently hides all of them: the
+ * migrator concludes they are already applied and never runs them, with no
+ * error and no log line.
+ *
+ * That is not hypothetical. Plans 61 and 62 hand-wrote their migrations
+ * (drizzle-kit's rename prompt needs a TTY) and stamped `0023`/`0024` with
+ * round synthetic values — `1786000000000` and `1786100000000` — larger than
+ * every real generation time that followed. Any database migrated while
+ * those were in the journal recorded the poisoned value, and then silently
+ * skipped `0025`–`0036`: `agent_blobs` was never created and
+ * `agent_threads.device_scope` never added, so `GET /api/v1/threads` failed
+ * with a bare 500. Correcting the journal alone does NOT help — the bad
+ * number is already in the database.
+ *
+ * The repair is self-healing rather than a one-shot marker, because it is
+ * cheap, idempotent, and the failure it prevents is invisible: the journal
+ * is the authority on when each migration was generated, so any row that
+ * disagrees is wrong by definition.
+ *
+ * Rows are matched to journal entries by `rowid`, which is the order they
+ * were applied in — NOT by `created_at`, which is the value under repair,
+ * and NOT by `id`: drizzle creates the table as `id SERIAL PRIMARY KEY`,
+ * SQLite has no `SERIAL`, so that column is NULL on every row and matching
+ * on it silently updates nothing. Only rows that actually differ are
+ * written.
+ */
+function realignMigrationTimestamps(sqlite: Database, journalPath: string): number {
+  const parsed = JSON.parse(readFileSync(journalPath, 'utf8')) as Journal
+  const table = sqlite
+    .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'")
+    .get()
+  if (!table) return 0 // a fresh database: nothing has been recorded yet
+  const rows = sqlite.query<{ rowid: number; created_at: number }, []>('SELECT rowid, created_at FROM __drizzle_migrations ORDER BY rowid ASC').all()
+  const update = sqlite.query<unknown, [number, number]>('UPDATE __drizzle_migrations SET created_at = ? WHERE rowid = ?')
+  let fixed = 0
+  for (const [i, row] of rows.entries()) {
+    const entry = parsed.entries[i]
+    if (!entry || row.created_at === entry.when) continue
+    update.run(entry.when, row.rowid)
+    fixed++
+  }
+  return fixed
+}
+
+/**
  * Run every migration in drizzle/ (idempotent, via the drizzle journal).
  */
-export function runMigrations(db: Db): void {
+export function runMigrations(db: Db, sqlite?: Database): void {
   const { dir, cleanup } = materialiseMigrationsFolder()
   try {
+    // Before the migrator reads its watermark, not after — see the note above.
+    if (sqlite) realignMigrationTimestamps(sqlite, join(dir, 'meta', '_journal.json'))
     migrate(db, { migrationsFolder: dir })
   } finally {
     cleanup()

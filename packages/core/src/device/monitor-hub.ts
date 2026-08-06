@@ -16,7 +16,7 @@ const ONESHOT_MAX_CHARS = 200_000
  *
  * `shellPort` resolves local vs. remote (plan 25 §4.3) — this function does
  * not know or care which one it got; the resolution (and any
- * device_not_found / agent_offline / E_ADB_UNAVAILABLE it throws) lives one
+ * device_not_found / node_offline / E_ADB_UNAVAILABLE it throws) lives one
  * layer up, in `ws-handlers.ts`, exactly like `stream.start` already does.
  */
 export async function runOneshotMonitor(
@@ -68,7 +68,7 @@ export interface MonitorHubDeps {
    * Resolves a `ShellPort` for a device (plan 25 §4.3) — local or remote,
    * chosen by the caller (`ws-handlers.ts`) with the same resolution the
    * video path already uses. Throws a coded `EnkakuError` (device_not_found /
-   * E_ADB_UNAVAILABLE / agent_offline) when the device cannot be reached;
+   * E_ADB_UNAVAILABLE / node_offline) when the device cannot be reached;
    * `MonitorHub` neither knows nor needs to know which case that was.
    */
   shellPort: (deviceId: string) => ShellPort
@@ -93,7 +93,7 @@ export interface MonitorHubDeps {
  * `messages/shell.ts`) — unchanged by plan 25 so Studio's exhaustive
  * `Record<MonitorEndReason, string>` needs no update (acceptance #1). A
  * remote stream can end with a reason the local vocabulary never had
- * (`agent_offline`, `backpressure`); anything not in this set is reported as
+ * (`node_offline`, `backpressure`); anything not in this set is reported as
  * `error` — still a clear, prompt end, just not a more specific label. */
 const KNOWN_END_REASONS: ReadonlySet<MonitorEndReason> = new Set(['closed', 'idle', 'deadline', 'bytes', 'stopped', 'error'])
 

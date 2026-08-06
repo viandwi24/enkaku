@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { toast } from 'sonner'
-import { normaliseTag, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
+import { normaliseTag, DeviceResponseSchema, DeviceTagsResponseSchema, type ClusterInfo } from '@enkaku/protocol'
+import { z } from 'zod'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -71,15 +72,24 @@ export function AdmitDeviceDialog({
       const body: { label?: string; clusterId?: string } = {}
       if (label.trim()) body.label = label.trim()
       if (clusterId !== 'none') body.clusterId = clusterId
-      const res = await api<{ device: DeviceInfo }>(
+      const res = await api(
         `/api/devices/discovered/${encodeURIComponent(entry.stableId)}/admit`,
+        DeviceResponseSchema,
         { method: 'POST', json: body },
       )
       if (tags.length > 0) {
         // Best-effort: the phone is already in the farm either way, so a
         // failure here is a warning, not a reason to say the whole action failed.
-        await api(`/api/devices/${res.device.id}/tags`, { method: 'PUT', json: { tags } }).catch(() =>
-          toast.warning(`${res.device.label} was added, but its tags could not be saved`),
+        //
+        // The plan called this one z.void() (the caller does not read the
+        // response) — but PUT /:id/tags actually returns `{ tags }`
+        // (`packages/core/src/api/devices.ts`), a non-empty body. `z.void()`
+        // only parses `undefined`, so it would reject that real response and
+        // turn every successful save into a spurious "could not be saved"
+        // warning. `DeviceTagsResponseSchema` is the schema that matches what
+        // the route actually sends; the result is still discarded.
+        await api(`/api/devices/${res.device.id}/tags`, DeviceTagsResponseSchema, { method: 'PUT', json: { tags } }).catch(
+          () => toast.warning(`${res.device.label} was added, but its tags could not be saved`),
         )
       }
       toast.success(`${res.device.label} added to the farm`)
@@ -95,7 +105,13 @@ export function AdmitDeviceDialog({
   const dismiss = async () => {
     setBusy('dismiss')
     try {
-      await api(`/api/devices/discovered/${encodeURIComponent(entry.stableId)}`, { method: 'DELETE' })
+      // `DELETE /discovered/:stableId` returns `{ ok: true }` — no envelope
+      // for that exists in `@enkaku/protocol` yet, and this call site never
+      // reads the body, so a small ad-hoc schema rather than a new export
+      // for a value nothing reads.
+      await api(`/api/devices/discovered/${encodeURIComponent(entry.stableId)}`, z.object({ ok: z.boolean() }), {
+        method: 'DELETE',
+      })
       toast.success(`${entry.label ?? entry.stableId} dismissed — it reappears here if it connects again`)
       onOpenChange(false)
       onDone()

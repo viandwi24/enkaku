@@ -4,7 +4,8 @@ import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Inbox, LayoutGrid, List, Plus, Search, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import type { ClusterInfo, DeviceInfo, DeviceStatus, JobInfo, Readiness } from '@enkaku/protocol'
+import { DeviceResponseSchema, JobInfoSchema, type ClusterInfo, type DeviceInfo, type DeviceStatus, type JobInfo, type Readiness } from '@enkaku/protocol'
+import { z } from 'zod'
 import { DeviceCard } from '@/components/DeviceCard'
 import { DiscoveredTray } from '@/components/DiscoveredTray'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
@@ -102,7 +103,11 @@ function DashboardView() {
         // Every list endpoint returns the keyset envelope `{items, nextCursor, total}` (plan 30);
         // this call site still read `.jobs`, so `setJobs(undefined)` made the whole dashboard throw
         // on the next render. Default defensively too — a shape change must not blank the page.
-        api<{ items: JobInfo[] }>('/api/jobs?status=running&limit=50'),
+        //
+        // Narrower than the full `JobsPageResponseSchema` on purpose (plan 72
+        // §4.1) — this call site only ever reads `.items`, and the real
+        // response's `nextCursor`/`total` are ignored either way.
+        api('/api/jobs?status=running&limit=50', z.object({ items: z.array(JobInfoSchema) })),
       ])
       setDevices(d)
       setJobs(j.items ?? [])
@@ -148,6 +153,21 @@ function DashboardView() {
         setDevices((prev) =>
           prev
             ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, readiness: m.payload.readiness } : d))
+            : prev,
+        )
+      } else if (m.type === 'lease.changed') {
+        // Who holds a device (plan 71 §3.2, §3.8) — an ordinary acquire or
+        // release also flips `status` (idle↔manual), which already triggers
+        // a full `load()` above; a TAKEOVER does not (the device stays
+        // `manual` throughout, only the holder changes), so this is the only
+        // path that keeps the fleet card and wall tile live for that case —
+        // without it, an agent taking a device over from another agent (or a
+        // person) would show the DISPLACED holder until something unrelated
+        // happened to trigger a reload. No polling anywhere (replaces
+        // `lib/agent-holders.ts`, deleted).
+        setDevices((prev) =>
+          prev
+            ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, heldBy: m.payload.heldBy } : d))
             : prev,
         )
       }
@@ -292,7 +312,12 @@ function DashboardView() {
   }
 
   const releaseQuarantine = (d: DeviceInfo) =>
-    run('unq-' + d.id, () => api(`/api/devices/${d.id}/unquarantine`, { method: 'POST' }), {
+    // Not one of the call sites the plan named for this file — found while
+    // migrating. `POST /:id/unquarantine` returns `{ device }`
+    // (`packages/core/src/api/devices.ts`), the result unread here (the WS
+    // `device.status` broadcast the unquarantine triggers is what actually
+    // updates the list, via `load()` below).
+    run('unq-' + d.id, () => api(`/api/devices/${d.id}/unquarantine`, DeviceResponseSchema, { method: 'POST' }), {
       success: `${d.label} is back in the queue`,
       failure: 'Could not return the device to the queue',
       onSuccess: () => void load(),

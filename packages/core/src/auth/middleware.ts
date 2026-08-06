@@ -14,7 +14,7 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/login',
   '/api/auth/setup',
   // The single-use enrollment token in the body IS the authentication.
-  '/api/agents/enroll',
+  '/api/nodes/enroll',
 ])
 
 export function authMiddleware(deps: {

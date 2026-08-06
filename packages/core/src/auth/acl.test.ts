@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { can, canUseAdbEndpoint, canUseShell } from './acl'
+import { ALL_PERMISSIONS, can, canUseAdbEndpoint, canUseShell, isPermission } from './acl'
 
 /**
  * `device.shell` across roles and every `shell.mode` value (plan 26 §7) —
@@ -53,5 +53,27 @@ describe('device.adb / canUseAdbEndpoint (plan 27 §3.4, §4.3)', () => {
   test('mode "operator" admits both admin and operator', () => {
     expect(canUseAdbEndpoint('admin', 'operator')).toBe(true)
     expect(canUseAdbEndpoint('operator', 'operator')).toBe(true)
+  })
+})
+
+/** `ALL_PERMISSIONS`/`isPermission` (plan 65 §4.5) — validates an agent's caller-supplied `permissions` list against the real ACL rather than accepting any string. */
+describe('ALL_PERMISSIONS / isPermission (plan 65 §4.5)', () => {
+  test('accepts every real permission name', () => {
+    for (const permission of ALL_PERMISSIONS) {
+      expect(isPermission(permission)).toBe(true)
+    }
+  })
+
+  test('rejects a typo or invented permission name', () => {
+    expect(isPermission('devices.control')).toBe(false)
+    expect(isPermission('agent.execute')).toBe(false)
+    expect(isPermission('')).toBe(false)
+  })
+
+  test('includes the new agent.view / agent.manage pair, agent.manage in the operator set', () => {
+    expect(ALL_PERMISSIONS).toContain('agent.view')
+    expect(ALL_PERMISSIONS).toContain('agent.manage')
+    expect(can('operator', 'agent.manage')).toBe(true)
+    expect(can('operator', 'agent.view')).toBe(true)
   })
 })

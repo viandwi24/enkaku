@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
-import type { DeviceEvent } from '@enkaku/protocol'
+import { DeviceEventsResponseSchema, type DeviceEvent } from '@enkaku/protocol'
 import { api } from '@/lib/actions'
 import { ws, coreBase } from '@/lib/ws'
 import { relativeTime } from '@/lib/format'
@@ -135,7 +135,7 @@ export function CrashesPanel({ deviceId }: { deviceId: string }) {
 
   const load = () => {
     setError(null)
-    void api<{ items: DeviceEvent[] }>(`/api/devices/${deviceId}/events?stream=main&kind=app.crashed&limit=${MAX_ROWS}`)
+    void api(`/api/devices/${deviceId}/events?stream=main&kind=app.crashed&limit=${MAX_ROWS}`, DeviceEventsResponseSchema)
       .then((body) => setEvents(body.items))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
   }

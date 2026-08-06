@@ -10,6 +10,17 @@ export interface SettingsSection {
   render(): ReactNode
   /** Hidden entirely when false — e.g. a section whose feature is switched off farm-wide. */
   visible?: boolean
+  /**
+   * Plan 73 §3.4, §4.4 — an optional heading the nav renders above a run of
+   * CONSECUTIVE sections that share it, in declaration order (Devices ·
+   * Jobs · AI Agents · Farm on the Settings page). Purely additive: a
+   * section that declares no `group` renders exactly as it did before this
+   * existed — one flat list of tabs, no headings anywhere — which is what
+   * keeps plan 46's own tests (none of which ever set this field) passing
+   * unedited, and is why the device page's and the agent editor's own
+   * (ungrouped) section lists need no changes here at all.
+   */
+  group?: string
 }
 
 /**
@@ -96,6 +107,44 @@ export function SectionNav({
     }
   }
 
+  // Consecutive sections sharing a `group` (declaration order) become one run under a heading;
+  // `null` is its own run of one-or-more UNGROUPED sections, rendered with no heading at all. When
+  // nothing declares `group`, this is exactly one run of `null` holding every visible section —
+  // which is why the "no groups" branch below renders byte-identical to the pre-grouping markup.
+  const runs: { group: string | null; items: SettingsSection[] }[] = []
+  for (const s of visible) {
+    const g = s.group ?? null
+    const last = runs[runs.length - 1]
+    if (last && last.group === g) last.items.push(s)
+    else runs.push({ group: g, items: [s] })
+  }
+  const hasGroups = runs.some((r) => r.group !== null)
+
+  const tab = (s: SettingsSection) => {
+    const isActive = resolved?.id === s.id
+    return (
+      <button
+        key={s.id}
+        type="button"
+        role="tab"
+        id={`section-tab-${s.id}`}
+        aria-selected={isActive}
+        aria-controls={`section-panel-${s.id}`}
+        tabIndex={isActive ? 0 : -1}
+        onClick={() => onChange(s.id)}
+        onKeyDown={onKeyDown}
+        className={cn(
+          'shrink-0 rounded-md px-3 py-2 text-left text-[13px] transition-colors sm:w-full',
+          isActive
+            ? 'bg-surface-2 font-medium text-fg'
+            : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg',
+        )}
+      >
+        {s.title}
+      </button>
+    )
+  }
+
   return (
     <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
       <div
@@ -104,30 +153,14 @@ export function SectionNav({
         aria-label="Settings sections"
         className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:overflow-visible sm:pb-0"
       >
-        {visible.map((s) => {
-          const isActive = resolved?.id === s.id
-          return (
-            <button
-              key={s.id}
-              type="button"
-              role="tab"
-              id={`section-tab-${s.id}`}
-              aria-selected={isActive}
-              aria-controls={`section-panel-${s.id}`}
-              tabIndex={isActive ? 0 : -1}
-              onClick={() => onChange(s.id)}
-              onKeyDown={onKeyDown}
-              className={cn(
-                'shrink-0 rounded-md px-3 py-2 text-left text-[13px] transition-colors sm:w-full',
-                isActive
-                  ? 'bg-surface-2 font-medium text-fg'
-                  : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg',
-              )}
-            >
-              {s.title}
-            </button>
-          )
-        })}
+        {hasGroups
+          ? runs.map((r, i) => (
+              <div key={r.group ?? `ungrouped-${i}`} className="contents sm:block">
+                {r.group && <p className="rack-label px-3 pb-1 pt-3 text-fg-subtle first:pt-0">{r.group}</p>}
+                {r.items.map(tab)}
+              </div>
+            ))
+          : visible.map(tab)}
       </div>
       <div
         role="tabpanel"

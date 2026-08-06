@@ -460,7 +460,7 @@ describe('TransferService.install', () => {
   })
 })
 
-describe('TransferService — remote (agent-owned) devices are out of scope for this plan', () => {
+describe('TransferService — remote (node-owned) devices are out of scope for this plan', () => {
   test('refuses with a clear, coded error rather than silently misbehaving', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)

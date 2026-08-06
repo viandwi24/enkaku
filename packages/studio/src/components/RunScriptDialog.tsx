@@ -2,7 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import type { BatchOrder, ClusterInfo, DeviceInfo } from '@enkaku/protocol'
+import {
+  BatchResponseSchema,
+  JobCreateResponseSchema,
+  type BatchInfo,
+  type BatchOrder,
+  type ClusterInfo,
+  type DeviceInfo,
+  type JobInfo,
+} from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -203,15 +211,15 @@ export function RunScriptDialog({
     target === 'single' ? !!deviceId : target === 'cluster' ? !!clusterId && targetCount > 0 : deviceIds.length > 0
 
   const runScript = () =>
-    run<{ job: { jobId: string } } | { batch: { id: string } }>(
+    run<{ job: JobInfo } | { batch: BatchInfo }>(
       'run',
       () =>
         target === 'single'
-          ? api<{ job: { jobId: string } }>('/api/jobs', {
+          ? api('/api/jobs', JobCreateResponseSchema, {
               method: 'POST',
               json: { scriptId: chosen.id, deviceId, params: params ?? {} },
             })
-          : api<{ batch: { id: string } }>('/api/batches', {
+          : api('/api/batches', BatchResponseSchema, {
               method: 'POST',
               json: {
                 scriptId: chosen.id,

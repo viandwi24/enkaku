@@ -9,6 +9,28 @@ import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
 export const DeviceStatusSchema = z.enum(['offline', 'idle', 'manual', 'busy', 'quarantined'])
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>
 
+/**
+ * Who holds a device's manual (control) lease — a person, an agent, or a job
+ * (plan 71 §3.2). The lease manager already knew this (`Lease.holder`,
+ * `Lease.holderUserId`); nothing propagated it past the lease manager itself,
+ * so an agent driving a phone was invisible to every surface. One field
+ * fixes the badge, the takeover dialog, and the wall.
+ */
+export const LeaseHolderSchema = z.object({
+  kind: z.enum(['user', 'agent', 'job']),
+  /** clientId for a user (or the authenticated userId when known), agentId for an agent, jobId for a job. */
+  id: z.string(),
+  /** For display: a username, an agent's name, a script's `name@version` — resolved server-side (plan 71 §3.3). */
+  label: z.string(),
+  /** Agent only — the ROOT run id, so a whole tree reads as one holder (plan 67 §3.7). */
+  runId: z.string().nullable(),
+  /** Whether this hold can be taken over at all (plan 71 §3.4) — computed server-side, never derived by a client. */
+  takeable: z.boolean(),
+  acquiredAt: z.number(),
+  expiresAt: z.number().nullable(),
+})
+export type LeaseHolder = z.infer<typeof LeaseHolderSchema>
+
 export const DeviceInfoSchema = z.object({
   id: z.string(),
   stableId: z.string(),
@@ -52,6 +74,14 @@ export const DeviceInfoSchema = z.object({
    * every production call site populates it from the real manager.
    */
   readiness: DeviceReadinessSchema.default(() => ({ desired: 'asleep' as const, actual: 'asleep' as const, blocked: null, since: 0 })),
+  /**
+   * Who currently holds this device's manual lease, or `null` when nobody
+   * does (plan 71 §3.2) — replaces the three polling workarounds
+   * `packages/studio/src/lib/agent-holders.ts` used to need. Defaulted so a
+   * caller that constructs a `DeviceInfo` without it (existing tests, or a
+   * fallback with no lease manager to hand) still parses.
+   */
+  heldBy: LeaseHolderSchema.nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

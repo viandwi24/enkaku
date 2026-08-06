@@ -5,7 +5,7 @@ import type { Logger } from './logger'
 import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
 import type { DeviceSnapshotSource } from './types'
 
-/** Legacy fallback when `idleTtlSec` is not supplied (agent mode, tests) — the
+/** Legacy fallback when `idleTtlSec` is not supplied (node mode, tests) — the
  * quick-reconnect grace this manager always had before Plan 42 made it configurable. */
 const DEFAULT_IDLE_TTL_SEC = 5
 

@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import bundled from '../manifest/enkaku-tools.json'
 import { ToolchainError } from './errors'
+import { moveFile } from './fs-safe'
 import { ToolsManifestSchema, type ToolManifestEntry, type ToolsManifest } from './types'
 
 export interface ManifestStoreOptions {
@@ -66,8 +67,7 @@ export class ManifestStore {
     }
     const tmp = `${this.cachePath}.tmp`
     await Bun.write(tmp, JSON.stringify(parsed.data, null, 2))
-    const { renameSync } = await import('node:fs')
-    renameSync(tmp, this.cachePath)
+    await moveFile(tmp, this.cachePath, { onWarn: this.opts.onWarn })
     this.current = parsed.data
     return this.current
   }

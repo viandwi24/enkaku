@@ -293,3 +293,124 @@ describe('createDeviceExecutor — dump (plan 60 §4.2)', () => {
     expect(dumps).toBe(1)
   })
 })
+
+/**
+ * `find`/`waitFor` produce a `FindOutcome` (plan 74 §3.4, §4.3): not-found /
+ * rejected-oversized / ambiguous travel BESIDE the node, and the executor
+ * is where that shape is assembled — from `inspector.findDetailed` when the
+ * engine has it, else a plain not-found/ok fallback built from `find()`.
+ */
+describe('createDeviceExecutor — find produces a FindOutcome (plan 74 §3.4, §4.3, §4.4)', () => {
+  const foundNode = {
+    resourceId: 'com.example:id/button',
+    text: 'OK',
+    desc: '',
+    className: 'android.widget.Button',
+    packageName: 'com.example',
+    bounds: { left: 10, top: 10, right: 100, bottom: 60 },
+    clickable: true,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+  }
+
+  function sessionWithInspector(inspector: Record<string, unknown>): DeviceSession {
+    return {
+      deviceId: 'dev-1',
+      inspector,
+      inspectorPollIntervalMs: 5,
+      transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
+    } as unknown as DeviceSession
+  }
+
+  test('an engine with no findDetailed: a match becomes { ok: true, node }', async () => {
+    const session = sessionWithInspector({ id: 'dump', find: async () => foundNode, dump: async () => foundNode, screenshot: async () => new Uint8Array() })
+    const execute = createDeviceExecutor({ session })
+    expect(await execute(call('find', { sel: { id: 'button' } }))).toEqual({ ok: true, node: foundNode })
+  })
+
+  test('an engine with no findDetailed: a miss becomes { ok: false, reason: "not-found", matches: 0 } — never a bare null', async () => {
+    const session = sessionWithInspector({ id: 'dump', find: async () => null, dump: async () => foundNode, screenshot: async () => new Uint8Array() })
+    const execute = createDeviceExecutor({ session })
+    expect(await execute(call('find', { sel: { id: 'button' } }))).toEqual({ ok: false, reason: 'not-found', matches: 0 })
+  })
+
+  test('an engine with findDetailed: rejected-oversized passes through untouched', async () => {
+    const session = sessionWithInspector({
+      id: 'ui-server',
+      find: async () => null,
+      findDetailed: async () => ({ ok: false, reason: 'rejected-oversized', matches: 1 }),
+      dump: async () => foundNode,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    expect(await execute(call('find', { sel: { id: 'url_bar' } }))).toEqual({ ok: false, reason: 'rejected-oversized', matches: 1 })
+  })
+
+  test('an engine with findDetailed: ambiguous passes through with the match count', async () => {
+    const session = sessionWithInspector({
+      id: 'dump',
+      find: async () => foundNode,
+      findDetailed: async () => ({ ok: false, reason: 'ambiguous', matches: 4 }),
+      dump: async () => foundNode,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    expect(await execute(call('find', { sel: { text: 'OK' } }))).toEqual({ ok: false, reason: 'ambiguous', matches: 4 })
+  })
+})
+
+describe('createDeviceExecutor — waitFor carries the last outcome into its timeout (plan 74 §3.5, §4.3, criterion 9)', () => {
+  function sessionWithInspector(inspector: Record<string, unknown>): DeviceSession {
+    return {
+      deviceId: 'dev-1',
+      inspector,
+      inspectorPollIntervalMs: 5,
+      transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
+    } as unknown as DeviceSession
+  }
+
+  test('every poll refused as rejected-oversized — the timeout error names that reason, not a bare timeout', async () => {
+    const session = sessionWithInspector({
+      id: 'ui-server',
+      find: async () => null,
+      findDetailed: async () => ({ ok: false, reason: 'rejected-oversized', matches: 1 }),
+      dump: async () => {
+        throw new Error('unused')
+      },
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    let caught: unknown
+    try {
+      await execute(call('waitFor', { sel: { id: 'url_bar' }, timeout: 20, intervalMs: 5 }))
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    const err = caught as { code?: string; message?: string; details?: { reason?: string; matches?: number } }
+    expect(err.code).toBe('waitfor_timeout')
+    expect(err.message).toContain('rejected-oversized')
+    expect(err.details).toEqual({ reason: 'rejected-oversized', matches: 1 })
+  })
+
+  test('a match arriving before the deadline resolves normally, exactly as before this plan', async () => {
+    let calls = 0
+    const session = sessionWithInspector({
+      id: 'ui-server',
+      find: async () => null,
+      findDetailed: async () => {
+        calls += 1
+        return calls < 3 ? { ok: false, reason: 'not-found', matches: 0 } : { ok: true, node: { resourceId: 'x', text: '', desc: '', className: '', packageName: '', bounds: { left: 0, top: 0, right: 1, bottom: 1 }, clickable: false, enabled: true, focused: false, index: 0, children: [] } }
+      },
+      dump: async () => {
+        throw new Error('unused')
+      },
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 2_000, intervalMs: 5 }))
+    expect((result as { resourceId: string }).resourceId).toBe('x')
+  })
+})

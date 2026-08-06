@@ -1,7 +1,15 @@
 import { Hono } from 'hono'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import type { BatchInfo, BatchOrder, BatchStatusEvent } from '@enkaku/protocol'
+import {
+  BatchCancelResponseSchema,
+  BatchResponseSchema,
+  BatchWithJobsResponseSchema,
+  BatchesPageResponseSchema,
+  type BatchInfo,
+  type BatchOrder,
+  type BatchStatusEvent,
+} from '@enkaku/protocol'
 import { canUseDevice } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
@@ -16,6 +24,7 @@ import { rowToJobInfo, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
+import { typedJson } from './typed-json'
 
 const CreateBatchBody = z.object({
   scriptId: z.string().min(1),
@@ -155,21 +164,21 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
       },
       { ...body.data, createdBy: c.get('user')?.id ?? null },
     )
-    return c.json({ batch: rowToBatchInfo(deps, batch) }, 201)
+    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
   })
 
   app.get('/', (c) => {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = queryBatchRows(db, { cursor, limit })
     const items = rows.map((r) => rowToBatchInfo(deps, r))
-    return c.json({ items, nextCursor, total })
+    return typedJson(c, BatchesPageResponseSchema, { items, nextCursor, total })
   })
 
   app.get('/:id', (c) => {
     const row = mustGet(c.req.param('id'))
     const jobRows = deps.jobStore.listByBatch(row.id)
     const names = deps.scriptNames(jobRows.map((j) => j.scriptId))
-    return c.json({
+    return typedJson(c, BatchWithJobsResponseSchema, {
       batch: rowToBatchInfo(deps, row),
       jobs: jobRows.map((j) => rowToJobInfo(j, names.get(j.scriptId) ?? null)),
     })
@@ -181,7 +190,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     const cancelled = deps.jobStore.cancelQueuedInBatch(row.id)
     recomputeBatchStatus({ db, jobStore: deps.jobStore, broadcast: deps.broadcastBatchStatus }, row.id)
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'batch.cancel', target: row.id, meta: { cancelled } })
-    return c.json({ cancelled })
+    return typedJson(c, BatchCancelResponseSchema, { cancelled })
   })
 
   // A new batch over the failed devices — `params` is copied verbatim from
@@ -212,7 +221,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
         createdBy: c.get('user')?.id ?? null,
       },
     )
-    return c.json({ batch: rowToBatchInfo(deps, batch) }, 201)
+    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
   })
 
   app.onError((err, c) => {

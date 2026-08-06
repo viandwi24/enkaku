@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import type { DeviceInfo, DeviceReadiness } from '@enkaku/protocol'
+import type { DeviceInfo, DeviceReadiness, LeaseHolder } from '@enkaku/protocol'
 import type { Db } from '../db'
 import type { DeviceRow } from '../db/schema'
 import { clusters, jobs, scripts } from '../db/schema'
@@ -38,8 +38,10 @@ export function buildTopology(
   db: Db,
   /** Readiness badge (plan 43 §4.6) — the same live accessor `/api/devices` uses; omitted call sites fall back per-row. */
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
+  /** Lease holder (plan 71 §4.4) — the same live accessor `/api/devices` uses; omitted call sites fall back to `null`. */
+  heldByOf?: (deviceId: string) => LeaseHolder | null,
 ): TopologyResponse {
-  const deviceInfos = listDevicesWithTags(db, readinessOf)
+  const deviceInfos = listDevicesWithTags(db, readinessOf, heldByOf)
   const knownIds = new Set(deviceInfos.map((d) => d.id))
 
   // Membership is resolved with the SAME function a batch dispatch uses
@@ -83,10 +85,11 @@ export function buildTopology(
 export function createTopologyRoutes(deps: {
   db: Db
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness
+  heldByOf?: (deviceId: string) => LeaseHolder | null
 }): Hono {
   const app = new Hono()
 
-  app.get('/', (c) => c.json(buildTopology(deps.db, deps.readinessOf)))
+  app.get('/', (c) => c.json(buildTopology(deps.db, deps.readinessOf, deps.heldByOf)))
 
   return app
 }

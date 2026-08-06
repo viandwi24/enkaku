@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { DeviceNetworkStatusResponseSchema } from '@enkaku/protocol'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -337,7 +338,7 @@ export function NetworkRouteForm({
     run(
       'apply',
       () =>
-        api<NetworkStatus>(`/api/devices/${deviceId}/network`, {
+        api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, {
           method: 'PUT',
           json: {
             host: host.trim(),
@@ -364,7 +365,7 @@ export function NetworkRouteForm({
     )
 
   const removeRoute = () =>
-    run('remove', () => api(`/api/devices/${deviceId}/network`, { method: 'DELETE' }), {
+    run('remove', () => api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, { method: 'DELETE' }), {
       success: 'Route removed',
       failure: 'Could not remove the route',
       onSuccess: load,

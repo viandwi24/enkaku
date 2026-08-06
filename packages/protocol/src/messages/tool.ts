@@ -20,7 +20,9 @@ export type ToolInstallProgress = z.infer<typeof ToolInstallProgressMessage>
 export const ToolProvisionProgressMessage = z.object({
   type: z.literal('tool.provision.progress'),
   payload: z.object({
-    step: z.enum(['start', 'tool', 'done', 'error']),
+    // 'degraded': an optional tool failed but the core carried on — only a
+    // critical tool (adb) produces 'error', which fails the boot gate.
+    step: z.enum(['start', 'tool', 'done', 'degraded', 'error']),
     toolId: z.string().optional(),
     version: z.string().optional(),
     phase: z.enum(['download', 'verify', 'extract', 'activate']).optional(),

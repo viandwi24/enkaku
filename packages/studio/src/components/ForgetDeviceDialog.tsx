@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { DeviceInfo } from '@enkaku/protocol'
+import { DeviceHistoryCountsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
+import { z } from 'zod'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -59,7 +60,7 @@ export function ForgetDeviceDialog({
     if (!open || !device || !deleteHistory) return
     setCountsLoading(true)
     setCounts(null)
-    void api<{ counts: HistoryCounts }>(`/api/devices/${device.id}/history-counts`)
+    void api(`/api/devices/${device.id}/history-counts`, DeviceHistoryCountsResponseSchema)
       .then((b) => setCounts(b.counts))
       .catch(() => setCounts(null))
       .finally(() => setCountsLoading(false))
@@ -76,7 +77,11 @@ export function ForgetDeviceDialog({
     setRefusal(null)
     setBusy(true)
     try {
-      await api(`/api/devices/${device.id}?deleteHistory=${deleteHistory}`, { method: 'DELETE' })
+      // `DELETE /:id` returns `{ forgotten: {...} }` (`packages/core/src/api/devices.ts`) — no
+      // envelope for that exists in `@enkaku/protocol` yet, and this call site never reads the
+      // body (only success/failure matters here), so a permissive ad-hoc "some object came back"
+      // schema rather than a new export for a value nothing reads.
+      await api(`/api/devices/${device.id}?deleteHistory=${deleteHistory}`, z.object({}).passthrough(), { method: 'DELETE' })
       toast.success(`${device.label} forgotten`)
       onOpenChange(false)
       onDone()
@@ -94,7 +99,8 @@ export function ForgetDeviceDialog({
   const blockInstead = async () => {
     setBusy(true)
     try {
-      await api(`/api/devices/${device.id}/block`, { method: 'POST', json: {} })
+      // Same reasoning as the DELETE above: `POST /:id/block` returns `{ blocked: {...} }`, unread here.
+      await api(`/api/devices/${device.id}/block`, z.object({}).passthrough(), { method: 'POST', json: {} })
       toast.success(`${device.label} blocked`)
       onOpenChange(false)
       onDone()

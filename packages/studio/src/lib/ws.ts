@@ -13,6 +13,24 @@ type MessageHandler = (msg: ServerMessage) => void
 type BinaryHandler = (buf: Uint8Array) => void
 
 /**
+ * `ws.request` rejects with this instead of a plain `Error` when the core
+ * replies with a coded `error` message (plan 71 §3.4, criterion 8) — a
+ * takeover's CAS failure (`lease_holder_changed`) needs to be told apart
+ * from any other refusal so the dialog can re-ask rather than just failing.
+ * Every existing `catch (err)`/`err instanceof Error` call site keeps
+ * working unchanged; this only adds a `code` alongside `message`.
+ */
+export class WsRequestError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'WsRequestError'
+  }
+}
+
+/**
  * A single WS client: auto-reconnect with exponential backoff plus
  * resubscribe, request/reply correlated by `id`, every inbound message
  * safeParse'd.
@@ -90,7 +108,7 @@ class WsClient {
         const waiter = this.pending.get(id)
         if (waiter) {
           this.pending.delete(id)
-          if (msg.type === 'error') waiter.reject(new Error(msg.payload.message))
+          if (msg.type === 'error') waiter.reject(new WsRequestError(msg.payload.code, msg.payload.message))
           else waiter.resolve(msg)
           return
         }

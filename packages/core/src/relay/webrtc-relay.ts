@@ -9,7 +9,7 @@ export interface WebRtcRelay {
   answer(deviceId: string, sdp: string): Promise<void>
   ice(deviceId: string, candidate: unknown): Promise<void>
   stop(deviceId: string): Promise<void>
-  /** Feeds H.264 frames from the source (agent or local) into the active peer. */
+  /** Feeds H.264 frames from the source (node or local) into the active peer. */
   push(deviceId: string, annexB: Uint8Array, ptsUs: bigint): void
   hasPeer(deviceId: string): boolean
   closeAll(): Promise<void>
@@ -33,7 +33,7 @@ interface PeerEntry {
 export function createWebRtcRelay(deps: {
   factory: RtcPeerFactory
   log: Logger
-  /** Subscribe to a device's frames (from an agent or a local session). */
+  /** Subscribe to a device's frames (from a node or a local session). */
   subscribeVideo: (deviceId: string, cb: (chunk: Uint8Array, ptsUs: bigint) => void) => () => void
   /** Ask the device for a fresh keyframe (a PLI from the browser). */
   requestKeyframe: (deviceId: string) => void

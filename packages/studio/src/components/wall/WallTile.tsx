@@ -7,6 +7,7 @@ import { LiveView } from '@/components/LiveView'
 import { ReadinessControl } from '@/components/ReadinessControl'
 import { TileChips } from '@/components/TileChips'
 import { explainQuarantine } from '@/components/DeviceCard'
+import { HolderBadge } from '@/components/HolderBadge'
 import { cn } from '@/lib/utils'
 
 /**
@@ -80,6 +81,12 @@ export function WallTile({
       <div className="flex min-w-0 flex-col gap-1 px-2 py-1.5">
         <span className="truncate text-[11.5px] font-medium leading-tight">{device.label}</span>
         <TileChips device={device} />
+        {/* Server-published, live (plan 71 §3.2, §3.8) — replaces `lib/agent-holders.ts`'s 15s poll. */}
+        {device.heldBy && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <HolderBadge holder={device.heldBy} className="w-fit" />
+          </div>
+        )}
       </div>
 
       <div className="relative aspect-[9/16] w-full overflow-hidden bg-black">

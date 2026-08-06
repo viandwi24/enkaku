@@ -34,9 +34,13 @@ export interface ClassifiedFailure {
  *    process was killed by the OS without reporting a result
  *    (`CHILD_CRASHED`), the device vanished from track-devices mid-job
  *    (`DEVICE_DISCONNECTED`), the job lease was force-expired
- *    (`LEASE_FORCE_RELEASED`), or the runner could not even acquire the
- *    device session for the next attempt (`SESSION_ACQUIRE_FAILED`),
- *  - the tunnel/cloud vocabulary (`agent_offline`, `E_DEVICE_NOT_READY`).
+ *    (`LEASE_FORCE_RELEASED`), the runner could not even acquire the
+ *    device session for the next attempt (`SESSION_ACQUIRE_FAILED`), or the
+ *    child never sent `ready` at all (`STARTUP_TIMEOUT`, plan 74 §3.2,
+ *    §4.2 — a child that never started is a farm problem, not the script's,
+ *    and unconditionally infra: unlike a run `TIMEOUT`, it never depends on
+ *    `timeoutIsInfra`, because there is no script behaviour to blame here),
+ *  - the tunnel/cloud vocabulary (`node_offline`, `E_DEVICE_NOT_READY`).
  */
 const INFRA_CODES = new Set<string>([
   'E_ADB_TIMEOUT',
@@ -44,7 +48,7 @@ const INFRA_CODES = new Set<string>([
   'E_ADB_HANDSHAKE_TIMEOUT',
   'E_ADB_UNAVAILABLE',
   'E_DEVICE_NOT_READY',
-  'agent_offline',
+  'node_offline',
   'device_not_found',
   'device_not_ready',
   'engine_not_found',
@@ -53,6 +57,7 @@ const INFRA_CODES = new Set<string>([
   'DEVICE_DISCONNECTED',
   'LEASE_FORCE_RELEASED',
   'SESSION_ACQUIRE_FAILED',
+  'STARTUP_TIMEOUT',
 ])
 
 /**

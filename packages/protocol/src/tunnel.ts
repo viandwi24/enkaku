@@ -3,7 +3,7 @@ import { DeviceInfoSchema } from './device'
 import { PointSchema } from './ui-node'
 
 /**
- * Protokol tunnel agent ⇄ control plane (plan 11 §4.2).
+ * Tunnel protocol, node ⇄ control plane (plan 11 §4.2, renamed from "agent" in plan 61).
  *
  * The envelope gains routing fields; local messages without them stay valid,
  * so local mode (Plans 01–09) is completely unchanged.
@@ -12,18 +12,33 @@ export const RoutedEnvelopeSchema = z.object({
   v: z.literal(1),
   type: z.string(),
   id: z.string().optional(),
-  /** Filled in by the control plane when routing to or from an agent. */
-  agentId: z.string().optional(),
+  /** Filled in by the control plane when routing to or from a node. */
+  nodeId: z.string().optional(),
   deviceId: z.string().optional(),
-  /** Server-side only — agents and browsers must never set it. */
+  /** Server-side only — nodes and browsers must never set it. */
   tenantId: z.string().optional(),
   payload: z.unknown(),
 })
 export type RoutedEnvelope = z.infer<typeof RoutedEnvelopeSchema>
 
-// ---- agent → control plane ----
+// ---- node → control plane ----
 
-export const AgentHelloMessage = z.object({
+export const NodeHelloMessage = z.object({
+  type: z.literal('node.hello'),
+  payload: z.object({
+    nodeVersion: z.string(),
+    platform: z.string(),
+    toolVersions: z.record(z.string(), z.string()),
+  }),
+})
+
+/**
+ * Plan 61 §3.3 compatibility window: a node binary built before the rename
+ * still sends `agent.hello` — the control plane accepts it for one release
+ * with a warn-level log naming the node, so an operator can see which nodes
+ * still need upgrading. Dated removal tracked in `00-overview.md`.
+ */
+export const NodeHelloLegacyMessage = z.object({
   type: z.literal('agent.hello'),
   payload: z.object({
     agentVersion: z.string(),
@@ -32,17 +47,23 @@ export const AgentHelloMessage = z.object({
   }),
 })
 
-export const AgentDevicesMessage = z.object({
+export const NodeDevicesMessage = z.object({
+  type: z.literal('node.devices'),
+  payload: z.object({ devices: z.array(DeviceInfoSchema) }),
+})
+
+/** Plan 61 §3.3 compatibility window — same payload shape as `NodeDevicesMessage`, a pre-rename node still sends this type string. */
+export const NodeDevicesLegacyMessage = z.object({
   type: z.literal('agent.devices'),
   payload: z.object({ devices: z.array(DeviceInfoSchema) }),
 })
 
-// ---- control plane → agent ----
+// ---- control plane → node ----
 
-export const AgentHelloAckMessage = z.object({
-  type: z.literal('agent.hello.ack'),
+export const NodeHelloAckMessage = z.object({
+  type: z.literal('node.hello.ack'),
   payload: z.object({
-    agentId: z.string(),
+    nodeId: z.string(),
     serverTime: z.number().int(),
     pinnedScrcpyVersion: z.string(),
   }),
@@ -98,7 +119,7 @@ export const TunnelChannelOpenMessage = z.object({
     deviceId: z.string(),
     /**
      * `shell` (plan 25 §3.3, §4.2): a multiplexed byte stream for
-     * logcat/top/thermal on an agent-owned device — no new transport, just a
+     * logcat/top/thermal on a node-owned device — no new transport, just a
      * new kind on the channel that already exists.
      * `adb-raw` (plan 28 §4.1): one channel per ADB stream carried by the
      * cloud adb endpoint's shim — see the `adb.*` messages below.
@@ -173,9 +194,9 @@ export const WebRtcStopMessage = z.object({
 // ---- session & job jarak jauh (M9a) ----
 
 /**
- * CP → agent: forward input. Coordinates are already in device PIXELS — the
+ * CP → node: forward input. Coordinates are already in device PIXELS — the
  * control plane maps them from 0..1 using the latest frame dimensions, so the
- * agent never needs to know the browser's display size.
+ * node never needs to know the browser's display size.
  */
 export const InputForwardMessage = z.object({
   type: z.literal('input.forward'),
@@ -195,7 +216,7 @@ export const JobCancelForwardMessage = z.object({
   payload: z.object({ jobId: z.string() }),
 })
 
-/** agent → CP: the session came up, including any degraded effective engines. */
+/** node → CP: the session came up, including any degraded effective engines. */
 export const SessionStartedMessage = z.object({
   type: z.literal('session.started'),
   payload: z.object({
@@ -215,7 +236,7 @@ export const SessionFailedMessage = z.object({
   payload: z.object({ deviceId: z.string(), code: z.string(), message: z.string() }),
 })
 
-/** agent → CP: job progress (phase, logs, small artifacts, final result). */
+/** node → CP: job progress (phase, logs, small artifacts, final result). */
 export const JobProgressMessage = z.object({
   type: z.literal('job.progress'),
   payload: z.object({
@@ -247,7 +268,7 @@ export const JobProgressMessage = z.object({
  * The correlation layer the tunnel was missing (plan 25 §3.2): every request
  * here carries `id` (a `crypto.randomUUID()`, matched to its reply by
  * `TunnelRpc`), unlike the fire-and-forget messages above. `cmd` crossing the
- * tunnel is deliberate (§4.2) — the agent is not a security boundary against
+ * tunnel is deliberate (§4.2) — the node is not a security boundary against
  * its own control plane, and the monitor builders on the core side are the
  * only producers of these strings in this plan.
  */
@@ -261,7 +282,7 @@ export const ShellExecRequestMessage = z.object({
     cmd: z.string(),
     /** An `AdbTimeoutProfile` name, mirrored as a plain string so this package
      * never depends on `@enkaku/adb` (same reasoning as `MonitorEndReasonSchema`
-     * in `messages/shell.ts`). An agent that does not recognise the value
+     * in `messages/shell.ts`). A node that does not recognise the value
      * falls back to its own default profile. */
     profile: z.string().optional(),
     timeoutMs: z.number().int().positive().optional(),
@@ -277,7 +298,7 @@ export const ShellExecReplyMessage = z.object({
     stdout: z.string().optional(),
     /**
      * Separated from `stdout` by the framed shell,v2,raw protocol (plan 53
-     * §3.3). Optional so an older agent build that has not been upgraded
+     * §3.3). Optional so an older node build that has not been upgraded
      * yet — and so never sends this field — does not fail validation; the
      * core defaults it to `''` when absent (plan 53).
      */
@@ -312,14 +333,14 @@ export const ShellStreamReplyMessage = z.object({
   }),
 })
 
-/** CP → agent: stop a running stream (mirrors the local `AdbStreamHandle.stop()` path). */
+/** CP → node: stop a running stream (mirrors the local `AdbStreamHandle.stop()` path). */
 export const ShellStreamStopMessage = z.object({
   type: z.literal('shell.stream.stop'),
   payload: z.object({ streamId: z.string() }),
 })
 
 /**
- * agent → CP: a push, not a reply — correlated by the stream's OWN id
+ * node → CP: a push, not a reply — correlated by the stream's OWN id
  * (assigned in `shell.stream.reply`), not by a pending request id, because
  * nothing is "requesting" this; it can arrive at any time (idle/deadline/
  * bytes/stopped/error/backpressure — plan 25 §3.5).
@@ -423,7 +444,7 @@ export const AdbCloseMessage = z.object({
 })
 
 /**
- * Delivery acknowledgement for §3.3: the agent reports how many bytes it has
+ * Delivery acknowledgement for §3.3: the node reports how many bytes it has
  * actually written downstream (to its own adb server) for `channelId`. The
  * shim's WRTE/OKAY window to the user's adb client advances ONLY on this
  * message — never merely because bytes were handed to the tunnel — so a
@@ -440,9 +461,11 @@ export const AdbAckMessage = z.object({
 
 // ---- union (must come last: every message is defined by now) ----
 
-export const AgentToControlSchema = z.discriminatedUnion('type', [
-  AgentHelloMessage,
-  AgentDevicesMessage,
+export const NodeToControlSchema = z.discriminatedUnion('type', [
+  NodeHelloMessage,
+  NodeHelloLegacyMessage,
+  NodeDevicesMessage,
+  NodeDevicesLegacyMessage,
   SessionStartedMessage,
   SessionFailedMessage,
   JobProgressMessage,
@@ -458,10 +481,10 @@ export const AgentToControlSchema = z.discriminatedUnion('type', [
   AdbCloseMessage,
   AdbAckMessage,
 ])
-export type AgentToControl = z.infer<typeof AgentToControlSchema>
+export type NodeToControl = z.infer<typeof NodeToControlSchema>
 
-export const ControlToAgentSchema = z.discriminatedUnion('type', [
-  AgentHelloAckMessage,
+export const ControlToNodeSchema = z.discriminatedUnion('type', [
+  NodeHelloAckMessage,
   SessionStartMessage,
   SessionStopMessage,
   JobDispatchMessage,
@@ -479,5 +502,5 @@ export const ControlToAgentSchema = z.discriminatedUnion('type', [
   AdbOpenRequestMessage,
   AdbCloseMessage,
 ])
-export type ControlToAgent = z.infer<typeof ControlToAgentSchema>
+export type ControlToNode = z.infer<typeof ControlToNodeSchema>
 

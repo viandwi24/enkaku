@@ -7,12 +7,17 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.33",
     "@enkaku/adb": "workspace:*",
     "@enkaku/drivers": "workspace:*",
+    "@enkaku/harness": "workspace:*",
     "@enkaku/protocol": "workspace:*",
     "@enkaku/scrcpy": "workspace:*",
+    "@enkaku/sdk": "workspace:*",
     "@enkaku/session": "workspace:*",
     "@enkaku/toolchain": "workspace:*",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
+    "ai": "^7.0.7",
     "croner": "^10.0.1",
     "drizzle-orm": "^0.44.0",
     "hono": "^4.6.0",
@@ -21,6 +26,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^4.0.6",
     "drizzle-kit": "^0.31.0"
   },
   "scripts": {

@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { GuestAgentStatusResponseSchema } from '@enkaku/protocol'
+import { z } from 'zod'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { AgentStateBadge } from '@/components/guest-agent/AgentStateBadge'
 import { NetworkRouteForm } from '@/components/guest-agent/NetworkRouteForm'
@@ -79,7 +81,7 @@ export function NetworkPanel({
 
   const install = () =>
     settle(
-      run('install', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
+      run('install', () => api(`/api/devices/${deviceId}/guest-agent`, GuestAgentStatusResponseSchema, { method: 'POST' }), {
         success: `Guest agent installed on ${deviceLabel}`,
         failure: 'Could not install the guest agent',
       }),
@@ -87,7 +89,7 @@ export function NetworkPanel({
 
   const repair = () =>
     settle(
-      run('repair', () => api<GuestAgentStatus>(`/api/devices/${deviceId}/guest-agent`, { method: 'POST' }), {
+      run('repair', () => api(`/api/devices/${deviceId}/guest-agent`, GuestAgentStatusResponseSchema, { method: 'POST' }), {
         success: `Guest agent repaired on ${deviceLabel}`,
         failure: 'Could not repair the guest agent',
       }),
@@ -95,7 +97,12 @@ export function NetworkPanel({
 
   const uninstall = () =>
     settle(
-      run('uninstall', () => api(`/api/devices/${deviceId}/guest-agent`, { method: 'DELETE' }), {
+      // `DELETE /:id/guest-agent` returns `{ ok: true }` (`packages/core/src/api/guest-agent.ts`),
+      // NOT the guest-agent status envelope the plan named for this file's two `POST` calls above
+      // — no envelope for `{ ok }` exists in `@enkaku/protocol` yet, and this call site never reads
+      // the body (the panel re-polls status separately via `settle`/`load`), so a small ad-hoc
+      // schema rather than a new export for a value nothing reads.
+      run('uninstall', () => api(`/api/devices/${deviceId}/guest-agent`, z.object({ ok: z.boolean() }), { method: 'DELETE' }), {
         success: `Guest agent uninstalled from ${deviceLabel}`,
         failure: 'Could not uninstall the guest agent',
       }),

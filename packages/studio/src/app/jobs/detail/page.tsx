@@ -3,9 +3,11 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { ArrowLeft, ChevronDown, ChevronRight, Download } from 'lucide-react'
-import type { ArtifactInfo } from '@enkaku/protocol'
+import { ArrowLeft, ChevronDown, ChevronRight, Download, Hourglass } from 'lucide-react'
+import { z } from 'zod'
+import { JobCancelResponseSchema, JobResponseSchema, type ArtifactInfo, type LeaseHolder } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
+import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
@@ -28,6 +30,14 @@ interface LogLine {
 
 /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
 const PHASES = ['reset', 'prepare', 'run', 'finish'] as const
+
+/**
+ * `GET /api/scripts/:id` returns a full `ScriptRowSchema`, but this screen
+ * only ever reads `.script.source` — a narrower ad-hoc schema, as plan 72's
+ * brief for this file allows, rather than importing the wider
+ * `ScriptResponseSchema` for one field.
+ */
+const ScriptSourceResponseSchema = z.object({ script: z.object({ source: z.string().nullable().optional() }) })
 
 /** Absolute time, because "5h ago" is useless when comparing two runs. */
 function absolute(epochSeconds: number | null): string {
@@ -60,6 +70,11 @@ function JobDetail() {
   // The crash trace disclosure (plan 37 §4.5) — collapsed by default, fetched lazily on first open.
   const [traceOpen, setTraceOpen] = useState(false)
   const [traceText, setTraceText] = useState<string | null>(null)
+  // Waiting for the device to go quiet before claiming it (plan 71 §3.7) —
+  // visible, not silent: a wait nobody can see is indistinguishable from a
+  // hang. `null` means "not currently waiting" (never started, or already
+  // claimed/expired past the cap).
+  const [waiting, setWaiting] = useState<{ heldBy: LeaseHolder | null; remainingSec: number } | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const { run, isPending } = useAction()
   // Run time and total-time tick without a refresh while a job is running.
@@ -68,11 +83,11 @@ function JobDetail() {
   const load = () => {
     if (!jobId) return
     setError(null)
-    void api<{ job: JobWithPhase }>(`/api/jobs/${jobId}`)
+    void api(`/api/jobs/${jobId}`, JobResponseSchema)
       .then((b) => {
         setJob(b.job)
         // The script row is version-specific, so its source is exactly what ran.
-        void api<{ script: { source?: string | null } }>(`/api/scripts/${b.job.scriptId}`)
+        void api(`/api/scripts/${b.job.scriptId}`, ScriptSourceResponseSchema)
           .then((s) => setSource(s.script.source ?? null))
           .catch(() => setSource(null))
         void fetchDeviceRefs([b.job.deviceId])
@@ -100,6 +115,8 @@ function JobDetail() {
       } else if (m.type === 'job.status' && m.payload.jobId === jobId) {
         setJob((p) => ({ ...(p ?? {}), ...m.payload }) as JobWithPhase)
         if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) load()
+      } else if (m.type === 'job.waiting' && m.payload.jobId === jobId) {
+        setWaiting(m.payload.waiting ? { heldBy: m.payload.heldBy, remainingSec: m.payload.remainingSec } : null)
       }
     })
     return off
@@ -244,7 +261,7 @@ function JobDetail() {
                 size="sm"
                 disabled={isPending('cancel')}
                 onClick={() =>
-                  void run('cancel', () => api(`/api/jobs/${jobId}/cancel`, { method: 'POST' }), {
+                  void run('cancel', () => api(`/api/jobs/${jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }), {
                     success: 'Job cancelled',
                     failure: 'Could not cancel the job',
                   })
@@ -267,6 +284,21 @@ function JobDetail() {
         ]}
         hrefFor={(k) => `/jobs/detail?id=${jobId}${k === 'summary' ? '' : `&tab=${k}`}`}
       />
+
+      {/* The quiet-period wait (plan 71 §3.7) — shown on every tab, since
+          "queued" alone looks identical to a job that is simply next in
+          line. This is what makes the difference legible instead of looking
+          stuck. */}
+      {waiting && job.status === 'queued' && (
+        <div className="mx-5 mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-led-warn/35 bg-led-warn/5 px-3.5 py-2.5 text-[12.5px]">
+          <Hourglass className="size-3.5 shrink-0 text-led-warn" aria-hidden />
+          <span>Waiting for the device to be free</span>
+          {waiting.heldBy && <HolderBadge holder={waiting.heldBy} />}
+          <span className="readout text-fg-subtle">
+            — proceeding in {waiting.remainingSec}s{waiting.remainingSec === 0 ? ' (any moment now)' : ' at the latest'}
+          </span>
+        </div>
+      )}
 
       {/* On every tab but Summary, where it has a card of its own. */}
       {tab !== 'summary' && failureDetail && <div className="mx-5 mt-4">{failureDetail}</div>}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { z } from 'zod'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -45,7 +46,9 @@ export function BulkForgetDialog({
     const entries = await Promise.all(
       devices.map(async (d): Promise<[string, Outcome]> => {
         try {
-          await api(`/api/devices/${d.id}?deleteHistory=false`, { method: 'DELETE' })
+          // `DELETE /:id` returns `{ forgotten: {...} }` (`packages/core/src/api/devices.ts`) — unread here,
+          // same reasoning as the single-device `ForgetDeviceDialog.tsx`.
+          await api(`/api/devices/${d.id}?deleteHistory=false`, z.object({}).passthrough(), { method: 'DELETE' })
           return [d.id, { ok: true }]
         } catch (err) {
           return [d.id, { ok: false, message: err instanceof Error ? err.message : String(err) }]

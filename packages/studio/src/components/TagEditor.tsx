@@ -2,15 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import { normaliseTag } from '@enkaku/protocol'
+import { normaliseTag, DeviceTagsResponseSchema, TagSuggestionSchema, TagsResponseSchema } from '@enkaku/protocol'
+import type { z } from 'zod'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { api, useAction } from '@/lib/actions'
 
-interface TagSuggestion {
-  tag: string
-  count: number
-}
+type TagSuggestion = z.infer<typeof TagSuggestionSchema>
 
 /**
  * The tags field on a device's Settings tab (plan 19 §4.5): a token input
@@ -30,13 +28,13 @@ export function TagEditor({ deviceId, tags }: { deviceId: string; tags: string[]
   useEffect(() => setCurrent(tags), [tags])
 
   useEffect(() => {
-    void api<{ tags: TagSuggestion[] }>('/api/tags')
+    void api('/api/tags', TagsResponseSchema)
       .then((b) => setSuggestions(b.tags))
       .catch(() => setSuggestions([]))
   }, [])
 
   const save = (next: string[]) =>
-    run('tags', () => api<{ tags: string[] }>(`/api/devices/${deviceId}/tags`, { method: 'PUT', json: { tags: next } }), {
+    run('tags', () => api(`/api/devices/${deviceId}/tags`, DeviceTagsResponseSchema, { method: 'PUT', json: { tags: next } }), {
       failure: 'Could not save the tags',
       onSuccess: (b) => {
         setCurrent(b.tags)

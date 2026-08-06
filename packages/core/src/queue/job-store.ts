@@ -72,8 +72,18 @@ export interface JobStore {
   }
   /** Script names for a batch of jobs — one query, not one per row. */
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string }>
-  /** Single-writer transaction: claim a queued job for an idle device (spec §10.3, plan 20 §4.2). */
-  claimNext(jobTtlSec: number): ClaimedJob | null
+  /**
+   * Single-writer transaction: claim a queued job for an idle device (spec
+   * §10.3, plan 20 §4.2). `excludeDeviceIds` (plan 71 §3.7) skips a device
+   * still inside its post-manual-use quiet period — the job KEEPS its
+   * place; it is simply not eligible to claim THAT device yet, exactly like
+   * `d.status !== 'idle'` already excludes a manually-held one.
+   */
+  claimNext(jobTtlSec: number, excludeDeviceIds?: string[]): ClaimedJob | null
+  /** Distinct device ids with at least one `queued` job — the quiet-period wait (plan 71 §3.7) only needs to evaluate these, not the whole fleet. */
+  queuedDeviceIds(): string[]
+  /** The job that would be claimed next for this device (same ordering `claimNext` uses), or null — for the quiet-period wait's visible state (plan 71 §3.7), not for claiming itself. */
+  nextQueuedJobId(deviceId: string): string | null
   /**
    * `failureClass` (plan 36 §4.3) is only meaningful for `status: 'failed'`;
    * omitted/undefined leaves the column untouched. So is `errorPhase` (plan
@@ -187,7 +197,7 @@ export function createJobStore(db: Db): JobStore {
       return new Map(rows.map((r) => [r.id, { name: r.name, version: r.version }]))
     },
 
-    claimNext(jobTtlSec) {
+    claimNext(jobTtlSec, excludeDeviceIds) {
       // BEGIN IMMEDIATE: the write lock is held from the start of the transaction so
       // claim + perubahan status device atomik (spec §10.3).
       //
@@ -198,6 +208,14 @@ export function createJobStore(db: Db): JobStore {
       // the status flip), because anything enforced outside it can be raced
       // (plan 20 §3.3, §8 risk table). Do not add a TypeScript pre-filter.
       //
+      // Plan 71 §3.7 adds a THIRD exclusion, alongside `d.status = 'idle'`
+      // (a manually-held device) and the batch gate above: a device still
+      // inside its post-manual-use quiet period. Computed by the caller
+      // (`queue/scheduler.ts`, which owns the `quietPeriodSec`/`maxWaitSec`
+      // settings and the lease manager) and passed in as a plain id list —
+      // this function stays settings-blind, the same reasoning the batch
+      // gate above already follows for `concurrency`.
+      //
       // Ordering: `priority DESC, created_at ASC` still decides between
       // different batches and standalone jobs (plan 20 §3.3) — batchSeq is
       // only a tiebreaker for jobs of the same batch, which share the same
@@ -205,6 +223,13 @@ export function createJobStore(db: Db): JobStore {
       // SQLite's default ASC ordering sorts NULL first, so a standalone job
       // (batch_seq IS NULL) is never pushed behind a batched one at an
       // equal priority/age tie (verified in job-store.test.ts).
+      const excludeClause =
+        excludeDeviceIds && excludeDeviceIds.length > 0
+          ? sql`AND j.device_id NOT IN (${sql.join(
+              excludeDeviceIds.map((id) => sql`${id}`),
+              sql`, `,
+            )})`
+          : sql``
       return db.transaction(
         (tx) => {
           const claimed = tx
@@ -219,6 +244,7 @@ export function createJobStore(db: Db): JobStore {
                 LEFT JOIN batches b ON b.id = j.batch_id
                 WHERE j.status = 'queued'
                   AND d.status = 'idle'
+                  ${excludeClause}
                   AND (
                     j.batch_id IS NULL
                     OR b.concurrency = 0
@@ -246,6 +272,21 @@ export function createJobStore(db: Db): JobStore {
         },
         { behavior: 'immediate' },
       )
+    },
+
+    queuedDeviceIds() {
+      return db.selectDistinct({ deviceId: jobs.deviceId }).from(jobs).where(eq(jobs.status, 'queued')).all().map((r) => r.deviceId)
+    },
+
+    nextQueuedJobId(deviceId) {
+      const row = db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.deviceId, deviceId), eq(jobs.status, 'queued')))
+        .orderBy(desc(jobs.priority), asc(jobs.createdAt))
+        .limit(1)
+        .get()
+      return row?.id ?? null
     },
 
     finish(jobId, status, data) {

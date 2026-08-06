@@ -63,7 +63,7 @@ export function createWebRtcPlayer(opts: {
       setState('connecting')
       let iceServers: RTCIceServer[] = []
       try {
-        const res = await fetch('/api/agents/ice-config')
+        const res = await fetch('/api/nodes/ice-config')
         iceServers = ((await res.json()) as { iceServers: RTCIceServer[] }).iceServers
       } catch {
         // Without STUN/TURN the connection only succeeds on the same network.

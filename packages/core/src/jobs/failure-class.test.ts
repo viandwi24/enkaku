@@ -10,7 +10,7 @@ describe('classifyFailure — the infra table (plan 36 §3.2, §4.1)', () => {
     'E_ADB_HANDSHAKE_TIMEOUT',
     'E_ADB_UNAVAILABLE',
     'E_DEVICE_NOT_READY',
-    'agent_offline',
+    'node_offline',
     'device_not_found',
     'device_not_ready',
     'engine_not_found',

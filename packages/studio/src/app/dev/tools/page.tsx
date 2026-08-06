@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { JobCreateResponseSchema } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,7 +37,7 @@ export default function DevToolsPage() {
     setParamError(null)
     return run(
       'submit',
-      () => api<{ job: { jobId: string } }>('/api/jobs', { method: 'POST', json: { scriptId, deviceId, params: parsed } }),
+      () => api('/api/jobs', JobCreateResponseSchema, { method: 'POST', json: { scriptId, deviceId, params: parsed } }),
       {
         success: 'Raw job created',
         failure: 'Could not create the job',

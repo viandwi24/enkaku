@@ -12,7 +12,7 @@ export interface EntityTab {
   /**
    * When set, the tab renders disabled (not a dead-looking but still
    * clickable link — design.md's quality floor) with this text in a
-   * tooltip explaining why (plan 56 §5.8 — an agent-owned device has no
+   * tooltip explaining why (plan 56 §5.8 — a node-owned device has no
    * local inspector to attach to).
    */
   disabledReason?: string

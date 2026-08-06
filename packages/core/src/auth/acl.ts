@@ -42,6 +42,42 @@ export type Permission =
    * below rather than behind a `shell.mode`-style widening switch.
    */
   | 'device.network'
+  /**
+   * The database-backed workspace (plan 64 §4.2) — a caller with `fs.write`
+   * still cannot write everywhere: the SCOPE (which path prefixes) is what
+   * limits an agent, not this permission. A human operator gets both by
+   * default (§3.2's "readable and writable by anyone with fs.write").
+   */
+  | 'fs.read'
+  | 'fs.write'
+  /**
+   * AI agent records themselves — create/edit/delete an agent (plan 65
+   * §4.5). This is DIFFERENT from what an agent is permitted to DO once it
+   * runs: that is `agent.permissions` on the record, capped at its owner's
+   * own set (§3.5) and never wider because of this permission. An operator
+   * who can create agents can still only ever hand one the permissions they
+   * themselves already have.
+   */
+  | 'agent.view'
+  | 'agent.manage'
+  /**
+   * Talking to an agent — creating a thread, posting a message (which
+   * starts a run), cancelling a run, deciding an approval (plan 66 §4.4).
+   * Deliberately separate from `agent.manage`: that permission governs
+   * editing the AGENT RECORD (model, tools, grants); this one governs
+   * OPERATING an already-configured agent, the same split `device.view`/
+   * `device.control` and `job.view`/`job.run` already draw for devices
+   * and jobs.
+   */
+  | 'agent.run'
+  /**
+   * `notify.send` (plan 68 §4.3) — reaching a human via the in-app bell and
+   * a webhook. Separate from `agent.run`: an agent that should observe but
+   * never page anyone simply does not have this permission, the same
+   * allowlist-shaped reasoning every other capability permission already
+   * follows.
+   */
+  | 'notify.send'
   | 'script.view'
   | 'script.publish'
   | 'script.delete'
@@ -61,6 +97,12 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.settings',
   'device.enroll',
   'device.network',
+  'fs.read',
+  'fs.write',
+  'agent.view',
+  'agent.manage',
+  'agent.run',
+  'notify.send',
   'script.view',
   'script.publish',
   'job.view',
@@ -68,6 +110,41 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'tool.view',
   'settings.view',
 ])
+
+/** Every permission the ACL matrix knows about — used to validate a caller-supplied permission NAME (e.g. an agent's `permissions` list, plan 65 §4.5) is real rather than a typo that would silently never match anything. */
+export const ALL_PERMISSIONS: readonly Permission[] = [
+  'device.view',
+  'device.control',
+  'device.settings',
+  'device.enroll',
+  'device.quarantine',
+  'device.shell',
+  'device.adb',
+  'device.files',
+  'device.network',
+  'fs.read',
+  'fs.write',
+  'agent.view',
+  'agent.manage',
+  'agent.run',
+  'notify.send',
+  'script.view',
+  'script.publish',
+  'script.delete',
+  'job.view',
+  'job.run',
+  'job.cancel.any',
+  'tool.view',
+  'tool.manage',
+  'settings.view',
+  'settings.manage',
+  'user.manage',
+  'audit.view',
+]
+
+export function isPermission(value: string): value is Permission {
+  return (ALL_PERMISSIONS as readonly string[]).includes(value)
+}
 
 export function can(role: Role, permission: Permission): boolean {
   return role === 'admin' ? true : OPERATOR.has(permission)

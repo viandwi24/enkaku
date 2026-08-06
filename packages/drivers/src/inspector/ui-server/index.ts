@@ -1,4 +1,4 @@
-import { matchSelector, type Inspector, type Selector, type UiNode } from '@enkaku/protocol'
+import { matchSelector, type FindOutcome, type Inspector, type Selector, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from '../xml-parser'
 import { UiServerClient, UiServerClientError } from './client'
 import { isImplausibleMatch } from './find-guard'
@@ -134,14 +134,32 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
   /**
    * `null` for a selector that only matches a viewport-sized container (plan
    * 60 §3.1) — the same answer `find` already gives for a genuine miss, so
-   * callers need no new branch. Rejections are logged at `warn` with the
-   * selector and what came back: swapping one invisible failure for another
-   * is not an improvement.
+   * callers need no new branch. A thin narrowing over `findDetailed` (plan 74
+   * §3.5, §4.3): the guard logic lives in exactly one place, so `find()`'s
+   * behaviour cannot drift from what `findDetailed()`/`device.find` report.
    */
   async find(sel: Selector): Promise<UiNode | null> {
-    if ('point' in sel) return matchSelector({} as UiNode, sel)
+    const outcome = await this.findDetailed(sel)
+    return outcome.ok ? outcome.node : null
+  }
+
+  /**
+   * `find`, honest about why (plan 74 §3.4, §4.3): `not-found` for a genuine
+   * miss, `rejected-oversized` for the plan 60 §3.1 container guard. `objInfo`
+   * only ever reports the first match a selector resolves to — there is no
+   * on-device query for "how many nodes match" without paying for a full
+   * `dump()` — so this engine can never honestly report `ambiguous`; that
+   * reason is left to an engine that already has the whole tree
+   * (`uiautomator-dump.ts`). Rejections are logged at `warn`, once per
+   * selector, exactly as `find()` always has.
+   */
+  async findDetailed(sel: Selector): Promise<FindOutcome> {
+    if ('point' in sel) {
+      const synthetic = matchSelector({} as UiNode, sel)
+      return synthetic ? { ok: true, node: synthetic } : { ok: false, reason: 'not-found', matches: 0 }
+    }
     const info = await this.call(() => this.client.objInfo(toUiSelector(sel)))
-    if (!info) return null
+    if (!info) return { ok: false, reason: 'not-found', matches: 0 }
     const node = infoToUiNode(info)
     const screen = await this.screenSize()
     if (screen && isImplausibleMatch(node, screen)) {
@@ -156,9 +174,9 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
             'answering null (plan 60 §3.1). Use dump() to walk the tree if you meant the root.',
         )
       }
-      return null
+      return { ok: false, reason: 'rejected-oversized', matches: 1 }
     }
-    return node
+    return { ok: true, node }
   }
 
   screenshot(): Promise<Uint8Array> {

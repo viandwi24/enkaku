@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { ClusterInfo } from '@enkaku/protocol'
+import { ClusterResponseSchema, type ClusterInfo } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -50,11 +50,11 @@ export function ClusterEditorDialog({
       'save',
       () =>
         cluster === 'new'
-          ? api<{ cluster: ClusterInfo }>('/api/clusters', {
+          ? api('/api/clusters', ClusterResponseSchema, {
               method: 'POST',
               json: { name, description: description || null },
             })
-          : api<{ cluster: ClusterInfo }>(`/api/clusters/${cluster.id}`, {
+          : api(`/api/clusters/${cluster.id}`, ClusterResponseSchema, {
               method: 'PATCH',
               json: { name, description: description || null },
             }),

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { Check, Search } from 'lucide-react'
 import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
+import { HolderBadge } from '@/components/HolderBadge'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -203,6 +204,10 @@ export function DevicePicker(props: DevicePickerProps) {
                 <TagLabel tag={t} />
               </span>
             ))}
+            {/* A `manual`/`busy` device is still pickable — a job just waits
+                for it to go quiet (plan 71 §3.7) — so who holds it now is
+                worth showing here rather than only a status word. */}
+            {d.heldBy && <HolderBadge holder={d.heldBy} />}
           </div>
         </div>
       </button>

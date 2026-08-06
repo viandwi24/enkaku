@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { blob, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Tabel devices (spec §12, subset M0). Tabel lain (jobs, scripts, artifacts,
@@ -32,8 +32,8 @@ export const devices = sqliteTable(
     status: text('status').default('offline'),
     /** Quarantine reason (e.g. 'thermal:47.3C') — null when not quarantined. */
     quarantineReason: text('quarantine_reason'),
-    /** Agent pemilik device (mode cloud); null = device lokal. */
-    agentId: text('agent_id'),
+    /** The node that owns this device (cloud mode); null = local device. */
+    nodeId: text('node_id'),
     tenantId: text('tenant_id'),
     lastSeen: integer('last_seen', { mode: 'timestamp' }),
     /**
@@ -449,12 +449,12 @@ export const deviceEvents = sqliteTable(
 export type DeviceEventRow = typeof deviceEvents.$inferSelect
 export type DeviceEventInsert = typeof deviceEvents.$inferInsert
 
-/** Cloud agents (plan 11 §4.3) — one agent holds many devices. */
-export const agents = sqliteTable(
-  'agents',
+/** Cloud nodes (plan 11 §4.3, renamed from "agents" in plan 61) — one node holds many devices. */
+export const nodes = sqliteTable(
+  'nodes',
   {
     id: text('id').primaryKey(),
-    /** Multi-tenant (M8c) — null di single-tenant. */
+    /** Multi-tenant (M8c) — null in single-tenant. */
     tenantId: text('tenant_id'),
     name: text('name').notNull(),
     /** A single-use enrollment token (null once exchanged for a credential). */
@@ -466,10 +466,10 @@ export const agents = sqliteTable(
     lastSeen: integer('last_seen', { mode: 'timestamp' }),
     createdAt: integer('created_at', { mode: 'timestamp' }),
   },
-  (t) => [index('idx_agents_created').on(t.createdAt, t.id)],
+  (t) => [index('idx_nodes_created').on(t.createdAt, t.id)],
 )
 
-export type AgentRow = typeof agents.$inferSelect
+export type NodeRow = typeof nodes.$inferSelect
 
 /**
  * A schedule triggers a batch on a cron expression, in a stated timezone
@@ -489,13 +489,27 @@ export const schedules = sqliteTable(
     /** IANA zone, e.g. 'Asia/Jakarta'. Never a UTC offset — offsets break on DST. */
     timezone: text('timezone').notNull(),
 
-    scriptId: text('script_id').notNull(),
+    /**
+     * `name@version` or `name@latest` (plan 62 §3.3, §4.3) — a schedule
+     * stores the REFERENCE, never a resolved id. Renamed from `scriptId`
+     * (which held a concrete `scripts.id` and pinned forever, invisibly) —
+     * the migration backfills every existing row to its pinned
+     * `"<name>@<version>"` verbatim, never to `@latest` (acceptance #9).
+     */
+    /**
+     * `''` for an agent-kind schedule (see `scheduleAgentTargets` below) —
+     * the dispatcher branches on WHETHER a `scheduleAgentTargets` row exists
+     * for this schedule BEFORE `scriptRef` is ever read (plan 68 §4.2), so
+     * the script branch's own reading of this column is byte-for-byte
+     * unchanged from plan 62.
+     */
+    scriptRef: text('script_ref').notNull(),
     params: text('params', { mode: 'json' }),
     /** Exactly one of clusterId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
     clusterId: text('cluster_id'),
     deviceIds: text('device_ids', { mode: 'json' }), // string[]
 
-    // Batch shape, passed straight through to plan 20's dispatcher.
+    // Batch shape, passed straight through to plan 20's dispatcher (script targets only).
     concurrency: integer('concurrency').notNull().default(0),
     order: text('order').notNull().default('as-listed'), // 'as-listed' | 'random'
 
@@ -541,3 +555,424 @@ export const scheduleRuns = sqliteTable(
 )
 
 export type ScheduleRunRow = typeof scheduleRuns.$inferSelect
+
+/**
+ * A schedule's AGENT target (plan 68 §3.1, §4.1) — a companion row, one per
+ * agent-kind schedule, rather than new columns on `schedules` itself. This
+ * is a deliberate deviation from the plan's own §4.1 illustration (which
+ * shows `target`/`threadMode`/`onApprovalRequired` as columns added
+ * directly to `schedules`): `schedules/runner.test.ts`'s `seedSchedule` and
+ * `api/schedules.test.ts`'s `seedSchedule` both build a fully-typed literal
+ * `const row: ScheduleRow = {...}` — TypeScript requires EVERY column of a
+ * `$inferSelect` type to be present in such a literal regardless of
+ * nullability or a SQL-level default, so any new column added directly to
+ * `schedules` fails to compile in both files, and neither may be edited
+ * (acceptance #2: "existing script schedules behave identically... with
+ * their tests UNEDITED"). A companion table keyed on `scheduleId` adds the
+ * agent-target fields with ZERO change to `ScheduleRow`'s shape, which is
+ * what actually keeps both files compiling and passing untouched — a
+ * stronger form of "extending rather than replacing" than the plan's own
+ * illustration achieves. Presence of a row here IS the discriminator: the
+ * dispatcher (`schedules/runner.ts`) checks for one before ever touching
+ * `schedules.scriptRef`.
+ */
+export const scheduleAgentTargets = sqliteTable(
+  'schedule_agent_targets',
+  {
+    scheduleId: text('schedule_id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    prompt: text('prompt').notNull(),
+    /** Plan 68 §3.2 — 'new' (default): a fresh thread per firing. 'continue': one long-lived thread, reused via `threadId` below. */
+    threadMode: text('thread_mode').notNull().default('new'),
+    /** Set once, on the first firing, when threadMode = 'continue'. */
+    threadId: text('thread_id'),
+    /** Plan 68 §3.5 — 'deny' (default) or 'pause'. */
+    onApprovalRequired: text('on_approval_required').notNull().default('deny'),
+    /** The most recent agent run this schedule started, for overlap tracking (parallels `schedules.lastBatchId` for the script branch). */
+    lastAgentRunId: text('last_agent_run_id'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_schedule_agent_targets_schedule').on(t.scheduleId)],
+)
+export type ScheduleAgentTargetRow = typeof scheduleAgentTargets.$inferSelect
+export type ScheduleAgentTargetInsert = typeof scheduleAgentTargets.$inferInsert
+
+/**
+ * The virtual, database-backed workspace (plan 64 §3.1, §4.1) — deliberately
+ * NEVER the real filesystem: scripts run as the core's OS user with full
+ * filesystem access (spec §11.3, crash containment not a sandbox) and an
+ * agent reads attacker-controllable device screens, so a real directory here
+ * would convert a prompt injection into arbitrary host file writes. `path`
+ * unique is what makes a write a single upsert and a listing a prefix scan;
+ * directories are implied by paths and are never rows of their own (§3.2).
+ */
+export const workspaceFiles = sqliteTable(
+  'workspace_files',
+  {
+    id: text('id').primaryKey(),
+    /** Absolute, NFC-normalised, unique — validated by `workspace/path.ts` before this table is ever touched. */
+    path: text('path').notNull().unique(),
+    content: blob('content', { mode: 'buffer' }).notNull(),
+    contentType: text('content_type').notNull().default('text/plain'),
+    size: integer('size').notNull(),
+    /** sha256 of `content` — the compare-and-swap token (§3.4). */
+    hash: text('hash').notNull(),
+    /** 'user:<id>' or 'agent:<id>' — an agent's writes are attributable (§4.5, acceptance #12). */
+    createdBy: text('created_by'),
+    updatedBy: text('updated_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_workspace_path').on(t.path)],
+)
+
+export type WorkspaceFileRow = typeof workspaceFiles.$inferSelect
+export type WorkspaceFileInsert = typeof workspaceFiles.$inferInsert
+
+/**
+ * Content-addressed image blobs (plan 70 §3.4, §4.1) — a screenshot or an
+ * attached image is stored ONCE, keyed by its own sha256, and referenced
+ * from `agent_messages.content` (an `AgentImageRefSchema` block carrying
+ * `blobId`) rather than inlined as base64 into every message row and pushed
+ * over `/ws`. The id IS the hash, so a row is immutable by construction and
+ * two identical screenshots dedupe for free (criterion 2).
+ */
+export const agentBlobs = sqliteTable('agent_blobs', {
+  /** `sha256:<hex>`. */
+  id: text('id').primaryKey(),
+  mediaType: text('media_type').notNull(),
+  bytes: integer('bytes').notNull(),
+  width: integer('width'),
+  height: integer('height'),
+  data: blob('data', { mode: 'buffer' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+export type AgentBlobRow = typeof agentBlobs.$inferSelect
+export type AgentBlobInsert = typeof agentBlobs.$inferInsert
+
+/**
+ * A configured provider endpoint plus credential (plan 65 §3.2, §3.6, §4.1)
+ * — farm-level, shared across agents (an agent names one by `connectorId`,
+ * never holds its own copy). `credential` is `iv.tag.ciphertext`,
+ * AES-256-GCM under the `'connector'` namespace of
+ * `../secrets/store.ts` — write-only through every API this table backs
+ * (`GET` returns `{configured, hint}`, never this column); the exact same
+ * honest claim `network_credentials` already states applies here unchanged
+ * ("not readable by grepping the database", not real key management).
+ */
+export const connectors = sqliteTable('connectors', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  kind: text('kind').notNull(), // 'anthropic' | 'openrouter' — free text, validated by ConnectorKindSchema; no migration needed to add a kind (plan 75 §4.4)
+  baseUrl: text('base_url'),
+  credential: text('credential'),
+  /** A masked tail computed ONCE at write time, e.g. "sk-ant-…7Xq2" — never enough to reconstruct the secret, and cheaper than decrypting on every GET just to redact it again. */
+  credentialHint: text('credential_hint'),
+  status: text('status').default('unknown'), // unknown|ok|unauthenticated|unreachable
+  statusMessage: text('status_message'),
+  checkedAt: integer('checked_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+export type ConnectorRow = typeof connectors.$inferSelect
+
+/**
+ * A stored, editable AI agent record (plan 65 §3, §4.1) — its own model,
+ * provider connector, system prompt, context budgets, tool allowlist,
+ * device grants, and workspace scope; farm defaults live in
+ * `FarmSettings.agentDefaults` (`@enkaku/protocol`), overridden per agent
+ * via `settings` below (`resolveAgentConfig` is the ONE place the two are
+ * merged — nothing else reads `settings` directly).
+ *
+ * Named `ai_agents`, NOT `agents`: `agents` carried a different meaning
+ * (the cloud tunnel process) for the whole life of this project before plan
+ * 61 renamed it to `nodes` — reusing the exact name for a different thing
+ * would make every old migration, backup, and support thread ambiguous.
+ *
+ * `deviceGrants` EMPTY OR NULL MEANS ALL DEVICES, never none (plan 65 §3.5)
+ * — the one place this project deliberately inverts the usual "empty list
+ * means nothing" reading, because an agent's authority defaults to
+ * everything an operator can already reach and narrows only when a grant is
+ * explicitly given. Stated here, in the API, and in the UI copy ("All
+ * devices (no restriction)"), so an agent never touches a phone it should
+ * not through an implicit reading of an empty list.
+ */
+export const aiAgents = sqliteTable(
+  'ai_agents',
+  {
+    id: text('id').primaryKey(),
+    /** Workspace home (`/agents/<slug>/`) and @mentions — unique across the farm. */
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    description: text('description'),
+    colour: text('colour'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+
+    /** Null ⇒ farm default (`agentDefaults.connectorId`). */
+    connectorId: text('connector_id'),
+    /** Null ⇒ farm default (`agentDefaults.model`). Model ids carry no date suffix. */
+    model: text('model'),
+    /** Null ⇒ farm default (`agentDefaults.systemPrompt`). */
+    systemPrompt: text('system_prompt'),
+
+    /** `AgentSettings` (`@enkaku/protocol`) — every field optional; unset means inherit the farm default. */
+    settings: text('settings', { mode: 'json' }),
+    /** Registry capability ids. Validated against the live registry at write time. */
+    tools: text('tools', { mode: 'json' }),
+    /**
+     * Registry capability ids that pause for approval EVEN when their own
+     * `effect` is not `destructive` (plan 66 §3.6) — an operator's own
+     * added caution on top of the registry's default gate. Validated
+     * against the live registry at write time, same as `tools`.
+     */
+    requiresApproval: text('requires_approval', { mode: 'json' }),
+    /** Device ids. EMPTY OR NULL MEANS ALL DEVICES — see the table comment. */
+    deviceGrants: text('device_grants', { mode: 'json' }),
+    /** `{ read: string[], write: string[] }` — workspace path prefixes (plan 64 §3.2). */
+    workspaceScope: text('workspace_scope', { mode: 'json' }),
+    /** ACL permission names; capped at the owner's own set at write time AND at execution (plan 65 §3.5). */
+    permissions: text('permissions', { mode: 'json' }),
+    /** 'on-child-result'|'always'|'never' — null means the default (plan 67 §3.3). */
+    wakeOnMessage: text('wake_on_message'),
+
+    ownerId: text('owner_id'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_ai_agents_created').on(t.createdAt, t.id)],
+)
+
+export type AiAgentRow = typeof aiAgents.$inferSelect
+export type AiAgentInsert = typeof aiAgents.$inferInsert
+
+/**
+ * A conversation with one agent (plan 66 §3.1, §4.1) — lives until deleted.
+ * `origin` records how it began: a person typing in Studio ('chat'), a
+ * schedule firing (plan 68, 'schedule'), or a parent agent spawning a child
+ * (plan 67, 'spawn').
+ */
+export const agentThreads = sqliteTable(
+  'agent_threads',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    title: text('title'),
+    origin: text('origin').notNull().default('chat'),
+    /** Plan 68 §3.5 — 'pause' (default, every non-schedule origin) or 'deny' (set from the firing schedule's own setting). */
+    onApprovalRequired: text('on_approval_required').notNull().default('pause'),
+    /**
+     * Plan 73 §4.6 — set when a thread is opened FROM a device page ("Ask an
+     * agent"): every run created in this thread (the opening message and
+     * every one after it) is narrowed to exactly these device ids via
+     * `deviceGrantsOverride` (plan 67 §4.2's existing per-run mechanism —
+     * this is what feeds it for a whole conversation instead of one spawn
+     * call). Null for an ordinary thread, matching the run-level field's own
+     * "null means no extra narrowing" rule.
+     */
+    deviceScope: text('device_scope', { mode: 'json' }).$type<string[] | null>(),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_agent_threads_agent').on(t.agentId, t.createdAt)],
+)
+export type AgentThreadRow = typeof agentThreads.$inferSelect
+export type AgentThreadInsert = typeof agentThreads.$inferInsert
+
+/**
+ * One execution within a thread (plan 66 §3.1, §3.2, §4.1): a message in,
+ * work, a result out. `stopReason`/`errorClass` make a run that failed at
+ * 3 a.m. diagnosable from the row alone (§3.8), never only from a log file.
+ */
+export const agentRuns = sqliteTable(
+  'agent_runs',
+  {
+    id: text('id').primaryKey(),
+    threadId: text('thread_id').notNull(),
+    /** queued|running|paused|succeeded|failed|cancelled */
+    status: text('status').notNull().default('queued'),
+    /** 'done'|'max-steps'|'max-seconds'|'max-tokens'|'loop-detected'|'cancelled'|'error' */
+    stopReason: text('stop_reason'),
+    errorClass: text('error_class'),
+    error: text('error'),
+    steps: integer('steps').notNull().default(0),
+    /** { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd } */
+    usage: text('usage', { mode: 'json' }),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    finishedAt: integer('finished_at', { mode: 'timestamp' }),
+    /** Plan 67 §4.1 — the run this one was spawned by (`agent.spawn`), null for a root. */
+    parentRunId: text('parent_run_id'),
+    /** Plan 67 §4.1 — the root's own id; equals `id` for a root. Makes the whole tree one indexed query. */
+    rootRunId: text('root_run_id').notNull(),
+    /** Plan 67 §3.6, §4.1 — root = 1, its children = 2, grandchildren = 3 (default depth cap). */
+    depth: integer('depth').notNull().default(1),
+    /** Plan 67 §3.2, §4.1 — true while the parent is parked on this child's result (`waitFor: true`). */
+    awaited: integer('awaited', { mode: 'boolean' }).notNull().default(false),
+    /** Plan 67 §4.2 — `agent.spawn`'s `deviceIds`, when given: narrows this ONE run's device grants
+     * below the authority intersection (never widens it). Null/absent means no extra narrowing. */
+    deviceGrantsOverride: text('device_grants_override', { mode: 'json' }),
+  },
+  (t) => [index('idx_agent_runs_thread').on(t.threadId, t.startedAt), index('idx_agent_runs_root').on(t.rootRunId), index('idx_agent_runs_parent').on(t.parentRunId)],
+)
+export type AgentRunRow = typeof agentRuns.$inferSelect
+export type AgentRunInsert = typeof agentRuns.$inferInsert
+
+/**
+ * One turn — user, assistant, tool, or system (plan 66 §3.1, §4.1).
+ * Append-only: nothing is ever rewritten in place, including by compaction
+ * (§3.5), which is a VIEW built for the provider at request time, never an
+ * edit of this table. The unique index on (threadId, seq) is what makes a
+ * double submit produce an error instead of two messages at one seq (§4.1) —
+ * `seq` is the client's gap detector across the fetch-then-subscribe
+ * boundary (§3.4).
+ */
+export const agentMessages = sqliteTable(
+  'agent_messages',
+  {
+    id: text('id').primaryKey(),
+    threadId: text('thread_id').notNull(),
+    runId: text('run_id'),
+    /** Monotonic within the thread. */
+    seq: integer('seq').notNull(),
+    role: text('role').notNull(), // user|assistant|tool|system
+    /** Content blocks — text, thinking, tool_use, tool_result. Zod on read. */
+    content: text('content', { mode: 'json' }).notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('idx_agent_messages_seq').on(t.threadId, t.seq),
+    index('idx_agent_messages_run').on(t.runId),
+  ],
+)
+export type AgentMessageRow = typeof agentMessages.$inferSelect
+export type AgentMessageInsert = typeof agentMessages.$inferInsert
+
+/**
+ * A paused destructive capability call awaiting a human decision (plan 66
+ * §3.6, §4.1). A row, not memory, so it survives a core restart — the run
+ * resumes where it paused once decided (acceptance #9), rather than being
+ * lost or silently re-running the steps before it. `expiresAt` is plain
+ * unix seconds (not `{mode:'timestamp'}`), matching `jobs.expiresAt`'s own
+ * convention for a reaper-compared deadline column.
+ */
+export const agentApprovals = sqliteTable(
+  'agent_approvals',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull(),
+    capabilityId: text('capability_id').notNull(),
+    input: text('input', { mode: 'json' }).notNull(),
+    /**
+     * The `tool_use.id` this approval gates (plan 66 §3.2, §3.6) — added
+     * beyond §4.1's illustrative column list because it is what makes
+     * resuming a run after a decision UNAMBIGUOUS: a step can carry more
+     * than one gated call, and without this, deciding call #1 while call
+     * #2 is still pending has no way to say which one a stored decision
+     * belongs to. Not null: `run.ts` always knows the call id when it
+     * creates the row.
+     */
+    toolCallId: text('tool_call_id').notNull(),
+    status: text('status').notNull().default('pending'), // pending|approved|denied|expired
+    decidedBy: text('decided_by'),
+    decidedAt: integer('decided_at', { mode: 'timestamp' }),
+    expiresAt: integer('expires_at').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_agent_approvals_run').on(t.runId), index('idx_agent_approvals_status').on(t.status)],
+)
+export type AgentApprovalRow = typeof agentApprovals.$inferSelect
+export type AgentApprovalInsert = typeof agentApprovals.$inferInsert
+
+/**
+ * The run tree's message channel (plan 67 §3.3, §4.1) — a TABLE, not an
+ * in-memory queue, so a message survives a restart and an undelivered one is
+ * inspectable when an agent appears stuck. Three edges write here:
+ * `agent.send` (parent → a running descendant), `agent.reply` (child →
+ * parent), and a detached child's completion (`waitFor: false`). The
+ * target's loop drains it ONLY at a turn boundary (`agent/loop/run.ts`'s top
+ * of iteration) — never mid tool-call (§3.3's central rule).
+ */
+export const agentInbox = sqliteTable(
+  'agent_inbox',
+  {
+    id: text('id').primaryKey(),
+    targetRunId: text('target_run_id').notNull(),
+    fromRunId: text('from_run_id'),
+    /** 'message' (agent.send / agent.reply) | 'child-result' (a detached child's completion). */
+    kind: text('kind').notNull(),
+    body: text('body', { mode: 'json' }).notNull(),
+    /** Null until drained at a turn boundary (§3.3) — a client renders "queued" while this is null. */
+    deliveredAt: integer('delivered_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_agent_inbox_target').on(t.targetRunId, t.deliveredAt)],
+)
+export type AgentInboxRow = typeof agentInbox.$inferSelect
+export type AgentInboxInsert = typeof agentInbox.$inferInsert
+
+/**
+ * Which agents may spawn which (plan 67 §3.4, §4.1) — opt-in per pair,
+ * defaulting to none, so a newly-created agent cannot spawn anything until
+ * an operator says which. A table rather than a JSON column because "which
+ * agents may spawn this one" is a question worth asking from both directions.
+ */
+export const agentSpawnGrants = sqliteTable(
+  'agent_spawn_grants',
+  {
+    parentAgentId: text('parent_agent_id').notNull(),
+    childAgentId: text('child_agent_id').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.parentAgentId, t.childAgentId] }), index('idx_agent_spawn_grants_child').on(t.childAgentId)],
+)
+export type AgentSpawnGrantRow = typeof agentSpawnGrants.$inferSelect
+export type AgentSpawnGrantInsert = typeof agentSpawnGrants.$inferInsert
+
+/**
+ * In-app notifications (plan 68 §3.4, §4.1) — the record even when a
+ * webhook fails: written FIRST, before any webhook delivery is even
+ * attempted (§3.4's central rule). `context` is what makes a row clickable
+ * — a link to the run/thread/device/job that produced it (criterion 14).
+ */
+export const notifications = sqliteTable(
+  'notifications',
+  {
+    id: text('id').primaryKey(),
+    level: text('level').notNull(), // 'info' | 'warn' | 'error'
+    title: text('title').notNull(),
+    body: text('body'),
+    /** `{ runId?, threadId?, agentId?, deviceId?, jobId?, scheduleId? }` — makes it clickable. */
+    context: text('context', { mode: 'json' }),
+    source: text('source').notNull(), // 'agent:<id>' | 'system'
+    readAt: integer('read_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_notifications_created').on(t.createdAt, t.id)],
+)
+export type NotificationRow = typeof notifications.$inferSelect
+export type NotificationInsert = typeof notifications.$inferInsert
+
+/**
+ * A configured webhook endpoint (plan 68 §3.4, §4.1) — farm-level and
+ * admin-managed; an agent chooses only among these NAMES via `notify.send`,
+ * never a raw URL, so a webhook cannot leak farm information to an
+ * arbitrary address (§8's risk table). `secretRef` is `iv.tag.ciphertext`
+ * under the `'webhook'` namespace of `../secrets/store.ts` — the SAME
+ * mechanism `connectors.credential` already uses, not a third one — never
+ * returned by any API (write-only, exactly like a connector credential).
+ */
+export const webhookEndpoints = sqliteTable('webhook_endpoints', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  url: text('url').notNull(),
+  /** `iv.tag.ciphertext`, AES-256-GCM under the `'webhook'` secrets namespace — never the plaintext secret. Null when the endpoint is unsigned (no secret configured yet). */
+  secretRef: text('secret_ref'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  /** Rolling delivery health (plan 68 §4.1) — so a dead endpoint is visible before someone needs it. */
+  lastStatus: text('last_status'), // 'ok' | 'failed' | null (never attempted)
+  lastAttemptAt: integer('last_attempt_at', { mode: 'timestamp' }),
+  failureCount: integer('failure_count').notNull().default(0),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+export type WebhookEndpointRow = typeof webhookEndpoints.$inferSelect
+export type WebhookEndpointInsert = typeof webhookEndpoints.$inferInsert

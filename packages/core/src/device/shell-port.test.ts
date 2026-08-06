@@ -87,7 +87,7 @@ function createFakeRpc() {
       cb(payload)
       return true
     },
-    failAllForAgent: () => {},
+    failAllForNode: () => {},
   }
   return {
     rpc,
@@ -111,8 +111,8 @@ function createFakeRouter() {
   const dataSubs = new Map<number, (payload: Uint8Array) => void>()
 
   const router: TunnelRouter = {
-    handleAgentMessage: () => {},
-    handleAgentFrame: () => {},
+    handleNodeMessage: () => {},
+    handleNodeFrame: () => {},
     sendToDevice: (deviceId, msg) => {
       sentToDevice.push({ deviceId, msg })
       return true
@@ -163,7 +163,7 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
     })
   })
 
-  test('exec() defaults stderr to "" when the agent reply omits it (an older agent build predating plan 53)', async () => {
+  test('exec() defaults stderr to "" when the node reply omits it (an older node build predating plan 53)', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRpc.setReply({ ok: true, stdout: 'device output', exitCode: 0, truncated: false }) // no `stderr` field at all
@@ -186,17 +186,17 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     class Boom extends Error {
-      code = 'E_AGENT_TIMEOUT'
+      code = 'E_NODE_TIMEOUT'
     }
-    fakeRpc.setRejection(new Boom('agent did not reply'))
+    fakeRpc.setRejection(new Boom('node did not reply'))
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
-    await expect(port.exec('ps -A')).rejects.toMatchObject({ code: 'E_AGENT_TIMEOUT' })
+    await expect(port.exec('ps -A')).rejects.toMatchObject({ code: 'E_NODE_TIMEOUT' })
   })
 
   test('stream() opens a shell channel, starts on a successful reply, and delivers channel frames via onData', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
-    fakeRpc.setReply({ ok: true, streamId: 'agent-stream-1' })
+    fakeRpc.setReply({ ok: true, streamId: 'node-stream-1' })
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
 
     const received: string[] = []
@@ -207,7 +207,7 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
       onEnd: () => {},
     })
 
-    expect(handle.streamId).toBe('agent-stream-1')
+    expect(handle.streamId).toBe('node-stream-1')
     expect(fakeRouter.opened).toEqual([{ deviceId: 'dev-1', kind: 'shell', channelId: 1 }])
     expect(fakeRpc.calls[0]).toMatchObject({ type: 'shell.stream.request', payload: { deviceId: 'dev-1', cmd: 'logcat -v time', channelId: 1 } })
 
@@ -218,37 +218,37 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
   test('stop() sends shell.stream.stop, closes the channel, and fires onEnd("stopped") — channel release on the happy path', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
-    fakeRpc.setReply({ ok: true, streamId: 'agent-stream-1' })
+    fakeRpc.setReply({ ok: true, streamId: 'node-stream-1' })
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
     const ended: string[] = []
     const handle = await port.stream('logcat', { onData: () => {}, onEnd: (r) => ended.push(r) })
 
     await handle.stop()
 
-    expect(fakeRouter.sentToDevice).toEqual([{ deviceId: 'dev-1', msg: { type: 'shell.stream.stop', payload: { streamId: 'agent-stream-1' } } }])
+    expect(fakeRouter.sentToDevice).toEqual([{ deviceId: 'dev-1', msg: { type: 'shell.stream.stop', payload: { streamId: 'node-stream-1' } } }])
     expect(fakeRouter.closed).toEqual([1])
     expect(ended).toEqual(['stopped'])
     // The watcher for this stream is gone — a late `shell.stream.ended` from
-    // the agent (a race with our own stop) is a harmless no-op, not a double-end.
-    expect(fakeRpc.hasWatcher('agent-stream-1')).toBe(false)
+    // the node (a race with our own stop) is a harmless no-op, not a double-end.
+    expect(fakeRpc.hasWatcher('node-stream-1')).toBe(false)
   })
 
-  test('an agent-pushed shell.stream.ended (idle/deadline/error/backpressure) closes the channel and fires onEnd with that reason', async () => {
+  test('a node-pushed shell.stream.ended (idle/deadline/error/backpressure) closes the channel and fires onEnd with that reason', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
-    fakeRpc.setReply({ ok: true, streamId: 'agent-stream-1' })
+    fakeRpc.setReply({ ok: true, streamId: 'node-stream-1' })
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
     const ended: string[] = []
     await port.stream('logcat', { onData: () => {}, onEnd: (r) => ended.push(r) })
 
-    const dispatched = fakeRpc.rpc.dispatch('agent-stream-1', { streamId: 'agent-stream-1', reason: 'idle' })
+    const dispatched = fakeRpc.rpc.dispatch('node-stream-1', { streamId: 'node-stream-1', reason: 'idle' })
 
     expect(dispatched).toBe(true)
     expect(ended).toEqual(['idle'])
     expect(fakeRouter.closed).toEqual([1]) // released even though nobody called stop()
   })
 
-  test('the channel is released even when the agent rejects the stream request (channel release on the unhappy path)', async () => {
+  test('the channel is released even when the node rejects the stream request (channel release on the unhappy path)', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRpc.setReply({ ok: false, error: { code: 'E_ADB_STREAM_LIMIT', message: 'too many streams' } })
@@ -259,13 +259,13 @@ describe('createRemoteShellPort (plan 25 §4.3) — against a fake rpc/router', 
     expect(fakeRouter.closed).toEqual([1]) // opened optimistically, released on rejection
   })
 
-  test('stream() throws agent_offline without ever calling rpc.request when no channel can be opened', async () => {
+  test('stream() throws node_offline without ever calling rpc.request when no channel can be opened', async () => {
     const fakeRpc = createFakeRpc()
     const fakeRouter = createFakeRouter()
     fakeRouter.setChannelsAvailable(false)
     const port = createRemoteShellPort({ rpc: fakeRpc.rpc, router: fakeRouter.router, deviceId: 'dev-1' })
 
-    await expect(port.stream('logcat', { onData: () => {}, onEnd: () => {} })).rejects.toMatchObject({ code: 'agent_offline' })
+    await expect(port.stream('logcat', { onData: () => {}, onEnd: () => {} })).rejects.toMatchObject({ code: 'node_offline' })
     expect(fakeRpc.calls).toHaveLength(0)
   })
 })

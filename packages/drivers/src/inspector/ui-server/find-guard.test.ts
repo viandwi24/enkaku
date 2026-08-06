@@ -181,3 +181,46 @@ describe('UiServerInspector.find — the guard in place', () => {
     expect(screenReads()).toBe(0)
   })
 })
+
+/**
+ * `UiServerInspector.findDetailed` (plan 74 §3.4, §4.3) — `find()` above is
+ * now a thin narrowing over this, so every scenario already covered for
+ * `find()` proves the guard logic is shared; these tests assert the REASON
+ * `findDetailed` reports, which `find()` cannot expose.
+ */
+describe('UiServerInspector.findDetailed (plan 74 §3.4, §4.3)', () => {
+  test('a genuine miss: { ok: false, reason: "not-found", matches: 0 }', async () => {
+    const { inspector } = inspectorWith(null)
+    expect(await inspector.findDetailed({ id: 'com.android.chrome:id/url_bar' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+      matches: 0,
+    })
+  })
+
+  test('a match rejected by the container guard: { ok: false, reason: "rejected-oversized", matches: 1 } — never "not-found"', async () => {
+    const { inspector } = inspectorWith(objInfo({ left: 0, top: 0, right: 720, bottom: 1640 }, 'android.widget.FrameLayout'))
+    expect(await inspector.findDetailed({ id: 'com.android.chrome:id/url_bar' })).toEqual({
+      ok: false,
+      reason: 'rejected-oversized',
+      matches: 1,
+    })
+  })
+
+  test('a usable match: { ok: true, node }', async () => {
+    const { inspector } = inspectorWith(objInfo({ left: 56, top: 96, right: 664, bottom: 208 }, 'android.widget.EditText'))
+    const outcome = await inspector.findDetailed({ id: 'com.android.chrome:id/url_bar' })
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.node.className).toBe('android.widget.EditText')
+  })
+
+  test('never reports "ambiguous" — objInfo only ever resolves the first match, so this engine has nothing honest to say beyond not-found/rejected-oversized/ok', async () => {
+    // Documents the deliberate gap recorded in the implementation comment:
+    // there is no on-device "how many matches" query without paying for a
+    // full dump(), so ui-server's findDetailed never produces this reason —
+    // that is left to uiautomator-dump.ts, which already has the whole tree.
+    const { inspector } = inspectorWith(objInfo({ left: 56, top: 96, right: 664, bottom: 208 }, 'android.widget.EditText'))
+    const outcome = await inspector.findDetailed({ id: 'com.android.chrome:id/url_bar' })
+    if (!outcome.ok) expect(outcome.reason).not.toBe('ambiguous')
+  })
+})

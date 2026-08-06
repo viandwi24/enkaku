@@ -1,5 +1,5 @@
-# Enkaku monorepo — konfigurasi Bun.
-# Sengaja minimal; ada untuk konvensi (00-overview §4.1).
+# Enkaku monorepo — Bun configuration.
+# Deliberately minimal; exists for the convention (00-overview §4.1).
 
 [test]
 # Only our own workspace. `refs/` holds vendored reference projects (STF, GADS,
@@ -8,3 +8,21 @@
 # bare `bun test` is red for reasons that have nothing to do with this codebase,
 # which makes the Definition of Done (00-overview §7.2) unverifiable.
 root = "packages"
+# `packages/studio` is excluded here and run as its OWN `bun test` invocation
+# (`bun run --cwd packages/studio test`) instead (plan 72 §4.4, criterion 10).
+# Bun's `[test].preload` is a single global list for the whole invocation —
+# there is no per-directory scoping within one `bun test` run (verified: a
+# nested `packages/studio/bunfig.toml` is only read when `bun test`'s cwd IS
+# that directory, never when invoked from here). Studio's component tests
+# need `@happy-dom/global-registrator` preloaded before `@testing-library/dom`
+# ever evaluates (its `screen` export is computed ONCE at first import — a
+# plain top-of-file `import` in the test file itself is too late, proven by
+# reproduction), so it cannot be preloaded here: doing so was tried and it
+# broke 13 existing core tests that stub `globalThis.fetch` themselves,
+# because happy-dom's registration installs its own `fetch`/`WebSocket`/etc.
+# Splitting the invocation is what keeps this package's tests running with no
+# DOM at all, exactly as before this plan. The pattern below is matched
+# against the path from the repo root (where `bun test` is actually invoked),
+# not from `root = "packages"` above — that setting only changes where Bun
+# SCANS for test files, not the base `pathIgnorePatterns` matches against.
+pathIgnorePatterns = ["packages/studio/**"]

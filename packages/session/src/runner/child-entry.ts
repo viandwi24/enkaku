@@ -8,6 +8,7 @@
  * parent. This is crash containment (spec §11.3) — NOT a security sandbox:
  * the bundle has full fs and network access as the core's OS user.
  */
+import { FindOutcomeSchema } from '@enkaku/protocol'
 import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type ParentToChild } from './ipc'
 
 const HEARTBEAT_MS = 10_000
@@ -23,7 +24,7 @@ function send(msg: ChildToParent): void {
 const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingArtifact = new Map<string, { resolve: () => void; reject: (e: unknown) => void }>()
 const abortController = new AbortController()
-let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | null = null
+let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
 
 function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>): Promise<T> {
   const callId = crypto.randomUUID()
@@ -74,7 +75,16 @@ const deviceApi = {
       },
     } as never),
   key: (code: unknown) => request<void>({ method: 'key', args: { code } } as never),
-  find: (sel: unknown) => request<unknown>({ method: 'find', args: { sel } } as never),
+  // Plan 74 §3.5, §4.3: the parent's 'find' device.call always answers with
+  // the full `FindOutcome` now (not-found/rejected-oversized/ambiguous
+  // travel beside the node) — `find()` narrows it to `UiNode | null` so a
+  // bundle published before this plan keeps working unchanged (criterion
+  // 10); `findDetailed()` below is the new call that hands back the reason.
+  find: async (sel: unknown) => {
+    const outcome = FindOutcomeSchema.parse(await request<unknown>({ method: 'find', args: { sel } } as never))
+    return outcome.ok ? outcome.node : null
+  },
+  findDetailed: async (sel: unknown) => FindOutcomeSchema.parse(await request<unknown>({ method: 'find', args: { sel } } as never)),
   dump: () => request<unknown>({ method: 'dump', args: {} } as never),
   waitFor: (sel: unknown, opts?: { timeout?: number; intervalMs?: number }) =>
     request<unknown>({

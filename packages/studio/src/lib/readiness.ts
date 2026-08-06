@@ -1,6 +1,6 @@
 'use client'
 
-import type { DeviceReadiness, Readiness } from '@enkaku/protocol'
+import { DeviceReadinessResponseSchema, type DeviceReadiness, type Readiness } from '@enkaku/protocol'
 import { api } from './actions'
 import { ws } from './ws'
 
@@ -19,7 +19,7 @@ import { ws } from './ws'
  * same `clientId` convention the adb-endpoint and transfer routes use.
  */
 export function setDeviceReadiness(deviceId: string, desired: Readiness): Promise<DeviceReadiness> {
-  return api<{ readiness: DeviceReadiness }>(`/api/devices/${encodeURIComponent(deviceId)}/readiness`, {
+  return api(`/api/devices/${encodeURIComponent(deviceId)}/readiness`, DeviceReadinessResponseSchema, {
     method: 'PUT',
     json: { desired, ...(ws.getSessionId() ? { clientId: ws.getSessionId() } : {}) },
   }).then((b) => b.readiness)

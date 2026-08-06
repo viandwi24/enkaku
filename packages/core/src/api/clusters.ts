@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
+import { ClusterMoveResponseSchema, ClusterResponseSchema, type ClusterInfo, type DeviceInfo, type LeaseHolder } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -13,6 +13,7 @@ import { loadClusterNames, rowToDeviceInfo } from '../registry/device-registry'
 import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, decodeStringCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
+import { typedJson } from './typed-json'
 
 const ClusterBody = z.object({
   name: z.string().min(1),
@@ -53,7 +54,12 @@ function rowToClusterInfo(db: Db, row: ClusterRow): ClusterInfo {
  * `PUT /api/devices/:id/cluster` (in `api/devices.ts`), never through the
  * cluster's own PATCH body.
  */
-export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<AuthEnv> {
+export function createClusterRoutes(deps: {
+  db: Db
+  audit: AuditLogger
+  /** Lease holder (plan 71 §4.4) — omitted (as in tests that predate this plan) falls back to `null`. */
+  heldByOf?: (deviceId: string) => LeaseHolder | null
+}): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { db } = deps
 
@@ -105,7 +111,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
     }
     db.insert(clusters).values(row).run()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'cluster.create', target: row.id, meta: { name: row.name } })
-    return c.json({ cluster: rowToClusterInfo(db, row) }, 201)
+    return typedJson(c, ClusterResponseSchema, { cluster: rowToClusterInfo(db, row) }, 201)
   })
 
   app.patch('/:id', requirePermission('device.settings'), async (c) => {
@@ -117,7 +123,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
     if (body.data.description !== undefined) patch.description = body.data.description
     if (Object.keys(patch).length > 0) db.update(clusters).set(patch).where(eq(clusters.id, row.id)).run()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'cluster.update', target: row.id, meta: { patch: Object.keys(patch) } })
-    return c.json({ cluster: rowToClusterInfo(db, mustGet(row.id)) })
+    return typedJson(c, ClusterResponseSchema, { cluster: rowToClusterInfo(db, mustGet(row.id)) })
   })
 
   // Deleting a cluster unassigns its members in the same transaction — the
@@ -144,7 +150,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
       target: row.id,
       meta: { deviceIds: body.data.deviceIds, moved },
     })
-    return c.json({ moved })
+    return typedJson(c, ClusterMoveResponseSchema, { moved })
   })
 
   // Remove one device from this cluster (idempotent — a device already
@@ -172,7 +178,7 @@ export function createClusterRoutes(deps: { db: Db; audit: AuditLogger }): Hono<
     )
     const cluster = { id: row.id, name: row.name }
     const infos: DeviceInfo[] = rows
-      .map((r) => rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster))
+      .map((r) => rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster, null, null, deps.heldByOf?.(r.id) ?? null))
       .sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.label < b.label ? -1 : 1))
 
     const { cursor: cursorParam, limit } = parsePageQuery(c)

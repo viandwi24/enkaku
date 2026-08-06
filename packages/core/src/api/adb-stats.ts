@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { AdbClient } from '@enkaku/adb'
+import { AdbStatsResponseSchema } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import type { AuthEnv } from '../auth/middleware'
 import { can } from '../auth/acl'
@@ -8,6 +9,7 @@ import { devices } from '../db/schema'
 import type { AdbMetricsStore } from '../device/adb-metrics'
 import type { DeviceHealth } from '../device/health'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = { 'auth.forbidden': 403 }
 
@@ -47,7 +49,7 @@ export function createAdbStatsRoutes(deps: {
     // measurable rather than assumed.
     const idle = deps.sessions()?.idleSessions() ?? []
 
-    return c.json({
+    return typedJson(c, AdbStatsResponseSchema, {
       global: {
         maxConcurrent: globalStats.maxConcurrent,
         auto: deps.auto(),

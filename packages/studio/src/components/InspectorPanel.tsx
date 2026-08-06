@@ -182,8 +182,10 @@ export function shouldPoll(o: {
   canUse: boolean
   ready: boolean
   pageVisible: boolean
+  /** True while a past dump is on screen. Following would drag the operator back to the present. */
+  viewingHistory: boolean
 }): boolean {
-  return o.follow && o.visible && o.canUse && o.ready && o.pageVisible
+  return o.follow && o.visible && o.canUse && o.ready && o.pageVisible && !o.viewingHistory
 }
 
 function containsPoint(b: UiNode['bounds'], x: number, y: number): boolean {
@@ -256,6 +258,16 @@ function nodeIdentity(node: UiNode): string {
   return `${shortClassName(node.className)}${label.text ? ` "${label.text}"` : ''}`
 }
 
+const HISTORY_LIMIT = 20
+
+interface DumpEntry {
+  requestId: number
+  root: UiNode
+  frameSize: { width: number; height: number }
+  at: number
+  tookMs: number
+}
+
 export function InspectorPanel({
   deviceId,
   canUse,
@@ -290,6 +302,21 @@ export function InspectorPanel({
   const [dumpLoading, setDumpLoading] = useState(false)
   const [dumpError, setDumpError] = useState<string | null>(null)
   const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
+  /**
+   * The last few dumps, newest first, so a screen that has already changed can
+   * still be read. Bounded hard: each entry pins a decoded PNG, and an
+   * unbounded ring on a panel that refreshes every two seconds is a memory
+   * leak with a nice name. Evicted entries have their blob URLs revoked —
+   * dropping the reference alone would keep the bytes alive.
+   */
+  const [history, setHistory] = useState<DumpEntry[]>([])
+  /**
+   * Which history entry is on screen, or null for "whatever is newest".
+   * Selecting one PAUSES following (see `shouldPoll`): a refresh that yanked
+   * the operator back to the present would make the history unusable for the
+   * one thing it is for.
+   */
+  const [viewing, setViewing] = useState<number | null>(null)
   const [snapshotRequestId, setSnapshotRequestId] = useState<number | null>(null)
   const [stale, setStale] = useState(false)
 
@@ -308,6 +335,8 @@ export function InspectorPanel({
 
   const nextRequestIdRef = useRef(0)
   const snapshotUrlRef = useRef<string | null>(null)
+  /** requestId → blob URL, for entries still in `history`. Revoked on eviction. */
+  const snapshotsRef = useRef<Map<number, string>>(new Map())
   const imgRef = useRef<HTMLImageElement>(null)
   /** The serialised tree currently on screen — the left-hand side of §3.4's comparison. */
   const treeSerialRef = useRef<string | null>(null)
@@ -438,17 +467,24 @@ export function InspectorPanel({
       if (requestId === droppedSnapshotRef.current) return
       const blob = new Blob([data.slice()], { type: 'image/png' })
       const url = URL.createObjectURL(blob)
-      if (snapshotUrlRef.current) URL.revokeObjectURL(snapshotUrlRef.current)
+      // Deliberately NOT revoking the previous URL here any more. That was
+      // right when only one snapshot existed, and is exactly wrong now that
+      // history holds the last twenty: eviction from the ring owns revocation,
+      // and revoking on arrival would blank every older entry the instant a
+      // new dump landed.
+      snapshotsRef.current.set(requestId, url)
       snapshotUrlRef.current = url
       setSnapshotUrl(url)
       setSnapshotRequestId(requestId)
     })
+    const urls = snapshotsRef.current
     return () => {
       off()
-      if (snapshotUrlRef.current) {
-        URL.revokeObjectURL(snapshotUrlRef.current)
-        snapshotUrlRef.current = null
-      }
+      // Unmount frees the whole ring, not just the newest — otherwise nineteen
+      // decoded PNGs outlive the panel that was showing them.
+      for (const url of urls.values()) URL.revokeObjectURL(url)
+      urls.clear()
+      snapshotUrlRef.current = null
     }
   }, [])
 
@@ -487,7 +523,29 @@ export function InspectorPanel({
       }
       droppedSnapshotRef.current = null
       treeSerialRef.current = serial
-      setTree({ root: res.payload.root, frameSize: res.payload.frameSize, at: res.payload.at, tookMs: res.payload.tookMs, requestId })
+      const entry: DumpEntry = {
+        requestId,
+        root: res.payload.root,
+        frameSize: res.payload.frameSize,
+        at: res.payload.at,
+        tookMs: res.payload.tookMs,
+      }
+      setTree({ ...entry })
+      // Only CHANGED dumps enter the history — twenty identical screens would
+      // be twenty ways of learning nothing, and would push out the change the
+      // operator is looking for.
+      setHistory((prev) => {
+        const next = [entry, ...prev].slice(0, HISTORY_LIMIT)
+        for (const dropped of prev.slice(HISTORY_LIMIT - 1)) {
+          const url = snapshotsRef.current.get(dropped.requestId)
+          if (url) {
+            URL.revokeObjectURL(url)
+            snapshotsRef.current.delete(dropped.requestId)
+          }
+        }
+        return next
+      })
+      setViewing(null)
       setSelectedPath((prev) => keepSelection(res.payload.root, prev))
       setStale(false)
       setTestResults({})
@@ -518,7 +576,14 @@ export function InspectorPanel({
   // one has come back, so a slow engine stretches the gap instead of queueing
   // dumps behind each other on the device's adb queue. `shouldPoll` collects
   // every reason not to spend a phone's time on a tree nobody is reading.
-  const polling = shouldPoll({ follow, visible, canUse, ready: state === 'ready', pageVisible })
+  const polling = shouldPoll({
+    follow,
+    visible,
+    canUse,
+    ready: state === 'ready',
+    pageVisible,
+    viewingHistory: viewing !== null,
+  })
   useEffect(() => {
     if (!polling) return
     let cancelled = false
@@ -697,6 +762,44 @@ export function InspectorPanel({
         <EmptyState title="No dump yet" description="Refresh to read the current screen." />
       )}
 
+      {history.length > 1 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <span className="rack-label mr-1">history</span>
+          {history.map((h, i) => {
+            const active = viewing === null ? i === 0 : viewing === h.requestId
+            return (
+              <button
+                key={h.requestId}
+                type="button"
+                onClick={() => {
+                  // Selecting the newest returns to live; anything else pins
+                  // the view and pauses following.
+                  const live = i === 0
+                  setViewing(live ? null : h.requestId)
+                  setTree({ ...h })
+                  setSnapshotUrl(snapshotsRef.current.get(h.requestId) ?? null)
+                  setSnapshotRequestId(h.requestId)
+                  setSelectedPath((prev) => keepSelection(h.root, prev))
+                  setExpanded((prev) => seedExpanded(h.root, DEFAULT_EXPAND_DEPTH, prev))
+                }}
+                className={cn(
+                  'readout rounded border px-1.5 py-0.5 text-[10.5px] transition-colors',
+                  active
+                    ? 'border-accent/50 bg-accent/10 text-accent-strong'
+                    : 'border-line text-fg-subtle hover:border-line-strong hover:text-fg-muted',
+                )}
+                title={`${h.root ? countNodes(h.root) : 0} nodes · ${h.tookMs} ms`}
+              >
+                {i === 0 ? 'live' : `−${i}`}
+              </button>
+            )
+          })}
+          {viewing !== null && (
+            <span className="ml-1 text-[11px] text-led-warn">following paused — showing an earlier dump</span>
+          )}
+        </div>
+      )}
+
       {tree && (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           {/* Left: the tree. */}
@@ -766,14 +869,20 @@ export function InspectorPanel({
           <div className="min-w-0">
             <span className="rack-label mb-2 block">snapshot</span>
             {snapshotUrl && snapshotRequestId === tree.requestId ? (
-              <div className="relative overflow-hidden rounded-lg border bg-surface">
+              <div className="relative mx-auto w-fit overflow-hidden rounded-lg border bg-surface">
                 {/* A blob: URL built from CHANNEL.SNAPSHOT bytes, not a static asset — next/image cannot take one. */}
                 <img
                   ref={imgRef}
                   src={snapshotUrl}
                   alt="Device snapshot"
                   onClick={onSnapshotClick}
-                  className="block w-full cursor-crosshair"
+                  // Fit to the same height the tree column is capped at. A
+                  // 720×1640 portrait screen stretched to a ~700 px column
+                  // renders about 1600 px tall, which is why this panel used to
+                  // scroll for ever. Height-bound and centred keeps the whole
+                  // screen visible beside its tree, which is the entire point
+                  // of showing them together.
+                  className="block max-h-[32rem] w-auto max-w-full cursor-crosshair object-contain"
                 />
                 {highlight && (
                   <div

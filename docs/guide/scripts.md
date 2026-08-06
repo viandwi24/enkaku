@@ -39,4 +39,4 @@ It returns the same `UiNode` root, children and all. **It costs 334–584 ms** (
 
 `find` is the other half of the same honesty: a selector that only resolves to a viewport-sized container now returns `null` instead of a node whose centre is the middle of the page. If a `find` you expected to work starts coming back empty, the job log says which selector was rejected and what it matched — dump the tree and look.
 
-An agent-owned (cloud) device has no local inspector to attach to yet — the tab says so and stays disabled there; copy-paste from a locally enrolled device of the same build in the meantime.
+A node-owned (cloud) device has no local inspector to attach to yet — the tab says so and stays disabled there; copy-paste from a locally enrolled device of the same build in the meantime.

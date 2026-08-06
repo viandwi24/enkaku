@@ -47,19 +47,19 @@ export interface AdbEndpointManagerDeps {
   createShim: (shimDeps: AdbdShimDeps) => AdbdShimHandlers
   /** Audit hook: one `OPEN` destination (plan §3.6, `adb.open` on the input stream). */
   onStreamOpen: (deviceId: string, service: string) => void
-  /** Audit hook: `adb.endpoint.opened` on the main stream — `agentId` is set for a cloud device (plan 28 §4.4) so a session can be traced to the machine that served it. */
-  onEndpointOpened: (deviceId: string, userId: string | null, port: number, agentId?: string | null) => void
+  /** Audit hook: `adb.endpoint.opened` on the main stream — `nodeId` is set for a cloud device (plan 28 §4.4) so a session can be traced to the machine that served it. */
+  onEndpointOpened: (deviceId: string, userId: string | null, port: number, nodeId?: string | null) => void
   /** Audit hook: `adb.endpoint.closed` on the main stream. */
   onEndpointClosed: (deviceId: string, reason: string) => void
   /**
-   * Cloud mode (plan 28 §4.4): when the device is agent-owned, `open()`
+   * Cloud mode (plan 28 §4.4): when the device is node-owned, `open()`
    * builds `openService` from `createRemoteOpenService` instead of
    * `AdbClient.openRaw` — mirroring `ws-handlers.ts`'s `shellPortFor`
    * resolution exactly. `rpc`/`router` are accessors (not values) because,
    * like `adb` above, this manager is constructed before the tunnel layer
    * exists in `daemon.ts`'s forward-ref wiring; read fresh on every `open()`.
    */
-  remoteAgentIdFor?: (deviceId: string) => string | null
+  remoteNodeIdFor?: (deviceId: string) => string | null
   rpc?: () => TunnelRpc | null
   router?: () => TunnelRouter | null
   /**
@@ -154,15 +154,15 @@ export function createAdbEndpointManager(deps: AdbEndpointManagerDeps): AdbEndpo
       // listener even opens, if it was asleep.
       const hold = (await deps.holdFor?.(deviceId).catch(() => null)) ?? null
 
-      // An agent-owned device gets the remote `openService`, everything else
+      // A node-owned device gets the remote `openService`, everything else
       // the local one (plan 28 §4.4) — the ONE place local-vs-remote is
       // decided for the adb endpoint, mirroring `ws-handlers.ts`'s
       // `shellPortFor`. `resolveDeviceInfo` above works unchanged either way
-      // — an agent-owned device's row is populated by `syncDevices` exactly
+      // — a node-owned device's row is populated by `syncDevices` exactly
       // like a local one's.
-      const agentId = deps.remoteAgentIdFor?.(deviceId) ?? null
+      const nodeId = deps.remoteNodeIdFor?.(deviceId) ?? null
       let openService: AdbdShimDeps['openService']
-      if (agentId) {
+      if (nodeId) {
         const rpc = deps.rpc?.()
         const router = deps.router?.()
         if (!rpc || !router) throw new EnkakuError('E_ADB_UNAVAILABLE', 'the cloud tunnel is not ready')
@@ -226,7 +226,7 @@ export function createAdbEndpointManager(deps: AdbEndpointManagerDeps): AdbEndpo
       }
       endpoints.set(deviceId, rec)
       armIdleTimer(rec)
-      deps.onEndpointOpened(deviceId, userId, listener.port, agentId)
+      deps.onEndpointOpened(deviceId, userId, listener.port, nodeId)
       return { host: settings.endpointBind, port: listener.port, expiresAt: rec.expiresAt }
     },
 

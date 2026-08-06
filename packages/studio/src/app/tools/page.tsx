@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { Lock, RefreshCw, Stethoscope } from 'lucide-react'
+import { toast } from 'sonner'
+import { z } from 'zod'
+import { DoctorResponseSchema, ToolsResponseSchema } from '@enkaku/protocol'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorState, LoadingRows } from '@/components/states'
@@ -25,6 +28,20 @@ interface DoctorRun {
   results: DoctorCheckResult[]
   exitCode: 0 | 1
 }
+
+// The `/api/tools/:id/...` action routes (`packages/core/src/tools/routes.ts`)
+// have no shared envelope in `@enkaku/protocol` — each is a small, distinct
+// shape only ever used to decide whether the action succeeded (`act`'s
+// `onSuccess` always just re-fetches `/api/tools`, never reads the body), so
+// these are declared locally rather than added to protocol for one page.
+const ToolOkSchema = z.object({ ok: z.boolean() })
+const ToolManifestRefreshSchema = z.object({ ok: z.boolean(), updatedAt: z.number(), tools: z.number() })
+const ToolCheckSchema = z.object({ health: z.object({ ok: z.boolean(), checkedAt: z.number(), detail: z.string() }).nullable() })
+const ToolRepairSchema = z.object({
+  ok: z.boolean(),
+  repaired: z.array(z.string()),
+  failed: z.array(z.object({ toolId: z.string(), code: z.string(), message: z.string() })),
+})
 
 const DOCTOR_TONE: Record<DoctorCheckStatus, string> = {
   ok: 'text-led-ok border-led-ok/35 bg-led-ok/10',
@@ -59,11 +76,11 @@ export default function ToolsPage() {
   const { run, isPending } = useAction()
 
   const runDiagnostics = () =>
-    run('diagnostics', () => api<DoctorRun>('/api/doctor'), { failure: 'Diagnostics failed', onSuccess: setDiagnostics })
+    run('diagnostics', () => api('/api/doctor', DoctorResponseSchema), { failure: 'Diagnostics failed', onSuccess: setDiagnostics })
 
   const load = () => {
     setError(null)
-    api<{ tools: ToolEntry[] }>('/api/tools')
+    api('/api/tools', ToolsResponseSchema)
       .then((b) => setTools(b.tools))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
@@ -93,8 +110,23 @@ export default function ToolsPage() {
     return off
   }, [])
 
-  const act = (key: string, path: string, init: RequestInit & { json?: unknown }, success: string) =>
-    run(key, () => api(path, init), { success, failure: 'Tool action failed', onSuccess: load })
+  const act = <S extends z.ZodType>(key: string, path: string, schema: S, init: RequestInit & { json?: unknown }, success: string) =>
+    run(key, () => api(path, schema, init), { success, failure: 'Tool action failed', onSuccess: load })
+
+  /**
+   * Re-runs provisioning for the core-managed tools. Partial success is
+   * reported as such: saying "reinstalled" when one of them failed again would
+   * send the operator back to a page that still reads "not installed".
+   */
+  const repairPinned = () =>
+    run('repair', () => api('/api/tools/repair', ToolRepairSchema, { method: 'POST' }), {
+      failure: 'Reinstall failed',
+      onSuccess: (result) => {
+        load()
+        if (result.ok) toast.success('Tools reinstalled')
+        else toast.error(`${result.failed.length} tool(s) still missing`, { description: result.failed[0]?.message })
+      },
+    })
 
   const swappable = tools?.filter((t) => t.swappable) ?? []
   const pinned = tools?.filter((t) => !t.swappable) ?? []
@@ -114,7 +146,7 @@ export default function ToolsPage() {
               size="sm"
               variant="outline"
               disabled={isPending('refresh')}
-              onClick={() => void act('refresh', '/api/tools/manifest/refresh', { method: 'POST' }, 'Manifest refreshed')}
+              onClick={() => void act('refresh', '/api/tools/manifest/refresh', ToolManifestRefreshSchema, { method: 'POST' }, 'Manifest refreshed')}
             >
               <RefreshCw className={cn('size-4', isPending('refresh') && 'animate-spin')} aria-hidden />
               Refresh manifest
@@ -192,7 +224,7 @@ export default function ToolsPage() {
                       className="h-7 text-[12px]"
                       disabled={isPending('check-' + tool.id)}
                       onClick={() =>
-                        void act('check-' + tool.id, `/api/tools/${tool.id}/check`, { method: 'POST' }, 'Health check finished')
+                        void act('check-' + tool.id, `/api/tools/${tool.id}/check`, ToolCheckSchema, { method: 'POST' }, 'Health check finished')
                       }
                     >
                       Check
@@ -238,6 +270,7 @@ export default function ToolsPage() {
                                   void act(
                                     'inst-' + v.version,
                                     `/api/tools/${tool.id}/install`,
+                                    ToolOkSchema,
                                     { method: 'POST', json: { version: v.version } },
                                     `${tool.id} ${v.version} installed`,
                                   )
@@ -257,6 +290,7 @@ export default function ToolsPage() {
                                     void act(
                                       'act-' + v.version,
                                       `/api/tools/${tool.id}/activate`,
+                                      ToolOkSchema,
                                       { method: 'POST', json: { version: v.version } },
                                       `${tool.id} ${v.version} activated`,
                                     )
@@ -276,6 +310,7 @@ export default function ToolsPage() {
                                     act(
                                       'del-' + v.version,
                                       `/api/tools/${tool.id}/${v.version}`,
+                                      ToolOkSchema,
                                       { method: 'DELETE' },
                                       'Version deleted',
                                     )
@@ -306,6 +341,25 @@ export default function ToolsPage() {
               The protocol between these tools and the core changes between versions with no compatibility guarantee.
               Their version follows the core release — raising one means raising the other.
             </p>
+            {/* These tools cannot be installed by version (they are not
+                swappable), so a boot-time install failure would otherwise only
+                be recoverable by restarting the core. */}
+            {pinned.some((t) => !t.activeVersion) && (
+              <div className="mt-3 flex flex-wrap items-center gap-3 rounded border border-led-warn/35 bg-led-warn/10 px-3 py-2">
+                <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-fg-muted">
+                  Some of these did not install. Devices still work, but mirroring or the inspector will not.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending('repair')}
+                  onClick={() => void repairPinned()}
+                >
+                  <RefreshCw className={cn('size-4', isPending('repair') && 'animate-spin')} aria-hidden />
+                  Reinstall missing
+                </Button>
+              </div>
+            )}
             <dl className="mt-3 divide-y overflow-hidden rounded border">
               {pinned.map((tool) => (
                 <div key={tool.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
