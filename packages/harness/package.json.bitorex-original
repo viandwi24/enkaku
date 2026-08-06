@@ -1,0 +1,26 @@
+{
+  "name": "@bitorex/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable agent-coding harness: loop, tools, VFS drivers, sessions, streaming runtime. Provider-agnostic.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./vfs": "./src/vfs/index.ts",
+    "./tools": "./src/tools/index.ts",
+    "./runtime": "./src/runtime/index.ts",
+    "./session": "./src/session/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ai": "^7.0.7",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
