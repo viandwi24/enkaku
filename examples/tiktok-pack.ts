@@ -196,9 +196,32 @@ async function readVisibleSignals(ctx: ScriptContext<unknown>): Promise<{ author
  */
 function scoreContent(text: string, keywords: string[], blocked: string[]): number {
   const hay = text.toLowerCase()
-  if (blocked.some((k) => k && hay.includes(k.toLowerCase()))) return -1
-  return keywords.filter((k) => k && hay.includes(k.toLowerCase())).length
+  if (blocked.some((k) => matches(hay, k))) return -1
+  return keywords.filter((k) => matches(hay, k)).length
 }
+
+/**
+ * Substring for long words, word-boundary for short ones.
+ *
+ * A plain `includes` is right for `xauusd` — it should still hit inside a handle like
+ * `goldxauusdtrader`, where nobody typed a space. It is wrong for the short trading acronyms:
+ * `ict` alone matches "pred**ict**", "add**ict**ive", "v**ict**im", and `smc` is no better. Those
+ * false hits would tilt a completely unrelated video towards a long watch, which is worse than
+ * missing a real one — it teaches the feed the opposite of what was asked.
+ *
+ * Three characters is the cut-off because that is where the acronyms live; anything longer is
+ * specific enough that an accidental substring hit is vanishingly unlikely.
+ */
+function matches(hay: string, keyword: string): boolean {
+  const k = keyword.trim().toLowerCase()
+  if (!k) return false
+  if (k.length > 3) return hay.includes(k)
+  // `\b` alone will not do: a handle like `xau_ict` has an underscore, which is a word character,
+  // so the boundary never fires. Anything that is not a letter or a digit counts as a separator.
+  return new RegExp(`(?:^|[^a-z0-9])${escapeForRegex(k)}(?:[^a-z0-9]|$)`, 'i').test(hay)
+}
+
+const escapeForRegex = (v: string): string => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**
  * Opens the comment sheet, scrolls it like someone reading, and closes it.
@@ -359,7 +382,7 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
 
 export default definePlugin({
   id: 'tiktok',
-  version: '0.5.1',
+  version: '0.7.0',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
   scripts: [
@@ -398,7 +421,7 @@ export default definePlugin({
          * against the account name and the effect/tag — the only content text this app exposes.
          * Empty disables the whole weighting and the run behaves exactly as it did before.
          */
-        keywords: z.array(z.string()).default(['trade', 'trading', 'gold', 'xau', 'xauusd', 'usd', 'forex', 'entry', 'profit']),
+        keywords: z.array(z.string()).default(['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict']),
         /** Words that force a fast skip regardless of any keyword hit. Checked first. */
         blockKeywords: z.array(z.string()).default([]),
         /**
@@ -407,6 +430,15 @@ export default definePlugin({
          * `always` opens on every video, which is neither a useful signal nor human-looking.
          */
         commentProbe: z.enum(['never', 'matched', 'always']).default('matched'),
+        /**
+         * Chance of opening the comments on a video that did NOT match, under `commentProbe:
+         * 'matched'`. Not zero on purpose: a session that only ever opens comments on trading
+         * videos draws a perfectly straight line between "matched" and "engaged", which is both a
+         * pattern and a waste — people open comments on things they merely find funny.
+         */
+        commentChance: z.number().min(0).max(1).default(0.15),
+        /** Chance of opening them on a video that DID match. Below 1 for the same reason: certainty is a tell. */
+        matchedCommentChance: z.number().min(0).max(1).default(0.85),
         /** Save a screenshot every N videos, for eyeballing that the feed really moved. 0 = none. */
         screenshotEvery: z.number().int().min(0).max(100).default(0),
       }),
@@ -462,8 +494,12 @@ export default definePlugin({
           await sleep(ms)
           watched.push({ label, ms })
 
+          // Randomised in BOTH directions — a match makes comments likely, not certain, and a
+          // non-match makes them unlikely, not impossible.
           const probe =
-            ctx.params.commentProbe === 'always' || (ctx.params.commentProbe === 'matched' && score > 0)
+            ctx.params.commentProbe === 'always' ||
+            (ctx.params.commentProbe === 'matched' &&
+              rng() < (score > 0 ? ctx.params.matchedCommentChance : ctx.params.commentChance))
           if (probe && (await browseComments(ctx, frame, rng))) commentVisits += 1
 
           // A person often lets a short clip loop once before moving on — an extra dwell that is
