@@ -14,7 +14,7 @@ import {
   sharesNetwork,
   settleStep,
   webrtcVerdicts,
-} from './network-test'
+} from './index'
 
 /**
  * The trees below are TRANSCRIBED, not invented.
@@ -359,7 +359,10 @@ describe('the assessment', () => {
 describe('settling', () => {
   test('a reading only counts once it has repeated', () => {
     // The rule that stops the script reading a test that is still running.
-    let s = { fp: null as string | null, count: 0 }
+    // `done` is annotated in, not inferred: the seed has no `done`, so without
+    // this the variable narrows to the seed's shape and every `s.done` below
+    // fails to compile even though `settleStep` always returns one.
+    let s: { fp: string | null; count: number; done?: boolean } = { fp: null, count: 0 }
     s = settleStep(s, 'Found 1 Server|@1.1.1.1', 3)
     expect(s.done).toBe(false)
     s = settleStep(s, 'Found 3 Servers|@1.1.1.1,@2.2.2.2,@3.3.3.3', 3)
@@ -368,7 +371,10 @@ describe('settling', () => {
   })
 
   test('a value that stops moving ends the wait', () => {
-    let s = { fp: null as string | null, count: 0 }
+    // `done` is annotated in, not inferred: the seed has no `done`, so without
+    // this the variable narrows to the seed's shape and every `s.done` below
+    // fails to compile even though `settleStep` always returns one.
+    let s: { fp: string | null; count: number; done?: boolean } = { fp: null, count: 0 }
     for (const _ of [1, 2]) s = settleStep(s, 'stable', 3)
     expect(s.done).toBe(false)
     s = settleStep(s, 'stable', 3)
@@ -379,7 +385,10 @@ describe('settling', () => {
     // browserleaks resolves operator names on a second lookup, so the row
     // count can sit still while the names are still arriving. Fingerprinting
     // the count alone would have called this settled.
-    let s = { fp: null as string | null, count: 0 }
+    // `done` is annotated in, not inferred: the seed has no `done`, so without
+    // this the variable narrows to the seed's shape and every `s.done` below
+    // fails to compile even though `settleStep` always returns one.
+    let s: { fp: string | null; count: number; done?: boolean } = { fp: null, count: 0 }
     s = settleStep(s, 'Found 1 Server|?@79.127.170.15', 3)
     s = settleStep(s, 'Found 1 Server|?@79.127.170.15', 3)
     expect(s.count).toBe(2)

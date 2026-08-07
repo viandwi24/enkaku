@@ -317,6 +317,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /* The slice of a run context these helpers touch                      */
 /* ------------------------------------------------------------------ */
 
+/** The only browser this pack drives: every selector below is a `com.android.chrome:id/...`. */
+const CHROME_PACKAGE = 'com.android.chrome'
+
 interface Ctx {
   device: {
     tap: (t: { point: { x: number; y: number } }) => Promise<void>
@@ -537,19 +540,22 @@ async function navigate(ctx: Ctx, url: string, humanTyping: boolean, pkg: string
   if (!humanTyping) {
     // The checks name their targets the way a person would type them (`whoer.net`), but an intent
     // needs a real URL — `am start -d whoer.net` has no scheme to act on and Chrome never moves.
-    // That left the run staring at the new-tab page, which genuinely has no address bar, so the
-    // read came back empty and the failure blamed the page rather than the missing `https://`.
     const absolute = /^https?:\/\//i.test(url) ? url : `https://${url}`
     await ctx.device.app.launch(pkg, { url: absolute })
-    // Polled rather than slept: a page that resolves fast should not be waited on, and one on a
-    // slow link should not be judged before it has drawn its own address bar.
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await sleep(1_000)
-      const shown = (pickAddressBar(await ctx.device.dump())?.text ?? '').trim()
-      if (sameAddress(shown, url)) return
-    }
-    const shown = (pickAddressBar(await ctx.device.dump())?.text ?? '').trim()
-    throw new Error(`asked Chrome to open ${JSON.stringify(absolute)} but the address bar holds ${JSON.stringify(shown)}`)
+    // NOTHING is verified here, deliberately.
+    //
+    // The first version of this read the address bar back to confirm the intent landed. That is a
+    // proxy for the thing that matters, and it happened to lean on the least reliable part of the
+    // stack: the address bar comes from the UI tree, and a session whose inspector has fallen back
+    // to one-shot `uiautomator dump` reads an EMPTY tree while the persistent ui-server holds
+    // UiAutomation. The runs failed with `the address bar holds ""` on a Chrome that was sitting on
+    // exactly the right page.
+    //
+    // The real proof is downstream and already exists: `awaitPage` waits on `ready()`, and every
+    // check's `read()` looks for content only its own page has — whoer's IP block, browserleaks'
+    // resolver table. A wrong page cannot satisfy them, so it fails there, with a message about
+    // what was missing rather than about a bar nobody cares about.
+    return
   }
 
   const bar = await reachAddressBar(ctx, 20_000)
@@ -1139,7 +1145,7 @@ export function assess(input: { whoer: WhoerFacts | null; dns: DnsFacts | null; 
  */
 export default definePlugin({
   id: 'networking',
-  version: '2.1.1',
+  version: '3.0.0',
   title: 'Networking',
   description: 'Leak and egress checks driven through a real browser on the device.',
   scripts: [
@@ -1148,78 +1154,27 @@ export default definePlugin({
       title: 'Browser leak test',
       description:
         'Opens Chrome in a fresh tab, reads whoer.net, browserleaks DNS and WebRTC, and reports the exit address, resolvers, and any address that escapes the tunnel.',
-  params: z.object({
-    /**
-     * Which pages to visit. Fewer is faster, and a run that only needs the
-     * exit address should not pay for two browserleaks page loads.
-     */
-    checks: z
-      .array(z.enum(['whoer', 'dns', 'webrtc']))
-      .min(1)
-      .default(['whoer', 'dns', 'webrtc'])
-      .describe('Which leak tests to run. Each one is a page load, so dropping any makes the run shorter.')
-      .meta({ title: 'Checks' }),
-    /**
-     * The browser this runs in. Not an operator-facing knob — every selector in this file is a
-     * `com.android.chrome:id/...`, so pointing it at another package produces a run that finds
-     * nothing and reports it as a network fault. Kept as a parameter only because `ctx.params` is
-     * how `prepare`/`finish` reach it; hidden from the form.
-     */
-    package: z.string().default('com.android.chrome').meta({ hidden: true }),
-    /**
-     * How long ONE page gets to finish. A budget, not a sleep — the wait is
-     * driven by the page's own completion signal and returns the moment it
-     * appears. Measured loads on this device's mobile data ran 16–47 s, so the
-     * original 30 s produced failures that were really just slow links.
-     */
-    pageTimeoutMs: z
-      .number()
-      .int()
-      .min(5_000)
-      .default(75_000)
-      .describe('Ceiling for one page. A budget, not a sleep — a page that answers sooner returns sooner.')
-      .meta({ title: 'Page timeout (ms)' }),
-    /**
-     * How many times a whole page is re-attempted from the omnibox before the
-     * run gives up on it. Each attempt waits longer than the last.
-     */
-    pageAttempts: z
-      .number()
-      .int()
-      .min(1)
-      .max(5)
-      .default(2)
-      .describe('How many times a page is re-opened from the omnibox before the run gives up on it.')
-      .meta({ title: 'Attempts per page' }),
-    /**
-     * How many consecutive identical readings end the wait for a page.
-     *
-     * This is what stops the script reading a test that is still running.
-     * Three at 2.5 s apart adds roughly 7 s to a page that settles at once, and
-     * considerably more to one that does not — which is the right way round.
-     */
-    settleReads: z
-      .number()
-      .int()
-      .min(1)
-      .max(10)
-      .default(3)
-      .describe('Consecutive identical readings that end the wait. Ignored once the page carries what the check needs.')
-      .meta({ title: 'Settle reads' }),
-    /**
-     * Type the address one key at a time, the way the farm's `natural` profile paces a person.
-     *
-     * Off by default, and the default is the honest one for THIS script: nothing it reports — the
-     * resolvers, the exit address, the WebRTC candidates — depends on how the URL reached the bar,
-     * and human pacing measured about two minutes per page against a real run. Turn it on when the
-     * point is to exercise Chrome's own autocomplete and per-keystroke listeners.
-     */
-    humanTyping: z
-      .boolean()
-      .default(false)
-      .describe('Type the address one key at a time. Slower, and changes nothing this script reports.')
-      .meta({ title: 'Human-paced typing' }),
-  }),
+  /**
+   * NO PARAMETERS, on purpose.
+   *
+   * The audience here is an operator or an agent asking one question — what does this device look
+   * like to the internet, and is anything escaping the tunnel. Every knob this used to expose
+   * either could not be changed safely or changed nothing about that answer:
+   *
+   * - `package` was a lie. Every selector in this file is a `com.android.chrome:id/...`, so pointing
+   *   it at another browser produces a run that finds nothing and then reports it as a network
+   *   fault. Marking it `hidden` was worse than removing it: the form does not honour that flag, so
+   *   it still rendered — a field that could break the run, dressed as one nobody could see.
+   * - `checks` asked which of the three pages to visit. A leak report missing its DNS half is not a
+   *   faster report, it is a wrong one.
+   * - `humanTyping` stopped meaning anything once navigation moved to an intent.
+   * - `pageTimeoutMs`, `pageAttempts`, `settleReads` are engineering constants. They live next to
+   *   the code they govern, where changing one is a decision with a reason attached rather than a
+   *   number typed into a box by someone who cannot see what it does.
+   *
+   * Press Run. It reports.
+   */
+  params: z.object({}),
   timeout: 480_000,
   // No script-level retries: a partial run leaves Chrome open on some page,
   // and `finish` restores the phone. The retries that matter are per-page,
@@ -1230,14 +1185,19 @@ export default definePlugin({
     // Start from a cold Chrome. Without this a restored session leaves the
     // previous tab in front, and the script measures a page it did not open —
     // and still passes, which is worse than failing.
-    ctx.log.info(`stopping ${ctx.params.package} for a clean start`)
-    await ctx.device.app.forceStop(ctx.params.package)
-    await ctx.device.app.launch(ctx.params.package)
+    ctx.log.info(`stopping ${CHROME_PACKAGE} for a clean start`)
+    await ctx.device.app.forceStop(CHROME_PACKAGE)
+    await ctx.device.app.launch(CHROME_PACKAGE)
     await sleep(3_000)
   },
 
   async run(ctx) {
-    const { checks, pageTimeoutMs, pageAttempts, settleReads, humanTyping, package: pkg } = ctx.params
+    // Fixed, and deliberately not operator-facing — see the `params` comment above.
+    const pkg = CHROME_PACKAGE
+    const pageTimeoutMs = 75_000
+    const pageAttempts = 2
+    const settleReads = 3
+    const humanTyping = false
 
     // A NEW tab, as asked — not whatever Chrome restored.
     //
@@ -1298,14 +1258,14 @@ export default definePlugin({
       return result
     }
 
-    if (checks.includes('whoer')) {
+    {
       whoer = await visit('whoer', 'whoer.net', whoerReady, readWhoer, (n) => {
         const f = readWhoer(n)
         return [f.exitIp, f.isp, f.dns, f.hostname].join('|')
       })
       ctx.log.info('whoer read', { ...whoer })
     }
-    if (checks.includes('dns')) {
+    {
       dns = await visit(
         'dns-leak',
         'browserleaks.com/dns',
@@ -1327,7 +1287,7 @@ export default definePlugin({
         servers: dns.servers.length,
       })
     }
-    if (checks.includes('webrtc')) {
+    {
       webrtc = await visit(
         'webrtc-leak',
         'browserleaks.com/webrtc',
@@ -1425,7 +1385,7 @@ export default definePlugin({
     // may run it again in a fresh process after a timeout kill and get the
     // same result.
     if (ctx.error) await ctx.artifact.screenshot('failed')
-    await ctx.device.app.forceStop(ctx.params.package)
+    await ctx.device.app.forceStop(CHROME_PACKAGE)
     await ctx.device.key('HOME')
   },
   },

@@ -24,6 +24,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # The packs are EMBEDDED in every archive built below and staged on a user's first boot, so
+      # this is the last gate between a broken pack and everyone who downloads this tag. `typecheck`
+      # alone does not run them — a pack can compile and still be wrong.
+      - run: bun run --cwd plugins/networking test
+      - run: bun run --cwd plugins/tiktok-automation-pack test
       - run: VERSION="${{ github.ref_name }}" TARGETS="linux-x64 linux-arm64 windows-x64" bash scripts/build-release.sh
       - uses: actions/upload-artifact@v4
         with:

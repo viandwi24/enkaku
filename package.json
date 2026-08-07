@@ -4,6 +4,7 @@
   "workspaces": [
     "packages/*",
     "apps/*",
+    "plugins/*",
     "examples"
   ],
   "scripts": {
@@ -11,10 +12,11 @@
     "dev:studio": "bun run --cwd packages/studio dev",
     "dev:cloud": "ENKAKU_MODE=orchestrator ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-cloud} bun run packages/core/src/index.ts",
     "dev:node": "ENKAKU_DATA_DIR=${ENKAKU_DATA_DIR:-$PWD/.dev-node} bun run packages/node/src/cli.ts",
-    "dev:agent": "echo '[deprecated] dev:agent was renamed to dev:node in plan 61 — this alias is removed in the release after next' >&2 && bun run dev:node",
+    "dev:agent": "echo '[deprecated] dev:agent was renamed to dev:node in plan 61 \u2014 this alias is removed in the release after next' >&2 && bun run dev:node",
     "dev:desktop": "bun run --cwd apps/desktop dev",
     "doctor": "bun run packages/core/src/index.ts doctor",
     "build:studio": "bash scripts/build-studio.sh",
+    "build:packs": "bun scripts/build-packs.ts",
     "build:guest-agent": "bash scripts/build-guest-agent.sh",
     "smoke:guest-agent": "bun run scripts/smoke-guest-agent.ts",
     "probe-server": "bun run packages/probe-server/src/index.ts",

@@ -1,0 +1,20 @@
+{
+  "name": "@enkaku/plugin-tiktok",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "description": "TikTok automation pack — watch-and-scroll with human-shaped timing",
+  "enkaku": {
+    "plugin": "tiktok",
+    "entry": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "publish:farm": "bun run ../../packages/sdk/src/cli/index.ts publish src/index.ts"
+  },
+  "dependencies": {
+    "@enkaku/protocol": "workspace:*",
+    "@enkaku/sdk": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}

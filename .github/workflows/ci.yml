@@ -34,6 +34,17 @@ jobs:
       # invocation, not as part of the root `bun test` above (plan 72 §4.4,
       # criterion 10 — see CLAUDE.md's Commands section for why).
       - run: bun run --cwd packages/studio test
+      # `plugins/*` and `examples/` sit outside `bunfig.toml`'s `[test] root =
+      # "packages"`, so each needs its own invocation.
+      #
+      # `plugins/*` is NOT decoration: those packs are embedded in the release
+      # binary and staged on a user's first boot, so a green badge here is the
+      # only thing standing between a broken pack and every download. They were
+      # moved out of `examples/` for exactly that reason — an example that
+      # breaks costs an afternoon, a shipped pack that breaks costs a release.
+      - run: bun run --cwd plugins/networking test
+      - run: bun run --cwd plugins/tiktok-automation-pack test
+      - run: bun run --cwd examples test
       # A plan can typecheck and pass every test while its own `> Status:`
       # header is stale or self-contradicting (a shipped plan still marked
       # `draft`, or an `implemented` plan whose own prose admits it left

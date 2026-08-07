@@ -24,6 +24,7 @@
       "name": "@enkaku/examples",
       "version": "0.0.0",
       "dependencies": {
+        "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
         "zod": "^4.0.0",
       },
@@ -191,6 +192,24 @@
         "zod": "^4.0.0",
       },
     },
+    "plugins/networking": {
+      "name": "@enkaku/plugin-networking",
+      "version": "2.2.0",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
+    "plugins/tiktok-automation-pack": {
+      "name": "@enkaku/plugin-tiktok",
+      "version": "0.7.0",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
   },
   "packages": {
     "@ai-sdk/anthropic": ["@ai-sdk/anthropic@4.0.33", "", { "dependencies": { "@ai-sdk/provider": "4.0.6", "@ai-sdk/provider-utils": "5.0.23" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-7mxzS0O2NQVSWscKqliLTd0JG/PDjNzRM3c9J8JIJKbOeAxJUSxjKjETIxTRSfvBCmrhASu7vRdpV6+cZruRUw=="],
@@ -236,6 +255,10 @@
     "@enkaku/harness": ["@enkaku/harness@workspace:packages/harness"],
 
     "@enkaku/node": ["@enkaku/node@workspace:packages/node"],
+
+    "@enkaku/plugin-networking": ["@enkaku/plugin-networking@workspace:plugins/networking"],
+
+    "@enkaku/plugin-tiktok": ["@enkaku/plugin-tiktok@workspace:plugins/tiktok-automation-pack"],
 
     "@enkaku/probe-server": ["@enkaku/probe-server@workspace:packages/probe-server"],
 

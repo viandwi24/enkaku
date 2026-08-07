@@ -38,7 +38,7 @@ import { z } from 'zod'
  */
 
 /** A small deterministic PRNG so a run can be replayed exactly — `Math.random()` cannot be seeded. */
-function makeRng(seed: number): () => number {
+export function makeRng(seed: number): () => number {
   let s = seed >>> 0 || 0x2f6e2b1
   return () => {
     // xorshift32 — plenty for gesture jitter, not for anything that needs real entropy.
@@ -80,7 +80,7 @@ const WATCH_BUCKETS = [
  * weights keeps the buckets overlapping, so a matched video is sometimes abandoned in a second and
  * an unmatched one is sometimes watched to the end, exactly as happens with a real viewer.
  */
-function pickWatchMs(rng: () => number, tilt = 0): { ms: number; label: string } {
+export function pickWatchMs(rng: () => number, tilt = 0): { ms: number; label: string } {
   // `skip` scales down as tilt rises and up as it falls; `engaged`/`hooked` do the opposite.
   const bias: Record<string, number> = { skip: -1, watch: 0, engaged: 0.8, hooked: 1 }
   const weights = WATCH_BUCKETS.map((b) => Math.max(0.01, b.weight * (1 + tilt * (bias[b.label] ?? 0))))
@@ -109,7 +109,7 @@ function sleep(ms: number): Promise<void> {
  * otherwise reveal it — but every screenshot is a PNG, and a PNG's IHDR carries width and height in
  * bytes 16..24. Exact, free, and it works on any device instead of hardcoding this phone's 720×1640.
  */
-function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
+export function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
   if (bytes.length < 24) return null
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (dv.getUint32(0) !== 0x89504e47) return null
@@ -194,7 +194,7 @@ async function readVisibleSignals(ctx: ScriptContext<unknown>): Promise<{ author
  * by dumping the whole tree; the longest strings there are button labels like "Bagikan video"), so
  * any code pretending to match against it would be matching against nothing.
  */
-function scoreContent(text: string, keywords: string[], blocked: string[]): number {
+export function scoreContent(text: string, keywords: string[], blocked: string[]): number {
   const hay = text.toLowerCase()
   if (blocked.some((k) => matches(hay, k))) return -1
   return keywords.filter((k) => matches(hay, k)).length
@@ -212,7 +212,7 @@ function scoreContent(text: string, keywords: string[], blocked: string[]): numb
  * Three characters is the cut-off because that is where the acronyms live; anything longer is
  * specific enough that an accidental substring hit is vanishingly unlikely.
  */
-function matches(hay: string, keyword: string): boolean {
+export function matches(hay: string, keyword: string): boolean {
   const k = keyword.trim().toLowerCase()
   if (!k) return false
   if (k.length > 3) return hay.includes(k)
@@ -382,7 +382,7 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
 
 export default definePlugin({
   id: 'tiktok',
-  version: '0.7.0',
+  version: '1.0.0',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
   scripts: [
@@ -391,63 +391,48 @@ export default definePlugin({
       title: 'Auto-scroll the feed',
       description:
         'Opens TikTok and scrolls the feed with randomised watch times, gesture strength, occasional re-watches, back-scrolls and idle pauses. Never likes, follows, or comments.',
+      /**
+       * Three parameters, because three things are genuinely an operator's (or an agent's) call:
+       * how long to run, when to stop, and what the feed should be nudged towards. Everything else
+       * that used to sit here was either a constant dressed as a choice or a lever nobody could
+       * reason about from a form — `commentProbe`, `commentChance`, `matchedCommentChance`,
+       * `relaunch`, `stopOnFinish`, `screenshotEvery`, `seed`, `package`. They are set below, next
+       * to the behaviour they govern.
+       *
+       * `commentProbe` in particular had to go: it was an enum whose default the run form failed to
+       * apply, so pressing Run with nothing touched submitted an empty string and the job died on a
+       * validation error before it did anything. A parameter that can fail like that, for a decision
+       * nobody wanted to make, is worse than no parameter.
+       */
       params: z.object({
-        /** The pack was inspected against `com.ss.android.ugc.trill`; the other TikTok build is `com.zhiliaoapp.musically`. */
-        package: z.string().default(TIKTOK_PACKAGE),
-        /** Stop after this many videos. Whichever of `videos`/`maxMinutes` comes first wins. */
-        videos: z.number().int().positive().max(2_000).default(30),
-        /** A wall-clock ceiling, so a run cannot outlive its window even if every video is a long one. */
-        maxMinutes: z.number().positive().max(600).default(20),
-        /** Same seed ⇒ same sequence of watch times and gestures. Useful when a run needs to be reproduced. */
-        seed: z.number().int().default(() => Math.floor(Math.random() * 0xffffffff)),
-        /**
-         * Force-stop and relaunch TikTok before starting, so the run begins from a known screen
-         * rather than wherever the phone was left. On by default: without it the run inherits an
-         * open comment sheet, a profile page, or a modal, and the first swipe lands somewhere
-         * nobody intended. Turn it off to attach to a session already on the feed.
-         */
-        relaunch: z.boolean().default(true),
-        /**
-         * Force-stop TikTok when the job ends, however it ends.
-         *
-         * On by default so a device is handed back closed rather than sitting on the feed burning
-         * battery and data — and so the next job starts from the same known state this one did.
-         * A force-stop does NOT log the account out; the session survives it. Turn it off to leave
-         * the app open, e.g. when watching a run by hand.
-         */
-        stopOnFinish: z.boolean().default(true),
-        /**
-         * Words that mark a video as the kind this account wants more of. Matched case-insensitively
-         * against the account name and the effect/tag — the only content text this app exposes.
-         * Empty disables the whole weighting and the run behaves exactly as it did before.
-         */
-        keywords: z.array(z.string()).default(['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict']),
-        /** Words that force a fast skip regardless of any keyword hit. Checked first. */
-        blockKeywords: z.array(z.string()).default([]),
-        /**
-         * When to open the comment sheet — itself an engagement signal, so it is rationed.
-         * `matched` (default) spends it only on videos that already matched; `never` disables it;
-         * `always` opens on every video, which is neither a useful signal nor human-looking.
-         */
-        commentProbe: z.enum(['never', 'matched', 'always']).default('matched'),
-        /**
-         * Chance of opening the comments on a video that did NOT match, under `commentProbe:
-         * 'matched'`. Not zero on purpose: a session that only ever opens comments on trading
-         * videos draws a perfectly straight line between "matched" and "engaged", which is both a
-         * pattern and a waste — people open comments on things they merely find funny.
-         */
-        commentChance: z.number().min(0).max(1).default(0.15),
-        /** Chance of opening them on a video that DID match. Below 1 for the same reason: certainty is a tell. */
-        matchedCommentChance: z.number().min(0).max(1).default(0.85),
-        /** Save a screenshot every N videos, for eyeballing that the feed really moved. 0 = none. */
-        screenshotEvery: z.number().int().min(0).max(100).default(0),
+        videos: z
+          .number()
+          .int()
+          .positive()
+          .max(2_000)
+          .default(30)
+          .describe('How many videos to watch before stopping.')
+          .meta({ title: 'Videos' }),
+        maxMinutes: z
+          .number()
+          .positive()
+          .max(600)
+          .default(20)
+          .describe('Wall-clock ceiling. Whichever limit is reached first ends the run.')
+          .meta({ title: 'Stop after (minutes)' }),
+        keywords: z
+          .array(z.string())
+          .default(['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict'])
+          .describe(
+            'Words that mark a video as wanted, matched against the account name and effect tag. A match makes a long watch more likely — never certain.',
+          )
+          .meta({ title: 'Interest keywords' }),
       }),
       // The wall-clock ceiling plus generous slack for launch, settling, and the long-idle bucket.
       timeout: 60 * 60_000,
 
       async prepare(ctx) {
-        if (!ctx.params.relaunch) return
-        await relaunch(ctx, ctx.params.package)
+        await relaunch(ctx, TIKTOK_PACKAGE)
         // Poll for the feed rather than sleeping a guessed number of seconds: the splash screen
         // took ~10s on the device this was written against, and a fixed sleep is either wrong on a
         // slower device or wasted on a faster one. `Beranda` (bottom-nav home) is the first thing
@@ -455,7 +440,16 @@ export default definePlugin({
       },
 
       async run(ctx) {
-        const rng = makeRng(ctx.params.seed)
+        // Was `seed`: useful for replaying a run, useless as something to type. Minted here and
+        // RETURNED in the result, so a run can still be reproduced exactly — by reading it back,
+        // not by inventing one up front.
+        const seed = Math.floor(Math.random() * 0xffffffff)
+        // Was `commentProbe` + two chances. Comments are opened mostly on videos that matched and
+        // occasionally on ones that did not: never opening them on an ordinary video draws a
+        // straight line between "matched" and "engaged", which is itself a pattern.
+        const MATCHED_COMMENT_CHANCE = 0.85
+        const COMMENT_CHANCE = 0.15
+        const rng = makeRng(seed)
         const deadline = Date.now() + ctx.params.maxMinutes * 60_000
 
         // No selector precheck. See `waitForLiveFeed` for why asking the inspector here cost ~50s
@@ -484,7 +478,7 @@ export default definePlugin({
 
           const signals = await readVisibleSignals(ctx)
           if (!signals.ok) unreadable += 1
-          const score = scoreContent(`${signals.author} ${signals.tag}`, ctx.params.keywords, ctx.params.blockKeywords)
+          const score = scoreContent(`${signals.author} ${signals.tag}`, ctx.params.keywords, [])
           // −1 is a blocked word: tilt hard towards `skip`. 0 is "nothing matched", which is NOT the
           // same as "bad" — it stays neutral, because most of the feed is neither wanted nor unwanted.
           const tilt = score < 0 ? -0.9 : score === 0 ? 0 : Math.min(0.9, 0.45 * score)
@@ -496,10 +490,7 @@ export default definePlugin({
 
           // Randomised in BOTH directions — a match makes comments likely, not certain, and a
           // non-match makes them unlikely, not impossible.
-          const probe =
-            ctx.params.commentProbe === 'always' ||
-            (ctx.params.commentProbe === 'matched' &&
-              rng() < (score > 0 ? ctx.params.matchedCommentChance : ctx.params.commentChance))
+          const probe = rng() < (score > 0 ? MATCHED_COMMENT_CHANCE : COMMENT_CHANCE)
           if (probe && (await browseComments(ctx, frame, rng))) commentVisits += 1
 
           // A person often lets a short clip loop once before moving on — an extra dwell that is
@@ -556,7 +547,7 @@ export default definePlugin({
               await sleep(2_000)
             } else if (stalled === 2) {
               ctx.log.warn('still stuck — restarting TikTok')
-              await relaunch(ctx, ctx.params.package)
+              await relaunch(ctx, TIKTOK_PACKAGE)
               recoveries += 1
             } else {
               ctx.log.warn('giving up: three consecutive swipes changed nothing, and a restart did not help')
@@ -569,9 +560,6 @@ export default definePlugin({
           }
           before = after
 
-          if (ctx.params.screenshotEvery > 0 && (i + 1) % ctx.params.screenshotEvery === 0) {
-            await ctx.artifact.screenshot(`video-${i + 1}`)
-          }
         }
 
         const totalMs = watched.reduce((sum, w) => sum + w.ms, 0)
@@ -588,7 +576,7 @@ export default definePlugin({
           matched,
           commentVisits,
           unreadable,
-          seed: ctx.params.seed,
+          seed: seed,
         })
 
         return {
@@ -604,7 +592,7 @@ export default definePlugin({
           unreadable,
           endedOnStall: stalled >= 3,
           /** Replaying with this seed reproduces the exact same sequence. */
-          seed: ctx.params.seed,
+          seed: seed,
         }
       },
 
@@ -617,7 +605,7 @@ export default definePlugin({
        */
       async finish(ctx) {
         if (ctx.error) await ctx.artifact.screenshot('failed')
-        if (ctx.params.stopOnFinish) await ctx.device.app.forceStop(ctx.params.package)
+        await ctx.device.app.forceStop(TIKTOK_PACKAGE)
       },
     },
   ],
