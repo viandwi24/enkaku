@@ -37,6 +37,7 @@ const KIND_LABEL: Record<string, string> = {
   'job.started': 'Job started',
   'job.finished': 'Job finished',
   'job.retry': 'Job retry',
+  'job.triggered': 'Job triggered',
   'settings.changed': 'Settings changed',
   'battery.warning': 'Battery warning',
   'input.tap': 'Tap',
@@ -59,6 +60,7 @@ const KIND_TONE: Record<string, string> = {
   'session.degraded': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'job.finished': 'text-led-ok border-led-ok/35 bg-led-ok/10',
   'job.retry': 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  'job.triggered': 'text-led-active border-led-active/35 bg-led-active/10',
   'battery.warning': 'text-led-danger border-led-danger/40 bg-led-danger/10',
   'adb.endpoint.opened': 'text-led-active border-led-active/35 bg-led-active/10',
   'adb.endpoint.closed': 'text-fg-subtle border-line bg-transparent',
@@ -102,6 +104,15 @@ function summarize(ev: DeviceEvent): string {
       if (delayMs > 0) parts.push(`after ${delayMs}ms`)
       if (rebound) parts.push(`→ moved to another device`)
       return parts.join(' ')
+    }
+    case 'job.triggered': {
+      // plan 81 §4.5 — `jobs/jobs-runner-port.ts`'s `onTriggered` meta shape.
+      // This device is the TARGET (where `toJobId` will run); `fromJobId` is
+      // the triggering job, which may be running on a different device.
+      const fromId = typeof meta.fromJobId === 'string' ? meta.fromJobId.slice(0, 8) : '?'
+      const toId = typeof meta.toJobId === 'string' ? meta.toJobId.slice(0, 8) : '?'
+      const depth = typeof meta.depth === 'number' ? meta.depth : null
+      return `job ${fromId} queued job ${toId}${depth !== null ? ` (depth ${depth})` : ''}`
     }
     case 'settings.changed':
       return Array.isArray(meta.keys) && meta.keys.length > 0 ? `Changed: ${meta.keys.join(', ')}` : 'Settings changed'

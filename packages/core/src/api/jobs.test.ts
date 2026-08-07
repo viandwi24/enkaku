@@ -22,6 +22,9 @@ function fakeJobInfo(scriptId: string): JobInfo {
     batchSeq: null,
     expiresAt: null,
     errorPhase: null,
+    triggeredByJobId: null,
+    rootJobId: null,
+    depth: 0,
   }
 }
 
@@ -29,12 +32,15 @@ function fakeJobInfo(scriptId: string): JobInfo {
 function fakeService(): JobService & {
   calls: Parameters<JobService['enqueue']>[0][]
   cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }>
+  listCalls: Parameters<JobService['list']>[0][]
 } {
   const calls: Parameters<JobService['enqueue']>[0][] = []
   const cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }> = []
+  const listCalls: Parameters<JobService['list']>[0][] = []
   return {
     calls,
     cancelCalls,
+    listCalls,
     enqueue(input) {
       calls.push(input)
       return fakeJobInfo(input.scriptId)
@@ -44,7 +50,10 @@ function fakeService(): JobService & {
       return { job: fakeJobInfo('x'), cancelledDescendants: opts?.cancelDescendants ? 4 : 0 }
     },
     get: (): JobDetail | null => null,
-    list: () => ({ jobs: [], nextCursor: null, total: 0 }),
+    list: (filter) => {
+      listCalls.push(filter)
+      return { jobs: [], nextCursor: null, total: 0 }
+    },
   }
 }
 
@@ -149,5 +158,23 @@ describe('POST /api/jobs/:id/cancel — cancelDescendants (plan 81 §4.4)', () =
     expect(service.cancelCalls).toEqual([{ jobId: 'job-1', opts: { cancelDescendants: true } }])
     const body = (await res.json()) as { cancelledDescendants: number }
     expect(body.cancelledDescendants).toBe(4)
+  })
+})
+
+describe('GET /api/jobs — rootJobId (plan 81 §4.5)', () => {
+  test('?rootJobId=<id> is forwarded to the service, for the job detail page’s lineage view', async () => {
+    const service = fakeService()
+    const app = createJobRoutes(service)
+    const res = await app.request('/?rootJobId=root-1')
+    expect(res.status).toBe(200)
+    expect(service.listCalls[0]?.rootJobId).toBe('root-1')
+  })
+
+  test('omitted, rootJobId is undefined — an ordinary list is unaffected', async () => {
+    const service = fakeService()
+    const app = createJobRoutes(service)
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
+    expect(service.listCalls[0]?.rootJobId).toBeUndefined()
   })
 })

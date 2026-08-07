@@ -87,6 +87,9 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
     const result = service.list({
       deviceId: c.req.query('deviceId') ?? undefined,
       status: status.success ? status.data : undefined,
+      // Plan 81 §4.5 — every other member of the trigger chain rooted at
+      // this job id, for the job detail page's lineage view.
+      rootJobId: c.req.query('rootJobId') ?? undefined,
       limit,
       cursor: decodeCursor(cursorParam),
     })

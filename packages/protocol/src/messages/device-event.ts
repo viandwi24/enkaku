@@ -26,6 +26,8 @@ export const MAIN_EVENT_KINDS = [
   'job.finished',
   /** The pre-job reset ran (plan 35 §3.5) — carries { policy, packages, warnings, durationMs }. */
   'job.reset',
+  /** A script called `ctx.jobs.trigger()` and a new (non-deduped) job was queued (plan 81 §4.5) — carries { fromJobId, toJobId, rootJobId, depth }, recorded on the TARGET device (where the new job will run, which may differ from the triggering job's own device). */
+  'job.triggered',
   'settings.changed',
   'battery.warning',
   /** A device stopped answering adb and was auto-quarantined (plan 23 §4.4). */

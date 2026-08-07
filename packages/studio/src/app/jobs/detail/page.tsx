@@ -5,18 +5,30 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft, ChevronDown, ChevronRight, Download, Hourglass } from 'lucide-react'
 import { z } from 'zod'
-import { JobCancelResponseSchema, JobResponseSchema, type ArtifactInfo, type LeaseHolder } from '@enkaku/protocol'
+import { JobCancelResponseSchema, JobResponseSchema, type ArtifactInfo, type JobInfo, type LeaseHolder } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
 import { deviceRefLabel, fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
 import { formatResult, isRunnerLog, outcomeLine, producedArtifacts, type JobWithPhase } from '@/lib/jobs'
+import { descendantsOf } from '@/lib/job-lineage'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -64,6 +76,14 @@ function JobDetail() {
   const [liveLogs, setLiveLogs] = useState<LogLine[]>([])
   const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
+  // Lineage (plan 81 §4.5) — `chainNodes` is every OTHER member of this
+  // job's trigger chain (`GET /api/jobs?rootJobId=...` excludes the root's
+  // own row by design); `rootInfo` is that root's own detail, fetched
+  // separately and only when this job is not itself the root. Both start
+  // empty/null so a job with no lineage — the common case — renders with
+  // nothing extra rather than a loading flicker.
+  const [chainNodes, setChainNodes] = useState<JobInfo[]>([])
+  const [rootInfo, setRootInfo] = useState<JobInfo | null>(null)
   const [source, setSource] = useState<string | null | undefined>(undefined)
   const [followLog, setFollowLog] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -93,6 +113,24 @@ function JobDetail() {
         void fetchDeviceRefs([b.job.deviceId])
           .then((refs) => setDeviceRef(refs[b.job.deviceId]))
           .catch(() => undefined)
+        // Every other member of this job's trigger chain (plan 81 §4.5) —
+        // cheap and always fetched: most jobs are not triggered, so this
+        // simply returns an empty page, and the lineage panel below stays
+        // hidden. `effectiveRootId` is this job's own id when it IS the
+        // root (`rootJobId` is null on the origin's own row by design).
+        const effectiveRootId = b.job.rootJobId ?? b.job.jobId
+        void fetchAllPages<JobInfo>('/api/jobs', { rootJobId: effectiveRootId })
+          .then(setChainNodes)
+          .catch(() => setChainNodes([]))
+        // The root's OWN detail is only fetched when this job is not it —
+        // the root's row never appears in the `rootJobId` list above.
+        if (b.job.depth > 0) {
+          void api(`/api/jobs/${effectiveRootId}`, JobResponseSchema)
+            .then((r) => setRootInfo(r.job))
+            .catch(() => setRootInfo(null))
+        } else {
+          setRootInfo(null)
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
     // A job's artifacts are usually a handful, but a script producing many
@@ -193,6 +231,25 @@ function JobDetail() {
   const waited = job.startedAt ? job.startedAt - job.createdAt : null
   const finished = ['success', 'failed', 'cancelled', 'expired'].includes(job.status)
 
+  // Lineage (plan 81 §4.5) — what triggered this job, the root of the
+  // chain, how deep it sits, and the jobs it triggered. A job with no
+  // lineage at all (`depth 0`, no trigger, no children — most jobs) shows
+  // none of this: `hasLineage` gates the whole panel rather than rendering
+  // a card of nulls for the common case.
+  const effectiveRootId = job.rootJobId ?? job.jobId
+  const rootDisplay: JobInfo | JobWithPhase | null = job.depth > 0 ? rootInfo : job
+  const parentDisplay: JobInfo | JobWithPhase | null = job.triggeredByJobId
+    ? job.depth === 1
+      ? rootDisplay
+      : (chainNodes.find((n) => n.jobId === job.triggeredByJobId) ?? null)
+    : null
+  const triggeredJobs = chainNodes.filter((n) => n.triggeredByJobId === job.jobId)
+  // Only QUEUED descendants — a cancel-with-descendants call only ever
+  // touches those (`JobStore.cancelQueuedDescendants`); a running or
+  // finished descendant is left alone regardless.
+  const queuedDescendants = descendantsOf(chainNodes, job.jobId).filter((n) => n.status === 'queued')
+  const hasLineage = job.triggeredByJobId !== null || job.depth > 0 || triggeredJobs.length > 0
+
   /**
    * Why it failed, with the failing line shown rather than described (plan 60
    * §3.4). One definition, rendered in one place at a time: inside the
@@ -255,21 +312,62 @@ function JobDetail() {
                 All jobs
               </Link>
             </Button>
-            {cancellable && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isPending('cancel')}
-                onClick={() =>
-                  void run('cancel', () => api(`/api/jobs/${jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }), {
-                    success: 'Job cancelled',
-                    failure: 'Could not cancel the job',
-                  })
-                }
-              >
-                Cancel job
-              </Button>
-            )}
+            {cancellable &&
+              // Cancelling a job with queued descendants must say so before
+              // it acts (plan 81 §4.4) — a plain cancel never touches them.
+              (queuedDescendants.length > 0 ? (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={isPending('cancel')}>
+                      {isPending('cancel') ? 'Cancelling…' : 'Cancel job'}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent size="sm">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel this job and its queued descendants?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This job triggered a chain — {queuedDescendants.length} job{queuedDescendants.length === 1 ? '' : 's'}{' '}
+                        still queued because of it will be cancelled along with this one. Anything already running or
+                        finished is left alone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep them queued</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() =>
+                          void run(
+                            'cancel',
+                            () =>
+                              api(`/api/jobs/${jobId}/cancel?cancelDescendants=1`, JobCancelResponseSchema, {
+                                method: 'POST',
+                              }),
+                            {
+                              success: `Job cancelled — ${queuedDescendants.length} descendant${queuedDescendants.length === 1 ? '' : 's'} too`,
+                              failure: 'Could not cancel the job',
+                            },
+                          )
+                        }
+                      >
+                        Cancel {queuedDescendants.length + 1} jobs
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isPending('cancel')}
+                  onClick={() =>
+                    void run('cancel', () => api(`/api/jobs/${jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }), {
+                      success: 'Job cancelled',
+                      failure: 'Could not cancel the job',
+                    })
+                  }
+                >
+                  Cancel job
+                </Button>
+              ))}
           </>
         }
       />
@@ -409,6 +507,84 @@ function JobDetail() {
                 <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
                   <Link href={`/device?id=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
                 </Button>
+              )}
+
+              {/* A chain is a tree, not four raw ids (plan 81 §4.5): every
+                  link below names the job by script and status, never a bare
+                  uuid. Hidden entirely for the common case — a job nothing
+                  triggered and that triggered nothing itself. */}
+              {hasLineage && (
+                <div className="mt-3 border-t pt-3">
+                  <h3 className="rack-label mb-2">lineage</h3>
+                  <dl className="space-y-1.5">
+                    {job.triggeredByJobId && (
+                      <div className="flex items-baseline justify-between gap-3">
+                        <dt className="text-[12px] text-fg-muted">triggered by</dt>
+                        <dd className="min-w-0">
+                          <Link
+                            href={`/jobs/detail?id=${job.triggeredByJobId}`}
+                            className="flex items-center gap-1.5 truncate hover:underline"
+                          >
+                            <span className="readout truncate text-[12px]">
+                              {parentDisplay?.scriptName ?? job.triggeredByJobId.slice(0, 8)}
+                            </span>
+                            {parentDisplay && <JobStatusBadge status={parentDisplay.status} />}
+                          </Link>
+                        </dd>
+                      </div>
+                    )}
+                    {job.depth > 0 && (
+                      <>
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-[12px] text-fg-muted">root of chain</dt>
+                          <dd className="min-w-0">
+                            <Link
+                              href={`/jobs/detail?id=${effectiveRootId}`}
+                              className="flex items-center gap-1.5 truncate hover:underline"
+                            >
+                              <span className="readout truncate text-[12px]">
+                                {rootDisplay?.scriptName ?? effectiveRootId.slice(0, 8)}
+                              </span>
+                              {rootDisplay && <JobStatusBadge status={rootDisplay.status} />}
+                            </Link>
+                          </dd>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-[12px] text-fg-muted">depth</dt>
+                          <dd className="readout text-[12px]">{job.depth}</dd>
+                        </div>
+                      </>
+                    )}
+                    {(job.depth > 0 || triggeredJobs.length > 0) && (
+                      <div className="flex items-baseline justify-between gap-3">
+                        <dt className="text-[12px] text-fg-muted">chain size</dt>
+                        <dd className="readout text-[12px]">
+                          {chainNodes.length + 1} job{chainNodes.length + 1 === 1 ? '' : 's'}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                  {triggeredJobs.length > 0 && (
+                    <div className="mt-2.5 border-t pt-2">
+                      <p className="rack-label mb-1.5">
+                        triggered {triggeredJobs.length} job{triggeredJobs.length === 1 ? '' : 's'}
+                      </p>
+                      <ul className="space-y-0.5">
+                        {triggeredJobs.map((c) => (
+                          <li key={c.jobId}>
+                            <Link
+                              href={`/jobs/detail?id=${c.jobId}`}
+                              className="flex items-center justify-between gap-2 rounded px-1 py-1 text-[12px] hover:bg-surface-2"
+                            >
+                              <span className="min-w-0 truncate">{c.scriptName ?? c.jobId.slice(0, 8)}</span>
+                              <JobStatusBadge status={c.status} />
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </aside>

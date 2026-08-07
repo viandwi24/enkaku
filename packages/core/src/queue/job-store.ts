@@ -38,6 +38,12 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
     expiresAt: row.expiresAt ?? null,
     /** Plan 60 §3.4 — where a failure happened, so Summary can say it. */
     errorPhase: row.errorPhase ?? null,
+    // Plan 81 §4.1 — lineage. Null `triggeredByJobId`/`rootJobId` means "not
+    // part of a trigger chain", the common case; `depth` defaults to 0, not
+    // null (see JobInfoSchema's own comment).
+    triggeredByJobId: row.triggeredByJobId ?? null,
+    rootJobId: row.rootJobId ?? null,
+    depth: row.depth ?? 0,
   }
 }
 
@@ -78,8 +84,16 @@ export interface JobStore {
     scriptVersion?: string | null
   }): JobRow
   get(jobId: string): JobRow | null
-  /** Keyset paging — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2). */
-  list(filter: { deviceId?: string; status?: JobStatus; limit: number; cursor?: JobCursor | null }): {
+  /**
+   * Keyset paging — `(createdAt DESC, id DESC)` (plan 30 §3.2, §4.2).
+   * `rootJobId` (plan 81 §4.5) filters to every job sharing a trigger
+   * chain's root — the chain's own row is excluded (its `rootJobId` is
+   * null, not its own id; see schema.ts's comment), so this is exactly
+   * "every OTHER member of this chain". Studio's job detail page uses it to
+   * render the lineage tree and to compute which queued descendants a
+   * cancel would take with it.
+   */
+  list(filter: { deviceId?: string; status?: JobStatus; rootJobId?: string; limit: number; cursor?: JobCursor | null }): {
     rows: JobRow[]
     nextCursor: JobCursor | null
     total: number
@@ -196,6 +210,7 @@ export function createJobStore(db: Db): JobStore {
       const conds = []
       if (filter.deviceId) conds.push(eq(jobs.deviceId, filter.deviceId))
       if (filter.status) conds.push(eq(jobs.status, filter.status))
+      if (filter.rootJobId) conds.push(eq(jobs.rootJobId, filter.rootJobId))
       const countWhere = conds.length > 0 ? and(...conds) : undefined
       const total = db.select().from(jobs).where(countWhere).all().length
 

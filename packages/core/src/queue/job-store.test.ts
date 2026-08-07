@@ -338,3 +338,50 @@ describe('cancelQueuedDescendants (plan 81 §4.4, criterion 11)', () => {
     expect(store.get('c2')?.status).toBe('queued')
   })
 })
+
+describe('list — rootJobId filter (plan 81 §4.5)', () => {
+  function trigger(db: Db, rootId: string, parentId: string, id: string, depth: number) {
+    db.insert(jobs)
+      .values({
+        id,
+        scriptId: 'internal:sleep',
+        deviceId: 'd1',
+        status: 'queued',
+        priority: 0,
+        createdAt: new Date(),
+        triggeredByJobId: parentId,
+        rootJobId: rootId,
+        depth,
+      })
+      .run()
+  }
+
+  test('returns every other member of the chain, excluding the root itself', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const root = seedJob(db, { deviceId: 'd1' })
+    trigger(db, root, root, 'c1', 1)
+    trigger(db, root, 'c1', 'gc1', 2)
+    const unrelatedRoot = seedJob(db, { deviceId: 'd1' })
+    trigger(db, unrelatedRoot, unrelatedRoot, 'other-c1', 1)
+
+    const { rows, total } = store.list({ rootJobId: root, limit: 50 })
+    expect(rows.map((r) => r.id).sort()).toEqual(['c1', 'gc1'])
+    expect(total).toBe(2)
+    // Neither the root's own row nor a different chain's members leak in.
+    expect(rows.some((r) => r.id === root)).toBe(false)
+    expect(rows.some((r) => r.id === 'other-c1')).toBe(false)
+  })
+
+  test('a job with no chain returns an empty page, not an error', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const standalone = seedJob(db, { deviceId: 'd1' })
+
+    const { rows, total } = store.list({ rootJobId: standalone, limit: 50 })
+    expect(rows).toEqual([])
+    expect(total).toBe(0)
+  })
+})

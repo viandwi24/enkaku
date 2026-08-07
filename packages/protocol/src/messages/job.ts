@@ -97,6 +97,21 @@ export const JobInfoSchema = z.object({
    * of the script's own lifecycle. Null for a job that never failed.
    */
   errorPhase: z.string().nullable().default(null),
+  /**
+   * Plan 81 §4.1 — lineage, straight from the `jobs` row (`rowToJobInfo`).
+   * The REST-facing sibling of `JobSummary`'s already-populated lineage
+   * fields (plan 81's `ctx.jobs` projection): both read the same three
+   * columns, this is just the shape Studio and `GET /api/jobs` see rather
+   * than the shape a running script sees. `triggeredByJobId`/`rootJobId`
+   * null means "not part of a trigger chain" — a human, a schedule, or a
+   * batch created this job directly, which is the common case. `depth` is
+   * never actually null (the column defaults to 0 and every existing
+   * pre-plan-81 row was backfilled to it), so it stays a plain number here
+   * rather than mirroring `JobSummary`'s defensive `.nullable()`.
+   */
+  triggeredByJobId: z.string().nullable().default(null),
+  rootJobId: z.string().nullable().default(null),
+  depth: z.number().int().default(0),
 })
 export type JobInfo = z.infer<typeof JobInfoSchema>
 

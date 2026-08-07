@@ -60,6 +60,36 @@ describe('DeviceLog', () => {
     await waitFor(() => expect(getByText('Connected')).toBeTruthy())
   })
 
+  test('job.triggered (plan 81 §4.5) renders a legible line, not just its kind string', async () => {
+    const { getByText } = renderWithApi(<DeviceLog deviceId="dev-4" deviceOffline={false} />, {
+      '/api/devices/dev-4/events*': ({ path }) => {
+        const stream = new URL(`http://x${path}`).searchParams.get('stream')
+        if (stream === 'main') {
+          return {
+            body: {
+              items: [
+                {
+                  id: 'e1',
+                  deviceId: 'dev-4',
+                  stream: 'main',
+                  kind: 'job.triggered',
+                  actor: 'job:fromjobid1',
+                  meta: { fromJobId: 'fromjobid1', toJobId: 'tojobid123', rootJobId: 'fromjobid1', depth: 1 },
+                  at: 1000,
+                },
+              ],
+              nextCursor: null,
+              total: 1,
+            },
+          }
+        }
+        return { body: { items: [], nextCursor: null, total: 0 } }
+      },
+    })
+    await waitFor(() => expect(getByText('Job triggered')).toBeTruthy())
+    expect(getByText('job fromjobi queued job tojobid1 (depth 1)')).toBeTruthy()
+  })
+
   test('an empty log shows the empty state, not a crash', async () => {
     const { getByText } = renderWithApi(<DeviceLog deviceId="dev-2" deviceOffline={true} />, {
       '/api/devices/dev-2/events*': { body: { items: [], nextCursor: null, total: 0 } },

@@ -34,6 +34,15 @@ jobs:
       # invocation, not as part of the root `bun test` above (plan 72 §4.4,
       # criterion 10 — see CLAUDE.md's Commands section for why).
       - run: bun run --cwd packages/studio test
+      # A plan can typecheck and pass every test while its own `> Status:`
+      # header is stale or self-contradicting (a shipped plan still marked
+      # `draft`, or an `implemented` plan whose own prose admits it left
+      # something declared unbuilt) — neither is caught by anything above.
+      - run: bash scripts/check-plan-status.sh
+      # `packages/harness` is a verbatim copy of bitorex-algo's harness, and
+      # its worth depends entirely on staying diffable against upstream. A
+      # local edit is invisible to typecheck and tests — only this catches it.
+      - run: bash scripts/check-harness-provenance.sh
 
   changes:
     runs-on: ubuntu-latest

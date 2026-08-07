@@ -37,7 +37,8 @@ export interface JobService {
    * fifty of them is not what a list is for.
    */
   get(jobId: string): JobDetail | null
-  list(filter: { deviceId?: string; status?: JobStatus; limit?: number; cursor?: JobCursor | null }): {
+  /** `rootJobId` (plan 81 §4.5) — every other member of a trigger chain, for the job detail page's lineage view. */
+  list(filter: { deviceId?: string; status?: JobStatus; rootJobId?: string; limit?: number; cursor?: JobCursor | null }): {
     jobs: JobInfo[]
     nextCursor: JobCursor | null
     total: number
@@ -133,6 +134,7 @@ export function createJobService(deps: {
       const { rows, nextCursor, total } = deps.jobStore.list({
         deviceId: filter.deviceId,
         status: filter.status,
+        rootJobId: filter.rootJobId,
         limit: filter.limit ?? 50,
         cursor: filter.cursor,
       })
