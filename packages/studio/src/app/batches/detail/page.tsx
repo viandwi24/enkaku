@@ -15,6 +15,7 @@ import {
 } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -184,40 +185,16 @@ function BatchDetail() {
             <Progress value={pct} className="mt-2 h-1.5" />
           </div>
 
-          <PaginatedTable<JobInfo>
-            ref={jobsRef}
-            resetKey={batchId}
+          {/* Shared jobs table (audit finding 1) over this batch's OWN source:
+              members come back with the batch itself, not from a jobs query.
+              The row is what matters — this table used to hide a failed
+              member's error behind a `line-clamp-1` that could not work. */}
+          <JobsList
+            handleRef={jobsRef}
             fetchPage={fetchJobs}
-            rowKey={(j) => j.jobId}
-            header={
-              <>
-                <TableHead className="w-10">#</TableHead>
-                <TableHead>Device</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead className="text-right">Job</TableHead>
-              </>
-            }
-            renderRow={(j) => (
-              <>
-                <TableCell className="readout text-[11.5px] text-fg-subtle">{(j.batchSeq ?? 0) + 1}</TableCell>
-                <TableCell className="text-[12.5px]">{deviceLabel(j.deviceId)}</TableCell>
-                <TableCell>
-                  <JobStatusBadge status={j.status} />
-                  {j.status === 'failed' && j.error && (
-                    <p className="mt-0.5 line-clamp-1 text-[11px] text-led-danger">{j.error}</p>
-                  )}
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {j.startedAt ? duration(j.startedAt, j.finishedAt) : '—'}
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
-                    <Link href={`/jobs/detail?id=${j.jobId}`}>Logs &amp; artifacts</Link>
-                  </Button>
-                </TableCell>
-              </>
-            )}
+            resetKey={batchId}
+            columns={{ seq: true, device: true }}
+            deviceLabel={(id) => ({ name: deviceLabel(id), ident: id })}
             empty={{
               title: 'No jobs in this batch',
               description: 'This batch has no member jobs — its target selector resolved to nothing at dispatch time.',

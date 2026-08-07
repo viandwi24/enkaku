@@ -11,6 +11,7 @@ afterEach(cleanup)
 const activePlugin = {
   id: 'p-active',
   name: 'tiktok',
+  title: 'TikTok pack',
   version: '1.0.0',
   status: 'active',
   verifiedAt: '2026-01-01T00:00:00.000Z',
@@ -24,6 +25,7 @@ const activePlugin = {
 const failedPlugin = {
   id: 'p-failed',
   name: 'broken-pack',
+  title: 'Broken pack',
   version: '1.0.0',
   status: 'failed',
   verifiedAt: null,
@@ -39,7 +41,10 @@ describe('PluginsPage — criterion 29: a failed plugin, its verbatim error, and
     renderWithApi(<PluginsPage />, {
       '/api/plugins': { body: { items: [activePlugin, failedPlugin], dev: [] } },
     })
-    await waitFor(() => expect(screen.getByText('broken-pack')).toBeTruthy())
+    // Both names are shown and they are different things: the human title, and
+  // the identifier a script reference is keyed on. Asserting on the readout
+  // rather than the title, since the identifier is the one that must be exact.
+  await waitFor(() => expect(screen.getByText('Broken pack')).toBeTruthy())
     expect(screen.getByText('E_PLUGIN_NAME_CONFLICT')).toBeTruthy()
     expect(screen.getByText(new RegExp(failedPlugin.verifyError!.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeTruthy()
     expect(screen.getByText(/2 script.*declared.*login, other/)).toBeTruthy()
@@ -60,7 +65,7 @@ describe('PluginsPage — criterion 29: a failed plugin, its verbatim error, and
     renderWithApi(<PluginsPage />, {
       '/api/plugins': { body: { items: [activePlugin], dev: [] } },
     })
-    await waitFor(() => expect(screen.getByText('tiktok')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
     expect(screen.getByText(/2 registered/)).toBeTruthy()
     expect(screen.queryByText('E_PLUGIN_NAME_CONFLICT')).toBeNull()
   })

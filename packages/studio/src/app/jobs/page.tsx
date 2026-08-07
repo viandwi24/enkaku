@@ -3,16 +3,13 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ListChecks, Search } from 'lucide-react'
-import { JobResponseSchema, JobsPageResponseSchema, type DeviceInfo, type JobInfo, type JobStatus } from '@enkaku/protocol'
-import { JobStatusBadge } from '@/components/StatusBadge'
+import type { DeviceInfo, JobInfo, JobStatus } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { JobsList } from '@/components/JobsList'
+import { type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { duration, relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
@@ -25,7 +22,6 @@ export default function JobsPage() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [status, setStatus] = useState<JobStatus | 'all'>('all')
   const [query, setQuery] = useState('')
-  const { run, isPending } = useAction()
   // A running job's duration ticks without a refresh (Plan 17 acceptance #1).
   const now = useNow()
 
@@ -49,12 +45,6 @@ export default function JobsPage() {
   const deviceIdent = (id: string) => deviceOf(id)?.stableId ?? id
   const scriptName = (j: Job) =>
     j.scriptName ? `${j.scriptName}${j.scriptVersion ? `@${j.scriptVersion}` : ''}` : j.scriptId
-
-  const cancel = (j: Job) =>
-    run('cancel-' + j.jobId, () => api(`/api/jobs/${j.jobId}/cancel`, JobResponseSchema, { method: 'POST' }), {
-      success: 'Job cancelled',
-      failure: 'Could not cancel the job',
-    })
 
   return (
     <>
@@ -91,11 +81,15 @@ export default function JobsPage() {
           </Select>
         </div>
 
-        <PaginatedTable<Job>
-          ref={tableRef}
-          fetchPage={(cursor) => api(`/api/jobs?limit=50${cursor ? `&cursor=${cursor}` : ''}`, JobsPageResponseSchema)}
-          rowKey={(j) => j.jobId}
-          sort={(list) => {
+        {/* One jobs table for the whole product (audit finding 1). This page,
+            the device page, a script's history and a batch's members were four
+            separate implementations, and only this one showed a failed job's
+            error or offered cancel. */}
+        <JobsList
+          handleRef={tableRef}
+          deviceLabel={(id) => ({ name: deviceName(id), ident: deviceIdent(id) })}
+          resetKey={`${status}|${query}`}
+          sort={(list: Job[]) => {
             let filtered = list
             if (status !== 'all') filtered = filtered.filter((j) => j.status === status)
             const q = query.trim().toLowerCase()
@@ -113,89 +107,15 @@ export default function JobsPage() {
               return rank(a) - rank(b) || b.createdAt - a.createdAt
             })
           }}
-          header={
-            <>
-              <TableHead className="w-[32%]">Script</TableHead>
-              <TableHead>Device</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Duration</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </>
-          }
-          renderRow={(j) => {
-            const cancellable = j.status === 'queued' || j.status === 'running'
-            return (
-              <>
-                <TableCell>
-                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                    {scriptName(j)}
-                  </Link>
-                  {/* `line-clamp-1` used to be here and did nothing: clamping
-                      needs text that is allowed to wrap, and the cell was
-                      `whitespace-nowrap`, so a long error ran on forever and
-                      pushed every column to its right off the screen. Cells
-                      wrap now; the error is shown in full, over as many lines
-                      as it needs, rather than truncated to a first fragment
-                      that rarely says what went wrong. */}
-                  {j.status === 'failed' && j.error && (
-                    <p className="mt-0.5 text-[11.5px] wrap-anywhere text-led-danger">{j.error}</p>
-                  )}
-                </TableCell>
-                <TableCell className="text-[12.5px]">
-                  <Link
-                    href={`/device?id=${encodeURIComponent(j.deviceId)}`}
-                    className="group inline-flex flex-col leading-tight hover:text-accent"
-                    title={`${deviceName(j.deviceId)} · ${deviceIdent(j.deviceId)}`}
-                  >
-                    <span className="group-hover:underline">{deviceName(j.deviceId)}</span>
-                    <span className="readout text-[10.5px] text-fg-subtle">{deviceIdent(j.deviceId)}</span>
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  <JobStatusBadge status={j.status} />
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {duration(j.startedAt, j.finishedAt, now)}
-                </TableCell>
-                <TableCell>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="readout text-[11.5px] text-fg-muted">{relativeTime(j.createdAt, now)}</span>
-                    </TooltipTrigger>
-                    <TooltipContent>{new Date(j.createdAt * 1000).toLocaleString()}</TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell className="text-right">
-                  {cancellable && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-[12px]"
-                      disabled={isPending('cancel-' + j.jobId)}
-                      onClick={() => void cancel(j)}
-                    >
-                      Cancel
-                    </Button>
-                  )}
-                </TableCell>
-              </>
-            )
-          }}
           empty={{
             icon: <ListChecks className="size-4" aria-hidden />,
             title: 'No jobs yet',
             description: 'Run a script from the Scripts page, or with the Run button on a device card.',
             action: (
               <Button asChild>
-                <Link href="/scripts">Open Scripts</Link>
+                <Link href="/scripts">Browse scripts</Link>
               </Button>
             ),
-          }}
-          emptyFiltered={{
-            icon: <ListChecks className="size-4" aria-hidden />,
-            title: 'Nothing matches',
-            description: 'Change the search or pick a different status.',
           }}
         />
       </div>

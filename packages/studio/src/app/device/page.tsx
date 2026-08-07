@@ -35,6 +35,7 @@ import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
+import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { relativeTime, duration } from '@/lib/format'
@@ -522,55 +523,16 @@ function DeviceDetail() {
 
       <TabPanel active={tab === 'jobs'}>
         <div className="px-5 py-4">
-          <PaginatedTable<JobInfo>
-            ref={jobsRef}
-            resetKey={deviceId}
-            fetchPage={(cursor) =>
-              api(`/api/jobs?deviceId=${deviceId}&limit=50${cursor ? `&cursor=${cursor}` : ''}`, JobsPageResponseSchema).then(
-                (page) => {
-                  if (cursor === null) setJobsCount(page.total)
-                  return page
-                },
-              )
-            }
-            rowKey={(j) => j.jobId}
-            header={
-              <>
-                <TableHead className="w-[45%]">Script</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead>Started</TableHead>
-              </>
-            }
-            renderRow={(j) => (
-              <>
-                <TableCell>
-                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                    {j.scriptName ? `${j.scriptName}@${j.scriptVersion ?? '?'}` : j.scriptId}
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  <JobStatusBadge status={j.status} />
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {duration(j.startedAt, j.finishedAt, now)}
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {relativeTime(j.startedAt ?? j.createdAt, now)}
-                </TableCell>
-              </>
-            )}
+          {/* The shared jobs table (audit finding 1). No device column: this
+              page IS one device, and repeating it in every row is noise. */}
+          <JobsList
+            handleRef={jobsRef}
+            filter={{ deviceId }}
+            columns={{ script: true, time: 'started' }}
+            onTotal={setJobsCount}
             empty={{
-              title: 'No jobs on this device yet',
-              description: 'Runs started on this device appear here, newest first.',
-              action: (
-                <Button
-                  disabled={scripts.length === 0}
-                  onClick={() => setRunOpen(true)}
-                >
-                  Run a script
-                </Button>
-              ),
+              title: 'No jobs on this device',
+              description: 'Run a script against it from the Scripts page, or with the Run button on its card.',
             }}
           />
         </div>

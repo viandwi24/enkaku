@@ -77,6 +77,14 @@ export default function PluginsPage() {
     return b.version.localeCompare(a.version)
   })
   const failedCount = (items ?? []).filter((p) => p.status === 'failed').length
+  // What `plugin@latest` resolves to, per identifier — the highest version published under each
+  // name. Marked in the row so an operator can tell at a glance which one a bare reference will
+  // pick up, instead of inferring it from the sort order.
+  const newestByName = new Map<string, string>()
+  for (const p of items ?? []) {
+    const current = newestByName.get(p.name)
+    if (!current || p.version.localeCompare(current) > 0) newestByName.set(p.name, p.version)
+  }
 
   return (
     <>
@@ -156,7 +164,14 @@ export default function PluginsPage() {
                   </TableHeader>
                   <TableBody>
                     {sorted.map((p) => (
-                      <PluginRowView key={p.id} plugin={p} onChanged={load} run={run} isPending={isPending} />
+                      <PluginRowView
+                        key={p.id}
+                        plugin={p}
+                        isNewest={newestByName.get(p.name) === p.version}
+                        onChanged={load}
+                        run={run}
+                        isPending={isPending}
+                      />
                     ))}
                   </TableBody>
                 </Table>
@@ -171,11 +186,14 @@ export default function PluginsPage() {
 
 function PluginRowView({
   plugin: p,
+  isNewest,
   onChanged,
   run,
   isPending,
 }: {
   plugin: PluginRow
+  /** The highest version published under this identifier — what `@latest` resolves to. */
+  isNewest: boolean
   onChanged: () => void
   run: ReturnType<typeof useAction>['run']
   isPending: ReturnType<typeof useAction>['isPending']
@@ -210,10 +228,27 @@ function PluginRowView({
   return (
     <TableRow>
       <TableCell>
-        <div className="font-medium">
-          {p.name}
-          <span className="readout ml-1.5 text-[11.5px] text-fg-muted">{p.version}</span>
+        {/*
+          A plugin has two names and they are not interchangeable: the human one it was published
+          with (`title`, e.g. "TikTok automation pack") and the identifier everything else keys on
+          (`name`, e.g. `tiktok` — the KV namespace, and half of every `plugin/script@version` ref).
+          Only the identifier used to be shown, which reads fine to whoever published it and tells
+          an operator nothing. Both are here now, and the identifier stays in the monospace readout
+          so it is obvious which one you can paste into a script reference.
+        */}
+        <div className="font-medium">{p.title?.trim() || p.name}</div>
+        <div className="mt-0.5 flex items-center gap-1.5">
+          <span className="readout text-[11.5px] text-fg-muted">{p.name}</span>
+          <span className="readout text-[11.5px] text-fg-subtle">{p.version}</span>
+          {isNewest && (
+            <span className="rounded-full border border-line px-1.5 text-[10.5px] leading-[1.35] text-fg-subtle">
+              latest
+            </span>
+          )}
         </div>
+        {p.description?.trim() && (
+          <p className="mt-1 max-w-md text-[11.5px] leading-relaxed text-fg-muted">{p.description}</p>
+        )}
         {p.status === 'failed' && (
           <div className="mt-1.5 max-w-md rounded-md border border-led-danger/30 bg-led-danger/5 px-2.5 py-1.5">
             <p className="readout text-[11px] text-led-danger">{p.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>

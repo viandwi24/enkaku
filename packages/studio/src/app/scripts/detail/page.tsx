@@ -18,6 +18,7 @@ import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -263,50 +264,12 @@ function ScriptDetail() {
 
       {tab === 'runs' && (
         <div className="px-5 py-4">
-          <PaginatedTable<JobInfo>
-            ref={runsRef}
-            resetKey={scriptId}
-            fetchPage={fetchRuns}
-            rowKey={(j) => j.jobId}
-            header={
-              <>
-                <TableHead className="w-[35%]">Job</TableHead>
-                <TableHead>Device</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead>Started</TableHead>
-              </>
-            }
-            renderRow={(j) => (
-              <>
-                <TableCell>
-                  <Link href={`/jobs/detail?id=${j.jobId}`} className="readout text-[12px] hover:text-accent">
-                    {j.jobId.slice(0, 8)}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-[12.5px]">
-                  {devices.find((d) => d.id === j.deviceId)?.label ?? j.deviceId.slice(0, 8)}
-                </TableCell>
-                <TableCell>
-                  <JobStatusBadge status={j.status} />
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {duration(j.startedAt, j.finishedAt, now)}
-                </TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">
-                  {relativeTime(j.startedAt ?? j.createdAt, now)}
-                </TableCell>
-              </>
-            )}
-            empty={{
-              title: 'No runs yet',
-              description: 'Jobs started from this script appear here.',
-              action: (
-                <Button disabled={!script.enabled} onClick={() => setRunOpen(true)}>
-                  Run it now
-                </Button>
-              ),
-            }}
+          {/* Shared jobs table (audit finding 1). No script column — this page IS
+              the script; the device is what varies between its runs. */}
+          <JobsList
+            filter={{ scriptId: script.id }}
+            columns={{ device: true, time: 'started' }}
+            empty={{ title: 'No runs yet', description: 'This version has not been run on any device.' }}
           />
         </div>
       )}

@@ -1,4 +1,4 @@
-import { defineScript, type UiNode } from '@enkaku/sdk'
+import { definePlugin, type UiNode } from '@enkaku/sdk'
 import { z } from 'zod'
 
 /**
@@ -1101,9 +1101,23 @@ export function assess(input: { whoer: WhoerFacts | null; dns: DnsFacts | null; 
 
 /* ------------------------------------------------------------------ */
 
-export default defineScript({
-  id: 'network-test',
-  version: '1.6.1',
+/**
+ * The `networking` pack — everything that answers "what does this device look like to the
+ * internet, and is anything leaking around the tunnel". `leak-test` is its first member; the pack
+ * exists so the next one (an exit-address watcher, a DNS-only probe) has an obvious home rather
+ * than becoming another loose script.
+ */
+export default definePlugin({
+  id: 'networking',
+  version: '2.0.0',
+  title: 'Networking',
+  description: 'Leak and egress checks driven through a real browser on the device.',
+  scripts: [
+    {
+      id: 'leak-test',
+      title: 'Browser leak test',
+      description:
+        'Opens Chrome in a fresh tab, reads whoer.net, browserleaks DNS and WebRTC, and reports the exit address, resolvers, and any address that escapes the tunnel.',
   params: z.object({
     /**
      * Which pages to visit. Fewer is faster, and a run that only needs the
@@ -1383,4 +1397,6 @@ export default defineScript({
     await ctx.device.app.forceStop(ctx.params.package)
     await ctx.device.key('HOME')
   },
+  },
+  ],
 })
