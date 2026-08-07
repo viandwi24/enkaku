@@ -188,8 +188,27 @@ function JobDetail() {
       .catch(() => setSavedLogs([]))
   }, [logArtifact, savedLogs])
 
-  // Live lines win while a job runs; the saved file is the record afterwards.
-  const logs = liveLogs.length > 0 ? liveLogs : (savedLogs ?? [])
+  /**
+   * The two sources are MERGED, not chosen between.
+   *
+   * This used to be `liveLogs.length > 0 ? liveLogs : savedLogs`, which lost lines in both
+   * directions and was reported as exactly that — "kadang ada log terlewat, kadang tidak realtime".
+   * `liveLogs` only ever holds what arrived over the WS *since this page subscribed*, so opening a
+   * job mid-run and then receiving a single new line discarded every earlier line at once; and
+   * before that first line arrived the panel showed the saved file, which lags. Neither source is
+   * complete on its own: the WS has no replay (`/ws` deliberately does not snapshot) and the
+   * artifact is written progressively.
+   *
+   * Deduped on `ts|level|msg` because a log line carries no id, and ordered by timestamp so the
+   * seam between "read from the file" and "arrived live" is invisible.
+   */
+  const logs = useMemo(() => {
+    const byKey = new Map<string, LogLine>()
+    for (const line of [...(savedLogs ?? []), ...liveLogs]) {
+      byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
+    }
+    return [...byKey.values()].sort((a, b) => a.ts - b.ts)
+  }, [savedLogs, liveLogs])
 
   useEffect(() => {
     if (followLog) logRef.current?.scrollTo({ top: logRef.current.scrollHeight })

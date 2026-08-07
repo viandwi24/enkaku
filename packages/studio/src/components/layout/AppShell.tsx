@@ -7,6 +7,7 @@ import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Box
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { NotificationBell } from '@/components/NotificationBell'
+import { ProvisioningBanner } from '@/components/ProvisioningBanner'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
@@ -132,6 +133,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NotificationBell />
           </div>
         </div>
+
+        {/* Above `main` and outside its scroll container: first-run
+            provisioning is the one thing an operator needs to see before
+            they have navigated anywhere, and it must not scroll away. */}
+        <ProvisioningBanner />
 
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
       </div>
