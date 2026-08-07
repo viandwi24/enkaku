@@ -12,7 +12,8 @@ BIN_DIR="apps/desktop/src-tauri/binaries"
 echo "==> Building Studio (static export)"
 bun run --cwd packages/studio build
 
-echo "==> Compiling the core into a single binary (Studio + migrations embedded)"
+echo "==> Compiling the core into a single binary (Studio + migrations + packs embedded)"
+bun scripts/build-packs.ts
 bun scripts/gen-embedded-entry.ts
 mkdir -p "$BIN_DIR"
 bun build packages/core/src/entry-release.gen.ts --compile --outfile "$BIN_DIR/enkaku-core-$TARGET_TRIPLE"

@@ -20,7 +20,10 @@ OUT_DIR="release"
 echo "==> Building Studio (static export)"
 bun run --cwd packages/studio build
 
-echo "==> Generating the release entrypoint (Studio + migrations embedded)"
+echo "==> Bundling the plugin packs (plugins/*, embedded in the binary)"
+bun scripts/build-packs.ts
+
+echo "==> Generating the release entrypoint (Studio + migrations + packs embedded)"
 bun scripts/gen-embedded-entry.ts
 
 rm -rf "$OUT_DIR"

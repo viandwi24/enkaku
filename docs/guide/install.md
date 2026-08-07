@@ -4,8 +4,9 @@ Enkaku manages every tool it needs itself (adb, scrcpy-server, the inspector APK
 
 ## 0. Portable binary (no Bun, no checkout)
 
-Each GitHub Release ships one self-contained binary per platform — Studio and
-the database migrations are embedded, so nothing else is needed:
+Each GitHub Release ships one self-contained binary per platform — Studio, the
+database migrations, and the example plugin packs are embedded, so nothing else
+is needed:
 
 ```bash
 # Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
@@ -20,6 +21,19 @@ On Windows: download `enkaku-vX.Y.Z-windows-x64.zip`, extract, run `enkaku.exe`
 
 To build the archives yourself: `bash scripts/build-release.sh` (all five
 targets cross-compile from any host; artifacts land in `release/`).
+
+### The bundled plugin packs
+
+On its first run the binary stages the example packs it carries — `networking`
+(a browser-driven leak and egress check) and `tiktok` (feed auto-scroll) — and
+verifies each one. They arrive **staged, not active**: open Plugins in Studio
+and press Activate on the ones you want, which is what writes their scripts
+(`networking/leak-test`, `tiktok/auto-scroll`) into your Scripts list.
+
+Removing a pack is permanent. The farm records what it has already seeded in
+`<dataDir>/seeded-packs.json`, so a pack you delete does not come back on the
+next restart; a pack whose version changed in a core upgrade arrives as a new
+staged version alongside the one you are running.
 
 ## 1. Local (easiest)
 

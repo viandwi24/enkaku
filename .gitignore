@@ -33,6 +33,8 @@ apps/desktop/src-tauri/gen/schemas/
 # release build
 *.gen.ts
 release/
+# Built by scripts/build-packs.ts from examples/ — an artifact, never a source.
+packages/core/packs/
 
 
 refs/

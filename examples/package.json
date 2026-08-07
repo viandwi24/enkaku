@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Example automation scripts — mirroring a script author's own project",
+  "scripts": {
+    "test": "bun test"
+  },
   "dependencies": {
+    "@enkaku/protocol": "workspace:*",
     "@enkaku/sdk": "workspace:*",
     "zod": "^4.0.0"
   }

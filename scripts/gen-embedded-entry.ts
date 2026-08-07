@@ -9,12 +9,13 @@
  * Output: packages/core/src/entry-release.gen.ts (gitignored).
  * Usage:  bun scripts/gen-embedded-entry.ts   (after `bun run build:studio`)
  */
-import { readdirSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 const root = join(import.meta.dir, '..')
 const studioOut = join(root, 'packages', 'studio', 'out')
 const drizzleDir = join(root, 'packages', 'core', 'drizzle')
+const packsDir = join(root, 'packages', 'core', 'packs')
 const outFile = join(root, 'packages', 'core', 'src', 'entry-release.gen.ts')
 
 function walk(dir: string): string[] {
@@ -38,6 +39,14 @@ function assertExists(dir: string, hint: string): void {
 
 assertExists(join(studioOut, 'index.html'), 'run `bun run build:studio` first')
 assertExists(drizzleDir, 'drizzle migrations folder not found')
+assertExists(join(packsDir, 'index.json'), 'run `bun scripts/build-packs.ts` first')
+
+/** Written by scripts/build-packs.ts — name/version come from each pack's own `definePlugin`. */
+const packs = JSON.parse(readFileSync(join(packsDir, 'index.json'), 'utf8')) as {
+  name: string
+  version: string
+  file: string
+}[]
 
 // Snapshots are drizzle-kit's input for generating the NEXT migration; the
 // runtime migrator only needs the journal and the .sql files.
@@ -64,6 +73,11 @@ for (const rel of drizzle) {
   lines.push(`import ${ident} from '../drizzle/${toPosix(rel)}' with { type: 'file' }`)
   entries.push({ map: 'drizzle', rel: toPosix(rel), ident })
 }
+const packIdents = packs.map((p) => {
+  const ident = `p${i++}`
+  lines.push(`import ${ident} from '../packs/${p.file}' with { type: 'file' }`)
+  return { ...p, ident }
+})
 
 lines.push('', 'registerEmbeddedAssets({')
 for (const map of ['studio', 'drizzle'] as const) {
@@ -71,7 +85,14 @@ for (const map of ['studio', 'drizzle'] as const) {
   for (const e of entries) if (e.map === map) lines.push(`    ${JSON.stringify(e.rel)}: ${e.ident},`)
   lines.push('  },')
 }
+lines.push('  packs: [')
+for (const p of packIdents) {
+  lines.push(`    { name: ${JSON.stringify(p.name)}, version: ${JSON.stringify(p.version)}, path: ${p.ident} },`)
+}
+lines.push('  ],')
 lines.push('})', '', "await import('./index')", '')
 
 writeFileSync(outFile, lines.join('\n'))
-console.log(`generated ${relative(root, outFile)} (${studio.length} studio files, ${drizzle.length} drizzle files)`)
+console.log(
+  `generated ${relative(root, outFile)} (${studio.length} studio files, ${drizzle.length} drizzle files, ${packs.length} packs)`,
+)

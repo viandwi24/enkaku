@@ -26,6 +26,16 @@ const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/
 export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny> = Omit<ScriptDefinition<S>, 'version'> & {
   /** Optional — must equal the plugin's own version when given (plan 82 §3.6). Omit it; `definePlugin` fills it in. */
   version?: string
+  /**
+   * Human-readable member metadata. The farm does NOT surface these yet: the
+   * verify child reports only `{ id, paramsSchema }` per member
+   * (`verify-child-entry.ts`), so unlike the PLUGIN-level `title`/`description`
+   * — which do reach the `plugins` row — these stay inside the bundle. They are
+   * typed because authors reasonably write them (both example packs do), and so
+   * that plumbing them through later needs no change on the authoring side.
+   */
+  title?: string
+  description?: string
 }
 
 export interface PluginDefinition {
@@ -39,6 +49,17 @@ export interface PluginDefinition {
   /** Merged with each script's own `reset.packages` at the runner (plan 82 §3.10). */
   reset?: { packages?: string[] }
 }
+
+/**
+ * The `scripts` array as the AUTHOR writes it, one schema type per member.
+ *
+ * `PluginDefinition.scripts` is `PluginMemberScript[]` — i.e. `PluginMemberScript<z.ZodTypeAny>[]`
+ * — which erases each member's own params schema, leaving `ctx.params` as `unknown` inside every
+ * `run`. That is the asymmetry this fixes: `defineScript<S>` infers a standalone script's params,
+ * so a plugin member should infer its own too. The homomorphic mapped type below is what makes
+ * TypeScript infer `S[K]` per element instead of collapsing the array to its constraint.
+ */
+type PluginMemberScripts<S extends readonly z.ZodTypeAny[]> = { [K in keyof S]: PluginMemberScript<S[K]> }
 
 /** `definePlugin`'s return: every member has been stamped with a real, required `version` — a genuine `ScriptDefinition[]`. */
 export interface Plugin extends Omit<PluginDefinition, 'scripts'> {
@@ -57,7 +78,9 @@ export interface Plugin extends Omit<PluginDefinition, 'scripts'> {
  * - a member that declares its own `version` must match the plugin's
  *   exactly — a silent divergence would be unverifiable (plan 82 §3.6).
  */
-export function definePlugin(def: PluginDefinition): Plugin {
+export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
+  def: Omit<PluginDefinition, 'scripts'> & { scripts: PluginMemberScripts<S> },
+): Plugin {
   if (!ID_SHAPE.test(def.id)) {
     throw new Error(`definePlugin: \`id\` must match ${ID_SHAPE} , got "${def.id}"`)
   }

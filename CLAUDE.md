@@ -29,6 +29,7 @@ bun run dev:node       # cloud node (needs ENKAKU_CP_URL; plus ENKAKU_ENROLL_TOK
 bun run dev:desktop    # Tauri (needs Rust; usually ENKAKU_CORE_BIN=<path>)
 bun run typecheck      # every package — do NOT run scripts/typecheck.sh via `bun run <file.sh>` (Bun misreads the shebang); use this root script or `bash scripts/typecheck.sh`
 bun run build:studio   # static export to packages/studio/out (served by the core = single origin)
+bun run build:packs    # bundle examples/*-pack.ts into packages/core/packs/ (embedded in the release binary)
 bun run reset          # delete .dev-data/.dev-cloud/.dev-node
 bun run --cwd packages/core db:generate   # generate a Drizzle migration after changing src/db/schema.ts
 bun run build:guest-agent   # on-device APK (needs JDK 17 + Android SDK; see apps/guest-agent/README.md)
@@ -38,7 +39,7 @@ bun test                    # every package EXCEPT studio (which bun test cannot
 bun run --cwd packages/studio test   # studio's own tests — a SEPARATE, REQUIRED command; see below before assuming a bare `bun test` covers Studio
 ```
 
-Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.
+Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. `packages/studio` and `examples` sit outside `bunfig.toml`'s `[test] root = "packages"` and each run as their own invocation (`bun run --cwd packages/studio test`, `bun run --cwd examples test`) — CI runs all three. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.
 
 **A bare `bun test` from the repo root never runs `packages/studio`'s tests — this is intentional, and `packages/studio` must be tested with the separate command above.** The root `bunfig.toml` excludes it via `[test].pathIgnorePatterns = ["packages/studio/**"]` (matched from the repo root, not from `[test].root` above it — that setting only changes where Bun *scans*, not what the ignore pattern is relative to). This exists because Studio's component/page tests render through `@testing-library/react` against a real DOM (`happy-dom`, registered by `packages/studio/bunfig.toml`'s own `[test].preload`), and Bun's preload is a single global list for the WHOLE invocation — there is no per-directory scoping within one `bun test` run. Preloading happy-dom globally was tried and broke core tests that stub `globalThis.fetch` themselves, because happy-dom's registration installs its own `fetch`/`WebSocket`/etc. `packages/studio/package.json`'s `test` script also passes `--isolate`, which is required, not cosmetic: several component tests use `mock.module('@/lib/ws', ...)`, and without `--isolate` a mock installed by one test FILE leaks into every file that runs after it in the same process (a documented Bun behavior), silently poisoning unrelated tests depending on file execution order. `.github/workflows/ci.yml` runs both commands — a green `check` job means both.
 

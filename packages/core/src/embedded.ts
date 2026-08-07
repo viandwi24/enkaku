@@ -9,11 +9,22 @@
  * paths are used as before.
  */
 
+/** One example plugin pack carried inside the binary (plan 82's `stage` input, pre-bundled). */
+export interface EmbeddedPack {
+  /** The plugin's `id` as `definePlugin` stamped it — becomes `plugins.name`. */
+  name: string
+  version: string
+  /** Embedded path, readable with `Bun.file` — the bundle TEXT, not a module to import here. */
+  path: string
+}
+
 export interface EmbeddedAssets {
   /** Studio static export: relative URL path (e.g. `_next/static/x.js`) → embedded path. */
   studio: Record<string, string>
   /** Drizzle migrations: path relative to drizzle/ (e.g. `meta/_journal.json`) → embedded path. */
   drizzle: Record<string, string>
+  /** Example plugin packs, seeded into the `plugins` table on first run (staged, never auto-activated). */
+  packs: EmbeddedPack[]
 }
 
 let assets: EmbeddedAssets | null = null

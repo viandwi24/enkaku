@@ -51,6 +51,8 @@ import { createScriptRoutes } from './scripts/routes'
 import { createScriptRegistry } from './scripts/registry'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
+import { seedEmbeddedPacks } from './plugins/seed-embedded'
+import { embeddedAssets } from './embedded'
 import { createPluginRoutes } from './api/plugins'
 import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
@@ -1543,6 +1545,21 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
       log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
+
+      // The plugin packs carried inside a compiled binary (staged, not
+      // activated). Deliberately after `listen` and deliberately not awaited:
+      // it spawns a verify child per pack, and nothing about serving requests
+      // depends on the outcome. Running from source embeds nothing, so this is
+      // a no-op there.
+      const embeddedPacks = embeddedAssets()?.packs ?? []
+      if (embeddedPacks.length > 0) {
+        void seedEmbeddedPacks({
+          runtime: pluginRuntime,
+          packs: embeddedPacks,
+          dataDir: cfg.dataDir,
+          log: log.child('packs'),
+        })
+      }
 
       // Artifact retention (spec §18) — the policy comes from farm settings.
       retention = createRetentionGc({
