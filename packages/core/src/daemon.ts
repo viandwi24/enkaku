@@ -56,6 +56,7 @@ import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
 import { createMcpServer } from './mcp/server'
 import { createWorkspaceStore } from './workspace/store'
+import { withAutoRebuild } from './plugins/auto-rebuild'
 import { createKvStore } from './kv/store'
 import { createKvRunnerPort } from './kv/runner-port'
 import { createJobsRunnerPort } from './jobs/jobs-runner-port'
@@ -1018,6 +1019,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // Remote jobs: a device owned by a node runs on that node (plan 12 §4.5).
       const remoteBridge = createRemoteJobBridge({
         db,
+        registry: scriptRegistry,
         router: tunnelRouter,
         log: log.child('remote-job'),
         hooks: {
@@ -1159,7 +1161,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // The database-backed workspace (plan 64 §3.1, §4.1) — one store per
       // boot, quotas read fresh from settings on every call, the same
       // pattern every other settings-derived accessor in this function uses.
-      const workspaceStore = createWorkspaceStore(db, () => settingsStore.get().workspace)
+      const workspaceStore = withAutoRebuild(createWorkspaceStore(db, () => settingsStore.get().workspace), {
+        devSlots: pluginDevSlots,
+        runtime: pluginRuntime,
+        log: log.child('plugins.dev'),
+      })
       // AI agents and connectors (plan 65 §4.5) — `agentStore` validates an
       // agent's tools against the SAME registry built just above, so a
       // capability that does not exist can never be saved onto an agent.
@@ -1407,7 +1413,20 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         auth,
         authMode,
         scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
-        pluginRoutes: createPluginRoutes({ runtime: pluginRuntime, audit, workspace: workspaceStore }),
+        pluginRoutes: createPluginRoutes({
+          runtime: pluginRuntime,
+          audit,
+          workspace: workspaceStore,
+          // `enkaku dev` (plan 82 §3.5 front-end B, §5 step 12) sends its own
+          // `user@host` label so the Plugins page can say who owns a dev
+          // slot without falling back to a bare user id — optional, so a
+          // plain `POST /api/plugins/dev` (no header) still works exactly
+          // as it did before this existed.
+          devOwnerFromRequest: (c) => {
+            const label = c.req.header('x-enkaku-dev-owner')
+            return label ? { kind: 'cli', label } : null
+          },
+        }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
         // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
         // are all built just above, before this call.
@@ -1842,7 +1861,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // `ctx.jobs` (plan 80 §4.2) — a running script's own view of the queue.
           jobs: jobsRunnerPort,
         })
-        const localExecutor = createScriptExecutor({ db, dataDir: cfg.dataDir, runner })
+        const localExecutor = createScriptExecutor({ registry: scriptRegistry, runner })
         executors.setFallback({
           validateParams: (params) => localExecutor.validateParams(params),
           run: (job, ctx) => {

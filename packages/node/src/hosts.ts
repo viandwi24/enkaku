@@ -320,13 +320,16 @@ export function createNodeHosts(deps: {
         }
 
         case 'job.dispatch': {
-          const { jobId, deviceId, bundle, params } = msg.payload
+          const { jobId, deviceId, bundle, params, scriptExportId } = msg.payload
           try {
             if (!bundle) throw new Error('no bundle was included (bundleUrl is not supported yet)')
             // The bundle is written to the node's disk so the child process can import it.
             const bundlePath = `${deps.dataDir}/cache/job-${jobId}.mjs`
             await Bun.write(bundlePath, bundle)
-            const result = await runner.execute({ id: jobId, deviceId, bundlePath, params })
+            // `scriptExportId` (plan 82 §3.2) selects which member of a plugin
+            // bundle to run — undefined for a standalone bundle, exactly the
+            // same optional field the local executor threads through.
+            const result = await runner.execute({ id: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
             send({
               type: 'job.progress',
               payload: {

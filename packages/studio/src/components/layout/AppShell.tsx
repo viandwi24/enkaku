@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot } from 'lucide-react'
+import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { NotificationBell } from '@/components/NotificationBell'
@@ -13,6 +13,11 @@ import { cn } from '@/lib/utils'
 const NAV = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
   { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
+  // Plan 82 §4.6, criterion 30 — the badge is a farm-health WARNING (danger
+  // tone, not the neutral count every other item uses) while any plugin is
+  // `failed`, and it already links to the page: this nav entry IS the
+  // warning, not a separate banner living somewhere else.
+  { href: '/plugins', label: 'Plugins', icon: Puzzle, countKey: 'failedPlugins' as const },
   { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
   { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
@@ -31,6 +36,7 @@ interface Counts {
   devices: number
   scripts: number
   activeJobs: number
+  failedPlugins: number
 }
 
 /**
@@ -41,7 +47,7 @@ interface Counts {
  * spot for core connection status, and room to grow as sections are added.
  */
 export function AppShell({ children }: { children: ReactNode }) {
-  const [counts, setCounts] = useState<Counts>({ devices: 0, scripts: 0, activeJobs: 0 })
+  const [counts, setCounts] = useState<Counts>({ devices: 0, scripts: 0, activeJobs: 0, failedPlugins: 0 })
   const [connected, setConnected] = useState(false)
   const [version, setVersion] = useState<string | null>(null)
   const [mode, setMode] = useState<string>('local')
@@ -51,11 +57,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const [d, s, j, h] = await Promise.all([
+        const [d, s, j, h, p] = await Promise.all([
           fetch(`${coreBase()}/api/devices`).then((r) => r.json()),
           fetch(`${coreBase()}/api/scripts`).then((r) => r.json()),
           fetch(`${coreBase()}/api/jobs?limit=200`).then((r) => r.json()),
           fetch(`${coreBase()}/api/health`).then((r) => r.json()),
+          // Plan 82 §4.6, criterion 30 — a farm-health warning while any
+          // plugin is `failed`. Best-effort: an older core with no
+          // `/api/plugins` route (or a request that simply fails) leaves
+          // the badge at 0 rather than breaking the whole sidebar.
+          fetch(`${coreBase()}/api/plugins`).then((r) => r.json()).catch(() => ({ items: [] })),
         ])
         setCounts({
           // Both endpoints paginate now (plan 30 §4.2) — `total` is the true
@@ -73,6 +84,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           activeJobs: ((j.items ?? j.jobs ?? []) as { status: string }[]).filter(
             (x) => x.status === 'queued' || x.status === 'running',
           ).length,
+          failedPlugins: ((p.items ?? []) as { status: string }[]).filter((x) => x.status === 'failed').length,
         })
         setVersion(h.version ?? null)
         setMode(h.mode ?? 'local')
@@ -164,6 +176,11 @@ function SidebarBody({
         {NAV.map((item) => {
           const active = item.href === '/' ? pathname === '/' || pathname === '/device' : pathname.startsWith(item.href)
           const count = item.countKey ? counts[item.countKey] : null
+          // The Plugins badge is a WARNING (criterion 30), not a neutral
+          // count — a farm operator needs it to read as "something is
+          // wrong here," the same visual language `DeviceStatusBadge`'s
+          // `quarantined` tone already uses, not "here is a number."
+          const isWarning = item.countKey === 'failedPlugins'
           const Icon = item.icon
           return (
             <Link
@@ -180,7 +197,14 @@ function SidebarBody({
               <Icon className="size-4 shrink-0" aria-hidden />
               <span className="flex-1">{item.label}</span>
               {count !== null && count > 0 && (
-                <span className="readout rounded bg-surface-3 px-1.5 text-[11px] text-fg-muted">
+                <span
+                  role={isWarning ? 'status' : undefined}
+                  title={isWarning ? `${count} plugin${count === 1 ? '' : 's'} failed to register` : undefined}
+                  className={cn(
+                    'readout rounded px-1.5 text-[11px]',
+                    isWarning ? 'bg-led-danger/15 text-led-danger font-medium' : 'bg-surface-3 text-fg-muted',
+                  )}
+                >
                   {count}
                 </span>
               )}

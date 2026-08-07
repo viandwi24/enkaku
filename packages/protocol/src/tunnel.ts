@@ -96,6 +96,8 @@ export const JobDispatchMessage = z.object({
     bundle: z.string().optional(),
     bundleUrl: z.string().optional(),
     params: z.unknown(),
+    /** Which member of a plugin bundle to run (plan 82 §3.2) — undefined for a standalone bundle. */
+    scriptExportId: z.string().optional(),
   }),
 })
 

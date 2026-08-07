@@ -70,6 +70,14 @@ export interface JobSpec {
   /** Path to the ESM bundle file the child will import. */
   bundlePath: string
   params: unknown
+  /**
+   * Which member of a plugin bundle to run (plan 82 §3.2, §4.2) — the
+   * registry entry's own `exportId`. Threaded into the spawned child's env
+   * as `ENKAKU_SCRIPT_EXPORT_ID`, read by `child-entry.ts`'s loader.
+   * Undefined for a standalone bundle, which selects its single default
+   * export exactly as before this field existed.
+   */
+  scriptExportId?: string
 }
 
 /**
@@ -244,7 +252,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
-    meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string }
+    meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
   }): Promise<AttemptOutcome> {
     const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
 
@@ -287,7 +295,15 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
       const isolation = deps.isolation ?? defaultIsolation
       const child: Subprocess<'ignore', 'pipe', 'pipe'> = isolation.spawn(
-        { entryPath: childEntryPath, bundlePath, jobId: job.id, env: { ENKAKU_JOB_ID: job.id } },
+        {
+          entryPath: childEntryPath,
+          bundlePath,
+          jobId: job.id,
+          env: {
+            ENKAKU_JOB_ID: job.id,
+            ...(job.scriptExportId ? { ENKAKU_SCRIPT_EXPORT_ID: job.scriptExportId } : {}),
+          },
+        },
         handleChildMessage,
       )
 
@@ -441,6 +457,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             if (msg.retries !== undefined) opts.meta.retries = msg.retries
             opts.meta.scriptId = msg.scriptId
             opts.meta.version = msg.version
+            opts.meta.pluginId = msg.pluginId
           }
           // Effective timeout is def.timeout when the script sets one,
           // clamped against the farm's optional ceiling (plan 74 §3.3, §4.2)
@@ -520,11 +537,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             send({ t: 'kv.result', callId: msg.callId, ok: false, error: { code: 'E_KV_UNAVAILABLE', message: 'the kv store is not available on this host' } })
             return
           }
-          // The namespace is the script's own id, known from its `ready` message (plan 79 §3.2) —
-          // always populated by the time a script can be running `prepare`/`run`/`finish`, since
-          // `ready` is handled before `init` (and therefore before the script can issue any call)
-          // is ever sent.
-          const namespace = opts.meta?.scriptId ?? job.id
+          // The namespace is the owning plugin's id when this is a plugin member
+          // (`pluginId`, plan 82 §3.10), or the script's own id for a standalone
+          // script (plan 79 §3.2) — both known from its `ready` message, always
+          // populated by the time a script can be running `prepare`/`run`/`finish`,
+          // since `ready` is handled before `init` (and therefore before the
+          // script can issue any call) is ever sent.
+          const namespace = opts.meta?.pluginId ?? opts.meta?.scriptId ?? job.id
           void deps
             .kv
             .call({ jobId: job.id, deviceId: job.deviceId, namespace }, call.data)
@@ -656,12 +675,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // message. Declared BEFORE the logger, so `redact` below can close over
       // `meta.scriptId` and see it update once `ready` arrives — a job-log
       // line from before that point has nothing to redact against anyway.
-      const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string } = {}
+      const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string } = {}
       const logger = createJobLogger({
         dataDir: deps.logDir,
         jobId: job.id,
         onEntry: deps.onLog,
-        redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.scriptId }, text) : undefined,
+        redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.pluginId ?? meta.scriptId }, text) : undefined,
       })
       const artifacts = deps.artifacts(job.id)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }

@@ -10,6 +10,7 @@ import { PaginatedTable, type PaginatedTableHandle } from '@/components/Paginate
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { TableCell, TableHead } from '@/components/ui/table'
 import { api, useAction } from '@/lib/actions'
@@ -27,6 +28,25 @@ interface ScriptGroupRow {
   enabled: boolean
 }
 
+type OriginFilter = 'all' | 'standalone' | 'plugin'
+
+/**
+ * A plugin member's name is always `<plugin>/<script>` (plan 82 §4.2's own
+ * naming rule, enforced at publish — `plugins/runtime.ts`'s
+ * `writeScriptRows`). `?group=name` (`scripts/routes.ts`) was deliberately
+ * left untouched by plan 82 — plugin rows already appear there correctly,
+ * being ordinary `scripts` rows — so the Plugin column and origin filter
+ * (step 13) are derived from that naming rule client-side rather than
+ * needing a new field on the wire. A DEV-origin script is never in this
+ * list at all (dev slots are not `scripts` rows — that is the whole point
+ * of a dev slot not surviving a restart); it is visible on the Plugins page
+ * instead, and in `RunScriptDialog` when opened from a device.
+ */
+function pluginNameOf(name: string): string | null {
+  const i = name.indexOf('/')
+  return i > 0 ? name.slice(0, i) : null
+}
+
 function ScriptsView() {
   const params = useSearchParams()
   const initialDevice = params.get('device')
@@ -36,6 +56,7 @@ function ScriptsView() {
   const [firstScript, setFirstScript] = useState<ScriptRow | null>(null)
   const [runTarget, setRunTarget] = useState<ScriptRow | null>(null)
   const [autoOpened, setAutoOpened] = useState(false)
+  const [originFilter, setOriginFilter] = useState<OriginFilter>('all')
   const { run, isPending } = useAction()
 
   useEffect(() => {
@@ -77,29 +98,53 @@ function ScriptsView() {
 
   return (
     <>
-      <PageHeader title="Scripts" description="Automation scripts published to this farm" />
+      <PageHeader
+        title="Scripts"
+        description="Automation scripts published to this farm"
+        meta={
+          <Select value={originFilter} onValueChange={(v) => setOriginFilter(v as OriginFilter)}>
+            <SelectTrigger className="h-8 w-40 text-[12.5px]" aria-label="Filter by origin">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All origins</SelectItem>
+              <SelectItem value="standalone">Standalone</SelectItem>
+              <SelectItem value="plugin">Plugin</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+      />
 
       <div className="space-y-4 px-5 py-4">
         <PaginatedTable<ScriptGroupRow>
           ref={tableRef}
+          resetKey={originFilter}
           fetchPage={(cursor) =>
             // Grouped: one row per name (plan 62 §4.4). The number of
             // distinct script names is small, so the core returns every
             // group in one page — `cursor` stays unused, kept in the call
-            // shape only because `PaginatedTable` always passes one.
+            // shape only because `PaginatedTable` always passes one. The
+            // origin filter is applied client-side, on that same one page
+            // (step 13) — `?group=name` carries no origin field of its own.
             api(`/api/scripts?group=name${cursor ? `&cursor=${cursor}` : ''}`, ScriptGroupsPageResponseSchema).then((page) => {
               if (cursor === null && page.items[0]) {
                 void api(`/api/scripts/${page.items[0].id}`, ScriptResponseSchema)
                   .then((b) => setFirstScript(b.script))
                   .catch(() => undefined)
               }
-              return page
+              const items = page.items.filter((s) => {
+                if (originFilter === 'all') return true
+                const isPlugin = pluginNameOf(s.name) !== null
+                return originFilter === 'plugin' ? isPlugin : !isPlugin
+              })
+              return { ...page, items, total: items.length }
             })
           }
           rowKey={(s) => s.id}
           header={
             <>
-              <TableHead className="w-[32%]">Name</TableHead>
+              <TableHead className="w-[28%]">Name</TableHead>
+              <TableHead>Plugin</TableHead>
               <TableHead>Latest</TableHead>
               <TableHead>Versions</TableHead>
               <TableHead>Published</TableHead>
@@ -113,6 +158,9 @@ function ScriptsView() {
                 <Link href={`/scripts/detail?id=${s.id}`} className="font-medium hover:text-accent">
                   {s.name}
                 </Link>
+              </TableCell>
+              <TableCell className="text-[12px] text-fg-muted">
+                {pluginNameOf(s.name) ?? <span className="text-fg-subtle">—</span>}
               </TableCell>
               <TableCell className="readout text-[12px] text-fg-muted">{s.latestVersion}</TableCell>
               <TableCell>

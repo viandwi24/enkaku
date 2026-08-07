@@ -307,6 +307,7 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
     // preserved, plugin-level packages first.
     let def: BundleDef | undefined
     let pluginResetPackages: string[] = []
+    let pluginId: string | undefined
     if (isPluginBundle(rawDef)) {
       const exportId = resolveScriptExportId()
       const selected = exportId ? rawDef.scripts.find((s) => s.id === exportId) : undefined
@@ -318,6 +319,11 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
       }
       def = selected
       pluginResetPackages = rawDef.reset?.packages ?? []
+      // The plugin's own id — `tiktok`, not `login` — reported alongside
+      // `scriptId` so the parent can resolve `ctx.kv`'s namespace to the
+      // PLUGIN, which is what makes a login script's session readable by a
+      // warmup script in the same pack (plan 82 §3.10, plan 79 §3.2).
+      pluginId = rawDef.id
     } else {
       def = rawDef as BundleDef | undefined
     }
@@ -331,6 +337,7 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
       t: 'ready',
       scriptId: def.id,
       version: def.version,
+      ...(pluginId !== undefined ? { pluginId } : {}),
       ...(typeof def.timeout === 'number' ? { timeoutMs: def.timeout } : {}),
       ...(typeof def.retries === 'number' ? { retries: def.retries } : {}),
       ...(reset ? { reset } : {}),

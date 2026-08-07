@@ -8,6 +8,7 @@ import {
   DeviceResponseSchema,
   DeviceViewersResponseSchema,
   JobsPageResponseSchema,
+  PluginDevSlotsResponseSchema,
   SettingsResponseSchema,
   type BatteryState,
   type DeviceStatus,
@@ -25,6 +26,7 @@ import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
 import { FilesPanel } from '@/components/FilesPanel'
 import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 import { IdentityPanel } from '@/components/identity/IdentityPanel'
+import { KvPanel } from '@/components/kv/KvPanel'
 import { DeviceHeader, type DeviceDetailInfo } from '@/components/device/DeviceHeader'
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
 import { EntityTabs } from '@/components/layout/EntityTabs'
@@ -188,6 +190,31 @@ function DeviceDetail() {
     void fetchAllPages<ScriptRow>('/api/scripts')
       .then((scripts) => setScripts(scripts.filter((x) => x.enabled)))
       .catch(() => setScripts([]))
+    // Dev-slot scripts (plan 82 §3.5) are never rows in `/api/scripts` —
+    // that is the whole point of a dev slot not surviving a restart — so
+    // they are merged in from `GET /api/plugins/dev` here, marked
+    // `isDev: true` (RunScriptDialog renders a DEV badge for them, plan 82
+    // §4.6 step 13). A dev script may be run manually (plan 82 §3.5's own
+    // "ad-hoc run" carve-out) — its `id` is already the registry's
+    // `dev:<plugin>/<export>` form, which `POST /api/jobs` accepts as an
+    // ordinary `scriptId`, same as any published one.
+    void api('/api/plugins/dev', PluginDevSlotsResponseSchema)
+      .then((b) => {
+        const devRows: ScriptRow[] = b.items.flatMap((slot) =>
+          slot.scripts.map((s) => ({
+            id: `dev:${slot.pluginName}/${s.exportId}`,
+            name: `${slot.pluginName}/${s.exportId}`,
+            version: slot.buildVersion,
+            paramsSchema: (s.paramsSchema ?? null) as JsonSchemaNode | null,
+            enabled: true,
+            createdAt: null,
+            pluginName: slot.pluginName,
+            isDev: true,
+          })),
+        )
+        if (devRows.length > 0) setScripts((prev) => [...prev, ...devRows])
+      })
+      .catch(() => undefined)
     // The presence snapshot (plan 31 §3.4): `/ws` has no replay, so the
     // current viewer list is fetched once here and kept live by
     // `device.viewers` below.
@@ -442,6 +469,8 @@ function DeviceDetail() {
           { key: 'network', label: 'Network' },
           { key: 'identity', label: 'Identity' },
           { key: 'logs', label: 'Logs' },
+          // Plan 79 §5.9 — device-scoped ctx.kv values a script wrote for THIS device.
+          { key: 'storage', label: 'Storage' },
           { key: 'settings', label: 'Settings' },
         ]}
         hrefFor={(k) => `/device?id=${encodeURIComponent(device.id)}${k === 'control' ? '' : `&tab=${k}`}`}
@@ -602,6 +631,12 @@ function DeviceDetail() {
 
       <TabPanel active={tab === 'logs'}>
         <DeviceLog deviceId={device.id} deviceOffline={currentStatus === 'offline'} />
+      </TabPanel>
+
+      <TabPanel active={tab === 'storage'}>
+        <div className="px-5 py-4">
+          <KvPanel scope={{ kind: 'device', stableId: device.stableId }} />
+        </div>
       </TabPanel>
 
       <TabPanel active={tab === 'settings'}>

@@ -1,7 +1,7 @@
 import type { ArtifactInfo } from '@enkaku/protocol'
-import { eq } from 'drizzle-orm'
 import type { Db } from '../../db'
-import { scripts, type JobRow } from '../../db/schema'
+import type { JobRow } from '../../db/schema'
+import { findShadowedPublished, type ScriptRegistry } from '../../scripts/registry'
 import type { TunnelRouter } from '../../tunnel/router'
 import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
@@ -47,6 +47,7 @@ export interface RemoteJobBridge {
  */
 export function createRemoteJobBridge(deps: {
   db: Db
+  registry: ScriptRegistry
   router: TunnelRouter
   hooks: RemoteJobHooks
   saveArtifact: (jobId: string, a: { kind: string; label: string; ext?: string; data: Uint8Array }) => Promise<ArtifactInfo>
@@ -58,14 +59,37 @@ export function createRemoteJobBridge(deps: {
     executor: {
       validateParams: (params) => params ?? {},
 
-      run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
-        const script = deps.db.select().from(scripts).where(eq(scripts.id, job.scriptId)).get()
-        if (!script) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
-        if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${script.name} is disabled`)
+      async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
+        // Plan 82 §3.3: through the registry, not a direct `scripts` table
+        // read — a node-owned device can just as well run a published
+        // plugin member as a standalone script (a dev entry too, though
+        // scheduling one is out of scope per §2; an ad-hoc run is not).
+        const entry = deps.registry.get(job.scriptId)
+        if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
+        if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)
+
+        const shadowed = findShadowedPublished(deps.registry, entry)
+        if (shadowed) {
+          ctx.log.info(
+            `running the DEV build of "${entry.name}" (${entry.version}, owned by ${entry.devOwner ?? 'a dev session'}) — this shadows the published "${shadowed.name}@${shadowed.version}"`,
+          )
+        }
+
+        // The registry always hands back a materialised FILE (db-backed or
+        // dev-slot-backed alike, plan 82 §4.5) — read its text back out for
+        // the tunnel wire, which carries the bundle inline.
+        const bundlePath = await deps.registry.bundlePath(entry)
+        const bundle = await Bun.file(bundlePath).text()
 
         const sent = deps.router.sendToDevice(job.deviceId, {
           type: 'job.dispatch',
-          payload: { jobId: job.id, deviceId: job.deviceId, bundle: script.bundle, params: job.params ?? {} },
+          payload: {
+            jobId: job.id,
+            deviceId: job.deviceId,
+            bundle,
+            params: job.params ?? {},
+            ...(entry.exportId ? { scriptExportId: entry.exportId } : {}),
+          },
         } as never)
         if (!sent) throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
 

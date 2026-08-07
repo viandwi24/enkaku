@@ -214,12 +214,19 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
         const isConflict = owner ? owner.name !== p.name : true
         if (!isConflict) continue
         const err = `E_PLUGIN_NAME_CONFLICT: "${scriptName}" is already owned by ${owner ? `plugin "${ownerLabel}"` : ownerLabel} — "${p.name}" cannot also claim it`
+        // The manifest is persisted here too (not just left null, the way the
+        // other failure branches above have to) — a name conflict is the one
+        // failure mode where the bundle DID finish importing and DID report
+        // its full script list before the conflict check refused activation.
+        // Keeping it lets the Plugins page say which scripts this version
+        // would have registered, none of which actually did (§4.6: "which
+        // scripts registered and which did not").
         db.update(plugins)
-          .set({ status: 'failed', verifyError: err, verifyErrorCode: 'E_PLUGIN_NAME_CONFLICT' })
+          .set({ status: 'failed', verifyError: err, verifyErrorCode: 'E_PLUGIN_NAME_CONFLICT', manifest: { scripts: report.scripts } })
           .where(eq(plugins.id, pluginId))
           .run()
         registry.invalidate(p.name)
-        return { ok: false, error: err, errorCode: 'E_PLUGIN_NAME_CONFLICT', scripts: [], resetPackages: [] }
+        return { ok: false, error: err, errorCode: 'E_PLUGIN_NAME_CONFLICT', scripts: report.scripts, resetPackages: [] }
       }
     }
 

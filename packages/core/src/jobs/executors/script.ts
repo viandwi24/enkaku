@@ -1,8 +1,6 @@
-import { eq } from 'drizzle-orm'
-import type { Db } from '../../db'
-import { scripts, type JobRow } from '../../db/schema'
 import type { JobRunner } from '@enkaku/session'
-import { materializeBundle } from '../../scripts/bundle-cache'
+import type { JobRow } from '../../db/schema'
+import { findShadowedPublished, type ScriptRegistry } from '../../scripts/registry'
 import { EnkakuError } from '../../util/errors'
 import type { ExecutorContext, JobExecutor } from '../executor'
 
@@ -13,17 +11,36 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  *
  * Authoritative param validation happens IN THE CHILD (`def.params.parse` from
  * the bundle) — here the params are just passed straight through.
+ *
+ * Plan 82 §3.3: reads the script through the `ScriptRegistry` rather than the
+ * `scripts` table directly — `job.scriptId` can be a persisted row's id
+ * (standalone or a published plugin member) OR a dev entry's id
+ * (`dev:<plugin>/<script>`, which has no row at all). The registry is also
+ * what supplies `exportId` — the plugin bundle's own member id — which is
+ * what actually lets `child-entry.ts` select the right script out of a
+ * shared bundle (§3.2, criterion 3); before this, only the bundle bytes were
+ * threaded through, never which member to run.
  */
-export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: JobRunner }): JobExecutor {
+export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: JobRunner }): JobExecutor {
   return {
     validateParams(params) {
       return params ?? {}
     },
 
     async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
-      const script = deps.db.select().from(scripts).where(eq(scripts.id, job.scriptId)).get()
-      if (!script) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
-      if (!script.enabled) throw new EnkakuError('script_disabled', `the script ${script.name} is disabled`)
+      const entry = deps.registry.get(job.scriptId)
+      if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
+      if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)
+
+      // A dev entry never shadows a published one silently (plan 82 §3.5) —
+      // logged on the very first line of the job's own log, before anything
+      // else this run does.
+      const shadowed = findShadowedPublished(deps.registry, entry)
+      if (shadowed) {
+        ctx.log.info(
+          `running the DEV build of "${entry.name}" (${entry.version}, owned by ${entry.devOwner ?? 'a dev session'}) — this shadows the published "${shadowed.name}@${shadowed.version}"`,
+        )
+      }
 
       // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
       ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
@@ -34,12 +51,16 @@ export function createScriptExecutor(deps: { db: Db; dataDir: string; runner: Jo
       ctx.onCrash?.((e) => deps.runner.abort(job.id, 'crashed', `${e.package} crashed: ${e.exception}`))
 
       // The bundle is materialised in the core (which has DB access); the runner only gets a path.
-      const bundlePath = await materializeBundle(deps.dataDir, script)
+      const bundlePath = await deps.registry.bundlePath(entry)
       const result = await deps.runner.execute({
         id: job.id,
         deviceId: job.deviceId,
         bundlePath,
         params: job.params ?? {},
+        // Undefined for a standalone script (no `scripts` array in its
+        // bundle, `exportId` is null) — `child-entry.ts` then takes the
+        // pre-plan-82 branch unchanged (criterion 27).
+        ...(entry.exportId ? { scriptExportId: entry.exportId } : {}),
       })
       if (!result.ok) {
         const err = result.error ?? { code: 'SCRIPT_FAILED', message: 'the script failed', phase: 'run' }

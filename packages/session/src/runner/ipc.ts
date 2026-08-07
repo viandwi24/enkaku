@@ -150,6 +150,15 @@ export const ChildToParentSchema = z.union([
     t: z.literal('ready'),
     scriptId: z.string(),
     version: z.string(),
+    /**
+     * The owning plugin's own id — `tiktok`, not `login` (plan 82 §3.10, plan
+     * 79 §3.2) — set only when the bundle is a plugin bundle. This is what
+     * `ctx.kv`'s namespace resolves to for a plugin member, so every script
+     * in one plugin shares one kv namespace; undefined for a standalone
+     * script, which keeps using its own `scriptId` as its namespace exactly
+     * as before this field existed.
+     */
+    pluginId: z.string().optional(),
     /** Metadata from ScriptDefinition — only the child can read it. */
     timeoutMs: z.number().int().positive().optional(),
     retries: z.number().int().min(0).max(10).optional(),

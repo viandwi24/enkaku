@@ -17,7 +17,7 @@ import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
@@ -31,6 +31,17 @@ export interface ScriptRow {
   createdBy?: string | null
   source?: string | null
   createdAt: number | null
+  /**
+   * Plan 82 §4.6, step 13 — set by a caller that merges in dev-slot entries
+   * (`GET /api/plugins/dev`) alongside the ordinary published list: the
+   * owning plugin's id (derived from `name.split('/')[0]` for an ordinary
+   * plugin member when the caller does not set it explicitly), and whether
+   * this entry is an unpublished dev build. Both undefined for a plain
+   * `/api/scripts` row — the common case, and the only one before this
+   * plan.
+   */
+  pluginName?: string | null
+  isDev?: boolean
 }
 
 type Target = 'single' | 'cluster' | 'devices'
@@ -72,12 +83,46 @@ function byVersionDesc(a: ScriptRow, b: ScriptRow): number {
  * it is a changelog — and it buries the eleven other scripts the operator might
  * actually want. Name first, version second, newest preselected.
  */
-function groupByName(scripts: ScriptRow[]): Array<{ name: string; versions: ScriptRow[] }> {
+interface NameGroup {
+  name: string
+  versions: ScriptRow[]
+  /** The owning plugin's id — explicit on a `versions[0].pluginName`, else derived from a `<plugin>/<script>` name (plan 82 §4.2's own naming rule); null for a standalone script. */
+  pluginName: string | null
+  /** True when EVERY version in this group is a dev entry — a group never mixes a published and a dev row under the same exact name/version, so "any" and "every" agree here. */
+  isDev: boolean
+}
+
+function groupByName(scripts: ScriptRow[]): NameGroup[] {
   const byName = new Map<string, ScriptRow[]>()
   for (const s of scripts) byName.set(s.name, [...(byName.get(s.name) ?? []), s])
   return [...byName.entries()]
-    .map(([name, versions]) => ({ name, versions: versions.sort(byVersionDesc) }))
+    .map(([name, versions]) => {
+      const sorted = versions.sort(byVersionDesc)
+      const first = sorted[0]
+      const pluginName = first?.pluginName ?? (name.includes('/') ? (name.split('/')[0] ?? null) : null)
+      return { name, versions: sorted, pluginName, isDev: sorted.every((v) => v.isDev) }
+    })
     .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Plan 82 §4.6, step 13 — "RunScriptDialog groups scripts by plugin and
+ * marks dev entries." `groupByName`'s own output is already sorted by full
+ * name, which means every group sharing one plugin (`tiktok/login`,
+ * `tiktok/warmup`) is already CONSECUTIVE (they share the literal
+ * `tiktok/` prefix) — so this only needs to bucket adjacent same-plugin
+ * runs under one heading, the same "consecutive run" trick
+ * `SectionNav.tsx`'s grouping already uses. A standalone script (no
+ * plugin) gets no heading, rendered exactly as it always was.
+ */
+function groupByPlugin(groups: NameGroup[]): Array<{ pluginName: string | null; items: NameGroup[] }> {
+  const runs: Array<{ pluginName: string | null; items: NameGroup[] }> = []
+  for (const g of groups) {
+    const last = runs[runs.length - 1]
+    if (last && last.pluginName === g.pluginName) last.items.push(g)
+    else runs.push({ pluginName: g.pluginName, items: [g] })
+  }
+  return runs
 }
 
 /**
@@ -281,11 +326,27 @@ export function RunScriptDialog({
                     <SelectValue placeholder="Pick a script" />
                   </SelectTrigger>
                   <SelectContent>
-                    {groups.map((g) => (
-                      <SelectItem key={g.name} value={g.name}>
-                        {g.name}
-                      </SelectItem>
-                    ))}
+                    {groupByPlugin(groups).map((run, i) =>
+                      run.pluginName ? (
+                        <SelectGroup key={`${run.pluginName}-${i}`}>
+                          <SelectLabel>{run.pluginName}</SelectLabel>
+                          {run.items.map((g) => (
+                            <SelectItem key={g.name} value={g.name}>
+                              {g.name}
+                              {g.isDev && (
+                                <span className="readout ml-1.5 rounded bg-led-warn/15 px-1 text-[10px] text-led-warn">DEV</span>
+                              )}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ) : (
+                        run.items.map((g) => (
+                          <SelectItem key={g.name} value={g.name}>
+                            {g.name}
+                          </SelectItem>
+                        ))
+                      ),
+                    )}
                   </SelectContent>
                 </Select>
               </div>

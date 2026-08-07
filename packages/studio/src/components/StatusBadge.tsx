@@ -112,4 +112,32 @@ export function ReadinessBadge({ readiness, className }: { readiness: DeviceRead
   )
 }
 
+/** Plan 82 §4.6 — a plugin version's own status, one badge for the whole farm to read the same way. */
+const PLUGIN_LABEL: Record<string, string> = {
+  staged: 'staged',
+  verifying: 'verifying',
+  active: 'active',
+  superseded: 'superseded',
+  failed: 'failed',
+  disabled: 'disabled',
+}
+
+const PLUGIN_TONE: Record<string, string> = {
+  staged: 'text-fg-muted border-line bg-transparent',
+  verifying: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  active: 'text-led-ok border-led-ok/35 bg-led-ok/10',
+  superseded: 'text-fg-subtle border-line bg-transparent',
+  failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  disabled: 'text-led-off border-led-off/35 bg-led-off/10',
+}
+
+export function PluginStatusBadge({ status, className }: { status: string; className?: string }) {
+  return (
+    <span className={cn(base, PLUGIN_TONE[status] ?? PLUGIN_TONE.staged, className)}>
+      <span className="size-1.5 rounded-full bg-current" aria-hidden />
+      {PLUGIN_LABEL[status] ?? status}
+    </span>
+  )
+}
+
 export { DEVICE_LABEL, JOB_LABEL }

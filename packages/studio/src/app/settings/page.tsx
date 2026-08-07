@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus, UserPlus } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { KvPanel } from '@/components/kv/KvPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -93,6 +94,9 @@ const FARM_SECTION_DEFS: readonly { id: string; title: string; group: string }[]
   // bespoke UI needed, same as `job`/`sessions`/`battery`).
   { id: 'spend', title: 'Spend', group: 'AI Agents' },
   { id: 'blocked', title: 'Blocked devices', group: 'Farm' },
+  // Plan 79 §5.9 — global-scope ctx.kv values (device scope lives on each
+  // device's own Storage tab instead, since it needs a device to browse).
+  { id: 'kv', title: 'Key/Value store', group: 'Farm' },
   { id: 'users', title: 'Users', group: 'Farm' },
   { id: 'audit', title: 'Audit log', group: 'Farm' },
 ]
@@ -114,6 +118,8 @@ function SettingsView() {
     render: () =>
       id === 'blocked' ? (
         <BlockedDevicesSection />
+      ) : id === 'kv' ? (
+        <KvPanel scope={{ kind: 'global' }} />
       ) : id === 'connectors' ? (
         <ConnectorsSection />
       ) : id === 'webhooks' ? (

@@ -83,3 +83,32 @@ describe('RunScriptDialog — smoke render', () => {
     await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/jobs/detail?id=job-1'))
   })
 })
+
+const pluginLogin: ScriptRow = {
+  id: 'p-login', name: 'tiktok/login', version: '1.0.0', paramsSchema: null, enabled: true, createdAt: 0, pluginName: 'tiktok',
+}
+const pluginWarmup: ScriptRow = {
+  id: 'p-warmup', name: 'tiktok/warmup', version: '1.0.0', paramsSchema: null, enabled: true, createdAt: 0, pluginName: 'tiktok',
+}
+const devScript: ScriptRow = {
+  id: 'dev:tiktok/login', name: 'tiktok/login-dev', version: '1.0.0+dev.1', paramsSchema: null, enabled: true, createdAt: null, pluginName: 'tiktok', isDev: true,
+}
+
+describe('RunScriptDialog — groups by plugin and marks dev entries (plan 82 §4.6, step 13)', () => {
+  test('the picker groups tiktok/login and tiktok/warmup under a "tiktok" heading, and a dev entry carries a DEV marker', async () => {
+    renderWithApi(
+      <RunScriptDialog script={null} scripts={[script, pluginLogin, pluginWarmup, devScript]} devices={[device]} onClose={() => {}} />,
+      { '/api/clusters*': { body: { items: [], nextCursor: null, total: 0 } } },
+    )
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeTruthy())
+    fireEvent.click(screen.getByRole('combobox'))
+    await waitFor(() => expect(screen.getByText('tiktok')).toBeTruthy()) // the group heading
+    expect(screen.getByText('tiktok/login')).toBeTruthy()
+    expect(screen.getByText('tiktok/warmup')).toBeTruthy()
+    expect(screen.getByText('tiktok/login-dev')).toBeTruthy()
+    expect(screen.getByText('DEV')).toBeTruthy()
+    // The standalone script is not swallowed into the plugin group (it appears once as the
+    // trigger's current value, and once as its own list item).
+    expect(screen.getAllByText('checkout').length).toBeGreaterThanOrEqual(1)
+  })
+})

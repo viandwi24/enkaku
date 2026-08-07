@@ -283,6 +283,21 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
   }
 }
 
+/**
+ * A dev entry never shadows a published one silently (plan 82 §3.5): when a
+ * running job's own entry is a dev build, this finds the enabled published
+ * (non-dev) entry of the same name that WOULD have resolved instead, so the
+ * executor can log which one actually ran, and who owns the dev slot that
+ * won. Returns null when the job's entry is not a dev build, or nothing
+ * published shares its name — the ordinary case, and the only one before
+ * this plan existed at all.
+ */
+export function findShadowedPublished(registry: ScriptRegistry, entry: ScriptEntry): ScriptEntry | null {
+  if (entry.origin !== 'dev') return null
+  const candidates = registry.list({ name: entry.name }).items
+  return candidates.find((e) => e.origin !== 'dev' && e.enabled) ?? null
+}
+
 /** Small helper for `queue/job-store.ts`'s `scriptNames()` — batch name/version lookup for a set of concrete `scripts.id`s, used to denormalise `jobs.script_name`/`script_version` at enqueue and as the fallback for a pre-existing row that has neither (plan 82 §3.4). */
 export function scriptNamesByIds(db: Db, ids: string[]): Map<string, { name: string; version: string }> {
   const unique = [...new Set(ids)]
