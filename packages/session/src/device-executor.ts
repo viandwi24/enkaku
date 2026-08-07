@@ -299,6 +299,19 @@ export function createDeviceExecutor(deps: {
       }
       case 'app.forceStop': {
         await deps.session.transport.exec(`am force-stop ${shellQuote(call.args.pkg)}`, { profile: 'appLifecycle' })
+        if (call.args.clearRecents) {
+          // One shell round trip, not one per task: read the switcher, keep only the lines naming
+          // THIS package, pull each task id out of `Task{<hex> #<id>`, and remove those. `am stack
+          // remove` is what actually drops the card — `force-stop` above never does.
+          //
+          // Failure is swallowed on purpose. A leftover card is untidy; a `finish()` that throws
+          // over one is worse, and this runs where a job is already ending.
+          const pkg = shellQuote(call.args.pkg)
+          const cmd =
+            `for t in $(dumpsys activity recents | grep -F ${pkg} | grep -oE 'Task\{[0-9a-f]+ #[0-9]+' ` +
+            `| grep -oE '[0-9]+$'); do am stack remove $t >/dev/null 2>&1; done`
+          await deps.session.transport.exec(cmd, { profile: 'appLifecycle' }).catch(() => undefined)
+        }
         return undefined
       }
       case 'clipboard.get': {

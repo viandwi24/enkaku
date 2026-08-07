@@ -605,7 +605,9 @@ export default definePlugin({
        */
       async finish(ctx) {
         if (ctx.error) await ctx.artifact.screenshot('failed')
-        await ctx.device.app.forceStop(TIKTOK_PACKAGE)
+        // `clearRecents` too: force-stop kills the process but leaves the card in Android's task
+        // switcher, so a device handed back still shows the app as if a session were open.
+        await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
       },
     },
   ],

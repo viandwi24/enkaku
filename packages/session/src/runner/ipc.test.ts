@@ -291,3 +291,21 @@ describe('app.launch carries a url across the IPC boundary (regression)', () => 
     }
   })
 })
+
+describe('app.forceStop can clear the recents card (regression)', () => {
+  // `am force-stop` kills the process and leaves the task behind — verified on hardware: process
+  // dead, nine recents entries still listed. The flag has to survive the IPC hop to matter, which
+  // is exactly the layer `app.launch`'s `url` was dropped at.
+  test('clearRecents is carried on the wire', () => {
+    expect(
+      DeviceCallSchema.parse({ method: 'app.forceStop', args: { pkg: 'com.x.y', clearRecents: true } }),
+    ).toEqual({ method: 'app.forceStop', args: { pkg: 'com.x.y', clearRecents: true } })
+  })
+
+  test('it stays optional, so every existing call site is unchanged', () => {
+    expect(DeviceCallSchema.parse({ method: 'app.forceStop', args: { pkg: 'com.x.y' } })).toEqual({
+      method: 'app.forceStop',
+      args: { pkg: 'com.x.y' },
+    })
+  })
+})

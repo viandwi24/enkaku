@@ -87,7 +87,11 @@ export interface DeviceApi {
      * the wrong page. An intent delivers it exactly, in one call, with nothing to clear first.
      */
     launch(pkg: string, opts?: { activity?: string; url?: string }): Promise<void>
-    forceStop(pkg: string): Promise<void>
+    /**
+     * Kill the app. `clearRecents` also removes its cards from the task switcher — `am force-stop`
+     * on its own leaves them, so an app a script "closed" still shows up in Android's recents.
+     */
+    forceStop(pkg: string, opts?: { clearRecents?: boolean }): Promise<void>
   }
   /** Device clipboard get/set over the scrcpy control socket (plan 38 §4.6). */
   clipboard: {

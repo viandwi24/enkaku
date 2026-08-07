@@ -96,7 +96,18 @@ export const AppLaunchArgsSchema = z.object({
   url: z.string().regex(/^https?:\/\/[^\s'"`$;|&<>]+$/).optional(),
 })
 
-export const AppForceStopArgsSchema = z.object({ pkg: PackageNameSchema })
+export const AppForceStopArgsSchema = z.object({
+  pkg: PackageNameSchema,
+  /**
+   * Also drop the app's cards from the recents switcher.
+   *
+   * `am force-stop` kills the process and leaves the task behind, so a script that "closed" an app
+   * still leaves it sitting in the Android task switcher — verified on hardware: process dead, nine
+   * recents entries still listed. Scoped to this package's own tasks; clearing the whole switcher
+   * would take an operator's other apps with it.
+   */
+  clearRecents: z.boolean().optional(),
+})
 
 export const ClipboardGetArgsSchema = z.object({})
 

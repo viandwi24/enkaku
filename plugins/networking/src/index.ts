@@ -1385,7 +1385,8 @@ export default definePlugin({
     // may run it again in a fresh process after a timeout kill and get the
     // same result.
     if (ctx.error) await ctx.artifact.screenshot('failed')
-    await ctx.device.app.forceStop(CHROME_PACKAGE)
+    // `clearRecents` too — see the tiktok pack's own `finish` for why force-stop is not enough.
+    await ctx.device.app.forceStop(CHROME_PACKAGE, { clearRecents: true })
     await ctx.device.key('HOME')
   },
   },

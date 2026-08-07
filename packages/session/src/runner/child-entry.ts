@@ -146,7 +146,11 @@ const deviceApi = {
           ...(opts?.url ? { url: opts.url } : {}),
         },
       } as never),
-    forceStop: (pkg: string) => request<void>({ method: 'app.forceStop', args: { pkg } } as never),
+    forceStop: (pkg: string, opts?: { clearRecents?: boolean }) =>
+      request<void>({
+        method: 'app.forceStop',
+        args: { pkg, ...(opts?.clearRecents ? { clearRecents: true } : {}) },
+      } as never),
   },
   clipboard: {
     get: () => request<string>({ method: 'clipboard.get', args: {} } as never),
