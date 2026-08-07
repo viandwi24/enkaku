@@ -321,7 +321,8 @@ interface Ctx {
   device: {
     tap: (t: { point: { x: number; y: number } }) => Promise<void>
     key: (k: 'DEL' | 'ENTER' | 'BACK') => Promise<void>
-    type: (s: string) => Promise<void>
+    type: (s: string, o?: { instant?: boolean }) => Promise<void>
+    app: { launch: (pkg: string, o?: { url?: string }) => Promise<void> }
     dump: () => Promise<UiNode>
     scroll: (o: { direction: 'up' }) => Promise<void>
   }
@@ -522,7 +523,35 @@ async function openNewTab(ctx: Ctx): Promise<boolean> {
 }
 
 /** Type an address into the omnibox, verify it landed, and commit it. */
-async function navigate(ctx: Ctx, url: string, humanTyping: boolean): Promise<void> {
+async function navigate(ctx: Ctx, url: string, humanTyping: boolean, pkg: string): Promise<void> {
+  // The fast path does not touch the omnibox at all.
+  //
+  // Driving a browser through its address bar is unreliable in a way retrying cannot fix: focusing
+  // does not reliably select, Chrome's autocomplete rewrites the field mid-keystroke, and a
+  // clear-then-type races itself. Real runs produced `wwho.erwhoer.net`, `hoer.net` and
+  // `bsssom/dnsom/dns` — each one either a failed check or, worse, a reading taken from the wrong
+  // page. An intent hands Chrome the address exactly, once, with nothing to clear first.
+  //
+  // The address bar is still read back below either way: the intent can be intercepted, redirected,
+  // or land on a different page, and this script's entire output depends on which page it measured.
+  if (!humanTyping) {
+    // The checks name their targets the way a person would type them (`whoer.net`), but an intent
+    // needs a real URL — `am start -d whoer.net` has no scheme to act on and Chrome never moves.
+    // That left the run staring at the new-tab page, which genuinely has no address bar, so the
+    // read came back empty and the failure blamed the page rather than the missing `https://`.
+    const absolute = /^https?:\/\//i.test(url) ? url : `https://${url}`
+    await ctx.device.app.launch(pkg, { url: absolute })
+    // Polled rather than slept: a page that resolves fast should not be waited on, and one on a
+    // slow link should not be judged before it has drawn its own address bar.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(1_000)
+      const shown = (pickAddressBar(await ctx.device.dump())?.text ?? '').trim()
+      if (sameAddress(shown, url)) return
+    }
+    const shown = (pickAddressBar(await ctx.device.dump())?.text ?? '').trim()
+    throw new Error(`asked Chrome to open ${JSON.stringify(absolute)} but the address bar holds ${JSON.stringify(shown)}`)
+  }
+
   const bar = await reachAddressBar(ctx, 20_000)
   const centre = centreOf(bar)
   await focusAndClear(ctx, centre, humanTyping)
@@ -593,8 +622,9 @@ async function awaitPage(
   ctx: Ctx,
   opts: {
     url: string
-    /** Passed through only so a reload retypes the address the same way the first attempt did. */
+    /** Passed through only so a reload re-opens the address the same way the first attempt did. */
     humanTyping: boolean
+    package: string
     ready: (nodes: UiNode[]) => boolean
     /**
      * The weaker bar: enough on the page for the reading to mean something,
@@ -688,7 +718,7 @@ async function awaitPage(
         backoffMs,
       })
       await sleep(backoffMs)
-      await navigate(ctx, opts.url, opts.humanTyping)
+      await navigate(ctx, opts.url, opts.humanTyping, opts.package)
       await sleep(2_000)
       continue
     }
@@ -1109,7 +1139,7 @@ export function assess(input: { whoer: WhoerFacts | null; dns: DnsFacts | null; 
  */
 export default definePlugin({
   id: 'networking',
-  version: '2.0.0',
+  version: '2.1.1',
   title: 'Networking',
   description: 'Leak and egress checks driven through a real browser on the device.',
   scripts: [
@@ -1207,7 +1237,7 @@ export default definePlugin({
   },
 
   async run(ctx) {
-    const { checks, pageTimeoutMs, pageAttempts, settleReads, humanTyping } = ctx.params
+    const { checks, pageTimeoutMs, pageAttempts, settleReads, humanTyping, package: pkg } = ctx.params
 
     // A NEW tab, as asked — not whatever Chrome restored.
     //
@@ -1237,10 +1267,11 @@ export default definePlugin({
     ): Promise<T> => {
       const result = await withRetry(ctx, name, pageAttempts, async (attempt) => {
         ctx.log.info(`opening ${url}`, { attempt, of: pageAttempts })
-        await navigate(ctx, url, humanTyping)
+        await navigate(ctx, url, humanTyping, pkg)
         const page = await awaitPage(ctx, {
           url,
           humanTyping,
+          package: pkg,
           ready,
           acceptable,
           budgetMs: pageTimeoutMs,

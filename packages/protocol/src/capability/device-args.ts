@@ -81,6 +81,19 @@ export const ScreenshotArgsSchema = z.object({})
 export const AppLaunchArgsSchema = z.object({
   pkg: PackageNameSchema,
   activity: z.string().regex(/^[a-zA-Z0-9_.$/]+$/).optional(),
+  /**
+   * Hand the app a URL instead of just starting it — `am start -a VIEW -d <url>`.
+   *
+   * Exists because driving a browser through its own address bar is unreliable in a way no amount
+   * of retrying fixes: focusing does not reliably select, autocomplete rewrites the field while
+   * keystrokes are still arriving, and a clear-then-type races itself. Observed results included
+   * `wwho.erwhoer.net`, `hoer.net`, and `bsssom/dnsom/dns` — each one a run that then measured the
+   * wrong page or failed outright. An intent carries the address exactly, once.
+   *
+   * `http`/`https` only: this opens whatever the URL names, so the scheme is constrained here
+   * rather than trusting the caller, and the value is shell-quoted at the executor.
+   */
+  url: z.string().regex(/^https?:\/\/[^\s'"`$;|&<>]+$/).optional(),
 })
 
 export const AppForceStopArgsSchema = z.object({ pkg: PackageNameSchema })

@@ -79,7 +79,14 @@ export interface DeviceApi {
   /** Raw PNG (without saving an artifact). */
   screenshot(): Promise<Uint8Array>
   app: {
-    launch(pkg: string, opts?: { activity?: string }): Promise<void>
+    /**
+     * Start the app — bare, at a named activity, or pointed at a URL.
+     *
+     * `url` is how a browser should be driven: typing an address into the omnibox races Chrome's
+     * own autocomplete and produced garbled addresses (`bsssom/dnsom/dns`) that sent whole runs to
+     * the wrong page. An intent delivers it exactly, in one call, with nothing to clear first.
+     */
+    launch(pkg: string, opts?: { activity?: string; url?: string }): Promise<void>
     forceStop(pkg: string): Promise<void>
   }
   /** Device clipboard get/set over the scrcpy control socket (plan 38 §4.6). */

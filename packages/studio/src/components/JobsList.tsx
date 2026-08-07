@@ -152,7 +152,6 @@ export function JobsList({
                 <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
                   {scriptLabel(j)}
                 </Link>
-                <FailureLine job={j} />
               </TableCell>
             )}
 
@@ -171,12 +170,13 @@ export function JobsList({
             )}
 
             <TableCell>
-              <JobStatusBadge status={j.status} />
-              {/* Every view shows why a job failed. Three of the four tables
-                  this replaces did not, so the same failure read differently
-                  depending on where you opened it. Shown here rather than
-                  under the script name when there is no script column. */}
-              {!columns.script && <FailureLine job={j} />}
+              {/* Every view shows WHY a job failed — but on the badge, not as a
+                  line in the row. Inline it dominated the list for the one row
+                  in a hundred that failed, and an error quoting a URL with no
+                  spaces in it pushed every column off the right edge. The badge
+                  is where the eye already is when a row reads "failed", and the
+                  full text is a click away on the job itself. */}
+              <JobStatusBadge status={j.status} error={j.error} />
             </TableCell>
 
             <TableCell className="readout text-[11.5px] text-fg-muted">
@@ -222,17 +222,4 @@ export function JobsList({
       }}
     />
   )
-}
-
-/**
- * Why a job failed, wherever a job is listed.
- *
- * `wrap-anywhere`, not `line-clamp-1`: three of the four tables this replaces
- * used the clamp, and under the old `whitespace-nowrap` cell it did nothing at
- * all — clamping needs text that may wrap. An error quoting a long URL then
- * pushed every column to its right off the screen.
- */
-function FailureLine({ job }: { job: JobInfo }) {
-  if (job.status !== 'failed' || !job.error) return null
-  return <p className="mt-0.5 text-[11.5px] wrap-anywhere text-led-danger">{job.error}</p>
 }

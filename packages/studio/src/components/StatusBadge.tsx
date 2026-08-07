@@ -1,5 +1,6 @@
 import type { DeviceReadiness, DeviceStatus, JobStatus } from '@enkaku/protocol'
 import { READINESS_BLOCKED_REASON } from '@/lib/readiness'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 /**
@@ -58,12 +59,45 @@ export function DeviceStatusBadge({ status, className }: { status: DeviceStatus;
   )
 }
 
-export function JobStatusBadge({ status, className }: { status: JobStatus; className?: string }) {
-  return (
+export function JobStatusBadge({
+  status,
+  className,
+  error,
+}: {
+  status: JobStatus
+  className?: string
+  /**
+   * Why a job failed. Shown on the badge rather than as a line in the row:
+   * an error is long, it is only interesting for the one row in a hundred
+   * that failed, and inline it dominated every list it appeared in — and,
+   * quoting a URL with no spaces, pushed every column off the screen. The
+   * badge is where the eye already is when a row reads "failed".
+   */
+  error?: string | null
+}) {
+  const badge = (
     <span className={cn(base, JOB_TONE[status], className)}>
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {JOB_LABEL[status]}
     </span>
+  )
+  if (status !== 'failed' || !error) return badge
+  return (
+    /* Its own provider: the app layout has one, but a shared badge that only
+       works inside an ambient provider crashes the moment it is used anywhere
+       else — including a test that renders it alone. Radix nests them. */
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        {/* `cursor-help` and a title so the affordance is discoverable without
+            hovering first, and readable to anything that does not hover at all. */}
+        <TooltipTrigger asChild>
+          <span className="cursor-help" title={error}>
+            {badge}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-sm wrap-anywhere text-[11.5px] leading-relaxed">{error}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

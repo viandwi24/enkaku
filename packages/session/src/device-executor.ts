@@ -287,9 +287,12 @@ export function createDeviceExecutor(deps: {
         // validated by a regex in `ipc.ts` as belt, `shellQuote` here as
         // braces — the quoting is what actually guarantees a value like
         // `com.x; touch /data/local/tmp/pwned` cannot run a second command.
-        const cmd = call.args.activity
-          ? `am start -n ${shellQuote(`${call.args.pkg}/${call.args.activity}`)}`
-          : `monkey -p ${shellQuote(call.args.pkg)} -c android.intent.category.LAUNCHER 1`
+        // A URL wins over an activity: the caller asked for a specific page, not a specific screen.
+        const cmd = call.args.url
+          ? `am start -a android.intent.action.VIEW -d ${shellQuote(call.args.url)} ${shellQuote(call.args.pkg)}`
+          : call.args.activity
+            ? `am start -n ${shellQuote(`${call.args.pkg}/${call.args.activity}`)}`
+            : `monkey -p ${shellQuote(call.args.pkg)} -c android.intent.category.LAUNCHER 1`
         await deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
         deps.onAppLaunch?.(call.args.pkg)
         return undefined

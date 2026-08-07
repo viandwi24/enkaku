@@ -70,21 +70,38 @@ export default function PluginsPage() {
       },
     })
 
-  // Failed first (§4.6), then by name, then newest version first.
-  const sorted = [...(items ?? [])].sort((a, b) => {
-    if ((a.status === 'failed') !== (b.status === 'failed')) return a.status === 'failed' ? -1 : 1
-    if (a.name !== b.name) return a.name.localeCompare(b.name)
-    return b.version.localeCompare(a.version)
-  })
+  /**
+   * ONE ROW PER PLUGIN, not per version.
+   *
+   * This table used to list every published version as its own row, so a plugin iterated on during
+   * a session filled the page with near-identical lines — eight `tiktok` rows differing only in a
+   * version string. That is a changelog, not an index: the question an operator opens this page
+   * with is "what is installed, and which version is live", and the answer was buried in repetition.
+   *
+   * Versions now live inside the row, in a picker, with the active one selected. Failed versions
+   * still surface, because a plugin that will not register is exactly what this page exists to make
+   * findable — a group is marked failed when its newest version failed.
+   */
+  const groups = [...(items ?? [])]
+    .reduce<Map<string, PluginRow[]>>((acc, p) => {
+      const list = acc.get(p.name) ?? []
+      list.push(p)
+      acc.set(p.name, list)
+      return acc
+    }, new Map())
+  const sortedGroups = [...groups.entries()]
+    .map(([name, versions]) => ({
+      name,
+      // Newest first, so `[0]` is what `@latest` resolves to.
+      versions: [...versions].sort((a, b) => b.version.localeCompare(a.version)),
+    }))
+    .sort((a, b) => {
+      const aFailed = a.versions[0]?.status === 'failed'
+      const bFailed = b.versions[0]?.status === 'failed'
+      if (aFailed !== bFailed) return aFailed ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
   const failedCount = (items ?? []).filter((p) => p.status === 'failed').length
-  // What `plugin@latest` resolves to, per identifier — the highest version published under each
-  // name. Marked in the row so an operator can tell at a glance which one a bare reference will
-  // pick up, instead of inferring it from the sort order.
-  const newestByName = new Map<string, string>()
-  for (const p of items ?? []) {
-    const current = newestByName.get(p.name)
-    if (!current || p.version.localeCompare(current) > 0) newestByName.set(p.name, p.version)
-  }
 
   return (
     <>
@@ -163,15 +180,8 @@ export default function PluginsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sorted.map((p) => (
-                      <PluginRowView
-                        key={p.id}
-                        plugin={p}
-                        isNewest={newestByName.get(p.name) === p.version}
-                        onChanged={load}
-                        run={run}
-                        isPending={isPending}
-                      />
+                    {sortedGroups.map((g) => (
+                      <PluginRowView key={g.name} versions={g.versions} onChanged={load} run={run} isPending={isPending} />
                     ))}
                   </TableBody>
                 </Table>
@@ -185,19 +195,25 @@ export default function PluginsPage() {
 }
 
 function PluginRowView({
-  plugin: p,
-  isNewest,
+  versions,
   onChanged,
   run,
   isPending,
 }: {
-  plugin: PluginRow
-  /** The highest version published under this identifier — what `@latest` resolves to. */
-  isNewest: boolean
+  /** Every published version of ONE plugin, newest first. */
+  versions: PluginRow[]
   onChanged: () => void
   run: ReturnType<typeof useAction>['run']
   isPending: ReturnType<typeof useAction>['isPending']
 }) {
+  // The version the row is POINTED AT: the live one when there is one, otherwise the newest.
+  // Everything below reads from `p`, so selecting a version in the picker re-points the whole row —
+  // status, script counts, verified time, and which action button is offered.
+  const live = versions.find((v) => v.status === 'active')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const p = versions.find((v) => v.id === selectedId) ?? live ?? (versions[0] as PluginRow)
+  const isNewest = versions[0]?.id === p.id
+
   const declared = p.manifest?.scripts ?? []
   const registered = p.scriptCount ?? 0
 
@@ -237,13 +253,32 @@ function PluginRowView({
           so it is obvious which one you can paste into a script reference.
         */}
         <div className="font-medium">{p.title?.trim() || p.name}</div>
-        <div className="mt-0.5 flex items-center gap-1.5">
+        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
           <span className="readout text-[11.5px] text-fg-muted">{p.name}</span>
-          <span className="readout text-[11.5px] text-fg-subtle">{p.version}</span>
+          {versions.length > 1 ? (
+            <select
+              className="readout rounded border bg-surface-2 px-1 py-0.5 text-[11.5px] text-fg-muted"
+              value={p.id}
+              onChange={(e) => setSelectedId(e.target.value)}
+              aria-label={`Version of ${p.name}`}
+            >
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.version}
+                  {v.status === 'active' ? ' · active' : v.status === 'failed' ? ' · failed' : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="readout text-[11.5px] text-fg-subtle">{p.version}</span>
+          )}
           {isNewest && (
             <span className="rounded-full border border-line px-1.5 text-[10.5px] leading-[1.35] text-fg-subtle">
               latest
             </span>
+          )}
+          {versions.length > 1 && (
+            <span className="text-[11px] text-fg-subtle">{versions.length} versions</span>
           )}
         </div>
         {p.description?.trim() && (
