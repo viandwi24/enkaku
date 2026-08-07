@@ -131,8 +131,15 @@ export default function JobsPage() {
                   <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
                     {scriptName(j)}
                   </Link>
+                  {/* `line-clamp-1` used to be here and did nothing: clamping
+                      needs text that is allowed to wrap, and the cell was
+                      `whitespace-nowrap`, so a long error ran on forever and
+                      pushed every column to its right off the screen. Cells
+                      wrap now; the error is shown in full, over as many lines
+                      as it needs, rather than truncated to a first fragment
+                      that rarely says what went wrong. */}
                   {j.status === 'failed' && j.error && (
-                    <p className="mt-0.5 line-clamp-1 text-[11.5px] text-led-danger">{j.error}</p>
+                    <p className="mt-0.5 text-[11.5px] break-words text-led-danger">{j.error}</p>
                   )}
                 </TableCell>
                 <TableCell className="text-[12.5px]">

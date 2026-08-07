@@ -183,5 +183,12 @@
   .readout {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+    /* A readout is a short measurement — a duration, a count, a timestamp —
+       and it belongs on one line. Table cells wrap by default now (see
+       `ui/table.tsx`'s note) so a long error message no longer pushes every
+       other column off screen; without this, the same change would break a
+       narrow "2m 14s" column into two lines, which is the opposite of the
+       "a changing value never shifts the layout" rule above. */
+    white-space: nowrap;
   }
 }

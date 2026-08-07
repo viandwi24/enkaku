@@ -78,12 +78,33 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   )
 }
 
+/**
+ * Cells WRAP, unlike shadcn's default.
+ *
+ * The upstream default is `whitespace-nowrap`, which suits a dashboard of
+ * short values and is wrong for this product: a failed job's error, a plugin's
+ * verify failure, and a connector's status message are all long, and under
+ * `nowrap` a single one of them runs on forever and pushes every other column
+ * off the screen. Three call sites had already grown their own workaround for
+ * it — `whitespace-pre-wrap break-words` on the plugins page, `max-w-xs
+ * truncate` in settings, and a `line-clamp-1` on the jobs page that did
+ * nothing at all, because clamping needs text that is allowed to wrap. Three
+ * patches for one primitive's default is the primitive's problem.
+ *
+ * `break-words` is here for the unbroken strings this product is full of —
+ * device serials, workspace paths, stack frames — which have no space to wrap
+ * at and would otherwise overflow the cell rather than the row.
+ *
+ * A column of short readouts that looks better on one line asks for
+ * `whitespace-nowrap` itself; `TableHead` keeps it, since a wrapped header is
+ * never what anyone wants.
+ */
 function TableCell({ className, ...props }: React.ComponentProps<"td">) {
   return (
     <td
       data-slot="table-cell"
       className={cn(
-        "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "p-2 align-middle break-words [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
