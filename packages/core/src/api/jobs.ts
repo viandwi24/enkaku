@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { JobCancelResponseSchema, JobCreateResponseSchema, JobResponseSchema, JobStatusSchema, JobsPageResponseSchema, ScriptRefSchema } from '@enkaku/protocol'
+import { JobCancelResponseSchema, JobCreateResponseSchema, JobLogsResponseSchema, JobResponseSchema, JobStatusSchema, JobsPageResponseSchema, ScriptRefSchema } from '@enkaku/protocol'
+import type { JobLogEntry } from '@enkaku/session'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import type { JobService } from '../services/job-service'
@@ -49,6 +50,14 @@ export interface JobRoutesDeps {
    * `script_ref_unresolved` | `script_disabled`) when it cannot resolve.
    */
   resolveScriptRef?: (ref: string) => { id: string }
+  /**
+   * What a RUNNING job has logged so far. `/ws` has no snapshot replay and the
+   * `job.log` artifact does not exist until the job ends, so without this a
+   * detail page opened mid-run could show nothing that already happened.
+   * Absent on a host with no local runner (matches every other optional
+   * dependency here).
+   */
+  logBuffer?: { get(jobId: string): JobLogEntry[]; truncated(jobId: string): boolean }
 }
 
 export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono<AuthEnv> {
@@ -111,6 +120,30 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
     const job = service.get(c.req.param('id'))
     if (!job) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
     return typedJson(c, JobResponseSchema, { job })
+  })
+
+  /**
+   * What a RUNNING job has logged so far.
+   *
+   * A client fetches this and then subscribes to `job.log`, the same
+   * fetch-then-subscribe shape the device list and the agent chat already use
+   * (`CLAUDE.md`: `/ws` has no snapshot replay). Without it, a detail page
+   * opened mid-run showed nothing that had already happened, and every earlier
+   * line appeared at once when the job ended and its artifact was written.
+   *
+   * A FINISHED job returns an empty list rather than a 404: its lines live in
+   * the `job.log` artifact from then on, which is what the page loads instead.
+   * `truncated` is honest about a long-running job whose oldest lines were
+   * dropped, so the panel can say so rather than quietly starting late.
+   */
+  app.get('/:id/logs', (c) => {
+    const id = c.req.param('id')
+    if (!service.get(id)) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const buf = deps?.logBuffer
+    return typedJson(c, JobLogsResponseSchema, {
+      lines: buf ? buf.get(id) : [],
+      truncated: buf ? buf.truncated(id) : false,
+    })
   })
 
   // `service.cancel()` returns a plain `JobInfo` (no `result` field) — a genuine shape mismatch

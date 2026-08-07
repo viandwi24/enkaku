@@ -54,7 +54,10 @@ export function rowToJobInfo(row: JobRow, script?: { name: string; version: stri
  * and is deliberately not narrowed further.
  */
 export function rowToJobDetail(row: JobRow, script?: { name: string; version: string } | null): JobDetail {
-  return { ...rowToJobInfo(row, script), result: row.result ?? null }
+  // `params` joins `result` here and NOT on `rowToJobInfo`: both are
+  // script-authored JSON, and the single-job read a human asked for is the
+  // right place for them — not a list, and not `ctx.jobs`' cross-script view.
+  return { ...rowToJobInfo(row, script), result: row.result ?? null, params: row.params ?? null }
 }
 
 export interface ClaimedJob {

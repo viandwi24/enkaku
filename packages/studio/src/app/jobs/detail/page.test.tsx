@@ -22,6 +22,9 @@ const job = {
   startedAt: 0,
   finishedAt: null,
   result: null,
+  // Sent by `rowToJobDetail` on every job — what the run was STARTED with,
+  // beside what it returned. Required by `JobDetailSchema`, like `result`.
+  params: null,
 }
 
 function baseResponses(jobResponse: { status?: number; body?: unknown }) {

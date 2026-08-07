@@ -126,6 +126,22 @@ export type JobInfo = z.infer<typeof JobInfoSchema>
 export const JobDetailSchema = JobInfoSchema.extend({
   /** Whatever `run()` returned. `unknown` on purpose — a script may return anything JSON can carry. */
   result: z.unknown(),
+  /**
+   * What the job was STARTED with — the params the run form, a schedule, a
+   * batch or `ctx.jobs.trigger()` supplied.
+   *
+   * On the row since M4 and, like `result` before plan 60, it reached nobody:
+   * a failed job could be read in full except for the one thing that says
+   * which inputs produced the failure, which is the first question anyone
+   * asks. `unknown` for the same reason `result` is — a script declares its
+   * own params schema, so the shape is the script's, not this type's.
+   *
+   * Deliberately NOT on `JobInfo` (the list) or `JobSummary` (what a
+   * neighbouring script sees through `ctx.jobs`): params are script-authored
+   * JSON and can carry anything an author put there, so they belong on the
+   * single-job read a human asked for, not in a list or a cross-script view.
+   */
+  params: z.unknown(),
 })
 export type JobDetail = z.infer<typeof JobDetailSchema>
 

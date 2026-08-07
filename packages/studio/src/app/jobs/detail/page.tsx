@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft, ChevronDown, ChevronRight, Download, Hourglass } from 'lucide-react'
 import { z } from 'zod'
-import { JobCancelResponseSchema, JobResponseSchema, type ArtifactInfo, type JobInfo, type LeaseHolder } from '@enkaku/protocol'
+import { JobCancelResponseSchema, JobLogsResponseSchema, JobResponseSchema, type ArtifactInfo, type JobInfo, type LeaseHolder } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
@@ -75,6 +75,10 @@ function JobDetail() {
   const [deviceRef, setDeviceRef] = useState<DeviceRef | undefined>(undefined)
   const [liveLogs, setLiveLogs] = useState<LogLine[]>([])
   const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
+  // What the job logged BEFORE this page subscribed (`GET /api/jobs/:id/logs`).
+  // The third source, and the one that makes a mid-run page useful at all.
+  const [backfillLogs, setBackfillLogs] = useState<LogLine[]>([])
+  const [logsTruncated, setLogsTruncated] = useState(false)
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
   // Lineage (plan 81 §4.5) — `chainNodes` is every OTHER member of this
   // job's trigger chain (`GET /api/jobs?rootJobId=...` excludes the root's
@@ -139,6 +143,19 @@ function JobDetail() {
     void fetchAllPages<ArtifactInfo>('/api/artifacts', { jobId })
       .then(setArtifacts)
       .catch(() => undefined)
+    // What the job has ALREADY logged. `/ws` has no snapshot replay, so
+    // without this a page opened mid-run showed nothing that had happened
+    // before it subscribed — and the `job.log` artifact does not exist until
+    // the job ends, so the whole story appeared at once on completion. This is
+    // the fetch half of fetch-then-subscribe; the `job.log` handler below is
+    // the other. A finished job answers with an empty list and the artifact
+    // takes over.
+    void api(`/api/jobs/${jobId}/logs`, JobLogsResponseSchema)
+      .then((r) => {
+        setBackfillLogs(r.lines)
+        setLogsTruncated(r.truncated)
+      })
+      .catch(() => setBackfillLogs([]))
   }
 
   useEffect(load, [jobId])
@@ -200,15 +217,23 @@ function JobDetail() {
    * artifact is written progressively.
    *
    * Deduped on `ts|level|msg` because a log line carries no id, and ordered by timestamp so the
-   * seam between "read from the file" and "arrived live" is invisible.
+   * seams between the three are invisible.
+   *
+   * There are THREE sources, not two. `backfillLogs` (`GET /api/jobs/:id/logs`)
+   * is what a RUNNING job logged before this page subscribed — the case the
+   * other two cannot cover, and the one that was reported as "sometimes no
+   * logs, or you wait for it to finish and they all appear at once". The
+   * comment here used to claim the artifact "is written progressively"; it is
+   * not — `job-runner.ts` accumulates lines in memory and writes the file once,
+   * in its `finally`. That mistaken belief is why the gap survived a first fix.
    */
   const logs = useMemo(() => {
     const byKey = new Map<string, LogLine>()
-    for (const line of [...(savedLogs ?? []), ...liveLogs]) {
+    for (const line of [...(savedLogs ?? []), ...backfillLogs, ...liveLogs]) {
       byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
     }
     return [...byKey.values()].sort((a, b) => a.ts - b.ts)
-  }, [savedLogs, liveLogs])
+  }, [savedLogs, backfillLogs, liveLogs])
 
   useEffect(() => {
     if (followLog) logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
@@ -439,6 +464,24 @@ function JobDetail() {
               </p>
               {failureDetail && <div className="mt-3">{failureDetail}</div>}
 
+              {/* What it was STARTED with, above what it returned, because that
+                  is the order anyone reads a run in — and because "which inputs
+                  produced this failure" is the first question a failed job
+                  raises. On the row since M4 and, like `result` before plan 60,
+                  it reached no screen until now. */}
+              <div className="mt-4 border-t pt-3">
+                <h3 className="rack-label mb-2">started with</h3>
+                {job.params === null || job.params === undefined ? (
+                  <p className="text-[12.5px] text-fg-subtle">
+                    No parameters — this script declares none, or it was run with its defaults.
+                  </p>
+                ) : (
+                  <pre className="readout max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
+                    {formatResult(job.params)}
+                  </pre>
+                )}
+              </div>
+
               <div className="mt-4 border-t pt-3">
                 <h3 className="rack-label mb-2">returned</h3>
                 {!finished ? (
@@ -615,8 +658,14 @@ function JobDetail() {
           <div className="overflow-hidden rounded-lg border bg-surface">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
               <h2 className="rack-label">
-                {liveLogs.length > 0 ? 'live' : savedLogs === null ? 'loading' : 'saved to job.log'}
+                {liveLogs.length > 0 ? 'live' : savedLogs === null && backfillLogs.length === 0 ? 'loading' : 'saved to job.log'}
               </h2>
+              {/* A long-running job's oldest retained lines are dropped rather
+                  than growing without bound. Saying so beats quietly starting
+                  the story in the middle. */}
+              {logsTruncated && (
+                <span className="text-[11px] text-fg-subtle">earlier lines dropped — the full log is kept as an artifact</span>
+              )}
               <label className="flex items-center gap-2 text-[11.5px] text-fg-muted">
                 Follow latest
                 <Switch checked={followLog} onCheckedChange={setFollowLog} aria-label="Follow latest lines" />

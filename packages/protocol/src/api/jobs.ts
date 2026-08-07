@@ -34,3 +34,24 @@ export const JobCancelResponseSchema = z.object({ job: JobInfoSchema, cancelledD
 
 /** `GET /api/jobs?...` (keyset). */
 export const JobsPageResponseSchema = pageSchema(JobInfoSchema)
+
+/**
+ * `GET /api/jobs/:id/logs` — what a RUNNING job has logged so far.
+ *
+ * The companion to the `job.log` WS message, not a replacement: `/ws` has no
+ * snapshot replay, so a client fetches this and then subscribes. A FINISHED
+ * job answers with an empty list rather than a 404, because from then on its
+ * lines live in the `job.log` artifact, which is what a page loads instead.
+ *
+ * `truncated` is true when a long-running job's oldest retained lines were
+ * dropped, so a panel can say so rather than quietly starting mid-story.
+ */
+export const JobLogLineSchema = z.object({
+  jobId: z.string(),
+  ts: z.number(),
+  level: z.enum(['debug', 'info', 'warn', 'error']),
+  source: z.enum(['script', 'stdout', 'stderr', 'runner']),
+  msg: z.string(),
+  fields: z.record(z.string(), z.unknown()).optional(),
+})
+export const JobLogsResponseSchema = z.object({ lines: z.array(JobLogLineSchema), truncated: z.boolean() })

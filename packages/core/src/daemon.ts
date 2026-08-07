@@ -19,6 +19,7 @@ import { createTunnelRouter } from './tunnel/router'
 import { createTunnelRpc, type TunnelRpc } from './tunnel/rpc'
 import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
 import { createRemoteJobBridge } from './jobs/executors/remote'
+import { createJobLogBuffer } from './jobs/log-buffer'
 import { createWebRtcRelay } from './relay/webrtc-relay'
 import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
@@ -378,6 +379,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // crash needs to be matched against a job, cleared once the job
       // settles (`onJobFinished` below).
       const targetPackagesByJob = new Map<string, string[]>()
+      // What a RUNNING job has logged so far, so a detail page opened mid-run
+      // is not blank until the job ends. `/ws` has no snapshot replay and the
+      // `job.log` artifact is written once in the runner's `finally`, so
+      // without this there was no way to read a line you were not already
+      // listening for. Released in `onJobFinished`.
+      const jobLogBuffer = createJobLogBuffer()
       recorder = createEventRecorder({
         db,
         publish: (deviceId, ev) => publishDeviceEvent?.(deviceId, ev),
@@ -695,6 +702,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           recorder?.record({ deviceId, stream: 'main', kind: 'job.finished', actor: `job:${jobId}`, meta: { jobId, status, durationMs } })
           // The crash policy's target-package set does not outlive the job (plan 37 §4.4).
           targetPackagesByJob.delete(jobId)
+          // Nor do the retained log lines: from here the `job.log` artifact is
+          // the record, and `GET /api/jobs/:id/logs` falls through to it.
+          jobLogBuffer.release(jobId)
           // Job claim/finish is one of the events readiness reconciles on
           // (plan 43 §5 step 43.6) — the job's own hold release (executor-host.ts)
           // already triggers this once its own count reaches zero, but a
@@ -1023,17 +1033,23 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         router: tunnelRouter,
         log: log.child('remote-job'),
         hooks: {
-          onLog: (jobId, entry) =>
+          onLog: (jobId, entry) => {
+            // A node-owned job takes the same path: retained for a mid-run
+            // fetch, then broadcast. See the local runner's own note below.
+            const level = entry.level as 'debug' | 'info' | 'warn' | 'error'
+            const source = entry.source as 'script' | 'stdout' | 'stderr' | 'runner'
+            jobLogBuffer.append({ jobId, ts: entry.ts, level, source, msg: entry.msg })
             hub.broadcast({
               type: 'job.log',
               payload: {
                 jobId,
                 ts: entry.ts,
-                level: entry.level as 'debug' | 'info' | 'warn' | 'error',
-                source: entry.source as 'script' | 'stdout' | 'stderr' | 'runner',
+                level,
+                source,
                 msg: entry.msg,
               },
-            }),
+            })
+          },
           onArtifact: (jobId, artifact) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } }),
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
@@ -1271,7 +1287,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         toolchain,
         // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
         // is written, so `jobs.scriptId` is always concrete.
-        jobRoutes: createJobRoutes(jobService, { log: log.child('jobs'), resolveScriptRef: (ref) => scriptRegistry.resolve(ref) }),
+        jobRoutes: createJobRoutes(jobService, {
+          log: log.child('jobs'),
+          resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
+          logBuffer: jobLogBuffer,
+        }),
         deviceRoutes: createDeviceRoutes({
           db,
           registry: () => buildRegistryResponse(toolchain),
@@ -1787,7 +1807,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
               onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
             }),
           log: log.child('runner'),
-          onLog: (entry) =>
+          onLog: (entry) => {
+            // Retained as well as broadcast: `/ws` has no snapshot replay, so a
+            // page opened mid-run would otherwise see nothing that already
+            // happened, and the `job.log` artifact does not exist until the
+            // job ends. `GET /api/jobs/:id/logs` serves this.
+            jobLogBuffer.append(entry)
             hub.broadcast({
               type: 'job.log',
               payload: {
@@ -1798,7 +1823,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
                 msg: entry.msg,
                 ...(entry.fields ? { fields: entry.fields } : {}),
               },
-            }),
+            })
+          },
           onArtifact: () => {
             // The sink already broadcast this when it wrote the DB row.
           },
