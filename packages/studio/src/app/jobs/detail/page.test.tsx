@@ -36,6 +36,17 @@ function baseResponses(jobResponse: { status?: number; body?: unknown }) {
     // Every other member of this job's trigger chain (plan 81 §4.5) —
     // empty by default, the common case: a job nothing triggered.
     '/api/jobs?*': { body: { items: [], nextCursor: null, total: 0 } },
+    // What the job has already logged (`GET /api/jobs/:id/logs`) — empty by
+    // default; the log tests below override it.
+    '/api/jobs/job-1/logs': { body: { lines: [], truncated: false } },
+  }
+}
+
+/** The logs tab, with a scripted backfill. */
+function withBackfill(lines: { jobId: string; ts: number; level: string; source: string; msg: string }[], truncated = false) {
+  return {
+    ...baseResponses({ body: { job: { ...job, status: 'running', finishedAt: null } } }),
+    '/api/jobs/job-1/logs': { body: { lines, truncated } },
   }
 }
 
@@ -126,5 +137,40 @@ describe('JobDetailPage — lineage (plan 81 §4.5)', () => {
     // plain cancel must not fire silently; it must ask first (plan 81 §4.4).
     fireEvent.click(screen.getByRole('button', { name: 'Cancel job' }))
     expect(screen.getByText('Cancel this job and its queued descendants?')).toBeTruthy()
+  })
+})
+
+/**
+ * A RUNNING job never has a `job.log` artifact — the runner writes it once, in
+ * its `finally` — so a panel that keys "loading" off `savedLogs` sat on
+ * "Loading…" until a new line happened to arrive over the WS. That is the
+ * exact bug the backfill fetch existed to fix, and it survived the first pass
+ * because only the header label was updated, not the panel body.
+ */
+describe('JobDetailPage — the logs panel while a job is running', () => {
+  test('shows what the job ALREADY logged, instead of Loading…', async () => {
+    setSearchParams({ id: 'job-1', tab: 'logs' })
+    renderWithApi(
+      <JobDetailPage />,
+      withBackfill([{ jobId: 'job-1', ts: 1_700_000_000_000, level: 'info', source: 'script', msg: 'opened chrome' }]),
+    )
+    await waitFor(() => expect(document.body.textContent).toContain('opened chrome'))
+    expect(document.body.textContent).not.toContain('Loading…')
+  })
+
+  test('a running job that has logged NOTHING says so, rather than loading forever', async () => {
+    setSearchParams({ id: 'job-1', tab: 'logs' })
+    renderWithApi(<JobDetailPage />, withBackfill([]))
+    await waitFor(() => expect(document.body.textContent).toContain('no log lines'))
+    expect(document.body.textContent).not.toContain('Loading…')
+  })
+
+  test('dropped earlier lines are admitted, not silently skipped', async () => {
+    setSearchParams({ id: 'job-1', tab: 'logs' })
+    renderWithApi(
+      <JobDetailPage />,
+      withBackfill([{ jobId: 'job-1', ts: 1_700_000_000_000, level: 'info', source: 'script', msg: 'still here' }], true),
+    )
+    await waitFor(() => expect(document.body.textContent).toContain('earlier lines dropped'))
   })
 })

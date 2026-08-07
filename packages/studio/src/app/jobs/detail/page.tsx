@@ -77,7 +77,12 @@ function JobDetail() {
   const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
   // What the job logged BEFORE this page subscribed (`GET /api/jobs/:id/logs`).
   // The third source, and the one that makes a mid-run page useful at all.
-  const [backfillLogs, setBackfillLogs] = useState<LogLine[]>([])
+  //
+  // `null` until the fetch settles, NOT `[]`: the panel's loading state has to
+  // distinguish "not asked yet" from "asked, and this job has logged nothing".
+  // With `[]` it could not, and a running job sat on "Loading…" forever —
+  // `savedLogs` stays null until the job ends, so nothing ever cleared it.
+  const [backfillLogs, setBackfillLogs] = useState<LogLine[] | null>(null)
   const [logsTruncated, setLogsTruncated] = useState(false)
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
   // Lineage (plan 81 §4.5) — `chainNodes` is every OTHER member of this
@@ -155,7 +160,7 @@ function JobDetail() {
         setBackfillLogs(r.lines)
         setLogsTruncated(r.truncated)
       })
-      .catch(() => setBackfillLogs([]))
+      .catch(() => setBackfillLogs([]))  // settled, just empty
   }
 
   useEffect(load, [jobId])
@@ -229,7 +234,7 @@ function JobDetail() {
    */
   const logs = useMemo(() => {
     const byKey = new Map<string, LogLine>()
-    for (const line of [...(savedLogs ?? []), ...backfillLogs, ...liveLogs]) {
+    for (const line of [...(savedLogs ?? []), ...(backfillLogs ?? []), ...liveLogs]) {
       byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
     }
     return [...byKey.values()].sort((a, b) => a.ts - b.ts)
@@ -658,7 +663,7 @@ function JobDetail() {
           <div className="overflow-hidden rounded-lg border bg-surface">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
               <h2 className="rack-label">
-                {liveLogs.length > 0 ? 'live' : savedLogs === null && backfillLogs.length === 0 ? 'loading' : 'saved to job.log'}
+                {liveLogs.length > 0 || (backfillLogs?.length ?? 0) > 0 ? 'live' : backfillLogs === null && savedLogs === null ? 'loading' : 'saved to job.log'}
               </h2>
               {/* A long-running job's oldest retained lines are dropped rather
                   than growing without bound. Saying so beats quietly starting
@@ -675,7 +680,12 @@ function JobDetail() {
               ref={logRef}
               className="readout max-h-[32rem] overflow-auto whitespace-pre-wrap p-3 text-[11.5px] leading-relaxed"
             >
-              {savedLogs === null && liveLogs.length === 0
+              {/* Loading means "nothing has answered yet" — not "there is no
+                  saved artifact". A RUNNING job never has one, so keying on
+                  `savedLogs` alone left the panel on "Loading…" until a new
+                  line happened to arrive, which is exactly the bug this
+                  backfill existed to fix. */}
+              {backfillLogs === null && savedLogs === null && liveLogs.length === 0
                 ? 'Loading…'
                 : logs.length === 0
                   ? 'This job produced no log lines.'
