@@ -131,8 +131,21 @@ const deviceApi = {
     return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
   },
   app: {
-    launch: (pkg: string, opts?: { activity?: string }) =>
-      request<void>({ method: 'app.launch', args: { pkg, ...(opts?.activity ? { activity: opts.activity } : {}) } } as never),
+    // Every field the wire schema accepts has to be forwarded HERE too. `url` was added to
+    // `AppLaunchArgsSchema` and to `DeviceApi`, but not to this line, so it typechecked, published,
+    // and silently dropped the address on its way across the IPC boundary — the script asked Chrome
+    // to open a page, the executor received a bare launch, and the run then failed on a page that
+    // had never been navigated. A field list spelled out in three places will drift; this is the
+    // one that decides.
+    launch: (pkg: string, opts?: { activity?: string; url?: string }) =>
+      request<void>({
+        method: 'app.launch',
+        args: {
+          pkg,
+          ...(opts?.activity ? { activity: opts.activity } : {}),
+          ...(opts?.url ? { url: opts.url } : {}),
+        },
+      } as never),
     forceStop: (pkg: string) => request<void>({ method: 'app.forceStop', args: { pkg } } as never),
   },
   clipboard: {

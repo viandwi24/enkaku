@@ -271,3 +271,23 @@ describe('JobsCallSchema and its framing on ChildToParentSchema/ParentToChildSch
     }
   })
 })
+
+describe('app.launch carries a url across the IPC boundary (regression)', () => {
+  // The url was added to the wire schema and to `DeviceApi`, but the child's own marshalling still
+  // forwarded only `activity` — so it typechecked, published, and dropped the address in transit.
+  // The executor received a bare launch, Chrome sat on the new-tab page, and the run failed
+  // complaining about the page rather than about the field that never arrived.
+  test('the wire schema accepts a url', () => {
+    const parsed = DeviceCallSchema.parse({
+      method: 'app.launch',
+      args: { pkg: 'com.android.chrome', url: 'https://whoer.net' },
+    })
+    expect(parsed).toEqual({ method: 'app.launch', args: { pkg: 'com.android.chrome', url: 'https://whoer.net' } })
+  })
+
+  test('a non-http scheme is refused rather than shelled out', () => {
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'https://x.test/a;rm -rf /']) {
+      expect(() => DeviceCallSchema.parse({ method: 'app.launch', args: { pkg: 'com.android.chrome', url } })).toThrow()
+    }
+  })
+})
