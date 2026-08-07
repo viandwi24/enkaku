@@ -427,13 +427,17 @@ export function Chat({
         <AttachmentStrip />
         <div className="relative">
           <SlashCommandMenu commands={commands} />
-          {/* Plan 83 §3.4 — `flex` on the shared `Textarea` (`components/ui/textarea.tsx`) vertically
-              centres a single line of placeholder inside its 4rem `min-h-16`, which is what makes
-              the composer look wrong before anything is typed. Fixed HERE, in this call site's own
-              className, rather than in the shared base (used elsewhere where a taller default is
-              fine) or in `prompt-input.tsx` itself (not edited — §2). `items-start` un-centres it;
-              `min-h-11` is sized for one line instead of four. */}
-          <PromptInputTextarea placeholder="Message the agent… (/ for commands)" className="min-h-11 items-start" />
+          {/* `min-h-11` sizes the box for one line instead of the shared
+              `Textarea`'s 4rem default.
+
+              This used to also carry `items-start`, added by plan 83 to
+              un-centre the placeholder. It never did anything: the centring
+              came from `InputGroup`, which flips to `flex-col` when a footer
+              with `data-align=block-end` is present but kept `items-center`
+              — turning a harmless vertical centring into a horizontal one for
+              every child. Fixed at that source (`ui/input-group.tsx`), which
+              is why nothing is needed here. */}
+          <PromptInputTextarea placeholder="Message the agent… (/ for commands)" className="min-h-11" />
         </div>
         <PromptInputFooter>
           <PromptInputTools>

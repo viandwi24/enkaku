@@ -70,12 +70,29 @@ const WATCH_BUCKETS = [
   { weight: 0.08, lo: 22_000, hi: 50_000, label: 'hooked' },
 ] as const
 
-function pickWatchMs(rng: () => number): { ms: number; label: string } {
-  const r = rng()
+/**
+ * Picks a watch time, TILTED by how well the video matched — never switched by it.
+ *
+ * `tilt > 0` moves probability mass towards the long buckets, `tilt < 0` towards `skip`. It does
+ * NOT pick a bucket outright, and that distinction is the whole design: "matched ⇒ long, unmatched
+ * ⇒ short" produces a perfectly bimodal watch-time distribution with nothing in the middle, which
+ * is a sharper fingerprint than no randomisation at all — no person is that consistent. Tilting the
+ * weights keeps the buckets overlapping, so a matched video is sometimes abandoned in a second and
+ * an unmatched one is sometimes watched to the end, exactly as happens with a real viewer.
+ */
+function pickWatchMs(rng: () => number, tilt = 0): { ms: number; label: string } {
+  // `skip` scales down as tilt rises and up as it falls; `engaged`/`hooked` do the opposite.
+  const bias: Record<string, number> = { skip: -1, watch: 0, engaged: 0.8, hooked: 1 }
+  const weights = WATCH_BUCKETS.map((b) => Math.max(0.01, b.weight * (1 + tilt * (bias[b.label] ?? 0))))
+  const total = weights.reduce((sum, w) => sum + w, 0)
+  const r = rng() * total
   let acc = 0
-  for (const b of WATCH_BUCKETS) {
-    acc += b.weight
-    if (r <= acc) return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label }
+  for (let i = 0; i < WATCH_BUCKETS.length; i++) {
+    acc += weights[i] as number
+    if (r <= acc) {
+      const b = WATCH_BUCKETS[i] as (typeof WATCH_BUCKETS)[number]
+      return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label }
+    }
   }
   const last = WATCH_BUCKETS[WATCH_BUCKETS.length - 1] as (typeof WATCH_BUCKETS)[number]
   return { ms: Math.round(between(rng, last.lo, last.hi)), label: last.label }
@@ -144,6 +161,92 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 const TIKTOK_PACKAGE = 'com.ss.android.ugc.trill'
 
 /**
+ * Node ids that survived across app restarts in the inspector dumps, unlike the obfuscated
+ * three-character ones (`ei1`, `p4e`, …) that change between builds. Only these are selected on.
+ */
+const ID_AUTHOR = `${TIKTOK_PACKAGE}:id/title`
+const ID_TAG = `${TIKTOK_PACKAGE}:id/feed_multi_tag_layout`
+const ID_AVATAR = `${TIKTOK_PACKAGE}:id/user_avatar`
+
+/** Free text about the current video, read WITHOUT touching anything. Empty strings for whatever could not be read. */
+async function readVisibleSignals(ctx: ScriptContext<unknown>): Promise<{ author: string; tag: string; ok: boolean }> {
+  let ok = false
+  const read = async (sel: Selector, field: 'text' | 'desc'): Promise<string> => {
+    try {
+      const node = await ctx.device.find(sel)
+      if (!node) return ''
+      ok = true
+      return (field === 'text' ? node.text : node.desc) ?? ''
+    } catch {
+      return ''
+    }
+  }
+  const author = (await read({ id: ID_AUTHOR }, 'text')) || (await read({ id: ID_AVATAR }, 'desc'))
+  const tag = await read({ id: ID_TAG }, 'desc')
+  return { author, tag, ok }
+}
+
+/**
+ * Does this video look like the kind we are trying to teach the feed to send more of?
+ *
+ * Matches only what is on screen for free — the account name, and the effect/tag when present. The
+ * CAPTION is deliberately absent: it is not in the accessibility tree at all on this app (verified
+ * by dumping the whole tree; the longest strings there are button labels like "Bagikan video"), so
+ * any code pretending to match against it would be matching against nothing.
+ */
+function scoreContent(text: string, keywords: string[], blocked: string[]): number {
+  const hay = text.toLowerCase()
+  if (blocked.some((k) => k && hay.includes(k.toLowerCase()))) return -1
+  return keywords.filter((k) => k && hay.includes(k.toLowerCase())).length
+}
+
+/**
+ * Opens the comment sheet, scrolls it like someone reading, and closes it.
+ *
+ * Tapped by POSITION, not by selector: the comment button's own id is one of the obfuscated ones,
+ * and its `content-desc` embeds the comment count ("Baca atau tambahkan komentar. 1.043 komentar"),
+ * so there is no stable exact string to select on. The fraction comes from the inspector dump —
+ * the button sits at x≈0.92w, y≈0.67h — and is applied to the frame read from the screenshot, so it
+ * is not hardcoded to one screen size.
+ *
+ * Opening comments is itself an engagement signal, which is the point: it is spent only on videos
+ * that already matched, never on every video, because a session that opens every comment section is
+ * neither a useful signal nor a human-looking one.
+ */
+async function browseComments(
+  ctx: ScriptContext<unknown>,
+  frame: { width: number; height: number },
+  rng: () => number,
+): Promise<boolean> {
+  const before = await snapshot(ctx)
+  await ctx.device.tap({ point: { x: Math.round(0.92 * frame.width), y: Math.round(0.67 * frame.height) } })
+  await sleep(Math.round(between(rng, 1_200, 2_200)))
+  const opened = await snapshot(ctx)
+  if (before && opened && bytesEqual(before, opened)) {
+    ctx.log.warn('the comment sheet did not open — leaving the video alone')
+    return false
+  }
+
+  // Read a couple of screenfuls the way a person skims them: the sheet's own list sits well inside
+  // the screen, so these swipes stay clear of both the video above and the input box below.
+  const passes = 1 + Math.floor(rng() * 3)
+  for (let i = 0; i < passes; i++) {
+    await sleep(Math.round(between(rng, 900, 2_600)))
+    const x = Math.round(between(rng, 0.25, 0.7) * frame.width)
+    await ctx.device.swipe(
+      { x, y: Math.round(0.78 * frame.height) },
+      { x, y: Math.round(between(rng, 0.44, 0.56) * frame.height) },
+      Math.round(between(rng, 220, 420)),
+      { easing: 'easeInOutCubic' },
+    )
+  }
+  await sleep(Math.round(between(rng, 700, 1_800)))
+  await ctx.device.key('BACK')
+  await sleep(Math.round(between(rng, 500, 1_100)))
+  return true
+}
+
+/**
  * Waits until the feed is actually LIVE, using screenshots rather than the inspector.
  *
  * The inspector is the wrong tool here twice over. It is unreliable on this app — `uiautomator dump`
@@ -159,14 +262,31 @@ const TIKTOK_PACKAGE = 'com.ss.android.ugc.trill'
  */
 async function waitForLiveFeed(ctx: ScriptContext<unknown>, timeoutMs: number): Promise<boolean> {
   const until = Date.now() + timeoutMs
-  let previous = await ctx.device.screenshot()
+  let previous: Uint8Array | null = null
   while (Date.now() < until) {
-    await sleep(900)
-    const current = await ctx.device.screenshot()
-    if (!bytesEqual(previous, current)) return true
+    const current = await snapshot(ctx)
+    if (current && previous && !bytesEqual(previous, current)) return true
     previous = current
+    await sleep(900)
   }
   return false
+}
+
+/**
+ * A screenshot that answers `null` instead of throwing.
+ *
+ * `screenshot()` goes through whichever inspector the session picked, and the ui-server's own budget
+ * is 10s. That is generous when the device is idle — the endpoint answers in about half a second —
+ * and not generous at all in the seconds after `app.launch()`, when the phone is saturated bringing
+ * an app up. Polling into that window with a bare `screenshot()` killed a whole run on one slow
+ * call. A missing frame is not a failure; it is one poll that has nothing to say yet.
+ */
+async function snapshot(ctx: ScriptContext<unknown>): Promise<Uint8Array | null> {
+  try {
+    return await ctx.device.screenshot()
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -229,6 +349,9 @@ async function clearBlockingDialog(ctx: ScriptContext<unknown>): Promise<void> {
 async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void> {
   await ctx.device.app.forceStop(pkg)
   await ctx.device.app.launch(pkg)
+  // Let the launch get past its own storm before asking the device for anything. Polling straight
+  // into it is what timed the inspector out; four seconds of patience costs less than a dead run.
+  await sleep(4_000)
   if (!(await waitForLiveFeed(ctx, 40_000))) {
     ctx.log.warn('nothing on screen changed within 40s of launching — continuing anyway, the run will report if it cannot advance')
   }
@@ -236,7 +359,7 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
 
 export default definePlugin({
   id: 'tiktok',
-  version: '0.4.0',
+  version: '0.5.1',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
   scripts: [
@@ -270,6 +393,20 @@ export default definePlugin({
          * the app open, e.g. when watching a run by hand.
          */
         stopOnFinish: z.boolean().default(true),
+        /**
+         * Words that mark a video as the kind this account wants more of. Matched case-insensitively
+         * against the account name and the effect/tag — the only content text this app exposes.
+         * Empty disables the whole weighting and the run behaves exactly as it did before.
+         */
+        keywords: z.array(z.string()).default(['trade', 'trading', 'gold', 'xau', 'xauusd', 'usd', 'forex', 'entry', 'profit']),
+        /** Words that force a fast skip regardless of any keyword hit. Checked first. */
+        blockKeywords: z.array(z.string()).default([]),
+        /**
+         * When to open the comment sheet — itself an engagement signal, so it is rationed.
+         * `matched` (default) spends it only on videos that already matched; `never` disables it;
+         * `always` opens on every video, which is neither a useful signal nor human-looking.
+         */
+        commentProbe: z.enum(['never', 'matched', 'always']).default('matched'),
         /** Save a screenshot every N videos, for eyeballing that the feed really moved. 0 = none. */
         screenshotEvery: z.number().int().min(0).max(100).default(0),
       }),
@@ -298,7 +435,11 @@ export default definePlugin({
         let backScrolls = 0
         let idlePauses = 0
         let recoveries = 0
-        let before = await ctx.device.screenshot()
+        let matched = 0
+        let commentVisits = 0
+        let unreadable = 0
+        let before = await snapshot(ctx)
+        if (!before) throw new Error('could not take a first screenshot — the inspector never answered')
         const frame = pngSize(before)
         if (!frame) throw new Error('could not read the frame size from the screenshot PNG — cannot aim a swipe safely')
         ctx.log.info('frame size read from the screenshot', frame)
@@ -309,9 +450,21 @@ export default definePlugin({
             break
           }
 
-          const { ms, label } = pickWatchMs(rng)
+          const signals = await readVisibleSignals(ctx)
+          if (!signals.ok) unreadable += 1
+          const score = scoreContent(`${signals.author} ${signals.tag}`, ctx.params.keywords, ctx.params.blockKeywords)
+          // −1 is a blocked word: tilt hard towards `skip`. 0 is "nothing matched", which is NOT the
+          // same as "bad" — it stays neutral, because most of the feed is neither wanted nor unwanted.
+          const tilt = score < 0 ? -0.9 : score === 0 ? 0 : Math.min(0.9, 0.45 * score)
+          if (score > 0) matched += 1
+
+          const { ms, label } = pickWatchMs(rng, tilt)
           await sleep(ms)
           watched.push({ label, ms })
+
+          const probe =
+            ctx.params.commentProbe === 'always' || (ctx.params.commentProbe === 'matched' && score > 0)
+          if (probe && (await browseComments(ctx, frame, rng))) commentVisits += 1
 
           // A person often lets a short clip loop once before moving on — an extra dwell that is
           // NOT drawn from the same bucket, so it breaks up the distribution rather than widening it.
@@ -348,7 +501,13 @@ export default definePlugin({
           // Let the next clip render before judging whether the feed moved at all.
           await sleep(Math.round(between(rng, 700, 1_400)))
 
-          const after = await ctx.device.screenshot()
+          const after = await snapshot(ctx)
+          if (!after) {
+            // One unanswered poll proves nothing either way — do not count it as a stall, and do
+            // not let it end a run that may be going perfectly well.
+            unreadable += 1
+            continue
+          }
           if (bytesEqual(before, after)) {
             // Two identical frames a second apart mean the feed did not advance. On this device that
             // is usually one of TikTok's own modals sitting on top — the contact prompt is the one
@@ -367,7 +526,7 @@ export default definePlugin({
               ctx.log.warn('giving up: three consecutive swipes changed nothing, and a restart did not help')
               break
             }
-            before = await ctx.device.screenshot()
+            before = (await snapshot(ctx)) ?? before
             continue
           } else {
             stalled = 0
@@ -390,6 +549,9 @@ export default definePlugin({
           backScrolls,
           idlePauses,
           recoveries,
+          matched,
+          commentVisits,
+          unreadable,
           seed: ctx.params.seed,
         })
 
@@ -401,6 +563,9 @@ export default definePlugin({
           backScrolls,
           idlePauses,
           recoveries,
+          matched,
+          commentVisits,
+          unreadable,
           endedOnStall: stalled >= 3,
           /** Replaying with this seed reproduces the exact same sequence. */
           seed: ctx.params.seed,

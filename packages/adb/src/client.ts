@@ -1,5 +1,6 @@
 import { AdbError } from './errors'
 import {
+  ADB_MAX_OUTPUT_BYTES,
   DEFAULT_HANDSHAKE_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_QUEUE_DEPTH,
@@ -385,7 +386,9 @@ export class AdbClient {
   ): Promise<Uint8Array> {
     const profile = opts?.profile ?? 'default'
     const execTimeoutMs = resolveExecTimeout(opts)
-    const maxOutputBytes = opts?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
+    // An explicit caller value wins; otherwise the profile decides, and only then the text default.
+    // See `ADB_MAX_OUTPUT_BYTES` for why a screenshot cannot share a budget sized for printed lines.
+    const maxOutputBytes = opts?.maxOutputBytes ?? ADB_MAX_OUTPUT_BYTES[profile] ?? DEFAULT_MAX_OUTPUT_BYTES
     const start = Date.now()
 
     const run = this.queue.run(

@@ -43,6 +43,27 @@ export const ADB_TIMEOUTS = {
   default: 15_000,
 } as const
 
+/**
+ * Per-profile OUTPUT budgets, for the profiles whose output is not text.
+ *
+ * `DEFAULT_MAX_OUTPUT_BYTES` (256 KB) is a sane ceiling for a command that prints lines — it is
+ * what stops a runaway `dumpsys` from eating the core's memory (plan 22.1 §3.4). A screenshot is
+ * not lines: a 720×1640 PNG of a busy video frame measured **1,115,196 bytes** on this farm's own
+ * device, four times that ceiling. Sharing the text budget made `screenshot()` fail or succeed
+ * according to how well the picture happened to compress, which showed up as a script dying
+ * mid-run with `adb output exceeded 262144 bytes` on one video and sailing past the next.
+ *
+ * A profile absent from this map keeps `DEFAULT_MAX_OUTPUT_BYTES`; nothing text-shaped is loosened.
+ */
+export const ADB_MAX_OUTPUT_BYTES: Partial<Record<keyof typeof ADB_TIMEOUTS, number>> = {
+  // Comfortably above a full-resolution PNG of the busiest frame, and still bounded: a device that
+  // starts streaming gibberish down this path is stopped long before it can exhaust memory.
+  screencap: 32 * 1024 * 1024,
+  // The dump is text, but a deep hierarchy on a content-heavy app runs far past 256 KB — the
+  // dumps taken while building the TikTok pack were 67–84 KB, and a denser screen exceeds it.
+  inspectorDump: 4 * 1024 * 1024,
+}
+
 export type AdbTimeoutProfile = keyof typeof ADB_TIMEOUTS
 
 /**
