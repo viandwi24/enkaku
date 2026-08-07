@@ -91,9 +91,16 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
  * nothing at all, because clamping needs text that is allowed to wrap. Three
  * patches for one primitive's default is the primitive's problem.
  *
- * `break-words` is here for the unbroken strings this product is full of —
- * device serials, workspace paths, stack frames — which have no space to wrap
- * at and would otherwise overflow the cell rather than the row.
+ * `wrap-anywhere` (`overflow-wrap: anywhere`) is here for the unbroken strings
+ * this product is full of — device serials, workspace paths, and error
+ * messages quoting a URL the script typed. It is deliberately NOT
+ * `break-words`, which was the first attempt and was not enough: both allow a
+ * long word to break when rendered, but only `anywhere` reduces the cell's
+ * MIN-CONTENT width. A table sizes its columns from min-content, so under
+ * `break-words` a 300-character unbroken string still widened the column and
+ * pushed every other one off screen — the exact symptom the wrap change was
+ * made to fix, reported again with a screenshot of an error quoting a
+ * repeated hostname.
  *
  * A column of short readouts that looks better on one line asks for
  * `whitespace-nowrap` itself; `TableHead` keeps it, since a wrapped header is
@@ -104,7 +111,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "p-2 align-middle break-words [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "p-2 align-middle wrap-anywhere [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

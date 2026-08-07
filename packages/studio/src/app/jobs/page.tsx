@@ -139,7 +139,7 @@ export default function JobsPage() {
                       as it needs, rather than truncated to a first fragment
                       that rarely says what went wrong. */}
                   {j.status === 'failed' && j.error && (
-                    <p className="mt-0.5 text-[11.5px] break-words text-led-danger">{j.error}</p>
+                    <p className="mt-0.5 text-[11.5px] wrap-anywhere text-led-danger">{j.error}</p>
                   )}
                 </TableCell>
                 <TableCell className="text-[12.5px]">

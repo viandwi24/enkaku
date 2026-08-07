@@ -34,7 +34,7 @@ describe('table primitives — cells wrap, headers do not', () => {
     expect(cell?.className).not.toContain('whitespace-nowrap')
   })
 
-  test('a cell breaks long unbroken strings — serials, paths, stack frames', () => {
+  test('a cell breaks long unbroken strings — serials, paths, a URL quoted in an error', () => {
     const { container } = renderWithApi(
       <Table>
         <TableBody>
@@ -44,7 +44,12 @@ describe('table primitives — cells wrap, headers do not', () => {
         </TableBody>
       </Table>,
     )
-    expect(container.querySelector('[data-slot="table-cell"]')?.className).toContain('break-words')
+    // `wrap-anywhere`, NOT `break-words`: both break a long word at render
+    // time, but only `overflow-wrap: anywhere` reduces the cell's MIN-CONTENT
+    // width, and a table sizes its columns from min-content. Under
+    // `break-words` a 300-character unbroken string still widened the column
+    // and pushed the rest off screen — reported twice before this was right.
+    expect(container.querySelector('[data-slot="table-cell"]')?.className).toContain('wrap-anywhere')
   })
 
   test('a header DOES stay on one line — a wrapped column title helps nobody', () => {
