@@ -67,3 +67,49 @@ export function formatResult(result: unknown): string {
     return String(result)
   }
 }
+
+/**
+ * A shape a job result MAY have, recognised opportunistically.
+ *
+ * `result` is `unknown` by design — a script returns whatever it likes (plan
+ * 60 §3.3) — so this guesses rather than parses: if a result looks like a list
+ * of findings, the page renders it as one instead of a JSON blob, and falls
+ * back to raw for everything else. Nothing breaks when the guess is wrong; the
+ * page shows what it always showed.
+ *
+ * Making this reliable rather than opportunistic is an SDK decision (a
+ * documented convention scripts opt into), recorded as a backend follow-up in
+ * `docs/ux-audit.md` §3 rather than guessed at harder here.
+ */
+export interface JobFinding {
+  title: string
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical' | string
+  detail?: string
+}
+
+export function readFindings(result: unknown): JobFinding[] | null {
+  if (typeof result !== 'object' || result === null) return null
+  const raw = (result as { findings?: unknown }).findings
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const out: JobFinding[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) return null // mixed shape: not a findings list
+    const f = item as { title?: unknown; severity?: unknown; detail?: unknown }
+    if (typeof f.title !== 'string' || typeof f.severity !== 'string') return null
+    out.push({
+      title: f.title,
+      severity: f.severity,
+      ...(typeof f.detail === 'string' ? { detail: f.detail } : {}),
+    })
+  }
+  return out
+}
+
+/** Severity → the LED token that carries it. Unknown severities read as neutral, never as alarming. */
+export function severityTone(severity: string): string {
+  const s = severity.toLowerCase()
+  if (s === 'critical' || s === 'high') return 'border-led-danger/40 bg-led-danger/10 text-led-danger'
+  if (s === 'medium') return 'border-led-warn/40 bg-led-warn/10 text-led-warn'
+  if (s === 'low') return 'border-led-ok/35 text-led-ok'
+  return 'text-fg-muted'
+}

@@ -174,3 +174,62 @@ describe('JobDetailPage — the logs panel while a job is running', () => {
     await waitFor(() => expect(document.body.textContent).toContain('earlier lines dropped'))
   })
 })
+
+/**
+ * Information order = order of the user's questions (audit finding 2). The
+ * result is what the run existed to produce; params are what it was given, and
+ * are read second; phases and timing are reference and belong in the sidebar.
+ * These pin the ORDER, which is the thing a later edit silently undoes.
+ */
+describe('JobDetailPage — hierarchy', () => {
+  test('the result appears before the params it was given', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, result: { ok: true } } } }))
+    await waitFor(() => expect(document.body.textContent).toContain('returned'))
+    const text = document.body.textContent ?? ''
+    expect(text.indexOf('returned')).toBeLessThan(text.indexOf('started with'))
+  })
+
+  test('params start collapsed — reference material, not content', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job: { ...job, params: { url: 'https://example.test' } } } }))
+    await waitFor(() => expect(document.body.textContent).toContain('started with'))
+    const details = [...document.querySelectorAll('details')].find((d) => d.textContent?.includes('started with'))
+    expect(details).toBeTruthy()
+    expect(details?.hasAttribute('open')).toBe(false)
+  })
+
+  test('a findings-shaped result renders as a list with its severities, not a JSON blob', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      baseResponses({
+        body: {
+          job: {
+            ...job,
+            status: 'success',
+            finishedAt: 1_700_000_100,
+            result: { findings: [{ title: 'checkout button missing', severity: 'high', detail: 'not on screen' }] },
+          },
+        },
+      }),
+    )
+    await waitFor(() => expect(document.body.textContent).toContain('checkout button missing'))
+    expect(document.body.textContent).toContain('high')
+    expect(document.body.textContent).toContain('view raw JSON')
+  })
+
+  test('a result that is not findings-shaped still renders raw, unchanged', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, result: { exitIp: '1.2.3.4' } } } }))
+    await waitFor(() => expect(document.body.textContent).toContain('exitIp'))
+    expect(document.body.textContent).not.toContain('view raw JSON')
+  })
+
+  test('the verdict is in the header — run time and the three moments, without scrolling', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job } }))
+    await waitFor(() => expect(document.body.textContent).toContain('queued'))
+    expect(document.body.textContent).toContain('started')
+  })
+})

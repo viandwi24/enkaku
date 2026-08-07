@@ -27,7 +27,7 @@ import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
 import { deviceRefLabel, fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
-import { formatResult, isRunnerLog, outcomeLine, producedArtifacts, type JobWithPhase } from '@/lib/jobs'
+import { formatResult, isRunnerLog, outcomeLine, producedArtifacts, readFindings, severityTone, type JobWithPhase } from '@/lib/jobs'
 import { descendantsOf } from '@/lib/job-lineage'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
@@ -108,6 +108,8 @@ function JobDetail() {
   const { run, isPending } = useAction()
   // Run time and total-time tick without a refresh while a job is running.
   const now = useNow()
+  // Opportunistic (audit finding 3) — null for every result that is not a findings list.
+  const findings = useMemo(() => readFindings(job?.result), [job?.result])
 
   const load = () => {
     if (!jobId) return
@@ -352,7 +354,26 @@ function JobDetail() {
       <PageHeader
         title={scriptName}
         description={`Job ${job.jobId.slice(0, 8)}`}
-        meta={<JobStatusBadge status={job.status} />}
+        meta={
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <JobStatusBadge status={job.status} />
+            {/* The verdict, answerable without scrolling: how long it ran, and
+                the three moments that matter as one line. This used to be a
+                `timing` card two-thirds of the way down the content column,
+                behind the result — so "did it work, and how long did it take"
+                needed a scroll on every failed job. */}
+            {job.startedAt && (
+              <span className="readout text-[12px] text-fg-muted">
+                ran {duration(job.startedAt, job.finishedAt, now)}
+              </span>
+            )}
+            <span className="readout text-[11.5px] text-fg-subtle">
+              {relativeTime(job.createdAt, now)} queued
+              {job.startedAt ? ` → ${relativeTime(job.startedAt, now)} started` : ''}
+              {job.finishedAt ? ` → ${relativeTime(job.finishedAt, now)} finished` : ''}
+            </span>
+          </div>
+        }
         actions={
           <>
             <Button asChild variant="ghost" size="sm">
@@ -469,24 +490,6 @@ function JobDetail() {
               </p>
               {failureDetail && <div className="mt-3">{failureDetail}</div>}
 
-              {/* What it was STARTED with, above what it returned, because that
-                  is the order anyone reads a run in — and because "which inputs
-                  produced this failure" is the first question a failed job
-                  raises. On the row since M4 and, like `result` before plan 60,
-                  it reached no screen until now. */}
-              <div className="mt-4 border-t pt-3">
-                <h3 className="rack-label mb-2">started with</h3>
-                {job.params === null || job.params === undefined ? (
-                  <p className="text-[12.5px] text-fg-subtle">
-                    No parameters — this script declares none, or it was run with its defaults.
-                  </p>
-                ) : (
-                  <pre className="readout max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
-                    {formatResult(job.params)}
-                  </pre>
-                )}
-              </div>
-
               <div className="mt-4 border-t pt-3">
                 <h3 className="rack-label mb-2">returned</h3>
                 {!finished ? (
@@ -496,63 +499,115 @@ function JobDetail() {
                     This script returned nothing. A script that should report something — an exit IP, a version,
                     whether an element was there — returns it from <span className="readout">run()</span>.
                   </p>
+                ) : findings ? (
+                  /* A result that looks like a list of findings is rendered as
+                     one (audit finding 3). `result` is `unknown` by design, so
+                     this recognises a shape rather than parsing a contract —
+                     anything unrecognised falls through to raw below, and the
+                     raw view stays one click away either way. */
+                  <>
+                    <ul className="space-y-1.5">
+                      {findings.map((f, i) => (
+                        <li key={`${f.title}-${i}`} className="flex items-start gap-2 rounded-md border bg-bg p-2.5">
+                          <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[10.5px]', severityTone(f.severity))}>
+                            {f.severity}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-[12.5px]">{f.title}</span>
+                            {f.detail && <span className="mt-0.5 block text-[11.5px] text-fg-muted">{f.detail}</span>}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-[11.5px] text-fg-subtle select-none">view raw JSON</summary>
+                      <pre className="readout mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
+                        {formatResult(job.result)}
+                      </pre>
+                    </details>
+                  </>
                 ) : (
                   <pre className="readout max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
                     {formatResult(job.result)}
                   </pre>
                 )}
               </div>
+
+              {/* Inputs are reference material, so they sit BELOW the result and
+                  start closed (audit finding 2). Above it, they pushed the thing
+                  the run produced further down the page — and the params are
+                  read second, when the result raises a question about them. */}
+              <details className="mt-4 border-t pt-3">
+                <summary className="rack-label cursor-pointer list-none select-none marker:content-none">
+                  started with{job.params === null || job.params === undefined ? ' — nothing' : ''}
+                </summary>
+                {job.params === null || job.params === undefined ? (
+                  <p className="mt-2 text-[12.5px] text-fg-subtle">
+                    This script declares no parameters, or it was run with its defaults.
+                  </p>
+                ) : (
+                  <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
+                    {formatResult(job.params)}
+                  </pre>
+                )}
+              </details>
             </div>
 
-            <div className="rounded-lg border bg-surface p-4">
-              <h2 className="rack-label mb-3">phases</h2>
-              <div className="flex flex-wrap items-center gap-2">
-                {PHASES.map((f, i) => {
-                  const active = job.phase === f && job.status === 'running'
-                  const done =
-                    job.status !== 'queued' && (PHASES.indexOf(job.phase ?? 'prepare') > i || job.status === 'success')
-                  return (
-                    <div key={f} className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          'rounded-full border px-2.5 py-1 text-[11.5px]',
-                          active
-                            ? 'border-led-active/40 bg-led-active/10 text-led-active'
-                            : done
-                              ? 'border-led-ok/35 text-led-ok'
-                              : 'text-fg-subtle',
-                        )}
-                      >
-                        {f}
-                      </span>
-                      {i < PHASES.length - 1 && <span className="text-fg-subtle">→</span>}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="rounded-lg border bg-surface p-4">
-              <h2 className="rack-label mb-3">timing</h2>
-              <dl className="space-y-2.5">
-                <Row label="Queued" value={absolute(job.createdAt)} note={relativeTime(job.createdAt, now)} />
-                <Row
-                  label="Started"
-                  value={absolute(job.startedAt)}
-                  note={waited !== null ? `waited ${duration(job.createdAt, job.startedAt, now)} for a device` : undefined}
-                />
-                <Row label="Finished" value={absolute(job.finishedAt)} />
-                <Row
-                  label="Run time"
-                  value={job.startedAt ? duration(job.startedAt, job.finishedAt, now) : '—'}
-                  note={job.status === 'running' ? 'still running' : undefined}
-                />
-                <Row label="Total, queue to finish" value={duration(job.createdAt, job.finishedAt, now)} />
-              </dl>
-            </div>
           </div>
 
-          <aside>
+          {/* Reference, not content (audit finding 2). Phases and timing were
+              in the left column ahead of the logs; nobody reads either until
+              the verdict is understood, and they pushed the result — the thing
+              the run existed to produce — below the fold. This column has the
+              width for them and now earns it. */}
+          <aside className="space-y-4">
+              <div className="rounded-lg border bg-surface p-3.5">
+                <h2 className="rack-label mb-3">phases</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  {PHASES.map((f, i) => {
+                    const active = job.phase === f && job.status === 'running'
+                    const done =
+                      job.status !== 'queued' && (PHASES.indexOf(job.phase ?? 'prepare') > i || job.status === 'success')
+                    return (
+                      <div key={f} className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            'rounded-full border px-2.5 py-1 text-[11.5px]',
+                            active
+                              ? 'border-led-active/40 bg-led-active/10 text-led-active'
+                              : done
+                                ? 'border-led-ok/35 text-led-ok'
+                                : 'text-fg-subtle',
+                          )}
+                        >
+                          {f}
+                        </span>
+                        {i < PHASES.length - 1 && <span className="text-fg-subtle">→</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-surface p-3.5">
+                <h2 className="rack-label mb-3">timing</h2>
+                <dl className="space-y-2.5">
+                  <Row label="Queued" value={absolute(job.createdAt)} note={relativeTime(job.createdAt, now)} />
+                  <Row
+                    label="Started"
+                    value={absolute(job.startedAt)}
+                    note={waited !== null ? `waited ${duration(job.createdAt, job.startedAt, now)} for a device` : undefined}
+                  />
+                  <Row label="Finished" value={absolute(job.finishedAt)} />
+                  <Row
+                    label="Run time"
+                    value={job.startedAt ? duration(job.startedAt, job.finishedAt, now) : '—'}
+                    note={job.status === 'running' ? 'still running' : undefined}
+                  />
+                  <Row label="Total, queue to finish" value={duration(job.createdAt, job.finishedAt, now)} />
+                </dl>
+              </div>
+
             <div className="rounded-lg border bg-surface p-3.5">
               <h2 className="rack-label mb-2.5">identity</h2>
               <dl className="space-y-1.5">

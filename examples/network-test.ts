@@ -381,9 +381,16 @@ async function withRetry<T>(
  * field, and the loop stops when the field says it is empty rather than after
  * a fixed number of presses.
  */
-async function focusAndClear(ctx: Ctx, point: { x: number; y: number }): Promise<void> {
+async function focusAndClear(ctx: Ctx, point: { x: number; y: number }, humanTyping: boolean): Promise<void> {
   await ctx.device.tap({ point })
   await sleep(700)
+  // The field is ALWAYS emptied first, in both modes.
+  //
+  // An earlier version skipped this in fast mode, reasoning that `type(..., { instant: true })`
+  // replaces the contents via the inspector's `setText`. It does not, here: the executor only
+  // reaches `setText` when a selector-based tap has recorded a target, and this taps by point — so
+  // it falls back to a bulk `input text`, which APPENDS. The result was an address bar holding
+  // `browserleaks.cbrowsbrowbrowsbrow…` and three failed attempts. Cheap assumption, expensive bug.
   for (let round = 0; round < 3; round++) {
     const current = (pickAddressBar(await ctx.device.dump())?.text ?? '').trim()
     if (!current) return
@@ -515,17 +522,21 @@ async function openNewTab(ctx: Ctx): Promise<boolean> {
 }
 
 /** Type an address into the omnibox, verify it landed, and commit it. */
-async function navigate(ctx: Ctx, url: string): Promise<void> {
+async function navigate(ctx: Ctx, url: string, humanTyping: boolean): Promise<void> {
   const bar = await reachAddressBar(ctx, 20_000)
   const centre = centreOf(bar)
-  await focusAndClear(ctx, centre)
-  // Typed character by character, deliberately. The farm's `natural` timing
-  // profile spaces keystrokes, jitters tap coordinates, and pauses between
-  // actions. `instant: true` would deliver the whole string in one shot:
-  // faster, sturdier, and nothing a person has ever done — and it would skip
-  // the autocomplete and per-keystroke listeners that are half of what is
-  // being tested here.
-  await ctx.device.type(url)
+  await focusAndClear(ctx, centre, humanTyping)
+  // Character-by-character typing was once unconditional here, justified as exercising Chrome's
+  // autocomplete and per-keystroke listeners. That justification does not survive contact with what
+  // this script actually reports: DNS resolvers, an exit address, and WebRTC candidates. None of
+  // them depend on how the URL got into the bar. Measured against the log of a real run, the
+  // human-paced path cost roughly two minutes per page — three pages, six minutes — for output that
+  // is byte-identical either way.
+  //
+  // So it is now a choice with a fast default. `instant` also removes a whole class of bug at the
+  // root rather than papering over it: `setText` replaces the field atomically, so the interleaving
+  // that produced `wwho.erwhoer.net` and `hoer.net` cannot happen at all.
+  await ctx.device.type(url, humanTyping ? {} : { instant: true })
 
   // Read the bar back BEFORE committing, and retype if it disagrees.
   //
@@ -540,8 +551,8 @@ async function navigate(ctx: Ctx, url: string): Promise<void> {
       throw new Error(`typed ${JSON.stringify(url)} but the address bar holds ${JSON.stringify(typed)}`)
     }
     ctx.log.warn('the address bar does not hold what was typed — clearing and retyping', { typed, url })
-    await focusAndClear(ctx, centre)
-    await ctx.device.type(url)
+    await focusAndClear(ctx, centre, humanTyping)
+    await ctx.device.type(url, humanTyping ? {} : { instant: true })
   }
 
   await ctx.device.key('ENTER')
@@ -582,6 +593,8 @@ async function awaitPage(
   ctx: Ctx,
   opts: {
     url: string
+    /** Passed through only so a reload retypes the address the same way the first attempt did. */
+    humanTyping: boolean
     ready: (nodes: UiNode[]) => boolean
     /**
      * The weaker bar: enough on the page for the reading to mean something,
@@ -663,7 +676,7 @@ async function awaitPage(
         backoffMs,
       })
       await sleep(backoffMs)
-      await navigate(ctx, opts.url)
+      await navigate(ctx, opts.url, opts.humanTyping)
       await sleep(2_000)
       continue
     }
@@ -1078,7 +1091,7 @@ export function assess(input: { whoer: WhoerFacts | null; dns: DnsFacts | null; 
 
 export default defineScript({
   id: 'network-test',
-  version: '1.5.0',
+  version: '1.6.1',
   params: z.object({
     /**
      * Which pages to visit. Fewer is faster, and a run that only needs the
@@ -1109,6 +1122,15 @@ export default defineScript({
      * considerably more to one that does not — which is the right way round.
      */
     settleReads: z.number().int().min(1).max(10).default(3),
+    /**
+     * Type the address one key at a time, the way the farm's `natural` profile paces a person.
+     *
+     * Off by default, and the default is the honest one for THIS script: nothing it reports — the
+     * resolvers, the exit address, the WebRTC candidates — depends on how the URL reached the bar,
+     * and human pacing measured about two minutes per page against a real run. Turn it on when the
+     * point is to exercise Chrome's own autocomplete and per-keystroke listeners.
+     */
+    humanTyping: z.boolean().default(false),
   }),
   timeout: 480_000,
   // No script-level retries: a partial run leaves Chrome open on some page,
@@ -1127,7 +1149,7 @@ export default defineScript({
   },
 
   async run(ctx) {
-    const { checks, pageTimeoutMs, pageAttempts, settleReads } = ctx.params
+    const { checks, pageTimeoutMs, pageAttempts, settleReads, humanTyping } = ctx.params
 
     // A NEW tab, as asked — not whatever Chrome restored.
     //
@@ -1157,9 +1179,10 @@ export default defineScript({
     ): Promise<T> => {
       const result = await withRetry(ctx, name, pageAttempts, async (attempt) => {
         ctx.log.info(`opening ${url}`, { attempt, of: pageAttempts })
-        await navigate(ctx, url)
+        await navigate(ctx, url, humanTyping)
         const page = await awaitPage(ctx, {
           url,
+          humanTyping,
           ready,
           acceptable,
           budgetMs: pageTimeoutMs,
