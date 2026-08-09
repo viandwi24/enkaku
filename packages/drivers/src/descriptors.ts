@@ -91,8 +91,15 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
     id: 'vpn-helper',
     displayName: 'Guest agent VPN route (SOCKS5)',
     kind: 'network',
-    // NOT 'probe' — the egress probe does not exist yet and claiming it would be a lie.
-    capabilities: ['auth', 'enforcing', 'udp'],
+    // `probe` is real as of plan 51 §4.2/§5.4 — the engine runs an egress probe
+    // THROUGH the tunnel (`vpn-helper.ts`'s `capabilities.probe: true`). This
+    // list said otherwise until plan 84's audit found the two declarations
+    // disagreeing (DIV-068); it is served to Studio through `GET /api/registry`,
+    // so the stale entry was visible in the product, not just in a comment.
+    // Advertising `probe` does NOT mean the route is healthy: `deriveHealth`
+    // (`packages/protocol/src/network.ts:304`) still reports `unverified` until
+    // an `egress` check actually passes.
+    capabilities: ['auth', 'enforcing', 'udp', 'probe'],
     locks: ['network-route'],
     configSchema: {
       type: 'object',

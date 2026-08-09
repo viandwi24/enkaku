@@ -71,6 +71,62 @@ docker compose up -d
 
 USB access from a container is awkward (it needs `--device /dev/bus/usb`, udev rules, and can fight the host over the adb server). **In containers, use wireless ADB**: enroll devices with a pairing code from Studio.
 
+## Windows fleets (5 → 20+ devices)
+
+A farm of USB-attached Android devices on Windows has a few behaviours worth
+knowing about once you pass a handful of devices.
+
+**"Port already in use" now names who is holding it.** If `enkaku.exe`
+refuses to start with `EADDRINUSE` on its HTTP port, or `enkaku doctor` flags
+a bind conflict, the message now includes the actual pid and process image
+name holding that port (via `netstat -ano` + `tasklist`, both read-only, no
+elevation needed) — for example `port 7700 is already held by pid 21440
+(adb.exe), which is not an Enkaku core`. Before, Windows hosts got only
+Bun's bare `Failed to start server. Is port 7700 in use?`, with no way to
+find out *what* was in the way short of running `netstat` by hand. The same
+lookup runs when the core's own data-directory lock is taken over as stale
+(a leftover lock file from a process that no longer exists) — it now also
+probes the port itself, so "the old process is gone" and "the port is free"
+are answered as the two separate questions they actually are, instead of
+proceeding into a listen failure with no explanation.
+
+**Rescan.** Next to the Discovered tray in Studio is a **Rescan** button
+(also `POST /api/devices/rescan`). It asks adb directly, right now, for
+every device it can see and reconciles that against what Enkaku already
+knows — adopting a device adb has but the registry does not, dropping one
+that vanished, and nudging any device stuck `offline` toward recovery. This
+already happens automatically every `discovery.scanIntervalSec` (10s by
+default), so a phone plugged in *before* the core started, or one that got
+stuck in Windows' `offline`/`authorizing` transition state while the adb
+server was still enumerating USB, recovers within one scan interval without
+a replug. Rescan exists for the moment you do not want to wait ten seconds —
+it runs the identical pass immediately and shows the result as one line
+("Scanned 5 devices · adopted 1 · nothing else changed").
+
+**Settings worth raising past ~20 devices.** Most concurrency settings scale
+themselves automatically with device count and do not need to be touched —
+`adb.maxConcurrent` and `adb.maxStreams` both default to `0` (auto) and grow
+with the fleet up to their own ceilings (24 and 64 respectively). What is
+still worth reviewing on a large farm:
+
+- `wall.maxTiles` / `session.maxIdleSessions` / `readiness.maxHot` (all
+  default 8, max 64) — these cap how many devices the fleet Wall streams
+  live at once, how many idle sessions the farm keeps warm, and how many
+  devices may be held "hot" simultaneously. A farm past 20 devices that
+  wants to see more than one Wall page live, or wants more than 8 devices to
+  stay instantly responsive between viewer visits, should raise all three
+  together (they default in lockstep on purpose).
+- `adb.maxHostConcurrent` (default 4, max 32) — bounds the adb **CLI**
+  processes (`install`/`push`/`forward`), which have no fleet-size
+  autoscaler of their own. A farm that attaches inspectors to many devices
+  at once may see these queue up; raising it trades USB/CPU headroom for
+  faster fan-out.
+- `adb.maxInstallConcurrent` (default 2, max 16) — how many APK
+  installs/pushes may run at once across the whole farm, since they share
+  one USB controller's bandwidth. Raise cautiously and watch install times —
+  the bound exists because unbounded concurrent installs is what saturates
+  USB on a fleet attaching many inspectors at once in the first place.
+
 ## adb endpoint (power users)
 
 While you hold a device's lease, Studio's Terminal tab can lend you a real

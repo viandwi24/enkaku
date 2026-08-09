@@ -25,6 +25,8 @@ export type AuditAction =
   // makes for block.
   | 'device.admit'
   | 'device.dismiss'
+  // The manual discovery reconciler escape hatch (plan 85 §4.6, §5 step 85.2).
+  | 'device.rescan'
   | 'script.publish'
   | 'script.delete'
   | 'script.toggle'

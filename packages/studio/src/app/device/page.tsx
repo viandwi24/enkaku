@@ -28,6 +28,7 @@ import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 import { IdentityPanel } from '@/components/identity/IdentityPanel'
 import { KvPanel } from '@/components/kv/KvPanel'
 import { DeviceHeader, type DeviceDetailInfo } from '@/components/device/DeviceHeader'
+import { RotationQuickAction } from '@/components/device/RotationQuickAction'
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
@@ -496,6 +497,27 @@ function DeviceDetail() {
               away from the video footer's own "Input is off — watching only."
               Only the job-running state carried something nothing else said,
               and it is a badge on the card now. */}
+          <div className="mb-3 flex justify-end">
+            {/* Rotation quick-action (plan 85 §3.7, §4.1, step 85.8): a
+                shortcut to `settings.prep.rotation`, the same field the
+                Settings tab's schema-driven form already exposes under
+                "Power & readiness" — this just saves the trip there for the
+                common case of locking or unlocking orientation. */}
+            <RotationQuickAction
+              deviceId={device.id}
+              settings={device.settings}
+              onSaved={(nextSettings) => {
+                setDevice((d) => (d ? { ...d, settings: nextSettings } : d))
+                // Only fast-forward the Settings tab's draft if it had no
+                // unsaved edit of its own — this quick action must not
+                // silently discard something the operator was mid-typing
+                // there.
+                const wasDirty = JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)
+                setSavedSettings(nextSettings)
+                if (!wasDirty) setDraftSettings(nextSettings)
+              }}
+            />
+          </div>
           <ScreenCard
             deviceId={device.id}
             mode={screenMode}

@@ -23,6 +23,7 @@
     "dev:probe": "PROBE_HTTP_PORT=${PROBE_HTTP_PORT:-8080} PROBE_GEOIP_UPSTREAM_URL='http://ip-api.com/json/{ip}' bun run packages/probe-server/src/index.ts",
     "publish:example": "bun run packages/sdk/src/cli/index.ts publish examples/hello-no-device.ts",
     "typecheck": "bash scripts/typecheck.sh",
+    "spec:check": "bun run scripts/spec-check.ts",
     "reset": "rm -rf .dev-data .dev-cloud .dev-node .dev-agent"
   },
   "devDependencies": {

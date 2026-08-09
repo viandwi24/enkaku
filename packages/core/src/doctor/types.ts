@@ -75,6 +75,22 @@ export type CoreProbeResult =
       quarantined: Array<{ deviceId: string; label: string; reason: string }>
     }
 
+/** `GET /api/adb/stats`'s `streams` block (plan 85 §4.2, §5 85.6) — the streaming lane's farm-wide occupancy against its (autoscaled) budget. */
+export interface StreamsStatus {
+  maxStreams: number
+  maxStreamsPerDevice: number
+  active: number
+  perDevice: Record<string, number>
+}
+
+/** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()` shape, as reported by a live core (plan 85 §4.5, §5 85.6) — never recomputed independently here. */
+export interface HostAdbCoreStats {
+  running: number
+  maxConcurrent: number
+  installsRunning: number
+  longLived: number
+}
+
 /**
  * Everything a check may read. Each namespace maps to exactly one row in
  * §4.3's table; a check only touches the namespace(s) it needs, which is
@@ -122,5 +138,15 @@ export interface DoctorContext {
   core: {
     /** `{ running: false }` when no core answers at all — a legitimate, common state, not a failure. */
     probe(): Promise<CoreProbeResult>
+  }
+  streams: {
+    /** `null` when no core is running — the stream-lane budget only exists while the core is up (plan 85 §5 85.6, mirrors `core.probe()`'s standalone case). */
+    probe(): Promise<StreamsStatus | null>
+  }
+  hostAdb: {
+    /** OS-level count of `adb`/`adb.exe` processes on this host right now (the adb server itself is one of them) — `null` when it cannot be determined (missing tool, unsupported platform), same degrade-gracefully rule as `port.findHolder` (plan 85 §5 85.6). */
+    countAdbProcesses(): Promise<number | null>
+    /** The live core's own `host-adb.ts` bookkeeping, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block. */
+    probeCoreStats(): Promise<HostAdbCoreStats | null>
   }
 }

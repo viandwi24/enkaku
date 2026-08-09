@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { makeRng, matches, pickWatchMs, pngSize, scoreContent } from './index'
+import type { Selector } from '@enkaku/protocol'
+import { matches, scoreContent } from './index'
+import { makeRng, pickWatchMs, pngSize } from './human'
+import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
 
 describe('keyword matching', () => {
   const KEYWORDS = ['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict']
@@ -89,5 +92,64 @@ describe('frame size from a screenshot', () => {
   test('refuses anything that is not a PNG rather than guessing', () => {
     expect(pngSize(new Uint8Array(24))).toBeNull()
     expect(pngSize(new Uint8Array(4))).toBeNull()
+  })
+})
+
+describe('dialog dismiss selectors — the safety invariant', () => {
+  const textOf = (sel: Selector): string | undefined => ('text' in sel ? sel.text : undefined)
+  const ackTexts = ACK_SELECTORS.map(textOf).filter((t): t is string => t !== undefined)
+  const denyTexts = DENY_SELECTORS.map(textOf).filter((t): t is string => t !== undefined)
+
+  /**
+   * This is the one property the whole "tap a button in a modal" mechanism depends on: it must
+   * never be possible for the same label to read as both "acknowledge" and "deny", because
+   * `clearBlockingDialog` tries ACK first and returns on the first match — a duplicate would make
+   * DENY's branch dead code, silently.
+   */
+  test('ACK and DENY selectors are disjoint', () => {
+    const denyKeys = new Set(DENY_SELECTORS.map((sel) => JSON.stringify(sel)))
+    for (const sel of ACK_SELECTORS) expect(denyKeys.has(JSON.stringify(sel))).toBe(false)
+  })
+
+  /**
+   * The load-bearing rule from the plugin's own comments: neither list may ever contain a label
+   * that grants, buys, subscribes, or follows. Checked as an exact (case-insensitive) label match,
+   * not a substring — `DENY_SELECTORS` legitimately contains "Jangan izinkan" ("don't allow"),
+   * which contains the substring "izinkan" while meaning the opposite of granting it.
+   */
+  test('neither list contains a label that grants, buys, subscribes, or follows', () => {
+    const granting = new Set(['izinkan', 'allow', 'ikuti', 'follow', 'beli', 'berlangganan'])
+    for (const t of [...ackTexts, ...denyTexts]) {
+      expect(granting.has(t.trim().toLowerCase())).toBe(false)
+    }
+  })
+
+  test('"Mengerti" — the label confirmed on hardware — is present in ACK', () => {
+    expect(ackTexts).toContain('Mengerti')
+  })
+})
+
+describe('nextDialogAction — escalation for "the feed nodes are not there"', () => {
+  test('below the two-in-a-row threshold, keep going', () => {
+    expect(nextDialogAction(0, 0)).toBe('continue')
+    expect(nextDialogAction(1, 0)).toBe('continue')
+    expect(nextDialogAction(1, 3)).toBe('continue')
+  })
+
+  test('two consecutive blind reads trigger a sweep, regardless of how many already happened', () => {
+    expect(nextDialogAction(2, 0)).toBe('sweep')
+    expect(nextDialogAction(2, 1)).toBe('sweep')
+    expect(nextDialogAction(2, 2)).toBe('sweep')
+  })
+
+  test('three fruitless sweeps stop the run as blocked instead of trying a fourth', () => {
+    expect(nextDialogAction(2, 3)).toBe('blocked')
+    expect(nextDialogAction(3, 5)).toBe('blocked')
+  })
+
+  test('a successful read resets both counters, which overrides any prior sweep count', () => {
+    // consecutiveBlind back to 0 after signals.ok === true — even with sweeps still at 3, the
+    // ladder starts over rather than staying latched in a blocked state.
+    expect(nextDialogAction(0, 3)).toBe('continue')
   })
 })

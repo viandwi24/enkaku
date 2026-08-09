@@ -38,6 +38,7 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
           'uhid',
         keepAwake: prep.keepAwake,
         standbyScreenOff: prep.standbyScreenOff,
+        rotation: prep.rotation,
         // Plan 58 §4.2 — the dead-config guard (plan 33 §5.9's lesson) applies
         // here too: identity is projected at the SAME seam the settings blob is
         // read, so it cannot be saved-and-never-read like `timing` once was.

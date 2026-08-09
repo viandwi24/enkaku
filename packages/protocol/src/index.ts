@@ -223,6 +223,7 @@ export {
   TimingSettingsSchema,
   KeepAwakeModeSchema,
   ShellModeSchema,
+  RotationModeSchema,
   DeviceGpsSchema,
   DeviceIdentitySchema,
   DeviceSettingsSchema,
@@ -233,6 +234,7 @@ export {
   type BatteryState,
   type KeepAwakeMode,
   type ShellMode,
+  type RotationMode,
   type TimingSettings,
   type DeviceGps,
   type DeviceIdentity,
@@ -691,9 +693,24 @@ export const ErrorMessage = z.object({
   payload: z.object({ code: z.string(), message: z.string() }),
 })
 
+/**
+ * A one-way liveness beat, broadcast every 15s (plan 85 §3.6, §4.6, fixes
+ * F16, tests H2) — the Studio client resets a 45s silence watchdog on ANY
+ * inbound message, so this is what turns "the socket is open but nothing is
+ * coming through it" from an undetectable state into one that self-heals.
+ * Deliberately absent from `ClientMessage`: a browser cannot observe
+ * protocol-level WebSocket pongs, and a client→server beat would only
+ * duplicate what every other command already proves.
+ */
+export const HeartbeatMessage = z.object({
+  type: z.literal('heartbeat'),
+  payload: z.object({ t: z.number() }),
+})
+
 /** Every server→client message. */
 export const ServerMessageSchema = z.discriminatedUnion('type', [
   HelloMessage,
+  HeartbeatMessage,
   DeviceViewersMessage,
   DeviceAddedMessage,
   DeviceRemovedMessage,

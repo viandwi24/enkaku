@@ -27,6 +27,20 @@ async function startDaemon(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  // Plan 85 §3.4, §5 step 85.3: on Windows, closing the console window (or a
+  // logoff) does not deliver SIGTERM the way it does on POSIX — Node/Bun's
+  // own docs describe `SIGHUP` as exactly the event that DOES fire there
+  // ("emitted on Windows when the console window is closed, and on other
+  // platforms under various similar conditions"), so it gets the same clean
+  // shutdown SIGINT/SIGTERM already get, on every platform.
+  process.on('SIGHUP', () => void shutdown('SIGHUP'))
+  // Best-effort belt-and-suspenders for any OTHER quiet-exit path neither
+  // signal covers: `beforeExit` fires once the event loop has nothing left
+  // to do, before the process actually exits, which is late enough to still
+  // reach `daemon.stop()` → `hostAdb.killAll()` (F12) rather than leaving a
+  // per-device `adb.exe` behind. It never fires on a forceful kill, hence
+  // "best-effort" — SIGHUP/SIGTERM/SIGINT above remain the real coverage.
+  process.on('beforeExit', () => void shutdown('beforeExit'))
 
   try {
     await daemon.start()

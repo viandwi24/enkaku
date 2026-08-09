@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { z } from 'zod'
 import type { AdbClient } from '@enkaku/adb'
 import { AdbStatsResponseSchema } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
@@ -12,6 +13,22 @@ import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = { 'auth.forbidden': 403 }
+
+type AdbStatsResponse = z.infer<typeof AdbStatsResponseSchema>
+type TransportStats = AdbStatsResponse['transport']
+type HostAdbStats = AdbStatsResponse['hostAdb']
+
+/** Zero-filled defaults (plan 85 §4.6) — reported before the WS router (`transport`) or `host-adb.ts` (`hostAdb`) exist, e.g. the brief window before `attachWsRouter` runs. */
+const ZERO_TRANSPORT: TransportStats = {
+  connections: 0,
+  bufferedBytesMax: 0,
+  bufferedBytesP95: 0,
+  videoBytesPerSec: 0,
+  controlReplyMsP50: 0,
+  controlReplyMsP95: 0,
+  watchdogReconnects: 0,
+}
+const ZERO_HOST_ADB: HostAdbStats = { running: 0, maxConcurrent: 0, installsRunning: 0, longLived: 0 }
 
 /**
  * `GET /api/adb/stats` (plan 23 §4.6, permission `device.view`) — the global
@@ -28,6 +45,16 @@ export function createAdbStatsRoutes(deps: {
   auto: () => boolean
   /** Idle session TTL (plan 42 §4.4) — exposed so the effect is measurable rather than assumed. Null under the orchestrator. */
   sessions: () => SessionManager | null
+  /**
+   * The shared `/ws` transport's own health (plan 85 §3.6, §4.6) — from
+   * `ws-handlers.ts`'s `transportStats()`, wired through `daemon.ts`'s usual
+   * forward-ref pattern. Optional so existing tests/hosts that predate plan
+   * 85 keep compiling; `null`/absent reports the zero-filled defaults, never
+   * a missing field (the schema requires them).
+   */
+  transport?: () => TransportStats | null
+  /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()` (plan 85 §3.4, §4.6) — same optional/zero-default contract as `transport` above. */
+  hostAdb?: () => HostAdbStats | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -75,6 +102,8 @@ export function createAdbStatsRoutes(deps: {
           consecutiveFailures: health?.consecutiveFailures(row.id) ?? 0,
         }
       }),
+      transport: deps.transport?.() ?? ZERO_TRANSPORT,
+      hostAdb: deps.hostAdb?.() ?? ZERO_HOST_ADB,
     })
   })
 

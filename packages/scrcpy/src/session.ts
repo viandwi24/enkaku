@@ -14,11 +14,37 @@ import {
 import { VideoDemuxer, type ScrcpyPacket, type VideoMeta } from './demuxer'
 import { DEVICE_JAR_PATH, SCRCPY_VERSION } from './version'
 
+/**
+ * A long-lived adb CLI child (the scrcpy server's `adb shell`), returned by
+ * `AdbExecutor.spawnLongLived` (plan 85 §3.4, §4.5, fixes F12). Structurally
+ * identical to `packages/core/src/device/host-adb.ts`'s `LongLivedChild` —
+ * this package cannot import that type directly (core depends on scrcpy,
+ * never the reverse), so the shape is declared locally and the core's real
+ * `hostAdb.spawnLongLived` satisfies it by matching structure alone.
+ */
+export interface LongLivedAdbChild {
+  readonly pid: number | null
+  /** The last 64 KB of combined stdout+stderr, for diagnostics — bounded, never the whole session. */
+  tail(): string
+  kill(): void
+  exited: Promise<number>
+}
+
 export interface AdbExecutor {
   /** Per-device shell exec (through the Plan 01 queue). */
   exec(cmd: string): Promise<string>
-  /** adb CLI-level: push jar, forward port. */
+  /** adb CLI-level, one-shot: push jar, forward port. */
   hostAdb(args: string[]): Promise<string>
+  /**
+   * adb CLI-level, long-lived: the `adb shell` that runs the scrcpy server
+   * itself (plan 85 §3.4, §4.5, fixes F12). Optional: `packages/core/src/
+   * daemon.ts` always supplies it (bound to its one shared `hostAdb`
+   * instance), but `packages/node/src/hosts.ts` — the cloud node's own,
+   * separate wiring, out of scope for plan 85 step 85.3 — does not yet.
+   * `startScrcpySession` falls back to the old fire-and-forget `hostAdb`
+   * launch when this is absent, so that caller keeps working unchanged.
+   */
+  spawnLongLived?(args: string[], opts?: { onExit?: (code: number, tail: string) => void }): LongLivedAdbChild
   serial: string
 }
 
@@ -118,12 +144,29 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   // process that never exits. Volume keys did nothing, the ui-server inspector
   // timed out and fell back, and none of it reported an error: the commands
   // were not failing, they were never running.
-  // warn, not debug: a server that dies takes the whole stream with it, and
-  // when this was invisible the only symptom was a session that opened and
+  //
+  // `spawnLongLived` (plan 85 §3.4, §4.5, fixes F12), not the fire-and-forget
+  // `hostAdb` this used to go through: something now actually HOLDS this
+  // child — `close()` below kills it, and `daemon.stop()`'s `hostAdb.killAll()`
+  // is the backstop if `close()` is never reached. Its stdout/stderr are
+  // drained into a bounded 64 KB ring buffer instead of accumulated forever.
+  // `closedDeliberately` distinguishes an operator-initiated `close()` from
+  // the server dying on its own — only the latter is worth a `warn`: a
+  // server that dies unexpectedly takes the whole stream with it, and when
+  // that was invisible the only symptom was a session that opened and
   // produced nothing, with no explanation anywhere in the log.
-  void adb
-    .hostAdb(['-s', adb.serial, 'shell', cmd])
-    .catch((err) => log('warn', `the scrcpy server exited: ${String(err)}`))
+  let closedDeliberately = false
+  const serverChild: LongLivedAdbChild | null = adb.spawnLongLived
+    ? adb.spawnLongLived(['-s', adb.serial, 'shell', cmd], {
+        onExit: (code, tail) => {
+          if (closedDeliberately) return
+          log('warn', `the scrcpy server exited unexpectedly (code ${code}): ${tail.trim() || '(no output captured)'}`)
+        },
+      })
+    : null
+  if (!serverChild) {
+    void adb.hostAdb(['-s', adb.serial, 'shell', cmd]).catch((err) => log('warn', `the scrcpy server exited: ${String(err)}`))
+  }
 
   // 3. Forward localabstract → host port, and prove it belongs to this device.
   const socketName = `localabstract:scrcpy_${scid}`
@@ -214,6 +257,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       } catch {
         // already closed
       }
+      closedDeliberately = true
+      serverChild?.kill()
       await adb.hostAdb(['-s', adb.serial, 'forward', '--remove', `tcp:${port}`]).catch(() => undefined)
     },
   }

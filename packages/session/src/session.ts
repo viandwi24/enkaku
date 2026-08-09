@@ -11,9 +11,10 @@ import {
   withAdbKeyFallback,
 } from '@enkaku/drivers'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, Quality, SessionPhase, Transport } from '@enkaku/protocol'
+import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, Quality, RotationMode, SessionPhase, Transport } from '@enkaku/protocol'
 import { SessionError } from './errors'
 import type { Logger } from './logger'
+import { applyRotation } from './orientation'
 import { wakeDevice } from './wake'
 
 /**
@@ -128,6 +129,8 @@ export interface CreateSessionOpts {
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff — dark panel, mirroring stays alive (Plan 17 §3.5). */
   standbyScreenOff?: boolean
+  /** DeviceSettings.prep.rotation — screen orientation lock, reverted on close (Plan 85 §3.7, §4.1). */
+  rotation?: RotationMode
   /** The initial value before the first frame arrives (the Plan 01 probe). */
   screenW?: number | null
   screenH?: number | null
@@ -216,6 +219,17 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    */
   const keepAwake: KeepAwakeMode = opts.keepAwake ?? 'while-charging'
   await wakeDevice(transport, { keepAwake, log })
+
+  /**
+   * Rotation lock (Plan 85 §3.7, §4.1, step 85.8): the identical shape to
+   * `wakeDevice` right above — a device-scoped preference applied here and
+   * reverted in `close()` below. `applyRotation` reads the device's current
+   * `accelerometer_rotation` before touching anything, so the revert thunk it
+   * returns can put it back exactly rather than to a hardcoded value.
+   * `'device'` (the default) touches nothing and the thunk is a no-op.
+   */
+  const rotation: RotationMode = opts.rotation ?? 'device'
+  const revertRotation = await applyRotation(transport, { rotation, log })
 
   onPhase('starting-video')
   // Display and input: scrcpy when the session comes up, otherwise the fallback
@@ -333,6 +347,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // Hand the screen back to the device's own timeout.
       if (keepAwake !== 'off')
         await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+      // Hand rotation back the same way — stateless and idempotent (see
+      // `orientation.ts`): `close()` can run more than once (a timeout kill
+      // followed by a normal close, for instance), and calling this twice
+      // must be safe. It always re-issues the exact command it captured at
+      // apply time, so a second call is a no-op on the device, not a fresh
+      // mutation of some remembered "already reverted" flag.
+      await revertRotation()
       await inspectorHandle?.release()
       await transport.disconnect()
     },

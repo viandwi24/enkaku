@@ -54,6 +54,22 @@ jobs:
       # its worth depends entirely on staying diffable against upstream. A
       # local edit is invisible to typecheck and tests — only this catches it.
       - run: bash scripts/check-harness-provenance.sh
+      # Plan 84 (M49) §4.4 "closing the loop": a deliberately dumb name-presence
+      # check for a table, route, or `page.tsx` screen that appears in neither
+      # docs/spec.md nor a DIV- row in docs/spec-divergences.md. Warning only —
+      # it always exits 0 today (see FAIL_ON_GAP in scripts/spec-check.ts);
+      # dozens of divergence rows are still open, and failing the build on day
+      # one would block every commit. It becomes a hard gate once that register
+      # reaches zero open rows (plan 84 §9 Q4) — flipping the single constant
+      # in the script is the only change that step needs.
+      - run: bun run spec:check
+      # scripts/ sits outside bunfig.toml's `[test] root = "packages"` — like
+      # plugins/* and examples/ above — but has no package.json of its own for
+      # a `--cwd` invocation, so it needs its own explicit path instead. The
+      # leading `./` is load-bearing: without it, bun treats the argument as a
+      # filter over the packages/-only scan and silently reports "0 files
+      # matched" rather than running the test.
+      - run: bun test ./scripts/spec-check.test.ts
 
   changes:
     runs-on: ubuntu-latest

@@ -42,6 +42,13 @@ function unhappyContext(): DoctorContext {
         quarantined: [{ deviceId: 'd1', label: 'Phone 1', reason: 'adb:unreachable' }],
       }),
     },
+    streams: {
+      probe: async () => ({ maxStreams: 10, maxStreamsPerDevice: 4, active: 10, perDevice: { d1: 10 } }),
+    },
+    hostAdb: {
+      countAdbProcesses: async () => 5,
+      probeCoreStats: async () => ({ running: 0, maxConcurrent: 4, installsRunning: 0, longLived: 0 }),
+    },
   })
 }
 
@@ -136,6 +143,8 @@ describe('doctor package — never runs adb kill-server (repo rule, plan 41 §6.
     'checks/devices.ts',
     'checks/egress.ts',
     'checks/core.ts',
+    'checks/streams.ts',
+    'checks/host-adb.ts',
   ]
 
   test('the literal string "kill-server" appears nowhere in the doctor package\'s implementation', () => {

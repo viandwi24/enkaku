@@ -1,12 +1,21 @@
 import { existsSync, readFileSync, statfsSync } from 'node:fs'
 import { Database } from 'bun:sqlite'
 import { join } from 'node:path'
+import { z } from 'zod'
 import { AdbSocket, parseSnapshot } from '@enkaku/adb'
 import { ToolchainManager, type ToolInstallRecord, type ToolInstallStore } from '@enkaku/toolchain'
 import { assertTlsPolicy, loadConfig, resolveAuthMode } from '../config'
 import { EnkakuError } from '../util/errors'
 import { embeddedAssets } from '../embedded'
-import type { ConfigLoadResult, CoreProbeResult, DbInspectResult, DoctorContext, PortHolder } from './types'
+import type {
+  ConfigLoadResult,
+  CoreProbeResult,
+  DbInspectResult,
+  DoctorContext,
+  HostAdbCoreStats,
+  PortHolder,
+  StreamsStatus,
+} from './types'
 
 const ADB_HOST = '127.0.0.1'
 const ADB_PORT = 5037
@@ -70,13 +79,96 @@ async function tryBindPort(port: number, host: string): Promise<boolean> {
   }
 }
 
+/** Runs an OS command and returns its stdout as text. Never reads stderr, never sends any signal — the same read-only contract every caller below relies on. */
+async function runCommandCapturingStdout(args: string[]): Promise<string> {
+  const [cmd, ...rest] = args
+  if (!cmd) return ''
+  const proc = Bun.spawn([cmd, ...rest], { stdout: 'pipe', stderr: 'ignore' })
+  const out = await new Response(proc.stdout).text()
+  await proc.exited
+  return out
+}
+
+/** Injectable so the Windows parsing below is testable on any host without actually spawning `netstat`/`tasklist` (plan 85 §5 85.6 — "your Windows code paths will run on this macOS dev box during tests"). */
+export type WindowsCommandRunner = (args: string[]) => Promise<string>
+
 /**
- * Best-effort, read-only "who holds this port" via `lsof` — unix only, and
- * silently `null` (never thrown) when `lsof` is missing or the platform
- * (Windows) does not have it. Never sends a signal; only reads.
+ * `netstat -ano` prints one line per socket, columns separated by runs of
+ * whitespace: `Proto  Local Address  Foreign Address  State  PID`. Only TCP
+ * sockets have a `State` column (UDP has four columns, not five) and only
+ * `LISTENING` ones are "who holds this port" — an `ESTABLISHED` line for the
+ * same local port is a client connection, not the holder. The local address
+ * is matched on its port only (taken from the last `:`, since a bracketed
+ * IPv6 address like `[::]:7700` still ends in `:<port>`), so both `0.0.0.0`
+ * and `127.0.0.1` binds are found regardless of which interface Bun chose.
  */
-async function findPortHolder(port: number): Promise<PortHolder> {
-  if (process.platform === 'win32') return null
+export function parseNetstatPidForPort(output: string, port: number): number | null {
+  const wantedPort = String(port)
+  for (const rawLine of output.split(/\r?\n/)) {
+    const fields = rawLine.trim().split(/\s+/)
+    if (fields[0] !== 'TCP' || fields.length < 5) continue
+    const [, local, , state, pidField] = fields
+    if (state !== 'LISTENING' || !local) continue
+    const sepIndex = local.lastIndexOf(':')
+    if (sepIndex === -1 || local.slice(sepIndex + 1) !== wantedPort) continue
+    const pid = Number.parseInt(pidField ?? '', 10)
+    if (Number.isFinite(pid)) return pid
+  }
+  return null
+}
+
+/**
+ * `tasklist ... /FO CSV /NH` prints one quoted-CSV row per matching process,
+ * e.g. `"adb.exe","21440","Console","1","12,345 K"` — CSV rather than the
+ * default table format because the table's column widths are not a stable
+ * thing to parse, and the memory column's own comma (`12,345 K`) makes a
+ * naive `split(',')` unsafe. Only the first (image name) field is ever
+ * needed, so a small anchored regex is enough. When nothing matches,
+ * `tasklist` prints an `INFO:` line to stdout instead of a CSV row.
+ */
+export function parseTasklistImageName(output: string): string | null {
+  const row = output.split(/\r?\n/).find((line) => line.trim().startsWith('"'))
+  return row?.trim().match(/^"([^"]*)"/)?.[1] ?? null
+}
+
+/** Counts CSV rows the same shape as `parseTasklistImageName` reads — used to count every process matching an `/FI "IMAGENAME eq ..."` filter, not just the first. */
+export function countTasklistRows(output: string): number {
+  return output.split(/\r?\n/).filter((line) => line.trim().startsWith('"')).length
+}
+
+/**
+ * Windows "who holds this port" (plan 85 §4.7, fixes F13): `lsof` does not
+ * exist on Windows, which is exactly why the old code returned `null`
+ * unconditionally there — the one host the field report happened on. Both
+ * `netstat` and `tasklist` ship with every Windows install and neither needs
+ * elevation for a read. Strictly read-only, exactly like the `lsof` path
+ * below: no signal is ever sent to the discovered process, only two
+ * information-gathering commands.
+ */
+export async function findPortHolderWindows(port: number, runCommand: WindowsCommandRunner = runCommandCapturingStdout): Promise<PortHolder> {
+  try {
+    const netstatOut = await runCommand(['netstat', '-ano'])
+    const pid = parseNetstatPidForPort(netstatOut, port)
+    if (pid === null) return null
+    const tasklistOut = await runCommand(['tasklist', '/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'])
+    return { pid, processName: parseTasklistImageName(tasklistOut) ?? 'unknown' }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Best-effort, read-only "who holds this port" — `lsof` on unix,
+ * `netstat`/`tasklist` on Windows (plan 85 §4.7). Silently `null` (never
+ * thrown) when the platform's tool is missing, exactly the existing habit
+ * this file already has for every other best-effort probe.
+ *
+ * Exported so `daemon.ts` can run the SAME lookup on a listen-time
+ * `EADDRINUSE` (plan 85 §4.7, §5 85.6) — one implementation of "who is this",
+ * used both by `enkaku doctor` and by the core's own startup failure message.
+ */
+export async function findPortHolder(port: number): Promise<PortHolder> {
+  if (process.platform === 'win32') return findPortHolderWindows(port)
   try {
     const proc = Bun.spawn(['lsof', '-t', '-i', `:${port}`, '-sTCP:LISTEN'], { stdout: 'pipe', stderr: 'ignore' })
     const out = (await new Response(proc.stdout).text()).trim()
@@ -89,6 +181,69 @@ async function findPortHolder(port: number): Promise<PortHolder> {
     return { pid, processName }
   } catch {
     return null
+  }
+}
+
+/**
+ * OS-level census of `adb`/`adb.exe` processes on this host (plan 85 §5
+ * 85.6) — the adb server itself is one of them. Read-only, degrades to
+ * `null` when the platform's tool is missing (same rule as `findPortHolder`
+ * above), never signals anything.
+ */
+async function countAdbProcesses(runWindows: WindowsCommandRunner = runCommandCapturingStdout): Promise<number | null> {
+  try {
+    if (process.platform === 'win32') {
+      const out = await runWindows(['tasklist', '/FI', 'IMAGENAME eq adb.exe', '/FO', 'CSV', '/NH'])
+      return countTasklistRows(out)
+    }
+    const proc = Bun.spawn(['ps', '-A', '-o', 'comm='], { stdout: 'pipe', stderr: 'ignore' })
+    const out = await new Response(proc.stdout).text()
+    await proc.exited
+    return out.split('\n').filter((line) => /(^|\/)adb$/.test(line.trim())).length
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The subset of `GET /api/adb/stats` this file reads, validated locally
+ * (plan 85 §5 85.6): both `streams` and `hostAdb` are required fields on the
+ * canonical `AdbStatsResponseSchema` (`@enkaku/protocol`) now, but this stays
+ * a hand-rolled, fully-optional local copy rather than importing that schema
+ * directly — an OLDER core (pre-plan-85, or one that has not yet added the
+ * `transport` block) must keep answering with either block simply absent,
+ * never a thrown parse error, and coupling this probe to the live schema's
+ * shape would break that the next time either block grows a field.
+ */
+const AdbStatsProbeSchema = z.object({
+  streams: z
+    .object({
+      maxStreams: z.number(),
+      maxStreamsPerDevice: z.number(),
+      active: z.number(),
+      perDevice: z.record(z.string(), z.number()),
+    })
+    .optional(),
+  hostAdb: z
+    .object({
+      running: z.number(),
+      maxConcurrent: z.number(),
+      installsRunning: z.number(),
+      longLived: z.number(),
+    })
+    .optional(),
+})
+
+/** Fetches `/api/adb/stats` once and returns both blocks this file cares about — `null`/`null` on any failure (unreachable core, bad JSON, schema mismatch), same "a diagnostic never throws" rule as every other probe in this file. */
+async function probeAdbStats(host: string, port: number): Promise<{ streams: StreamsStatus | null; hostAdb: HostAdbCoreStats | null }> {
+  try {
+    const res = await fetch(`http://${host}:${port}/api/adb/stats`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    if (!res.ok) return { streams: null, hostAdb: null }
+    const parsed = AdbStatsProbeSchema.safeParse(await res.json())
+    if (!parsed.success) return { streams: null, hostAdb: null }
+    return { streams: parsed.data.streams ?? null, hostAdb: parsed.data.hostAdb ?? null }
+  } catch {
+    return { streams: null, hostAdb: null }
   }
 }
 
@@ -278,5 +433,10 @@ export async function createRealDoctorContext(dataDir: string): Promise<DoctorCo
     devices: { list: listDevices },
     egress: { host: EGRESS_HOST, check: checkEgress },
     core: { probe: () => probeCore(host, port) },
+    streams: { probe: async () => (await probeAdbStats(host, port)).streams },
+    hostAdb: {
+      countAdbProcesses: () => countAdbProcesses(),
+      probeCoreStats: async () => (await probeAdbStats(host, port)).hostAdb,
+    },
   }
 }

@@ -273,6 +273,96 @@ describe('AdbClient.exec — framed shell (plan 53)', () => {
 })
 
 /**
+ * A fake adb server good enough to drive `listDevices`/`reconnectOffline`
+ * (plan 85 §3.3, §4.3) — both are plain host: services (send a request,
+ * read one status, read one block), so this only needs to understand the
+ * two service strings, not `host:transport:` or any shell service.
+ */
+function fakeHostServiceServer(handlers: { devicesL?: () => string; reconnectOffline?: () => string }) {
+  const respond = (s: import('bun').Socket, body: string) => {
+    const bodyBuf = Buffer.from(body, 'utf8')
+    const lenHex = bodyBuf.length.toString(16).padStart(4, '0')
+    s.write(Buffer.concat([Buffer.from('OKAY'), Buffer.from(lenHex, 'ascii'), bodyBuf]))
+  }
+  return Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      data(s, data) {
+        const text = new TextDecoder().decode(data)
+        if (text.includes('host:devices-l')) {
+          respond(s, handlers.devicesL?.() ?? '')
+          return
+        }
+        if (text.includes('host:reconnect-offline')) {
+          respond(s, handlers.reconnectOffline?.() ?? '')
+          return
+        }
+      },
+      close() {},
+      error() {},
+    },
+  })
+}
+
+describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () => {
+  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model/transport_id fields', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () =>
+        '0123456789ABCDEF       device product:sunfish model:Pixel_4a device:sunfish transport_id:1\n' +
+        'ZY327K2XYZ\toffline\n' +
+        'ZP2222RMBS   unauthorized transport_id:3\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([
+        { serial: '0123456789ABCDEF', state: 'device' },
+        { serial: 'ZY327K2XYZ', state: 'offline' },
+        { serial: 'ZP2222RMBS', state: 'unauthorized' },
+      ])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a zero-length block (no devices at all) parses to an empty array', async () => {
+    const listener = fakeHostServiceServer({ devicesL: () => '' })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([])
+    } finally {
+      listener.stop(true)
+    }
+  })
+})
+
+describe('AdbClient.reconnectOffline — host:reconnect-offline (plan 85 §3.3, §4.3) — NOT kill-server', () => {
+  test('sends the request and returns the server block verbatim', async () => {
+    const listener = fakeHostServiceServer({ reconnectOffline: () => 'reconnecting device 0123456789ABCDEF\n' })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const result = await client.reconnectOffline()
+      expect(result).toBe('reconnecting device 0123456789ABCDEF\n')
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a zero-length response block resolves to an empty string, not an error', async () => {
+    const listener = fakeHostServiceServer({ reconnectOffline: () => '' })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const result = await client.reconnectOffline()
+      expect(result).toBe('')
+    } finally {
+      listener.stop(true)
+    }
+  })
+})
+
+/**
  * `execStream` (plan 24 §4.2) — the central rule of the plan: a stream must
  * NEVER go through `PerDeviceQueue`. `pending(serial)` staying 0 for a
  * stream's entire lifetime, while `exec()` on the same serial keeps
@@ -462,6 +552,84 @@ describe('AdbClient.execStream — the streaming lane, never PerDeviceQueue (pla
     } finally {
       if (logTimer1) clearInterval(logTimer1)
       if (logTimer2) clearInterval(logTimer2)
+      listener.stop(true)
+    }
+  })
+
+  test('a farm-wide refusal names the current occupancy and which serials hold the slots (plan 85 §5, step 85.1)', async () => {
+    let logTimerA: ReturnType<typeof setInterval> | null = null
+    let logTimerB: ReturnType<typeof setInterval> | null = null
+    const listener = fakeStreamingServer({
+      onStream(s, cmd) {
+        if (cmd !== 'logcat') return
+        s.write(Buffer.from('OKAY'))
+        s.write(Buffer.from('1\n'))
+        const timer = setInterval(() => s.write(Buffer.from('x\n')), 5)
+        if (!logTimerA) logTimerA = timer
+        else logTimerB = timer
+      },
+    })
+    try {
+      const client = new AdbClient({
+        adbPath: 'unused',
+        host: '127.0.0.1',
+        port: listener.port,
+        maxStreamsPerDevice: 4,
+        maxStreams: 2,
+      })
+      const first = await client.execStream('serial-a', 'logcat', { onData: () => {}, onEnd: () => {} })
+      const second = await client.execStream('serial-a', 'logcat', { onData: () => {}, onEnd: () => {} })
+      try {
+        await client.execStream('serial-b', 'logcat', { onData: () => {}, onEnd: () => {} })
+        throw new Error('expected E_ADB_STREAM_LIMIT, but the stream opened')
+      } catch (err) {
+        expect(err).toBeInstanceOf(AdbError)
+        const message = (err as AdbError).message
+        // Names the current occupancy (2 of a max of 2)...
+        expect(message).toContain('2')
+        // ...and the per-device breakdown naming the serial holding both slots.
+        expect(message).toContain('serial-a: 2')
+      }
+      await first.stop()
+      await second.stop()
+    } finally {
+      if (logTimerA) clearInterval(logTimerA)
+      if (logTimerB) clearInterval(logTimerB)
+      listener.stop(true)
+    }
+  })
+
+  test('a per-device refusal also names the farm-wide occupancy breakdown', async () => {
+    let logTimer: ReturnType<typeof setInterval> | null = null
+    const listener = fakeStreamingServer({
+      onStream(s, cmd) {
+        if (cmd !== 'logcat') return
+        s.write(Buffer.from('OKAY'))
+        s.write(Buffer.from('1\n'))
+        logTimer = setInterval(() => s.write(Buffer.from('x\n')), 5)
+      },
+    })
+    try {
+      const client = new AdbClient({
+        adbPath: 'unused',
+        host: '127.0.0.1',
+        port: listener.port,
+        maxStreamsPerDevice: 1,
+        maxStreams: 8,
+      })
+      const first = await client.execStream('serial-limit', 'logcat', { onData: () => {}, onEnd: () => {} })
+      try {
+        await client.execStream('serial-limit', 'logcat', { onData: () => {}, onEnd: () => {} })
+        throw new Error('expected E_ADB_STREAM_LIMIT, but the stream opened')
+      } catch (err) {
+        expect(err).toBeInstanceOf(AdbError)
+        const message = (err as AdbError).message
+        expect(message).toContain('serial-limit')
+        expect(message).toContain('serial-limit: 1')
+      }
+      await first.stop()
+    } finally {
+      if (logTimer) clearInterval(logTimer)
       listener.stop(true)
     }
   })

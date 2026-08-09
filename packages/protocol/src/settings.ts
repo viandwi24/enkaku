@@ -112,6 +112,29 @@ function normaliseLegacyPrep(raw: unknown): unknown {
 }
 
 /**
+ * `adb.maxStreams` was a fixed 4 before plan 85 — a farm-wide cap identical
+ * to the per-device one, which starved any farm past two instrumented
+ * devices. Nobody chose it; it was the default. A stored 4 therefore reads
+ * as "never configured" and is migrated to 0 (auto). Tracked removal:
+ * 2027-02-01, after which a stored 4 means a deliberate 4.
+ */
+function normaliseLegacyAdb(raw: unknown): unknown {
+  if (raw && typeof raw === 'object' && (raw as { maxStreams?: unknown }).maxStreams === 4) {
+    return { ...(raw as object), maxStreams: 0 }
+  }
+  return raw
+}
+
+/**
+ * Screen rotation control (plan 85 §3.7, §4.1) — `'device'` leaves the
+ * device's own auto-rotate behaviour untouched (today's behaviour, exactly);
+ * the lock modes pin `user_rotation` while a session is open and are
+ * reverted on close the same way `keepAwake` already is.
+ */
+export const RotationModeSchema = z.enum(['device', 'lock-portrait', 'lock-landscape', 'lock-current'])
+export type RotationMode = z.infer<typeof RotationModeSchema>
+
+/**
  * A spoofed GPS fix (plan 58 §4.1). Bounds are the real-world ranges — a
  * latitude outside ±90 or a longitude outside ±180 is a typo, not a place.
  * `accuracy` is the radius the OS reports alongside the fix; social apps weigh
@@ -252,9 +275,16 @@ export const DeviceSettingsSchema = z
             .default(false)
             .describe('Turn the device screen off while streaming')
             .meta({ title: 'Turn the device screen off while streaming' }),
+          /**
+           * Rotation lock (plan 85 §3.7, §4.1) — schema only here; applying
+           * and reverting it belongs to plan 85.8, next to `keepAwake`.
+           */
+          rotation: RotationModeSchema.default('device')
+            .describe('Lock the screen orientation while a session is open')
+            .meta({ title: 'Screen rotation' }),
         }),
       )
-      .default({ disableAnimations: true, keepAwake: 'while-charging', standbyScreenOff: false })
+      .default({ disableAnimations: true, keepAwake: 'while-charging', standbyScreenOff: false, rotation: 'device' })
       .meta({ title: 'Before a job runs' }),
     autoReconnect: z
       .boolean()
@@ -570,68 +600,144 @@ export const FarmSettingsSchema = z.object({
    * non-zero value pins the global semaphore and the autoscaler leaves it alone.
    */
   adb: z
-    .object({
-      maxConcurrent: z
-        .number()
-        .int()
-        .min(0)
-        .max(24)
-        .default(0)
-        .describe('Total adb commands in flight across the farm. 0 = scale automatically with device count.')
-        .meta({ title: 'Max concurrent adb commands' }),
-      execTimeoutMs: z
-        .number()
-        .int()
-        .min(1_000)
-        .max(120_000)
-        .default(15_000)
-        .describe('Default execution budget for a single adb command.')
-        .meta({ title: 'adb command timeout (ms)' }),
-      maxQueueDepth: z
-        .number()
-        .int()
-        .min(4)
-        .max(256)
-        .default(32)
-        .describe('Pending adb commands allowed per device before new ones are rejected.')
-        .meta({ title: 'Max queue depth per device' }),
-      /**
-       * The streaming lane's own budget (plan 24 §3.2, §4.2) — completely
-       * separate from `maxConcurrent` above: streams never draw from the
-       * exec semaphore, so their limit is its own field rather than a slice
-       * of it.
-       *
-       * Raised from 3 to 4 by plan 39 §3.3: with the ui-server inspector
-       * (plan 34), the always-on crash watcher (plan 37), a human's Monitor
-       * tab, and now a file transfer or `pm install` (plan 39 — both run on
-       * this lane, never `PerDeviceQueue`, so a 60 MB push does not block
-       * video/input/jobs on that device), four concurrent slots is the
-       * floor that lets all four coexist without one starving another. This
-       * must never be lowered back down.
-       */
-      maxStreamsPerDevice: z
-        .number()
-        .int()
-        .min(1)
-        .max(8)
-        .default(4)
-        .describe(
-          'Concurrent adb streams (logcat, top, crash, file transfer, ...) allowed on one device. Kept above 1 because the ui-server inspector, the always-on crash watcher, and a file transfer or APK install each hold a slot of their own, on top of anything a human opens in the Monitor tab.',
-        )
-        .meta({ title: 'Max streams per device' }),
-      maxStreams: z
-        .number()
-        .int()
-        .min(1)
-        .max(64)
-        .default(4)
-        .describe('Concurrent adb streams allowed across the whole farm.')
-        .meta({ title: 'Max concurrent streams (farm-wide)' }),
-    })
-    .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 4, maxStreams: 4 })
+    .preprocess(
+      normaliseLegacyAdb,
+      z.object({
+        maxConcurrent: z
+          .number()
+          .int()
+          .min(0)
+          .max(24)
+          .default(0)
+          .describe('Total adb commands in flight across the farm. 0 = scale automatically with device count.')
+          .meta({ title: 'Max concurrent adb commands' }),
+        execTimeoutMs: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(120_000)
+          .default(15_000)
+          .describe('Default execution budget for a single adb command.')
+          .meta({ title: 'adb command timeout (ms)' }),
+        maxQueueDepth: z
+          .number()
+          .int()
+          .min(4)
+          .max(256)
+          .default(32)
+          .describe('Pending adb commands allowed per device before new ones are rejected.')
+          .meta({ title: 'Max queue depth per device' }),
+        /**
+         * The streaming lane's own budget (plan 24 §3.2, §4.2) — completely
+         * separate from `maxConcurrent` above: streams never draw from the
+         * exec semaphore, so their limit is its own field rather than a slice
+         * of it.
+         *
+         * Raised from 3 to 4 by plan 39 §3.3: with the ui-server inspector
+         * (plan 34), the always-on crash watcher (plan 37), a human's Monitor
+         * tab, and now a file transfer or `pm install` (plan 39 — both run on
+         * this lane, never `PerDeviceQueue`, so a 60 MB push does not block
+         * video/input/jobs on that device), four concurrent slots is the
+         * floor that lets all four coexist without one starving another. This
+         * must never be lowered back down.
+         */
+        maxStreamsPerDevice: z
+          .number()
+          .int()
+          .min(1)
+          .max(8)
+          .default(4)
+          .describe(
+            'Concurrent adb streams (logcat, top, crash, file transfer, ...) allowed on one device. Kept above 1 because the ui-server inspector, the always-on crash watcher, and a file transfer or APK install each hold a slot of their own, on top of anything a human opens in the Monitor tab.',
+          )
+          .meta({ title: 'Max streams per device' }),
+        // CHANGED (plan 85 §3.1, §4.1): 0 = auto (computeAutoStreams). A
+        // stored 4 is rewritten to 0 by `normaliseLegacyAdb` above — tracked
+        // removal, 00-overview §9.
+        maxStreams: z
+          .number()
+          .int()
+          .min(0)
+          .max(64)
+          .default(0)
+          .describe('Concurrent adb streams allowed across the whole farm. 0 scales it automatically with the number of connected devices.')
+          .meta({ title: 'Max concurrent streams (farm-wide)' }),
+        maxHostConcurrent: z
+          .number()
+          .int()
+          .min(1)
+          .max(32)
+          .default(4)
+          .describe('How many adb command-line processes (install, push, forward) may run at once.')
+          .meta({ title: 'Max adb CLI processes' }),
+        maxInstallConcurrent: z
+          .number()
+          .int()
+          .min(1)
+          .max(16)
+          .default(2)
+          .describe('How many APK installs or file pushes may run at once across the farm. USB bandwidth is shared.')
+          .meta({ title: 'Max concurrent installs' }),
+      }),
+    )
+    .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 4, maxStreams: 0, maxHostConcurrent: 4, maxInstallConcurrent: 2 })
     .meta({
       title: 'adb concurrency',
       description: 'How many adb commands the farm runs at once, and the budgets for a single command.',
+    }),
+  /**
+   * Device discovery reconciliation (plan 85 §3.3, §4.1) — schema only here;
+   * the reconciler that reads these is plan 85.2. `scanIntervalSec: 0`
+   * disables the periodic rescan entirely (regression watch, plan 85 §7.4).
+   */
+  discovery: z
+    .object({
+      scanIntervalSec: z
+        .number()
+        .int()
+        .min(0)
+        .max(300)
+        .default(10)
+        .describe('How often adb is re-scanned for devices the live event stream may have missed. 0 disables the rescan.')
+        .meta({ title: 'Device rescan interval (s)' }),
+      offlineGraceSec: z
+        .number()
+        .int()
+        .min(5)
+        .max(600)
+        .default(20)
+        .describe('How long a device may sit in adb’s "offline" state before one automatic reconnect is attempted.')
+        .meta({ title: 'Offline grace (s)' }),
+      recoveryCooldownSec: z
+        .number()
+        .int()
+        .min(30)
+        .max(3600)
+        .default(120)
+        .describe('Minimum gap between automatic reconnect attempts for the same device.')
+        .meta({ title: 'Recovery cooldown (s)' }),
+    })
+    .default({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
+    .meta({
+      title: 'Device discovery',
+      description: 'How often adb is re-scanned for devices the live event stream may have missed, and the recovery cadence for offline/unauthorized devices.',
+    }),
+  /**
+   * The always-on crash watcher's farm-wide switch (plan 85 §3.2, §4.1) —
+   * schema only here; the consumer that reads it is plan 85.4.
+   */
+  monitor: z
+    .object({
+      crashWatch: z
+        .enum(['always', 'off'])
+        .default('always')
+        .describe('Keep a logcat crash feed open on every device with a live session.')
+        .meta({ title: 'Always-on crash detection' }),
+    })
+    .default({ crashWatch: 'always' })
+    .meta({
+      title: 'Crash monitoring',
+      description: 'Whether the always-on crash feed stays open for the life of a session.',
     }),
   /**
    * Auto-quarantine on repeated adb failure, and its automatic recovery

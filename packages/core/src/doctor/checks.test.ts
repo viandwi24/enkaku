@@ -1,4 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { openDb, runMigrations } from '../db'
+import { devices } from '../db/schema'
 import {
   adbServerCheck,
   configCheck,
@@ -12,6 +17,26 @@ import {
   toolsCheck,
 } from './checks/index'
 import { fakeDoctorContext } from './test-helpers'
+
+/**
+ * A real, on-disk `enkaku.db` with the given device rows (plan 85 §5 step
+ * 85.2's doctor check reads the file directly rather than through
+ * `DoctorContext` — see `checks/devices.ts`'s own comment for why). Returns
+ * the temp data dir; callers clean it up with `rmSync`.
+ */
+function tempDataDirWithDevices(rows: Array<{ serial: string; status: string }>): string {
+  const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-doctor-devices-'))
+  const opened = openDb(join(dataDir, 'enkaku.db'))
+  runMigrations(opened.db, opened.sqlite)
+  for (const [i, r] of rows.entries()) {
+    opened.db
+      .insert(devices)
+      .values({ id: `d${i}`, stableId: `stable-${i}`, serial: r.serial, label: `Phone ${i}`, status: r.status })
+      .run()
+  }
+  opened.sqlite.close()
+  return dataDir
+}
 
 describe('runtime check', () => {
   test('ok when Bun meets the minimum version', async () => {
@@ -221,6 +246,60 @@ describe('devices check', () => {
     const result = await devicesCheck.run(fakeDoctorContext({ devices: { list: async () => [{ serial: 'ZP3', state: 'offline' }] } }))
     expect(result.status).toBe('warn')
     expect(result.remedy).toContain('ZP3')
+  })
+})
+
+describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §5 step 85.2, testing H3)', () => {
+  test('no local database yet: falls back to adb-only reporting, exactly as before this plan', async () => {
+    // `fakeDoctorContext`'s default dataDir points nowhere on disk.
+    const result = await devicesCheck.run(fakeDoctorContext({ devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
+    expect(result.status).toBe('ok')
+    expect(result.observed).toContain('registry: no local database yet')
+  })
+
+  test('agrees: adb connected and the registry already has it non-offline — ok, side by side in observed', async () => {
+    const dataDir = tempDataDirWithDevices([{ serial: 'ZP1', status: 'idle' }])
+    try {
+      const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
+      expect(result.status).toBe('ok')
+      expect(result.observed).toContain('adb: ZP1:device')
+      expect(result.observed).toContain('registry: ZP1:idle')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('disagrees: adb sees it connected, the registry still has it offline — fails, names the serial and both sides', async () => {
+    const dataDir = tempDataDirWithDevices([{ serial: 'ZP1', status: 'offline' }])
+    try {
+      const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
+      expect(result.status).toBe('fail')
+      expect(result.remedy).toContain('ZP1')
+      expect(result.remedy).toContain('rescan')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('disagrees the other way: the registry thinks it is online, adb does not see it at all — fails', async () => {
+    const dataDir = tempDataDirWithDevices([{ serial: 'ZP-GONE', status: 'busy' }])
+    try {
+      const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [] } }))
+      expect(result.status).toBe('fail')
+      expect(result.remedy).toContain('ZP-GONE')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a device adb sees that the registry has never heard of at all is NOT a disagreement — ordinary Discovered-tray territory', async () => {
+    const dataDir = tempDataDirWithDevices([])
+    try {
+      const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP-NEW', state: 'device' }] } }))
+      expect(result.status).toBe('ok')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 })
 

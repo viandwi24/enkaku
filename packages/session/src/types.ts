@@ -1,4 +1,4 @@
-import type { DeviceStatus, KeepAwakeMode } from '@enkaku/protocol'
+import type { DeviceStatus, KeepAwakeMode, RotationMode } from '@enkaku/protocol'
 
 /**
  * The data contract the session needs, **with no knowledge of any database**.
@@ -26,6 +26,8 @@ export interface DeviceSnapshot {
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff (Plan 17 §3.5). */
   standbyScreenOff?: boolean
+  /** DeviceSettings.prep.rotation (Plan 85 §3.7, §4.1). */
+  rotation?: RotationMode
   /**
    * DeviceSettings.identity (plan 58 §4.2) — the spoofed identity the device
    * presents (timezone/locale/GPS). Carried so a session/job can read what the

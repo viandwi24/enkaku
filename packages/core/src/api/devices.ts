@@ -10,12 +10,14 @@ import {
   MonitorKindSchema,
   MonitorSaveResponseSchema,
   ReadinessSchema,
+  ReconcileReportSchema,
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
   type DeviceSettings,
   type LeaseHolder,
   type Readiness,
+  type ReconcileReport,
   type RegistryResponse,
   type ServerMessage,
   type ShellMode,
@@ -167,6 +169,15 @@ export function createDeviceRoutes(deps: {
    */
   /** Bring a just-admitted device online if it is currently connected (plan 56) — see `DeviceRegistry.admitted`. */
   onAdmitted?: (stableId: string) => void
+  /**
+   * `POST /rescan` (plan 85 §3.3, §4.4, §4.6) — the manual escape hatch for
+   * the discovery reconciler: "the first thing a human does when a phone is
+   * missing is look for that button." `undefined`/`null` (orchestrator
+   * mode, or the adb subsystem never came up) refuses with `E_NOT_SUPPORTED`
+   * rather than the route not existing at all — same optionality pattern as
+   * `readiness` below.
+   */
+  rescan?: () => Promise<ReconcileReport> | null
   deviceDefaults?: () => DeviceSettings
   /** `readiness.defaultDesired` (plan 43 §4.4) — a separate accessor for the same reason it is one in the registry. */
   defaultDesiredReadiness?: () => Readiness
@@ -277,6 +288,29 @@ export function createDeviceRoutes(deps: {
     deps.db.delete(discoveredDevices).where(eq(discoveredDevices.stableId, stableId)).run()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.dismiss', target: stableId })
     return c.json({ ok: true })
+  })
+
+  /**
+   * `POST /rescan` (plan 85 §3.3, §4.4, §4.6) — a static route, mounted
+   * before `/:id` for the same shadowing reason as `/refs`/`/blocked`/
+   * `/discovered` above. Runs the discovery reconciler's pass right now,
+   * instead of waiting up to `discovery.scanIntervalSec` for the next
+   * automatic one — the Studio **Rescan** button calls this directly.
+   *
+   * The plan's own table names `device.admin` as the permission; that
+   * permission does not exist in this codebase's ACL
+   * (`packages/core/src/auth/acl.ts`, out of scope for this change) — every
+   * other admin-style device mutation in this exact router (block, forget,
+   * tags, cluster, discovered/admit) already gates on `device.settings`, so
+   * this uses the same one rather than inventing a permission nothing else
+   * recognises.
+   */
+  app.post('/rescan', requirePermission('device.settings'), async (c) => {
+    const result = deps.rescan?.() ?? null
+    if (!result) throw new EnkakuError('E_NOT_SUPPORTED', 'device discovery is not available (orchestrator mode, or the adb subsystem is not ready)')
+    const report = await result
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.rescan' })
+    return typedJson(c, ReconcileReportSchema, report)
   })
 
   // `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a minimal lookup, not

@@ -15,7 +15,7 @@ import {
 import { PerDeviceQueue, Semaphore } from './queue'
 import { ShellFrameParser, type ShellResult } from './shell-frames'
 import { AdbSocket } from './socket'
-import { DeviceTracker } from './tracker'
+import { DeviceTracker, type TrackedDevice } from './tracker'
 
 export type { ShellResult } from './shell-frames'
 
@@ -61,19 +61,34 @@ export class StreamLane {
     this.maxGlobal = Math.max(1, maxGlobal)
   }
 
+  /**
+   * `serial: count` for every device currently holding a lane slot, sorted by
+   * descending count (plan 85 §5, step 85.1) — this is what turns "the farm
+   * already has 4 adb stream(s) running (max 4)" (F3/F7's field log line, on
+   * its own useless for naming a culprit) into a line that names which
+   * devices hold the slots, without a second round trip to `stats()`.
+   */
+  private occupancyBreakdown(): string {
+    if (this.perDevice.size === 0) return '(no device holds a slot)'
+    return [...this.perDevice.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([s, n]) => `${s}: ${n}`)
+      .join(', ')
+  }
+
   /** Reserves a slot or throws `E_ADB_STREAM_LIMIT`; never blocks. */
   acquire(serial: string): () => void {
     const current = this.perDevice.get(serial) ?? 0
     if (current >= this.maxPerDevice) {
       throw new AdbError(
         'E_ADB_STREAM_LIMIT',
-        `device ${serial} already has ${current} adb stream(s) running (max ${this.maxPerDevice} per device)`,
+        `device ${serial} already has ${current} adb stream(s) running (max ${this.maxPerDevice} per device); farm-wide: ${this.globalCount}/${this.maxGlobal} held by ${this.occupancyBreakdown()}`,
       )
     }
     if (this.globalCount >= this.maxGlobal) {
       throw new AdbError(
         'E_ADB_STREAM_LIMIT',
-        `the farm already has ${this.globalCount} adb stream(s) running (max ${this.maxGlobal})`,
+        `the farm already has ${this.globalCount} adb stream(s) running (max ${this.maxGlobal}), held by ${this.occupancyBreakdown()}`,
       )
     }
     this.perDevice.set(serial, current + 1)
@@ -97,6 +112,28 @@ export class StreamLane {
       perDevice: Object.fromEntries(this.perDevice),
     }
   }
+}
+
+/**
+ * `host:devices-l`'s response body (plan 85 §3.3, §4.3). Unlike
+ * `host:track-devices` (tab-separated, `tracker.ts`'s `parseSnapshot`), adb's
+ * long-listing format left-pads the serial to a fixed column width with
+ * plain spaces and then appends unstructured `key:value` fields
+ * (product/model/device/transport_id) after the state — so this splits on
+ * ANY whitespace run rather than assuming a tab, and simply ignores
+ * everything past the second column. A zero-length block (no devices at
+ * all) parses to `[]`.
+ */
+function parseDevicesLongBlock(raw: string): TrackedDevice[] {
+  const out: TrackedDevice[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const [serial, state] = trimmed.split(/\s+/)
+    if (!serial || !state) continue
+    out.push({ serial, state })
+  }
+  return out
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {
@@ -605,6 +642,38 @@ export class AdbClient {
     } finally {
       if (!ok) socket.close(true)
     }
+  }
+
+  /**
+   * `host:devices-l` → adb's own truth (plan 85 §3.3, §4.3) — the
+   * `DeviceReconciler`'s primary signal, deliberately independent of
+   * `trackDevices()`'s long-lived event stream: a one-shot request/response
+   * exactly like `version()`/`connectDevice()` below, so it can be polled on
+   * a timer without holding a second permanent connection open.
+   */
+  async listDevices(): Promise<TrackedDevice[]> {
+    return this.withSocket(async (socket) => {
+      socket.send('host:devices-l')
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      const raw = await socket.readBlock({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      return parseDevicesLongBlock(raw)
+    })
+  }
+
+  /**
+   * `host:reconnect-offline` (plan 85 §3.3, §4.3) — asks the adb server to
+   * re-open its transports for every device currently stuck `offline`. This
+   * is a host-level re-open, NOT `kill-server`: port 5037 keeps its owner
+   * and no other tool's session on it is disturbed (`adb kill-server` is
+   * forbidden repo-wide outside the Toolchain Manager's swap flow, spec
+   * §10.4).
+   */
+  async reconnectOffline(): Promise<string> {
+    return this.withSocket(async (socket) => {
+      socket.send('host:reconnect-offline')
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      return await socket.readBlock({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+    })
   }
 
   /** `adb connect <host:port>` via host service (wireless / adb-tcp). */

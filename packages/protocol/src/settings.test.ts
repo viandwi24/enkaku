@@ -84,7 +84,25 @@ describe('DeviceSettingsSchema.prep — legacy stayAwake transform (Plan 17 §4.
       'disableAnimations',
       'keepAwake',
       'standbyScreenOff',
+      'rotation',
     ])
+  })
+})
+
+describe('DeviceSettingsSchema.prep.rotation — screen rotation (plan 85 §3.7, §4.1)', () => {
+  test('defaults to "device" (today\'s behaviour: Enkaku neither sets nor clears rotation)', () => {
+    expect(defaultDeviceSettings().prep.rotation).toBe('device')
+    expect(DeviceSettingsSchema.parse({}).prep.rotation).toBe('device')
+  })
+
+  test('accepts every documented lock mode', () => {
+    for (const mode of ['device', 'lock-portrait', 'lock-landscape', 'lock-current'] as const) {
+      expect(DeviceSettingsSchema.parse({ prep: { rotation: mode } }).prep.rotation).toBe(mode)
+    }
+  })
+
+  test('rejects a value outside the documented modes', () => {
+    expect(() => DeviceSettingsSchema.parse({ prep: { rotation: 'landscape' } })).toThrow()
   })
 })
 
@@ -96,7 +114,9 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
       execTimeoutMs: 15_000,
       maxQueueDepth: 32,
       maxStreamsPerDevice: 4,
-      maxStreams: 4,
+      maxStreams: 0,
+      maxHostConcurrent: 4,
+      maxInstallConcurrent: 2,
     })
     expect(parsed.health).toEqual({ consecutiveFailures: 3, autoQuarantine: true, probeIntervalSec: 60 })
   })
@@ -121,13 +141,26 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
     expect(() => FarmSettingsSchema.parse({ adb: { maxConcurrent: -1 } })).toThrow()
   })
 
-  test('adb.maxStreamsPerDevice / adb.maxStreams (plan 24 §4.2) are bounded and independent of maxConcurrent', () => {
+  test('adb.maxStreamsPerDevice / adb.maxStreams (plan 24 §4.2, min(0) since plan 85 §4.1) are bounded and independent of maxConcurrent', () => {
     expect(FarmSettingsSchema.parse({ adb: { maxStreamsPerDevice: 3 } }).adb.maxStreamsPerDevice).toBe(3)
     expect(FarmSettingsSchema.parse({ adb: { maxStreams: 16 } }).adb.maxStreams).toBe(16)
     expect(() => FarmSettingsSchema.parse({ adb: { maxStreamsPerDevice: 0 } })).toThrow()
     expect(() => FarmSettingsSchema.parse({ adb: { maxStreamsPerDevice: 9 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ adb: { maxStreams: 0 } })).toThrow()
+    // 0 is now a legal, meaningful value (auto) — only a negative value throws.
+    expect(FarmSettingsSchema.parse({ adb: { maxStreams: 0 } }).adb.maxStreams).toBe(0)
+    expect(() => FarmSettingsSchema.parse({ adb: { maxStreams: -1 } })).toThrow()
     expect(() => FarmSettingsSchema.parse({ adb: { maxStreams: 65 } })).toThrow()
+  })
+
+  test('adb.maxHostConcurrent / adb.maxInstallConcurrent (plan 85 §4.1) are bounded and default correctly', () => {
+    expect(defaultFarmSettings().adb.maxHostConcurrent).toBe(4)
+    expect(defaultFarmSettings().adb.maxInstallConcurrent).toBe(2)
+    expect(FarmSettingsSchema.parse({ adb: { maxHostConcurrent: 32 } }).adb.maxHostConcurrent).toBe(32)
+    expect(() => FarmSettingsSchema.parse({ adb: { maxHostConcurrent: 0 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adb: { maxHostConcurrent: 33 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ adb: { maxInstallConcurrent: 16 } }).adb.maxInstallConcurrent).toBe(16)
+    expect(() => FarmSettingsSchema.parse({ adb: { maxInstallConcurrent: 0 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adb: { maxInstallConcurrent: 17 } })).toThrow()
   })
 
   test('defaultFarmSettings() carries adb and health with their documented defaults', () => {
@@ -136,10 +169,75 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
     expect(s.adb.execTimeoutMs).toBe(15_000)
     expect(s.adb.maxQueueDepth).toBe(32)
     expect(s.adb.maxStreamsPerDevice).toBe(4)
-    expect(s.adb.maxStreams).toBe(4)
+    expect(s.adb.maxStreams).toBe(0)
+    expect(s.adb.maxHostConcurrent).toBe(4)
+    expect(s.adb.maxInstallConcurrent).toBe(2)
     expect(s.health.consecutiveFailures).toBe(3)
     expect(s.health.autoQuarantine).toBe(true)
     expect(s.health.probeIntervalSec).toBe(60)
+  })
+})
+
+describe('FarmSettingsSchema.adb.maxStreams — legacy migration (plan 85 §3.1, §4.1)', () => {
+  test('a stored 4 (the old, never-deliberately-chosen default) is rewritten to 0 (auto)', () => {
+    expect(FarmSettingsSchema.parse({ adb: { maxStreams: 4 } }).adb.maxStreams).toBe(0)
+  })
+
+  test('a stored 7 (a deliberate, non-default value) is left untouched', () => {
+    expect(FarmSettingsSchema.parse({ adb: { maxStreams: 7 } }).adb.maxStreams).toBe(7)
+  })
+
+  test('a fresh row with no adb.maxStreams at all defaults to 0 (auto), not the migration path', () => {
+    expect(FarmSettingsSchema.parse({}).adb.maxStreams).toBe(0)
+    expect(FarmSettingsSchema.parse({ adb: {} }).adb.maxStreams).toBe(0)
+    expect(defaultFarmSettings().adb.maxStreams).toBe(0)
+  })
+
+  test('the migration does not disturb the other adb fields on the same stored row', () => {
+    const parsed = FarmSettingsSchema.parse({ adb: { maxStreams: 4, maxConcurrent: 10, maxStreamsPerDevice: 2 } })
+    expect(parsed.adb.maxStreams).toBe(0)
+    expect(parsed.adb.maxConcurrent).toBe(10)
+    expect(parsed.adb.maxStreamsPerDevice).toBe(2)
+  })
+})
+
+describe('FarmSettingsSchema.discovery — device rescan reconciliation (plan 85 §3.3, §4.1)', () => {
+  test('a settings row that predates this field (an empty object) still parses, with working defaults', () => {
+    const parsed = FarmSettingsSchema.parse({})
+    expect(parsed.discovery).toEqual({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
+    expect(defaultFarmSettings().discovery).toEqual({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
+  })
+
+  test('scanIntervalSec is bounded to [0, 300]; 0 disables the rescan (plan 85 §7.4 regression watch)', () => {
+    expect(FarmSettingsSchema.parse({ discovery: { scanIntervalSec: 0 } }).discovery.scanIntervalSec).toBe(0)
+    expect(FarmSettingsSchema.parse({ discovery: { scanIntervalSec: 300 } }).discovery.scanIntervalSec).toBe(300)
+    expect(() => FarmSettingsSchema.parse({ discovery: { scanIntervalSec: -1 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ discovery: { scanIntervalSec: 301 } })).toThrow()
+  })
+
+  test('offlineGraceSec is bounded to [5, 600]', () => {
+    expect(() => FarmSettingsSchema.parse({ discovery: { offlineGraceSec: 4 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ discovery: { offlineGraceSec: 601 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ discovery: { offlineGraceSec: 5 } }).discovery.offlineGraceSec).toBe(5)
+  })
+
+  test('recoveryCooldownSec is bounded to [30, 3600]', () => {
+    expect(() => FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 29 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 3601 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 3600 } }).discovery.recoveryCooldownSec).toBe(3600)
+  })
+})
+
+describe('FarmSettingsSchema.monitor — always-on crash detection switch (plan 85 §3.2, §4.1)', () => {
+  test('a settings row that predates this field (an empty object) still parses, defaulting to "always"', () => {
+    const parsed = FarmSettingsSchema.parse({})
+    expect(parsed.monitor).toEqual({ crashWatch: 'always' })
+    expect(defaultFarmSettings().monitor).toEqual({ crashWatch: 'always' })
+  })
+
+  test('only "always" or "off" are accepted', () => {
+    expect(FarmSettingsSchema.parse({ monitor: { crashWatch: 'off' } }).monitor.crashWatch).toBe('off')
+    expect(() => FarmSettingsSchema.parse({ monitor: { crashWatch: 'sometimes' } })).toThrow()
   })
 })
 

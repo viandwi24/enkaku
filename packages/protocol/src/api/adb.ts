@@ -26,6 +26,32 @@ export const AdbStatsResponseSchema = z.object({
       consecutiveFailures: z.number(),
     }),
   ),
+  /**
+   * The shared `/ws` transport's own health (plan 85 §3.6, §4.6) — measures,
+   * rather than picks between, H1 (control replies queued behind video on
+   * the shared socket) and H2 (a silent-but-open socket the client cannot
+   * detect on its own). `watchdogReconnects` counts connection churn the
+   * SERVER can observe (opens beyond peak concurrency) — it can never be
+   * attributed to the client's silence watchdog specifically, since
+   * `ClientMessage` deliberately carries no such signal; the browser console
+   * is the source of truth for a genuinely watchdog-caused reconnect.
+   */
+  transport: z.object({
+    connections: z.number(),
+    bufferedBytesMax: z.number(),
+    bufferedBytesP95: z.number(),
+    videoBytesPerSec: z.number(),
+    controlReplyMsP50: z.number(),
+    controlReplyMsP95: z.number(),
+    watchdogReconnects: z.number(),
+  }),
+  /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()`, verbatim (plan 85 §3.4, §4.6). */
+  hostAdb: z.object({
+    running: z.number(),
+    maxConcurrent: z.number(),
+    installsRunning: z.number(),
+    longLived: z.number(),
+  }),
 })
 
 /** `GET/POST /api/devices/:id/adb-endpoint`. */

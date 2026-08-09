@@ -43,8 +43,15 @@ export interface UiServerLauncherDeps {
   serial: string
   /** Per-device shell exec (through the Plan 01 queue) — everything EXCEPT the instrumentation itself (see `execStream` below). */
   exec: (cmd: string, opts?: TransportExecOptions) => Promise<string>
-  /** `adb forward` and `install` need CLI-level adb, supplied by the core. */
-  hostAdb: (args: string[]) => Promise<string>
+  /**
+   * `adb forward` and `install` need CLI-level adb, supplied by the core.
+   * Installs pass `{ lane: 'install', serial }` so the core's bounded
+   * host-adb helper (plan 85 §3.4, §4.5) can serialise them per device AND
+   * apply the farm's `adb.maxInstallConcurrent` cap — a fleet attaching
+   * inspectors at once would otherwise fire two unbounded `pm install`
+   * commands per device, all at once, across every device (H5).
+   */
+  hostAdb: (args: string[], opts?: { lane?: 'default' | 'install'; serial?: string }) => Promise<string>
   /** APK path from the Toolchain Manager. */
   apkPaths: () => Promise<{ app: string; test: string }>
   /**
@@ -86,6 +93,16 @@ export interface UiServerLauncher {
   start(localPort: number): Promise<void>
   stop(localPort: number): Promise<void>
   isInstalled(): Promise<boolean>
+  /**
+   * Re-issues `adb forward` for an ALREADY-RUNNING instrumentation, without
+   * touching install state or the instrumentation stream (plan 85 §3.5,
+   * fixes F18's real cause): `adb forward` entries do not survive a
+   * ui-server restart, so a client `fetch` holding a pooled keep-alive
+   * connection to the old forward fails with "the socket connection was
+   * closed unexpectedly" rather than a clean refusal. `UiServerClient` calls
+   * this at most once per failed request, right before its one retry.
+   */
+  reassertForward(localPort: number): Promise<void>
 }
 
 /**
@@ -106,8 +123,38 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
     const { app, test } = await deps.apkPaths()
     deps.onLog?.('info', `installing the ui-server APKs on ${deps.serial}`)
     // -g auto-grants runtime permissions; -r replaces a different version.
-    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', app])
-    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', test])
+    // `lane: 'install'` (plan 85 §3.4, §5 step 85.3, tests H5): these two
+    // installs for the SAME device never run concurrently with each other,
+    // nor with more than `adb.maxInstallConcurrent` installs farm-wide.
+    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', app], { lane: 'install', serial: deps.serial })
+    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', test], { lane: 'install', serial: deps.serial })
+  }
+
+  /**
+   * `adb forward` plus the ownership check below (plan 34 §4.1's port-races
+   * note). Shared between `start()` and `reassertForward()` (plan 85 §3.5)
+   * so the client's stale-forward retry re-issues EXACTLY the same forward
+   * `start()` would have, not a second, slightly different implementation.
+   */
+  const assertForward = async (localPort: number): Promise<void> => {
+    await deps.hostAdb(['-s', deps.serial, 'forward', `tcp:${localPort}`, `tcp:${UI_SERVER_DEVICE_PORT}`])
+
+    // A host port belongs to one device. Every phone's ui-server listens on
+    // the same device port, so a host port that another device already holds
+    // gets silently rebound and this inspector would answer with the OTHER
+    // phone's screen. Throwing here drops us to the uiautomator-dump
+    // fallback, which is slow but at least reads the right device.
+    const list = await deps.hostAdb(['forward', '--list'])
+    const owner = list
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .find(([, local]) => local === `tcp:${localPort}`)
+    if (!owner || owner[0] !== deps.serial) {
+      throw new Error(
+        `tcp:${localPort} is bound to ${owner?.[0] ?? 'nothing'}, not to ${deps.serial} — refusing to inspect another device`,
+      )
+    }
+    deps.onLog?.('debug', `forward tcp:${localPort} → device tcp:${UI_SERVER_DEVICE_PORT}`)
   }
 
   return {
@@ -202,24 +249,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
         },
       })
       try {
-        await deps.hostAdb(['-s', deps.serial, 'forward', `tcp:${localPort}`, `tcp:${UI_SERVER_DEVICE_PORT}`])
-
-        // A host port belongs to one device. Every phone's ui-server listens on
-        // the same device port, so a host port that another device already holds
-        // gets silently rebound and this inspector would answer with the OTHER
-        // phone's screen. Throwing here drops us to the uiautomator-dump
-        // fallback, which is slow but at least reads the right device.
-        const list = await deps.hostAdb(['forward', '--list'])
-        const owner = list
-          .split('\n')
-          .map((line) => line.trim().split(/\s+/))
-          .find(([, local]) => local === `tcp:${localPort}`)
-        if (!owner || owner[0] !== deps.serial) {
-          throw new Error(
-            `tcp:${localPort} is bound to ${owner?.[0] ?? 'nothing'}, not to ${deps.serial} — refusing to inspect another device`,
-          )
-        }
-        deps.onLog?.('debug', `forward tcp:${localPort} → device tcp:${UI_SERVER_DEVICE_PORT}`)
+        await assertForward(localPort)
       } catch (err) {
         // The stream is now the thing holding the instrumentation open, so a
         // failure past this point (a lost port race, a dead hostAdb) must not
@@ -244,6 +274,10 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
       await handle?.stop().catch(() => undefined)
       await deps.exec(`am force-stop ${UI_SERVER_PACKAGE}`).catch(() => undefined)
       await deps.exec(`am force-stop ${UI_SERVER_TEST_PACKAGE}`).catch(() => undefined)
+    },
+
+    async reassertForward(localPort) {
+      await assertForward(localPort)
     },
   }
 }

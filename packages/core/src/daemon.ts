@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { AdbClient, createAdbdShim } from '@enkaku/adb'
-import { UI_SERVER_PACKAGE } from '@enkaku/drivers'
+import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
 import {
   DeviceSettingsSchema,
@@ -40,8 +40,9 @@ import { recomputeBatchStatus } from './clusters/status'
 import { createJobRoutes } from './api/jobs'
 import { createSettingsRoutes } from './api/settings'
 import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
-import { computeAutoConcurrency } from './device/adb-scaling'
+import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
+import { createHostAdb, type HostAdb } from './device/host-adb'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
 import { createAdbStatsRoutes } from './api/adb-stats'
 import { createDoctorRoutes } from './api/doctor'
@@ -123,9 +124,11 @@ import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
 import { createDeviceRegistry, listDevicesWithTags, type DeviceRegistry } from './registry/device-registry'
+import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
+import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
 import { startScrcpySession } from '@enkaku/scrcpy'
 import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
@@ -138,6 +141,7 @@ import { createToolInstallStore } from './tools/store'
 import { createLogger } from './util/logger'
 import { acquireDataDirLock, type DataDirLock } from './util/data-dir-lock'
 import { createEventRecorder, type EventRecorder } from './events/recorder'
+import { findPortHolder } from './doctor/context'
 
 import pkg from '../package.json'
 
@@ -156,6 +160,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let opened: OpenedDb | null = null
   let adb: AdbClient | null = null
   let registry: DeviceRegistry | null = null
+  /** The discovery reconciler (plan 85 §3.3, §4.4, fixes F8/F9/F10) — null until the adb subsystem comes up (or in orchestrator mode, where it never does), and stopped/cleared in `stop()`. */
+  let reconciler: DeviceReconciler | null = null
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
   let health: DeviceHealth | null = null
@@ -165,6 +171,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let retention: RetentionGc | null = null
   let recorder: EventRecorder | null = null
   let adbEndpointManager: AdbEndpointManager | null = null
+  /** The one bounded adb CLI helper (plan 85 §3.4, §4.5) — `null` only before `start()` builds it and after `stop()` tears it down; `killAll()` is called from `stop()` below. */
+  let hostAdb: HostAdb | null = null
   /** Device readiness (plan 43) — constructed once `leases` exists (below), used by every module below that reconciles or holds on it. */
   let readiness: ReadinessManager | null = null
   let stopScheduler: (() => void) | null = null
@@ -172,6 +180,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let stopExpiryReaper: (() => void) | null = null
   let stopScheduleRunner: (() => void) | null = null
   let dataDirLock: DataDirLock | null = null
+  /** The 15s application-level `heartbeat` broadcast (plan 85 §3.6, §4.6, §5 85.7a) — cleared in `stop()` like every other periodic timer here. */
+  let heartbeatInterval: ReturnType<typeof setInterval> | null = null
   let stopped = false
   let adbState = 'provisioning'
 
@@ -185,7 +195,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // Before anything opens the database or touches adb: one core per data
       // directory. Two cores here would silently fight over the same phones
       // (see `data-dir-lock.ts` for what that actually looked like).
-      dataDirLock = acquireDataDirLock(cfg.dataDir, log)
+      //
+      // `portCheck` (plan 85 §4.7, §5 85.6, fixes F14) — closes the gap the
+      // field log showed directly: `taking over a stale lock from pid 19964
+      // (no such process)` immediately followed by `Failed to start server.
+      // Is port 7700 in use?`. Those two lines only look contradictory
+      // because `process.kill(pid, 0)` (what makes a lock "stale") answers
+      // "is that pid alive", never "is the port free" — this probes the
+      // port too, at the moment the log was actively implying it was free.
+      dataDirLock = acquireDataDirLock(cfg.dataDir, log, { host: cfg.host, port: cfg.port })
 
       // 1. DB + migrasi
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
@@ -277,11 +295,39 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const authMode = resolveAuthMode(cfg)
       const settingsStore = createFarmSettingsStore(db, { authMode })
 
+      // The ONE bounded adb CLI helper (plan 85 §3.4, §4.5, fixes F11/F12) —
+      // built here, unconditionally, before `adb` exists, mirroring every
+      // other "adb might not be ready yet" dep in this function
+      // (`guestAgentHostAdb`/`transferService` used to have their own
+      // separate copies of this same lazy-read pattern; `hostAdb` below
+      // replaces every one of them). `binaryPath` reads the outer `adb`
+      // variable fresh on every call, so a request that arrives before adb
+      // is up gets a correctly-coded `E_ADB_UNAVAILABLE` refusal instead of
+      // spawning against an undefined path. `killAll()` is called from
+      // `stop()` below — nothing this instance spawns can outlive the core.
+      //
+      // `hostAdbHandle` is a narrowed, non-nullable const alias — the same
+      // `adbClient = adb` trick used further down this function — so every
+      // closure below (`guestAgent`, `makeScrcpy`, `makeInspector`) can call
+      // `.run`/`.spawnLongLived` without TS widening it back to `HostAdb |
+      // null` just because the outer `let hostAdb` is also reassigned in
+      // `stop()`.
+      const hostAdbHandle = createHostAdb({
+        binaryPath: () => {
+          if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+          return adb.binaryPath
+        },
+        settings: () => settingsStore.get().adb,
+        onLog: (level, msg) => log.child('host-adb')[level](msg),
+      })
+      hostAdb = hostAdbHandle
+
       // adb concurrency and health diagnostics (plan 23 §4.3, §4.6). Created
       // here (rather than inside the try-block below, once `adb` exists)
       // because `/api/adb/stats` is mounted in step 4, before adb is up.
       const adbMetrics = createAdbMetricsStore()
       let lastLoggedAdbConcurrency: number | null = null
+      let lastLoggedAdbStreams: number | null = null
       // The autoscaler (plan 23 §3.2, §4.3): recomputed whenever a device
       // appears, disappears, or changes status, and whenever `adb.maxConcurrent`
       // changes in settings. A non-zero setting always wins over the formula.
@@ -308,11 +354,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
                 : `concurrency auto-scaled to ${target} (${nonOfflineCount} non-offline devices)`,
             )
         }
-        // The streaming lane's budget (plan 24 §3.2, §4.2) — a completely
-        // separate field from `maxConcurrent` above, applied here because
-        // this is already "whenever adb.maxConcurrent-shaped settings
-        // change, push them onto the live client".
-        adb.setStreamLimits(cfg.maxStreamsPerDevice, cfg.maxStreams)
+        // The streaming lane's budget (plan 24 §3.2, §4.2; auto-scaled by
+        // plan 85 §3.1, §4.2) — a completely separate field from
+        // `maxConcurrent` above, applied here because this is already
+        // "whenever adb.maxConcurrent-shaped settings change, push them
+        // onto the live client". Same "a non-zero setting always wins" rule
+        // and "log only when the effective value changes" discipline as the
+        // `maxConcurrent` branch above, and the same non-offline device
+        // count.
+        const streamsTarget = cfg.maxStreams > 0 ? cfg.maxStreams : computeAutoStreams(nonOfflineCount)
+        adb.setStreamLimits(cfg.maxStreamsPerDevice, streamsTarget)
+        if (streamsTarget !== lastLoggedAdbStreams) {
+          lastLoggedAdbStreams = streamsTarget
+          log
+            .child('adb')
+            .info(
+              cfg.maxStreams > 0
+                ? `stream budget pinned to ${streamsTarget} by adb.maxStreams`
+                : `stream budget auto-scaled to ${streamsTarget} (${nonOfflineCount} non-offline devices)`,
+            )
+        }
       }
       settingsStore.onChange(() => recomputeAdbConcurrency())
 
@@ -365,6 +426,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // before the WS router (which owns the actual `CrashWatcher`) exists.
       let watchCrashesForDevice: ((deviceId: string) => void) | null = null
       let unwatchCrashesForDevice: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: `/api/adb/stats`'s `transport` block (plan
+      // 85 §3.6, §4.6) lives on the WS router's own connection bookkeeping,
+      // but `createAdbStatsRoutes` is built (below, in step 4) before
+      // `attachWsRouter` ever runs.
+      let transportStats: (() => TransportSnapshot) | null = null
       // Same forward-ref pattern: the shared reaper (`expiryReaper`, built well before the agent
       // runner exists) sweeps overdue agent approvals on its own cadence (plan 66 §4.3) instead of
       // a second scheduler.
@@ -1111,18 +1177,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // `ports` (built earlier, unconditionally) but must exist before `adb`
       // is ready, since it is mounted into `createApp` below — the same
       // "lazy, adb-not-ready-yet-safe deps" pattern `adbEndpointManager`/
-      // `transferService` already use, for the same reason. `hostAdb`/`exec`
-      // read the outer `adb` variable fresh on every call rather than
-      // capturing it now, so a request that arrives before adb is up gets a
+      // `transferService` already use, for the same reason. `exec` reads the
+      // outer `adb` variable fresh on every call rather than capturing it
+      // now, so a request that arrives before adb is up gets a
       // correctly-coded refusal instead of a route that does not exist.
-      const guestAgentHostAdb = async (args: string[]): Promise<string> => {
-        if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
-        const proc = Bun.spawn([adb.binaryPath, ...args], { stdout: 'pipe', stderr: 'pipe' })
-        const out = await new Response(proc.stdout).text()
-        const exit = await proc.exited
-        if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
-        return out
-      }
+      // `hostAdb` is the ONE shared bounded helper built above (plan 85
+      // §3.4, §4.5) — this used to be its own third inline copy of the
+      // undrained-stderr, no-timeout, no-bound F11 defect.
       const guestAgentExec = async (serial: string, cmd: string): Promise<ShellResult> => {
         if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
         // The whole result, not just `.stdout`: the launcher decides whether
@@ -1132,7 +1193,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       }
       const guestAgent = createGuestAgentRoutes({
         db,
-        hostAdb: guestAgentHostAdb,
+        hostAdb: hostAdbHandle.run,
         exec: guestAgentExec,
         apkPath: () =>
           resolveGuestAgentApkPath({
@@ -1310,6 +1371,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // time rather than capturing a null — admitting a device cannot
           // happen before the registry exists anyway.
           onAdmitted: (stableId) => registry?.admitted(stableId),
+          // `POST /:id/../rescan` (plan 85 §4.6, §5 step 85.2) — same
+          // forward-ref pattern as `onAdmitted` above: `reconciler` is
+          // assigned later in boot (or never, in orchestrator mode / if the
+          // adb subsystem failed to start), so this reads it fresh at call
+          // time rather than capturing a null.
+          rescan: () => reconciler?.runOnce() ?? null,
           // Presence's snapshot half (plan 31 §3.4): `/ws` has no replay, so a
           // client GETs the current list before subscribing to `device.viewers`.
           viewersOf: (deviceId) => viewersOfDevice?.(deviceId) ?? [],
@@ -1404,6 +1471,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           health: () => health,
           auto: () => settingsStore.get().adb.maxConcurrent === 0,
           sessions: () => sessions,
+          // `hostAdbHandle` is unconditional and non-null from construction
+          // (see its own comment above); `transportStats` is the forward-ref
+          // resolved once `attachWsRouter` runs.
+          transport: () => transportStats?.() ?? null,
+          hostAdb: () => hostAdbHandle.stats(),
         }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
@@ -1478,73 +1550,111 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           ? { tls: { cert: Bun.file(cfg.tls.certPath), key: Bun.file(cfg.tls.keyPath) } }
           : {}
 
-      server = Bun.serve({
-        hostname: cfg.host,
-        port: cfg.port,
-        ...tlsOptions,
-        async fetch(req, srv) {
-          const url = new URL(req.url)
-          // The node tunnel authenticates with the credential from enrollment.
-          // `/agent/ws` is the pre-plan-61 path — accepted alongside `/node/ws`
-          // for the same compatibility window as `agent.hello` (§3.3): a node
-          // binary already deployed in the field has this URL hardcoded and
-          // cannot be told to dial somewhere else.
-          if (url.pathname === '/node/ws' || url.pathname === '/agent/ws') {
-            const nodeId = await nodeAuth.verify(req.headers.get('authorization'))
-            if (!nodeId) return new Response('unauthorized', { status: 401 })
-            if (srv.upgrade(req, { data: { nodeId } })) return undefined
-            return new Response('upgrade failed', { status: 400 })
-          }
-          if (url.pathname === '/ws') {
-            // A WS handshake does not always carry cookies → support single-use tickets.
-            // The resolved user rides along on `ws.data` (plan 18 §4.2, §18.4):
-            // control.acquired/control.revoked and input events need an actor,
-            // not just an anonymous per-connection clientId.
-            let userId: string | null = null
-            if (authMode === 'server') {
-              const ticket = url.searchParams.get('ticket')
-              const cookie = req.headers.get('cookie')?.match(/enkaku_session=([^;]+)/)?.[1]
-              const user = ticket ? auth.consumeWsTicket(ticket) : cookie ? auth.validateSession(cookie) : null
-              if (!user) return new Response('unauthorized', { status: 401 })
-              userId = user.id
-            } else {
-              userId = auth.ensureLocalAdmin().id
+      try {
+        server = Bun.serve({
+          hostname: cfg.host,
+          port: cfg.port,
+          ...tlsOptions,
+          async fetch(req, srv) {
+            const url = new URL(req.url)
+            // The node tunnel authenticates with the credential from enrollment.
+            // `/agent/ws` is the pre-plan-61 path — accepted alongside `/node/ws`
+            // for the same compatibility window as `agent.hello` (§3.3): a node
+            // binary already deployed in the field has this URL hardcoded and
+            // cannot be told to dial somewhere else.
+            if (url.pathname === '/node/ws' || url.pathname === '/agent/ws') {
+              const nodeId = await nodeAuth.verify(req.headers.get('authorization'))
+              if (!nodeId) return new Response('unauthorized', { status: 401 })
+              if (srv.upgrade(req, { data: { nodeId } })) return undefined
+              return new Response('upgrade failed', { status: 400 })
             }
-            if (srv.upgrade(req, { data: { userId } })) return undefined
-            return new Response('upgrade failed', { status: 400 })
-          }
-          return app.fetch(req, srv)
-        },
-        websocket: {
-          open: (ws) => {
-            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-            if (nodeId) {
-              tunnelRegistry.attach(nodeId, ws)
-              return
+            if (url.pathname === '/ws') {
+              // A WS handshake does not always carry cookies → support single-use tickets.
+              // The resolved user rides along on `ws.data` (plan 18 §4.2, §18.4):
+              // control.acquired/control.revoked and input events need an actor,
+              // not just an anonymous per-connection clientId.
+              let userId: string | null = null
+              if (authMode === 'server') {
+                const ticket = url.searchParams.get('ticket')
+                const cookie = req.headers.get('cookie')?.match(/enkaku_session=([^;]+)/)?.[1]
+                const user = ticket ? auth.consumeWsTicket(ticket) : cookie ? auth.validateSession(cookie) : null
+                if (!user) return new Response('unauthorized', { status: 401 })
+                userId = user.id
+              } else {
+                userId = auth.ensureLocalAdmin().id
+              }
+              if (srv.upgrade(req, { data: { userId } })) return undefined
+              return new Response('upgrade failed', { status: 400 })
             }
-            hub.handlers.open?.(ws)
+            return app.fetch(req, srv)
           },
-          close: (ws, code, reason) => {
-            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-            if (nodeId) {
-              tunnelRegistry.detach(ws)
-              return
-            }
-            hub.handlers.close?.(ws, code, reason)
+          websocket: {
+            // Set explicitly rather than inherited (plan 85 §3.6, §4.6, §5
+            // 85.7a) — Bun's own defaults happen to already be 120s/true, but
+            // a value nobody wrote down is not a value anyone can review.
+            // `sendPings` is Bun's OWN protocol-level WebSocket ping/pong,
+            // invisible to browser JS; the 15s `heartbeat` broadcast below is
+            // the separate, APPLICATION-level beat the Studio client's watchdog
+            // actually reads (a browser cannot observe the protocol-level one).
+            idleTimeout: 120,
+            sendPings: true,
+            open: (ws) => {
+              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+              if (nodeId) {
+                tunnelRegistry.attach(nodeId, ws)
+                return
+              }
+              hub.handlers.open?.(ws)
+            },
+            close: (ws, code, reason) => {
+              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+              if (nodeId) {
+                tunnelRegistry.detach(ws)
+                return
+              }
+              hub.handlers.close?.(ws, code, reason)
+            },
+            message: (ws, message) => {
+              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
+              if (nodeId) {
+                if (typeof message === 'string') tunnelRouter.handleNodeMessage(ws, nodeId, message)
+                else tunnelRouter.handleNodeFrame(nodeId, new Uint8Array(message))
+                return
+              }
+              hub.handlers.message?.(ws, message)
+            },
           },
-          message: (ws, message) => {
-            const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-            if (nodeId) {
-              if (typeof message === 'string') tunnelRouter.handleNodeMessage(ws, nodeId, message)
-              else tunnelRouter.handleNodeFrame(nodeId, new Uint8Array(message))
-              return
-            }
-            hub.handlers.message?.(ws, message)
-          },
-        },
-      })
+        })
+      } catch (err) {
+        // Bun re-throws the bare libuv/OS error on a bind failure (plan 85
+        // §4.7, §5 85.6, fixes F13/F14) — `Failed to start server. Is port
+        // 7700 in use?`, with no hint of WHO is holding it. On Windows that
+        // question used to be unanswerable at all (`findPortHolderWindows`
+        // returned `null` unconditionally); now it names the pid and image,
+        // the same lookup `enkaku doctor` itself uses.
+        if (err && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'EADDRINUSE') {
+          const holder = await findPortHolder(cfg.port)
+          const holderText = holder ? `pid ${holder.pid} (${holder.processName})` : 'another process'
+          throw new EnkakuError(
+            'E_PORT_IN_USE',
+            `port ${cfg.port} is already held by ${holderText}, which is not an Enkaku core.\n` +
+              `        Stop it, or set ENKAKU_PORT to a free port. \`enkaku doctor\` explains more.`,
+          )
+        }
+        throw err
+      }
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
       log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
+
+      // The application-level heartbeat (plan 85 §3.6, §4.2, §4.6, §5
+      // 85.7a, tests H2) — every 15s, so the Studio client's 45s silence
+      // watchdog always has three chances to see traffic before it decides
+      // the socket is dead rather than merely idle. Distinct from
+      // `sendPings` above: that is Bun's protocol-level ping/pong, which a
+      // browser's WebSocket API cannot observe at all.
+      heartbeatInterval = setInterval(() => {
+        hub.broadcast({ type: 'heartbeat', payload: { t: Date.now() } })
+      }, 15_000)
 
       // The plugin packs carried inside a compiled binary (staged, not
       // activated). Deliberately after `listen` and deliberately not awaited:
@@ -1645,6 +1755,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // and the settle path use, so a crash-driven abort classifies and
           // records exactly like any other job failure.
           crashPolicy: () => settingsStore.get().job.crashPolicy,
+          // `monitor.crashWatch` (plan 85 §3.2) — read fresh for the same
+          // reason `crashPolicy` is, so an operator who turns crash detection
+          // off on a large farm does not have to restart the core.
+          crashWatch: () => settingsStore.get().monitor.crashWatch,
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
@@ -1665,6 +1779,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         releaseLeaseReadinessHold = handler.releaseLeaseHold
         watchCrashesForDevice = handler.watchDevice
         unwatchCrashesForDevice = handler.unwatchDevice
+        transportStats = handler.transportStats
       }
 
       if (isOrchestrator) {
@@ -1700,18 +1815,55 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
+        // Boot-time forward cleanup (plan 85 §4.8, §5 85.6, fixes F20) —
+        // `adb forward` entries live in the adb SERVER, not in this process,
+        // so they survive a crash and accumulate across restarts. Every
+        // entry whose LOCAL port falls inside the configured ui-server range
+        // and whose REMOTE is `tcp:9008` is ours by construction — nothing
+        // else binds that exact pair — so it is safe to remove
+        // unconditionally. scrcpy's own forwards are deliberately left
+        // alone: they use `tcp:0` (a random local port) and are therefore
+        // both harmless leftovers and indistinguishable from another tool's,
+        // so reaching into the shared adb server to remove one would be
+        // guessing, not cleanup.
+        try {
+          const { rangeStart, rangeEnd } = parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE)
+          const list = await hostAdbHandle.run(['forward', '--list'])
+          let removed = 0
+          for (const rawLine of list.split('\n')) {
+            const fields = rawLine.trim().split(/\s+/)
+            const serial = fields[0]
+            const local = fields[1]
+            const remote = fields[2]
+            if (!serial || !local || !remote || remote !== `tcp:${UI_SERVER_DEVICE_PORT}`) continue
+            const portMatch = /^tcp:(\d+)$/.exec(local)
+            if (!portMatch) continue
+            const port = Number.parseInt(portMatch[1]!, 10)
+            if (port < rangeStart || port > rangeEnd) continue
+            try {
+              // `-s serial`, matching `launcher.ts`'s own `forward --remove`
+              // call — the removal is scoped to the exact (serial, local)
+              // pair the listing reported, never a bare port number.
+              await hostAdbHandle.run(['-s', serial, 'forward', '--remove', local])
+              removed += 1
+            } catch (err) {
+              log.warn(`boot-time forward cleanup: failed to remove ${local} (${serial}): ${String(err)}`)
+            }
+          }
+          if (removed > 0) {
+            log.info(
+              `boot-time cleanup: removed ${removed} leaked ui-server adb forward(s) (range ${rangeStart}-${rangeEnd}, remote tcp:${UI_SERVER_DEVICE_PORT})`,
+            )
+          }
+        } catch (err) {
+          log.warn(`boot-time forward cleanup: could not list adb forwards, skipping: ${String(err)}`)
+        }
+
         // `ports` is the one constructed unconditionally above, before adb
         // was ready — shared with the guest-agent network route (plan 44 §5.7).
         const adbClient = adb
         const inspectorLog = log.child('inspector')
         const scrcpyLog = log.child('scrcpy')
-        const hostAdb = async (args: string[]) => {
-          const proc = Bun.spawn([adbClient.binaryPath, ...args], { stdout: 'pipe', stderr: 'pipe' })
-          const out = await new Response(proc.stdout).text()
-          const exit = await proc.exited
-          if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
-          return out
-        }
 
         sessions = createSessionManager({
           client: adb,
@@ -1756,7 +1908,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // which is how a port could end up bound to the other device.
             const profile = QUALITY_PROFILES[quality]
             return startScrcpySession(
-              { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout), hostAdb },
+              {
+                serial: transport.serial,
+                exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout),
+                hostAdb: hostAdbHandle.run,
+                spawnLongLived: hostAdbHandle.spawnLongLived,
+              },
               {
                 jarPath,
                 maxSize: profile.maxSize,
@@ -1772,13 +1929,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
                 toolchain,
                 ports,
                 log: inspectorLog,
-                hostAdb: async (args) => {
-                  const proc = Bun.spawn([adbClient.binaryPath, ...args], { stdout: 'pipe', stderr: 'pipe' })
-                  const out = await new Response(proc.stdout).text()
-                  const exit = await proc.exited
-                  if (exit !== 0) throw new Error(`adb ${args.join(' ')} exit ${exit}: ${out.trim()}`)
-                  return out
-                },
+                hostAdb: hostAdbHandle.run,
                 // The Plan 24 streaming lane, bound to this adb client (plan
                 // 34 §4.1) — the ui-server instrumentation's `am instrument
                 // -w` runs here instead of through the per-device queue.
@@ -1994,6 +2145,35 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           },
         })
         await registry.start()
+
+        // The discovery reconciler (plan 85 §3.3, §4.4, §5 step 85.2, fixes
+        // F8/F9/F10) — `host:track-devices` speaks on change only, so this
+        // is the generalisation of the comment already on
+        // `DeviceRegistry.admitted`: every serial `host:devices-l` reports
+        // gets re-derived and reconciled on its own cadence, independent of
+        // whether the tracker's event stream ever caught it. `runOnce()`
+        // right after the tracker starts (rather than waiting a full
+        // `scanIntervalSec`) is what makes five phones already plugged in
+        // at boot converge immediately instead of up to one interval late.
+        reconciler = createDeviceReconciler({
+          client: adb,
+          registry,
+          settings: () => settingsStore.get().discovery,
+          log: log.child('discovery'),
+          broadcast: (msg) => hub.broadcast(msg),
+        })
+        try {
+          const bootReport = await reconciler.runOnce()
+          if (bootReport.adopted.length > 0 || bootReport.dropped.length > 0 || bootReport.offline.length > 0) {
+            log.child('discovery').info(
+              `boot reconcile: seen ${bootReport.seen}, adopted ${bootReport.adopted.length}, dropped ${bootReport.dropped.length}, offline ${bootReport.offline.length}`,
+            )
+          }
+        } catch (err) {
+          log.child('discovery').warn(`boot reconcile pass failed, the periodic scan will retry: ${String(err)}`)
+        }
+        reconciler.start()
+
         recomputeAdbConcurrency()
         adbState = 'ready'
         log.info(`adb subsystem ready (devices registered: ${db.select().from(devices).all().length})`)
@@ -2010,6 +2190,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       if (stopped) return
       stopped = true
       log.info('stopping...')
+      if (heartbeatInterval) clearInterval(heartbeatInterval)
+      heartbeatInterval = null
       server?.stop(true)
       server = null
       stopScheduler?.()
@@ -2034,8 +2216,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       remoteSessions = null
       await webrtcRelayRef?.closeAll()
       webrtcRelayRef = null
+      // Stopped before the registry it depends on (plan 85 §5 step 85.2) —
+      // a pending reconcile pass calling into a torn-down registry would be
+      // the exact kind of "process left running past stop()" 00-overview §7
+      // exists to catch.
+      reconciler?.stop()
+      reconciler = null
       await registry?.stop()
       registry = null
+      // Plan 85 §3.4, §4.5, §5 step 85.3 (fixes F12) — the backstop. Every
+      // scrcpy session's long-lived shell child should already be dead from
+      // `sessions?.closeAll()` above calling `ScrcpySession.close()`, but
+      // this is what makes that a GUARANTEE rather than a hope: any adb CLI
+      // child this instance ever spawned (a still-running install/push, or a
+      // long-lived child that missed a clean `close()`) dies here too.
+      // Never touches a process it did not itself spawn (see `killAll`'s own
+      // doc comment in `host-adb.ts`).
+      hostAdb?.killAll()
+      hostAdb = null
       await adb?.dispose()
       adb = null
       opened?.sqlite.close()

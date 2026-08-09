@@ -11,6 +11,7 @@ import { createToolsRoutes } from '../tools/routes'
 import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import { createSlowLogger } from '../util/slow-log'
 import { typedJson } from '../api/typed-json'
 
 export interface HttpDeps {
@@ -109,6 +110,18 @@ function isLoopbackOrigin(origin: string): boolean {
 
 export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
+
+  // The slow-request logger (plan 85 §3.6, §4.6, §5 85.7a) — registered
+  // FIRST so it wraps every other middleware and route below: Hono runs
+  // `app.use` callbacks in registration order up to `next()`, then unwinds
+  // in reverse, so starting the clock here and resuming after `next()`
+  // times the whole request regardless of which route eventually served it.
+  const logSlowRequest = createSlowLogger(deps.log, { thresholdMs: 1000, label: 'request' })
+  app.use('*', async (c, next) => {
+    const startedAt = Date.now()
+    await next()
+    logSlowRequest(new URL(c.req.url).pathname, Date.now() - startedAt)
+  })
 
   // Studio dev mode (next dev on another port) — non-production only.
   if (process.env.NODE_ENV !== 'production') {

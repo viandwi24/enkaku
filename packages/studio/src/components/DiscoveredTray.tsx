@@ -1,9 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { Inbox, X } from 'lucide-react'
+import { Inbox, RefreshCw, X } from 'lucide-react'
 import { z } from 'zod'
-import type { ClusterInfo } from '@enkaku/protocol'
+import { ReconcileReportSchema, type ClusterInfo, type ReconcileReport } from '@enkaku/protocol'
 import { AdmitDeviceDialog } from '@/components/AdmitDeviceDialog'
 import { EmptyState } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,24 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { api, useAction } from '@/lib/actions'
 import type { DiscoveredDevice } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
+
+/**
+ * One line, matching the plan's own example verbatim: "Scanned 5 devices ·
+ * adopted 1 · nothing else changed" (plan 85 §5 step 85.2, §4.6). Every
+ * named category that actually changed is listed; "nothing else changed"
+ * always closes the line, reading as "nothing changed" on its own when
+ * nothing did.
+ */
+function summariseReconcileReport(report: ReconcileReport): string {
+  const parts: string[] = []
+  if (report.adopted.length > 0) parts.push(`adopted ${report.adopted.length}`)
+  if (report.dropped.length > 0) parts.push(`dropped ${report.dropped.length}`)
+  if (report.offline.length > 0) parts.push(`${report.offline.length} still offline${report.reconnectIssued ? ' — reconnect attempted' : ''}`)
+  if (report.unauthorized.length > 0) parts.push(`${report.unauthorized.length} unauthorized`)
+  const scanned = `Scanned ${report.seen} device${report.seen === 1 ? '' : 's'}`
+  if (parts.length === 0) return `${scanned} · nothing changed`
+  return `${scanned} · ${parts.join(' · ')} · nothing else changed`
+}
 
 /**
  * The Discovered tray (plan 56 §3.5, §4.5): phones adb has seen that nobody
@@ -21,6 +39,11 @@ import { relativeTime } from '@/lib/format'
  * A row is a queue entry, not a live device view: it still shows here while
  * the phone is disconnected, and `lastSeen`/`firstSeen` are what tell the
  * operator how stale it is (plan 56 §3.4's "queue of decisions").
+ *
+ * **Rescan** (plan 85 §3.3, §4.6, §5 step 85.2) runs the discovery
+ * reconciler's pass right now instead of waiting for the next automatic
+ * one — the plan's own reasoning: "the first thing a human does when a
+ * phone is missing is look for that button."
  */
 export function DiscoveredTray({
   discovered,
@@ -38,6 +61,7 @@ export function DiscoveredTray({
 }) {
   const [target, setTarget] = useState<DiscoveredDevice | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [lastReport, setLastReport] = useState<ReconcileReport | null>(null)
   const { run, isPending } = useAction()
 
   // Dismiss straight from the row (plan 56 §6 risk table: "one click"), for
@@ -54,6 +78,18 @@ export function DiscoveredTray({
       },
     )
 
+  // Runs the discovery reconciler's pass right now (plan 85 §3.3, §4.6) —
+  // may pull a newly-adopted device straight into the farm and out of this
+  // tray, or add a brand-new one to it, so `onChanged` refetches either way.
+  const rescan = () =>
+    run('rescan', () => api('/api/devices/rescan', ReconcileReportSchema, { method: 'POST' }), {
+      failure: 'Could not rescan for devices',
+      onSuccess: (report) => {
+        setLastReport(report)
+        onChanged()
+      },
+    })
+
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
@@ -65,6 +101,22 @@ export function DiscoveredTray({
               dismissed phone is not blocked, it just comes back here the next time it connects.
             </SheetDescription>
           </SheetHeader>
+
+          <div className="flex items-center justify-between gap-2 border-b px-4 pb-3">
+            <p className="min-w-0 truncate text-[11.5px] text-fg-subtle">
+              {lastReport ? summariseReconcileReport(lastReport) : 'Missing a phone? Rescan checks adb directly, right now.'}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 gap-1.5 text-[12px]"
+              disabled={isPending('rescan')}
+              onClick={() => void rescan()}
+            >
+              <RefreshCw className={`size-3.5 ${isPending('rescan') ? 'animate-spin' : ''}`} aria-hidden />
+              {isPending('rescan') ? 'Scanning…' : 'Rescan'}
+            </Button>
+          </div>
 
           <div className="flex-1 overflow-auto px-4 pb-4">
             {discovered.length === 0 ? (

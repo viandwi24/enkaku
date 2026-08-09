@@ -1,6 +1,10 @@
 import { definePlugin, type ScriptContext } from '@enkaku/sdk'
 import type { Selector } from '@enkaku/protocol'
 import { z } from 'zod'
+import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
+import { clearBlockingDialog, nextDialogAction } from './dialogs'
+import switchAccount from './switch-account'
+import searchFollow from './search-follow'
 
 /**
  * TikTok automation pack.
@@ -36,87 +40,6 @@ import { z } from 'zod'
  * No liking, following, commenting, or sharing. This pack only watches and scrolls. Anything that
  * writes to the account is a separate, explicit decision.
  */
-
-/** A small deterministic PRNG so a run can be replayed exactly — `Math.random()` cannot be seeded. */
-export function makeRng(seed: number): () => number {
-  let s = seed >>> 0 || 0x2f6e2b1
-  return () => {
-    // xorshift32 — plenty for gesture jitter, not for anything that needs real entropy.
-    s ^= s << 13
-    s >>>= 0
-    s ^= s >>> 17
-    s ^= s << 5
-    s >>>= 0
-    return s / 0x100000000
-  }
-}
-
-function between(rng: () => number, lo: number, hi: number): number {
-  return lo + rng() * (hi - lo)
-}
-
-/**
- * How long a person leaves one video on screen.
- *
- * A single uniform range is the tell: real watch times are heavy-tailed and lumpy. Most clips get a
- * few seconds, a fair number get abandoned almost immediately, and a small minority hold attention
- * for a long time. The weights below are a coarse model of that shape, not measured data — they
- * exist so the *distribution* is uneven, which is the property that matters.
- */
-const WATCH_BUCKETS = [
-  { weight: 0.12, lo: 600, hi: 1_900, label: 'skip' },
-  { weight: 0.58, lo: 2_500, hi: 9_000, label: 'watch' },
-  { weight: 0.22, lo: 9_000, hi: 22_000, label: 'engaged' },
-  { weight: 0.08, lo: 22_000, hi: 50_000, label: 'hooked' },
-] as const
-
-/**
- * Picks a watch time, TILTED by how well the video matched — never switched by it.
- *
- * `tilt > 0` moves probability mass towards the long buckets, `tilt < 0` towards `skip`. It does
- * NOT pick a bucket outright, and that distinction is the whole design: "matched ⇒ long, unmatched
- * ⇒ short" produces a perfectly bimodal watch-time distribution with nothing in the middle, which
- * is a sharper fingerprint than no randomisation at all — no person is that consistent. Tilting the
- * weights keeps the buckets overlapping, so a matched video is sometimes abandoned in a second and
- * an unmatched one is sometimes watched to the end, exactly as happens with a real viewer.
- */
-export function pickWatchMs(rng: () => number, tilt = 0): { ms: number; label: string } {
-  // `skip` scales down as tilt rises and up as it falls; `engaged`/`hooked` do the opposite.
-  const bias: Record<string, number> = { skip: -1, watch: 0, engaged: 0.8, hooked: 1 }
-  const weights = WATCH_BUCKETS.map((b) => Math.max(0.01, b.weight * (1 + tilt * (bias[b.label] ?? 0))))
-  const total = weights.reduce((sum, w) => sum + w, 0)
-  const r = rng() * total
-  let acc = 0
-  for (let i = 0; i < WATCH_BUCKETS.length; i++) {
-    acc += weights[i] as number
-    if (r <= acc) {
-      const b = WATCH_BUCKETS[i] as (typeof WATCH_BUCKETS)[number]
-      return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label }
-    }
-  }
-  const last = WATCH_BUCKETS[WATCH_BUCKETS.length - 1] as (typeof WATCH_BUCKETS)[number]
-  return { ms: Math.round(between(rng, last.lo, last.hi)), label: last.label }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * Frame size, read straight out of the PNG `screenshot()` already returns.
- *
- * `DeviceApi` exposes no frame size, and `find()` refuses the viewport-sized containers that would
- * otherwise reveal it — but every screenshot is a PNG, and a PNG's IHDR carries width and height in
- * bytes 16..24. Exact, free, and it works on any device instead of hardcoding this phone's 720×1640.
- */
-export function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
-  if (bytes.length < 24) return null
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (dv.getUint32(0) !== 0x89504e47) return null
-  const width = dv.getUint32(16)
-  const height = dv.getUint32(20)
-  return width > 0 && height > 0 ? { width, height } : null
-}
 
 /**
  * One swipe that actually turns the page.
@@ -313,54 +236,6 @@ async function snapshot(ctx: ScriptContext<unknown>): Promise<Uint8Array | null>
 }
 
 /**
- * Every way a runtime-permission dialog spells "deny".
- *
- * TikTok's contact prompt is NOT the Android system dialog — it is TikTok's own modal ("Temukan
- * kontak", buttons `Izinkan` / `Jangan izinkan`), so the `permissioncontroller` ids never match it.
- * They are kept anyway because a genuine system prompt can still appear, and matching one by its
- * stable id beats matching a translated label. Nothing here spells "allow".
- */
-const DENY_SELECTORS: Selector[] = [
-  { id: 'com.android.permissioncontroller:id/permission_deny_button' },
-  { id: 'com.android.packageinstaller:id/permission_deny_button' },
-  { text: 'Jangan izinkan' },
-  { text: 'JANGAN IZINKAN' },
-  { text: 'Tolak' },
-  { text: "Don't allow" },
-  { text: 'Deny' },
-]
-
-/**
- * Gets rid of whatever modal is in the way WITHOUT ever granting anything.
- *
- * Two mechanisms, in order, because on this device the first one often cannot run at all:
- *
- * 1. Tap an explicit deny button, when the inspector can see one. Preferred — it is unambiguous.
- * 2. Otherwise press BACK. Verified on hardware against the live "Izinkan TikTok mengakses kontak?"
- *    modal: one BACK closed it and returned to the feed with nothing granted. BACK is safe by
- *    construction — no Android dialog and no in-app pre-prompt treats it as consent.
- *
- * Why the fallback is not optional: `uiautomator dump` on this phone comes back **Killed** on the
- * modal screen (and intermittently on the feed too), and the farm's own ui-server answered
- * `did not respond within 3000ms` during a real run. A recovery path that depends on the inspector
- * is a recovery path that is unavailable exactly when it is needed.
- */
-async function clearBlockingDialog(ctx: ScriptContext<unknown>): Promise<void> {
-  for (const sel of DENY_SELECTORS) {
-    try {
-      if ((await ctx.device.find(sel)) === null) continue
-      await ctx.device.tap(sel)
-      ctx.log.warn('denied a permission prompt', { selector: JSON.stringify(sel) })
-      return
-    } catch {
-      // Inspector unavailable — fall through to BACK rather than pretending we know what is there.
-    }
-  }
-  ctx.log.warn('pressing BACK to clear whatever is on top — no deny button was readable')
-  await ctx.device.key('BACK')
-}
-
-/**
  * Force-stop, launch, and give the app time to settle — the one place a restart is spelled out, so
  * `prepare` and the mid-run recovery cannot drift apart.
  *
@@ -382,10 +257,12 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
 
 export default definePlugin({
   id: 'tiktok',
-  version: '1.0.0',
+  version: '1.3.2',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
   scripts: [
+    switchAccount,
+    searchFollow,
     {
       id: 'auto-scroll',
       title: 'Auto-scroll the feed',
@@ -464,6 +341,8 @@ export default definePlugin({
         let matched = 0
         let commentVisits = 0
         let unreadable = 0
+        let consecutiveBlind = 0
+        let dialogSweeps = 0
         let before = await snapshot(ctx)
         if (!before) throw new Error('could not take a first screenshot — the inspector never answered')
         const frame = pngSize(before)
@@ -478,6 +357,42 @@ export default definePlugin({
 
           const signals = await readVisibleSignals(ctx)
           if (!signals.ok) unreadable += 1
+
+          // `readVisibleSignals()` already runs every iteration for the keyword match just below,
+          // so this rides along on that call instead of adding a periodic sweep or an extra
+          // inspector round-trip in the happy path — reactive, not polling. It exists because the
+          // screenshot stall ladder further down cannot see this failure mode at all: a modal like
+          // "Item Virtual dan pembaruan Kebijakan Reward" only covers the middle of the screen, so
+          // the live-stream video above it and the scrolling chat below it keep two consecutive
+          // screenshots different even while the feed itself is completely stuck — `bytesEqual`
+          // never fires and the swipe/relaunch ladder never gets a chance to run.
+          if (signals.ok) {
+            consecutiveBlind = 0
+            dialogSweeps = 0
+          } else {
+            consecutiveBlind += 1
+          }
+          const dialogAction = nextDialogAction(consecutiveBlind, dialogSweeps)
+          if (dialogAction === 'blocked') {
+            // A silent `success` on a screen that has been stuck behind a modal for three sweeps
+            // is worse than any thrown error — it is exactly the failure this fix exists to catch.
+            ctx.log.warn('giving up: the feed never came back after repeated dialog sweeps', { dialogSweeps })
+            await ctx.artifact.screenshot('blocked')
+            throw new Error(
+              `blocked: the feed did not recover after ${dialogSweeps} dialog-clearing sweeps — a modal (e.g. a policy-consent notice) is likely still covering the screen`,
+            )
+          }
+          if (dialogAction === 'sweep') {
+            dialogSweeps += 1
+            consecutiveBlind = 0
+            ctx.log.warn('feed selectors came back not-found twice in a row — sweeping for a blocking dialog', { dialogSweeps })
+            await clearBlockingDialog(ctx)
+            await sleep(2_000)
+            // Do not swipe or watch into whatever was just covering the screen, and do not count
+            // this iteration as a watched video — `watched.push` below never runs for it.
+            continue
+          }
+
           const score = scoreContent(`${signals.author} ${signals.tag}`, ctx.params.keywords, [])
           // −1 is a blocked word: tilt hard towards `skip`. 0 is "nothing matched", which is NOT the
           // same as "bad" — it stays neutral, because most of the feed is neither wanted nor unwanted.
@@ -576,6 +491,7 @@ export default definePlugin({
           matched,
           commentVisits,
           unreadable,
+          dialogSweeps,
           seed: seed,
         })
 
@@ -591,6 +507,12 @@ export default definePlugin({
           commentVisits,
           unreadable,
           endedOnStall: stalled >= 3,
+          // How many times a blocking dialog was swept away mid-run. There is deliberately no
+          // `endedOnBlocked` counterpart to `endedOnStall`: a blocked run THROWS (see
+          // `nextDialogAction`) and never reaches this return, so such a field could only ever be
+          // reported false. The blocked outcome is carried by the failed job and its `blocked`
+          // screenshot artifact instead — a constant in the result would just be noise.
+          dialogSweeps,
           /** Replaying with this seed reproduces the exact same sequence. */
           seed: seed,
         }

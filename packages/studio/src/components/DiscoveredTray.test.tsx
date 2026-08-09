@@ -67,4 +67,51 @@ describe('DiscoveredTray', () => {
     fireEvent.click(getByLabelText('Dismiss moto g06'))
     await waitFor(() => expect(changed).toBe(true))
   })
+
+  /**
+   * The Rescan button (plan 85 §3.3, §4.6, §5 step 85.2) — "the first thing
+   * a human does when a phone is missing is look for that button." A
+   * successful rescan renders the report as one line (matching the plan's
+   * own example wording) and refetches the tray, since an adopt or a new
+   * discovery can change what belongs in it.
+   */
+  test('Rescan calls POST /api/devices/rescan, renders the report as one line, and refetches the tray', async () => {
+    let changed = false
+    const { getByText, apiMock } = renderWithApi(
+      <DiscoveredTray discovered={[entry]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => (changed = true)} />,
+      {
+        '/api/devices/rescan': {
+          body: { seen: 5, adopted: ['SER1'], dropped: [], offline: [], unauthorized: [], reconnectIssued: false, retriesPending: 0 },
+        },
+      },
+    )
+    fireEvent.click(getByText('Rescan'))
+    await waitFor(() => expect(getByText('Scanned 5 devices · adopted 1 · nothing else changed')).toBeTruthy())
+    expect(changed).toBe(true)
+    expect(apiMock.calls.some((c) => c.path === '/api/devices/rescan' && c.method === 'POST')).toBe(true)
+  })
+
+  test('a scan that changed nothing reads "nothing changed", without "else"', async () => {
+    const { getByText } = renderWithApi(
+      <DiscoveredTray discovered={[]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      {
+        '/api/devices/rescan': {
+          body: { seen: 2, adopted: [], dropped: [], offline: [], unauthorized: [], reconnectIssued: false, retriesPending: 0 },
+        },
+      },
+    )
+    fireEvent.click(getByText('Rescan'))
+    await waitFor(() => expect(getByText('Scanned 2 devices · nothing changed')).toBeTruthy())
+  })
+
+  test('a failed rescan surfaces the server error and leaves the tray otherwise unaffected', async () => {
+    const { getByText } = renderWithApi(
+      <DiscoveredTray discovered={[entry]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      { '/api/devices/rescan': { status: 500, body: { error: { code: 'E_ADB_UNAVAILABLE', message: 'adb is not ready yet' } } } },
+    )
+    fireEvent.click(getByText('Rescan'))
+    await waitFor(() => expect(getByText('Rescan')).toBeTruthy())
+    // The row is still there — a failed rescan does not clear the tray.
+    expect(getByText('moto g06')).toBeTruthy()
+  })
 })

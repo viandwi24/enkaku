@@ -34,7 +34,9 @@ DB and migrations (including the one-shot cluster materialisation, see below) �
 - `GET /api/tools` · `POST /api/tools/:id/install|activate|check` · `DELETE /api/tools/:id/:version` · `POST /api/tools/manifest/refresh` (spec §7.7)
 - `GET/POST/DELETE /api/devices/:id/guest-agent` — install, inspect, or remove the on-device helper APK
 - `GET/PUT/DELETE /api/devices/:id/network` — the device's network route (plan 44)
-- WS `/ws` — broadcasts `device.*` and `tool.*` (schemas in `@enkaku/protocol`). A client must `GET /api/devices` first, then subscribe (there is no snapshot replay).
+- `POST /api/devices/rescan` — runs one discovery reconcile pass immediately and returns the `ReconcileReport` (plan 85, see below)
+- `GET /api/adb/stats` — exec semaphore, streaming lane, `hostAdb`, and `transport` occupancy (plan 23, extended by plan 85, see below)
+- WS `/ws` — broadcasts `device.*` and `tool.*` (schemas in `@enkaku/protocol`), plus a one-way `heartbeat` every 15s (plan 85). A client must `GET /api/devices` first, then subscribe (there is no snapshot replay).
 
 ## Guest agent and the device network route (plan 44)
 
@@ -125,3 +127,170 @@ Two farm-configurable budgets live inside `JobSettingsSchema.trigger` (`@enkaku/
 Cancel-with-descendants (`JobStore.cancelQueuedDescendants`, `POST /api/jobs/:id/cancel?cancelDescendants=1`) walks `triggeredByJobId` transitively (a level-by-level BFS, not a `rootJobId` heuristic) so a job's siblings — and their own descendants — are left alone; it is opt-in, never automatic, and works for a RUNNING job too, since a job that triggered children and kept running still has queued descendants worth cancelling. `job.triggered` is a main-stream device event on the TARGET device, fired once per successful (non-deduped) trigger.
 
 Not shipped this pass: the Studio job detail page's lineage display and the Monitor feed's `job.triggered` rendering — the same scope cut Plan 79 made for its KV panel, given the size of the backend surface that actually needed to be correct and tested. The REST/event surface is real; a panel reading it is future work.
+
+## The Windows fleet: discovery, a bounded adb CLI, and observability (plan 85)
+
+Written against a field report where a five-device Windows farm was silently
+capped at two fully-instrumented devices, could not recover a device plugged
+in before the core started, and left orphaned `adb.exe` children and leaked
+`adb forward` entries behind. `docs/plans/85-m50-windows-fleet-scale.md`
+carries the full evidence and design; this section documents what actually
+shipped.
+
+**Discovery reconciler** (`registry/reconcile.ts`, `createDeviceReconciler`).
+`host:track-devices` is an excellent primary signal and a terrible *only*
+signal — it speaks on change, which for a phone that never gets unplugged may
+never come again. The reconciler runs a periodic, independent pass against
+adb's own truth (`host:devices-l`, `AdbClient.listDevices()`) every
+`discovery.scanIntervalSec` (default 10s; `0` disables the reconciler
+entirely, restoring the exact pre-plan-85 tracker-only behaviour): a `device`
+state unknown to the registry is adopted through the normal `onOnline` path; a
+device known to the registry but gone from adb is dropped through `onRemove`
+(a safety net — the tracker's own `remove` event usually wins the race); a
+device stuck `offline` past `discovery.offlineGraceSec` (default 20s) gets one
+`host:reconnect-offline` — a host-level re-open, **not** `kill-server`, and no
+other tool's session on port 5037 is disturbed — at most once per serial per
+`discovery.recoveryCooldownSec` (default 120s); `unauthorized` re-broadcasts
+`device.unauthorized` on a repeating cadence instead of once. `POST
+/api/devices/rescan` and a boot-time call both run `runOnce()` directly, and
+the Discovered tray's **Rescan** button (`packages/studio/src/components/DiscoveredTray.tsx`)
+calls the endpoint and renders the returned `ReconcileReport` as one line
+("Scanned 5 devices · adopted 1 · nothing else changed").
+
+`POST /api/devices/rescan` is gated on **`device.settings`** — the plan
+document that designed this endpoint named `device.admin`, but no such
+permission exists in `packages/core/src/auth/acl.ts`; every other
+device-configuration route (tags, cluster, discovered/admit, block) already
+gates on `device.settings`, so the endpoint follows that existing convention
+rather than inventing a new permission for one route.
+
+**One bounded adb CLI helper** (`device/host-adb.ts`, `createHostAdb`).
+Before this plan, the code that shells out to the adb **binary** (as opposed
+to talking to its smartsocket, which is `@enkaku/adb`'s job) for `install`,
+`push`, `forward`, and the long-lived `adb shell` that runs the scrcpy server
+was duplicated across **four** call sites (the plan's own text named two;
+the other two were the guest-agent routes and the ui-server launcher) — every
+copy piped `stderr` and never read it, so a failing `adb install` reported
+only stdout (`exit 1: Performing Streamed Install`) while the real
+`INSTALL_FAILED_*` reason sat unread on the discarded stream. `createHostAdb`
+replaces all four:
+
+- `run(args, opts)` — one-shot, both streams drained *concurrently* (a
+  sequential drain can deadlock: a full stderr pipe blocks the child, which
+  blocks the stdout read this function is waiting on), a deadline (30s
+  default, 180s for `opts.lane: 'install'`), the child killed on expiry, and
+  a thrown `HostAdbError` carrying the exit code plus **both** bounded tails
+  (last 64 KB each).
+- `spawnLongLived(args, opts)` — for the scrcpy server: returns a handle with
+  a bounded tail, `kill()`, and `exited`; every child is tracked so
+  `killAll()` (called from `daemon.stop()`) can terminate all of them. It is
+  **deliberately not** gated by `adb.maxHostConcurrent` — that budget bounds
+  bursty, short-lived CLI processes, and it has no fleet-size autoscaler the
+  way `adb.maxStreams` does; holding a farm-wide slot for a whole session's
+  lifetime would silently reintroduce the exact "a cap sized for two
+  devices" defect this plan exists to remove, one layer down.
+
+Both `run()` lanes go through a `Semaphore`: `adb.maxHostConcurrent` (default
+4) farm-wide, with `lane: 'install'` additionally bounded by
+`adb.maxInstallConcurrent` (default 2) farm-wide **and** serialised per
+device — a 20-device farm attaching inspectors at once must not fire 40
+concurrent `pm install` sessions over one USB controller, but it also must
+never let the same device race two installs against each other.
+
+**Stream-lane autoscaling.** `adb.maxStreams` gains the same `0 = auto`
+semantics `adb.maxConcurrent` already had — see `packages/adb/README.md` for
+`computeAutoStreams` and why its formula differs from the exec semaphore's. A
+stored `4` (the old fixed default) is rewritten to `0` by a Zod `preprocess`
+(`normaliseLegacyAdb`, `packages/protocol/src/settings.ts`) on first boot
+after upgrading — tracked for removal, see `docs/plans/00-overview.md` §9.
+
+**Crash detection that resubscribes instead of dying.** The always-on crash
+watcher (plan 37) used to inherit the streaming lane's generic clocks and,
+when its stream hit any of them, silently drop its bookkeeping — crash
+detection on a session open more than ten minutes was dead with no log line.
+`monitor-hub.ts` now lets the `crash` kind override its clocks
+(`idleTimeoutMs: 0`, `absoluteTimeoutMs: 0`, `maxBytes: 32 MiB`, all
+`crash-watcher.ts` constructor deps in `daemon.ts`), and `crash-watcher.ts`
+resubscribes on any unexpected end with exponential backoff (2s → 60s,
+doubling per failed attempt, resetting only once a stream genuinely comes
+back), logging exactly one `warn` per restart. The new farm setting
+`monitor.crashWatch` (`'always' | 'off'`, default `'always'`) lets a
+20-device farm trade the detection for the stream slot it costs per device;
+`'off'` makes `watch()` a no-op and stops any in-flight resubscribe loop.
+
+**The ui-server watchdog fails slowly.** `packages/drivers/src/inspector/ui-server/watchdog.ts`
+gained a circuit breaker: more than `maxRestartsPerWindow` (default 3)
+restart *cycles* within `restartWindowMs` (default 10 minutes) moves the
+watchdog to a terminal `dead` state — no code path ever resets it back — and
+the session falls back to `uiautomator-dump` with one `warn` explaining why.
+Backoff between cycles is now exponential (1s, 3s, 10s, 30s) rather than the
+old flat 1s/3s, and every cycle spends one unit of the circuit-breaker budget
+regardless of whether it goes on to succeed — the old design reset its
+failure counter on every restart that itself worked, which is why a device
+that degraded every ~35 seconds churned forever without ever giving up.
+`packages/drivers/src/inspector/ui-server/client.ts` splits its timeouts by
+operation instead of one 3000ms constant for everything: `PING_TIMEOUT_MS`
+(1000), `RPC_TIMEOUT_MS` (5000), `DUMP_WINDOW_HIERARCHY_TIMEOUT_MS` (20000 —
+a deep hierarchy legitimately takes longer on a loaded phone),
+`SCREENSHOT_TIMEOUT_MS` (15000); a `socket connection was closed
+unexpectedly` failure — a known, benign symptom of a pooled connection
+outliving an `adb forward` torn down by a restart — gets one retry after the
+forward is re-asserted, rather than being reported as a device fault.
+
+**Windows diagnosability.** `doctor/context.ts`'s `findPortHolderWindows`
+answers "who holds this port" on Windows for the first time, via `netstat
+-ano` (pid by port) and `tasklist /FI "PID eq <pid>"` (name by pid) — both
+read-only, neither needs elevation, both ship with every Windows install.
+`daemon.ts` catches `EADDRINUSE` on listen and reports the holding pid and
+image name instead of re-throwing Bun's bare message; `enkaku doctor` uses
+the same lookup. `util/data-dir-lock.ts` also probes the configured port when
+taking over a stale lock, so "the lock's owner is dead" and "the port is
+free" are answered as the two separate questions they are, rather than
+proceeding into an unexplained listen failure. At boot, after `ensureServer()`,
+every `adb forward` entry whose local port falls in the ui-server range
+(`ENKAKU_UI_SERVER_PORT_RANGE`, default 27100–27299) and whose remote is
+`tcp:9008` is removed and logged once with a count — `adb forward` entries
+outlive a core crash because they live in the adb server, not the core.
+Two new doctor checks, `streams` and `host-adb`
+(`doctor/checks/streams.ts`, `doctor/checks/host-adb.ts`), report lane
+occupancy against budget and orphaned/long-lived adb CLI children.
+
+**Transport observability (85.7a).** A one-way `heartbeat` server message
+broadcasts every 15s; Studio's WS client resets a 45s silence watchdog on
+*any* inbound message and force-closes the socket on expiry, letting the
+existing reconnect path run — this is what makes an open-but-silent
+WebSocket (no `onclose` ever fires on one) self-healing instead of an
+undetectable hang. `MAX_BUFFERED` in `server/ws-handlers.ts` drops from 4 MB
+to 512 KB, so a control reply can no longer queue behind that much
+already-buffered video. `GET /api/adb/stats` gains `transport` (connection
+count, `bufferedBytesMax`/`bufferedBytesP95`, `videoBytesPerSec`,
+`controlReplyMsP50`/`P95`, `watchdogReconnects`) and `hostAdb` (`running`,
+`maxConcurrent`, `installsRunning`, `longLived`) blocks. A slow-request
+logger warns once (rate-limited) on any HTTP request over 1s or WS command
+over 2s.
+
+**85.7b — splitting video onto its own `/ws/video` socket — was designed but
+not built.** It is gated on the 10-device rung of the plan's §7.3 ladder
+recording control-reply p95 above 500ms with a non-trivial
+`bufferedBytesP95`; that rung needs physical Windows hardware and has not
+been run. See the plan document's own closing note for the exact trigger.
+
+**Rotation control** (`packages/session/src/orientation.ts`,
+`applyRotation`). `DeviceSettings.prep.rotation` (`'device' | 'lock-portrait'
+| 'lock-landscape' | 'lock-current'`, default `'device'`, today's unchanged
+behaviour) is applied at session start next to `wakeDevice` and reverted on
+close next to `svc power stayon false` — both `accelerometer_rotation` *and*
+`user_rotation` are read before anything is written and both are restored,
+which is stricter than the plan's own §3.7 prose (it only names the former)
+and is what the plan's own acceptance criterion 16 actually requires: a
+device already manually locked to landscape before the session started needs
+its `user_rotation` put back too, not just its auto-rotate flag. `'lock-current'`
+reads the live `SurfaceOrientation` and falls back to `lock-portrait` (logged)
+when the device has none to read (e.g. asleep at session start) — an
+unratified proposal, not a settled product decision (plan 85 §9 Q4).
+
+**Everything above is implemented and unit-tested but not hardware-verified.**
+The plan's §7.3 ladder (5 / 10 / 20 real devices on the actual Windows client
+with the release binary) has not been run — see the plan document's own
+status line and closing section for what that means for acceptance criteria
+1–16.

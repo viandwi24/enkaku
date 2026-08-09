@@ -39,7 +39,9 @@ import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import { createSlowLogger } from '../util/slow-log'
 import type { AgentWsHandler } from './ws-handlers-agent'
+import { createTransportMetricsStore, type TransportSnapshot } from './transport-metrics'
 
 /** Timeout-shaped error codes (plan 26 §3.6): a command that hit its
  * deadline is reported with the `stream_suggested` hint, whether the local
@@ -47,8 +49,14 @@ import type { AgentWsHandler } from './ws-handlers-agent'
  * up waiting on a node (`E_NODE_TIMEOUT`, plan 25 §4.1). */
 const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
 
-/** Backpressure limit: past this, frames are dropped (only the newest one matters). */
-const MAX_BUFFERED = 4 * 1024 * 1024
+/**
+ * Backpressure limit: past this, frames are dropped (only the newest one
+ * matters). Dropped from 4MB to 512KB by plan 85 §3.6, §4.6 (tests H1) —
+ * video already backs off correctly and requests a keyframe on its own; the
+ * only thing the old 4MB bought was a deeper queue of already-buffered H.264
+ * sitting in front of every control reply on the SAME socket (F15).
+ */
+const MAX_BUFFERED = 512 * 1024
 
 /** The Inspect tab's `dump`/`find` deadline (plan 56 §4.2 step 5, acceptance #9) — `ui-server` targets well under this; `uiautomator-dump` can legitimately take 1-2s, so this is generous, not tight. */
 const INSPECT_DEADLINE_MS = 20_000
@@ -247,6 +255,14 @@ export interface WsHandlerDeps {
    * already give their own farm settings.
    */
   crashPolicy: () => CrashPolicy
+  /**
+   * `monitor.crashWatch` (plan 85 §3.2) — `'off'` trades crash detection for
+   * the one stream slot it costs per device, which a 20-device farm may want.
+   * Read fresh like `crashPolicy`, so flipping it takes effect without a
+   * restart. Optional: a host or test that has not wired plan 85 keeps the
+   * `'always'` behaviour that predates it.
+   */
+  crashWatch?: () => 'always' | 'off'
   /** The `declared` policy's target package set for a running job (plan 37 §3.4) — from `JobRunnerDeps.onTargetPackages`, wired in daemon.ts. */
   targetPackagesForJob: (jobId: string) => string[]
   /** Writes the crash trace as an artifact (plan 37 §3.6) — job-scoped or device-scoped, decided in daemon.ts by whether a jobId is given. */
@@ -263,6 +279,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   // every connection's subscriptions, which a WeakMap cannot do. `handleClose`
   // deletes the entry explicitly so this cannot grow unbounded.
   const conns = new Map<ServerWebSocket<unknown>, ConnState>()
+
+  // The shared transport's own health (plan 85 §3.6, §4.6, §5 85.7a) —
+  // exposed to `/api/adb/stats` through `transportStats()` on the returned
+  // object below. `logSlowCommand` is the WS half of the slow-request/
+  // slow-command logger (§4.6's last bullet); `http.ts` carries the HTTP half.
+  const transportMetrics = createTransportMetricsStore()
+  const logSlowCommand = createSlowLogger(deps.log, { thresholdMs: 2000, label: 'ws command' })
 
   const send = (ws: ServerWebSocket<unknown>, msg: ServerMessage) => ws.send(JSON.stringify(msg))
   const sendError = (ws: ServerWebSocket<unknown>, code: string, message: string, id?: string) =>
@@ -440,6 +463,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       return lease?.type === 'job' ? { jobId: lease.holder } : null
     },
     crashPolicy: deps.crashPolicy,
+    crashWatch: deps.crashWatch,
     targetPackagesForJob: deps.targetPackagesForJob,
     log: deps.log.child('crash'),
   })
@@ -511,6 +535,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /** Sent the moment a WS opens (plan 31 §4.2) — before any client message. */
     handleOpen(ws: ServerWebSocket<unknown>): void {
       const state = stateOf(ws)
+      // Connection churn (plan 85 §3.6, §4.6) — see `transport-metrics.ts`'s
+      // `noteOpen` doc comment for exactly what this can and cannot prove.
+      transportMetrics.noteOpen(conns.size)
       send(ws, { type: 'hello', payload: { sessionId: state.clientId } })
     },
     async handleMessage(ws: ServerWebSocket<unknown>, raw: string): Promise<void> {
@@ -529,6 +556,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       const msg = parsed.data
       const state = stateOf(ws)
       const msgId = 'id' in msg ? msg.id : undefined
+      // Plan 85 §3.6, §4.6, §5 85.7a (tests H1) — wall time from this
+      // message's arrival to the handler finishing it. Recorded as a
+      // "control reply" only when `msgId` is set: those are exactly the
+      // messages a `ws.request()` caller on the client is waiting on
+      // (fire-and-forget messages like `input.tap` carry no `id`, so they
+      // never skew the percentile with traffic nobody is blocked on).
+      const startedAt = performance.now()
 
       try {
         switch (msg.type) {
@@ -560,7 +594,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                  * for a fresh keyframe, then resumes from it. A brief freeze
                  * is honest; a smeared picture pretending to be live is not.
                  */
-                const congested = ws.getBufferedAmount() > MAX_BUFFERED
+                const bufferedAmount = ws.getBufferedAmount()
+                // Sampled here, not only on congestion (plan 85 §3.6, §4.6) —
+                // `/api/adb/stats`'s `transport.bufferedBytesP95` needs the
+                // ordinary case too, not just the moments this stream was
+                // already backed off.
+                transportMetrics.recordBufferedBytes(bufferedAmount)
+                const congested = bufferedAmount > MAX_BUFFERED
                 if (meta.codec === 'png') {
                   if (congested) return // one lost picture; nothing downstream depends on it
                 } else {
@@ -579,7 +619,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   binding.lastSize = { width: meta.width, height: meta.height }
                   send(ws, { type: 'stream.meta', payload: { streamId, width: meta.width, height: meta.height } })
                 }
-                ws.send(encodeVideoFrame(streamId, meta, chunk))
+                const encoded = encodeVideoFrame(streamId, meta, chunk)
+                transportMetrics.recordVideoBytes(encoded.byteLength)
+                ws.send(encoded)
               },
             }
             // Video keeps running even while a device is `busy` (spec §10.1) —
@@ -1521,6 +1563,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'E_INTERNAL'
         deps.log.warn(`handler ${msg.type} failed: ${message}`)
         sendError(ws, code, message, msgId)
+      } finally {
+        const elapsedMs = performance.now() - startedAt
+        if (msgId) transportMetrics.recordControlReplyMs(elapsedMs)
+        logSlowCommand(msg.type, elapsedMs)
       }
     },
 
@@ -1625,5 +1671,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
      * `lease.release`/`handleClose`, which already call this directly.
      */
     releaseLeaseHold,
+
+    /** `GET /api/adb/stats`'s `transport` block (plan 85 §3.6, §4.6) — `daemon.ts` wires this into `createAdbStatsRoutes` through the same forward-ref pattern every other WS-router hook here already uses. */
+    transportStats(): TransportSnapshot {
+      return transportMetrics.snapshot(conns.size)
+    },
   }
 }

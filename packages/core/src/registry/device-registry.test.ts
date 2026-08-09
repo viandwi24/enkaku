@@ -200,6 +200,76 @@ describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', ()
   })
 })
 
+describe('probe-retry backoff (plan 85 §3.3 point 7, §5 step 85.2, fixes F9)', () => {
+  type AddEvent = { kind: 'add'; serial: string; state: string }
+  type RemoveEvent = { kind: 'remove'; serial: string }
+
+  /** A device that never answers adb — every `exec` rejects, so `probeDeviceIdentity` always throws. */
+  function fakeAdbAlwaysFails(): { client: AdbClient; listeners: Array<(ev: AddEvent | RemoveEvent) => void> } {
+    const listeners: Array<(ev: AddEvent | RemoveEvent) => void> = []
+    const client = {
+      exec: async () => {
+        throw new Error('device not responding')
+      },
+      trackDevices: () => ({
+        on: (cb: (ev: AddEvent | RemoveEvent) => void) => {
+          listeners.push(cb)
+          return () => {}
+        },
+        start: async () => {},
+        stop: () => {},
+      }),
+    } as unknown as AdbClient
+    return { client, listeners }
+  }
+
+  test('a probe that keeps failing schedules a backoff retry — pendingRetryCount() becomes 1', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const { client, listeners } = fakeAdbAlwaysFails()
+
+    const registry = createDeviceRegistry({ client, db, hub: new WsHub(log), log, states: createDeviceStateMachine({ db, log, onChange: () => {} }) })
+    await registry.start()
+    expect(registry.pendingRetryCount()).toBe(0)
+
+    for (const cb of listeners) cb({ kind: 'add', serial: 'FAILING-SERIAL', state: 'device' })
+    // The existing inner "retry once after 1s" (unchanged by this plan) runs
+    // before the OUTER catch — that inner sleep is a real 1000ms, so this
+    // has to wait past it to observe the backoff getting scheduled.
+    await new Promise((r) => setTimeout(r, 1200))
+
+    expect(registry.pendingRetryCount()).toBe(1)
+    expect(db.select().from(devices).all()).toHaveLength(0) // never successfully enrolled — it never answered
+    await registry.stop()
+    // stop() clears every pending timer (00-overview §7) — verified by the
+    // absence of a "next tick" firing after this point (no assertion needed
+    // here beyond the call not throwing; a leaked timer would keep the test
+    // process alive, which `bun test`'s own runner would catch).
+  }, 10_000)
+
+  test('the retry is cancelled when the device disappears', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const { client, listeners } = fakeAdbAlwaysFails()
+
+    const registry = createDeviceRegistry({ client, db, hub: new WsHub(log), log, states: createDeviceStateMachine({ db, log, onChange: () => {} }) })
+    await registry.start()
+
+    for (const cb of listeners) cb({ kind: 'add', serial: 'FAILING-SERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(registry.pendingRetryCount()).toBe(1)
+
+    for (const cb of listeners) cb({ kind: 'remove', serial: 'FAILING-SERIAL' })
+    expect(registry.pendingRetryCount()).toBe(0)
+
+    await registry.stop()
+  }, 10_000)
+})
+
 describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §4.5)', () => {
   test('a device that crashed within the last hour carries lastCrashAt; one older than an hour does not', () => {
     const opened = openDb(':memory:')

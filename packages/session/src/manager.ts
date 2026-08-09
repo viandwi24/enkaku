@@ -132,6 +132,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         preferredInputMode: row.preferredInputMode,
         ...(row.keepAwake !== undefined ? { keepAwake: row.keepAwake } : {}),
         ...(row.standbyScreenOff !== undefined ? { standbyScreenOff: row.standbyScreenOff } : {}),
+        ...(row.rotation !== undefined ? { rotation: row.rotation } : {}),
         screenW: row.screenW,
         screenH: row.screenH,
         quality,

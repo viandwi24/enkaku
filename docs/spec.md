@@ -76,10 +76,12 @@ packages/
   scrcpy/      # the scrcpy protocol client (socket demux, meta decode) — version-locked to the core
   toolchain/   # runtime and tool provisioning (download, version, checksum)
   drivers/     # transport/display/input/inspection implementations
-  agent/       # the cloud tunnel mini-core (M8)
+  node/        # the cloud tunnel mini-core (M8) — called "agent" before plan 61 renamed it
 apps/
   desktop/     # the Tauri shell (native window, tray, auto-update)
 ```
+
+> **Naming note** *(corrected in reconciliation, 2026-08-09, DIV-009/DIV-055 — a manager decision, not sent to the owner, since this is factual staleness rather than a scope question).* The package on disk, and every product-facing name, is `node` — `agent` was the name of this same process only until plan 61 renamed it, freeing "agent" for the unrelated in-product AI agent feature (§12.1). This tree, §5.3, and §7.1's Transport row previously still said `agent/` here; only §14 had caught up. `ai_agents` (§12.1) and `nodes` are two different things that happen to both have been called "agent" at different points in this project's history — see §12.1 for why that distinction is kept explicit everywhere.
 
 > **Architecture note (from the ws-scrcpy research):** there are two schools of running scrcpy in a browser. (a) **Modified scrcpy-server** — rebuild scrcpy-server with an embedded WebSocket server (used by the older NetrisTV/ws-scrcpy). (b) **Vanilla scrcpy-server** — use Genymobile's official .jar as-is, with the host multiplexing its TCP sockets into one WebSocket and the browser demuxing and decoding (used by the newer ws-scrcpy-web). **Enkaku picks (b)** because: using the official .jar means following upstream releases, no Java fork to maintain, and a checksum that can be verified against the official release. The consequence is that `packages/scrcpy` (the protocol client on both host and browser) is ours to maintain and pin (see §7.6).
 
@@ -101,9 +103,9 @@ The core runs as a service (systemd) on a mini-PC, SBC, or Proxmox VM. Studio is
 
 ### 5.3 Cloud (split control plane)
 
-Studio, orchestrator, and relay live in the cloud (a container image, ready to deploy). Devices stay in the office, handled by a lightweight **agent** (a mini-core) that opens an **outbound WebSocket tunnel** to the control plane — so no port forwarding, and NAT is a non-issue.
+Studio, orchestrator, and relay live in the cloud (a container image, ready to deploy). Devices stay in the office, handled by a lightweight **node** (a mini-core, called "agent" before plan 61 — see §4) that opens an **outbound WebSocket tunnel** to the control plane — so no port forwarding, and NAT is a non-issue. Node management is a real REST API: `POST /api/nodes/enroll`, `GET/POST /api/nodes`, `DELETE /api/nodes/:id`, `GET /api/nodes/ice-config` *(added in reconciliation, 2026-08-09, DIV-042)*.
 
-This is also the SaaS monetisation path: customers run a small agent next to their devices while you host the control plane.
+This is also the SaaS monetisation path: customers run a small node next to their devices while you host the control plane.
 
 > **⚠️ v0.2 revision — cloud video needs a different transport.** WS + WebCodecs is fine on a LAN. But WebSocket is TCP; on the internet, one lost packet triggers TCP head-of-line blocking and **the whole video freezes** until the retransmit completes (very noticeable during real-time remote control). For cloud, the video path has to be reconsidered: the realistic option is **WebRTC** (`RTCPeerConnection`, UDP, congestion control plus partial reliability), or at minimum WebTransport (HTTP/3, QUIC). Control and queueing may stay on WS (loss there matters far less). **Architectural consequence:** the control plane's relay must be able to terminate WebRTC and repackage scrcpy's H.264 as RTP. This is not a flag — it is real work in M8. LANs stay on WS + WebCodecs (simpler, no TURN/STUN).
 
@@ -115,7 +117,7 @@ For cases that do not need physical hardware: **redroid** (Android in a containe
 |---|---|---|---|---|
 | Local self-host | The user's machine | Local USB/WiFi | WS + WebCodecs | Non-experts, solo devs |
 | Headless server | A box on the network | Local USB/WiFi | WS + WebCodecs | An office with 10 devices |
-| Cloud split | Local agent plus a cloud control plane | Local, tunnelled | **WebRTC** | A SaaS product |
+| Cloud split | Local node plus a cloud control plane | Local, tunnelled | **WebRTC** | A SaaS product |
 | Cloud devices | Cloud | redroid | WebRTC | Testing without physical phones |
 
 ---
@@ -234,11 +236,13 @@ const session = await createSession({
 
 | Layer | Engines | Notes |
 |---|---|---|
-| Transport | `adb-usb`, `adb-tcp` (wireless / redroid), `cloud-tunnel` | the tunnel is the agent's outbound WS |
-| Display | `scrcpy` (H.264/H.265, default), `screencap-loop` (MVP/fallback, ~3 fps) | scrcpy encodes on the phone, the host only relays |
-| Input | `scrcpy-uhid` (**the new default**, hardware-like), `scrcpy-sdk` (InputManager, broad compatibility), `scrcpy-aoa` (OTG, no adb), `adb-input` (crude fallback), `appium` (opt-in) | details in §9 |
-| Inspection | `ui-server` (persistent on-device, default), `appium` (WebView/hybrid, opt-in), `ocr-pixel` (last resort) | replaces the naive `uiautomator dump` |
-| Network | `none` (**the default**, never touches routing), `adb-proxy` (`settings put global http_proxy`), `adb-reverse-proxy` (`adb reverse` to a proxy on the host/agent), `vpn-helper` (an on-device helper app driven by intents) | details in §7.9; all hold the `network-route` lock so two of them can never be active at once |
+| Transport | `adb-usb`, `adb-tcp` (wireless / redroid) | a device behind a node still connects locally via one of these two — the node's own outbound WS tunnel (§5.3) is not itself modelled as a `Transport` engine today; there is no `cloud-tunnel` id in the registry |
+| Display | `scrcpy` (H.264, default), `screencap-loop` (MVP/fallback, ~3 fps) | scrcpy encodes on the phone, the host only relays; only H.264 is requested from the device today |
+| Input | `scrcpy-uhid` (**the new default**, hardware-like), `scrcpy-sdk` (InputManager, broad compatibility), `scrcpy-aoa` (OTG, no adb), `adb-input` (crude fallback) | details in §9. `appium` is **not** a separate `InputSink` — it registers only as an `Inspection` engine below, which happens to also hold the `input-injection` lock (§9.5) |
+| Inspection | `ui-server` (persistent on-device, default), `appium` (WebView/hybrid, opt-in) | replaces the naive `uiautomator dump`. `ocr-pixel` ("last resort") is planned, not yet implemented |
+| Network | `none` (**the default**, never touches routing), `vpn-helper` (an on-device helper app, §7.10) | details in §7.9; all hold the `network-route` lock so two of them can never be active at once. `adb-proxy` and `adb-reverse-proxy` are **deferred, not shipped** — deliberately deferred by plan 44 §2 to Plan 33 §5.5, not an oversight |
+
+> *(Transport, Display, Input, Inspection, and Network rows corrected in reconciliation, 2026-08-09, DIV-063/DIV-067/DIV-066/DIV-065/DIV-064 — none of these were sent to the owner individually; §3's "remaining rows" direction applies. DIV-009's "node" terminology fix, which was sent to the owner as a manager decision, also touches the Transport row's old "agent's outbound WS" wording.)*
 
 ### 7.2 Toolchain Manager (runtime provisioning) — the concept
 
@@ -306,15 +310,21 @@ interface ToolVersion {
 
 The effect: the "plug in over USB to enroll, then move to WiFi for daily use" flow produces no duplicate records. `devices.stableId` becomes the primary identity (see §12).
 
-**Admission (v0.5, plan 56).** Resolving an identity does **not** make a phone a farm device. A `stableId` that has no `devices` row lands in a **Discovered** tray and waits for an operator to admit it by name.
+**Admission (v0.5, plan 56).** Resolving an identity does **not** make a phone a farm device. A `stableId` that has no `devices` row lands in a **Discovered** tray (the `discovered_devices` table) and waits for an operator to admit it by name.
 
-The farm is therefore an allowlist, not a denylist. This matters because the adb server is usually shared — with Android Studio, with a developer's own phone, with whatever is plugged in to charge — and the previous behaviour made every one of those schedulable until somebody noticed. Blocking (§ plan 47) remains the outer layer and still wins over everything: a blocked `stableId` never reaches the tray.
+The farm is therefore an allowlist, not a denylist. This matters because the adb server is usually shared — with Android Studio, with a developer's own phone, with whatever is plugged in to charge — and the previous behaviour made every one of those schedulable until somebody noticed. Blocking (§ plan 47) remains the outer layer and still wins over everything: a blocked `stableId` never reaches the tray. It is enforced by the `blocked_devices` table, keyed on `stableId` (not the adb serial or `devices.id`) so a block survives a port change or a forget/re-enroll cycle.
 
 Three consequences worth stating:
 
 - A discovered phone **is** probed — `getprop` for the model, the Android version, and the identity itself — because a tray listing bare serial numbers cannot be acted on. Nothing else runs against it: no scrcpy, no guest agent, no ui-server, no network route.
-- Discovered devices live in their own table rather than as a sixth `DeviceStatus`, so the scheduler, lease manager, wall, clusters and topology need no filter of their own — they query `devices`, which only ever holds members.
-- **Forget** now works on a connected device, returning it to the tray. It previously had to be refused, because the registry would have re-enrolled it immediately, which forced an operator who only wanted a device *out of the farm* to declare it permanently unwelcome instead.
+- Discovered devices live in their own table (`discovered_devices`) rather than as a sixth `DeviceStatus`, so the scheduler, lease manager, wall, clusters and topology need no filter of their own — they query `devices`, which only ever holds members.
+- **Forget** now works on a connected device, returning it to the tray. It previously had to be refused, because the registry would have re-enrolled it immediately, which forced an operator who only wanted a device *out of the farm* to declare it permanently unwelcome instead. A forgotten device leaves a placeholder row in `deleted_devices` (old id, `stableId`, label), so anything that still points at it — a job, an artifact, a device-event, a batch, a schedule — can render "deleted device (\<stableId\>)" instead of crashing. `GET /api/devices/refs?ids=...` resolves a batch of such dangling references to a label in one call.
+
+**Tags.** A device can also carry free-form tags (`device_tags`, many-to-many, no foreign key so a forgotten device's tags are cleanly orphaned) for pool selection — "smoke pool", "Android 15" — normalised to lowercase/trimmed/`[a-z0-9:._-]`. `GET /api/tags` lists every tag in use; `PUT /api/devices/:id/tags` sets a device's tags. Clusters (§12.3) can resolve their membership from a tag instead of an explicit device list.
+
+**Discovery reconciliation (v0.6, plan 85).** `host:track-devices` speaks only on change, which is not enough by itself: a phone plugged in *before* the core starts, one stuck in adb's `offline`/`authorizing` transition, or an identity probe that failed outright can each miss their one event and stay invisible until a physical replug. A `DeviceReconciler` re-derives adb's own truth (`host:devices-l`) on a timer — `discovery.scanIntervalSec`, default 10s, `0` disables it — and reconciles it against the registry's live view: adopting a device adb has but the registry does not, dropping one that vanished, nudging a device stuck `offline` past `discovery.offlineGraceSec` (default 20s) toward one rate-limited `host:reconnect-offline` per `discovery.recoveryCooldownSec` (default 120s, never `kill-server`), and retrying a failed probe on backoff instead of giving up. `POST /api/devices/rescan` runs the same pass immediately, on demand; Studio surfaces it as a **Rescan** button beside the Discovered tray.
+
+*(This subsection's table names and the `device_tags`/`GET /refs` mentions added in reconciliation, 2026-08-09 — DIV-001, DIV-002, DIV-003, DIV-004 accepted as uncontroversial by the audit itself; DIV-038's device-tags REST API follows the owner's general direction, not an individually ratified decision — see the register. The discovery-reconciliation paragraph above was added directly by plan 85 §85.9, 2026-08-09, describing new product surface in the same pass that shipped it — not a register entry.)*
 
 ### 7.6 The scrcpy-server rule: PINNED to the core (critical v0.2 revision)
 
@@ -343,6 +353,8 @@ APKs, scrcpy-server) that fails to install degrades its feature and is reported
 on the Tools page; the farm keeps running and the operator retries with
 `/api/tools/repair`.
 
+Three diagnostic/operational endpoints sit beside these: `GET /api/health`, `GET /api/doctor`, and `GET /api/adb/stats` *(named in reconciliation, 2026-08-09, DIV-043 — accepted as uncontroversial by the audit)*. `GET /api/adb/stats` gained `transport` (WS connection count, buffered-bytes and control-reply latency percentiles, watchdog reconnect count) and `hostAdb` (running/max/installs/long-lived adb CLI processes) blocks — plan 85 §4.6, added directly here rather than through the register, since the endpoint itself was already named above and this is only its response shape growing.
+
 ### 7.8 Tool security rules
 
 - **sha256** verification is mandatory before a tool is used (checksums from the official release).
@@ -355,12 +367,12 @@ on the Tools page; the farm keeps running and the operator retries with
 
 The QA requirement is ordinary: point a device at a capture proxy to inspect **your own** app's traffic, test against a mocked backend, or check a regional catalogue. The layer exists so that requirement is met **without** a script gaining a raw shell.
 
-The three working engines are a capability ladder, and each rung buys something the one below it cannot do:
+The design is a three-rung capability ladder, each rung buying something the one below it cannot do — **but only the first and last rungs are built**. `adb-proxy` and `adb-reverse-proxy` are deliberately deferred (plan 44 §2 → Plan 33 §5.5), not an oversight; `packages/protocol/src/network.ts` states this directly. Only `none` and `vpn-helper` are registered engines today *(corrected in reconciliation, 2026-08-09, DIV-064 — follows the owner's general direction, not an individually ratified decision)*:
 
 | Engine | Auth | Enforcing | Needs an APK | Notes |
 |---|---|---|---|---|
-| `adb-proxy` | ✗ | ✗ (advisory) | ✗ | `settings put global http_proxy host:port`. `global` is Android's settings namespace — device-wide, **not** farm-wide. The value is world-readable by every app on the device, so credentials must never be placed in it. |
-| `adb-reverse-proxy` | ✓ | ✗ (advisory) | ✗ | `adb reverse` to a proxy on the host/agent, which holds the upstream credentials. Works over USB and needs no shared LAN; **the credentials never touch the device**. This is the default recommendation. |
+| `adb-proxy` (**deferred, not shipped**) | ✗ | ✗ (advisory) | ✗ | `settings put global http_proxy host:port`. `global` is Android's settings namespace — device-wide, **not** farm-wide. The value is world-readable by every app on the device, so credentials must never be placed in it. |
+| `adb-reverse-proxy` (**deferred, not shipped**) | ✓ | ✗ (advisory) | ✗ | `adb reverse` to a proxy on the host/node, which holds the upstream credentials. Works over USB and needs no shared LAN; **the credentials never touch the device**. This would be the default recommendation once built. |
 | `vpn-helper` | ✓ | ✓ | ✓ | An on-device helper app using `VpnService`. The only rung an app cannot ignore. The intent contract is **app-specific** — it is a per-app profile (§7.10), not an Android standard. |
 
 Rules that hold for every engine on this layer:
@@ -368,8 +380,8 @@ Rules that hold for every engine on this layer:
 1. **Configuration is bound to the device, never to the lease** (revised in v0.6 by `docs/plans/52-m24c-device-scoped-routes-and-stable-identity.md`, superseding this rule's original lease-scoped form). A route survives lease release, expiry via the reaper, client disconnect, a device reboot, and a core restart; only an explicit act — switching it off, removing it, or uninstalling the agent — tears it down. The original rule bound configuration to the lease specifically to stop one tenant's routing from silently leaking into the next tenant's session, and that concern was real — but tying a network identity to *whoever happens to be holding control* turned out to be the wrong model for a farm where a device is expected to present a consistent regional identity across sessions: an operator set a proxy, checked the device's geo IP, and got their own real address because the lease had idle-timed-out ninety seconds earlier and torn the route down with it. The isolation the old rule provided is kept, just moved: a device's route, its upstream, and who set it are shown wherever the device is shown, and every change is recorded to the device event log (rule 5) with an actor — so a tenant who acquires an already-routed device sees that immediately, rather than being silently protected by a teardown they never asked for. On a device coming back online, or on core start, the route is *restored*, never blindly re-applied: it is probed first, and only brought up when the device reports no route already running — a stored route may point at an upstream that has since expired, and reapplying blind would produce a device that looks routed and carries nothing.
 2. **Declared intent and observed state are separate reads.** `getConfig()` returns what was requested; `observe()` returns what the device reports. They diverge (a VPN drops, a reboot clears the setting), and the drift must be visible rather than assumed away.
 3. **`apply()` is not a success signal.** An engine that can verify egress must offer `probe()`; without a probe, the status is reported as `unverified`, never as `ok`.
-4. **Credentials are referenced, never inlined.** Scripts and run configs name a stored credential; raw secrets never enter script params, the `jobs` table, artifacts, or the device event log.
-5. **Every change is recorded** to the device event log (`network.*` kinds) with the secret redacted.
+4. **Credentials are referenced, never inlined.** Scripts and run configs name a stored credential (the `network_credentials` table — AES-256-GCM at rest, plan 52 §4.2); raw secrets never enter script params, the `jobs` table, artifacts, or the device event log.
+5. **Every change is recorded** to the device event log (the `device_events` table, `network.*` kinds) with the secret redacted. `device_events` carries two streams sharing one shape but different retention budgets: `main` (lifecycle) and `input` (every injected tap/swipe/key — a full audit trail, plan 18) *(table names added in reconciliation, 2026-08-09, DIV-005/DIV-008 — accepted as uncontroversial by the audit)*.
 6. **HTTPS interception is out of scope and cannot be solved here.** Reading TLS payloads needs a trusted CA, which since Android 7 means a debug build of your own app with a matching network security config. The layer routes traffic; it does not decrypt it.
 
 ### 7.10 The `vpn-helper` engine is served by a first-party agent
@@ -398,9 +410,12 @@ GET /api/registry
     displays:    [{ id, displayName, capabilities, configSchema, locks }],
     inputs:      [{ id, displayName, capabilities, configSchema, locks }],
     inspectors:  [{ id, displayName, capabilities, configSchema, locks }],
+    networks:    [{ id, displayName, capabilities, configSchema, locks }],  // the fifth layer, §7.9
     tools:       [{ id, displayName, swappable }],
   }
 ```
+
+*(`networks` added to the example in reconciliation, 2026-08-09, DIV-041 — accepted as uncontroversial by the audit; purely additive, since §7.9's network layer postdates this example.)*
 
 `configSchema` is a JSON Schema (generated from Zod). Studio uses a schema-driven form renderer, so every engine and tool automatically gets a settings panel with no hardcoded UI. **Capabilities and locks** validate combinations: Studio disables impossible or conflicting choices (an Appium inspector needs an Appium transport; `appium` input and `scrcpy-uhid` both claim `input-injection`) before anyone can pick wrongly.
 
@@ -454,6 +469,8 @@ The session manager refuses to activate a second engine that claims the same res
 
 ## 10. Session, lease, queue, scheduler
 
+> **Naming note** *(added in reconciliation, 2026-08-09, DIV-012/DIV-035/DIV-047 — Cluster B, owner decision).* This section's title predates a later addition, and "scheduler" here means only the per-device job-queue picker in §10.3 — the SQL query below that claims the next queued job for an idle device. It is **not** the cron-style, time-triggered dispatcher (recurring runs of a batch or an AI-agent thread) described in §12.3. That subsystem is unrelated code with its own tables (`schedules`, `schedule_runs`, `schedule_agent_targets`) and its own REST API and WS push (`schedule.fired`); a reader should not assume this section already covers it.
+
 ### 10.1 Device state machine
 
 ```
@@ -494,9 +511,11 @@ SQLite was chosen for zero setup (**and is retained** — per instruction, this 
 **The v0.2 revision:** the adb server is in fact reasonably safe for many clients using different `-s <serial>` values. The classic problem is not exec concurrency but **device-discovery races** and stray `adb kill-server` calls.
 
 - A **per-device command queue** (serialising commands *within* one device) — unchanged by this revision; one device still runs one adb command at a time.
-- A **global semaphore that scales with fleet size** (plan 23 §3.2), not a fixed constant: `auto = min(24, max(6, ceil(nonOfflineDeviceCount * 0.75)))`. The floor of 6 keeps a small setup (≤4 devices) at the same concurrency as before this revision; the ceiling of 24 is deliberate — the adb server itself becomes the bottleneck above it on a typical host, and a farm that needs more should run a second core (the cloud agent model already provides this). `nonOfflineDeviceCount` excludes offline devices, so an unplugged phone does not reserve capacity. The farm setting `adb.maxConcurrent` (default `0` = auto) lets an operator pin a lower or higher value (up to the ceiling) instead of the formula, and it takes effect immediately, with no restart.
+- A **global semaphore that scales with fleet size** (plan 23 §3.2), not a fixed constant: `auto = min(24, max(6, ceil(nonOfflineDeviceCount * 0.75)))`. The floor of 6 keeps a small setup (≤4 devices) at the same concurrency as before this revision; the ceiling of 24 is deliberate — the adb server itself becomes the bottleneck above it on a typical host, and a farm that needs more should run a second core (the cloud agent model already provides this). `nonOfflineDeviceCount` excludes offline devices, so an unplugged phone does not reserve capacity. The farm setting `adb.maxConcurrent` (default `0` = auto) lets an operator pin a lower or higher value (up to the ceiling) instead of the formula, and it takes effect immediately, with no restart. This and every other farm-wide setting (including the AI agent defaults, §12.1) live as JSON in a single always-exactly-one-row table, `farm_settings` (`id = 1`) *(table name added in reconciliation, 2026-08-09, DIV-028 — accepted as uncontroversial by the audit)*.
+- A **separate streaming lane** (plan 24, rescaled by plan 85 §3.1) for long-lived commands — `logcat`, `top`, the always-on crash watch, the ui-server instrumentation — that never touches the per-device queue above, so a stuck stream cannot park an exec slot. Its own farm-wide budget, `adb.maxStreams`, is `0 = auto` the same way: `auto = min(64, max(8, ceil(nonOfflineDeviceCount * 2.5)))`, derived from what a device holds at steady state (the ui-server instrumentation and the crash watch each hold one slot for a session's whole life) plus headroom for a Monitor tab or a file transfer — never a slice of the exec semaphore above. A pinned, over-the-lane request is refused immediately (`E_ADB_STREAM_LIMIT`), never queued.
 - **`adb kill-server` is FORBIDDEN** anywhere except the Toolchain Manager during an adb version swap (and even then, only after draining every session).
-- Heavy operations (install, uninstall, large pushes) run without blocking heartbeats or control of other devices.
+- Heavy operations (install, uninstall, large pushes) run without blocking heartbeats or control of other devices. The adb **CLI** processes behind them (`install`/`push`/`forward`, and the long-lived `adb shell` running the scrcpy server) go through one bounded helper (`adb.maxHostConcurrent`, default 4, farm-wide) with a stricter, per-device-serialised sub-limit for installs and pushes specifically (`adb.maxInstallConcurrent`, default 2, farm-wide) — plan 85 §3.4, since a fleet attaching inspectors to many devices at once would otherwise fire dozens of concurrent `pm install` sessions over one shared USB controller.
+- **Device discovery is reconciled, not only event-driven** (plan 85 §3.3, detailed in §7.5): `discovery.scanIntervalSec` (default 10s), `discovery.offlineGraceSec` (default 20s), and `discovery.recoveryCooldownSec` (default 120s) govern the periodic pass that recovers a device the live event stream missed.
 
 ---
 
@@ -548,15 +567,31 @@ export default defineScript({
 - **`find` answers `null` when it cannot answer** (plan 60 §3.1). A selector that only resolves to a viewport-sized container is not a match: `tap` aims at a node's centre, so acting on one presses the middle of the page. The grammar stays at four shapes — `ctx.device.dump()` returns the whole tree (334–584 ms) for everything a selector cannot reach.
 - **Artifacts per job**: screenshots, logs, results, stored against the job id → auditable.
 
-### 11.3 Trust model and isolation (HONEST CORRECTION in v0.2)
+### 11.3 Trust model and isolation (HONEST CORRECTION in v0.2; extended in reconciliation, 2026-08-09, DIV-048/DIV-040 — owner decision)
 
 **v0.1 said "sandbox: limits child process fs/network access". That was an overclaim.** Bun does **not** have a permission model like Deno's; a `Bun.spawn` child process has full fs and network access as its OS user.
 
-What is actually true:
+What is actually true for **the first actor, a script**:
 - **The isolation that EXISTS is crash containment**, not a security boundary: a child process plus a hard-timeout kill means a user's script cannot crash the core or hang it. That is the entire promise in local/single-tenant mode.
 - **The local/self-host trust model is "the script author is a trusted operator."** Do not write "secure sandbox" in marketing.
 - **If a real security boundary is needed** (mandatory for multi-tenant cloud later): that requires **a container, gVisor, or a microVM per job**, or at minimum a separate OS user. This is an architectural change (part of §18/M8), not a flag.
 - Only the `device`, `artifact`, and `log` APIs are exposed to a script as a *convenience*, not as a security guarantee.
+
+**There is a second actor this section did not previously name: an authenticated operator working through the browser**, not through a script at all. This is deliberate, shipped scope — this is documenting something real, not papering over a hole. Enkaku hands that operator, once authenticated and holding a lease on the device:
+
+- **An interactive shell** (`shell.exec`, with `shell.echo`/`shell.result` streaming the output back) — a live root-equivalent-as-the-adb-user command line on the device, no different in reach from running `adb shell` at a terminal.
+- **`monitor.*` live streams** (`monitor.start`/`monitor.stop`/`monitor.oneshot` from the client; `monitor.started`/`monitor.data`/`monitor.ended`/`monitor.result`/`monitor.subscribers` from the server) — live logcat and perf data piped straight from the device to the browser. **These are the one item here that is NOT lease-gated**: they are treated as read-only observation and are deliberately allowed while the device is `busy`, on the same reasoning as watching the video stream (`packages/core/src/server/ws-handlers.ts:904-907`, plan 24 §4.4 — it explicitly does not call `leases.checkInputAllowed`). Any authenticated session may therefore read any device's logcat. That is a real widening of who can see device output, and it is stated here rather than left to be discovered.
+- **Lease-scoped raw adb access at the REST level**: `POST/DELETE/GET /api/devices/:id/adb-endpoint` (exposes an adb endpoint directly), plus `POST /:id/install`, `POST /:id/push`, `POST /:id/pull` for arbitrary file transfer and APK install.
+
+**What authentication and leasing do guarantee:** all of these require a logged-in session (§14); an anonymous caller is rejected by the core (server-authoritative, §2). Beyond that the three surfaces are gated **differently**, and the difference matters:
+
+- `shell.exec` is the strictest — a role permission **and** the farm-wide `shell.mode` switch **and** the same lease rule input uses (`ws-handlers.ts:939-957`). Studio hiding the terminal is a convenience, never the control.
+- The raw adb REST surface (`adb-endpoint`, `install`/`push`/`pull`) is lease-scoped: `no_lease` and `not_lease_holder` are enforced server-side.
+- `monitor.*` requires **no lease at all**, as described in the bullet above.
+
+*(Corrected 2026-08-09, two days after the reconciliation that wrote this section: the first version of this paragraph claimed every one of the three required a lease. That was wrong for `monitor.*` and understated `shell.exec`. It is recorded here rather than silently rewritten, because a source-of-truth document overstating a security guarantee is a worse failure than the drift the reconciliation existed to fix.)*
+
+**What leasing does not guarantee:** once a lease is held, there is no further restriction *inside* that device — the operator has the same reach as a local `adb shell`, including reading any file, any app's data the adb user can reach, and any command. This is the same trust model as §11.3's first half, extended to a second actor: **the authenticated, leased operator is a trusted operator**, exactly as the script author is. Neither the shell, the monitor streams, nor the raw adb endpoints are a narrower or safer surface than a script running under crash containment — they are the same trust boundary, reached a different way. A real security boundary between *different* operators (as opposed to between an operator and the core) remains the same unbuilt, out-of-scope-until-multi-tenant work described above.
 
 ### 11.4 Dependencies and publishing (NEW in v0.2)
 
@@ -568,7 +603,7 @@ CRUD through Studio: create, edit, version, enable/disable, delete, run with par
 
 ### 11.6 Plugins — many scripts, one bundle (plan 82)
 
-A **plugin** is one TypeScript project — an `index.ts` calling `definePlugin` — that publishes many scripts sharing helpers, types, and constants by ordinary import, as one bundle instead of one per script. Publishing a plugin writes one `plugins` row (identity plus version, so a farm can say what it is running and roll back) and N ordinary `scripts` rows, one per script it defines, each pointing at the same bundle blob and named `<plugin>/<script>` (e.g. `tiktok/login`). A plugin is a grouping and build concept, not a new execution path: a job still runs through the existing executor and still pins a concrete, resolved entry at enqueue, so publishing a new plugin version never changes what an already-queued job runs (§11.2's rules apply unchanged). A plugin may also occupy a **dev slot** — a built-but-unpublished bundle, runnable immediately for iteration, never a database row, and gone on a core restart.
+A **plugin** is one TypeScript project — an `index.ts` calling `definePlugin` — that publishes many scripts sharing helpers, types, and constants by ordinary import, as one bundle instead of one per script. Publishing a plugin writes one `plugins` row (identity plus version, so a farm can say what it is running and roll back) and N ordinary `scripts` rows, one per script it defines, each pointing at the same bundle blob and named `<plugin>/<script>` (e.g. `tiktok/login`). A plugin is a grouping and build concept, not a new execution path: a job still runs through the existing executor and still pins a concrete, resolved entry at enqueue, so publishing a new plugin version never changes what an already-queued job runs (§11.2's rules apply unchanged). A plugin may also occupy a **dev slot** — a built-but-unpublished bundle, runnable immediately for iteration, never a database row, and gone on a core restart. A published plugin can be rolled back to a previous version (`POST /api/plugins/:name/rollback`), disabled, or reloaded from its dev-slot bundle after an edit (`POST /api/plugins/:name/reload`); Studio's **Plugins** screen (§19) surfaces this as a failed-plugins-first list with the verbatim error, code, and dev-slot badges *(rollback/reload endpoints and the Studio screen mentioned in reconciliation, 2026-08-09, DIV-056 — follows the owner's general direction, not an individually ratified decision)*.
 
 **`definePlugin` and `defineAgentPlugin` are two different, deliberately unrelated things that happen to share a word.** `definePlugin` (`@enkaku/sdk`) is the public authoring API described above — a script author's `index.ts` calls it, and it is the only one of the two ever exported from the SDK a script project depends on. `defineAgentPlugin` (`packages/core/src/agent/plugins/`, plan 77) is core-internal: it groups the AI agent's own built-in capabilities (device control, workspace, skills, and so on) into named sections of the agent's system prompt, compiled into the core binary. A script author has no way to reach `defineAgentPlugin` and never sees its output; an agent capability author never touches `definePlugin`. The two names collide in English, not in any code path either type of author can reach.
 
@@ -618,7 +653,7 @@ export const jobs = sqliteTable('jobs', {
   deviceId:  text('device_id').notNull(),
   params:    text('params', { mode: 'json' }),
   priority:  integer('priority').default(0),
-  status:    text('status').default('queued'), // queued|running|success|failed|cancelled
+  status:    text('status').default('queued'), // queued|running|success|failed|cancelled|expired (last one added in reconciliation, 2026-08-09, DIV-070 — a real terminal state the queue produces on timeout, plan 21)
   leaseExpiresAt: integer('lease_expires_at'),
   result:    text('result', { mode: 'json' }),
   error:     text('error'),
@@ -676,6 +711,9 @@ const DeviceSettings = z.object({
   prep: z.object({
     disableAnimations: z.boolean().default(true),
     stayAwake:         z.boolean().default(true),
+    rotation: z.enum(['device', 'lock-portrait', 'lock-landscape', 'lock-current'])
+                       .default('device'),   // NEW (plan 85 §3.7) — applied at session
+                                              // start, reverted on close, same shape as stayAwake
   }),
   input: z.object({
     preferredMode: z.enum(['uhid', 'sdk', 'aoa']).default('uhid'),  // NEW (§9)
@@ -685,6 +723,42 @@ const DeviceSettings = z.object({
 ```
 
 Screen dimensions, density, and apiLevel **must** be probed once on connect and cached — coordinate mapping and feature gating (UHID needs a particular Android version) depend on them.
+
+> **Note** *(added in reconciliation, 2026-08-09, DIV-029 — accepted as uncontroversial by the audit).* The `devices` and `jobs` blocks above are not a full schema dump — they show the columns meaningful to the concepts this document already describes. The shipped tables carry more: `devices` also has `quarantineReason`, `nodeId`, `tenantId`, `clusterId`, `desiredReadiness`, and `networkRoute` (each the anchor of a subsystem described below or elsewhere in this spec); `jobs` also carries batch membership, expiry, failure classification, an infra-retry count, and the trigger/lineage chain used by schedules (§12.3). See `docs/spec-divergences.md` (DIV-029) for the complete, currently-verified column set.
+
+### 12.1 AI agents *(added in reconciliation, 2026-08-09, DIV-019 and its companions — owner decision 2026-08-03, Plan 84 §9 Q1; applied to this document in this pass)*
+
+An **AI agent** is a stored, editable configuration — model, provider connector, system prompt, context budgets, tool allowlist, device grants (empty/null = ALL devices), workspace scope, permissions — that a farm operator creates through Studio's **AI agents** screens (§19) and that then runs conversations (`agent_threads`), executes turns (`agent_runs`), and exchanges messages (`agent_messages`, including images stored content-addressed in `agent_blobs`) much like a script does, but interactively and with its own capability model. Destructive capability calls can pause for a human decision (`agent_approvals`, persisted so a core restart resumes the run exactly where it paused); an undelivered message to a running agent queues in `agent_inbox` until the next turn boundary; and one agent may be allowed to spawn another, opt-in per pair (`agent_spawn_grants`, defaulting to none) — managed through `GET/POST /api/agents/:id/spawn-grants` and `DELETE /api/agents/:id/spawn-grants/:childId`.
+The REST surface is `GET/POST/PATCH/DELETE /api/agents*` for agent CRUD, `/api/v1/threads`, `/api/v1/runs`, `/api/v1/approvals`, and `/api/v1/agent-commands` for the conversation itself, plus `/api/v1/blobs`, `/api/v1/cap` (the capability registry), an MCP endpoint (`POST /mcp`), and an OpenAPI document (`GET /api/openapi.json`).
+
+**Naming: `ai_agents` is not `agents`.** For this project's entire history until plan 61, "agent" meant the cloud tunnel mini-core — now called `nodes` (§4, §5.3). Reusing "agent" for this feature would recreate exactly that ambiguity, which is why the table is `ai_agents` and every table it owns is prefixed `agent_*` while remaining conceptually unrelated to a `node`. Keep the two distinct when reading or writing about either: a **node** tunnels a farm's devices to a cloud control plane (§5.3); an **AI agent** is an in-product chat/automation actor with its own device grants and workspace. `defineAgentPlugin` (§11.6) is a third, also-unrelated use of the word, internal to how an agent's own built-in capabilities are packaged.
+
+### 12.2 Connectors, workspace, webhooks, and notifications *(added in reconciliation, 2026-08-09, DIV-015/DIV-018/DIV-026/DIV-027 — Cluster A, owner decision)*
+
+Four more tables support the AI agent and are described here alongside it, per the owner's ruling that they ride along with the `ai_agents` decision:
+
+- **`connectors`** — a farm-level, admin-managed LLM provider endpoint (Anthropic, OpenRouter, and so on) plus an AES-256-GCM-encrypted credential, shared across agents. **Load-bearing**: an agent cannot run at all without one, which is why this table was decided alongside `ai_agents` rather than separately. REST: `GET/POST/PATCH/DELETE /api/connectors`, `GET /:id/models`, `POST /:id/test`.
+- **`workspace_files`** — a content-addressed, DB-backed *virtual* filesystem the AI agent reads and writes instead of the real OS filesystem, deliberately, since an agent (reading attacker-controllable device screens) runs under the same crash containment as a script, not a sandbox (§11.3). Studio's **Workspace** screen (§19) is a tree-plus-editor view over the same `fs.*` capabilities the agent itself uses, with compare-and-swap saves.
+- **`webhook_endpoints`** — farm-level, admin-managed webhook targets. An agent can only choose among these **by name**, via `notify.send` — never a raw URL — so a webhook call cannot leak farm data to an arbitrary address. REST: `GET/POST/PATCH/DELETE /api/webhooks`.
+- **`notifications`** — the in-app notification record (the bell). Written *before* any webhook delivery is attempted, so the record survives even when delivery fails; `context` makes a row clickable. REST: `GET /api/notifications`, `GET /unread-count`, `POST /:id/read`, `POST /read-all`.
+
+### 12.3 Clusters, batches, and schedules — the recurring-dispatch scheduler *(added in reconciliation, 2026-08-09, DIV-010/DIV-011/DIV-012/DIV-013/DIV-014 — Cluster B, owner decision: "the scheduling subsystem is wanted scope; the spec absorbs it")*
+
+This is a different mechanism from §10's per-device job-queue picker — see the naming note at the top of §10. Three tables plus two companions:
+
+- **`clusters`** — a container, not a selector: a device belongs to at most one cluster (`devices.clusterId`), and the table itself carries only the cluster's own identity. `/clusters` (Studio, §19) and `/api/topology` show devices grouped this way. REST: `GET/POST/PATCH/DELETE /api/clusters`, `POST/DELETE /:id/devices`, `POST /preview`; `GET /api/topology`.
+- **`batches`** — one script run resolved across a device set (explicit list, a tag, or a cluster). `status` is a cached projection recomputed from the member jobs, never incremented directly. REST: `POST/GET /api/batches`, `GET /:id`, `POST /:id/cancel`, `POST /:id/rerun-failed`; pushed live over WS as `batch.status`.
+- **`schedules`** — cron-triggered dispatch of a batch **or an AI-agent thread** (`schedule_agent_targets` is the companion row that marks a schedule as agent-targeted, checked by the dispatcher before it reads `schedules.scriptRef`), with overlap policy, a queue timeout, catch-up behaviour, jitter, and priority. REST: `POST /validate`, `GET/POST /api/schedules`, `GET/PATCH/DELETE /:id`, `GET /:id/runs`, `POST /:id/run-now`; pushed live over WS as `schedule.fired`. `schedule_runs` records one row per fire decision, including "ran nothing" outcomes (`skipped-overlap`, `skipped-missed`, `no-targets`, `error`), so a schedule's history is never a blank gap.
+
+Studio: **Clusters**, **Batches**, **Batch detail**, **Schedules**, **Schedule detail** (§19).
+
+### 12.4 Smaller tables and operational surfaces *(added in reconciliation, 2026-08-09 — mostly code-wins following the owner's general direction for the "remaining rows," not individually ratified; see `docs/spec-divergences.md` for the row-by-row detail this section deliberately keeps brief)*
+
+- **Durable KV store** (`kv_entries`) — a key/value store scripts and plugins can read/write across job runs, keyed by `(scope, scopeId, namespace, key)` with `namespace` runtime-injected so two plugins cannot collide. REST, admin-scoped: `GET /`, `GET/PUT/DELETE /entry` under `/api/kv`.
+- **Device readiness** — a second state axis beside `DeviceStatus` (§12), `asleep|awake|hot`, with a blocked-reason enum (`offline|quarantined|hot_budget_full|locked|error`) that implies a fleet-wide "hot" resource budget. REST: `GET/PUT /api/devices/:id/readiness`; pushed live over WS as `device.readiness` (server) and set via `device.readiness.set` (client).
+- **`GET /api/settings/device-schema`** exposes the `DeviceSettings` JSON Schema (§12) for the per-device settings form — the same schema-driven pattern as the registry (§8).
+
+Everything above is intentionally terse; nothing here changes how the well-documented parts of this spec behave, and each item has a full write-up with file:line citations in the divergence register.
 
 ---
 
@@ -698,6 +772,17 @@ Message-based over WebSocket. Categories:
 - **Video**: on a LAN, a stream of H.264 bytes (scrcpy) → the browser's WebCodecs `VideoDecoder`. In the cloud, WebRTC negotiation (§5.3).
 - **Queue/job**: `job.enqueue`, `job.status`, `job.log`, `job.artifact`.
 - **Registry/tools**: introspection plus tool operations.
+- **Presence**: `hello`, `device.viewers` — who else is watching a device right now.
+- **Device readiness**: `device.readiness` (push), `device.readiness.set` (client) — see §12.4.
+- **Clipboard**: `clipboard.get`/`clipboard.set` (client), `clipboard.value`/`clipboard.ok` (server).
+- **File transfer**: `transfer.progress`, `transfer.done` (server), `transfer.cancel` (client) — progress for the lease-scoped install/push/pull endpoints (§11.3).
+- **Scheduling subsystem**: `batch.status`, `schedule.fired` — live pushes for the cron dispatcher described in §12.3, not §10's job-queue picker.
+- **Notifications**: `notification.created` — the bell (§12.2).
+- **AI agent chat**: `agent.run.*`, `agent.delta`, `agent.message*`, `agent.tool.*`, `agent.approval.*`, `agent.child.*` (server); `agent.subscribe`/`agent.unsubscribe`/`agent.run.cancel` (client) — the agent conversation protocol (§12.1).
+- **Session startup progress**: `session.progress`, carrying a phase (`connecting|waking|starting-video|waiting-frame|ready`) before the first video frame arrives.
+- **Liveness**: `heartbeat` (server, one-way) — a beat every 15s so the Studio client can tell an open-but-silent socket from an idle one and force a reconnect after missing three in a row (plan 85 §3.6).
+
+*(The nine bullets above added in reconciliation, 2026-08-09. Presence/readiness/clipboard/transfer/batch-status/schedule-fired follow the owner's general direction for the "remaining rows," not individually ratified; the AI agent chat protocol follows the owner's 2026-08-03 `ai_agents` decision; session-startup-progress was accepted as uncontroversial by the audit. DIV-044/045/046/047/049/050/051/052/072. The `heartbeat` bullet was added directly by plan 85 §85.9, 2026-08-09, describing new product surface in the same pass that shipped it — not a register entry.)*
 
 REST handles ordinary request-response (script and tool CRUD). WebSocket handles streaming and realtime. The contract lives in `packages/protocol` (Zod), shared and type-safe.
 
@@ -708,7 +793,7 @@ REST handles ordinary request-response (script and tool CRUD). WebSocket handles
 - **Server-authoritative**: leases, resource conflicts, and ACL live in the core.
 - **Auth (REVISED in v0.2):**
   - Local single-user (the non-expert mode): may **auto-create an admin** and skip login for zero-config — BUT only when bound to `localhost`.
-  - Server/cloud mode: login is **mandatory** (argon2 hashes), with session tokens. The node tunnel uses a token (the process was called an "agent" before plan 61 renamed it).
+  - Server/cloud mode: login is **mandatory** (argon2 hashes), with session tokens. Sessions are their own table (`sessions`) — only the sha256 of the raw token is ever persisted, alongside `userId`, `expiresAt`, `lastUsedAt`, `userAgent`, and `ip` *(table name added in reconciliation, 2026-08-09, DIV-007 — accepted as uncontroversial by the audit)*. The node tunnel uses a token (the process was called an "agent" before plan 61 renamed it — see §4).
   - **TLS is mandatory** in server and cloud modes (do not repeat the ws-scrcpy mistake: "no encryption, no auth, listening on all interfaces").
 - **Crash containment (not a sandbox)**: every job is a child process with a hard-timeout kill (§11.3). A real security boundary (container or microVM) is multi-tenant cloud work (§18).
 - **Tool integrity**: sha256 is mandatory.
@@ -782,35 +867,29 @@ Things that will certainly happen and that often stall indie products:
 
 | Screen | Contents |
 |---|---|
-| **Dashboard** | A device grid (optional live thumbnails), status (idle/manual/busy/offline/quarantined), owner, **battery and temperature badges**. Quick actions: control / run. |
+| **Dashboard** | A device grid (optional live thumbnails), status (idle/manual/busy/offline/quarantined), owner, **battery and temperature badges**. Quick actions: control / run. `/topology` is a dead route kept only as a redirect into this screen's wall view grouped by cluster (`?view=wall&group=cluster`), for old bookmarks — it has no content of its own. |
 | **Enrollment wizard** | Detects `unauthorized` and wireless pairing, visual instructions, pairing code input (§15.1). |
-| **Device detail / live control** | Video stream plus click input, a driver selection panel (dropdowns, validated by capabilities and locks), **input mode choice uhid/sdk/aoa**, per-device settings (schema-driven), a prep button. While `busy`: input disabled, video still running, an "automation running" badge. |
+| **Device detail / live control** | Video stream plus click input, a driver selection panel (dropdowns, validated by capabilities and locks), **input mode choice uhid/sdk/aoa**, per-device settings (schema-driven), a prep button. While `busy`: input disabled, video still running, an "automation running" badge. Tabs: Control, Jobs, Monitor, Crashes, Terminal, Files, Network, Identity, Logs, Storage, Settings (Terminal/Files conditionally hidden per farm settings; Terminal and Monitor are the operator-facing shell and live streams described in §11.3). |
 | **Scripts** | List, editor, versioning, enable/disable, run (parameter form generated from Zod), job history, publish button. |
 | **Job / run detail** | Status, realtime logs, artifacts (screenshots and video per step), result or error. |
 | **Tools (Toolchain)** | Per tool: installed versions (with an active badge) plus available ones, install/update/activate/delete, progress, health check, manifest refresh. **scrcpy-server appears as "managed by core" (read-only).** |
-| **Settings** | Farm-wide defaults (driver, timing, default input mode), users and ACL (admin), retention policy, DB backup and restore. |
+| **Settings** | Four groups: Devices, Jobs, AI Agents (defaults, connectors, webhooks, spend — §12.1/§12.2), and Farm (blocked devices, KV store, users and ACL, audit log). Farm-wide defaults (driver, timing, default input mode) and retention policy live here too. **"DB backup and restore" is not a feature** — deliberately withdrawn, see below. |
+| **AI agents** | Roster, approvals inbox, per-agent workbench (chat/config), run history (§12.1). |
+| **Clusters, batches, schedules** | Cluster membership and preview; batch list and per-batch detail (member jobs, cancel, rerun-failed); schedule list, per-schedule detail and run history, run-now (§12.3). |
+| **Plugins** | A failed-plugins-first list (verbatim error and code), dev-slot badges, rollback/reload/disable (§11.6). |
+| **Workspace** | A file tree plus editor over the AI agent's virtual filesystem (`workspace_files`, §12.2), compare-and-swap saves. |
 
 The rendering principle: every config panel is rendered from a schema through the schema-driven form renderer — no hardcoded UI per component.
 
+*(This section's rows corrected and added in reconciliation, 2026-08-09. Device detail's tab list and the Settings row's factual correction: accepted as uncontroversial, DIV-060; the Settings row's "DB backup and restore" claim is removed as a deliberate withdrawal, not spec-wins, DIV-059 — see `docs/spec-divergences.md`; the Settings row's overall grouping follows the owner's general direction for the "remaining rows," not individually ratified, DIV-058; AI agents follows the owner's 2026-08-03 `ai_agents` decision, DIV-053; Clusters/batches/schedules follows the owner's 2026-08-09 Cluster B ruling, DIV-054; Plugins and Workspace follow the owner's general direction, not individually ratified, DIV-056/DIV-057; the Dashboard row's topology footnote is accepted as uncontroversial, DIV-062.)*
+
 ---
 
-## 20. Roadmap / milestones (REVISED in v0.2)
+## 20. Roadmap / milestones
 
-| Phase | Deliverable | Focus |
-|---|---|---|
-| **M0 — Foundations** | Monorepo, core daemon, `packages/adb` (client plus `track-devices`), device registry (**stableId probing**) → SQLite → WS broadcast, **per-device queue plus adb semaphore**. | Devices visible in the API in realtime, with a stable identity. |
-| **M1 — Toolchain** | Manifest, download plus checksum, versions, active pointer, the **swappable flag**, API plus first-run auto-provisioning. | Genuinely zero-config "install and run". |
-| **M2 — Basic control** | `screencap-loop` plus `adb-input`, end-to-end coordinate mapping validation, Studio live view and click, the **enrollment wizard**. | Manual remote control works (roughly) and devices enroll correctly. |
-| **M3 — Session/lease/queue** | State machine, lease plus heartbeat, per-device queue (with a dummy `sleep` job at first). | Get queueing and device safety right first. |
-| **M4 — Script framework** | `defineScript`, the subprocess runner, artifacts and logs, `@enkaku/sdk`, the inspector (starting with `uiautomator dump`, preparing `ui-server`). | Mature, isolated automation. |
-| **M4.5 — ui-server** | A persistent on-device inspector (the uiautomator2 pattern), fast `find`/`waitFor`, `set_text`. | Inspector speed is farm speed. |
-| **M5 — Studio complete** | Script CRUD plus run form and publish, job detail, the Tools UI, settings, the schema-driven renderer, the registry, **battery/thermal plus auto-quarantine**. | A fully dynamic UI plus device health. |
-| **M6 — scrcpy** | The `scrcpy` display (H.264 relay, **version-locked**) plus **`scrcpy-uhid` input** plus WebCodecs decoding plus a fallback decoder. | Low latency, hardware-like input, production quality. |
-| **M7 — Multi-user and packaging** | Auth/ACL plus TLS, a single binary, a Docker image, the Tauri shell, auto-update, retention and GC. | Ready to self-host. |
-| **M7.5 — Business plumbing** | Docs, licence/activation, opt-in telemetry, the AUP, support and update channels, `LICENSES.md`. | Ready to sell. |
-| **M8 — Cloud and extra drivers** | The cloud tunnel agent, a split control plane, **WebRTC video**, a per-job security boundary (container or microVM), opt-in `appium`, redroid, `scrcpy-aoa`. | Scale, flexibility, safe multi-tenancy. |
-
-A note on ordering: **M3 before M4** is deliberate (getting queue and lease right with a fake job beats debugging the queue and the automation at the same time). **M4.5 and the M6 input work** were added because inspector speed and input realism are the two main axes of differentiation from competitors.
+> **Replaced in reconciliation, 2026-08-09 (Plan 84 §4.5, mandatory).** This section used to carry its own milestone table, running to roughly M8/M9. That table is gone — not amended, replaced — because two competing roadmaps is exactly how this document drifted from the shipped product in the first place (see `docs/spec-divergences.md`'s 72-row account of the result). **The roadmap now lives in one place only: `docs/plans/00-overview.md`**, which indexes every milestone plan (M0 through the current one, past M40 as of this reconciliation) and is kept current as plans land, in a way a static table in this document cannot be. If this section and `docs/plans/00-overview.md` ever disagree about what milestone the project is on, `00-overview.md` is authoritative.
+>
+> The early milestone shape (M0 Foundations → M1 Toolchain → M2 Basic control → M3 Session/lease/queue → M4 Script framework → M4.5 ui-server → M5 Studio complete → M6 scrcpy → M7 Multi-user/packaging → M7.5 Business plumbing → M8 Cloud/extra drivers) is preserved here only as history: it explains the ordering logic referenced elsewhere in this document (**M3 before M4** — get queue and lease right with a fake job before debugging queue and automation together; **M4.5 and the M6 input work** — inspector speed and input realism are this product's two main axes of differentiation). It is not a live plan of record.
 
 ---
 

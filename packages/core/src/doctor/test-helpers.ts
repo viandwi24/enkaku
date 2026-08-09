@@ -49,6 +49,13 @@ export function fakeDoctorContext(overrides: Partial<DoctorContext> = {}): Docto
     core: {
       probe: async () => ({ running: false }),
     },
+    streams: {
+      probe: async () => null,
+    },
+    hostAdb: {
+      countAdbProcesses: async () => 0,
+      probeCoreStats: async () => null,
+    },
   }
   return { ...base, ...overrides }
 }

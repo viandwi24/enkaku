@@ -13,6 +13,40 @@ type MessageHandler = (msg: ServerMessage) => void
 type BinaryHandler = (buf: Uint8Array) => void
 
 /**
+ * A connectivity status update — `watchdogReconnects` is a running total for
+ * the LIFE OF THIS TAB, so a caller can show "N silent-link reconnects" or
+ * simply log it (plan 85 §3.6, §4.6, §5 85.7a, tests H2). Extra tuple/object
+ * arguments are safe to add to a callback type: every existing
+ * `ws.onStatus(setConnected)` call site keeps compiling unchanged, since a
+ * function declared with fewer parameters than a type expects simply ignores
+ * the rest when called with more.
+ */
+export interface WsStatusInfo {
+  watchdogReconnects: number
+}
+type StatusHandler = (connected: boolean, info: WsStatusInfo) => void
+
+/** Injectable scheduler (plan 85 §5 85.7a) — so the 45s silence watchdog is provable without an actual 45s wait; defaults to the real global timers. */
+export interface WsClientScheduler {
+  setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
+  clearTimeout: (id: ReturnType<typeof setTimeout>) => void
+}
+
+const REAL_SCHEDULER: WsClientScheduler = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (id) => clearTimeout(id),
+}
+
+export interface WsClientDeps {
+  /** Overridable so tests can drive the socket without a real `WebSocket`/server. Defaults to `(url) => new WebSocket(url)`. */
+  createSocket?: (url: string) => WebSocket
+  /** See `WsClientScheduler`'s doc comment. */
+  scheduler?: WsClientScheduler
+  /** How long the connection may go silent before the watchdog force-closes it. Defaults to 45_000 — the core's `heartbeat` broadcasts every 15s (plan 85 §4.2), so this is three missed beats, not a merely-idle link. */
+  watchdogMs?: number
+}
+
+/**
  * `ws.request` rejects with this instead of a plain `Error` when the core
  * replies with a coded `error` message (plan 71 §3.4, criterion 8) — a
  * takeover's CAS failure (`lease_holder_changed`) needs to be told apart
@@ -33,13 +67,14 @@ export class WsRequestError extends Error {
 /**
  * A single WS client: auto-reconnect with exponential backoff plus
  * resubscribe, request/reply correlated by `id`, every inbound message
- * safeParse'd.
+ * safeParse'd. Exported (not just the `ws` singleton below) so
+ * `ws.test.ts` can construct an isolated instance with injected deps.
  */
-class WsClient {
+export class WsClient {
   private ws: WebSocket | null = null
   private handlers = new Set<MessageHandler>()
   private binaryHandlers = new Set<BinaryHandler>()
-  private statusHandlers = new Set<(connected: boolean) => void>()
+  private statusHandlers = new Set<StatusHandler>()
   private pending = new Map<string, { resolve: (m: ServerMessage) => void; reject: (e: unknown) => void }>()
   private queue: string[] = []
   private backoffMs = 500
@@ -53,29 +88,74 @@ class WsClient {
    */
   private sessionId: string | null = null
 
+  private readonly createSocket: (url: string) => WebSocket
+  private readonly scheduler: WsClientScheduler
+  private readonly watchdogMs: number
+  /**
+   * The silence watchdog (plan 85 §3.6, §4.6, §5 85.7a, fixes F16, tests
+   * H2) — reset on ANY inbound message (`onmessage`'s very first line,
+   * before parsing) and on `onopen`. The core broadcasts a `heartbeat` every
+   * 15s, so 45s of total silence is three missed beats, not a merely-idle
+   * link: `onclose` was the ONLY reconnect trigger before this, which left
+   * an open-but-silent socket permanently invisible to the client.
+   */
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null
+  private watchdogReconnects = 0
+
+  constructor(deps: WsClientDeps = {}) {
+    this.createSocket = deps.createSocket ?? ((url) => new WebSocket(url))
+    this.scheduler = deps.scheduler ?? REAL_SCHEDULER
+    this.watchdogMs = deps.watchdogMs ?? 45_000
+  }
+
+  private armWatchdog(): void {
+    this.clearWatchdog()
+    this.watchdogTimer = this.scheduler.setTimeout(() => {
+      console.warn(`[enkaku] no message from the core in ${this.watchdogMs}ms — forcing a reconnect`)
+      this.watchdogReconnects += 1
+      this.ws?.close()
+    }, this.watchdogMs)
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdogTimer !== null) {
+      this.scheduler.clearTimeout(this.watchdogTimer)
+      this.watchdogTimer = null
+    }
+  }
+
   connect(): void {
     if (typeof window === 'undefined') return
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
 
     const url = `${coreBase().replace(/^http/, 'ws')}/ws`
-    const ws = new WebSocket(url)
+    const ws = this.createSocket(url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
 
     ws.onopen = () => {
       this.backoffMs = 500
       this.setConnected(true)
+      this.armWatchdog()
       for (const raw of this.queue.splice(0)) ws.send(raw)
       for (const cb of this.onReconnect) cb()
     }
     ws.onclose = () => {
+      this.clearWatchdog()
       this.setConnected(false)
       this.ws = null
-      setTimeout(() => this.connect(), this.backoffMs)
+      // Routed through the same injectable scheduler as the watchdog (not
+      // the bare global `setTimeout`) so a test that injects a fake clock
+      // never leaks a real, uncontrolled timer past the end of the test.
+      this.scheduler.setTimeout(() => this.connect(), this.backoffMs)
       this.backoffMs = Math.min(this.backoffMs * 2, 10_000)
     }
     ws.onerror = () => ws.close()
     ws.onmessage = (ev) => {
+      // Any inbound message proves the link is alive — reset BEFORE parsing,
+      // so even a message this build cannot understand (an older/newer core)
+      // still counts as traffic.
+      this.armWatchdog()
       if (ev.data instanceof ArrayBuffer) {
         const buf = new Uint8Array(ev.data)
         for (const cb of this.binaryHandlers) cb(buf)
@@ -103,6 +183,9 @@ class WsClient {
       }
       const msg = parsed.data
       if (msg.type === 'hello') this.sessionId = msg.payload.sessionId
+      // A pure liveness beat (plan 85 §4.6) — already did its job by
+      // resetting the watchdog above; no component needs to see it.
+      if (msg.type === 'heartbeat') return
       const id = 'id' in msg ? msg.id : undefined
       if (id) {
         const waiter = this.pending.get(id)
@@ -119,7 +202,13 @@ class WsClient {
 
   private setConnected(v: boolean): void {
     this.connected = v
-    for (const cb of this.statusHandlers) cb(v)
+    const info: WsStatusInfo = { watchdogReconnects: this.watchdogReconnects }
+    for (const cb of this.statusHandlers) cb(v, info)
+  }
+
+  /** Forced reconnects for the life of this tab (plan 85 §3.6, §4.6, tests H2) — also readable through `onStatus`'s second argument. */
+  getWatchdogReconnects(): number {
+    return this.watchdogReconnects
   }
 
   isConnected(): boolean {
@@ -172,9 +261,9 @@ class WsClient {
     return () => this.binaryHandlers.delete(cb)
   }
 
-  onStatus(cb: (connected: boolean) => void): () => void {
+  onStatus(cb: StatusHandler): () => void {
     this.statusHandlers.add(cb)
-    cb(this.connected)
+    cb(this.connected, { watchdogReconnects: this.watchdogReconnects })
     return () => this.statusHandlers.delete(cb)
   }
 

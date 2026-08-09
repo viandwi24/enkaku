@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { RegistryResponse } from '@enkaku/protocol'
+import type { ReconcileReport, RegistryResponse } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
@@ -64,7 +64,7 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function makeApp(role: 'admin' | 'operator' | null = 'admin') {
+function makeApp(role: 'admin' | 'operator' | null = 'admin', opts: { rescan?: () => Promise<ReconcileReport> | null } = {}) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -83,6 +83,7 @@ function makeApp(role: 'admin' | 'operator' | null = 'admin') {
       lifecycle,
       heldByOf: () => null,
       broadcast: (msg) => broadcast.push(msg),
+      ...(opts.rescan ? { rescan: opts.rescan } : {}),
     }),
   )
   return { db, app, dataDir, broadcast }
@@ -513,6 +514,54 @@ describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, �
     const { app } = makeApp(null)
     expect((await app.request('/blocked')).status).toBe(403)
     expect((await app.request('/blocked/stable-a', { method: 'DELETE' })).status).toBe(403)
+  })
+})
+
+describe('POST /rescan (plan 85 §3.3, §4.4, §4.6, §5 step 85.2)', () => {
+  const sampleReport: ReconcileReport = {
+    seen: 5,
+    adopted: ['SER1'],
+    dropped: [],
+    offline: [],
+    unauthorized: [],
+    reconnectIssued: false,
+    retriesPending: 0,
+  }
+
+  test('returns the reconciler\'s report and audits the action', async () => {
+    const { app, db } = makeApp('admin', { rescan: async () => sampleReport })
+    const res = await app.request('/rescan', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual(sampleReport)
+    const entries = db.select().from(auditLog).all()
+    expect(entries.some((e) => e.action === 'device.rescan')).toBe(true)
+  })
+
+  test('is refused with no authenticated user, same as every other admin-style device mutation here', async () => {
+    const { app } = makeApp(null, { rescan: async () => sampleReport })
+    const res = await app.request('/rescan', { method: 'POST' })
+    expect(res.status).toBe(403)
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still rescan', async () => {
+    const { app } = makeApp('operator', { rescan: async () => sampleReport })
+    const res = await app.request('/rescan', { method: 'POST' })
+    expect(res.status).toBe(200)
+  })
+
+  test('refuses E_NOT_SUPPORTED when no reconciler is wired (orchestrator mode, or adb never came up)', async () => {
+    const { app } = makeApp('admin')
+    const res = await app.request('/rescan', { method: 'POST' })
+    expect(res.status).toBe(501)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NOT_SUPPORTED')
+  })
+
+  test('also refuses E_NOT_SUPPORTED when the accessor itself resolves to null (the forward-ref default before boot assigns it)', async () => {
+    const { app } = makeApp('admin', { rescan: () => null })
+    const res = await app.request('/rescan', { method: 'POST' })
+    expect(res.status).toBe(501)
   })
 })
 

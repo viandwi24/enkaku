@@ -38,6 +38,32 @@ export const DevicesBlockedResponseSchema = z.object({ blocked: z.array(BlockedD
 /** `GET /api/devices/:id/viewers`. */
 export const DeviceViewersResponseSchema = z.object({ viewers: z.array(ViewerSchema) })
 
+/**
+ * `POST /api/devices/rescan` (plan 85 §3.3, §4.4, §4.6) — the manual escape
+ * hatch for the discovery reconciler (`packages/core/src/registry/reconcile.ts`),
+ * whose `DeviceReconciler.runOnce()` returns this exact shape. Declared once
+ * here rather than as a separate hand-rolled interface in `reconcile.ts`
+ * (00-overview §4.4, plan 72 §3.2) — `reconcile.ts` imports the type from
+ * this package instead of redefining it.
+ */
+export const ReconcileReportSchema = z.object({
+  /** How many devices `host:devices-l` reported this pass, in any state. */
+  seen: z.number(),
+  /** In adb (state `device`) but unknown to the registry → adopted this pass. */
+  adopted: z.array(z.string()),
+  /** Known to the registry but gone from adb entirely → dropped this pass (the safety net; the live tracker usually gets there first). */
+  dropped: z.array(z.string()),
+  /** Stuck `offline` longer than `discovery.offlineGraceSec`. */
+  offline: z.array(z.string()),
+  /** Currently `unauthorized`. */
+  unauthorized: z.array(z.string()),
+  /** Whether `host:reconnect-offline` was actually issued this pass. */
+  reconnectIssued: z.boolean(),
+  /** Devices currently mid-backoff on a failed probe (plan 85 §3.3 point 7). */
+  retriesPending: z.number(),
+})
+export type ReconcileReport = z.infer<typeof ReconcileReportSchema>
+
 /** `GET/PUT /api/devices/:id/readiness`. */
 export const DeviceReadinessResponseSchema = z.object({ readiness: DeviceReadinessSchema })
 

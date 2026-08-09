@@ -15,3 +15,17 @@
 export function computeAutoConcurrency(nonOfflineDeviceCount: number): number {
   return Math.min(24, Math.max(6, Math.ceil(nonOfflineDeviceCount * 0.75)))
 }
+
+/**
+ * The streaming lane's farm-wide budget (plan 85 §3.1). Derived from what a
+ * device actually holds at steady state — the ui-server instrumentation and
+ * the crash feed, one slot each, both for the life of the session — plus
+ * half a slot of headroom for the bursty users of the lane (a Monitor tab,
+ * a file transfer, an APK install).
+ *
+ *  5 devices → 13    10 → 25    20 → 50    26+ → 64 (the adb server, not
+ *  this budget, is the limit past there)
+ */
+export function computeAutoStreams(nonOfflineDeviceCount: number): number {
+  return Math.min(64, Math.max(8, Math.ceil(nonOfflineDeviceCount * 2.5)))
+}

@@ -34,6 +34,35 @@ export interface DataDirLock {
   release(): void
 }
 
+/**
+ * The host/port the core is about to bind, for the stale-lock port probe
+ * below (plan 85 §4.7, fixes F14). Optional — a caller that does not pass it
+ * gets exactly the pre-plan-85 behaviour, since not every caller (e.g. a
+ * script that only wants the directory claimed) has a port to check yet.
+ */
+export interface DataDirLockPortCheck {
+  host: string
+  port: number
+  /**
+   * Injectable for tests — defaults to a real read-only bind test, exactly
+   * like `doctor/context.ts`'s `tryBindPort`: attempt to bind, and release
+   * immediately on success. Returns `true` when the port is free. Never
+   * sends a signal to anything; it only tests the socket.
+   */
+  probe?: (host: string, port: number) => boolean
+}
+
+/** Read-only "is anything already listening here" — see `DataDirLockPortCheck.probe`'s doc comment above for the contract. */
+function defaultProbePortFree(host: string, port: number): boolean {
+  try {
+    const server = Bun.listen({ hostname: host, port, socket: { data() {} } })
+    server.stop(true)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Whether a process with this pid exists. Signal 0 checks without signalling. */
 function isAlive(pid: number): boolean {
   try {
@@ -69,8 +98,22 @@ function readLock(path: string): LockContents | null {
  * Known limit: a recycled pid now belonging to an unrelated program reads as
  * "still held", so the core refuses to start until the file is removed. That
  * is the safe direction to be wrong in, and the error message names the file.
+ *
+ * `portCheck` (plan 85 §4.7, fixes F14): "is that pid alive" and "is the
+ * port free" are two different questions, and a stale lock only answers the
+ * first one. The field log that motivated this showed them disagreeing
+ * directly — `taking over a stale lock from pid 19964 (no such process)`
+ * immediately followed by `Failed to start server. Is port 7700 in use?`.
+ * When `portCheck` is given and the lock turns out to be stale, this also
+ * probes the port the core is about to bind, and warns *now*, at the point
+ * the log was actively implying "the port is free", rather than only
+ * failing later with an unexplained `EADDRINUSE`.
  */
-export function acquireDataDirLock(dataDir: string, log?: { info: (m: string) => void }): DataDirLock {
+export function acquireDataDirLock(
+  dataDir: string,
+  log?: { info: (m: string) => void; warn?: (m: string) => void },
+  portCheck?: DataDirLockPortCheck,
+): DataDirLock {
   mkdirSync(dataDir, { recursive: true })
   const path = join(dataDir, LOCK_FILE)
 
@@ -85,6 +128,16 @@ export function acquireDataDirLock(dataDir: string, log?: { info: (m: string) =>
   }
   if (held) {
     log?.info(`taking over a stale lock from pid ${held.pid} (no such process)`)
+    if (portCheck) {
+      const probe = portCheck.probe ?? defaultProbePortFree
+      const portFree = probe(portCheck.host, portCheck.port)
+      if (!portFree) {
+        log?.warn?.(
+          `the stale lock's owner (pid ${held.pid}) is gone, but something else is already listening on ${portCheck.host}:${portCheck.port} — ` +
+            'a dead pid does not mean the port is free. If startup then fails with "port already in use", this is why; run `enkaku doctor` to name the holder.',
+        )
+      }
+    }
   }
 
   const contents: LockContents = { pid: process.pid, startedAt: new Date().toISOString() }

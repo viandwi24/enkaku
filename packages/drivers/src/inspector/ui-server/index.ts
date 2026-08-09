@@ -59,6 +59,13 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
     this.client = new UiServerClient({
       localPort: opts.localPort,
       ...(opts.findTimeoutMs !== undefined ? { timeoutMs: opts.findTimeoutMs } : {}),
+      // Plan 85 §3.5 (F18) — `adb forward` is torn down and re-created on every
+      // ui-server restart, so a pooled keep-alive connection can outlive its
+      // forward and fail as "socket connection was closed unexpectedly". The
+      // client retries that case once; this is what lets the retry actually
+      // repair the forward rather than just hoping the pool evicted the dead
+      // connection first.
+      reassertForward: () => opts.launcher.reassertForward(opts.localPort),
     })
     this.watchdog = createWatchdog({
       client: this.client,

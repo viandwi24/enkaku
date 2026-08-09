@@ -42,6 +42,26 @@ const MAX_BACKLOG_LINES = 2000
 /** Lines are batched and flushed on this cadence (plan 24 §4.4) — a chatty logcat must not become one WS frame per chunk. */
 const FLUSH_INTERVAL_MS = 100
 
+/**
+ * Per-kind overrides for the streaming lane's three clocks (plan 85 §3.2, §5
+ * step 85.4). A kind absent from this map gets nothing spread in and falls
+ * through to the lane's own defaults (`DEFAULT_STREAM_IDLE_TIMEOUT_MS` /
+ * `DEFAULT_STREAM_ABSOLUTE_TIMEOUT_MS` / `DEFAULT_STREAM_MAX_BYTES` in
+ * `@enkaku/adb`, applied inside `AdbClient.execStream`) — this file never
+ * repeats those numbers.
+ *
+ * `crash` is the always-on crash watcher's feed (plan 37) and must outlive a
+ * generic Monitor-tab stream: both clocks OFF, exactly the precedent already
+ * set for the ui-server instrumentation stream
+ * (`packages/session/src/inspector-factory.ts:86-93`, plan 34 §3.2) — "an
+ * always-on internal stream declares itself as one" is established here, not
+ * new. Its byte cap is raised to 32 MiB and, per `crash-watcher.ts`, hitting
+ * it is now a restart trigger rather than a silent death (plan 85 §3.2).
+ */
+export const STREAM_CLOCK_OVERRIDES: Partial<Record<MonitorKind, { idleTimeoutMs?: number; absoluteTimeoutMs?: number; maxBytes?: number }>> = {
+  crash: { idleTimeoutMs: 0, absoluteTimeoutMs: 0, maxBytes: 32 * 1024 * 1024 },
+}
+
 export interface MonitorHub {
   /**
    * Subscribe `clientId` to `(deviceId, kind, options)`. Starts the adb
@@ -213,6 +233,10 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
       const handle = await port.stream(entry.cmd, {
         onData: (chunk) => handleChunk(entry, chunk),
         onEnd: (reason) => handleEnded(entry, toMonitorEndReason(reason)),
+        // Per-kind clock override (plan 85 §3.2, §5 step 85.4) — undefined
+        // for every kind but `crash`, so the spread adds nothing and the
+        // lane's own defaults apply exactly as before.
+        ...STREAM_CLOCK_OVERRIDES[entry.kind],
       })
       if (entry.stopRequested) {
         void handle.stop().catch(() => {})

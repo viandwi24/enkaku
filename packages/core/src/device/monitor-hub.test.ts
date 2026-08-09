@@ -5,7 +5,7 @@ import { devices } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { createLogger } from '../util/logger'
 import type { ShellPort } from './shell-port'
-import { createMonitorHub, runOneshotMonitor } from './monitor-hub'
+import { createMonitorHub, runOneshotMonitor, STREAM_CLOCK_OVERRIDES } from './monitor-hub'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -17,6 +17,10 @@ interface FakeStreamRecord {
   serial: string
   cmd: string
   stopped: boolean
+  /** The clock options `MonitorHub` actually passed to `ShellPort.stream()` (plan 85 §5 step 85.4). */
+  idleTimeoutMs?: number
+  absoluteTimeoutMs?: number
+  maxBytes?: number
   emit(text: string): void
 }
 
@@ -42,6 +46,9 @@ function createFakeShellPortFactory(db: Db): { shellPort: (deviceId: string) => 
           serial: row.serial,
           cmd,
           stopped: false,
+          idleTimeoutMs: opts.idleTimeoutMs,
+          absoluteTimeoutMs: opts.absoluteTimeoutMs,
+          maxBytes: opts.maxBytes,
           emit(text: string) {
             opts.onData(new TextEncoder().encode(text))
           },
@@ -182,6 +189,34 @@ describe('MonitorHub (plan 24 §4.5) — with a fake ShellPort', () => {
     // A second attempt does not silently join a broken entry — it tries again cleanly.
     await expect(hub.subscribe('client-a', 'no-such-device', 'logcat', {})).rejects.toThrow()
     expect(dataEvents).toHaveLength(0)
+  })
+})
+
+describe('MonitorHub — per-kind stream clocks (plan 85 §3.2, §5 step 85.4)', () => {
+  test('the crash kind gets both clocks OFF and a 32 MiB byte cap, mirroring the ui-server precedent (inspector-factory.ts:86-93)', async () => {
+    const { hub, calls } = setup()
+    await hub.subscribe('internal:crash', 'dev-1', 'crash', {})
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.idleTimeoutMs).toBe(0)
+    expect(calls[0]?.absoluteTimeoutMs).toBe(0)
+    expect(calls[0]?.maxBytes).toBe(32 * 1024 * 1024)
+  })
+
+  test('every other streaming kind is untouched — no clock override is passed at all', async () => {
+    const { hub, calls } = setup()
+    await hub.subscribe('client-a', 'dev-1', 'logcat', {})
+    await hub.subscribe('client-a', 'dev-1', 'top', {})
+    await hub.subscribe('client-a', 'dev-1', 'thermal', {})
+    for (const call of calls) {
+      expect(call.idleTimeoutMs).toBeUndefined()
+      expect(call.absoluteTimeoutMs).toBeUndefined()
+      expect(call.maxBytes).toBeUndefined()
+    }
+  })
+
+  test('STREAM_CLOCK_OVERRIDES only names "crash" — the documented single exception', () => {
+    expect(Object.keys(STREAM_CLOCK_OVERRIDES)).toEqual(['crash'])
+    expect(STREAM_CLOCK_OVERRIDES.crash).toEqual({ idleTimeoutMs: 0, absoluteTimeoutMs: 0, maxBytes: 32 * 1024 * 1024 })
   })
 })
 

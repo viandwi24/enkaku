@@ -51,6 +51,40 @@ export interface DeviceRegistry {
    * unplugged, may never come.
    */
   admitted(stableId: string): void
+  /**
+   * Runs the normal probe → enroll/discover path for a serial adb currently
+   * reports as `device` (plan 85 §3.3, §4.4) — exposed (rather than staying
+   * a module-private closure, as it was before this plan) so the
+   * `DeviceReconciler` can adopt a device the tracker's own event stream
+   * missed, through the EXACT same path a live `add` event already uses.
+   * Dedupes internally against a probe already in flight for the same
+   * serial, so the reconciler calling this for a serial the tracker is
+   * already probing is a safe no-op, not a double probe.
+   */
+  onOnline(serial: string): Promise<void>
+  /**
+   * Marks a serial's device offline (plan 85 §3.3, §4.4) — exposed for the
+   * same reason as `onOnline` above: the `DeviceReconciler`'s safety net for
+   * a `remove` the tracker's event stream missed.
+   */
+  onRemove(serial: string): void
+  /**
+   * Every serial the registry currently associates with a device (plan 85
+   * §3.3, §4.4): the tracker's live view (`serialToStableId`) UNIONED with
+   * every enrolled device's last-known serial (the `devices` table) — a
+   * device can be enrolled but currently disconnected and still needs to
+   * count as "known" so the reconciler's `onRemove` safety net, not its
+   * adopt path, is what notices it is gone. The `DeviceReconciler` diffs
+   * adb's own `host:devices-l` truth against this set.
+   */
+  knownSerials(): Set<string>
+  /**
+   * How many serials currently have a scheduled probe-retry backoff pending
+   * (plan 85 §3.3 point 7, §5 step 85.2) — surfaced verbatim in
+   * `ReconcileReport.retriesPending` so a human watching Rescan can see F9's
+   * fix actually working, not just trust that it is.
+   */
+  pendingRetryCount(): number
 }
 
 /**
@@ -201,6 +235,47 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   const probesInFlight = new Set<string>()
   let unsubscribe: (() => void) | null = null
 
+  /**
+   * Backoff schedule for a probe that keeps failing (plan 85 §3.3 point 7,
+   * §5 step 85.2) — 1s, 2s, 5s, 15s, 30s, and then nothing further: once
+   * exhausted, the periodic `DeviceReconciler`
+   * (`packages/core/src/registry/reconcile.ts`) picks it back up on its own
+   * cadence with no special-casing needed here — a serial that never
+   * successfully probes never enters `serialToStableId`, so it never stops
+   * looking "unknown" to `knownSerials()`, and the reconciler's ordinary
+   * adopt path retries it every tick.
+   */
+  const PROBE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000]
+  /** serial → the scheduled retry timer, so a device that disappears can cancel it before it fires a stale probe. */
+  const pendingProbeRetries = new Map<string, ReturnType<typeof setTimeout>>()
+  /** serial → how many backoff steps have already been used; reset to 0 the moment a probe succeeds. */
+  const probeRetryAttempt = new Map<string, number>()
+
+  function cancelProbeRetry(serial: string): void {
+    const timer = pendingProbeRetries.get(serial)
+    if (timer) {
+      clearTimeout(timer)
+      pendingProbeRetries.delete(serial)
+    }
+    probeRetryAttempt.delete(serial)
+  }
+
+  function scheduleProbeRetry(serial: string): void {
+    const attempt = probeRetryAttempt.get(serial) ?? 0
+    if (attempt >= PROBE_RETRY_BACKOFF_MS.length) {
+      // Backoff exhausted — from here the reconciler's own tick is the
+      // retry mechanism (F9's fix): see the comment on the constant above.
+      return
+    }
+    const delayMs = PROBE_RETRY_BACKOFF_MS[attempt]!
+    probeRetryAttempt.set(serial, attempt + 1)
+    const timer = setTimeout(() => {
+      pendingProbeRetries.delete(serial)
+      void onOnline(serial)
+    }, delayMs)
+    pendingProbeRetries.set(serial, timer)
+  }
+
   async function onOnline(serial: string): Promise<void> {
     if (probesInFlight.has(serial)) return
     probesInFlight.add(serial)
@@ -214,6 +289,10 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         await Bun.sleep(1000)
         probe = await probeDeviceIdentity(client, serial)
       }
+      // It answered — any scheduled backoff retry for this serial is moot,
+      // and the next failure (a later disconnect/reconnect cycle) starts
+      // the schedule fresh rather than continuing where a stale one left off.
+      cancelProbeRetry(serial)
       if (probe.stableId.startsWith('serial:')) {
         log.warn(`using the tertiary stableId fallback for ${serial} (ro.serialno and android_id are both invalid)`)
       }
@@ -314,13 +393,25 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb' } })
       deps.onDeviceReady?.(row.id)
     } catch (err) {
-      log.warn(`probe of ${serial} failed outright — waiting for the next event`, { err: String(err) })
+      // Used to be a dead end (F9): the device stayed invisible until
+      // physically unplugged and replugged, because no next tracker event
+      // was coming. Now it gets a bounded backoff retry, and once that is
+      // exhausted the periodic `DeviceReconciler` keeps trying every tick —
+      // see `scheduleProbeRetry`'s own comment for why no further
+      // bookkeeping is needed to make that happen.
+      log.warn(`probe of ${serial} failed — retrying with backoff`, { err: String(err) })
+      scheduleProbeRetry(serial)
     } finally {
       probesInFlight.delete(serial)
     }
   }
 
   function onRemove(serial: string): void {
+    // Cancel BEFORE the early returns below (plan 85 §5 step 85.2's "the
+    // retry is cancelled when the device disappears") — a serial can be
+    // mid-backoff with no `devices` row at all (every probe has failed so
+    // far), and it must still stop retrying the instant adb says it is gone.
+    cancelProbeRetry(serial)
     const stableId = serialToStableId.get(serial)
     serialToStableId.delete(serial)
     const row = stableId
@@ -357,8 +448,20 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       const stableId = serialToStableId.get(ev.serial)
       const knownRow = stableId ? db.select().from(devices).where(eq(devices.stableId, stableId)).get() : null
       if (knownRow) deps.record?.({ deviceId: knownRow.id, stream: 'main', kind: 'device.unauthorized', meta: {} })
+    } else if (ev.state === 'offline' || ev.state === 'authorizing') {
+      // Not acted on here (plan 85 §3.3, fixes F10): a single tracker event
+      // is not enough signal — `offline`/`authorizing` are exactly the
+      // states a Windows host shows for a phone plugged in before the adb
+      // server finished USB enumeration, and they often resolve themselves
+      // within a second or two. The `DeviceReconciler`
+      // (`packages/core/src/registry/reconcile.ts`) is what watches these
+      // over TIME (`discovery.offlineGraceSec`) and issues the one bounded
+      // `host:reconnect-offline` recovery if the state persists — it
+      // re-derives its own view straight from `host:devices-l` on every
+      // tick, so nothing here needs to feed it directly.
+      log.debug(`device ${ev.serial} state=${ev.state} — the discovery reconciler recovers it if it persists`)
     } else {
-      log.debug(`device ${ev.serial} state=${ev.state} — ignored in M0`)
+      log.debug(`device ${ev.serial} state=${ev.state} — unrecognised adb state, ignored`)
     }
   }
 
@@ -378,6 +481,12 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     async stop() {
       unsubscribe?.()
       unsubscribe = null
+      // Every process this registry started is dead on stop (00-overview §7)
+      // — a pending backoff timer left running would fire `onOnline` against
+      // a client that may already be disposed.
+      for (const timer of pendingProbeRetries.values()) clearTimeout(timer)
+      pendingProbeRetries.clear()
+      probeRetryAttempt.clear()
       await client.trackDevices().stop()
     },
     listDevices() {
@@ -385,6 +494,18 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     },
     deviceCount() {
       return db.select().from(devices).all().length
+    },
+    onOnline,
+    onRemove,
+    knownSerials() {
+      const serials = new Set(serialToStableId.keys())
+      for (const row of db.select({ serial: devices.serial }).from(devices).all()) {
+        if (row.serial) serials.add(row.serial)
+      }
+      return serials
+    },
+    pendingRetryCount() {
+      return pendingProbeRetries.size
     },
     admitted(stableId) {
       // A phone admitted from the tray (plan 56) is usually plugged in RIGHT

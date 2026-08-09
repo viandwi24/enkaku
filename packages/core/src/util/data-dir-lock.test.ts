@@ -85,3 +85,71 @@ describe('acquireDataDirLock', () => {
     expect(() => lock.release()).not.toThrow()
   })
 })
+
+/**
+ * F14: `process.kill(pid, 0)` answers "is that pid alive", never "is the
+ * port free" — the field log showed the two disagreeing directly. These
+ * tests are for the `portCheck` parameter that closes the gap: a stale
+ * lock's takeover now also probes the port the core is about to bind, and
+ * warns when the probe disagrees with what the takeover log line implies.
+ */
+describe('acquireDataDirLock — stale-lock port probe (plan 85 §4.7, F14)', () => {
+  const deadPid = 999_999 // asserted dead the same way the "takes over" test above does
+
+  function writeStaleLock(dir: string): void {
+    writeFileSync(join(dir, 'enkaku.lock'), JSON.stringify({ pid: deadPid, startedAt: 'yesterday' }))
+  }
+
+  test('warns when the port is still answering despite the lock being stale', () => {
+    const dir = freshDir()
+    writeStaleLock(dir)
+    const warnings: string[] = []
+    const log = { info: () => {}, warn: (m: string) => warnings.push(m) }
+
+    const lock = acquireDataDirLock(dir, log, { host: '127.0.0.1', port: 7700, probe: () => false })
+    lock.release()
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('127.0.0.1:7700')
+    expect(warnings[0]).toContain(String(deadPid))
+  })
+
+  test('does not warn when the port probe reports it free', () => {
+    const dir = freshDir()
+    writeStaleLock(dir)
+    const warnings: string[] = []
+    const log = { info: () => {}, warn: (m: string) => warnings.push(m) }
+
+    const lock = acquireDataDirLock(dir, log, { host: '127.0.0.1', port: 7700, probe: () => true })
+    lock.release()
+
+    expect(warnings).toHaveLength(0)
+  })
+
+  test('never probes the port when the lock was not stale (fresh acquire, nothing to take over)', () => {
+    const dir = freshDir()
+    let probed = false
+    const lock = acquireDataDirLock(dir, undefined, { host: '127.0.0.1', port: 7700, probe: () => (probed = true) })
+    expect(probed).toBe(false)
+    lock.release()
+  })
+
+  test('omitting portCheck entirely leaves behaviour unchanged — no probe, no warn, no throw', () => {
+    const dir = freshDir()
+    writeStaleLock(dir)
+    expect(() => acquireDataDirLock(dir)).not.toThrow()
+  })
+
+  test('the default probe is a real, read-only bind test when no probe function is injected', () => {
+    const dir = freshDir()
+    writeStaleLock(dir)
+    const warnings: string[] = []
+    const log = { info: () => {}, warn: (m: string) => warnings.push(m) }
+    // Port 0 always binds (the OS assigns a free ephemeral port), so the
+    // default bind-test probe should find it free and warn nothing — this
+    // exercises `defaultProbePortFree` itself, not an injected fake.
+    const lock = acquireDataDirLock(dir, log, { host: '127.0.0.1', port: 0 })
+    lock.release()
+    expect(warnings).toHaveLength(0)
+  })
+})

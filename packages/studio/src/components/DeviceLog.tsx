@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Pause, Play } from 'lucide-react'
 import { DeviceEventsResponseSchema, type DeviceEvent, type DeviceEventStream } from '@enkaku/protocol'
 import { api } from '@/lib/actions'
-import { ws } from '@/lib/ws'
+import { newId, ws } from '@/lib/ws'
 import { relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
 import { Button } from '@/components/ui/button'
@@ -48,6 +48,14 @@ const KIND_LABEL: Record<string, string> = {
   'adb.endpoint.closed': 'adb endpoint closed',
   'adb.open': 'adb stream',
   'app.crashed': 'App crashed',
+  // `device.inspector.status` (plan 85 §3.5) is a live-only WS message, never
+  // persisted as a `DeviceEvent` — synthesized client-side below so the
+  // watchdog's circuit breaker and restart churn are visible here, not only
+  // in the console.
+  'inspector.starting': 'Inspector starting',
+  'inspector.healthy': 'Inspector healthy',
+  'inspector.restarting': 'Inspector restarting',
+  'inspector.dead': 'Inspector degraded',
 }
 
 const KIND_TONE: Record<string, string> = {
@@ -65,6 +73,9 @@ const KIND_TONE: Record<string, string> = {
   'adb.endpoint.opened': 'text-led-active border-led-active/35 bg-led-active/10',
   'adb.endpoint.closed': 'text-fg-subtle border-line bg-transparent',
   'app.crashed': 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  'inspector.healthy': 'text-led-ok border-led-ok/35 bg-led-ok/10',
+  'inspector.restarting': 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  'inspector.dead': 'text-led-danger border-led-danger/40 bg-led-danger/10',
 }
 const DEFAULT_TONE = 'text-fg-muted border-line bg-transparent'
 
@@ -145,6 +156,21 @@ function summarize(ev: DeviceEvent): string {
       const suffix = meta.jobId ? ` (job ${String(meta.jobId).slice(0, 8)})` : ''
       return `${String(meta.package ?? '?')} — ${label}${suffix}`
     }
+    case 'inspector.starting':
+      return 'Negotiating the on-device inspector'
+    case 'inspector.healthy':
+      return 'The ui-server inspector is responding again'
+    case 'inspector.restarting': {
+      // plan 85 §3.5 (F17): the watchdog's circuit breaker — `attempt` counts
+      // the restart within the CURRENT cycle, not across the whole session.
+      const attempt = typeof meta.attempt === 'number' ? meta.attempt : null
+      const reason = meta.reason ? String(meta.reason) : null
+      return `${attempt !== null ? `Restart attempt ${attempt}` : 'Restarting'}${reason ? `: ${reason}` : ''}`
+    }
+    case 'inspector.dead':
+      // The breaker gave up for this session — falling back to
+      // uiautomator-dump, no further attempts (plan 85 §3.5).
+      return `Gave up — falling back to uiautomator-dump${meta.reason ? `: ${String(meta.reason)}` : ''}`
     default:
       return ev.kind
   }
@@ -240,14 +266,40 @@ export function DeviceLog({ deviceId, deviceOffline }: { deviceId: string; devic
     subscribe()
     const offReconnect = ws.onReconnected(subscribe)
 
-    const off = ws.on((msg) => {
-      if (msg.type !== 'device.event' || msg.payload.deviceId !== deviceId) return
-      const ev = msg.payload
+    const appendEvent = (ev: DeviceEvent) => {
       setSlots((s) => {
         const slot = s[ev.stream]
         if (slot.paused) return { ...s, [ev.stream]: { ...slot, pending: [ev, ...slot.pending] } }
         return { ...s, [ev.stream]: { ...slot, events: [ev, ...slot.events].slice(0, MAX_ROWS) } }
       })
+    }
+
+    const off = ws.on((msg) => {
+      if (msg.type === 'device.event' && msg.payload.deviceId === deviceId) {
+        appendEvent(msg.payload)
+        return
+      }
+      if (msg.type === 'device.inspector.status' && msg.payload.deviceId === deviceId) {
+        // `device.inspector.status` (plan 85 §3.5, fixes F17/F18) is a
+        // live-only broadcast — the core never writes it to the persisted
+        // event table, only the eventual `session.degraded` fallback is.
+        // Synthesized here as a client-side-only `main`-stream row so a
+        // restart storm or the circuit breaker's `dead` state is visible in
+        // the Logs tab, not only in the console.
+        const { state, reason, attempt } = msg.payload
+        const meta: Record<string, unknown> = {}
+        if (reason !== undefined) meta.reason = reason
+        if (attempt !== undefined) meta.attempt = attempt
+        appendEvent({
+          id: newId(),
+          deviceId,
+          stream: 'main',
+          kind: `inspector.${state}`,
+          actor: null,
+          meta: Object.keys(meta).length > 0 ? meta : null,
+          at: Math.floor(Date.now() / 1000),
+        })
+      }
     })
 
     return () => {
