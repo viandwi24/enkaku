@@ -175,7 +175,11 @@ export function createDeviceExecutor(deps: {
         await pause()
         lastTarget = 'point' in call.args.target ? null : call.args.target
         const point = jitterPoint(await resolveTarget(call.args.target))
-        await deps.session.input.tap(point)
+        // tapJitterMs (spec §9.3, §17): the hold duration is sampled per tap
+        // from a range, not fixed — test realism, not evasion. The engine
+        // does the actual sampling (so it can stay deterministic under an
+        // injected rng); this just hands down the configured range.
+        await deps.session.input.tap(point, { holdMs: timing.tapJitterMs })
         return undefined
       }
       case 'swipe': {

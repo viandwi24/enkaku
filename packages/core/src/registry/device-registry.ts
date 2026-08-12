@@ -1,5 +1,15 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
-import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type LeaseHolder, type Readiness } from '@enkaku/protocol'
+import {
+  DeviceInfoSchema,
+  defaultDeviceSettings,
+  type ConnectionMedium,
+  type DeviceConnection,
+  type DeviceInfo,
+  type DeviceReadiness,
+  type DeviceSettings,
+  type LeaseHolder,
+  type Readiness,
+} from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
@@ -11,6 +21,7 @@ import type { WsHub } from '../server/ws'
 import { loadDeviceTags } from './device-tags'
 import { classify, recordSighting } from './admission'
 import type { EventRecorder } from '../events/recorder'
+import type { EndpointStore } from './endpoints'
 
 export interface DeviceRegistryDeps {
   client: AdbClient
@@ -37,6 +48,14 @@ export interface DeviceRegistryDeps {
   deviceDefaults?: () => DeviceSettings
   /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below for why this is a separate accessor from `deviceDefaults`. */
   defaultDesiredReadiness?: () => Readiness
+  /**
+   * The address book (plan 88 §3.2, §4.3). `onOnline`'s success path calls
+   * `observe(stableId, serial)` for an admitted device — free, no extra adb
+   * work, a no-op for a USB serial. Optional so every existing caller (tests,
+   * orchestrator mode before this is wired in `daemon.ts`) keeps constructing
+   * a registry exactly as before this plan.
+   */
+  endpoints?: EndpointStore
 }
 
 export interface DeviceRegistry {
@@ -104,6 +123,89 @@ export function clusterRefFor(db: Db, clusterId: string | null): { id: string; n
   return row ? { id: clusterId, name: row.name } : null
 }
 
+/**
+ * `host:port` shape adb itself uses for a TCP transport — confirmed by
+ * `AdbTcpTransport`'s own comment ("serial adb-tcp = host:port",
+ * `packages/drivers/src/transport/adb-transport.ts`). A USB serial (e.g.
+ * `ZP2222RMBS`, or a 16-hex device id) never contains a colon, so this split
+ * is purely observational (plan 88 §3.1) — no guessing which one a device
+ * is. `host` may be bracketed IPv6 (`[::1]:5555`) or a bare hostname/IPv4;
+ * only IPv4 participates in `ipInCidr` below.
+ */
+const TCP_SERIAL_RE = /^(\[[0-9a-fA-F:]+\]|[^\s:]+):(\d{1,5})$/
+
+function parseIPv4(host: string): number | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!m) return null
+  const octets = [m[1]!, m[2]!, m[3]!, m[4]!].map(Number)
+  if (octets.some((o) => o > 255)) return null
+  return (((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0) >>> 0
+}
+
+/**
+ * Whether the IPv4 dotted-quad `host` falls inside `cidr` ('10.20.0.0/24').
+ * A hostname or IPv6 host, or a malformed `cidr`, never matches — nobody has
+ * configured a network wide enough to say what those are (plan 88 §3.6
+ * configures IPv4 ranges only), and a non-match just means `mediumSource`
+ * stays `'unknown'` rather than guessing.
+ */
+function ipInCidr(host: string, cidr: string): boolean {
+  const slash = cidr.indexOf('/')
+  if (slash < 0) return false
+  const bits = Number(cidr.slice(slash + 1))
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false
+  const hostInt = parseIPv4(host)
+  const baseInt = parseIPv4(cidr.slice(0, slash))
+  if (hostInt === null || baseInt === null) return false
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0
+  return (hostInt & mask) === (baseInt & mask)
+}
+
+/**
+ * A farm network (plan 88 §3.6) — the shape `discovery.networks` will have
+ * once step 88.3 adds it to `packages/protocol/src/settings.ts`. Declared
+ * here, ahead of that settings field, so `deriveConnection` below has
+ * something concrete to accept; every call site passes `[]` until 88.3
+ * wires real configuration through, which is then a settings change, not a
+ * rewrite of this function.
+ */
+export interface FarmNetwork {
+  cidr: string
+  label: string
+  medium: ConnectionMedium
+  scan: boolean
+}
+
+/**
+ * The ONE place a device's connection is computed (plan 88 §3.1, §4.1) —
+ * `kind` from adb's own serial shape (OBSERVED), `medium` from whether a
+ * `tcp` address falls inside a configured farm network (INFERRED,
+ * `mediumSource: 'network'`). There is no third source yet: a per-address
+ * DECLARED medium belongs to the endpoint store (plan 88 §3.2, §4.3), which
+ * step 88.2 introduces — `mediumSource` here is therefore never
+ * `'declared'` until that step threads a lookup through. Called from
+ * `rowToDeviceInfo`, so the list, the wall, the card, the device page and
+ * every WS broadcast agree — no caller re-derives this itself.
+ */
+export function deriveConnection(serial: string, networks: FarmNetwork[]): DeviceConnection {
+  const match = TCP_SERIAL_RE.exec(serial)
+  if (!match) {
+    return { kind: 'usb', medium: null, mediumSource: 'unknown', address: null, port: null, networkLabel: null }
+  }
+  const hostRaw = match[1]!
+  const host = hostRaw.startsWith('[') ? hostRaw.slice(1, -1) : hostRaw
+  const port = Number(match[2])
+  const network = networks.find((n) => ipInCidr(host, n.cidr))
+  return {
+    kind: 'tcp',
+    medium: network?.medium ?? null,
+    mediumSource: network ? 'network' : 'unknown',
+    address: host,
+    port,
+    networkLabel: network?.label || null,
+  }
+}
+
 export function rowToDeviceInfo(
   row: DeviceRow,
   tags: string[] = [],
@@ -125,6 +227,14 @@ export function rowToDeviceInfo(
    * manager to hand (orchestrator mode, most tests) gets by default.
    */
   heldBy: LeaseHolder | null = null,
+  /**
+   * Farm networks (plan 88 §3.6) — used only to infer `connection.medium`
+   * for a `tcp` serial. Defaulted to `[]` (every network match then misses,
+   * so `mediumSource` reads `'unknown'`) until step 88.3 wires
+   * `discovery.networks` through a call site; every existing caller keeps
+   * parsing unchanged in the meantime.
+   */
+  networks: FarmNetwork[] = [],
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
@@ -145,6 +255,7 @@ export function rowToDeviceInfo(
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
     heldBy,
+    connection: deriveConnection(row.serial, networks),
   })
 }
 
@@ -179,6 +290,13 @@ export function listDevicesWithTags(
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
   /** Lease holder (plan 71 §4.4) — omitted call sites fall back to `null` (unheld), same as `rowToDeviceInfo` itself. */
   heldByOf?: (deviceId: string) => LeaseHolder | null,
+  /**
+   * Farm networks (plan 88 §3.6), resolved ONCE for the whole list — the
+   * same N+1 discipline this function already applies to tags, clusters and
+   * crashes above, extended to `connection.medium`. `rowToDeviceInfo` NEVER
+   * re-resolves this per row.
+   */
+  networks: FarmNetwork[] = [],
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
@@ -194,6 +312,7 @@ export function listDevicesWithTags(
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
       heldByOf?.(r.id) ?? null,
+      networks,
     ),
   )
 }
@@ -382,6 +501,9 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       serialToStableId.set(serial, probe.stableId)
       const row = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()
       if (!row) return
+      // The address book's whole cost (plan 88 §3.2, §4.3, fixes F10): free,
+      // because this probe already ran for an ordinary reason.
+      deps.endpoints?.observe(probe.stableId, serial)
       if (existing) {
         // The official transition (offline→idle; quarantined stays quarantined).
         deps.states.apply(row.id, 'DEVICE_CONNECTED')

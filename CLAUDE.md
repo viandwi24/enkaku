@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `docs/plans/01..16-*.md` — milestone plans M0–M10 (a nine-section template, with acceptance criteria per plan).
 - `docs/design.md` — the Studio design system: tokens, screen patterns, writing rules, quality floor.
 - `docs/guide/` — user guides: `install.md`, `cloud.md`, `enrollment.md`, `redroid.md`.
-- `docs/acceptable-use.md` and `LICENSES.md` — the AUP and the redistribution audit (adb is NOT redistributed; it is downloaded on first run and sha256-verified).
+- `LICENSES.md` — the redistribution audit (adb is NOT redistributed; it is downloaded on first run and sha256-verified).
 
 ## Language
 
@@ -49,7 +49,7 @@ Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anythi
 
 - **Immutable stack decisions** (detail in `docs/plans/00-overview.md` §3): Bun + Hono core, Next.js Studio, SQLite + Drizzle, Zod 4 at every boundary, version-locked scrcpy-server (`packages/scrcpy/src/version.ts` is the only source of that version — never fork the Java side).
 - **Two TypeScripts — do not merge them**: the root uses TypeScript 7 with `tsconfig.base.json` (bun types, verbatimModuleSyntax); `packages/studio` is deliberately standalone with a local TypeScript 5 and a tsconfig that does NOT extend the base (Next needs the TS 5 compiler API). Both must coexist.
-- **`adb kill-server` is forbidden** except inside the Toolchain Manager's adb swap flow (port 5037 is shared with Android Studio).
+- **`adb kill-server` is forbidden everywhere except `packages/core/src/tools/adb-server-control.ts`'s `cycle()`** — the one function in the workspace that runs it, because port 5037 is shared with Android Studio and every other adb consumer on the machine. `cycle()` has exactly two audited entry points: the Toolchain Manager's version swap and the operator's "Restart adb server" button on the Tools page. Both drain sessions and leases (plus any running job the caller explicitly overrode) before the server stops, and reattach every remembered network address afterward. A workspace-wide test (`packages/core/src/tools/adb-server-control.test.ts`) asserts the literal command appears in exactly that one non-test file; the doctor package keeps its own narrower guard too.
 - Cross-package imports always go through the package name (`@enkaku/...`), never a relative path across packages. WS message types and strings come only from `@enkaku/protocol` — never hardcode them elsewhere.
 - Validate external input (WS, HTTP bodies, JSON DB columns, config files) through Zod; never `as`-cast. DB timestamps are integer unix **seconds** (Drizzle `mode: 'timestamp'`).
 - Device identity is `stableId` (ro.serialno → ANDROID_ID fallback); the adb serial is only a transport address.

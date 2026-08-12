@@ -19,6 +19,7 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
       const settings = DeviceSettingsSchema.safeParse(row.settings ?? {})
       const prep = settings.success ? settings.data.prep : defaultDeviceSettings().prep
       const identity = settings.success ? settings.data.identity : defaultDeviceSettings().identity
+      const instrumentation = settings.success ? settings.data.instrumentation : defaultDeviceSettings().instrumentation
       return {
         id: row.id,
         stableId: row.stableId,
@@ -43,6 +44,10 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         // here too: identity is projected at the SAME seam the settings blob is
         // read, so it cannot be saved-and-never-read like `timing` once was.
         identity,
+        // Plan 87 §4.12, §5 step 87.13 — same dead-config guard as identity
+        // above: the farm-tagging setting must be read here, not just saved,
+        // or "on by default" (spec §17) would be true only in the schema.
+        tagTraffic: instrumentation.tagTraffic,
       }
     },
   }

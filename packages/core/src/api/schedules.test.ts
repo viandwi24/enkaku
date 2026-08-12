@@ -1,10 +1,14 @@
 import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, scheduleAgentTargets, scheduleRuns, schedules, scripts } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
+import { createScriptExecutor } from '../jobs/executors/script'
+import { createDevSlotStore } from '../plugins/dev-slots'
+import { createScriptRegistry } from '../scripts/registry'
 import type { ScheduleAgentDispatch } from '../schedules/runner'
 import { createScheduleRoutes, queryScheduleRunsRows, querySchedulesRows, type ScheduleRoutesDeps } from './schedules'
 
@@ -277,6 +281,81 @@ describe('scriptRef on POST/PATCH /api/schedules (plan 62 §4.4)', () => {
 })
 
 /**
+ * Plan 95 §4.4, §4.8, §5 step 95.7 — `paramsCompatible`/`paramsFindingCount`,
+ * computed fresh on every GET against what `scriptRef` resolves to RIGHT
+ * NOW. Written so it would FAIL if the badge only turned on after a firing
+ * actually happened: this test never calls `fireOnce` or `run-now` at
+ * all — it only ever GETs — so a badge that flips true→false BEFORE the
+ * first missed run is the whole point being asserted.
+ */
+describe('paramsCompatible / paramsFindingCount on GET /api/schedules (plan 95 §4.4, §4.8)', () => {
+  test('a schedule visible and compatible, then incompatible the moment a new version publishes — with no firing in between', async () => {
+    const db = setUp()
+    db.update(scripts)
+      .set({ paramsSchema: { type: 'object', properties: { videos: { type: 'number' } } } })
+      .where(eq(scripts.id, 'test-script-1.0.0'))
+      .run()
+    const [id] = seedSchedule(db, 1) // scriptRef: test-script@1.0.0
+    db.update(schedules).set({ scriptRef: 'test-script@latest', params: { videos: 30 } }).where(eq(schedules.id, id!)).run()
+    const app = makeApp(db, null)
+
+    const before = (await (await app.request('/')).json()) as { items: Array<{ id: string; paramsCompatible: boolean; paramsFindingCount: number }> }
+    const rowBefore = before.items.find((i) => i.id === id)
+    expect(rowBefore).toEqual(expect.objectContaining({ paramsCompatible: true, paramsFindingCount: 0 }))
+
+    // 1.1.0 adds a REQUIRED `region` with no default — the schedule was never touched.
+    db.insert(scripts)
+      .values({
+        id: 'test-script-1.1.0',
+        name: 'test-script',
+        version: '1.1.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { videos: { type: 'number' }, region: { type: 'string' } }, required: ['videos', 'region'] },
+      })
+      .run()
+
+    // No firing happened — this GET is the ONLY thing that ran since the publish above.
+    const after = (await (await app.request('/')).json()) as { items: Array<{ id: string; paramsCompatible: boolean; paramsFindingCount: number }> }
+    const rowAfter = after.items.find((i) => i.id === id)
+    expect(rowAfter).toEqual(expect.objectContaining({ paramsCompatible: false, paramsFindingCount: 1 }))
+
+    // GET /:id agrees with the list.
+    const detail = (await (await app.request(`/${id}`)).json()) as { schedule: { paramsCompatible: boolean; paramsFindingCount: number } }
+    expect(detail.schedule).toEqual(expect.objectContaining({ paramsCompatible: false, paramsFindingCount: 1 }))
+  })
+
+  test('an agent-target schedule is always compatible — there is nothing to reconcile', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeApp(db, 'operator', { agentExists: () => true })
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'agent check',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        workTarget: { kind: 'agent', agentId: 'agent-1', prompt: 'check things' },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+    const body = (await res.json()) as { schedule: { paramsCompatible: boolean; paramsFindingCount: number } }
+    expect(body.schedule).toEqual(expect.objectContaining({ paramsCompatible: true, paramsFindingCount: 0 }))
+  })
+
+  test('a reference that cannot resolve is reported compatible (nothing to say about PARAMS specifically — a separate failure mode)', async () => {
+    const db = setUp()
+    const [id] = seedSchedule(db, 1)
+    db.update(schedules).set({ scriptRef: 'test-script@9.9.9' }).where(eq(schedules.id, id!)).run()
+    const app = makeApp(db, null)
+    const res = await (await app.request('/')).json() as { items: Array<{ id: string; paramsCompatible: boolean }> }
+    expect(res.items.find((i) => i.id === id)?.paramsCompatible).toBe(true)
+  })
+})
+
+/**
  * The agent target (plan 68 §3.1, §4.1, §4.2) — `workTarget` as a
  * discriminated pair alongside the legacy `scriptRef` shape. Every test
  * above never sends `workTarget`, which is exactly what keeps them, and the
@@ -429,5 +508,101 @@ describe('workTarget: agent on POST/PATCH /api/schedules (plan 68 §3.1, §4.1, 
     expect(body.run?.threadId).toBeNull()
     expect(body.batch).toBeUndefined()
     expect(dispatchCalls).toBe(1)
+  })
+})
+
+/**
+ * Plan 95 §5 step 95.6's checklist item "the same validation on create and
+ * patch": `POST /` and `PATCH /:id` already routed through
+ * `validateScriptForRun` before this plan (`schedules.ts:290,370,458,491`)
+ * — what was missing was the fallback executor actually validating anything
+ * (F10). These tests exercise the real HTTP routes, with the REAL
+ * `createScriptExecutor` wired as the fallback (exactly as `daemon.ts`
+ * wires it), so the wiring claim is exercised end to end rather than only
+ * at the function-call level.
+ */
+describe('schedule routes validate params against the real paramsSchema (plan 95 §5 step 95.6)', () => {
+  function setUpWithParamsSchema(): Db {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    opened.db
+      .insert(scripts)
+      .values({
+        id: 'checkout-1.0.0',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } }, required: ['videos'] },
+        createdAt: new Date(),
+      })
+      .run()
+    return opened.db
+  }
+
+  function appWithRealValidation(db: Db, role: 'admin' | 'operator' | null) {
+    const scriptRegistry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-schedules-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = new ExecutorRegistry()
+    registry.setFallback(createScriptExecutor({ registry: scriptRegistry, runner: {} as never }))
+    return makeApp(db, role, { registry })
+  }
+
+  test('POST / rejects an out-of-range params value with 400 invalid_job_params and field-level issues, and creates no schedule row', async () => {
+    const db = setUpWithParamsSchema()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = appWithRealValidation(db, 'operator')
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'nightly',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        scriptRef: 'checkout@1.0.0',
+        params: { videos: 9999 },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; issues?: { path: string; message: string }[] } }
+    expect(body.error.code).toBe('invalid_job_params')
+    expect(body.error.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+    expect(db.select().from(schedules).all().length).toBe(0)
+  })
+
+  test('PATCH /:id rejects an out-of-range params value the same way, and leaves the stored params untouched', async () => {
+    const db = setUpWithParamsSchema()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = appWithRealValidation(db, 'operator')
+
+    const createdRes = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'nightly',
+        cron: '0 2 * * *',
+        timezone: 'UTC',
+        scriptRef: 'checkout@1.0.0',
+        params: { videos: 30 },
+        target: { deviceIds: ['d1'] },
+      }),
+    })
+    expect(createdRes.status).toBe(201)
+    const created = (await createdRes.json()) as { schedule: { id: string } }
+
+    const patchRes = await app.request(`/${created.schedule.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ params: { videos: 9999 } }),
+    })
+    expect(patchRes.status).toBe(400)
+    const body = (await patchRes.json()) as { error: { code: string; issues?: { path: string; message: string }[] } }
+    expect(body.error.code).toBe('invalid_job_params')
+    expect(body.error.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+
+    const row = db.select().from(schedules).all().find((r) => r.id === created.schedule.id)
+    expect(row?.params).toEqual({ videos: 30 })
   })
 })

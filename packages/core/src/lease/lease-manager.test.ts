@@ -267,3 +267,73 @@ describe('lastManualReleaseAt / lastManualHolder — feeds the quiet-period wait
     expect(leases.lastManualHolder('d1')?.label).toBe('user:user-b')
   })
 })
+
+describe('releaseAll — the adb restart flow\'s farm-wide drain (plan 88 §3.10, §4.8, fixes F19)', () => {
+  function setUpFarm() {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db as Db
+    db.insert(devices)
+      .values([
+        { id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' },
+        { id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'idle' },
+        { id: 'd3', stableId: 'stable-3', serial: 'SER3', label: 'Phone Three', status: 'idle' },
+      ])
+      .run()
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    return { db, states }
+  }
+
+  test('releases every manual lease farm-wide with the given reason, and returns the count', () => {
+    const { states } = setUpFarm()
+    const revoked: Array<{ deviceId: string; reason: string }> = []
+    const leases = makeLeases({
+      states,
+      onManualRevoked: (deviceId, reason) => {
+        revoked.push({ deviceId, reason })
+      },
+    })
+    leases.acquireManual('d1', 'client-a')
+    leases.acquireManual('d2', 'client-b')
+    // d3 stays idle — never leased, so it must not appear in the count or the revoke callback.
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(2)
+    expect(leases.getLease('d1')).toBeNull()
+    expect(leases.getLease('d2')).toBeNull()
+    expect(revoked.sort((a, b) => a.deviceId.localeCompare(b.deviceId))).toEqual([
+      { deviceId: 'd1', reason: 'adb-server-restart' },
+      { deviceId: 'd2', reason: 'adb-server-restart' },
+    ])
+  })
+
+  test('never touches a JOB lease — only a manual one', () => {
+    const { states } = setUpFarm()
+    const leases = makeLeases({ states })
+    leases.acquireManual('d1', 'client-a')
+    leases.noteJobLease('d2', 'job-1', 60)
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(1)
+    expect(leases.getLease('d1')).toBeNull()
+    expect(leases.getLease('d2')?.type).toBe('job')
+  })
+
+  test('no manual leases held: returns 0 and revokes nobody', () => {
+    const { states } = setUpFarm()
+    const revoked: string[] = []
+    const leases = makeLeases({
+      states,
+      onManualRevoked: (deviceId) => {
+        revoked.push(deviceId)
+      },
+    })
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(0)
+    expect(revoked).toEqual([])
+  })
+})

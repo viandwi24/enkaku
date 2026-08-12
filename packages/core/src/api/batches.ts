@@ -6,9 +6,11 @@ import {
   BatchResponseSchema,
   BatchWithJobsResponseSchema,
   BatchesPageResponseSchema,
+  reconcileParams,
   type BatchInfo,
   type BatchOrder,
   type BatchStatusEvent,
+  type JsonSchemaNode,
 } from '@enkaku/protocol'
 import { canUseDevice } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
@@ -17,11 +19,12 @@ import { requirePermission } from '../auth/middleware'
 import { createBatch } from '../clusters/dispatch'
 import { computeBatchStatus, countJobs, recomputeBatchStatus } from '../clusters/status'
 import type { Db } from '../db'
-import { batches, devices, type BatchRow } from '../db/schema'
+import { batches, devices, scripts, type BatchRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import { rowToJobInfo, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
+import type { ScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
@@ -43,6 +46,12 @@ const ERROR_STATUS: Record<string, number> = {
   unknown_script: 400,
   script_disabled: 409,
   invalid_job_params: 400,
+  // A state conflict, not a malformed request (plan 95 §4.4, §5 step 95.7):
+  // the ORIGINAL params were fine when the batch was created; the schema
+  // moved out from under them since. 409, matching E_NO_TARGETS's own
+  // "cannot proceed as configured right now" family, not 400's "you sent me
+  // something wrong".
+  params_incompatible: 409,
   E_DB: 500,
   'auth.forbidden': 403,
 }
@@ -91,6 +100,29 @@ export interface BatchRoutesDeps {
   scriptNames: (scriptIds: string[]) => Map<string, { name: string; version: string }>
   registry: ExecutorRegistry
   findScript: (scriptId: string) => { enabled: boolean } | null
+  /**
+   * Plan 95 §4.4, §5 step 95.7 — read through for `rerun-failed`'s params
+   * schema lookup (`paramsSchemaFor` below), not for dispatch: `registry`
+   * above is the unrelated job EXECUTOR registry, named `scriptRegistry`
+   * here to avoid colliding with it, exactly as `ScheduleRoutesDeps` already
+   * does. Optional so every pre-95.7 test keeps compiling unedited and
+   * falls back to a direct `scripts` table read.
+   */
+  scriptRegistry?: ScriptRegistry
+}
+
+/**
+ * The CURRENT params schema for a concrete `scripts.id` (plan 95 §5 step
+ * 95.7) — read through `scriptRegistry` when wired (covers a dev-slot
+ * script, whose schema can be redefined under the same stable id between a
+ * batch's original run and a later rerun-failed — plan 82 §3.3), or a
+ * direct read of the `scripts` table otherwise. Never throws: an unknown
+ * scriptId (the script was deleted since the batch ran) resolves to `null`,
+ * which `reconcileParams` treats as "no schema, nothing to reconcile".
+ */
+function paramsSchemaFor(db: Db, scriptId: string, registry?: ScriptRegistry): unknown {
+  if (registry) return registry.get(scriptId)?.paramsSchema ?? null
+  return db.select({ paramsSchema: scripts.paramsSchema }).from(scripts).where(eq(scripts.id, scriptId)).get()?.paramsSchema ?? null
 }
 
 /** Exported so `api/schedules.ts`'s `run-now` can build the same `BatchInfo` shape without a second implementation. */
@@ -195,7 +227,19 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
 
   // A new batch over the failed devices — `params` is copied verbatim from
   // the original (plan 20 §9 open question #4: the common case is a flaky
-  // device, not wrong parameters).
+  // device, not wrong parameters). "Verbatim" now means *reconciled*
+  // verbatim (plan 95 §4.4, §5 step 95.7): `row.scriptId` is a concrete,
+  // immutable version (plan 62 §3.3), so its schema cannot itself have
+  // moved — EXCEPT for a dev-slot script (plan 82 §3.3), whose schema can be
+  // redefined under the SAME stable id between the batch's original run and
+  // this rerun. Rerun-failed has no form and no human reviewing the
+  // parameters before they run again, so it takes the unattended discipline
+  // (plan 95 §4.4): a blocking finding refuses the whole rerun rather than
+  // re-enqueuing jobs against parameters that no longer satisfy the schema;
+  // a non-blocking one (a field reset to its new default, a stale field the
+  // schema no longer declares dropped) is applied automatically — the raw
+  // stored value would otherwise still fail `createBatch`'s own param
+  // validation for the exact field reconciliation just repaired.
   app.post('/:id/rerun-failed', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     const jobRows = deps.jobStore.listByBatch(row.id)
@@ -203,6 +247,19 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     if (failedDeviceIds.length === 0) {
       throw new EnkakuError('E_NO_TARGETS', 'this batch has no failed jobs to re-run')
     }
+
+    const paramsSchema = paramsSchemaFor(db, row.scriptId, deps.scriptRegistry)
+    const reconciliation = reconcileParams(paramsSchema as JsonSchemaNode | null, row.params)
+    if (reconciliation.blocking) {
+      const blocking = reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing')
+      throw new EnkakuError(
+        'params_incompatible',
+        `this batch's stored parameters no longer satisfy its script's current schema: ${blocking.map((f) => `${f.path} (${f.detail})`).join('; ')}`,
+        undefined,
+        blocking.map((f) => ({ path: f.path, message: f.detail })),
+      )
+    }
+
     const { batch } = createBatch(
       {
         db,
@@ -214,7 +271,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
       },
       {
         scriptId: row.scriptId,
-        params: row.params,
+        params: reconciliation.value,
         target: { deviceIds: failedDeviceIds },
         concurrency: row.concurrency,
         order: row.order as BatchOrder,

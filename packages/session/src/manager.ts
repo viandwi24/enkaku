@@ -40,7 +40,25 @@ export interface SessionManager {
   closeIfIdle(deviceId: string): Promise<void>
   /** Idle sessions currently held open, oldest first — for `/api/adb/stats` (Plan 42 §4.4). */
   idleSessions(): { deviceId: string; idleSince: number }[]
-  closeAll(): Promise<void>
+  /**
+   * Force-closes every open session, active or idle alike (unlike
+   * `idleSessions()`, which only ever sees the idle ones) — used both by an
+   * ordinary core shutdown (`reason` defaults to `'shutdown'`) and by the adb
+   * restart flow (plan 88 §3.10, §4.8), which drains with `'adb-server-restart'`
+   * so the device log reads as an operator action rather than an unexplained
+   * drop. Returns the number of sessions actually closed, for the restart
+   * flow's own report (`AdbCycleReport.sessionsClosed`) — never a guess.
+   */
+  closeAll(reason?: string): Promise<number>
+  /**
+   * Device ids with a currently open session, active viewer or idle alike
+   * (unlike `idleSessions()`, which only ever sees the idle ones) — a
+   * non-destructive peek, for a live "N screens will stop" count in the adb
+   * restart confirmation dialog (plan 88 §3.10) before anything actually
+   * closes. Optional: only that one preview needs it, and every other
+   * consumer of this interface already has `idleSessions()`.
+   */
+  activeDeviceIds?(): string[]
 }
 
 export interface SessionManagerDeps {
@@ -133,6 +151,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         ...(row.keepAwake !== undefined ? { keepAwake: row.keepAwake } : {}),
         ...(row.standbyScreenOff !== undefined ? { standbyScreenOff: row.standbyScreenOff } : {}),
         ...(row.rotation !== undefined ? { rotation: row.rotation } : {}),
+        ...(row.tagTraffic !== undefined ? { tagTraffic: row.tagTraffic } : {}),
         screenW: row.screenW,
         screenH: row.screenH,
         quality,
@@ -324,8 +343,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         .sort((a, b) => a.idleSince - b.idleSince)
     },
 
-    async closeAll() {
-      await Promise.all([...entries.keys()].map((id) => closeEntry(id, 'shutdown')))
+    async closeAll(reason = 'shutdown') {
+      const ids = [...entries.keys()]
+      await Promise.all(ids.map((id) => closeEntry(id, reason)))
+      return ids.length
+    },
+
+    activeDeviceIds() {
+      return [...entries.keys()]
     },
   }
 }

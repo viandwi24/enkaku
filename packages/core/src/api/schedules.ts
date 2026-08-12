@@ -6,6 +6,7 @@ import {
   CatchUpSchema,
   OnApprovalRequiredSchema,
   OnOverlapSchema,
+  reconcileParams,
   ScheduleResponseSchema,
   ScheduleRunsPageResponseSchema,
   ScheduleThreadModeSchema,
@@ -15,6 +16,7 @@ import {
   type BatchOrder,
   type CatchUp,
   type JobInfo,
+  type JsonSchemaNode,
   type OnApprovalRequired,
   type OnOverlap,
   type ScheduleFiredEvent,
@@ -29,7 +31,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
+import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import type { JobStore } from '../queue/job-store'
@@ -37,7 +39,7 @@ import type { Scheduler } from '../queue/scheduler'
 import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
 import { resolveScriptRef } from '../scripts/resolve'
-import type { ScriptRegistry } from '../scripts/registry'
+import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -103,16 +105,49 @@ interface ResolvesTo {
   version: string
 }
 
-/** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). */
-function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): ResolvesTo | null {
+/** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). Returns the FULL row/entry (paramsSchema included) so `paramsCompatibility` below can reuse the same resolution `tryResolve` already does, rather than resolving twice. */
+function tryResolveEntry(db: Db, scriptRef: string, registry?: ScriptRegistry): (ScriptRow | ScriptEntry) | null {
   const parsed = ScriptRefSchema.safeParse(scriptRef)
   if (!parsed.success) return null
   try {
-    const row = registry ? registry.resolve(parsed.data) : resolveScriptRef(db, parsed.data)
-    return { scriptId: row.id, name: row.name, version: row.version }
+    return registry ? registry.resolve(parsed.data) : resolveScriptRef(db, parsed.data)
   } catch {
     return null
   }
+}
+
+function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): ResolvesTo | null {
+  const row = tryResolveEntry(db, scriptRef, registry)
+  return row ? { scriptId: row.id, name: row.name, version: row.version } : null
+}
+
+/**
+ * Plan 95 §4.4, §4.8, §5 step 95.7 — `paramsCompatible`/`paramsFindingCount`
+ * on every `ScheduleInfo`, computed against what `scriptRef` resolves to
+ * RIGHT NOW (never cached from the last firing): a schedule that WILL fail
+ * is visible the moment the new script version is published, not the
+ * morning after it silently enqueued nothing (see `ScheduleInfoSchema`'s own
+ * doc comment for why this cannot be a stored column).
+ *
+ * Always compatible for an agent target (nothing to reconcile) and for a
+ * reference that cannot resolve right now — an unresolvable `scriptRef` is
+ * its OWN failure mode, surfaced through `resolvesTo: null` and, at the next
+ * firing, a `schedule.failed` audit entry naming ITS code
+ * (`script_not_found`, `script_disabled`, ...). Folding that into the params
+ * badge would answer a different question than the one it asks ("are the
+ * stored PARAMETERS still valid") with a misleading yes/no.
+ */
+function paramsCompatibility(
+  db: Db,
+  row: ScheduleRow,
+  agentTarget: ScheduleAgentTargetRow | null,
+  registry?: ScriptRegistry,
+): { paramsCompatible: boolean; paramsFindingCount: number } {
+  if (agentTarget) return { paramsCompatible: true, paramsFindingCount: 0 }
+  const entry = tryResolveEntry(db, row.scriptRef, registry)
+  if (!entry) return { paramsCompatible: true, paramsFindingCount: 0 }
+  const { findings, blocking } = reconcileParams(entry.paramsSchema as JsonSchemaNode | null, row.params)
+  return { paramsCompatible: !blocking, paramsFindingCount: findings.length }
 }
 
 function toSec(d: Date | null): number | null {
@@ -216,6 +251,7 @@ function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | n
 }
 
 function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleInfo {
+  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget, deps.scriptRegistry)
   return {
     id: row.id,
     name: row.name,
@@ -244,6 +280,8 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     createdBy: row.createdBy,
     createdAt: toSec(row.createdAt) ?? 0,
     nextFireAt: row.enabled ? (deps.runner.nextFires().get(row.id) ?? null) : null,
+    paramsCompatible,
+    paramsFindingCount,
   }
 }
 

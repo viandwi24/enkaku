@@ -1,10 +1,17 @@
 # Plan 86 — M51 : The TikTok pack learns to switch accounts and to follow a searched account
 
-Status: executed. All seven steps in §5 are done; `search.ts` and
-`search-follow.ts` are implemented, unit-tested, and hardware-verified
-(pack version 1.3.2 — steps 4–6 shipped two corrections found on hardware
-after the initial 1.3.0 publish, §0.10a and §0.10b). §7.3's probe closed §0.7.
-Owner decisions recorded in §9 are already answered unless marked OPEN.
+> Status: implemented — executed. All seven steps in §5 are done; `search.ts` and
+> `search-follow.ts` are implemented, unit-tested, and hardware-verified
+> (pack version 1.3.2 — steps 4–6 shipped two corrections found on hardware
+> after the initial 1.3.0 publish, §0.10a and §0.10b). §7.3's probe closed §0.7.
+> Owner decisions recorded in §9 are already answered unless marked OPEN.
+>
+> *(Header reformatted 2026-08-11 into the `> Status:` / `> Ships:` blockquote
+> convention `scripts/check-plan-status.sh` reads. The wording above is
+> unchanged — only the prefix was missing, so the checker could not see this
+> plan at all and reported it as undeclared. Nothing about what shipped was
+> re-judged here; this plan's own hardware verification stands as written.)*
+> Ships: plugins/tiktok-automation-pack/src/search-follow.ts
 
 Scope is one package: `plugins/tiktok-automation-pack`. No `packages/*` code
 changes. The pack goes from one script to three, plus a reusable search helper

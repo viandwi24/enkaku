@@ -6,6 +6,14 @@ import type { Logger } from '../util/logger'
 
 export type LeaseType = 'manual' | 'job'
 
+/**
+ * Why a manual lease ended without its holder asking (plan 88 §3.10, §4.8
+ * adds `'adb-server-restart'` to the pre-existing three — a restart drains
+ * every manual lease farm-wide, same as an idle timeout or a quarantine, and
+ * the holder deserves the same honest reason on the wire and in the log).
+ */
+export type ManualReleaseReason = 'idle_timeout' | 'disconnected' | 'quarantined' | 'adb-server-restart'
+
 export interface Lease {
   deviceId: string
   type: LeaseType
@@ -97,8 +105,38 @@ export interface LeaseManager {
    */
   acquireManual(deviceId: string, clientId: string, userId?: string | null, opts?: { takeOverFrom?: string }): Lease
   touchManual(deviceId: string, clientId: string): void
-  releaseManual(deviceId: string, clientId: string, reason?: 'idle_timeout' | 'disconnected' | 'quarantined'): boolean
+  releaseManual(deviceId: string, clientId: string, reason?: ManualReleaseReason): boolean
   releaseAllForClient(clientId: string): void
+  /**
+   * Every manual lease, farm-wide, released with one named reason (plan 88
+   * §3.10, §4.8) — the adb restart flow's own drain, alongside
+   * `SessionManager.closeAll`. Job leases are untouched here: a running job
+   * is the caller's own concern (the restart route's `E_ADB_BUSY_FARM`
+   * guard), not something this method silently clears. Returns the number of
+   * manual leases actually released, for `AdbCycleReport.leasesReleased`.
+   *
+   * Optional (unlike the rest of this interface) so the many existing
+   * hand-written `LeaseManager` fakes across the test suite — several in
+   * files this step deliberately avoids touching while `packages/core/src/api/devices.ts`
+   * is under concurrent edit elsewhere — do not all need a stub added for a
+   * method they never exercise. `createLeaseManager` below always provides
+   * it; only a fake may omit it.
+   */
+  releaseAll?(opts: { reason: ManualReleaseReason }): number
+  /**
+   * Force-releases ONE device's manual lease, regardless of who holds it
+   * (plan 88 §3.7, §4.6, §5 step 88.4: "a successful disconnect ... releases
+   * the manual lease first"). Unlike `releaseManual`, which only succeeds
+   * when `clientId` matches the current holder, an operator's explicit
+   * Disconnect action is not the holder asking to give it back — it is the
+   * same "someone else's concern overrides the hold" shape `releaseAll`
+   * already has, scoped to one device instead of the whole farm. A no-op
+   * (returns `false`) when the device carries no manual lease at all, so a
+   * caller does not need to check `getHolder` first. Optional for the same
+   * reason `releaseAll` is: several hand-written `LeaseManager` fakes across
+   * the test suite do not need a stub added for a method they never exercise.
+   */
+  releaseDevice?(deviceId: string, reason: ManualReleaseReason): boolean
   noteJobLease(deviceId: string, jobId: string, ttlSec: number): void
   clearJobLease(deviceId: string): void
   getLease(deviceId: string): Lease | null
@@ -126,7 +164,7 @@ export interface LeaseManagerDeps {
   log: Logger
   /** An expired job lease fails the job and force-releases the device (spec §10.2). */
   onJobLeaseExpired: (jobId: string, reason: string) => void
-  onManualRevoked?: (deviceId: string, reason: 'idle_timeout' | 'disconnected' | 'quarantined', holderUserId: string | null) => void
+  onManualRevoked?: (deviceId: string, reason: ManualReleaseReason, holderUserId: string | null) => void
   /**
    * A successful takeover (plan 71 §3.5) — the displaced holder (`from`,
    * already resolved to a `LeaseHolder`, or null defensively if the map and
@@ -148,7 +186,7 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
   const lastManualRelease = new Map<string, { at: number; holder: LeaseHolder | null }>()
   let reaper: ReturnType<typeof setInterval> | null = null
 
-  function release(deviceId: string, reason?: 'idle_timeout' | 'disconnected' | 'quarantined'): boolean {
+  function release(deviceId: string, reason?: ManualReleaseReason): boolean {
     const lease = leases.get(deviceId)
     if (!lease || lease.type !== 'manual') return false
     leases.delete(deviceId)
@@ -243,6 +281,18 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
       for (const [deviceId, lease] of [...leases]) {
         if (lease.type === 'manual' && lease.holder === clientId) release(deviceId)
       }
+    },
+
+    releaseAll(opts) {
+      let count = 0
+      for (const [deviceId, lease] of [...leases]) {
+        if (lease.type === 'manual' && release(deviceId, opts.reason)) count++
+      }
+      return count
+    },
+
+    releaseDevice(deviceId, reason) {
+      return release(deviceId, reason)
     },
 
     noteJobLease(deviceId, jobId, ttlSec) {

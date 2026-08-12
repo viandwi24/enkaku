@@ -58,7 +58,7 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
     },
 
     createUser({ email, password, role }) {
-      if (password.length < 8) throw new EnkakuError('auth.weak_password', 'password minimal 8 karakter')
+      if (password.length < 8) throw new EnkakuError('auth.weak_password', 'password must be at least 8 characters')
       const existing = db.select().from(users).where(eq(users.email, email)).get()
       if (existing) throw new EnkakuError('auth.email_taken', `the email ${email} is already taken`)
       const row = {
@@ -95,7 +95,7 @@ export function createAuthService(deps: { db: Db; sessionTtlHours: number }): Au
     },
 
     async changePassword(userId, current, next) {
-      if (next.length < 8) throw new EnkakuError('auth.weak_password', 'password minimal 8 karakter')
+      if (next.length < 8) throw new EnkakuError('auth.weak_password', 'password must be at least 8 characters')
       const row = findUser(userId)
       if (!row?.passwordHash) throw new EnkakuError('auth.user_not_found', 'this user has no password')
       if (!(await Bun.password.verify(current, row.passwordHash))) {

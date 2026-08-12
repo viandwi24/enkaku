@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import type { JobRow } from '../db/schema'
+import type { JobRunner } from '@enkaku/session'
+import { openDb, runMigrations, type Db } from '../db'
+import { scripts, type JobRow } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
 import type { ExecutorHost } from '../jobs/executor-host'
+import { createScriptExecutor } from '../jobs/executors/script'
+import { createDevSlotStore } from '../plugins/dev-slots'
+import { createScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import type { JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
@@ -239,5 +244,112 @@ describe('createJobService.cancel — cancelledDescendants (plan 81 §4.4)', () 
     expect(result.job.status).toBe('running') // the running job itself is aborted via host.abort, not settled here
     expect(result.cancelledDescendants).toBe(2)
     expect(calls).toEqual(['job-1'])
+  })
+})
+
+/**
+ * Plan 95 §5 step 95.6's verifiable result, single-job half (fixes F10):
+ * `POST /api/jobs` with an out-of-range value against a published script's
+ * `paramsSchema` must be refused BEFORE a device is leased — not merely
+ * answer 400 while still having created something a device could be leased
+ * against. `enqueue()` calls `validateScriptForRun` (which now reaches the
+ * REAL `createScriptExecutor().validateParams`, wired here exactly as
+ * `daemon.ts` wires it) before `jobStore.enqueue` and before
+ * `scheduler.kick`, so this test proves the ordering by asserting neither
+ * was ever called — a test that only checked the thrown error would still
+ * pass if the lease had already happened.
+ */
+describe('createJobService.enqueue — invalid params are refused before any device is leased (plan 95 §5 step 95.6)', () => {
+  function setUpDb(): Db {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    return opened.db
+  }
+
+  function registryWithScriptExecutor(db: Db): ExecutorRegistry {
+    const scriptRegistry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-job-service-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = new ExecutorRegistry()
+    // `run` is never reached in this test — enqueue() never gets past validateParams.
+    registry.setFallback(createScriptExecutor({ registry: scriptRegistry, runner: {} as JobRunner }))
+    return registry
+  }
+
+  test('{ videos: 9999 } against a max(2000) schema throws invalid_job_params, and jobStore.enqueue / scheduler.kick are never called', () => {
+    const db = setUpDb()
+    db.insert(scripts)
+      .values({
+        id: 'checkout',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } }, required: ['videos'] },
+        createdAt: new Date(),
+      })
+      .run()
+
+    let enqueueCalled = false
+    let kicked = false
+    const jobStore = {
+      enqueue: () => {
+        enqueueCalled = true
+        return fakeRow()
+      },
+      scriptNames: () => new Map(),
+    } as unknown as JobStore
+    const scheduler: Scheduler = { kick: () => void (kicked = true), start: () => {}, stop: () => {} }
+
+    const service = createJobService({
+      jobStore,
+      registry: registryWithScriptExecutor(db),
+      scheduler,
+      host: {} as ExecutorHost,
+      log: silentLog(),
+      onJobStatus: () => {},
+      findScript: () => ({ enabled: true }),
+    })
+
+    let caught: EnkakuError | undefined
+    try {
+      service.enqueue({ scriptId: 'checkout', deviceId: 'd1', params: { videos: 9999 } })
+    } catch (err) {
+      caught = err as EnkakuError
+    }
+
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect(caught?.code).toBe('invalid_job_params')
+    expect(caught?.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+    // The proof: nothing that could lead to a device lease ever ran.
+    expect(enqueueCalled).toBe(false)
+    expect(kicked).toBe(false)
+  })
+
+  test('a params object inside every bound enqueues normally', () => {
+    const db = setUpDb()
+    db.insert(scripts)
+      .values({
+        id: 'checkout',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } }, required: ['videos'] },
+        createdAt: new Date(),
+      })
+      .run()
+
+    const jobStore = { enqueue: () => fakeRow({ scriptId: 'checkout' }), scriptNames: () => new Map() } as unknown as JobStore
+    const service = createJobService({
+      jobStore,
+      registry: registryWithScriptExecutor(db),
+      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+      host: {} as ExecutorHost,
+      log: silentLog(),
+      onJobStatus: () => {},
+      findScript: () => ({ enabled: true }),
+    })
+
+    const info = service.enqueue({ scriptId: 'checkout', deviceId: 'd1', params: { videos: 30 } })
+    expect(info.jobId).toBe('job-1')
   })
 })

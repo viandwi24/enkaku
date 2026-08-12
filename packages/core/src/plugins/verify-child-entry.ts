@@ -19,6 +19,7 @@
  */
 import { isPlugin } from '@enkaku/sdk'
 import { z } from 'zod'
+import { checkParamsSchema } from '@enkaku/protocol'
 
 export type VerifyChildMessage =
   | {
@@ -50,7 +51,22 @@ async function main(): Promise<void> {
     if (!isPlugin(def)) {
       throw new Error('the bundle has no default export produced by definePlugin() — expected a `scripts` array')
     }
-    const scripts = def.scripts.map((s) => ({ id: s.id, paramsSchema: z.toJSONSchema(s.params as z.ZodTypeAny) }))
+    // Publish path 2 of 3 (plan 95 §4.9, §5 step 95.5) — the same
+    // `checkParamsSchema` gate `POST /api/scripts` runs for a standalone
+    // script, applied here to every member of a plugin bundle so a plugin
+    // cannot take the path a standalone script cannot. A `'group'` finding
+    // is the non-consecutive-group WARNING (plan 95 §3.5) and does not
+    // fail verification on its own — every other finding does.
+    const scripts = def.scripts.map((s) => {
+      const paramsSchema = z.toJSONSchema(s.params as z.ZodTypeAny)
+      const findings = checkParamsSchema(paramsSchema).filter((f) => f.limit !== 'group')
+      if (findings.length > 0) {
+        throw new Error(
+          `E_PARAMS_SCHEMA_INVALID: script "${s.id}"'s params schema: ${findings.map((f) => (f.path ? `${f.path}: ${f.message}` : f.message)).join('; ')}`,
+        )
+      }
+      return { id: s.id, paramsSchema }
+    })
     send({
       ok: true,
       pluginId: def.id,

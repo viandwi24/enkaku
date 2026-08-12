@@ -112,3 +112,35 @@ describe('RunScriptDialog — groups by plugin and marks dev entries (plan 82 §
     expect(screen.getAllByText('checkout').length).toBeGreaterThanOrEqual(1)
   })
 })
+
+const scriptWithParams: ScriptRow = {
+  ...script,
+  paramsSchema: { type: 'object', properties: { videos: { type: 'integer', title: 'Videos', default: 10 } } },
+}
+
+describe('RunScriptDialog — named parameter sets (plan 95 §4.7, §4.8, §5 step 95.8)', () => {
+  test('a script with params shows the preset picker; applying one fills the form', async () => {
+    renderWithApi(
+      <RunScriptDialog script={scriptWithParams} devices={[device]} onClose={() => {}} />,
+      {
+        '/api/clusters*': { body: { items: [], nextCursor: null, total: 0 } },
+        '/api/scripts/checkout/param-sets': {
+          body: { items: [{ id: 'set-1', scriptName: 'checkout', name: 'Aggressive', params: { videos: 500 }, createdBy: 'u1', createdAt: 0, updatedAt: 0 }] },
+        },
+      },
+    )
+    await waitFor(() => expect(screen.getByText('Preset')).toBeTruthy())
+    // Seeded from the schema's own default before any preset is touched.
+    await waitFor(() => expect((screen.getByLabelText('Videos') as HTMLInputElement).value).toBe('10'))
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(await screen.findByText('Aggressive'))
+    await waitFor(() => expect((screen.getByLabelText('Videos') as HTMLInputElement).value).toBe('500'))
+  })
+
+  test('a script with no params shows no preset picker — nothing to save a preset of', async () => {
+    renderWithApi(<RunScriptDialog script={script} devices={[device]} onClose={() => {}} />, { '/api/clusters*': { body: { items: [], nextCursor: null, total: 0 } } })
+    await waitFor(() => expect(screen.getByText('This script takes no parameters.')).toBeTruthy())
+    expect(screen.queryByText('Preset')).toBeNull()
+  })
+})

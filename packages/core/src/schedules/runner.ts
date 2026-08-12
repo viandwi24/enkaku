@@ -1,10 +1,12 @@
 import { eq } from 'drizzle-orm'
 import {
+  reconcileParams,
   ScriptRefSchema,
   type AgentRunStatus,
   type BatchOrder,
   type BatchStatusEvent,
   type JobInfo,
+  type JsonSchemaNode,
   type NotificationContext,
   type OnApprovalRequired,
   type ScheduleFiredEvent,
@@ -208,13 +210,36 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       }
       const resolved = deps.registry ? deps.registry.resolve(parsedRef.data) : resolveScriptRef(deps.db, parsedRef.data)
 
+      // Reconciled against the RESOLVED version's schema (plan 95 §4.4, §5
+      // step 95.7) — the same discipline plan 62 §4.5 already applies to an
+      // unresolvable reference: a contract change (a field tightened, a
+      // required field added with no default) must stop an unattended
+      // firing rather than run a half-understood configuration. Blocking
+      // findings (`missing`/`invalid`) refuse the fire outright, below.
+      // `reconciliation.value` — not the raw `schedule.params` — is what
+      // actually gets dispatched further down: a NON-blocking finding (a
+      // field reset to its new default, a stale field the schema no longer
+      // declares dropped) must take effect, or the raw stored value would
+      // still fail `createBatch`'s own param validation for the exact field
+      // reconciliation just silently repaired.
+      const reconciliation = reconcileParams(resolved.paramsSchema as JsonSchemaNode | null, schedule.params)
+      if (reconciliation.blocking) {
+        const blocking = reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing')
+        throw new EnkakuError(
+          'params_incompatible',
+          `${resolved.name}@${resolved.version}'s parameter schema no longer matches this schedule's stored parameters: ${blocking.map((f) => `${f.path} (${f.detail})`).join('; ')}`,
+          undefined,
+          blocking.map((f) => ({ path: f.path, message: f.detail })),
+        )
+      }
+
       // The queue timeout lives on the job, set from whatever created it
       // (plan 21 §3.3) — a schedule is simply the first caller to set it.
       const expiresAt =
         schedule.queueTimeoutSec != null ? Math.floor(deps.clock().getTime() / 1000) + schedule.queueTimeoutSec : null
       const { batch } = createBatch(batchDeps, {
         scriptId: resolved.id,
-        params: schedule.params,
+        params: reconciliation.value,
         target: scheduleTarget(schedule),
         concurrency: schedule.concurrency,
         order: schedule.order as BatchOrder,

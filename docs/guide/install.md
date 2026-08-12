@@ -10,13 +10,15 @@ is needed:
 
 ```bash
 # Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
-curl -LO https://github.com/OWNER/REPO/releases/latest/download/enkaku-vX.Y.Z-linux-x64.tar.gz
-tar xzf enkaku-vX.Y.Z-linux-x64.tar.gz
+# Set VERSION to the tag you want — the Releases page lists them.
+VERSION=v0.1.6
+curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
+tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
 ./enkaku
 # open http://localhost:7700
 ```
 
-On Windows: download `enkaku-vX.Y.Z-windows-x64.zip`, extract, run `enkaku.exe`
+On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe`
 (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
 
 To build the archives yourself: `bash scripts/build-release.sh` (all five
@@ -161,6 +163,81 @@ permission, and the loopback binding to keep it safe. Only widen the bind
 address if you understand and accept that trade-off, on a network you
 already trust.
 
+## Backup and restore
+
+`enkaku backup` writes one `.tar.gz` containing a consistent snapshot of
+`enkaku.db` and — when the farm has one — `secrets.key`, the key that
+decrypts every credential this farm has ever stored (connector API keys,
+network proxy credentials, webhook secrets, secret KV entries).
+
+```bash
+./enkaku backup                      # ./enkaku-backup-<timestamp>.tar.gz in the current directory
+./enkaku backup /path/to/backups/    # into a directory (created if it does not exist)
+./enkaku backup my-backup.tar.gz     # an explicit file name
+```
+
+It refuses to overwrite a file already at the target path, and it never
+leaves a partial or corrupt file behind on failure — a failed backup cleans
+up after itself rather than blocking the next attempt. The command's own
+output ends with a loud warning for a reason: **whoever holds this file can
+decrypt every credential this farm has ever stored.** Treat it like the
+credentials themselves — restrict who can read it, never send it over chat
+or email unencrypted, encrypt it at rest if it leaves this machine, and
+delete copies you no longer need.
+
+### Why not `cp enkaku.db backup.db`
+
+`cp` looks like a backup and is not one, for two independent reasons:
+
+- The core runs SQLite in WAL mode unconditionally, so a live database is
+  really three files (`enkaku.db`, `enkaku.db-wal`, `enkaku.db-shm`).
+  Copying them non-atomically while the core is writing can produce a torn,
+  unrecoverable set — and copying `enkaku.db` alone silently drops whatever
+  is sitting in `-wal` but has not yet been checkpointed into the main file.
+- `secrets.key` lives next to `enkaku.db`, not inside it. Without it, every
+  encrypted credential in a restored database becomes permanently
+  unreadable — this codebase has already lost secrets exactly this way once
+  (see `packages/core/src/secrets/store.ts`'s note on its old key file).
+
+`enkaku backup` avoids both: it takes the snapshot through SQLite's own
+`VACUUM INTO`, run over a **read-only** connection, which is safe to call
+while the core is up and devices are busy — it never writes to `enkaku.db`
+itself, and it correctly captures any committed write still sitting only in
+the WAL. Then it bundles that snapshot together with `secrets.key` into one
+archive, so the two cannot be separated by accident.
+
+### Restoring
+
+There is no `enkaku restore` command. Restore is rare, deliberate, and only
+ever safe with the core stopped — once you have the archive, it is two file
+copies, not something that benefits from a dedicated code path. The one
+real trap: leftover `-wal`/`-shm` files in the **target** data directory
+will try to replay frames that belong to a different database on top of the
+file you just restored, corrupting it. Steps:
+
+```bash
+# 1. Stop the core.
+# 2. Extract the archive:
+tar xzf enkaku-backup-*.tar.gz -C /tmp/enkaku-restore
+
+# 3. Remove any WAL leftovers from the TARGET data directory first.
+rm -f "$ENKAKU_DATA_DIR/enkaku.db-wal" "$ENKAKU_DATA_DIR/enkaku.db-shm"
+
+# 4. Copy the restored files into place — both from the SAME archive.
+cp /tmp/enkaku-restore/enkaku.db "$ENKAKU_DATA_DIR/enkaku.db"
+cp /tmp/enkaku-restore/secrets.key "$ENKAKU_DATA_DIR/secrets.key"   # if the archive has one
+
+# 5. Start the core. Pending migrations (if the backup predates an
+#    upgrade) run automatically at boot, same as any other enkaku.db.
+```
+
+(No `ENKAKU_DATA_DIR` set means the platform default: `~/Library/Application
+Support/Enkaku` on macOS, `%APPDATA%\Enkaku` on Windows,
+`~/.local/share/enkaku` elsewhere.) Restore `enkaku.db` and `secrets.key`
+from the **same** archive, never mixed from two different backups: a
+database restored with the wrong key file is exactly the "looks fine, is
+not" failure this command exists to prevent.
+
 ## Environment variables
 
 | Env | What it does |
@@ -179,7 +256,7 @@ already trust.
 
 **A device is not detected at all.** Make sure USB debugging is on and the cable carries data (many charging cables do not). On Linux, add a udev rule for your phone's vendor.
 
-**Conflicts with Android Studio.** Android Studio runs its own adb server on port 5037. Enkaku uses that same adb server, so this is usually fine — but do not run `adb kill-server` by hand while the farm is working: it disconnects every device.
+**Conflicts with Android Studio.** Android Studio runs its own adb server on port 5037. Enkaku uses that same adb server, so this is usually fine — but do not run `adb kill-server` by hand while the farm is working: it disconnects every device. If the shared server itself is wedged (reachable but not answering), use **Tools → Restart adb server** in Studio instead of a manual kill: it drains live sessions and leases first, restarts the server, and dials every remembered network device back afterward — reconnecting far more of the farm than a bare `kill-server` would leave you to recover by hand. It still disconnects Android Studio's own adb connection for a few seconds, the same as a manual restart would.
 
 **Provisioning fails (no internet).** The core stays up; set up a manifest mirror and point `ENKAKU_TOOLS_MANIFEST_URL` at it, or copy an already-populated `tools/` folder into the data dir — the core adopts it at start.
 

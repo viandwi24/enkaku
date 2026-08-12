@@ -2,6 +2,46 @@ import { z } from 'zod'
 import { BatteryStateSchema } from './settings'
 import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
 
+/** How a device's transport is reached — OBSERVED from adb (plan 88 §3.1, §4.1). */
+export const ConnectionKindSchema = z.enum(['usb', 'tcp'])
+export type ConnectionKind = z.infer<typeof ConnectionKindSchema>
+
+/** The physical medium a `tcp` connection rides on — DECLARED by an operator or INFERRED from a configured farm network; never observed (plan 88 §3.1). */
+export const ConnectionMediumSchema = z.enum(['wired', 'wireless'])
+export type ConnectionMedium = z.infer<typeof ConnectionMediumSchema>
+
+/**
+ * How a device is reached (plan 88 §3.1). TWO fields, deliberately:
+ * `kind` is OBSERVED (adb's serial shape, plus the `usb:` field
+ * `host:devices-l` carries), `medium` is DECLARED by an operator or
+ * INFERRED from a configured farm network — adb cannot see the difference
+ * between a switch port and a radio, and a schema that stores 'otg' as an
+ * observed value stores a claim as a fact. Same observed-vs-declared split
+ * as readiness (desired/actual) and network routes (declared/observed).
+ */
+export const DeviceConnectionSchema = z.object({
+  kind: ConnectionKindSchema,
+  medium: ConnectionMediumSchema.nullable(),
+  mediumSource: z.enum(['declared', 'network', 'unknown']),
+  /** Host part of a `host:port` serial; null for USB. */
+  address: z.string().nullable(),
+  port: z.number().int().nullable(),
+  /** `discovery.networks[].label` when the address matched one — for the tooltip and the sweep report. */
+  networkLabel: z.string().nullable(),
+})
+export type DeviceConnection = z.infer<typeof DeviceConnectionSchema>
+
+/** USB | WI-FI | OTG | TCP — the ONE place the badge string is computed, so no surface can disagree with another (plan 88 §3.1, §4.1). */
+export function connectionBadge(c: DeviceConnection): 'USB' | 'WI-FI' | 'OTG' | 'TCP' {
+  if (c.kind === 'usb') return 'USB'
+  if (c.medium === 'wired') return 'OTG'
+  if (c.medium === 'wireless') return 'WI-FI'
+  // tcp with no known medium — honest uncertainty, never a guessed WI-FI (the
+  // exact mistake `packages/drivers/src/descriptors.ts`'s `adb-tcp` display
+  // name made before this plan; see its own updated comment).
+  return 'TCP'
+}
+
 /**
  * Device status (spec §12): M0 only ever produces 'offline' | 'idle'; the
  * full enum is declared now to avoid a schema migration in M3.
@@ -82,6 +122,21 @@ export const DeviceInfoSchema = z.object({
    * fallback with no lease manager to hand) still parses.
    */
   heldBy: LeaseHolderSchema.nullable().default(null),
+  /**
+   * How this device is reached (plan 88 §3.1, §4.1) — computed by
+   * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),
+   * never by a client. Defaulted so a caller that constructs a `DeviceInfo`
+   * without it (existing tests, or a fallback with no live derivation to
+   * hand) still parses; every production call site populates it for real.
+   */
+  connection: DeviceConnectionSchema.default(() => ({
+    kind: 'usb' as const,
+    medium: null,
+    mediumSource: 'unknown' as const,
+    address: null,
+    port: null,
+    networkLabel: null,
+  })),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

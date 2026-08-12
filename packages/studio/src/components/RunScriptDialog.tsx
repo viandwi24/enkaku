@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   BatchResponseSchema,
+  clampParamsSchema,
   JobCreateResponseSchema,
+  summarizeClamp,
   type BatchInfo,
   type BatchOrder,
   type ClusterInfo,
@@ -12,6 +14,7 @@ import {
   type JobInfo,
 } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
+import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button } from '@/components/ui/button'
@@ -19,8 +22,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { api, useAction } from '@/lib/actions'
+import { api, issuesFromError, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
+import { relativeTime } from '@/lib/format'
 
 export interface ScriptRow {
   id: string
@@ -185,6 +189,12 @@ export function RunScriptDialog({
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
   const [params, setParams] = useState<unknown>(undefined)
+  // Plan 95 §3.7, §4.3, §5 step 95.6 (fixes F12, F14) — `serverErrors` maps
+  // straight onto `SchemaForm`; `formCanSubmit` is the callback's mirror,
+  // ANDed into the Run button below so a form the server just rejected (or
+  // one the client already knows is invalid) cannot be resubmitted as-is.
+  const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
+  const [formCanSubmit, setFormCanSubmit] = useState(true)
   const { run, isPending } = useAction()
   const router = useRouter()
 
@@ -214,6 +224,10 @@ export function RunScriptDialog({
   useEffect(() => {
     if (!script && !scripts) return
     setParams(undefined)
+    setServerIssues(undefined)
+    // A script with no `paramsSchema` never mounts `SchemaForm`, which would
+    // otherwise leave a PREVIOUS script's `false` stuck forever (F14).
+    setFormCanSubmit(true)
     setDeviceIds([])
     setConcurrency(0)
     setOrder('as-listed')
@@ -232,6 +246,17 @@ export function RunScriptDialog({
   // The preselect effect above only persists what this already shows, which
   // keeps the first paint and the state in agreement.
   const chosen = script ?? (scripts ?? []).find((s) => s.id === pickedId) ?? groups[0]?.versions[0] ?? null
+
+  // Plan 95 §3.8, §5 step 95.5 — "reject at publish, clamp at render": a
+  // schema already sitting in the database from before `checkParamsSchema`
+  // existed must still render a usable form, never a hang or a mangled
+  // page. Called unconditionally (before the `!chosen` early return below)
+  // because it is a hook — `clampParamsSchema` is total, so `chosen` being
+  // momentarily null just clamps an empty schema to an empty schema.
+  const { schema: clampedSchema, clamped } = useMemo(
+    () => clampParamsSchema(chosen?.paramsSchema ?? null),
+    [chosen?.paramsSchema],
+  )
 
   if (!chosen) {
     // Not "no script yet" — no scripts at all. Say which, and how to fix it.
@@ -255,25 +280,36 @@ export function RunScriptDialog({
   const canSubmit =
     target === 'single' ? !!deviceId : target === 'cluster' ? !!clusterId && targetCount > 0 : deviceIds.length > 0
 
-  const runScript = () =>
-    run<{ job: JobInfo } | { batch: BatchInfo }>(
+  const runScript = () => {
+    setServerIssues(undefined)
+    return run<{ job: JobInfo } | { batch: BatchInfo }>(
       'run',
-      () =>
-        target === 'single'
-          ? api('/api/jobs', JobCreateResponseSchema, {
-              method: 'POST',
-              json: { scriptId: chosen.id, deviceId, params: params ?? {} },
-            })
-          : api('/api/batches', BatchResponseSchema, {
-              method: 'POST',
-              json: {
-                scriptId: chosen.id,
-                params: params ?? {},
-                target: target === 'cluster' ? { clusterId } : { deviceIds },
-                concurrency,
-                order,
-              },
-            }),
+      async () => {
+        try {
+          return await (target === 'single'
+            ? api('/api/jobs', JobCreateResponseSchema, {
+                method: 'POST',
+                json: { scriptId: chosen.id, deviceId, params: params ?? {} },
+              })
+            : api('/api/batches', BatchResponseSchema, {
+                method: 'POST',
+                json: {
+                  scriptId: chosen.id,
+                  params: params ?? {},
+                  target: target === 'cluster' ? { clusterId } : { deviceIds },
+                  concurrency,
+                  order,
+                },
+              }))
+        } catch (err) {
+          // `invalid_job_params` (plan 95 §3.7, §4.3, fixes F12) — attach the
+          // field-level issues to the form; `run()`'s own catch still shows
+          // the toast below, so the failure is never silent even before the
+          // operator scrolls to the flagged field.
+          setServerIssues(issuesFromError(err))
+          throw err
+        }
+      },
       {
         success: target === 'single' ? 'Job created' : 'Batch created',
         failure: target === 'single' ? 'Could not create the job' : 'Could not create the batch',
@@ -289,6 +325,7 @@ export function RunScriptDialog({
         },
       },
     )
+  }
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -299,6 +336,14 @@ export function RunScriptDialog({
             <span className="readout ml-1.5 text-[12px] font-normal text-fg-muted">@{chosen.version}</span>
           </DialogTitle>
           <DialogDescription>A single device joins its queue directly; a cluster or list creates a batch.</DialogDescription>
+          {/* Provenance (plan 95 §3.8 R6, §5 step 95.5, criterion 18) — "the
+              operator can see who published the thing they are about to
+              run." `createdBy`/`createdAt` are already on `ScriptRow` from
+              `GET /api/scripts`'s list projection; no extra fetch. */}
+          <p className="readout text-[11px] text-fg-subtle">
+            published by {chosen.createdBy ?? 'an unknown publisher'}
+            {chosen.createdAt !== null ? ` · ${relativeTime(chosen.createdAt)}` : ''}
+          </p>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -320,6 +365,8 @@ export function RunScriptDialog({
                     // parent effect would therefore wipe the defaults it had
                     // just filled in, and the form would open blank.
                     setParams(undefined)
+                    setServerIssues(undefined)
+                    setFormCanSubmit(true)
                   }}
                 >
                   <SelectTrigger className="h-9">
@@ -363,6 +410,8 @@ export function RunScriptDialog({
                       // Same reason as above: a different version is a different
                       // schema with different defaults.
                       setParams(undefined)
+                      setServerIssues(undefined)
+                      setFormCanSubmit(true)
                     }}
                   >
                     <SelectTrigger className="readout h-9 min-w-28">
@@ -479,15 +528,52 @@ export function RunScriptDialog({
           )}
 
           {chosen.paramsSchema ? (
-            <SchemaForm
-              // Keyed on the exact version: a remount guarantees the previous
-              // version's answers cannot leak into the next one's fields, even
-              // if two versions happen to share a field name.
-              key={chosen.id}
-              schema={chosen.paramsSchema}
-              value={params}
-              onChange={setParams}
-            />
+            <>
+              {/* Plan 95 §3.8, §5 step 95.5 — "silently rendering a mangled
+                  form is worse than saying so": one line at the top naming
+                  what was clamped, only when something actually was. Every
+                  script published through `checkParamsSchema` (§4.9) never
+                  reaches here — this is the backstop for a schema stored
+                  before that check existed. */}
+              {clamped.length > 0 && (
+                <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+                  {summarizeClamp(clamped)}
+                </p>
+              )}
+              {/* Plan 95 §4.7, §4.8, §5 step 95.8 — a preset is a convenience
+                  for FILLING this form: applying one runs `reconcileParams`
+                  and reports the outcome in one line, then behaves exactly
+                  as if the operator had typed the result in by hand. Keyed
+                  on `chosen.name` (not `chosen.id`) — presets belong to the
+                  script NAME and outlive any one version. */}
+              <ParamSetPicker
+                scriptName={chosen.name}
+                schema={clampedSchema}
+                value={params}
+                onApply={(next) => {
+                  setParams(next)
+                  setServerIssues(undefined)
+                }}
+              />
+              <SchemaForm
+                // Keyed on the exact version: a remount guarantees the previous
+                // version's answers cannot leak into the next one's fields, even
+                // if two versions happen to share a field name.
+                key={chosen.id}
+                // `clampedSchema`, not `chosen.paramsSchema` directly (plan 95
+                // §3.8) — the reconciliation between `@enkaku/protocol`'s
+                // `JsonSchemaNode` (a plain index signature) and this
+                // package's own, more specific one is the SAME cast
+                // `packages/core/src/scripts/routes.ts`'s detail route
+                // comment documents for the identical two-parallel-type
+                // situation; not a bypass of validation.
+                schema={clampedSchema as JsonSchemaNode}
+                value={params}
+                onChange={setParams}
+                serverErrors={serverIssues}
+                onCanSubmitChange={setFormCanSubmit}
+              />
+            </>
           ) : (
             <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
           )}
@@ -496,7 +582,7 @@ export function RunScriptDialog({
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={() => void runScript()} disabled={!canSubmit || isPending('run')}>
+            <Button onClick={() => void runScript()} disabled={!canSubmit || !formCanSubmit || isPending('run')}>
               {isPending('run') ? 'Creating…' : target === 'single' ? 'Run' : 'Run batch'}
             </Button>
           </div>

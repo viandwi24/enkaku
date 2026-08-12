@@ -13,6 +13,7 @@ import {
 import type { ScrcpySession } from '@enkaku/scrcpy'
 import type { DisplaySource, FrameMeta, InputSink, Inspector, KeepAwakeMode, Quality, RotationMode, SessionPhase, Transport } from '@enkaku/protocol'
 import { SessionError } from './errors'
+import { applyFarmTag } from './farm-tag'
 import type { Logger } from './logger'
 import { applyRotation } from './orientation'
 import { wakeDevice } from './wake'
@@ -131,6 +132,13 @@ export interface CreateSessionOpts {
   standbyScreenOff?: boolean
   /** DeviceSettings.prep.rotation — screen orientation lock, reverted on close (Plan 85 §3.7, §4.1). */
   rotation?: RotationMode
+  /**
+   * DeviceSettings.instrumentation.tagTraffic — mark this device as part of
+   * an Enkaku farm for the life of the session, reverted on close (spec
+   * §9.4/§17; plan 87 §4.12, §5 step 87.13). Defaults to `true` when omitted
+   * — "on by default" is the spec's own wording for this setting.
+   */
+  tagTraffic?: boolean
   /** The initial value before the first frame arrives (the Plan 01 probe). */
   screenW?: number | null
   screenH?: number | null
@@ -230,6 +238,16 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    */
   const rotation: RotationMode = opts.rotation ?? 'device'
   const revertRotation = await applyRotation(transport, { rotation, log })
+
+  /**
+   * Farm-traffic marker (spec §9.4/§17, plan 87 §4.12, §5 step 87.13): the
+   * same shape as `applyRotation` right above — device-scoped, applied here,
+   * reverted in `close()`. Defaults to `true` ("on by default" is the spec's
+   * own wording); `applyFarmTag` is what actually enforces "never claim a
+   * device is tagged when it is not" when the underlying `setprop` fails.
+   */
+  const tagTraffic = opts.tagTraffic ?? true
+  const revertFarmTag = await applyFarmTag(transport, { tagTraffic, log })
 
   onPhase('starting-video')
   // Display and input: scrcpy when the session comes up, otherwise the fallback
@@ -354,7 +372,20 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // apply time, so a second call is a no-op on the device, not a fresh
       // mutation of some remembered "already reverted" flag.
       await revertRotation()
+      // Same idempotent-thunk contract as rotation right above — safe to
+      // call more than once (a timeout kill followed by a normal close).
+      await revertFarmTag()
       await inspectorHandle?.release()
+      // Plan 88 §3.7 (fixes F12/H6): this call stays, but its MEANING
+      // changed. It used to drop the whole adb transport for `adb-tcp` —
+      // `host:disconnect` on session close — so closing one wall tile
+      // silently kicked a wireless/OTG phone off adb entirely, sometimes
+      // unrecoverably from Studio. `Transport.disconnect()` is now defined
+      // as session-scoped only (`packages/protocol/src/driver.ts`);
+      // `AdbTcpTransport.disconnect()` is a documented no-op
+      // (`packages/drivers/src/transport/adb-transport.ts`). This call
+      // remains so a future transport WITH real session-scoped state (a
+      // socket pool, a per-session token) still has somewhere to release it.
       await transport.disconnect()
     },
   }

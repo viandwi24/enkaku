@@ -1,9 +1,21 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { compareSemver, isPrereleaseVersion, ListAgentsResponseSchema, parseScriptRef, ScheduleResponseSchema, ValidateResponseSchema } from '@enkaku/protocol'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  clampParamsSchema,
+  compareSemver,
+  isPrereleaseVersion,
+  ListAgentsResponseSchema,
+  parseScriptRef,
+  reconcileParams,
+  ScheduleResponseSchema,
+  ScriptListItemSchema,
+  summarizeClamp,
+  ValidateResponseSchema,
+} from '@enkaku/protocol'
 import type { Agent, BatchOrder, CatchUp, ClusterInfo, DeviceInfo, OnApprovalRequired, OnOverlap, ScheduleInfo, ScheduleThreadMode } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
+import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button } from '@/components/ui/button'
@@ -14,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
+import { api, issuesFromError, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
 
 export interface ScheduleRow extends ScheduleInfo {}
@@ -129,6 +141,11 @@ export function ScheduleEditorDialog({
   const [jitterSec, setJitterSec] = useState(0)
   const [priority, setPriority] = useState(0)
   const [preview, setPreview] = useState<ValidatePreview | null>(null)
+  // Plan 95 §3.7, §4.3, §5 step 95.6 (fixes F12, F14) — the same wiring
+  // `RunScriptDialog` uses: `serverErrors` maps onto `SchemaForm`,
+  // `formCanSubmit` is ANDed into the Save button below.
+  const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
+  const [formCanSubmit, setFormCanSubmit] = useState(true)
   const { run, isPending } = useAction()
 
   const isNew = schedule === 'new'
@@ -136,8 +153,10 @@ export function ScheduleEditorDialog({
 
   useEffect(() => {
     if (!open) return
-    void fetchAllPages<ScriptOption>('/api/scripts')
-      .then((scripts) => setScripts(scripts.filter((s) => s.enabled)))
+    // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8) — see
+    // `device/page.tsx`'s identical fix for the full reasoning.
+    void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
+      .then((scripts) => setScripts((scripts as ScriptOption[]).filter((s) => s.enabled)))
       .catch(() => setScripts([]))
     void fetchAllPages<ClusterInfo>('/api/clusters')
       .then(setClusters)
@@ -149,6 +168,10 @@ export function ScheduleEditorDialog({
   }, [open])
 
   useEffect(() => {
+    setServerIssues(undefined)
+    // A no-params script, or an agent target, never mounts `SchemaForm`,
+    // which would otherwise leave a PREVIOUS pick's `false` stuck (F14).
+    setFormCanSubmit(true)
     if (schedule === 'new') {
       setName('')
       setEnabled(true)
@@ -220,16 +243,40 @@ export function ScheduleEditorDialog({
     return () => clearTimeout(timer)
   }, [open, cron, timezone])
 
-  if (!open) return null
-
   // The names available to pick from, one entry each (plan 62 §4.6) — the
-  // version choice is a second, separate control below.
+  // version choice is a second, separate control below. Computed BEFORE the
+  // `!open` early return below, on purpose: `clampedSchema` is a hook and
+  // must be called on every render, so `effectiveVersion` (what it clamps)
+  // has to be available before any conditional return, not after.
   const scriptNames = [...new Set(scripts.map((s) => s.name))].sort((a, b) => a.localeCompare(b))
   const versionsForName = scripts.filter((s) => s.name === scriptName).sort((a, b) => compareSemver(b.version, a.version))
   const resolved = scriptName ? resolveLatest(scripts, scriptName) : null
   // The version whose params schema actually drives the form below: the
   // live resolution when floating on @latest, the exact pinned row otherwise.
   const effectiveVersion = useLatest ? resolved : (versionsForName.find((v) => v.version === pinnedVersion) ?? null)
+
+  // Plan 95 §3.8, §5 step 95.5 — "reject at publish, clamp at render", the
+  // same defence `RunScriptDialog` carries. `clampParamsSchema` is total,
+  // so `effectiveVersion` being null (no script picked yet, or an agent
+  // target) just clamps an empty schema to an empty schema.
+  const { schema: clampedSchema, clamped } = useMemo(
+    () => clampParamsSchema(effectiveVersion?.paramsSchema ?? null),
+    [effectiveVersion?.paramsSchema],
+  )
+
+  // Plan 95 §4.4, §5 step 95.7 — the schedule-evolution rule, run live in the
+  // editor: `params` may have been saved against an EARLIER version of this
+  // script's schema (loaded verbatim by the effect above, never silently
+  // reshaped). Recomputed whenever the schema or the value changes, never
+  // stored — same "read fresh, never cached" rule `paramsCompatible` follows
+  // server-side (`GET /api/schedules`).
+  const reconciliation = useMemo(() => reconcileParams(clampedSchema, params), [clampedSchema, params])
+  const blockingReconcileErrors = Object.fromEntries(
+    reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing').map((f) => [f.path, f.detail]),
+  )
+  const hasFillableDefaults = reconciliation.findings.some((f) => f.kind === 'reset')
+
+  if (!open) return null
 
   const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
   const canSubmit =
@@ -267,13 +314,23 @@ export function ScheduleEditorDialog({
     onApprovalRequired,
   })
 
-  const save = () =>
-    run(
+  const save = () => {
+    setServerIssues(undefined)
+    return run(
       'save',
-      () =>
-        schedule === 'new'
-          ? api('/api/schedules', ScheduleResponseSchema, { method: 'POST', json: body() })
-          : api(`/api/schedules/${schedule.id}`, ScheduleResponseSchema, { method: 'PATCH', json: body() }),
+      async () => {
+        try {
+          return await (schedule === 'new'
+            ? api('/api/schedules', ScheduleResponseSchema, { method: 'POST', json: body() })
+            : api(`/api/schedules/${schedule.id}`, ScheduleResponseSchema, { method: 'PATCH', json: body() }))
+        } catch (err) {
+          // `invalid_job_params` (plan 95 §3.7, §4.3, fixes F12) — same
+          // wiring as `RunScriptDialog`: attach the field-level issues to
+          // the form; `run()`'s own catch still shows the toast.
+          setServerIssues(issuesFromError(err))
+          throw err
+        }
+      },
       {
         success: isNew ? 'Schedule created' : 'Schedule saved',
         failure: 'Could not save the schedule',
@@ -283,6 +340,7 @@ export function ScheduleEditorDialog({
         },
       },
     )
+  }
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -331,7 +389,16 @@ export function ScheduleEditorDialog({
               script or an agent. */}
           <div className="space-y-1.5">
             <Label className="text-[13px] font-normal">Runs</Label>
-            <Tabs value={workKind} onValueChange={(v) => setWorkKind(v as WorkKind)}>
+            <Tabs
+              value={workKind}
+              onValueChange={(v) => {
+                setWorkKind(v as WorkKind)
+                // Switching to "An agent" unmounts `SchemaForm` entirely,
+                // which would otherwise leave a script pick's `false` stuck.
+                setServerIssues(undefined)
+                setFormCanSubmit(true)
+              }}
+            >
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="script">A script</TabsTrigger>
                 <TabsTrigger value="agent">An agent</TabsTrigger>
@@ -350,6 +417,8 @@ export function ScheduleEditorDialog({
                       setScriptName(v)
                       setPinnedVersion('')
                       setParams(undefined)
+                      setServerIssues(undefined)
+                      setFormCanSubmit(true)
                     }}
                   >
                     <SelectTrigger className="h-8 w-full text-[12.5px]">
@@ -370,7 +439,7 @@ export function ScheduleEditorDialog({
                 {!useLatest && versionsForName.length > 0 && (
                   <div className="space-y-1.5">
                     <Label className="text-[13px] font-normal">Version</Label>
-                    <Select value={pinnedVersion} onValueChange={(v) => { setPinnedVersion(v); setParams(undefined) }}>
+                    <Select value={pinnedVersion} onValueChange={(v) => { setPinnedVersion(v); setParams(undefined); setServerIssues(undefined); setFormCanSubmit(true) }}>
                       <SelectTrigger className="readout h-8 min-w-28 text-[12.5px]">
                         <SelectValue placeholder="Pick a version" />
                       </SelectTrigger>
@@ -413,7 +482,80 @@ export function ScheduleEditorDialog({
               )}
 
               {effectiveVersion?.paramsSchema ? (
-                <SchemaForm key={effectiveVersion.id} schema={effectiveVersion.paramsSchema} value={params} onChange={setParams} />
+                <>
+                  {/* Plan 95 §4.7, §4.8, §5 step 95.8 — the same picker
+                      `RunScriptDialog` has. Applying a preset here stores
+                      its RECONCILED value into `params` below, exactly like
+                      typing it in by hand — never a reference to the set:
+                      "a preset edited later must not silently change what a
+                      schedule runs" (the same reference-vs-resolution split
+                      plan 62 §3.3 draws between `schedules.scriptRef` and
+                      `jobs.scriptId`, applied here to a preset instead of a
+                      script version). */}
+                  <ParamSetPicker
+                    scriptName={scriptName}
+                    schema={clampedSchema}
+                    value={params}
+                    onApply={(next) => {
+                      setParams(next)
+                      setServerIssues(undefined)
+                    }}
+                  />
+                  {/* Plan 95 §3.8, §5 step 95.5 — same clamp-and-say-so
+                      backstop as `RunScriptDialog`, for a schema stored
+                      before `checkParamsSchema` existed. */}
+                  {clamped.length > 0 && (
+                    <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+                      {summarizeClamp(clamped)}
+                    </p>
+                  )}
+                  {/* Plan 95 §4.4, §5 step 95.7 — an attended caller does not
+                      stop (§4.4): the findings are shown and the fields they
+                      block are highlighted below (via `serverErrors`), but
+                      saving is never refused outright here the way an
+                      unattended firing is. "Fill from the new version's
+                      defaults" only ever touches the NON-blocking findings
+                      (`reset`) — a `missing`/`invalid` field has no default
+                      to fill from, which is exactly why it blocks; those
+                      stay for the operator to answer by hand. */}
+                  {reconciliation.findings.length > 0 && (
+                    <div className="space-y-1.5 rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-led-warn">
+                          {reconciliation.blocking
+                            ? "Some stored parameters no longer match this version's schema"
+                            : "This version changed how some stored parameters are read"}
+                        </p>
+                        {hasFillableDefaults && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 shrink-0 text-[11px]"
+                            onClick={() => setParams(reconciliation.value)}
+                          >
+                            Fill from the new version&apos;s defaults
+                          </Button>
+                        )}
+                      </div>
+                      <ul className="space-y-0.5 text-fg-muted">
+                        {reconciliation.findings.map((f) => (
+                          <li key={f.path} className={f.kind === 'invalid' || f.kind === 'missing' ? 'text-led-danger' : undefined}>
+                            <span className="readout">{f.path}</span> — {f.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <SchemaForm
+                    key={effectiveVersion.id}
+                    schema={clampedSchema as JsonSchemaNode}
+                    value={params}
+                    onChange={setParams}
+                    serverErrors={{ ...blockingReconcileErrors, ...serverIssues }}
+                    onCanSubmitChange={setFormCanSubmit}
+                  />
+                </>
               ) : effectiveVersion ? (
                 <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
               ) : null}
@@ -645,7 +787,7 @@ export function ScheduleEditorDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={() => void save()} disabled={!canSubmit || isPending('save')}>
+          <Button onClick={() => void save()} disabled={!canSubmit || !formCanSubmit || isPending('save')}>
             {isPending('save') ? 'Saving…' : isNew ? 'Create schedule' : 'Save changes'}
           </Button>
         </div>

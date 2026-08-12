@@ -4,7 +4,16 @@ import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Inbox, LayoutGrid, List, Plus, Search, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { DeviceResponseSchema, JobInfoSchema, type ClusterInfo, type DeviceInfo, type DeviceStatus, type JobInfo, type Readiness } from '@enkaku/protocol'
+import {
+  connectionBadge,
+  DeviceResponseSchema,
+  JobInfoSchema,
+  type ClusterInfo,
+  type DeviceInfo,
+  type DeviceStatus,
+  type JobInfo,
+  type Readiness,
+} from '@enkaku/protocol'
 import { z } from 'zod'
 import { DeviceCard } from '@/components/DeviceCard'
 import { DiscoveredTray } from '@/components/DiscoveredTray'
@@ -20,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
+import { isAdmin, useAuth } from '@/lib/auth'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -29,6 +39,25 @@ type Filter = 'all' | 'ready' | 'inUse' | 'attention'
 type ClusterFilter = 'all' | 'none' | (string & {})
 /** A readiness filter, by `actual` (plan 43 §4.6) — 'all' = no filter. */
 type ReadinessFilter = 'all' | 'hot' | 'awake' | 'asleep'
+/**
+ * A connection filter (plan 88 §3.1, §4.1, F5). Six values, not four — the
+ * badge only has USB / OTG / WI-FI / TCP, but an operator chasing a
+ * wired-farm problem usually wants "everything not on USB" more than three
+ * separate checkboxes, so `network` sits alongside the three fine-grained
+ * ones rather than replacing them. `network` filters on the OBSERVED `kind`
+ * field directly (the question adb can actually answer); `otg`/`wifi`/`tcp`
+ * filter on the derived badge (kind + medium together) for when the precise
+ * value matters, e.g. isolating exactly the wired-OTG rack during a cutover.
+ */
+type ConnectionFilter = 'all' | 'usb' | 'network' | 'otg' | 'wifi' | 'tcp'
+const CONNECTION_FILTER_LABEL: Record<ConnectionFilter, string> = {
+  all: 'Any connection',
+  usb: 'USB',
+  network: 'On the network',
+  otg: 'OTG',
+  wifi: 'Wi-Fi',
+  tcp: 'TCP (unknown)',
+}
 /** The View and Group controls (plan 47 §3.6, §4.5) — both linkable in the query string. */
 type View = 'list' | 'wall'
 type GroupBy = 'none' | 'cluster' | 'status' | 'tag'
@@ -52,6 +81,10 @@ function isGroupBy(v: string | null): v is GroupBy {
 function DashboardView() {
   const params = useSearchParams()
   const router = useRouter()
+  const { user } = useAuth()
+  // `device.quarantine` (admin-only, `packages/core/src/auth/acl.ts`) gates
+  // `POST /:id/unquarantine` — the fleet card's "Return to queue" button.
+  const canReleaseQuarantine = isAdmin(user)
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null)
   const [jobs, setJobs] = useState<JobInfo[]>([])
   const [clusters, setClusters] = useState<ClusterInfo[]>([])
@@ -61,6 +94,7 @@ function DashboardView() {
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [clusterFilter, setClusterFilter] = useState<ClusterFilter>('all')
   const [readinessFilter, setReadinessFilter] = useState<ReadinessFilter>('all')
+  const [connectionFilter, setConnectionFilter] = useState<ConnectionFilter>('all')
   // View (List | Wall) and Group (None | Cluster | Status | Tag) are two
   // orthogonal controls, both in the query string so a view is linkable
   // (plan 47 §3.6, §4.5) — this is what replaces the separate `/topology`
@@ -217,8 +251,17 @@ function DashboardView() {
     // Readiness filter, by `actual` (plan 43 §4.6) — what the device really
     // is right now, not merely what was asked for.
     if (readinessFilter !== 'all') list = list.filter((d) => d.readiness.actual === readinessFilter)
+    // Connection filter (plan 88 §3.1, §4.1, F5) — `network` reads the
+    // observed `kind` directly; the other three read the same derived badge
+    // string the operator sees on the card, so "filter to OTG" can never
+    // disagree with what the badge itself says.
+    if (connectionFilter === 'usb') list = list.filter((d) => d.connection.kind === 'usb')
+    else if (connectionFilter === 'network') list = list.filter((d) => d.connection.kind === 'tcp')
+    else if (connectionFilter === 'otg') list = list.filter((d) => connectionBadge(d.connection) === 'OTG')
+    else if (connectionFilter === 'wifi') list = list.filter((d) => connectionBadge(d.connection) === 'WI-FI')
+    else if (connectionFilter === 'tcp') list = list.filter((d) => connectionBadge(d.connection) === 'TCP')
     return list
-  }, [devices, filter, query, selectedTags, clusterFilter, readinessFilter])
+  }, [devices, filter, query, selectedTags, clusterFilter, readinessFilter, connectionFilter])
 
   // View (List | Wall) and Group (None | Cluster | Status | Tag) update the
   // query string too, so the exact page anyone is looking at is linkable —
@@ -477,6 +520,23 @@ function DashboardView() {
             </SelectContent>
           </Select>
 
+          {/* Connection filter (plan 88 §3.1, §4.1, §4.9, F5) — narrows by
+              the same badge value the card and the wall render, plus a
+              coarser "On the network" bucket for the more common question
+              (see the type's own comment for why both exist). */}
+          <Select value={connectionFilter} onValueChange={(v) => setConnectionFilter(v as ConnectionFilter)}>
+            <SelectTrigger className="h-8 w-[10rem] text-[12.5px]" aria-label="Filter by connection">
+              <SelectValue placeholder="Any connection" />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(CONNECTION_FILTER_LABEL) as ConnectionFilter[]).map((key) => (
+                <SelectItem key={key} value={key}>
+                  {CONNECTION_FILTER_LABEL[key]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           {/* Group by: None | Cluster | Status | Tag (plan 47 §3.6, §4.5) —
               applies to the table AND the Wall, from the same `groups`
               value. This is what replaced the separate `/topology` route. */}
@@ -614,6 +674,7 @@ function DashboardView() {
                       device={d}
                       runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
                       onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                      canReleaseQuarantine={canReleaseQuarantine}
                       onRequestForget={() => {
                         setForgetTarget(d)
                         setForgetOpen(true)
@@ -635,6 +696,7 @@ function DashboardView() {
                 device={d}
                 runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
                 onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                canReleaseQuarantine={canReleaseQuarantine}
                 onRequestForget={() => {
                   setForgetTarget(d)
                   setForgetOpen(true)

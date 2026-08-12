@@ -422,6 +422,88 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
 })
 
 /**
+ * Plan 95 §4.4, §5 step 95.7 — reconciliation at firing. Written so it would
+ * FAIL if `paramsCompatible` (tested separately in `api/schedules.test.ts`)
+ * only ever reflected the LAST firing's outcome rather than a fresh
+ * recomputation: here the schedule is published against `s@1.0.0`, then the
+ * schema changes underneath it, and the very NEXT firing (never fired before
+ * against the new schema) must already refuse — there is no "warm up" firing.
+ */
+describe('fireOnce — reconciliation against the resolved schema (plan 95 §4.4, §5 step 95.7)', () => {
+  test('publish s@1.0.0 with { videos }, create an s@latest schedule, publish s@1.1.0 adding a required region with no default: the next firing enqueues nothing and records params_incompatible naming region', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.update(scripts)
+      .set({ paramsSchema: { type: 'object', properties: { videos: { type: 'number' } } } })
+      .where(eq(scripts.id, 'test-script-1.0.0'))
+      .run()
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@latest', deviceIds: ['d1'], params: { videos: 30 } })
+
+    // 1.1.0 adds a REQUIRED `region` with no default — the exact scenario the plan names.
+    db.insert(scripts)
+      .values({
+        id: 'test-script-1.1.0',
+        name: 'test-script',
+        version: '1.1.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { videos: { type: 'number' }, region: { type: 'string' } }, required: ['videos', 'region'] },
+      })
+      .run()
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.batchId).toBeNull()
+    expect(runs[0]?.detail).toContain('params_incompatible')
+    expect(runs[0]?.detail).toContain('region')
+
+    // Nothing was enqueued.
+    expect(db.select().from(batches).all()).toHaveLength(0)
+    expect(db.select().from(jobs).all()).toHaveLength(0)
+
+    const audit = createAuditLogger(db)
+    const failure = audit.list(10).find((e) => e.action === 'schedule.failed')
+    expect(failure).toBeDefined()
+    expect(failure?.target).toBe('s1')
+    expect((failure?.meta as { code?: string } | null)?.code).toBe('params_incompatible')
+    expect((failure?.meta as { message?: string } | null)?.message).toContain('region')
+  })
+
+  test('a non-blocking finding (a tightened bound with a default) still dispatches, using the RECONCILED value, not the stale stored one', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.update(scripts)
+      .set({ paramsSchema: { type: 'object', properties: { chance: { type: 'number', minimum: 0, maximum: 1, default: 0.5 } } } })
+      .where(eq(scripts.id, 'test-script-1.0.0'))
+      .run()
+    // Stored under an older, wider bound — no longer valid, but the schema supplies a default.
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'], params: { chance: 5 } })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs[0]?.params).toEqual({ chance: 0.5 })
+  })
+
+  test('a schedule with no params schema at all (a script that takes none) is never incompatible', async () => {
+    const db = setUp() // test-script@1.0.0 has no paramsSchema set
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+  })
+})
+
+/**
  * Plan 68 §3.1, §4.2 — the AGENT branch of `fireOnce`. Presence of a
  * `scheduleAgentTargets` row is the discriminator (`db/schema.ts`'s own doc
  * comment): every test above never inserts one, which is exactly what keeps

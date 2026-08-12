@@ -144,6 +144,58 @@ export const discoveredDevices = sqliteTable('discovered_devices', {
 export type DiscoveredDeviceRow = typeof discoveredDevices.$inferSelect
 
 /**
+ * Remembered network addresses for a device (plan 88 §3.2, §4.3) — the fix
+ * for F10: adb has no memory of a TCP device's address once it disconnects,
+ * and until this table, neither did this repo. Keyed on `(stable_id,
+ * address)`, with `stable_id` alone matching `blocked_devices`/
+ * `discovered_devices` above (F15) — an address survives a serial change, a
+ * forget/re-admit cycle, and a move between transports, exactly like a block
+ * or a sighting does.
+ *
+ * `address` is the EXACT `host:port` string adb uses as a serial for this
+ * transport — never re-derived. `registry/endpoints.ts`'s `EndpointStore` is
+ * the only code that touches this table; it also enforces the
+ * `discovery.endpointsPerDevice` cap (there is no CHECK constraint here,
+ * since the cap is a live setting, not a schema fact).
+ */
+export const deviceEndpoints = sqliteTable(
+  'device_endpoints',
+  {
+    stableId: text('stable_id').notNull(),
+    /** `host:port` — the exact string adb uses as a serial for this transport. */
+    address: text('address').notNull(),
+    /** 'wired' | 'wireless' | null — DECLARED (an operator, or a matched farm network), never observed (plan 88 §3.1). */
+    medium: text('medium'),
+    /** 'observed' (free, from a successful probe) | 'declared' (an operator said so) | 'scanned' (found by a sweep — plan 88 §4.5, not written by anything step 88.2 ships). */
+    source: text('source').notNull(),
+    firstSeen: integer('first_seen', { mode: 'timestamp' }).notNull(),
+    lastConnectedAt: integer('last_connected_at', { mode: 'timestamp' }),
+    lastAttemptAt: integer('last_attempt_at', { mode: 'timestamp' }),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    /** This address answered as a DIFFERENT phone (plan 88 §3.3 step 3) — never adopted here; the reconciler's own admission pass (F14) is the only place that happens. */
+    conflictStableId: text('conflict_stable_id'),
+    /**
+     * A DEVIATION from §3.2's illustrative column list, recorded here rather
+     * than silently: every timestamp in this repo is unix SECONDS
+     * (CLAUDE.md), so two writes for the same device within one wall-clock
+     * second — plausible in a burst (several ladder attempts in a row, or a
+     * sweep's results landing together, plan 88 §4.5) — would tie under
+     * `lastConnectedAt`/`firstSeen` alone, leaving eviction and the ladder's
+     * own ordering to fall back on undefined row-scan order. This is a
+     * per-table monotonic write counter, internal to `registry/endpoints.ts`
+     * only (never part of the public `Endpoint` shape) — strictly higher on
+     * every write, so "most recently touched" is always well-ordered even
+     * when the second-granularity timestamps are not.
+     */
+    seq: integer('seq').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.stableId, t.address] })],
+)
+
+export type DeviceEndpointRow = typeof deviceEndpoints.$inferSelect
+export type DeviceEndpointInsert = typeof deviceEndpoints.$inferInsert
+
+/**
  * Just enough to label a dangling reference (plan 47 §3.4): forgetting a
  * device removes its `devices` row but deliberately keeps `jobs`,
  * `artifacts`, and `device_events` pointing at the old `deviceId` — this
@@ -397,6 +449,34 @@ export const scripts = sqliteTable(
 )
 
 export type ScriptRow = typeof scripts.$inferSelect
+
+/**
+ * A named parameter set for a script NAME (plan 95 §4.7, §5 step 95.8).
+ * Keyed on `scriptName`, never a `scripts.id`: a preset is standing intent
+ * about a script, exactly as a schedule's `scriptRef` is (plan 62 §3.3) — it
+ * must outlive the version it was written against, and be reconciled
+ * (`@enkaku/protocol`'s `reconcileParams`) whenever it meets one. Applying a
+ * set to a form, or to a new schedule, copies its `params` in — nothing
+ * downstream of that moment ever reads this table again for that job or
+ * schedule, the same "reference on the standing thing, resolution on the
+ * concrete thing" split plan 62 draws between `schedules.scriptRef` and
+ * `jobs.scriptId`.
+ */
+export const scriptParamSets = sqliteTable(
+  'script_param_sets',
+  {
+    id: text('id').primaryKey(),
+    scriptName: text('script_name').notNull(),
+    name: text('name').notNull(),
+    params: text('params', { mode: 'json' }),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [uniqueIndex('idx_param_sets_script_name').on(t.scriptName, t.name)],
+)
+
+export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
 
 /**
  * Per-job (and, since plan 24 §4.6, per-device) artifacts (spec §12). `path`

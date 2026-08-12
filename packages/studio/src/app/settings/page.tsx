@@ -6,8 +6,11 @@ import { Plus, UserPlus } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { KvPanel } from '@/components/kv/KvPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { FarmNetworksEditor } from '@/components/settings/FarmNetworksEditor'
+import { FARM_SECTION_DEFS } from '@/components/settings/farmSections'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Badge } from '@/components/ui/badge'
@@ -60,48 +63,6 @@ const WebhookEndpointResponseSchema = z.object({ endpoint: WebhookEndpointSchema
 const UserCreateResponseSchema = z.object({ user: UserSchema })
 
 /**
- * The farm Settings page's section list. Grouped (plan 73 §3.4, §4.5) —
- * `Connectors`, `Webhooks`, and `Spend` used to sit as three flat AI
- * concerns among `adb`, `Storage`, and `Blocked devices`; `SectionNav`'s new
- * optional `group` (plan 73 §3.4) puts them under one **AI Agents** heading
- * instead, alongside a **Defaults** sub-section that finally renders
- * `agentDefaults` — built by plan 65, editable nowhere until now (criterion
- * 13). Content is otherwise unchanged; only the container and this list's
- * shape moved.
- */
-const FARM_SECTION_DEFS: readonly { id: string; title: string; group: string }[] = [
-  { id: 'defaults', title: 'Defaults', group: 'Devices' },
-  { id: 'battery', title: 'Battery', group: 'Devices' },
-  { id: 'adb', title: 'adb', group: 'Devices' },
-  { id: 'sessions', title: 'Sessions & Wall', group: 'Devices' },
-  { id: 'job', title: 'Jobs', group: 'Jobs' },
-  { id: 'storage', title: 'Storage', group: 'Jobs' },
-  // AI Agents (plan 73 §3.4) — `agentDefaults` rendered through the same
-  // schema-driven `FarmForm` every other section already uses, so a field
-  // added to `AgentDefaultsSchema` appears here automatically (criterion 13).
-  { id: 'ai-defaults', title: 'Defaults', group: 'AI Agents' },
-  // Farm-level provider connectors (plan 65 §3.8) — appear inside the agent
-  // editor only as a picker plus a link, because a credential edited from
-  // inside one agent's page but affecting every other agent is a trap.
-  { id: 'connectors', title: 'Connectors', group: 'AI Agents' },
-  // Plan 68 §3.4, §4.5 — farm-level, admin-managed webhook endpoints an
-  // agent's `notify.send` chooses among by NAME (never a raw URL).
-  { id: 'webhooks', title: 'Webhooks', group: 'AI Agents' },
-  // Plan 68 §3.3, §4.5 — the spend cap and scheduled-concurrency ceiling.
-  // Both apply ONLY to scheduled agent runs; an interactive chat run is
-  // never blocked by either, stated here in `scheduledAgents`'s own
-  // `.meta()` description (rendered by the generic `FarmForm` below — no
-  // bespoke UI needed, same as `job`/`sessions`/`battery`).
-  { id: 'spend', title: 'Spend', group: 'AI Agents' },
-  { id: 'blocked', title: 'Blocked devices', group: 'Farm' },
-  // Plan 79 §5.9 — global-scope ctx.kv values (device scope lives on each
-  // device's own Storage tab instead, since it needs a device to browse).
-  { id: 'kv', title: 'Key/Value store', group: 'Farm' },
-  { id: 'users', title: 'Users', group: 'Farm' },
-  { id: 'audit', title: 'Audit log', group: 'Farm' },
-]
-
-/**
  * Farm settings, split by subject rather than stacked into one long scroll.
  *
  * Two of these sections had no interface at all: the user and audit APIs
@@ -111,7 +72,7 @@ function SettingsView() {
   const router = useRouter()
   const tab = useSearchParams().get('tab') ?? 'defaults'
 
-  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title, group }) => ({
+  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title, group, keys }) => ({
     id,
     title,
     group,
@@ -119,7 +80,14 @@ function SettingsView() {
       id === 'blocked' ? (
         <BlockedDevicesSection />
       ) : id === 'kv' ? (
-        <KvPanel scope={{ kind: 'global' }} />
+        // Plan 96 item 96.4 — the browser sits above the quota `FarmForm`
+        // for the SAME `kv` schema block (`maxValueBytes`, `maxKeyLength`,
+        // ...), so one tab covers both browsing entries and the limits
+        // that bound them.
+        <>
+          <KvPanel scope={{ kind: 'global' }} />
+          <FarmForm keys={keys} />
+        </>
       ) : id === 'connectors' ? (
         <ConnectorsSection />
       ) : id === 'webhooks' ? (
@@ -130,16 +98,26 @@ function SettingsView() {
         <AuditSection />
       ) : id === 'adb' ? (
         <>
-          <FarmForm section={id} />
+          <FarmForm keys={keys} />
           <AdbDiagnosticsPanel />
+        </>
+      ) : id === 'discovery' ? (
+        // Plan 88 §3.6, §5 step 88.6 — `networks` is excluded from the
+        // generic form here (see `FarmForm`'s `omit` prop) so it has exactly
+        // ONE editor: `FarmNetworksEditor`'s own live count/ceiling/copy,
+        // never the generic table underneath it disagreeing about the same
+        // array between saves.
+        <>
+          <FarmForm keys={keys} omit={['discovery.networks']} />
+          <FarmNetworksEditor />
         </>
       ) : id === 'spend' ? (
         <>
-          <FarmForm section={id} />
+          <FarmForm keys={keys} />
           <ObservedSpendPanel />
         </>
       ) : (
-        <FarmForm section={id} />
+        <FarmForm keys={keys} />
       ),
   }))
 
@@ -157,35 +135,50 @@ function SettingsView() {
   )
 }
 
-/** Which top-level FarmSettings keys a tab renders — most tabs are one section; `adb` groups two (plan 23 §4.1). */
-function keysForSection(section: string): string[] {
-  if (section === 'battery') return ['battery']
-  if (section === 'storage') return ['retention']
-  if (section === 'adb') return ['adb', 'health']
-  // Session hygiene between jobs (plan 35 §4.1) — its own tab, no UI code
-  // beyond this mapping: the fields render from `.describe()`/`.meta()`.
-  if (section === 'job') return ['job']
-  // Idle session TTL and the fleet Wall's tile cap (plan 42 §4.4, §4.6) —
-  // same pattern: no bespoke UI, the fields render from `.describe()`/`.meta()`.
-  if (section === 'sessions') return ['session', 'wall']
-  // Plan 73 §3.4, §4.5 — the farm defaults plan 65 built and never exposed a screen for. Rendered
-  // through the SAME schema-driven `FarmForm` every other section already uses, so a field added
-  // to `AgentDefaultsSchema` appears here with no UI change at all (criterion 13).
-  if (section === 'ai-defaults') return ['agentDefaults']
-  // Plan 68 §3.3 — the scheduled-agent spend cap and concurrency ceiling.
-  if (section === 'spend') return ['scheduledAgents']
-  return ['defaults']
+/**
+ * A schema node with one NESTED property removed — `narrowSchema` only
+ * trims `properties` at its own top level, by design (its own doc comment),
+ * so a section that needs to drop a property one level down (`discovery.
+ * networks`, owned outright by `FarmNetworksEditor` — see its doc comment)
+ * needs one more step after that. `path` is a dotted path relative to the
+ * schema passed in; each segment recurses into that property's own nested
+ * `properties` and rebuilds the object immutably on the way back out, same
+ * as `narrowSchema`'s own "drop, don't blank" rule — the removed key is
+ * gone from the plan entirely, never rendered as an escape hatch.
+ */
+function omitProperty(schema: JsonSchemaNode, path: string): JsonSchemaNode {
+  const [head, ...rest] = path.split('.')
+  if (!head || !schema.properties?.[head]) return schema
+  if (rest.length === 0) {
+    const { [head]: _dropped, ...properties } = schema.properties
+    return { ...schema, properties, required: schema.required?.filter((k) => k !== head) }
+  }
+  return { ...schema, properties: { ...schema.properties, [head]: omitProperty(schema.properties[head], rest.join('.')) } }
 }
 
-/** One schema, rendered a section at a time by trimming its properties. */
-function FarmForm({ section }: { section: string }) {
+/**
+ * One schema, rendered a section at a time by trimming its properties to
+ * `keys` — the top-level `FarmSettingsSchema` keys `FARM_SECTION_DEFS`
+ * assigns the calling section (plan 96 item 96.4: the old `keysForSection`
+ * switch was a second hand-maintained id → keys mapping living apart from
+ * `FARM_SECTION_DEFS`'s own id → title/group; folding `keys` into that same
+ * array removes the seam a key could go missing from one list but not the
+ * other, and is what `farmSections.test.ts` checks directly against the
+ * schema).
+ *
+ * `omit` (plan 88 §5 step 88.6) — dotted paths, applied after `narrowSchema`,
+ * for the rare field a BESPOKE panel owns outright rather than the generic
+ * form: without it, `discovery.networks` would render twice (once here as a
+ * plain `TableControl`, once in `FarmNetworksEditor`'s own live-count/
+ * ceiling editor below it) against two independently-loaded drafts that
+ * never see each other's unsaved edits.
+ */
+function FarmForm({ keys, omit }: { keys: string[]; omit?: string[] }) {
   const [schema, setSchema] = useState<JsonSchemaNode | null>(null)
   const [saved, setSaved] = useState<Record<string, unknown> | undefined>(undefined)
   const [draft, setDraft] = useState<Record<string, unknown> | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
-
-  const keys = keysForSection(section)
 
   const load = () => {
     setError(null)
@@ -213,11 +206,13 @@ function FarmForm({ section }: { section: string }) {
 
   // Narrow the schema to this section's keys, so the form renders one
   // subject at a time while the value stays the whole settings object the
-  // API expects.
-  const sectionSchema: JsonSchemaNode = {
-    ...schema,
-    properties: Object.fromEntries(keys.map((k) => [k, schema.properties?.[k] as JsonSchemaNode])),
-  }
+  // API expects. `narrowSchema` (plan 95 §5 step 95.4) — not a third inline
+  // copy of the same handful of lines: unlike a hand-rolled `.map`, it DROPS
+  // a key `schema.properties` does not (yet) have instead of putting
+  // `undefined` in its place, which is exactly the crash
+  // `deviceSections.test.ts`'s own fixture-schema doc comment guards
+  // against (`SchemaForm` rendering an undefined field definition).
+  const sectionSchema: JsonSchemaNode = (omit ?? []).reduce((s, path) => omitProperty(s, path), narrowSchema(schema, keys))
 
   return (
     <div className="max-w-3xl py-4">

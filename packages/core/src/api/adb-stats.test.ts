@@ -93,6 +93,60 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     expect(body.global.maxConcurrent).toBe(0)
   })
 
+  test('adbHealth is zero-filled (status ok, never checked) when the monitor dep is absent (plan 88 §3.9, §4.7)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const inner = createAdbStatsRoutes({
+      db: opened.db,
+      client: () => null,
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+    })
+    const app = withUser('operator', inner)
+    const res = await app.request('/')
+    const body = (await res.json()) as { adbHealth: unknown }
+    expect(body.adbHealth).toEqual({
+      status: 'ok',
+      versionRttMs: null,
+      lastCheckedAt: 0,
+      window: { seconds: 0, execs: 0, timeouts: 0, timeoutRate: 0 },
+      wedged: [],
+      stuckOffline: [],
+      symptoms: [],
+      restartAdvised: false,
+    })
+  })
+
+  test('adbHealth reports the live monitor verdict verbatim when the dep is supplied', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const verdict = {
+      status: 'stuck' as const,
+      versionRttMs: null,
+      lastCheckedAt: 12_345,
+      window: { seconds: 600, execs: 40, timeouts: 25, timeoutRate: 0.625 },
+      wedged: [],
+      stuckOffline: [],
+      symptoms: [{ symptom: 'server-unresponsive' as const, detail: 'host:version has not answered', since: 12_000 }],
+      restartAdvised: true,
+    }
+    const inner = createAdbStatsRoutes({
+      db: opened.db,
+      client: () => null,
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+      adbHealth: () => verdict,
+    })
+    const app = withUser('operator', inner)
+    const res = await app.request('/')
+    const body = (await res.json()) as { adbHealth: typeof verdict }
+    expect(body.adbHealth).toEqual(verdict)
+  })
+
   test('requires device.view — an unauthenticated request is rejected with 403', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)

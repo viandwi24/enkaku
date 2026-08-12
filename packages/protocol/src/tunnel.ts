@@ -32,29 +32,8 @@ export const NodeHelloMessage = z.object({
   }),
 })
 
-/**
- * Plan 61 §3.3 compatibility window: a node binary built before the rename
- * still sends `agent.hello` — the control plane accepts it for one release
- * with a warn-level log naming the node, so an operator can see which nodes
- * still need upgrading. Dated removal tracked in `00-overview.md`.
- */
-export const NodeHelloLegacyMessage = z.object({
-  type: z.literal('agent.hello'),
-  payload: z.object({
-    agentVersion: z.string(),
-    platform: z.string(),
-    toolVersions: z.record(z.string(), z.string()),
-  }),
-})
-
 export const NodeDevicesMessage = z.object({
   type: z.literal('node.devices'),
-  payload: z.object({ devices: z.array(DeviceInfoSchema) }),
-})
-
-/** Plan 61 §3.3 compatibility window — same payload shape as `NodeDevicesMessage`, a pre-rename node still sends this type string. */
-export const NodeDevicesLegacyMessage = z.object({
-  type: z.literal('agent.devices'),
   payload: z.object({ devices: z.array(DeviceInfoSchema) }),
 })
 
@@ -465,9 +444,7 @@ export const AdbAckMessage = z.object({
 
 export const NodeToControlSchema = z.discriminatedUnion('type', [
   NodeHelloMessage,
-  NodeHelloLegacyMessage,
   NodeDevicesMessage,
-  NodeDevicesLegacyMessage,
   SessionStartedMessage,
   SessionFailedMessage,
   JobProgressMessage,

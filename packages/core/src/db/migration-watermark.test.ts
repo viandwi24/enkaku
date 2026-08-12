@@ -42,16 +42,26 @@ function rowCount(sqlite: ReturnType<typeof freshDb>['sqlite']): number {
 
 describe('migration watermark repair (plan 61/62 fallout)', () => {
   test('a watermark poisoned above every later entry no longer hides the remainder', () => {
-    const full = (() => {
+    // Both numbers come from a real, fully-migrated database rather than from
+    // constants. `POISON` used to be a literal (`1786100000000`, a date in
+    // early August 2026) chosen because it sat above every journal entry at
+    // the time it was written. Drizzle stamps each migration with `Date.now()`
+    // when it is generated, so the first migration generated after that date
+    // pushed the legitimate watermark above the literal and this test started
+    // failing on a change that had nothing to do with it. Deriving the poison
+    // from the journal keeps the property the test is actually asserting —
+    // "poisoned above every later entry" — true forever.
+    const { full, fullWatermark } = (() => {
       const f = freshDb()
       try {
         runMigrations(f.db, f.sqlite)
-        return rowCount(f.sqlite)
+        return { full: rowCount(f.sqlite), fullWatermark: watermark(f.sqlite) }
       } finally {
         f.cleanup()
       }
     })()
     expect(full).toBeGreaterThan(30)
+    const POISON = fullWatermark + 1
 
     const { db, sqlite, cleanup } = freshDb()
     try {
@@ -65,15 +75,15 @@ describe('migration watermark repair (plan 61/62 fallout)', () => {
 
       // Poison it exactly as plans 61/62 did: the newest recorded row carries
       // a timestamp larger than every journal entry that follows it.
-      sqlite.query(`UPDATE __drizzle_migrations SET created_at = 1786100000000 WHERE rowid = ${partial}`).run()
-      expect(watermark(sqlite)).toBe(1786100000000)
+      sqlite.query(`UPDATE __drizzle_migrations SET created_at = ${POISON} WHERE rowid = ${partial}`).run()
+      expect(watermark(sqlite)).toBe(POISON)
 
       // Without the repair, drizzle concludes everything is already applied
       // and this call is a silent no-op.
       runMigrations(db, sqlite)
 
       expect(rowCount(sqlite)).toBe(full)
-      expect(watermark(sqlite)).toBeLessThan(1786100000000)
+      expect(watermark(sqlite)).toBeLessThan(POISON)
 
       // The schema the hidden migrations carried actually landed.
       const tables = (sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name)

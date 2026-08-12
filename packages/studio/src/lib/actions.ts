@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import { z } from 'zod'
+import type { ParamIssue } from '@enkaku/protocol'
 import { coreBase } from './ws'
 
 /**
@@ -15,6 +16,49 @@ import { coreBase } from './ws'
 export interface ApiError {
   code: string
   message: string
+  /** Present on `invalid_job_params` (plan 95 §3.7, §4.3, §4.8) — field-level failures a form can attach to the field that caused them. */
+  issues?: ParamIssue[]
+}
+
+/**
+ * `issues` off a thrown `api()` error, keyed by path — the same
+ * `Record<path, message>` shape `SchemaForm`'s `serverErrors` prop takes.
+ * `undefined` for every other failure (a network error, a coded error with
+ * no `issues`), so a caller can spread it straight into `serverErrors`
+ * without an extra null check.
+ */
+export function issuesFromError(err: unknown): Record<string, string> | undefined {
+  if (!err || typeof err !== 'object' || !('issues' in err)) return undefined
+  const issues = (err as { issues?: unknown }).issues
+  if (!Array.isArray(issues)) return undefined
+  const map: Record<string, string> = {}
+  for (const issue of issues) {
+    if (issue && typeof issue === 'object' && typeof (issue as { path?: unknown }).path === 'string' && typeof (issue as { message?: unknown }).message === 'string') {
+      map[(issue as { path: string }).path] = (issue as { message: string }).message
+    }
+  }
+  return Object.keys(map).length > 0 ? map : undefined
+}
+
+/**
+ * Turns a thrown `api()` error into what a screen should show a user.
+ *
+ * `auth.forbidden` (`packages/core/src/auth/middleware.ts`'s `requirePermission`,
+ * and the couple of routes with their own admin-only check, e.g.
+ * `PATCH /api/devices/:id`'s ownerId transition) is a normal, expected
+ * outcome the moment Studio hides or disables a control instead of removing
+ * it — a role changed in another tab, or a second click races the
+ * server response — not a bug, so it gets a plain-English rewrite rather
+ * than the server's `requires the tool.manage permission` (a permission
+ * NAME, not something anyone using the product typed or chose). Every
+ * other code keeps the server's own message verbatim, same as before —
+ * that text already explains the specific failure better than anything
+ * generic here could.
+ */
+export function describeApiError(err: unknown): string {
+  const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : null
+  if (code === 'auth.forbidden') return 'Your role does not allow this — ask an admin.'
+  return err instanceof Error ? err.message : String(err)
 }
 
 /**
@@ -74,6 +118,7 @@ export async function api<S extends z.ZodType>(
     const err = (body as { error?: ApiError } | null)?.error
     throw Object.assign(new Error(err?.message ?? `Request failed (HTTP ${res.status})`), {
       code: err?.code ?? 'unknown',
+      ...(err?.issues ? { issues: err.issues } : {}),
     })
   }
   // `body` is `null` for "no JSON came back" — normalised to `undefined` so
@@ -102,10 +147,7 @@ export function useAction() {
         opts?.onSuccess?.(result)
         return result
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        // The server's own message is passed through verbatim — it explains
-        // the cause far better than any generic wording could.
-        toast.error(opts?.failure ?? 'Action failed', { description: message })
+        toast.error(opts?.failure ?? 'Action failed', { description: describeApiError(err) })
         return null
       } finally {
         setPending(null)

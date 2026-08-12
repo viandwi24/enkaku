@@ -12,6 +12,26 @@ export { enroll, loadState, saveState, type NodeState } from './state'
 const NODE_VERSION = '0.0.1'
 
 /**
+ * The `kind` half of `DeviceInfo.connection` (plan 88 §3.1), observable from
+ * the serial shape alone — the same split
+ * `packages/core/src/registry/device-registry.ts`'s `deriveConnection` uses.
+ * That function is core-only (deliberately): `medium` needs a configured
+ * farm network, which is control-plane state a node never has. Reported
+ * here purely to keep this `DeviceInfo` honest and schema-valid; the control
+ * plane recomputes `connection` from `serial` itself when it persists this
+ * report (`packages/core/src/tunnel/registry.ts`'s `syncDevices` only reads
+ * `serial`, never `connection`), so `medium`/`mediumSource` are always
+ * `null`/`'unknown'` here rather than guessed.
+ */
+function connectionFromSerial(serial: string): DeviceInfo['connection'] {
+  const m = /^(\[[0-9a-fA-F:]+\]|[^\s:]+):(\d{1,5})$/.exec(serial)
+  if (!m) return { kind: 'usb', medium: null, mediumSource: 'unknown', address: null, port: null, networkLabel: null }
+  const hostRaw = m[1]!
+  const host = hostRaw.startsWith('[') ? hostRaw.slice(1, -1) : hostRaw
+  return { kind: 'tcp', medium: null, mediumSource: 'unknown', address: host, port: Number(m[2]), networkLabel: null }
+}
+
+/**
  * A mini-core for cloud mode (plan 11 §4.1): adb, toolchain, drivers, and
  * local sessions — with NO Studio, queue/scheduler, users, or script storage.
  * Scheduling and lease decisions stay with the control plane; the node holds
@@ -197,6 +217,7 @@ export function createNode(opts: NodeOptions): Node {
               // overwrites the DB row's lease-independent columns from this
               // snapshot but never touches who holds it.
               heldBy: null,
+              connection: connectionFromSerial(snapshot.serial),
             })
           }
           hosts?.updateDevices([...snapshots.values()])

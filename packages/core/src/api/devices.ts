@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import {
+  ConnectionMediumSchema,
+  DeviceConnectionPatchResponseSchema,
   DeviceHistoryCountsResponseSchema,
   DeviceReadinessResponseSchema,
   DeviceResponseSchema,
@@ -7,10 +9,13 @@ import {
   DeviceTagsResponseSchema,
   DeviceViewersResponseSchema,
   DevicesBlockedResponseSchema,
+  DisconnectOutcomeSchema,
   MonitorKindSchema,
   MonitorSaveResponseSchema,
   ReadinessSchema,
   ReconcileReportSchema,
+  ReconnectOutcomeSchema,
+  SweepReportSchema,
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
@@ -21,10 +26,13 @@ import {
   type RegistryResponse,
   type ServerMessage,
   type ShellMode,
+  type SweepReport,
   type Viewer,
 } from '@enkaku/protocol'
+import type { SessionManager } from '@enkaku/session'
 import { eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
+import { can } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -36,10 +44,13 @@ import type { DeviceLifecycle } from '../device/lifecycle'
 import { staticReadinessFallback, type ReadinessManager } from '../device/readiness'
 import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
+import type { JobStore } from '../queue/job-store'
 import { assignDevices, unassignDevices } from '../clusters/membership'
 import { admitDevice } from '../registry/admission'
-import { clusterRefFor, loadClusterNames, rowToDeviceInfo } from '../registry/device-registry'
+import { clusterRefFor, deriveConnection, loadClusterNames, rowToDeviceInfo } from '../registry/device-registry'
 import { loadDeviceTags, replaceDeviceTags } from '../registry/device-tags'
+import type { EndpointStore } from '../registry/endpoints'
+import type { DeviceReconnector } from '../registry/reconnect'
 import { saveForDevice } from '../runner/artifact-store'
 import { EnkakuError } from '../util/errors'
 import { createAdbEndpointRoutes } from './adb-endpoint'
@@ -69,6 +80,15 @@ const DeviceClusterBody = z.object({ clusterId: z.string().min(1).nullable() })
 /** Plan 47 §4.4 — `POST /:id/block`. Every field optional: a bodyless call is valid. */
 const BlockBody = z.object({ reason: z.string().min(1).optional() })
 
+/** Plan 88 §4.6, §5 step 88.4 — `POST /:id/connection/disconnect`. Every field optional: a bodyless call is valid. */
+const ConnectionDisconnectBody = z.object({ force: z.boolean().optional() })
+
+/** Plan 88 §4.6, §5 step 88.4 — `POST /:id/connection/reconnect`. Every field optional: a bodyless call is valid. */
+const ConnectionReconnectBody = z.object({ allowSweep: z.boolean().optional(), force: z.boolean().optional() })
+
+/** Plan 88 §3.1, §4.6, §5 step 88.4 — `PATCH /:id/connection`. `null` declares "medium unknown", overriding a network-inferred guess (§3.1's "a declaration wins"). */
+const ConnectionPatchBody = z.object({ medium: ConnectionMediumSchema.nullable() })
+
 /** Plan 24 §4.6 — `POST /:id/monitor/save`. The Monitor pane's "save last N lines" action. */
 const MonitorSaveBody = z.object({
   kind: MonitorKindSchema,
@@ -79,6 +99,8 @@ const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
   cluster_not_found: 404,
   E_BAD_REQUEST: 400,
+  // `device.owner.set` (plan 09 §4.4, `auth/acl.ts`) — the ownerId transition's own gate on PATCH /:id.
+  'auth.forbidden': 403,
   UNKNOWN_ENGINE: 400,
   ENGINE_UNAVAILABLE: 409,
   LOCK_CONFLICT: 409,
@@ -94,6 +116,17 @@ const ERROR_STATUS: Record<string, number> = {
   device_busy: 409,
   device_online: 409,
   not_blocked: 404,
+  // The bounded sweep (plan 88 §3.5, §4.5, §5 step 88.3) — `sweeper.sweep`'s own coded refusals.
+  E_SCAN_BUSY: 409,
+  E_SCAN_UNAVAILABLE: 409,
+  // Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4).
+  // `E_TRANSPORT_NOT_DETACHABLE`: adb has no host service to release a single
+  // USB transport (§4.6) — the Connection menu's Disconnect item is present
+  // but disabled for exactly this reason, never a silent no-op.
+  E_TRANSPORT_NOT_DETACHABLE: 409,
+  // `PATCH /:id/connection` on a USB device — there is no network address to
+  // declare a medium for.
+  E_NOT_ON_NETWORK: 409,
 }
 
 /** `PUT /:id/readiness` (plan 43 §4.5). */
@@ -178,6 +211,51 @@ export function createDeviceRoutes(deps: {
    * `readiness` below.
    */
   rescan?: () => Promise<ReconcileReport> | null
+  /**
+   * `POST /scan` (plan 88 §3.5, §4.5, §4.6, §5 step 88.3) — the bounded
+   * subnet sweep's own manual trigger (F29), distinct from `rescan` above:
+   * `rescan` re-reads adb's OWN list; `scan` dials addresses adb has never
+   * heard of. `undefined` (orchestrator mode, or a farm with no sweeper
+   * wired yet) refuses with `E_NOT_SUPPORTED` — same optionality pattern as
+   * `rescan`. A `scan.mode: 'off'`/no-networks refusal is `sweeper.sweep`'s
+   * OWN job (`E_SCAN_UNAVAILABLE`) and is handled below, not here.
+   */
+  sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
+  /**
+   * Who currently holds each device's manual lease, and the means to force
+   * it free (plan 88 §3.7, §4.6, §5 step 88.4: "a successful disconnect ...
+   * releases the manual lease first"). Required, like `heldByOf` — the lease
+   * manager exists in every mode this router is mounted in.
+   */
+  leases: LeaseManager
+  /**
+   * The running-job guard for `POST /:id/connection/disconnect` (plan 88
+   * §4.6, §5 step 88.4: "a device with a running job refuses unless force,
+   * and the error lists the jobs"). Required, like `leases` above — the job
+   * store exists in every mode, including the orchestrator.
+   */
+  jobStore: Pick<JobStore, 'list'>
+  /**
+   * Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.4, §4.6, §5 step
+   * 88.4). `reconnector` is the SAME `DeviceReconnector` steps 88.2/88.8
+   * built and wired into `daemon.ts` — NOT a second reconnect path: its own
+   * `reconnect`/`disconnect` already run the ladder and the ordinary USB
+   * refusal; this router adds the coded HTTP refusal, the running-job guard,
+   * and the session/lease teardown ordering on top. Both accessors are
+   * forward-refs (`daemon.ts` assigns `reconnector`/`sessions` later in boot
+   * than this router is built, the same reason `rescan`/`onAdmitted` above
+   * are functions rather than values) and both are `undefined` in
+   * orchestrator mode or before the adb subsystem comes up — the routes
+   * below refuse with `E_NOT_SUPPORTED` rather than not existing, same
+   * optionality pattern as `rescan`/`sweeper`.
+   */
+  connection?: {
+    reconnector: () => DeviceReconnector | null
+    /** Force-closes this device's session before the transport actually drops (plan 88 §4.6's ordering) — `SessionManager.closeDevice`. */
+    sessions: () => Pick<SessionManager, 'closeDevice'> | null
+  }
+  /** The address book (plan 88 §3.2, §4.3) — `PATCH /:id/connection`'s write path. Same optionality as `connection` above. */
+  endpoints?: Pick<EndpointStore, 'declare'>
   deviceDefaults?: () => DeviceSettings
   /** `readiness.defaultDesired` (plan 43 §4.4) — a separate accessor for the same reason it is one in the registry. */
   defaultDesiredReadiness?: () => Readiness
@@ -311,6 +389,34 @@ export function createDeviceRoutes(deps: {
     const report = await result
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.rescan' })
     return typedJson(c, ReconcileReportSchema, report)
+  })
+
+  /**
+   * `POST /scan` (plan 88 §3.5, §4.5, §4.6, §5 step 88.3) — the bounded
+   * subnet sweep's manual trigger (F29, H4): the Studio "Rescan / scan all
+   * networks" button, and nothing else — there is no automatic cadence to
+   * call this on a timer (§9 Q1, decided 2026-08-12). A static route, same
+   * shadowing reason as `/rescan` above. `sweeper.sweep()` itself enforces
+   * `scan.mode`/"no scannable network" (`E_SCAN_UNAVAILABLE`) and the
+   * singleton mutex (`E_SCAN_BUSY`) — both map through `ERROR_STATUS` above,
+   * so this route does no policy checking of its own.
+   *
+   * Audited as its own `device.scan` action (plan 88 §5 step 88.4) — step
+   * 88.3 had to audit this under `device.rescan` with `meta.via: 'scan'` as a
+   * stopgap, since `packages/core/src/auth/audit.ts`'s `AuditAction` union
+   * was held by a concurrent step at the time; that step's own comment said
+   * a dedicated action should be added once the file was free again, and
+   * step 88.4 is what does it.
+   */
+  app.post('/scan', requirePermission('device.settings'), async (c) => {
+    if (!deps.sweeper) throw new EnkakuError('E_NOT_SUPPORTED', 'network scanning is not available (orchestrator mode, or the adb subsystem is not ready)')
+    const report: SweepReport = await deps.sweeper.sweep()
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.scan',
+      meta: { scanned: report.scanned, answered: report.answered, adopted: report.adopted.length, discovered: report.discovered.length },
+    })
+    return typedJson(c, SweepReportSchema, report)
   })
 
   // `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a minimal lookup, not
@@ -462,10 +568,38 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceReadinessResponseSchema, { readiness })
   })
 
-  app.patch('/:id', async (c) => {
+  /**
+   * `device.settings` (plan 34 §4.4, §4.5) — the blanket gate every sibling
+   * mutation on this router already declares (`PUT /:id/tags`, `PUT
+   * /:id/cluster`, `PATCH /:id/drivers`, …), but this route never had: any
+   * authenticated caller could reach `label`/`settings` with no permission
+   * check at all (plan 87, mvp-3 Finding 3). It is a no-op today FOR WHO GETS
+   * IN — `device.settings` sits in `OPERATOR` (`acl.ts`), so both roles this
+   * codebase has already passed before this existed — but it is not a no-op
+   * for what the router SAYS: the next role `acl.ts` adds would silently
+   * inherit this hole instead of being asked to earn `device.settings` like
+   * every other mutation here. Do not delete this as "redundant" just
+   * because both roles currently pass it. `device.owner.set` immediately
+   * below is a SEPARATE, stricter check on the `ownerId` transition alone —
+   * this gate sits in front of it, not instead of it.
+   */
+  app.patch('/:id', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = PatchBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'invalid body')
+    const user = c.get('user')
+    // `device.owner.set` (`auth/acl.ts`, admin-only) — gates ONLY the
+    // ownerId transition, and only when it actually changes: `label` and
+    // `settings` below stay ordinary operator work, unrestricted by this
+    // check, and a PATCH that merely repeats the current owner is a no-op,
+    // not a reassignment. Without this, any authenticated operator could
+    // set a device's `ownerId` to themselves or anyone else, silently — the
+    // exact thing `canUseDevice` otherwise gates lease acquisition, job
+    // enqueue, and the adb endpoint on.
+    const ownerChanged = body.data.ownerId !== undefined && body.data.ownerId !== row.ownerId
+    if (ownerChanged && (!user || !can(user.role, 'device.owner.set'))) {
+      throw new EnkakuError('auth.forbidden', 'only an admin may reassign a device’s owner')
+    }
     const patch: Record<string, unknown> = {}
     if (body.data.label !== undefined) patch.label = body.data.label
     if (body.data.ownerId !== undefined) patch.ownerId = body.data.ownerId
@@ -515,11 +649,31 @@ export function createDeviceRoutes(deps: {
       // the whole point of the setting (plan 18 §3.4).
       deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.settings', target: row.id, meta: { logInputText: true } })
     }
+    if (ownerChanged) {
+      // Both the old and new owner, so the trail answers "who had it before"
+      // as well as "who has it now" — the whole point of auditing a
+      // reassignment rather than just a flag flip.
+      deps.audit.record({
+        userId: user?.id ?? null,
+        action: 'device.owner',
+        target: row.id,
+        meta: { from: row.ownerId, to: body.data.ownerId },
+      })
+    }
     return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
   })
 
-  /** Per-device engine choice — validated server-side (capabilities and locks, spec §8). */
-  app.patch('/:id/drivers', async (c) => {
+  /**
+   * Per-device engine choice — validated server-side (capabilities and locks,
+   * spec §8). `device.settings` (plan 34 §4.4, §4.5) — the same permission
+   * `PUT /:id/tags`/`PUT /:id/cluster` above already gate on: this route had
+   * NO `requirePermission` at all until this fix (a security-sweep finding,
+   * not part of the original plan 09/34 work), so any authenticated operator
+   * could silently change a device's transport/display/input/inspector
+   * engines. Audited as `device.drivers` — the action name was already
+   * defined in `auth/audit.ts` and never used anywhere until now.
+   */
+  app.patch('/:id/drivers', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = DriversBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { transport, display, input, inspection } is required')
@@ -527,16 +681,179 @@ export function createDeviceRoutes(deps: {
     // not built yet) — this endpoint does not accept a network engine choice.
     const result = validateEngineSelection(await deps.registry(), { ...body.data, network: 'none' })
     if (!result.ok) throw new EnkakuError(result.code, result.message)
+    const from = { transport: row.transport, display: row.display, input: row.input, inspection: row.inspection }
     db.update(devices).set(body.data).where(eq(devices.id, row.id)).run()
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.drivers', target: row.id, meta: { from, to: body.data } })
     return c.json({ device: { id: row.id, ...body.data } })
   })
 
-  app.post('/:id/unquarantine', (c) => {
+  /**
+   * `POST /:id/connection/disconnect` (plan 88 §3.7, §3.8, §4.6, §5 step
+   * 88.4) — drops a `tcp` device's adb transport. The phone stays enrolled:
+   * its record, tags, cluster, settings, job history and artifacts are
+   * untouched. This is NOT Remove/Forget/Block (§3.8's whole point), so the
+   * confirm copy and this route's own behaviour say so, not just the button.
+   *
+   * Guards, in order — the substance of this step:
+   * 1. A `usb` device refuses with `E_TRANSPORT_NOT_DETACHABLE`: adb has no
+   *    host service to release one USB transport (F11), so the menu item is
+   *    present but disabled with this exact reason, never a button that
+   *    quietly does nothing.
+   * 2. A running job refuses (coded `job_running`, naming every job) unless
+   *    `force` — bypassing `EnkakuError`/`ERROR_STATUS` here (like
+   *    `E_ADB_BUSY_FARM` in `tools/routes.ts`) because the refusal carries a
+   *    structured `jobs` list alongside the coded message, not just prose.
+   * 3. Only once both guards pass: the session closes and the manual lease
+   *    is force-released BEFORE the transport actually drops, so an operator
+   *    who asked for this sees it as their own action, not the device dying
+   *    out from under them.
+   */
+  app.post('/:id/connection/disconnect', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const body = ConnectionDisconnectBody.safeParse(await c.req.json().catch(() => ({})))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { force? } is required')
+
+    const conn = deriveConnection(row.serial, [])
+    if (conn.kind === 'usb') {
+      throw new EnkakuError(
+        'E_TRANSPORT_NOT_DETACHABLE',
+        `${row.label} is connected over USB — adb has no way to release a single USB transport. Unplug the cable to disconnect it.`,
+      )
+    }
+
+    const reconnector = deps.connection?.reconnector()
+    if (!reconnector) {
+      throw new EnkakuError('E_NOT_SUPPORTED', 'device connection control is not available (orchestrator mode, or the adb subsystem is not ready)')
+    }
+
+    if (!body.data.force) {
+      const running = deps.jobStore.list({ deviceId: row.id, status: 'running', limit: 50 }).rows
+      if (running.length > 0) {
+        const names = running.map((j) => j.scriptName ?? 'a script').join(', ')
+        return c.json(
+          {
+            error: {
+              code: 'job_running',
+              message: `${running.length} running job${running.length === 1 ? '' : 's'} on ${row.label} (${names}) would fail if disconnected now — pass force to disconnect anyway`,
+            },
+            jobs: running.map((j) => ({ id: j.id, scriptName: j.scriptName ?? 'a script' })),
+          },
+          409,
+        )
+      }
+    }
+
+    // Close first, release second, drop the transport LAST (plan 88 §4.6's
+    // ordering) — a device with no session and no lease disconnecting reads
+    // as "Enkaku did this on purpose", not as an unexplained drop.
+    await deps.connection?.sessions?.()?.closeDevice(row.id)
+    deps.leases.releaseDevice?.(row.id, 'disconnected')
+
+    const outcome = await reconnector.disconnect(row.stableId)
+    deps.record?.({
+      deviceId: row.id,
+      stream: 'main',
+      kind: 'device.disconnected',
+      actor: c.get('user')?.id ?? null,
+      meta: { result: outcome.result, force: Boolean(body.data.force) },
+    })
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.disconnect',
+      target: row.id,
+      meta: { result: outcome.result, force: Boolean(body.data.force) },
+    })
+    return typedJson(c, DisconnectOutcomeSchema, outcome)
+  })
+
+  /**
+   * `POST /:id/connection/reconnect` (plan 88 §3.3, §3.8, §4.4, §4.6, §5 step
+   * 88.4, fixes F13, tests H2) — dials this ONE device's last known address.
+   * Reuses `DeviceReconnector.reconnect()` verbatim (steps 88.2/88.8's own
+   * ladder: already-connected → remembered addresses → sweep when
+   * `allowSweep` and a sweeper is wired) — this route adds nothing to the
+   * ladder itself, only the HTTP/audit/event wrapping every other mutation on
+   * this router already has.
+   */
+  app.post('/:id/connection/reconnect', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const body = ConnectionReconnectBody.safeParse(await c.req.json().catch(() => ({})))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { allowSweep?, force? } is required')
+
+    const reconnector = deps.connection?.reconnector()
+    if (!reconnector) {
+      throw new EnkakuError('E_NOT_SUPPORTED', 'device connection control is not available (orchestrator mode, or the adb subsystem is not ready)')
+    }
+
+    const outcome = await reconnector.reconnect(row.stableId, { allowSweep: body.data.allowSweep, force: body.data.force })
+    deps.record?.({
+      deviceId: row.id,
+      stream: 'main',
+      kind: 'device.reconnected',
+      actor: c.get('user')?.id ?? null,
+      meta: { result: outcome.result },
+    })
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.reconnect', target: row.id, meta: { result: outcome.result } })
+    return typedJson(c, ReconnectOutcomeSchema, outcome)
+  })
+
+  /**
+   * `PATCH /:id/connection` (plan 88 §3.1, §4.6, §5 step 88.4) — declares (or
+   * clears, `medium: null`) this device's medium for its CURRENT network
+   * address, for a device whose cutover to Wi-Fi/OTG happened outside
+   * Enkaku (§3.4's wizard, step 88.5, is the guided path; this is the manual
+   * correction). Refuses on a `usb` device: there is no network address to
+   * declare a medium for. A declaration always wins over a network match
+   * (§3.1) — `EndpointStore.declare` records `source: 'declared'` even for
+   * `medium: null`, an explicit "unknown" that a later network match must
+   * not silently overwrite.
+   */
+  app.patch('/:id/connection', requirePermission('device.settings'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    const body = ConnectionPatchBody.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { medium: "wired" | "wireless" | null } is required')
+
+    const conn = deriveConnection(row.serial, [])
+    if (conn.kind !== 'tcp' || !conn.address || conn.port === null) {
+      throw new EnkakuError('E_NOT_ON_NETWORK', `${row.label} is connected over USB — there is no network address to declare a medium for.`)
+    }
+    if (!deps.endpoints) {
+      throw new EnkakuError('E_NOT_SUPPORTED', 'device connection control is not available (orchestrator mode, or the adb subsystem is not ready)')
+    }
+
+    deps.endpoints.declare(row.stableId, row.serial, body.data.medium)
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.medium',
+      target: row.id,
+      meta: { address: row.serial, medium: body.data.medium },
+    })
+
+    // Reflects the just-declared value directly, for the caller's immediate
+    // confirmation. `deriveConnection` itself does not yet read the endpoint
+    // store's declared medium back on every render (`GET /api/devices` and
+    // `GET /:id` derive `connection` from `serial` + farm networks only,
+    // §4.1) — a known, pre-existing gap this step does not close; see this
+    // step's own report.
+    return typedJson(c, DeviceConnectionPatchResponseSchema, { connection: { ...conn, medium: body.data.medium, mediumSource: 'declared' } })
+  })
+
+  /**
+   * `device.quarantine` (plan 09 §4.4, admin-only in `auth/acl.ts`) — the SET
+   * side of quarantine happens automatically (`BatteryMonitor`'s own
+   * thermal policy), but this manual UNSET side had no permission check at
+   * all until this fix: any authenticated operator could clear a
+   * thermal/safety quarantine on a device they may not even own. Audited as
+   * `device.unquarantine`, matching the action name already defined (and
+   * already unused) in `auth/audit.ts`.
+   */
+  app.post('/:id/unquarantine', requirePermission('device.quarantine'), (c) => {
     const row = mustGet(c.req.param('id'))
     const monitor = deps.battery()
     if (!monitor || !monitor.unquarantine(row.id)) {
       throw new EnkakuError('not_quarantined', `device ${row.label} is not quarantined`)
     }
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.unquarantine', target: row.id, meta: { reason: row.quarantineReason } })
     return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
   })
 
@@ -544,9 +861,12 @@ export function createDeviceRoutes(deps: {
    * "Save last N lines" (plan 24 §4.6, §3.6): the Monitor pane is deliberately
    * ephemeral — nothing is persisted while it streams — so this is the one
    * explicit escape hatch, writing a `.log` artifact tied to the device
-   * rather than a job.
+   * rather than a job. `device.settings` (plan 87, mvp-3 Finding 3) — this
+   * route had NO permission check at all until this fix, the same
+   * "everyone has it anyway" gap `PATCH /:id`'s blanket gate closes above;
+   * gated on the same permission its siblings on this router already use.
    */
-  app.post('/:id/monitor/save', async (c) => {
+  app.post('/:id/monitor/save', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
     const body = MonitorSaveBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { kind, lines } (1..5000 lines) is required')

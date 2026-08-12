@@ -35,6 +35,21 @@ export interface DeviceReconciler {
   stop(): void
   /** One pass, now — `POST /api/devices/rescan` and the boot sequence both call this. */
   runOnce(): Promise<ReconcileReport>
+  /**
+   * serial → how many `host:reconnect-offline` nudges have been issued on
+   * its behalf across consecutive cooldown windows, without a recovery in
+   * between (plan 88 §3.9, §4.7 — feeds `reconnect-ineffective`). Absent
+   * (not zero) for a serial never nudged or that has since recovered. A
+   * snapshot copy, never the live map.
+   */
+  nudgeCounts(): Map<string, number>
+  /**
+   * serial → the ms timestamp it was first observed offline this streak —
+   * the same bookkeeping `runOnce`'s own grace-period gate already keeps
+   * (`offlineSince`), read-only from outside (plan 88 §3.9, §4.7). A
+   * snapshot copy, never the live map.
+   */
+  offlineSerials(): Map<string, number>
 }
 
 const EMPTY_REPORT: ReconcileReport = {
@@ -63,6 +78,8 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
   const offlineSince = new Map<string, number>()
   /** serial → the last time a `host:reconnect-offline` was issued on its behalf (plan 85 §3.3 point 5's per-serial cooldown). */
   const lastReconnectAttempt = new Map<string, number>()
+  /** serial → how many nudges issued back-to-back with no recovery in between (plan 88 §3.9, §4.7's `reconnect-ineffective` symptom). Cleared the instant the serial is seen `device` again, same trigger as `offlineSince`. */
+  const nudgeCounts = new Map<string, number>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
 
@@ -83,6 +100,7 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
       seenSerials.add(d.serial)
       if (d.state === 'device') {
         offlineSince.delete(d.serial)
+        nudgeCounts.delete(d.serial)
         if (!known.has(d.serial)) toAdopt.push(d.serial)
         continue
       }
@@ -145,7 +163,10 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
       try {
         await deps.client.reconnectOffline()
         reconnectIssued = true
-        for (const serial of dueForReconnect) lastReconnectAttempt.set(serial, nowMs)
+        for (const serial of dueForReconnect) {
+          lastReconnectAttempt.set(serial, nowMs)
+          nudgeCounts.set(serial, (nudgeCounts.get(serial) ?? 0) + 1)
+        }
         log.warn(
           `host:reconnect-offline issued for ${dueForReconnect.length} device(s) stuck offline past ${cfg.offlineGraceSec}s: ${dueForReconnect.join(', ')}`,
         )
@@ -158,6 +179,7 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
     // long-gone device does not leak memory forever.
     for (const serial of offlineSince.keys()) if (!seenSerials.has(serial)) offlineSince.delete(serial)
     for (const serial of lastReconnectAttempt.keys()) if (!seenSerials.has(serial)) lastReconnectAttempt.delete(serial)
+    for (const serial of nudgeCounts.keys()) if (!seenSerials.has(serial)) nudgeCounts.delete(serial)
 
     return {
       seen: adbList.length,
@@ -202,5 +224,7 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
       }
     },
     runOnce,
+    nudgeCounts: () => new Map(nudgeCounts),
+    offlineSerials: () => new Map(offlineSince),
   }
 }

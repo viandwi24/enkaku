@@ -1,10 +1,15 @@
 import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, devices } from '../db/schema'
+import { batches, devices, jobs, scripts } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
+import { createScriptExecutor } from '../jobs/executors/script'
+import { createDevSlotStore } from '../plugins/dev-slots'
+import { createJobStore } from '../queue/job-store'
+import { createScriptRegistry } from '../scripts/registry'
 import { createBatchRoutes, queryBatchRows, type BatchRoutesDeps } from './batches'
 
 function setUp() {
@@ -154,5 +159,197 @@ describe('requirePermission("job.run") on /api/batches mutations (plan 34 §4.4,
     const app = makeApp(db, null)
     const res = await app.request('/')
     expect(res.status).toBe(200)
+  })
+})
+
+/**
+ * Plan 95 §5 step 95.6's verifiable result: `dispatch.ts:131` already called
+ * `deps.validateScript` before ANY target resolution or row write (F11) —
+ * what was missing was the fallback executor actually enforcing anything.
+ * This exercises the real `POST /api/batches` route with the REAL
+ * `createScriptExecutor` wired as the fallback, exactly as `daemon.ts` wires
+ * it, so the "batches are covered by the same edit" claim is proven through
+ * the HTTP layer, not just at the function-call level.
+ */
+describe('POST /api/batches rejects invalid params before any job or device is touched (plan 95 §5 step 95.6)', () => {
+  function makeAppWithRealValidation(db: Db, role: 'admin' | 'operator' | null) {
+    db.insert(scripts)
+      .values({
+        id: 'checkout-1.0.0',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } }, required: ['videos'] },
+        createdAt: new Date(),
+      })
+      .run()
+    const scriptRegistry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-batches-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const audit = createAuditLogger(db)
+    const registry = new ExecutorRegistry()
+    registry.setFallback(createScriptExecutor({ registry: scriptRegistry, runner: {} as never }))
+    const deps: BatchRoutesDeps = {
+      db,
+      jobStore: { listByBatch: () => [] } as unknown as BatchRoutesDeps['jobStore'],
+      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+      audit,
+      broadcastBatchStatus: () => {},
+      scriptNames: () => new Map(),
+      registry,
+      findScript: (id) => (id === 'checkout-1.0.0' ? { enabled: true } : null),
+    }
+    return withUser(role, createBatchRoutes(deps))
+  }
+
+  test('{ videos: 9999 } is refused with 400 invalid_job_params, naming the field, with no batch or job row created and no device touched', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd2', stableId: 'stable-d2', serial: 'serial-d2', label: 'd2', status: 'idle' }).run()
+    const app = makeAppWithRealValidation(db, 'operator')
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scriptId: 'checkout-1.0.0', params: { videos: 9999 }, target: { deviceIds: ['d1', 'd2'] } }),
+    })
+
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; issues?: { path: string; message: string }[] } }
+    expect(body.error.code).toBe('invalid_job_params')
+    expect(body.error.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+    expect(db.select().from(batches).all().length).toBe(0)
+    expect(db.select().from(jobs).all().length).toBe(0)
+    expect(db.select().from(devices).all().every((d) => d.status === 'idle')).toBe(true)
+  })
+
+  test('a params value inside every bound creates the batch normally', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    const app = makeAppWithRealValidation(db, 'operator')
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scriptId: 'checkout-1.0.0', params: { videos: 30 }, target: { deviceIds: ['d1'] } }),
+    })
+
+    expect(res.status).toBe(201)
+    expect(db.select().from(jobs).all().length).toBe(1)
+  })
+})
+
+/**
+ * Plan 95 §4.4, §5 step 95.7 — rerun-failed reconciles the ORIGINAL batch's
+ * stored `params` against its script's CURRENT schema before re-enqueuing.
+ * `row.scriptId` is a concrete, immutable version (plan 62 §3.3) so its own
+ * schema cannot itself drift — in real use the trigger is a dev-slot
+ * script's schema redefined under the SAME stable id between the batch's
+ * first run and the rerun (plan 82 §3.3). These tests seed the incompatible
+ * state directly, which exercises the handler's own reconciliation logic
+ * without needing the full dev-slot machinery.
+ */
+describe('POST /:id/rerun-failed reconciles params before re-enqueuing (plan 95 §4.4, §5 step 95.7)', () => {
+  function makeAppWithReconciliation(db: Db, role: 'admin' | 'operator' | null) {
+    const scriptRegistry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-batches-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const audit = createAuditLogger(db)
+    const registry = new ExecutorRegistry()
+    registry.setFallback(createScriptExecutor({ registry: scriptRegistry, runner: {} as never }))
+    const deps: BatchRoutesDeps = {
+      db,
+      jobStore: createJobStore(db),
+      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+      audit,
+      broadcastBatchStatus: () => {},
+      scriptNames: () => new Map(),
+      registry,
+      findScript: (id) => (db.select().from(scripts).where(eq(scripts.id, id)).get() ? { enabled: true } : null),
+      scriptRegistry,
+    }
+    return withUser(role, createBatchRoutes(deps))
+  }
+
+  function seedFailedBatch(db: Db, params: unknown) {
+    db.insert(batches).values({ id: 'b1', scriptId: 'checkout-1.0.0', params, concurrency: 0, order: 'as-listed', status: 'error', createdAt: new Date() }).run()
+    db.insert(jobs)
+      .values({ id: 'j1', scriptId: 'checkout-1.0.0', deviceId: 'd1', params, priority: 0, status: 'failed', createdAt: new Date(), batchId: 'b1', batchSeq: 0 })
+      .run()
+  }
+
+  test('a blocking finding (missing, no default) refuses the rerun with 409 params_incompatible naming the field, enqueueing nothing', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    db.insert(scripts)
+      .values({
+        id: 'checkout-1.0.0',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { region: { type: 'string' } }, required: ['region'] },
+      })
+      .run()
+    seedFailedBatch(db, {}) // region is required by the (same, concrete) schema and was never set
+    const app = makeAppWithReconciliation(db, 'operator')
+
+    const res = await app.request('/b1/rerun-failed', { method: 'POST' })
+
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string; issues?: { path: string; message: string }[] } }
+    expect(body.error.code).toBe('params_incompatible')
+    expect(body.error.issues?.[0]?.path).toBe('region')
+    // Only the ORIGINAL batch/job exist — nothing new was enqueued.
+    expect(db.select().from(batches).all()).toHaveLength(1)
+    expect(db.select().from(jobs).all()).toHaveLength(1)
+  })
+
+  test('a non-blocking finding (tightened bound, has a default) reruns using the RECONCILED value, not the stale stored one', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    db.insert(scripts)
+      .values({
+        id: 'checkout-1.0.0',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000, default: 30 } } },
+      })
+      .run()
+    seedFailedBatch(db, { videos: 9999 }) // valid when the batch first ran, no longer valid — but there IS a default
+    const app = makeAppWithReconciliation(db, 'operator')
+
+    const res = await app.request('/b1/rerun-failed', { method: 'POST' })
+
+    expect(res.status).toBe(201)
+    const rerunBatchId = ((await res.json()) as { batch: { id: string } }).batch.id
+    const rerunJobs = db.select().from(jobs).where(eq(jobs.batchId, rerunBatchId)).all()
+    expect(rerunJobs[0]?.params).toEqual({ videos: 30 })
+  })
+
+  test('an unchanged schema (the ordinary case — no drift at all) reruns the params verbatim', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
+    db.insert(scripts)
+      .values({
+        id: 'checkout-1.0.0',
+        name: 'checkout',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } } },
+      })
+      .run()
+    seedFailedBatch(db, { videos: 30 })
+    const app = makeAppWithReconciliation(db, 'operator')
+
+    const res = await app.request('/b1/rerun-failed', { method: 'POST' })
+
+    expect(res.status).toBe(201)
+    const rerunBatchId = ((await res.json()) as { batch: { id: string } }).batch.id
+    const rerunJobs = db.select().from(jobs).where(eq(jobs.batchId, rerunBatchId)).all()
+    expect(rerunJobs[0]?.params).toEqual({ videos: 30 })
   })
 })

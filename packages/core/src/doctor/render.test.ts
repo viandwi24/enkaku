@@ -49,6 +49,20 @@ function unhappyContext(): DoctorContext {
       countAdbProcesses: async () => 5,
       probeCoreStats: async () => ({ running: 0, maxConcurrent: 4, installsRunning: 0, longLived: 0 }),
     },
+    adbHealth: {
+      probe: async () => ({
+        status: 'stuck',
+        versionRttMs: null,
+        lastCheckedAt: 1_000,
+        window: { seconds: 600, execs: 40, timeouts: 25, timeoutRate: 0.625 },
+        wedged: [],
+        stuckOffline: [],
+        symptoms: [
+          { symptom: 'server-unresponsive', detail: 'host:version has not answered within 2000ms across 2 consecutive probes', since: 900 },
+        ],
+        restartAdvised: true,
+      }),
+    },
   })
 }
 
@@ -145,6 +159,7 @@ describe('doctor package — never runs adb kill-server (repo rule, plan 41 §6.
     'checks/core.ts',
     'checks/streams.ts',
     'checks/host-adb.ts',
+    'checks/adb-health.ts',
   ]
 
   test('the literal string "kill-server" appears nowhere in the doctor package\'s implementation', () => {

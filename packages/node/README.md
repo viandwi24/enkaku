@@ -30,7 +30,7 @@ ENKAKU_DATA_DIR=/var/lib/enkaku-node \
 bun run packages/node/src/index.ts
 ```
 
-The token is needed only once: the result (a `nodeId` plus a long-lived credential) is stored in `<data-dir>/node.json`. After that the node runs without a token. A `node.json` upgraded from a pre-plan-61 build adopts the existing `<data-dir>/agent.json` on first start and rewrites it — it does not re-enroll (plan 61 §3.3).
+The token is needed only once: the result (a `nodeId` plus a long-lived credential) is stored in `<data-dir>/node.json`. After that the node runs without a token. (Plan 61's one-release `agent.json` adoption was removed per the dated follow-up in `docs/plans/00-overview.md` §9 — a data directory that never saw a post-plan-61 node during that window now needs `ENKAKU_ENROLL_TOKEN` again.)
 
 ## Why video needs WebRTC in the cloud
 

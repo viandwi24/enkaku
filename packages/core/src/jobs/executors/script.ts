@@ -1,16 +1,40 @@
 import type { JobRunner } from '@enkaku/session'
+import { validateParams as validateAgainstSchema } from '@enkaku/protocol'
 import type { JobRow } from '../../db/schema'
 import { findShadowedPublished, type ScriptRegistry } from '../../scripts/registry'
 import { EnkakuError } from '../../util/errors'
 import type { ExecutorContext, JobExecutor } from '../executor'
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * `ScriptEntry.paramsSchema` is `unknown` (it crosses the DB boundary as a
+ * raw JSON column — F7) — narrows it to the loose `{[key: string]: unknown}`
+ * shape `validateParams` expects, with a type guard rather than a cast. Not
+ * `null`/an array/a primitive → `undefined`, which `validateParams` already
+ * treats as "no schema, nothing to violate".
+ */
+function asSchemaNode(value: unknown): Record<string, unknown> | undefined {
+  return isPlainObject(value) ? value : undefined
+}
 
 /**
  * The real script executor (M4): delegates to JobRunner (a child
  * process plus IPC). It replaces the `internal:sleep` dummy as the main path;
  * dummy executor stays registered for exercising the queue without a device.
  *
- * Authoritative param validation happens IN THE CHILD (`def.params.parse` from
- * the bundle) — here the params are just passed straight through.
+ * Authoritative STRUCTURAL param validation now happens HERE too, at enqueue
+ * (plan 95 §3.7, §5 step 95.6, fixes F10) — against the SAME published
+ * `paramsSchema` the run form reads, through the one shared validator in
+ * `@enkaku/protocol`. The child still parses with the real, live Zod schema
+ * (`def.params.parse`) and is still the only place a `.refine()`/
+ * `.superRefine()` constraint is enforced (§3.6) — but every representable
+ * constraint (types, bounds, enums, required, ordered ranges) now fails
+ * BEFORE a device is leased instead of after, because `validateScriptForRun`
+ * (`jobs/validate-script.ts`) calls this before the job row is written and
+ * `createBatch` (`clusters/dispatch.ts`) calls it before resolving targets.
  *
  * Plan 82 §3.3: reads the script through the `ScriptRegistry` rather than the
  * `scripts` table directly — `job.scriptId` can be a persisted row's id
@@ -23,7 +47,18 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  */
 export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: JobRunner }): JobExecutor {
   return {
-    validateParams(params) {
+    validateParams(params, scriptId) {
+      const entry = deps.registry.get(scriptId)
+      if (!entry) throw new EnkakuError('unknown_script', `no such script: ${scriptId}`)
+      const result = validateAgainstSchema(asSchemaNode(entry.paramsSchema), params)
+      if (!result.ok) {
+        throw new EnkakuError(
+          'invalid_job_params',
+          result.issues.map((i) => `${i.path}: ${i.message}`).join('; '),
+          undefined,
+          result.issues,
+        )
+      }
       return params ?? {}
     },
 

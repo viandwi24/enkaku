@@ -13,7 +13,17 @@ export class AdbInput implements InputSink {
 
   constructor(private transport: Transport) {}
 
-  async tap(p: Point): Promise<void> {
+  /**
+   * `opts.holdMs` (spec §9.3, §17 — tap-hold jitter for test realism) cannot
+   * be honoured here: `input tap` sends its DOWN and UP back-to-back with no
+   * duration argument at all, which is exactly the "rigid timing" already
+   * called out in this class's docstring above. Unlike `gesture()`, `tap()`
+   * is not optional on `InputSink`, so it cannot simply be left absent the
+   * way this engine already leaves `gesture()` absent (§3.6) to signal
+   * "unsupported" rather than fake it — accepting the option and silently
+   * not applying it is the closest honest equivalent for a required method.
+   */
+  async tap(p: Point, _opts?: { holdMs?: [number, number]; rng?: () => number }): Promise<void> {
     await this.transport.exec(`input tap ${Math.round(p.x)} ${Math.round(p.y)}`, { profile: 'input' })
   }
 

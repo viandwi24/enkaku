@@ -164,10 +164,12 @@ describe('db check', () => {
     expect(result.status).toBe('ok')
   })
 
-  test('fails with a remedy on a corrupt database', async () => {
+  test('fails with a remedy on a corrupt database, pointing at the real backup command', async () => {
     const result = await dbCheck.run(fakeDoctorContext({ db: { inspect: async () => ({ state: 'corrupt', detail: 'malformed' }) } }))
     expect(result.status).toBe('fail')
-    expect(result.remedy).toBeDefined()
+    // `enkaku backup` exists (packages/core/src/backup/) — the remedy must not
+    // point an operator at a backup mechanism the product never gave them.
+    expect(result.remedy).toContain('enkaku backup')
   })
 
   test('warns with a remedy on pending migrations', async () => {

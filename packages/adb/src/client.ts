@@ -115,23 +115,43 @@ export class StreamLane {
 }
 
 /**
- * `host:devices-l`'s response body (plan 85 §3.3, §4.3). Unlike
- * `host:track-devices` (tab-separated, `tracker.ts`'s `parseSnapshot`), adb's
- * long-listing format left-pads the serial to a fixed column width with
- * plain spaces and then appends unstructured `key:value` fields
- * (product/model/device/transport_id) after the state — so this splits on
- * ANY whitespace run rather than assuming a tab, and simply ignores
- * everything past the second column. A zero-length block (no devices at
- * all) parses to `[]`.
+ * `host:devices-l`'s response body (plan 85 §3.3, §4.3; plan 88 §3.1, fixes
+ * F6). Unlike `host:track-devices` (tab-separated, `tracker.ts`'s
+ * `parseSnapshot`), adb's long-listing format left-pads the serial to a
+ * fixed column width with plain spaces and then appends unstructured
+ * `key:value` fields (product/model/device/transport_id, and — USB only —
+ * usb) after the state — so this splits on ANY whitespace run rather than
+ * assuming a tab. `product`/`model`/`device` are still ignored (nothing
+ * reads them); `usb` and `transport_id` are now kept, because `usb:` is
+ * adb's own signal that a transport is USB rather than TCP — the exact
+ * field this function used to throw away. Verified against a real
+ * `adb devices -l` line (plan 88 §5 step 88.1's H6 spike):
+ * `ZP2222RMBS   device usb:3-1.4.3 product:lagos_gpn model:moto_g06_power
+ * device:lagos transport_id:10` — confirming the field order and that a
+ * USB line always carries `usb:`. A zero-length block (no devices at all)
+ * parses to `[]`.
  */
 function parseDevicesLongBlock(raw: string): TrackedDevice[] {
   const out: TrackedDevice[] = []
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
-    const [serial, state] = trimmed.split(/\s+/)
+    const [serial, state, ...fields] = trimmed.split(/\s+/)
     if (!serial || !state) continue
-    out.push({ serial, state })
+    const device: TrackedDevice = { serial, state }
+    for (const field of fields) {
+      const colon = field.indexOf(':')
+      if (colon < 0) continue
+      const key = field.slice(0, colon)
+      const value = field.slice(colon + 1)
+      if (!value) continue
+      if (key === 'usb') device.usb = value
+      else if (key === 'transport_id') {
+        const transportId = Number(value)
+        if (Number.isFinite(transportId)) device.transportId = transportId
+      }
+    }
+    out.push(device)
   }
   return out
 }

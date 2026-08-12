@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { CalendarClock, Plus } from 'lucide-react'
+import { CalendarClock, Plus, TriangleAlert } from 'lucide-react'
 import { z } from 'zod'
 import {
   BatchInfoSchema,
@@ -19,6 +19,7 @@ import { PaginatedTable, type PaginatedTableHandle } from '@/components/Paginate
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { TableCell, TableHead } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
@@ -154,9 +155,33 @@ export default function SchedulesPage() {
             return (
               <>
                 <TableCell>
-                  <Link href={`/schedules/detail?id=${s.id}`} className="font-medium hover:text-accent">
-                    {s.name}
-                  </Link>
+                  <div className="flex items-center gap-1.5">
+                    <Link href={`/schedules/detail?id=${s.id}`} className="font-medium hover:text-accent">
+                      {s.name}
+                    </Link>
+                    {/* Plan 95 §4.4, §4.8 — computed fresh on every load against
+                        what `scriptRef` resolves to RIGHT NOW: visible the
+                        moment an incompatible version is published, never only
+                        after the first missed firing. */}
+                    {!s.paramsCompatible && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            tabIndex={0}
+                            className="flex cursor-help items-center gap-1 rounded-full border border-led-danger/35 bg-led-danger/10 px-2 py-0.5 text-[11px] text-led-danger"
+                          >
+                            <TriangleAlert className="size-3" aria-hidden />
+                            {s.paramsFindingCount}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs">
+                          {s.paramsFindingCount} stored parameter{s.paramsFindingCount === 1 ? '' : 's'} no longer{' '}
+                          {s.paramsFindingCount === 1 ? 'satisfies' : 'satisfy'} this script&apos;s current schema — the next firing will enqueue nothing.
+                          Edit the schedule to see and fix them.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
                 </TableCell>
                 {/* A script target shows the raw reference, verbatim (plan 62
                     §4.6) — self-documenting ("checkout@latest" vs

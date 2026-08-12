@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import type { AdbClient } from '@enkaku/adb'
+import type { AdbClient, TrackedDevice } from '@enkaku/adb'
 import type { Inspector, UiNode } from '@enkaku/protocol'
+import { FARM_TAG_PROPERTY } from './farm-tag'
 import { createSession, type CreateSessionDeps } from './session'
 import type { Logger } from './logger'
 
@@ -78,5 +79,112 @@ describe('DeviceSession.releaseInspector (plan 56 §4.3, §5.3)', () => {
     )
     await expect(session.releaseInspector()).resolves.toBeUndefined()
     await session.close()
+  })
+})
+
+/**
+ * Farm-traffic marker wiring end to end (spec §9.4/§17, plan 87 §4.12, §5
+ * step 87.13) — `farm-tag.test.ts` covers `applyFarmTag` itself in
+ * isolation; this proves `createSession` actually calls it with the right
+ * default, the same way `applyRotation`'s call site is trusted rather than
+ * separately re-tested here.
+ */
+describe('createSession — farm-traffic marker (spec §9.4/§17, plan 87 §4.12, §5 step 87.13)', () => {
+  /** Records every shell command reaching `AdbClient.exec`, keyed off the raw command string. */
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  test('tagTraffic omitted defaults to on ("on by default" — spec §17): the marker is set at session start and cleared at close', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession({ deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' }, { client, log: silentLog() })
+    expect(calls).toContain(`setprop ${FARM_TAG_PROPERTY} 1`)
+    await session.close()
+    expect(calls).toContain(`setprop ${FARM_TAG_PROPERTY} ''`)
+  })
+
+  test('tagTraffic: false never writes the marker, at start or close', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', tagTraffic: false },
+      { client, log: silentLog() },
+    )
+    expect(calls.some((c) => c.includes(FARM_TAG_PROPERTY))).toBe(false)
+    await session.close()
+    expect(calls.some((c) => c.includes(FARM_TAG_PROPERTY))).toBe(false)
+  })
+
+  test('close() is safe to call twice — the revert it issues is idempotent, same contract as rotation', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession({ deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' }, { client, log: silentLog() })
+    await session.close()
+    const clearsAfterFirstClose = calls.filter((c) => c === `setprop ${FARM_TAG_PROPERTY} ''`).length
+    await session.close()
+    const clearsAfterSecondClose = calls.filter((c) => c === `setprop ${FARM_TAG_PROPERTY} ''`).length
+    expect(clearsAfterFirstClose).toBe(1)
+    expect(clearsAfterSecondClose).toBe(2)
+  })
+})
+
+/**
+ * The H6 reproduction, the half provable without the owner's phone (plan 88
+ * §5 step 88.1): F12 was confirmed by reading `DeviceSession.close()` — it
+ * called `transport.disconnect()`, which for `adb-tcp` issued
+ * `host:disconnect` and dropped the device from adb entirely, not just the
+ * session. This proves the fix with a fake `adb-tcp` transport end to end
+ * through the real `createSession`/`close()` path: closing a session must
+ * never disconnect the device from adb.
+ */
+describe('DeviceSession.close() on an adb-tcp device (plan 88 §3.7, fixes F12/H6)', () => {
+  /** `listDevices` answers from `snapshot`; every disconnectDevice/connectDevice call is recorded. */
+  function fakeTcpClient(snapshot: TrackedDevice[]) {
+    const disconnectCalls: string[] = []
+    const connectCalls: string[] = []
+    const client = {
+      exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      execOut: async () => new Uint8Array(),
+      listDevices: async () => snapshot,
+      connectDevice: async (hostPort: string) => {
+        connectCalls.push(hostPort)
+        return 'connected'
+      },
+      disconnectDevice: async (hostPort: string) => {
+        disconnectCalls.push(hostPort)
+        return 'disconnected'
+      },
+    } as unknown as AdbClient
+    return { client, disconnectCalls, connectCalls }
+  }
+
+  test('closing the session leaves the device connected in adb devices — no host:disconnect is ever issued', async () => {
+    const { client, disconnectCalls, connectCalls } = fakeTcpClient([{ serial: '10.20.0.37:5555', state: 'device' }])
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: '10.20.0.37:5555', stableId: 'STABLE1', transport: 'adb-tcp' },
+      { client, log: silentLog() },
+    )
+
+    await session.close()
+
+    expect(disconnectCalls).toEqual([]) // the fix: no host:disconnect on close
+    expect(connectCalls).toEqual([]) // already `device` at session start, so connect() was a no-op too
+  })
+
+  test('closing twice still never disconnects — the no-op is as idempotent as the rest of close()', async () => {
+    const { client, disconnectCalls } = fakeTcpClient([{ serial: '10.20.0.37:5555', state: 'device' }])
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: '10.20.0.37:5555', stableId: 'STABLE1', transport: 'adb-tcp' },
+      { client, log: silentLog() },
+    )
+    await session.close()
+    await session.close()
+    expect(disconnectCalls).toEqual([])
   })
 })

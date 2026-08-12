@@ -83,3 +83,75 @@ describe('createDbDeviceSource — identity projection (plan 58 §4.2, §5.2)', 
     expect(snapshot?.identity).toEqual({})
   })
 })
+
+/**
+ * Plan 87 §4.12, §5 step 87.13 — the same read seam as `identity` above:
+ * `DeviceSnapshot.tagTraffic` must be projected from
+ * `devices.settings.instrumentation.tagTraffic`, or "on by default" (spec
+ * §17) would only be true inside the Zod schema and never reach a real
+ * session.
+ */
+describe('createDbDeviceSource — farm-tag projection (spec §9.4/§17, plan 87 §4.12, §5 step 87.13)', () => {
+  test('a device with no settings at all still gets tagTraffic: true (the documented default), never undefined or a throw', () => {
+    const { db } = openDb(':memory:')
+    runMigrations(db)
+    db.insert(devices)
+      .values({
+        id: 'dev-4',
+        stableId: 'stable-dev-4',
+        serial: 'serial-dev-4',
+        label: 'Bare Phone',
+        status: 'idle',
+      })
+      .run()
+
+    const source = createDbDeviceSource(db)
+    const snapshot = source.get('dev-4')
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.tagTraffic).toBe(true)
+  })
+
+  test('an operator who turned tagging off has that honoured, not silently forced back on', () => {
+    const { db } = openDb(':memory:')
+    runMigrations(db)
+    db.insert(devices)
+      .values({
+        id: 'dev-5',
+        stableId: 'stable-dev-5',
+        serial: 'serial-dev-5',
+        label: 'Opted-out Phone',
+        status: 'idle',
+        settings: { instrumentation: { tagTraffic: false } },
+      })
+      .run()
+
+    const source = createDbDeviceSource(db)
+    const snapshot = source.get('dev-5')
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.tagTraffic).toBe(false)
+  })
+
+  test('a legacy row whose settings blob has no instrumentation block still yields tagTraffic: true, never a throw', () => {
+    const { db } = openDb(':memory:')
+    runMigrations(db)
+    db.insert(devices)
+      .values({
+        id: 'dev-6',
+        stableId: 'stable-dev-6',
+        serial: 'serial-dev-6',
+        label: 'Legacy Phone',
+        status: 'idle',
+        // A settings blob written before this plan — no `instrumentation` key at all.
+        settings: { autoReconnect: true },
+      })
+      .run()
+
+    const source = createDbDeviceSource(db)
+    const snapshot = source.get('dev-6')
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.tagTraffic).toBe(true)
+  })
+})

@@ -20,5 +20,5 @@ export function validateScriptForRun(
   }
   const executor = deps.registry.get(scriptId)
   if (!executor) throw new EnkakuError('unknown_script', `unknown script: ${scriptId}`)
-  return executor.validateParams(params)
+  return executor.validateParams(params, scriptId)
 }

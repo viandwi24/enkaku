@@ -12,6 +12,17 @@ export type Permission =
   | 'device.enroll'
   | 'device.quarantine'
   /**
+   * Assign or clear a device's `ownerId` (plan 09 §4.4 named this
+   * `device.owner.set`; it was never carried into the matrix below until
+   * now). Ownership is what `canUseDevice` bases every other per-device
+   * gate on — lease acquisition, job enqueue, the adb endpoint — so letting
+   * any operator reassign it would let them grant themselves, or take away
+   * from someone else, exactly the access those gates exist to restrict.
+   * Admin-only, the same default as `device.shell`/`device.adb`/
+   * `device.files`/`kv.manage` here.
+   */
+  | 'device.owner.set'
+  /**
    * Free-form shell commands on a device (plan 26 §3.2, §4.1) — genuine
    * remote code execution, so unlike everything else here it is admin-only
    * in the STATIC matrix below. `canUseShell` is the actual gate the WS
@@ -129,6 +140,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'device.settings',
   'device.enroll',
   'device.quarantine',
+  'device.owner.set',
   'device.shell',
   'device.adb',
   'device.files',
@@ -214,4 +226,29 @@ export function canUseFiles(role: Role, mode: ShellMode): boolean {
 export function canUseDevice(user: { id: string; role: Role }, device: { ownerId: string | null }): boolean {
   if (user.role === 'admin') return true
   return device.ownerId === null || device.ownerId === user.id
+}
+
+/**
+ * The gate for `job.cancel` on the two interactive paths (`POST
+ * /api/jobs/:id/cancel`, the WS `job.cancel` message) — the agent/MCP-facing
+ * capability (plan 63 §4.3, `capability/job.ts`) requires `job.cancel.any`
+ * outright, no exception. These two paths give an operator a narrower one:
+ * cancelling a job on a device they are themselves allowed to use
+ * (`canUseDevice`) is ordinary operator work — the SAME ownership boundary
+ * `job.run` already enforces at enqueue time (`services/job-service.ts`'s
+ * `enqueue`). Cancelling a job on a device someone else owns is the
+ * admin-shaped action the `.any` suffix names.
+ *
+ * There is no `job.cancel.own` permission in this ACL. Plan 09 §4.4 named
+ * one, but it was never carried into the matrix above, and a job has no
+ * per-user owner of its own — the `jobs` table has no `createdBy` column.
+ * So "own" here is defined exactly the way every other per-resource check in
+ * this file defines it: through the DEVICE's `ownerId`, not a separate grant.
+ * `device: null` (the device row could not be found — a deleted device, or a
+ * caller with no ownership data wired) is permissive, the same default
+ * `canUseDevice`'s other call sites use when a device lookup comes back empty.
+ */
+export function canCancelJob(actor: { id: string; role: Role }, device: { ownerId: string | null } | null): boolean {
+  if (can(actor.role, 'job.cancel.any')) return true
+  return device === null || canUseDevice(actor, device)
 }

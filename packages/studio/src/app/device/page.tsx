@@ -9,6 +9,7 @@ import {
   DeviceViewersResponseSchema,
   JobsPageResponseSchema,
   PluginDevSlotsResponseSchema,
+  ScriptListItemSchema,
   SettingsResponseSchema,
   type BatteryState,
   type DeviceStatus,
@@ -189,8 +190,12 @@ function DeviceDetail() {
         setTransferEnabled(b.settings.transfer.enabled)
       })
       .catch(() => undefined)
-    void fetchAllPages<ScriptRow>('/api/scripts')
-      .then((scripts) => setScripts(scripts.filter((x) => x.enabled)))
+    // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8): a
+    // `paramsSchema` here is author-controlled input (F7) — this used to
+    // reach the page through a bare `as` cast with nothing checking its
+    // shape at all.
+    void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
+      .then((scripts) => setScripts((scripts as ScriptRow[]).filter((x) => x.enabled)))
       .catch(() => setScripts([]))
     // Dev-slot scripts (plan 82 §3.5) are never rows in `/api/scripts` —
     // that is the whole point of a dev slot not surviving a restart — so
@@ -265,7 +270,9 @@ function DeviceDetail() {
               ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
               : msg.payload.reason === 'taken-over'
                 ? `${msg.payload.takenBy ?? 'Someone else'} took control from you.`
-                : `Control was released automatically (${msg.payload.reason}).`,
+                : msg.payload.reason === 'adb-server-restart'
+                  ? 'Control was released — the adb server just restarted. Take it again once the device reconnects.'
+                  : `Control was released automatically (${msg.payload.reason}).`,
           )
         }
       }

@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { z } from 'zod'
+import { checkParamsSchema, type SchemaCheckFinding } from '@enkaku/protocol'
 import { isPlugin } from '../plugin'
 
 export interface PublishOptions {
@@ -48,6 +49,94 @@ function authHeaders(token: string | undefined): Record<string, string> {
 }
 
 /**
+ * Zod v4 internals, read defensively (never a type import — `_zod` is not
+ * part of the public API and this is advisory diagnostics, not a contract).
+ * `.refine()`/`.superRefine()` both compile down to one check kind
+ * (`check: 'custom'`) on `def.checks`, distinct from a `.min()`/`.max()`/
+ * `.regex()` check (`'greater_than'`, `'less_than'`, ...) — *(measured)*
+ * against this workspace's installed Zod, the same way plan 95 §0's other
+ * findings were.
+ */
+interface ZodInternal {
+  _zod?: { def?: Record<string, unknown> }
+}
+
+function hasCustomCheck(schema: unknown): boolean {
+  const checks = (schema as ZodInternal)?._zod?.def?.checks
+  if (!Array.isArray(checks)) return false
+  return checks.some((check) => (check as ZodInternal)?._zod?.def?.check === 'custom')
+}
+
+/**
+ * Walks the LIVE Zod schema tree — never the JSON Schema output, which
+ * silently drops `.refine()`/`.superRefine()` with no `unrepresentable`
+ * signal at all (plan 95 §3.6) — collecting one path per refinement found.
+ * `'(top level)'` for a refine on the object itself
+ * (`z.object({...}).refine(...)`, plan 94 §4.9's `intervalMs` shape). Bounded
+ * by depth and never follows `z.lazy()` — this is publish-time author
+ * guidance, not a safety boundary that must handle a hostile schema.
+ */
+function findRefinementPaths(schema: unknown, path = '', depth = 0, out: string[] = []): string[] {
+  if (depth > 20 || schema === null || typeof schema !== 'object') return out
+  const def = (schema as ZodInternal)._zod?.def
+  if (!def) return out
+
+  if (hasCustomCheck(schema)) out.push(path || '(top level)')
+
+  const shape = def.shape
+  if (shape !== null && typeof shape === 'object') {
+    for (const [key, child] of Object.entries(shape as Record<string, unknown>)) {
+      findRefinementPaths(child, path ? `${path}.${key}` : key, depth + 1, out)
+    }
+  }
+  if (def.innerType !== undefined) findRefinementPaths(def.innerType, path, depth + 1, out)
+  if (def.element !== undefined) findRefinementPaths(def.element, path ? `${path}[]` : '[]', depth + 1, out)
+  if (def.valueType !== undefined) findRefinementPaths(def.valueType, path ? `${path}[]` : '[]', depth + 1, out)
+  if (Array.isArray(def.items)) def.items.forEach((item, i) => findRefinementPaths(item, path ? `${path}[${i}]` : `[${i}]`, depth + 1, out))
+  if (Array.isArray(def.options)) def.options.forEach((opt) => findRefinementPaths(opt, path, depth + 1, out))
+  return out
+}
+
+/**
+ * Prints the warning §3.6 specifies — this is the difference between a
+ * limitation and a trap: `.refine()`/`.superRefine()` are enforced by the
+ * child (the real Zod schema) but invisible to the run form and to
+ * `validateParams` (`@enkaku/protocol/params/validate.ts`), so an operator
+ * who satisfies every field the FORM checks can still watch the job die on
+ * one it could not. No-op when there is nothing to warn about.
+ */
+function warnAboutRefinements(params: unknown): void {
+  const paths = findRefinementPaths(params)
+  if (paths.length === 0) return
+  console.log(
+    `warning: params carries ${paths.length} refinement${paths.length === 1 ? '' : 's'} that the run form cannot evaluate (${paths.join(', ')}). Operators will see it as a job failure, not a form error. Consider an ordered range, showWhen, or a per-field bound.`,
+  )
+}
+
+/**
+ * Publish path 3 of 3 (plan 95 §4.9, §5 step 95.5) — the SAME
+ * `checkParamsSchema` gate `POST /api/scripts` and the plugin verify child
+ * run, but LOCALLY: the author sees a refused publish in their own
+ * terminal, before any network call, rather than only a 400 weeks later. A
+ * `'group'` finding is the non-consecutive-group WARNING (plan 95 §3.5,
+ * "warns... so the author can reorder or accept it") — printed, publish
+ * continues; every other finding refuses the publish outright (no request
+ * is ever sent).
+ */
+function checkAndReportParamsSchema(paramsSchema: unknown): void {
+  const findings = checkParamsSchema(paramsSchema)
+  const warnings = findings.filter((f) => f.limit === 'group')
+  const blocking = findings.filter((f) => f.limit !== 'group')
+  for (const w of warnings) {
+    console.log(`warning: ${w.path || '(root)'}: ${w.message}`)
+  }
+  if (blocking.length > 0) {
+    const lines = blocking.map((f) => `  ${f.path || '(root)'}: ${f.message}`).join('\n')
+    throw new Error(`params schema violates the published limits (plan 95 §3.8) — nothing was published:\n${lines}`)
+  }
+}
+
+/**
  * `enkaku publish <entry.ts>` (spec §11.4): bundles the entry and its deps
  * into one file. The farm only accepts finished bundles, which makes
  * dependencies deterministic and means the runner installs nothing.
@@ -86,8 +175,19 @@ async function publishScript(built: BuiltEntry, opts: PublishOptions): Promise<v
   if (!params || typeof params.safeParse !== 'function') {
     throw new Error('`params` must be a Zod schema')
   }
+  // Checked LOCALLY, before the network call (plan 95 §4.9), so the author
+  // sees it in their own terminal rather than only in a run dialog weeks
+  // later.
+  warnAboutRefinements(params)
   // Zod → JSON Schema (Studio uses it to generate the parameter form).
-  const paramsSchema = z.toJSONSchema(params)
+  // `io: 'input'` (plan 95 §3.2, §4.9, fixes F2): a params schema describes
+  // what a person TYPES. The default `io: 'output'` puts every `.default()`
+  // field into `required`, which is why every defaulted parameter used to be
+  // published as mandatory — the root of F16's shipped bug.
+  const paramsSchema = z.toJSONSchema(params, { io: 'input' })
+  // Checked LOCALLY too, before the network call (plan 95 §4.9) — see
+  // `checkAndReportParamsSchema`'s own doc comment.
+  checkAndReportParamsSchema(paramsSchema)
 
   const res = await fetch(`${opts.farmUrl.replace(/\/$/, '')}/api/scripts`, {
     method: 'POST',

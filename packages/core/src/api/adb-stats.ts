@@ -17,6 +17,7 @@ const ERROR_STATUS: Record<string, number> = { 'auth.forbidden': 403 }
 type AdbStatsResponse = z.infer<typeof AdbStatsResponseSchema>
 type TransportStats = AdbStatsResponse['transport']
 type HostAdbStats = AdbStatsResponse['hostAdb']
+type AdbHealthStats = AdbStatsResponse['adbHealth']
 
 /** Zero-filled defaults (plan 85 §4.6) — reported before the WS router (`transport`) or `host-adb.ts` (`hostAdb`) exist, e.g. the brief window before `attachWsRouter` runs. */
 const ZERO_TRANSPORT: TransportStats = {
@@ -29,6 +30,17 @@ const ZERO_TRANSPORT: TransportStats = {
   watchdogReconnects: 0,
 }
 const ZERO_HOST_ADB: HostAdbStats = { running: 0, maxConcurrent: 0, installsRunning: 0, longLived: 0 }
+/** Same zero-fill contract (plan 88 §3.9, §4.7) — reported before the health monitor exists, e.g. the brief window before `daemon.ts` constructs it once adb is up. `status: 'ok'` is deliberate: a monitor that has never run is not KNOWN to be unhealthy. */
+const ZERO_ADB_HEALTH: AdbHealthStats = {
+  status: 'ok',
+  versionRttMs: null,
+  lastCheckedAt: 0,
+  window: { seconds: 0, execs: 0, timeouts: 0, timeoutRate: 0 },
+  wedged: [],
+  stuckOffline: [],
+  symptoms: [],
+  restartAdvised: false,
+}
 
 /**
  * `GET /api/adb/stats` (plan 23 §4.6, permission `device.view`) — the global
@@ -55,6 +67,8 @@ export function createAdbStatsRoutes(deps: {
   transport?: () => TransportStats | null
   /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()` (plan 85 §3.4, §4.6) — same optional/zero-default contract as `transport` above. */
   hostAdb?: () => HostAdbStats | null
+  /** `packages/core/src/device/adb-health.ts`'s `AdbServerHealthMonitor.current()` (plan 88 §3.9, §4.7) — same optional/zero-default contract as `transport`/`hostAdb` above. */
+  adbHealth?: () => AdbHealthStats | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -104,6 +118,7 @@ export function createAdbStatsRoutes(deps: {
       }),
       transport: deps.transport?.() ?? ZERO_TRANSPORT,
       hostAdb: deps.hostAdb?.() ?? ZERO_HOST_ADB,
+      adbHealth: deps.adbHealth?.() ?? ZERO_ADB_HEALTH,
     })
   })
 

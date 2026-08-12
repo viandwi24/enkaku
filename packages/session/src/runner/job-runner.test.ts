@@ -47,7 +47,7 @@ function fakeSessions(session: DeviceSession): SessionManager {
     closeDevice: async () => {},
     closeIfIdle: async () => {},
     idleSessions: () => [],
-    closeAll: async () => {},
+    closeAll: async () => 0,
   }
 }
 
@@ -585,7 +585,7 @@ function trackingSessions(session: DeviceSession, sequence: string[]): SessionMa
     closeDevice: async () => {},
     closeIfIdle: async () => {},
     idleSessions: () => [],
-    closeAll: async () => {},
+    closeAll: async () => 0,
   }
 }
 
@@ -804,7 +804,9 @@ describe('createJobRunner — target-package tracking for the crash policy (plan
  * "the getter exists but nothing reads it" would fail loudly here.
  */
 describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3, §4.2)', () => {
-  function fakeSessionWithInput(tapCalls: Array<{ x: number; y: number }>): DeviceSession {
+  function fakeSessionWithInput(
+    tapCalls: Array<{ x: number; y: number; holdMs?: [number, number] }>,
+  ): DeviceSession {
     return {
       deviceId: DEVICE_ID,
       inspector: null,
@@ -812,8 +814,8 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
       transport: { exec: async () => '', execOut: async () => new Uint8Array() },
       whenInspectorReady: async () => {},
       input: {
-        tap: async (p: { x: number; y: number }) => {
-          tapCalls.push(p)
+        tap: async (p: { x: number; y: number }, opts?: { holdMs?: [number, number] }) => {
+          tapCalls.push({ ...p, holdMs: opts?.holdMs })
         },
         swipe: async () => {},
         text: async () => {},
@@ -876,8 +878,8 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
       betweenActionMs: [0, 0] as [number, number],
       coordJitterPx: 0, // job 1: no jitter — the exact target point
     }
-    const tapCallsJob1: Array<{ x: number; y: number }> = []
-    const tapCallsJob2: Array<{ x: number; y: number }> = []
+    const tapCallsJob1: Array<{ x: number; y: number; holdMs?: [number, number] }> = []
+    const tapCallsJob2: Array<{ x: number; y: number; holdMs?: [number, number] }> = []
     const { isolation } = fakeIsolation([tapBehavior(), tapBehavior()])
     const makeRunner = (tapCalls: Array<{ x: number; y: number }>) =>
       createJobRunner({
@@ -899,7 +901,8 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
 
     const outcome1 = await makeRunner(tapCallsJob1).execute({ ...JOB, id: 'job-a' })
     expect(outcome1.ok).toBe(true)
-    expect(tapCallsJob1).toEqual([{ x: 10, y: 20 }])
+    // holdMs is [0, 0] here too — this test's own `current.tapJitterMs`, now that it reaches the driver.
+    expect(tapCallsJob1).toEqual([{ x: 10, y: 20, holdMs: [0, 0] }])
 
     // The setting changes here — no restart, no new runner, no new process.
     current = { ...DEFAULT_TIMING, tapJitterMs: [0, 0], betweenActionMs: [0, 0], coordJitterPx: 1_000_000 }
@@ -952,6 +955,39 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
     expect(Math.abs((point?.x ?? 10) - 10)).toBeLessThanOrEqual(2)
     expect(Math.abs((point?.y ?? 20) - 20)).toBeLessThanOrEqual(2)
   }, 10_000)
+
+  /**
+   * The regression test for the original defect (plan 84's audit): `tapJitterMs`
+   * was declared in `TimingSettingsSchema` and rendered in Studio's Settings
+   * panel, but before this fix no production code read it at all — the real
+   * tap hold was a hardcoded literal inside the scrcpy input drivers. This
+   * drives a real `tap` through the full parent↔child IPC path, exactly like
+   * the `coordJitterPx` test above, and inspects the actual `holdMs` handed
+   * to `session.input.tap` — a regression back to "the getter exists but
+   * nothing downstream reads it" fails loudly here, not just in a schema test.
+   */
+  test('a configured timing getter reaches the executor: tapJitterMs reaches session.input.tap as opts.holdMs', async () => {
+    const tapCalls: Array<{ x: number; y: number; holdMs?: [number, number] }> = []
+    const { isolation } = fakeIsolation([tapBehavior()])
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSessionWithInput(tapCalls)),
+      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => HOME_SETTINGS,
+      timing: () => ({ ...DEFAULT_TIMING, tapJitterMs: [777, 888], betweenActionMs: [0, 0], coordJitterPx: 0 }),
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+    expect(tapCalls).toHaveLength(1)
+    expect(tapCalls[0]?.holdMs).toEqual([777, 888])
+  })
 })
 
 /**

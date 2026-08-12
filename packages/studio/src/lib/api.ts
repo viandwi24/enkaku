@@ -1,4 +1,6 @@
+import { z } from 'zod'
 import type { DeviceInfo } from '@enkaku/protocol'
+import { BadResponseError } from './actions'
 import { coreBase } from './ws'
 
 interface ItemsPage<T> {
@@ -13,16 +15,37 @@ interface ItemsPage<T> {
  * lookup — rather than a "load more" table. Walks the cursor internally so
  * no call site re-invents that loop, capped generously so a runaway server
  * response can never hang the tab.
+ *
+ * `parser` is optional (plan 95 §5 step 95.5, fixes F8): omitted, this
+ * behaves exactly as before — a bare cast to the caller's own type
+ * parameter, unchanged for every existing call site. Passed, EVERY item is
+ * validated through it rather than trusted — an author-controlled blob
+ * (a script's `paramsSchema`, F7) reaching a `fetchAllPages<ScriptRow>`
+ * call used to cross this boundary with no check at all. A row that fails
+ * throws `BadResponseError`, the SAME "this build of Studio does not
+ * understand the response" failure `api()` already raises for a single
+ * fetch — a bad row is not swallowed or skipped, because a caller silently
+ * missing an item it asked for is worse than a visible failure.
  */
-export async function fetchAllPages<T>(path: string, extraQuery?: Record<string, string>): Promise<T[]> {
-  const all: T[] = []
+export async function fetchAllPages<T>(path: string, extraQuery?: Record<string, string>): Promise<T[]>
+export async function fetchAllPages<S extends z.ZodType>(path: string, extraQuery: Record<string, string> | undefined, parser: S): Promise<z.output<S>[]>
+export async function fetchAllPages(path: string, extraQuery?: Record<string, string>, parser?: z.ZodType): Promise<unknown[]> {
+  const all: unknown[] = []
   let cursor: string | null = null
   for (let page = 0; page < 25; page++) {
     const qs = new URLSearchParams({ limit: '200', ...extraQuery, ...(cursor ? { cursor } : {}) })
     const res = await fetch(`${coreBase()}${path}?${qs.toString()}`)
     if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
-    const body = (await res.json()) as ItemsPage<T>
-    all.push(...body.items)
+    const body = (await res.json()) as ItemsPage<unknown>
+    if (parser) {
+      for (const item of body.items) {
+        const parsed = parser.safeParse(item)
+        if (!parsed.success) throw new BadResponseError(path, z.prettifyError(parsed.error))
+        all.push(parsed.data)
+      }
+    } else {
+      all.push(...body.items)
+    }
     if (!body.nextCursor) break
     cursor = body.nextCursor
   }

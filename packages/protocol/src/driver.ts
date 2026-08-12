@@ -60,7 +60,23 @@ export interface Transport {
   serial: string
   /** Identitas device stabil (spec §7.5). */
   stableId: string
+  /**
+   * Session-scoped, NOT farm-scoped (plan 88 §3.7): make this transport
+   * usable for the session about to start, without owning whether the
+   * device stays reachable afterwards. `AdbTcpTransport` implements this as
+   * ensure-connected — a no-op when adb already has it, a dial only when it
+   * does not (`packages/drivers/src/transport/adb-transport.ts`).
+   */
   connect(): Promise<void>
+  /**
+   * Session-scoped, NOT farm-scoped (plan 88 §3.7, fixes F12/H6): release
+   * whatever THIS session opened, and nothing more. It must never drop the
+   * device's adb transport for the whole farm — that used to be exactly
+   * what `AdbTcpTransport.disconnect()` did (`host:disconnect`), so closing
+   * one wall tile silently kicked a wireless/OTG phone off adb entirely.
+   * Transport lifetime belongs to the registry and to an operator's
+   * explicit action, never to a session closing.
+   */
   disconnect(): Promise<void>
   exec(cmd: string, opts?: TransportExecOptions): Promise<ShellResult>
   /** Binary stdout (screencap and friends) — an M2 extension to spec §7. */
@@ -91,7 +107,17 @@ export interface GestureSample {
 export interface InputSink {
   id: string
   mode: 'sdk' | 'uhid' | 'aoa'
-  tap(p: Point): Promise<void>
+  /**
+   * `opts.holdMs` (spec §9.3, §17): the down→up hold duration, sampled from a
+   * `[min, max]` range rather than fixed — this is test realism (a real
+   * finger never holds a tap for exactly the same duration twice, and some
+   * apps branch on it), explicitly not evasion. `opts.rng` makes that
+   * sampling injectable so tests are deterministic; it defaults to
+   * `Math.random`. Optional to supply: omitting `opts` (or `holdMs` within
+   * it) falls back to each engine's own default range. Not every engine can
+   * honour `holdMs` — see `AdbInput.tap` for the one that cannot and why.
+   */
+  tap(p: Point, opts?: { holdMs?: [number, number]; rng?: () => number }): Promise<void>
   swipe(from: Point, to: Point, ms: number): Promise<void>
   key(code: number): Promise<void>
   text(s: string): Promise<void>

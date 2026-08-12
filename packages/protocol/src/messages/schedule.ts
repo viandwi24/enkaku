@@ -81,6 +81,17 @@ export const ScheduleInfoSchema = z.object({
   createdAt: z.number(),
   /** The next fire time, computed on read (plan 21 §4.4) — null if disabled or the cron is invalid. */
   nextFireAt: z.number().nullable().default(null),
+  /**
+   * Plan 95 §4.4, §4.8, §5 step 95.7 — computed on EVERY read against what
+   * `target`/`scriptRef` resolves to RIGHT NOW, never cached from the last
+   * firing: a schedule that WILL fail is visible the moment the new script
+   * version is published, not the morning after it silently enqueued
+   * nothing. `true`/`0` for an agent target, or a script target with no
+   * declared params — nothing to reconcile. Defaulted so every pre-95.7
+   * caller's fixture literal keeps compiling unedited.
+   */
+  paramsCompatible: z.boolean().default(true),
+  paramsFindingCount: z.number().int().default(0),
 })
 export type ScheduleInfo = z.infer<typeof ScheduleInfoSchema>
 

@@ -21,7 +21,7 @@ describe('createInstallExecutor', () => {
       transfer: {} as TransferService,
       broadcast: { progress() {}, done() {} },
     })
-    expect(() => executor.validateParams({})).toThrow()
+    expect(() => executor.validateParams({}, 'internal:install')).toThrow()
   })
 
   test('validateParams accepts { artifactId }', () => {
@@ -29,7 +29,7 @@ describe('createInstallExecutor', () => {
       transfer: {} as TransferService,
       broadcast: { progress() {}, done() {} },
     })
-    expect(executor.validateParams({ artifactId: 'a1' })).toEqual({ artifactId: 'a1' })
+    expect(executor.validateParams({ artifactId: 'a1' }, 'internal:install')).toEqual({ artifactId: 'a1' })
   })
 
   test('run() delegates to TransferService.install with the job device and broadcasts progress/done', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
-import { DeviceSettingsSchema, FarmSettingsSchema, TimingSettingsSchema, defaultDeviceSettings, defaultFarmSettings } from './settings'
+import { CidrSchema, DeviceSettingsSchema, FarmSettingsSchema, TimingSettingsSchema, addressCount, defaultDeviceSettings, defaultFarmSettings } from './settings'
 
 describe('TimingSettingsSchema — input realism (plan 40 §4.3)', () => {
   test('a row that predates these fields (an empty object) still parses, defaulting to "natural"', () => {
@@ -106,6 +106,33 @@ describe('DeviceSettingsSchema.prep.rotation — screen rotation (plan 85 §3.7,
   })
 })
 
+describe('DeviceSettingsSchema.instrumentation.tagTraffic — farm traffic tagging (spec §9.4/§17, plan 87 §4.12, §5 step 87.13)', () => {
+  test('defaults to true — "on by default" is the spec\'s own wording', () => {
+    expect(defaultDeviceSettings().instrumentation.tagTraffic).toBe(true)
+    expect(DeviceSettingsSchema.parse({}).instrumentation.tagTraffic).toBe(true)
+  })
+
+  test('a settings row that predates this field (an empty object) still parses, defaulting to true', () => {
+    const parsed = DeviceSettingsSchema.parse({ prep: { keepAwake: 'always' } })
+    expect(parsed.instrumentation).toEqual({ tagTraffic: true })
+  })
+
+  test('the operator\'s off switch is honoured: false stays false, never silently forced back on', () => {
+    expect(DeviceSettingsSchema.parse({ instrumentation: { tagTraffic: false } }).instrumentation.tagTraffic).toBe(false)
+  })
+
+  test('FarmSettingsSchema.defaults.instrumentation agrees with the device schema (they are the same schema, reused)', () => {
+    expect(defaultFarmSettings().defaults.instrumentation).toEqual(defaultDeviceSettings().instrumentation)
+  })
+
+  test('the generated JSON Schema represents instrumentation.tagTraffic (the settings form needs this to render the off switch)', () => {
+    const jsonSchema = z.toJSONSchema(DeviceSettingsSchema) as unknown as {
+      properties: { instrumentation: { properties: Record<string, unknown> } }
+    }
+    expect(Object.keys(jsonSchema.properties.instrumentation.properties)).toEqual(['tagTraffic'])
+  })
+})
+
 describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
   test('a settings row that predates these fields (an empty object) still parses, with working defaults', () => {
     const parsed = FarmSettingsSchema.parse({})
@@ -178,6 +205,53 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
   })
 })
 
+describe('FarmSettingsSchema.adbControl — adb server health monitoring and restart control (plan 88 §3.9, §3.10, §4.7, §4.8, §5 step 88.9)', () => {
+  test('a row that predates these fields (an empty object) still parses, with working defaults', () => {
+    expect(FarmSettingsSchema.parse({}).adbControl).toEqual({
+      healthIntervalSec: 15,
+      stuckTimeoutRate: 0.5,
+      restartCooldownSec: 60,
+      drainTimeoutMs: 30_000,
+    })
+  })
+
+  test('healthIntervalSec is bounded to [5, 300]', () => {
+    expect(FarmSettingsSchema.parse({ adbControl: { healthIntervalSec: 5 } }).adbControl.healthIntervalSec).toBe(5)
+    expect(FarmSettingsSchema.parse({ adbControl: { healthIntervalSec: 300 } }).adbControl.healthIntervalSec).toBe(300)
+    expect(() => FarmSettingsSchema.parse({ adbControl: { healthIntervalSec: 4 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adbControl: { healthIntervalSec: 301 } })).toThrow()
+  })
+
+  test('stuckTimeoutRate is a [0, 1] share, not a percentage', () => {
+    expect(FarmSettingsSchema.parse({ adbControl: { stuckTimeoutRate: 0 } }).adbControl.stuckTimeoutRate).toBe(0)
+    expect(FarmSettingsSchema.parse({ adbControl: { stuckTimeoutRate: 1 } }).adbControl.stuckTimeoutRate).toBe(1)
+    expect(() => FarmSettingsSchema.parse({ adbControl: { stuckTimeoutRate: 1.1 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adbControl: { stuckTimeoutRate: -0.1 } })).toThrow()
+  })
+
+  test('restartCooldownSec is bounded to [10, 3600] — the gap between adb-server-control cycle() restarts', () => {
+    expect(FarmSettingsSchema.parse({ adbControl: { restartCooldownSec: 10 } }).adbControl.restartCooldownSec).toBe(10)
+    expect(FarmSettingsSchema.parse({ adbControl: { restartCooldownSec: 3600 } }).adbControl.restartCooldownSec).toBe(3600)
+    expect(() => FarmSettingsSchema.parse({ adbControl: { restartCooldownSec: 9 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adbControl: { restartCooldownSec: 3601 } })).toThrow()
+  })
+
+  test('drainTimeoutMs is bounded to [5_000, 300_000] — how long cycle() waits for sessions/leases to drain', () => {
+    expect(FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 5_000 } }).adbControl.drainTimeoutMs).toBe(5_000)
+    expect(FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 300_000 } }).adbControl.drainTimeoutMs).toBe(300_000)
+    expect(() => FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 4_999 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 300_001 } })).toThrow()
+  })
+
+  test('defaultFarmSettings() carries adbControl with its documented defaults', () => {
+    const s = defaultFarmSettings()
+    expect(s.adbControl.healthIntervalSec).toBe(15)
+    expect(s.adbControl.stuckTimeoutRate).toBe(0.5)
+    expect(s.adbControl.restartCooldownSec).toBe(60)
+    expect(s.adbControl.drainTimeoutMs).toBe(30_000)
+  })
+})
+
 describe('FarmSettingsSchema.adb.maxStreams — legacy migration (plan 85 §3.1, §4.1)', () => {
   test('a stored 4 (the old, never-deliberately-chosen default) is rewritten to 0 (auto)', () => {
     expect(FarmSettingsSchema.parse({ adb: { maxStreams: 4 } }).adb.maxStreams).toBe(0)
@@ -202,10 +276,22 @@ describe('FarmSettingsSchema.adb.maxStreams — legacy migration (plan 85 §3.1,
 })
 
 describe('FarmSettingsSchema.discovery — device rescan reconciliation (plan 85 §3.3, §4.1)', () => {
+  const DISCOVERY_DEFAULTS = {
+    scanIntervalSec: 10,
+    offlineGraceSec: 20,
+    recoveryCooldownSec: 120,
+    tcpPort: 5555,
+    endpointsPerDevice: 4,
+    endpointRetireAfter: 10,
+    connectSettleMs: 3_000,
+    networks: [],
+    scan: { mode: 'on-demand' as const, maxAddresses: 1024, concurrency: 32, probeTimeoutMs: 300 },
+  }
+
   test('a settings row that predates this field (an empty object) still parses, with working defaults', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.discovery).toEqual({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
-    expect(defaultFarmSettings().discovery).toEqual({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
+    expect(parsed.discovery).toEqual(DISCOVERY_DEFAULTS)
+    expect(defaultFarmSettings().discovery).toEqual(DISCOVERY_DEFAULTS)
   })
 
   test('scanIntervalSec is bounded to [0, 300]; 0 disables the rescan (plan 85 §7.4 regression watch)', () => {
@@ -225,6 +311,140 @@ describe('FarmSettingsSchema.discovery — device rescan reconciliation (plan 85
     expect(() => FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 29 } })).toThrow()
     expect(() => FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 3601 } })).toThrow()
     expect(FarmSettingsSchema.parse({ discovery: { recoveryCooldownSec: 3600 } }).discovery.recoveryCooldownSec).toBe(3600)
+  })
+
+  describe('the address-book / reconnect-ladder fields (plan 88 §4.2, §5 step 88.2)', () => {
+    test('tcpPort is bounded to [1024, 65535], default 5555', () => {
+      expect(FarmSettingsSchema.parse({}).discovery.tcpPort).toBe(5555)
+      expect(FarmSettingsSchema.parse({ discovery: { tcpPort: 1024 } }).discovery.tcpPort).toBe(1024)
+      expect(FarmSettingsSchema.parse({ discovery: { tcpPort: 65535 } }).discovery.tcpPort).toBe(65535)
+      expect(() => FarmSettingsSchema.parse({ discovery: { tcpPort: 1023 } })).toThrow()
+      expect(() => FarmSettingsSchema.parse({ discovery: { tcpPort: 65536 } })).toThrow()
+    })
+
+    test('endpointsPerDevice is bounded to [1, 16], default 4', () => {
+      expect(FarmSettingsSchema.parse({}).discovery.endpointsPerDevice).toBe(4)
+      expect(FarmSettingsSchema.parse({ discovery: { endpointsPerDevice: 1 } }).discovery.endpointsPerDevice).toBe(1)
+      expect(FarmSettingsSchema.parse({ discovery: { endpointsPerDevice: 16 } }).discovery.endpointsPerDevice).toBe(16)
+      expect(() => FarmSettingsSchema.parse({ discovery: { endpointsPerDevice: 0 } })).toThrow()
+      expect(() => FarmSettingsSchema.parse({ discovery: { endpointsPerDevice: 17 } })).toThrow()
+    })
+
+    test('endpointRetireAfter is bounded to [1, 100], default 10', () => {
+      expect(FarmSettingsSchema.parse({}).discovery.endpointRetireAfter).toBe(10)
+      expect(() => FarmSettingsSchema.parse({ discovery: { endpointRetireAfter: 0 } })).toThrow()
+      expect(() => FarmSettingsSchema.parse({ discovery: { endpointRetireAfter: 101 } })).toThrow()
+      expect(FarmSettingsSchema.parse({ discovery: { endpointRetireAfter: 100 } }).discovery.endpointRetireAfter).toBe(100)
+    })
+
+    test('connectSettleMs is bounded to [500, 30_000], default 3_000', () => {
+      expect(FarmSettingsSchema.parse({}).discovery.connectSettleMs).toBe(3_000)
+      expect(() => FarmSettingsSchema.parse({ discovery: { connectSettleMs: 499 } })).toThrow()
+      expect(() => FarmSettingsSchema.parse({ discovery: { connectSettleMs: 30_001 } })).toThrow()
+      expect(FarmSettingsSchema.parse({ discovery: { connectSettleMs: 500 } }).discovery.connectSettleMs).toBe(500)
+    })
+  })
+
+  describe('CidrSchema (plan 88 §3.5, §4.2, §5 step 88.3)', () => {
+    test('accepts a plain IPv4 CIDR block', () => {
+      expect(CidrSchema.parse('10.20.0.0/24')).toBe('10.20.0.0/24')
+      expect(CidrSchema.parse('192.0.2.0/24')).toBe('192.0.2.0/24') // TEST-NET-1
+      expect(CidrSchema.parse('0.0.0.0/0')).toBe('0.0.0.0/0')
+      expect(CidrSchema.parse('10.0.0.5/32')).toBe('10.0.0.5/32')
+    })
+
+    test('rejects a malformed CIDR', () => {
+      expect(() => CidrSchema.parse('not-a-cidr')).toThrow()
+      expect(() => CidrSchema.parse('10.20.0.0')).toThrow() // no prefix
+      expect(() => CidrSchema.parse('10.20.0.0/33')).toThrow() // prefix out of range
+      expect(() => CidrSchema.parse('10.20.0.999/24')).toThrow() // octet out of range
+      expect(() => CidrSchema.parse('10.20.0.0/24/1')).toThrow()
+      expect(() => CidrSchema.parse('')).toThrow()
+    })
+  })
+
+  describe('addressCount (plan 88 §4.2, §5 step 88.3)', () => {
+    test('2 ** (32 - prefix), including the network and broadcast address', () => {
+      expect(addressCount('10.20.0.0/24')).toBe(256)
+      expect(addressCount('10.20.0.0/16')).toBe(65_536)
+      expect(addressCount('10.20.0.0/30')).toBe(4)
+      expect(addressCount('10.20.0.5/32')).toBe(1)
+    })
+
+    test('four /24s add up to exactly maxAddresses’ own default (1024) — the plan’s own "four /24s" note', () => {
+      expect(addressCount('10.0.0.0/24') * 4).toBe(1_024)
+    })
+
+    test('returns 0 for anything malformed rather than throwing', () => {
+      expect(addressCount('not-a-cidr')).toBe(0)
+      expect(addressCount('10.20.0.0/33')).toBe(0)
+      expect(addressCount('10.20.0.0/-1')).toBe(0)
+    })
+  })
+
+  describe('discovery.networks / discovery.scan (plan 88 §3.5, §3.6, §4.2, §5 step 88.3)', () => {
+    test('empty by default — no top-level key was added; both nest under discovery (plan 88 §5 step 88.3)', () => {
+      const parsed = FarmSettingsSchema.parse({})
+      expect(parsed.discovery.networks).toEqual([])
+      expect(parsed.discovery.scan).toEqual({ mode: 'on-demand', maxAddresses: 1024, concurrency: 32, probeTimeoutMs: 300 })
+      expect(Object.keys(FarmSettingsSchema.parse({})).includes('networks')).toBe(false)
+      expect(Object.keys(FarmSettingsSchema.parse({})).includes('scan')).toBe(false)
+    })
+
+    test('scan.mode is only "off" | "on-demand" — no "auto" (§9 Q1, decided 2026-08-12)', () => {
+      expect(FarmSettingsSchema.parse({ discovery: { scan: { mode: 'off' } } }).discovery.scan.mode).toBe('off')
+      expect(FarmSettingsSchema.parse({ discovery: { scan: { mode: 'on-demand' } } }).discovery.scan.mode).toBe('on-demand')
+      expect(() => FarmSettingsSchema.parse({ discovery: { scan: { mode: 'auto' } } })).toThrow()
+    })
+
+    test('a network row defaults label/medium/scan and validates its own cidr', () => {
+      const parsed = FarmSettingsSchema.parse({ discovery: { networks: [{ cidr: '10.20.0.0/24' }] } })
+      expect(parsed.discovery.networks).toEqual([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }])
+      expect(() =>
+        FarmSettingsSchema.parse({ discovery: { networks: [{ cidr: 'garbage' }] } }),
+      ).toThrow()
+    })
+
+    test('one /24 is ok', () => {
+      const parsed = FarmSettingsSchema.parse({ discovery: { networks: [{ cidr: '10.0.0.0/24', scan: true }] } })
+      expect(parsed.discovery.networks.length).toBe(1)
+    })
+
+    test('five /24s (1280 addresses) are rejected, with the exact message', () => {
+      const networks = Array.from({ length: 5 }, (_, i) => ({ cidr: `10.${i}.0.0/24`, scan: true }))
+      let error: unknown
+      try {
+        FarmSettingsSchema.parse({ discovery: { networks } })
+      } catch (err) {
+        error = err
+      }
+      expect(error).toBeDefined()
+      const zodError = error as { issues: Array<{ path: (string | number)[]; message: string }> }
+      const issue = zodError.issues.find((i) => i.path.join('.') === 'discovery.networks')
+      expect(issue?.message).toBe(
+        'these networks add up to 1280 addresses, over the 1024 limit — untick one, narrow a range, or raise the limit',
+      )
+    })
+
+    test('an untouched network (scan: false) does not count toward the ceiling', () => {
+      const networks = [
+        { cidr: '10.0.0.0/24', scan: true },
+        { cidr: '10.1.0.0/16', scan: false }, // 65,536 addresses, but excluded
+      ]
+      expect(FarmSettingsSchema.parse({ discovery: { networks } }).discovery.networks.length).toBe(2)
+    })
+
+    test('a malformed CIDR inside the array is rejected', () => {
+      expect(() =>
+        FarmSettingsSchema.parse({ discovery: { networks: [{ cidr: '999.999.999.999/24' }] } }),
+      ).toThrow()
+    })
+
+    test('raising maxAddresses lets the same networks through', () => {
+      const networks = Array.from({ length: 5 }, (_, i) => ({ cidr: `10.${i}.0.0/24`, scan: true }))
+      const parsed = FarmSettingsSchema.parse({ discovery: { networks, scan: { maxAddresses: 1280 } } })
+      expect(parsed.discovery.networks.length).toBe(5)
+    })
   })
 })
 

@@ -48,6 +48,9 @@ import {
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
 } from './messages/tool'
+import { AdbHealthMessage } from './messages/adb-health'
+import { AdbServerPhaseMessage } from './messages/adb-server-control'
+import { ScanProgressMessage } from './messages/scan'
 import { BatchStatusMessage } from './messages/batch'
 import { ScheduleFiredMessage } from './messages/schedule'
 import { DeviceEventMessage, LogSubscribeMessage, LogUnsubscribeMessage } from './messages/device-event'
@@ -97,6 +100,26 @@ import { NotificationCreatedMessage } from './messages/notify'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
+export {
+  PARAM_KINDS,
+  DURATION_UNITS,
+  PARAM_SOURCES,
+  ENKAKU_META_KEY,
+  ParamHintsSchema,
+  readHints,
+  ui,
+  type ParamKind,
+  type DurationUnit,
+  type ParamSource,
+  type ShowWhen,
+  type ParamHints,
+  type UiSpec,
+} from './params/vocabulary'
+export { PARAMS_LIMITS, checkParamsSchema, type SchemaCheckFinding } from './params/limits'
+export { validateParams, type ParamIssue, type ValidateParamsResult } from './params/validate'
+export { clampParamsSchema, summarizeClamp, type ClampedSchema } from './params/clamp'
+export { HOSTILE_PARAMS_FIXTURES, HOSTILE_BLOCKING, type HostileFixtureName } from './params/hostile-fixtures'
+export { reconcileParams, summarizeApply, type FindingKind, type ReconcileFinding, type ReconcileResult } from './params/reconcile'
 export {
   EffortSchema,
   AgentDefaultsSchema,
@@ -180,6 +203,10 @@ export {
   DeviceReadinessSetMessage,
   DeviceReadinessMessage,
   LeaseHolderSchema,
+  ConnectionKindSchema,
+  ConnectionMediumSchema,
+  DeviceConnectionSchema,
+  connectionBadge,
   type DeviceStatus,
   type DeviceInfo,
   type DeviceAdded,
@@ -189,6 +216,9 @@ export {
   type DeviceReadinessSet,
   type DeviceReadinessEvent,
   type LeaseHolder,
+  type ConnectionKind,
+  type ConnectionMedium,
+  type DeviceConnection,
 } from './device'
 export {
   ReadinessSchema,
@@ -226,9 +256,12 @@ export {
   RotationModeSchema,
   DeviceGpsSchema,
   DeviceIdentitySchema,
+  DeviceInstrumentationSchema,
   DeviceSettingsSchema,
   FarmSettingsSchema,
   JobSettingsSchema,
+  CidrSchema,
+  addressCount,
   defaultFarmSettings,
   defaultDeviceSettings,
   type BatteryState,
@@ -238,6 +271,7 @@ export {
   type TimingSettings,
   type DeviceGps,
   type DeviceIdentity,
+  type DeviceInstrumentation,
   type DeviceSettings,
   type FarmSettings,
   type JobSettings,
@@ -254,6 +288,20 @@ export {
   type ToolProvisionProgress,
   type ToolChanged,
 } from './messages/tool'
+export {
+  AdbHealthMessage,
+  type AdbHealthEvent,
+} from './messages/adb-health'
+export {
+  AdbServerPhaseSchema,
+  AdbServerPhaseMessage,
+  type AdbServerPhase,
+  type AdbServerPhaseEvent,
+} from './messages/adb-server-control'
+export {
+  ScanProgressMessage,
+  type ScanProgressEvent,
+} from './messages/scan'
 export {
   NormPointSchema,
   InputTapMessage,
@@ -552,10 +600,8 @@ export {
   NodeToControlSchema,
   ControlToNodeSchema,
   NodeHelloMessage,
-  NodeHelloLegacyMessage,
   NodeHelloAckMessage,
   NodeDevicesMessage,
-  NodeDevicesLegacyMessage,
   SessionStartMessage,
   SessionStopMessage,
   JobDispatchMessage,
@@ -724,6 +770,9 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
   ToolChangedMessage,
+  AdbHealthMessage,
+  AdbServerPhaseMessage,
+  ScanProgressMessage,
   StreamStartedMessage,
   StreamMetaMessage,
   StreamEndedMessage,

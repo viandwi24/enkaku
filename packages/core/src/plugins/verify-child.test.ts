@@ -57,6 +57,21 @@ export default {
 }
 `
 
+// Plan 95 §4.9, §5 step 95.5 — publish path 2 of 3: a plugin member with a
+// hostile params schema (here, a non-identifier field name) must be refused
+// the same way a standalone script's `POST /api/scripts` would be.
+const HOSTILE_PARAMS = `
+import { z } from 'zod'
+export default {
+  id: 'p',
+  version: '1.0.0',
+  scripts: [
+    { id: 'ok', params: z.object({}), run: async () => {} },
+    { id: 'hostile', params: z.object({ 'bad name': z.string() }), run: async () => {} },
+  ],
+}
+`
+
 describe('verifyPluginBundle', () => {
   test('a healthy bundle reports the plugin id, version, every script id, and JSON-Schema params', async () => {
     const path = writeBundle(HEALTHY)
@@ -109,5 +124,14 @@ describe('verifyPluginBundle', () => {
   test('a missing bundle file is reported failed, not thrown', async () => {
     const report = await verifyPluginBundle('/no/such/file.mjs')
     expect(report.ok).toBe(false)
+  }, 10_000)
+
+  test('a plugin member with a hostile params schema is refused, naming the member and the finding (plan 95 §4.9, §5 step 95.5)', async () => {
+    const path = writeBundle(HOSTILE_PARAMS)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.error).toContain('E_PARAMS_SCHEMA_INVALID')
+    expect(report.error).toContain('hostile')
+    expect(report.error).toContain('bad name')
   }, 10_000)
 })

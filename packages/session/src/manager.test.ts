@@ -426,3 +426,57 @@ describe('SessionManager — AdbInput gesture degrade reported once per session 
     await manager.closeAll()
   })
 })
+
+/**
+ * `closeAll(reason)` and `activeDeviceIds()` (plan 88 §3.10, §4.8, fixes
+ * F19) — the adb restart flow's drain reads BOTH: a live count before
+ * anything closes (for the confirmation dialog), and the real count of what
+ * it actually closed (for `AdbCycleReport.sessionsClosed`), with the reason
+ * threaded onto the wire so the device log reads as an operator action
+ * ("adb-server-restart") rather than an unexplained drop.
+ */
+describe('SessionManager.closeAll(reason) / activeDeviceIds() (plan 88 §3.10, §4.8)', () => {
+  test('activeDeviceIds() sees an open session before it is closed, and closeAll(reason) reports both the count and the reason', async () => {
+    const events: { deviceId: string; kind: string; meta: Record<string, unknown> }[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      onEvent: (deviceId, kind, meta) => events.push({ deviceId, kind, meta }),
+    })
+
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(manager.activeDeviceIds?.()).toEqual([DEVICE_ID])
+
+    const closed = await manager.closeAll('adb-server-restart')
+
+    expect(closed).toBe(1)
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    const closedEvent = events.find((e) => e.kind === 'session.closed')
+    expect(closedEvent?.meta.reason).toBe('adb-server-restart')
+  })
+
+  test('closeAll() with no reason defaults to \'shutdown\' and still reports the count', async () => {
+    const events: { deviceId: string; kind: string; meta: Record<string, unknown> }[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      onEvent: (deviceId, kind, meta) => events.push({ deviceId, kind, meta }),
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+
+    const closed = await manager.closeAll()
+
+    expect(closed).toBe(1)
+    expect(events.find((e) => e.kind === 'session.closed')?.meta.reason).toBe('shutdown')
+  })
+
+  test('nothing open: closeAll() closes zero and activeDeviceIds() is empty', async () => {
+    const manager = createSessionManager({ client: fakeClient(), devices, log: silentLog() })
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    expect(await manager.closeAll()).toBe(0)
+  })
+})

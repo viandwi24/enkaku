@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { RegistryResponse } from '@enkaku/protocol'
+import type { ParamSource, RegistryResponse } from '@enkaku/protocol'
 import { coreBase } from '@/lib/ws'
 
 export interface EnumOption {
@@ -39,7 +39,11 @@ export async function fetchRegistry(): Promise<RegistryResponse | null> {
   return inflight
 }
 
-const KEY_MAP: Record<string, keyof RegistryResponse> = {
+// A closed allowlist keyed in Studio (plan 95 §3.4): a `source` not listed
+// here — including the newer `devices`/`clusters`/`scripts` members of
+// `PARAM_SOURCES` (plan 95 §4.1), not yet wired to a registry endpoint — is
+// ignored, never fetched, and the plain enum is used instead.
+const KEY_MAP: Partial<Record<ParamSource, keyof RegistryResponse>> = {
   'registry.transports': 'transports',
   'registry.displays': 'displays',
   'registry.inputs': 'inputs',
@@ -47,7 +51,7 @@ const KEY_MAP: Record<string, keyof RegistryResponse> = {
   'registry.networks': 'networks',
 }
 
-export function useEnumOptions(enumValues: unknown[] | undefined, enumSource: string | undefined): EnumOption[] {
+export function useEnumOptions(enumValues: unknown[] | undefined, source: ParamSource | undefined): EnumOption[] {
   const plain: EnumOption[] = (enumValues ?? []).map((v) => ({
     value: String(v),
     label: String(v),
@@ -56,14 +60,15 @@ export function useEnumOptions(enumValues: unknown[] | undefined, enumSource: st
   const [options, setOptions] = useState<EnumOption[]>(plain)
 
   useEffect(() => {
-    if (!enumSource || !KEY_MAP[enumSource]) {
+    const registryKey = source ? KEY_MAP[source] : undefined
+    if (!registryKey) {
       setOptions(plain)
       return
     }
     let cancelled = false
     void fetchRegistry().then((registry) => {
       if (cancelled || !registry) return
-      const entries = registry[KEY_MAP[enumSource]!] as Array<{
+      const entries = registry[registryKey] as Array<{
         id: string
         displayName: string
         available: boolean
@@ -86,7 +91,7 @@ export function useEnumOptions(enumValues: unknown[] | undefined, enumSource: st
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enumSource, JSON.stringify(enumValues)])
+  }, [source, JSON.stringify(enumValues)])
 
   return options
 }

@@ -16,6 +16,11 @@ export type AuditAction =
   | 'device.quarantine'
   | 'device.unquarantine'
   | 'device.control'
+  // `PATCH /:id`'s `ownerId` transition (plan 09 §4.4's `device.owner.set`,
+  // `api/devices.ts`) — separate from `device.settings` (label/settings)
+  // because reassigning ownership changes who `canUseDevice` admits, not a
+  // device attribute; `meta` always carries `{ from, to }`.
+  | 'device.owner'
   // Device lifecycle (plan 47 §3.5, §4.4) — Forget, Block, Unblock.
   | 'device.forget'
   | 'device.block'
@@ -27,9 +32,30 @@ export type AuditAction =
   | 'device.dismiss'
   // The manual discovery reconciler escape hatch (plan 85 §4.6, §5 step 85.2).
   | 'device.rescan'
+  // The bounded subnet sweep's manual trigger (plan 88 §3.5, §4.5, §4.6, §5
+  // step 88.3, dedicated by step 88.4) — `POST /api/devices/scan` audited
+  // under `device.rescan` with `meta.via: 'scan'` as a stopgap while this
+  // file was held by a concurrent step; now its own action.
+  | 'device.scan'
+  // Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4)
+  // — distinct from `device.forget`/`device.block`, which un-enrol a device:
+  // these only drop or restore the adb transport and leave the device's
+  // record, tags, cluster, settings, job history and artifacts untouched.
+  | 'device.disconnect'
+  | 'device.reconnect'
+  // `PATCH /:id/connection`'s declared medium (plan 88 §3.1, §4.6, §5 step
+  // 88.4) — an operator declaring/correcting wired vs wireless, e.g. after a
+  // cutover that happened outside Enkaku.
+  | 'device.medium'
   | 'script.publish'
   | 'script.delete'
   | 'script.toggle'
+  // Named parameter sets (plan 95 §4.7, §4.8, §5 step 95.8) — a preset is
+  // "standing intent" about a script the same way a schedule is, and gets
+  // the same answerability its sibling `script.*` verbs already have.
+  | 'script.param_set.create'
+  | 'script.param_set.update'
+  | 'script.param_set.delete'
   | 'job.run'
   | 'job.cancel'
   | 'cluster.create'
@@ -54,6 +80,20 @@ export type AuditAction =
   | 'tool.install'
   | 'tool.activate'
   | 'tool.delete'
+  // Bulk re-provisioning of the required tools (`POST /api/tools/repair`) and a manual manifest
+  // refresh (`POST /api/tools/manifest/refresh`) — both `tool.manage` (plan 09 §4.4's table names
+  // this exact route set: "install/activate/delete/check/manifest-refresh"), both previously
+  // ungated and unaudited (a security-sweep finding, `tools/routes.ts`). `tool.manifest.refresh`
+  // is the literal name plan 09 §4.5's audit table already gives this action.
+  | 'tool.repair'
+  | 'tool.manifest.refresh'
+  // The operator-triggered adb server restart (plan 88 §3.10, §4.8, §5 step
+  // 88.8) — `tool.manage`, same as every other row in this group, but its
+  // own action rather than folded into `tool.repair`: it drops every other
+  // program's adb connection on this machine too (Android Studio, a `adb
+  // logcat` in a terminal), which is a materially different blast radius
+  // from re-provisioning one of Enkaku's own tools.
+  | 'adb.restart'
   | 'settings.update'
   | 'retention.gc'
   // AI agent records (plan 65 §4.5, §5.5) — creating/editing/deleting the

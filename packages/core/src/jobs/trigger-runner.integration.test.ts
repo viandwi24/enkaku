@@ -63,7 +63,7 @@ function fakeSessions(): SessionManager {
     closeDevice: async () => {},
     closeIfIdle: async () => {},
     idleSessions: () => [],
-    closeAll: async () => {},
+    closeAll: async () => 0,
   }
 }
 

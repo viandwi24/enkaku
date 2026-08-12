@@ -81,6 +81,7 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
  * taken, without a real scrcpy socket or adb transport.
  */
 interface RecordedCalls {
+  tap: { p: Point; opts: { holdMs?: [number, number]; rng?: () => number } | undefined }[]
   swipe: { from: Point; to: Point; ms: number }[]
   gesture: GestureSample[][]
   text: string[]
@@ -92,9 +93,11 @@ function fakeGestureSession(opts: {
   withGesture?: boolean
   withTypeText?: boolean
 }): { session: DeviceSession; calls: RecordedCalls } {
-  const calls: RecordedCalls = { swipe: [], gesture: [], text: [], typeText: [] }
+  const calls: RecordedCalls = { tap: [], swipe: [], gesture: [], text: [], typeText: [] }
   const input: Record<string, unknown> = {
-    tap: async () => {},
+    tap: async (p: Point, tapOpts?: { holdMs?: [number, number]; rng?: () => number }) => {
+      calls.tap.push({ p, opts: tapOpts })
+    },
     swipe: async (from: Point, to: Point, ms: number) => {
       calls.swipe.push({ from, to, ms })
     },
@@ -128,6 +131,49 @@ function fakeGestureSession(opts: {
 // perCharMs, asserted below) stays at the schema's real default.
 const NATURAL_TIMING: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0] }
 const INSTANT_TIMING: TimingSettings = { ...DEFAULT_TIMING, profile: 'instant', betweenActionMs: [0, 0] }
+
+/**
+ * The regression test for the original defect: `DeviceSettings.timing.tapJitterMs`
+ * was declared in the schema and rendered in Studio's Settings panel, but no
+ * production code read it — the real tap-hold duration was a hardcoded
+ * literal inside the scrcpy input drivers (`40 + Math.random() * 80`) that
+ * happened to coincide with the schema's own default range, which is exactly
+ * why nobody noticed. This asserts `timing.tapJitterMs` actually reaches
+ * `session.input.tap`'s second argument — the one place downstream of
+ * `createDeviceExecutor` where a silently-ignored setting would go unnoticed.
+ */
+describe('createDeviceExecutor — tap honours tapJitterMs (the setting reaches the driver, not just the schema)', () => {
+  test('a configured tapJitterMs range is handed to session.input.tap as opts.holdMs', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [500, 900] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tap', { target: { point: { x: 10, y: 20 } } }))
+    expect(calls.tap).toHaveLength(1)
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([500, 900])
+  })
+
+  test('a different tapJitterMs range produces a different opts.holdMs — proof it is read fresh, not a stale default', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timingA: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [10, 20] }
+    await createDeviceExecutor({ session, timing: timingA })(call('tap', { target: { point: { x: 0, y: 0 } } }))
+
+    const timingB: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [3000, 4000] }
+    await createDeviceExecutor({ session, timing: timingB })(call('tap', { target: { point: { x: 0, y: 0 } } }))
+
+    expect(calls.tap).toHaveLength(2)
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([10, 20])
+    expect(calls.tap[1]!.opts?.holdMs).toEqual([3000, 4000])
+    expect(calls.tap[0]!.opts?.holdMs).not.toEqual(calls.tap[1]!.opts?.holdMs)
+  })
+
+  test('with no timing supplied at all, DEFAULT_TIMING.tapJitterMs ([40, 120] — the old hardcoded literal\'s exact bounds) still reaches opts.holdMs', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session })
+    await execute(call('tap', { target: { point: { x: 10, y: 20 } } }))
+    expect(DEFAULT_TIMING.tapJitterMs).toEqual([40, 120])
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([40, 120])
+  })
+})
 
 describe('createDeviceExecutor — swipe under profile natural vs instant (plan 40 §4.4, acceptance #7)', () => {
   test('natural: an engine with gesture() gets a curved path whose endpoints match the call exactly', async () => {

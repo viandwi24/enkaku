@@ -59,16 +59,43 @@ export class AdbUsbTransport implements Transport {
   }
 }
 
-/** Transport `adb-tcp` (wireless / redroid): connect/disconnect eksplisit. */
+/** Transport `adb-tcp` (wireless / OTG / redroid) — see the two methods below for what changed under plan 88 §3.7 and why. */
 export class AdbTcpTransport extends AdbUsbTransport {
   override readonly id = 'adb-tcp'
 
+  /**
+   * Ensure-connected, not connect (plan 88 §3.7, §5 step 88.1). A session
+   * starting on a device adb already lists as `device` must not re-dial —
+   * `host:connect` on an address that is already up is at best redundant
+   * and, on a queued device, unnecessary contention. Only when adb does NOT
+   * already have it does this fall back to a direct dial, exactly as
+   * `connect()` always did. Step 88.2 replaces that fallback with the full
+   * reconnect ladder (remembered addresses, then an optional sweep,
+   * `packages/core/src/registry/reconnect.ts`) — this ensure-connected shape
+   * is the seam it slots into; nothing here needs to change again for that.
+   */
   override async connect(): Promise<void> {
+    const known = await this.client.listDevices()
+    const alreadyUp = known.some((d) => d.serial === this.serial && d.state === 'device')
+    if (alreadyUp) return
     // serial adb-tcp = "host:port"
     await this.client.connectDevice(this.serial)
   }
 
+  /**
+   * A documented no-op (plan 88 §3.7, fixes F12/H6). This used to issue
+   * `host:disconnect`, which drops the device's adb transport for the WHOLE
+   * farm, not just the caller's session — closing one Studio wall tile
+   * silently kicked a wireless (or OTG) phone off adb entirely, and it was
+   * not always recoverable from Studio afterwards (H6). Transport lifetime
+   * is the registry's and the operator's explicit action now (plan 88 §4.6),
+   * never a session's — a session ending must never mean "the farm loses
+   * this device". `DeviceSession.close()` still calls this
+   * (`packages/session/src/session.ts`) for interface symmetry with a
+   * future transport that DOES have session-scoped state to release; adb-tcp
+   * itself has none, so the call lands here and does nothing.
+   */
   override async disconnect(): Promise<void> {
-    await this.client.disconnectDevice(this.serial)
+    // Intentionally empty — see the doc comment above.
   }
 }

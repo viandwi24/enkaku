@@ -49,23 +49,32 @@ const MAX_SHEET_SCROLL_ATTEMPTS = 5 // bounded — plan 86 §4.3; an account lis
 export type ParsedTarget = { kind: 'position'; position: number } | { kind: 'username'; username: string }
 
 /**
+ * What "I did not specify a target" means: the first account that is not the one already signed in.
+ *
+ * Position 2 is the only defensible default. Position 1 is the current account (plan §3.3), and no
+ * username could be a default without guessing at somebody's account list.
+ */
+export const DEFAULT_TARGET = '2'
+
+/**
  * `target` is one plain string, not a `z.union` and not a second field — plan 86 §3.2 rejects both
  * alternatives on this pack's own history: `commentProbe` was an enum whose default the run form
  * failed to apply, so pressing Run with nothing touched submitted an empty string and the job died
- * on a validation error before doing anything. A plain string cannot fail that way — and here, an
- * accidentally-empty submission gets THIS function's own clear, coded rejection instead of a cryptic
- * one.
+ * on a validation error before doing anything.
  *
- * `/^\d+$/` after trimming means "list position"; anything else means "username" (plan §3.2). Both
- * rejections below are checked here, independent of the device, because they are true for every
- * account list this script will ever see: position 1 is always the currently signed-in account
- * (plan §3.3), and an empty string can never be a username.
+ * That history is also why a blank target resolves to `DEFAULT_TARGET` here rather than being
+ * rejected, which is what this function did first. `.default()` in the schema only fires when the
+ * key is ABSENT; the run form's observed behaviour is to submit `""` for a field nobody touched, so
+ * a schema default alone would not have covered the very case it exists for. Rejecting a blank with
+ * a tidy coded error is still a job that dies before doing anything — a better error message for a
+ * failure that should not happen at all.
+ *
+ * `/^\d+$/` after trimming means "list position"; anything else means "username" (plan §3.2).
+ * Position 1 is rejected here, independent of the device, because it is true of every account list
+ * this script will ever see: position 1 is always the currently signed-in account (plan §3.3).
  */
 export function parseTarget(raw: string): ParsedTarget {
-  const trimmed = raw.trim()
-  if (trimmed === '') {
-    throw Object.assign(new Error('target is empty — give a list position (2, 3, …) or a username'), { code: 'E_INVALID_TARGET' })
-  }
+  const trimmed = raw.trim() === '' ? DEFAULT_TARGET : raw.trim()
   if (/^\d+$/.test(trimmed)) {
     const position = Number.parseInt(trimmed, 10)
     if (position === 1) {
@@ -335,8 +344,12 @@ async function resolveTargetInSheet(ctx: ScriptContext<unknown>, target: ParsedT
 const paramsSchema = z.object({
   target: z
     .string()
+    // Every `auto-scroll` parameter carries a default; this one was the odd exception, so pressing
+    // Run without typing anything killed the job on a validation error. See `parseTarget` for why
+    // the blank case is ALSO handled there and not by this default alone.
+    .default(DEFAULT_TARGET)
     .describe(
-      'List position (2, 3, …) or username of the account to switch to. Position 1 — the currently signed-in account — and "Tambah akun" are never valid targets.',
+      'List position (2, 3, …) or username of the account to switch to. Leave empty to switch to position 2. Position 1 — the currently signed-in account — and "Tambah akun" are never valid targets.',
     )
     .meta({ title: 'Target account' }),
 })

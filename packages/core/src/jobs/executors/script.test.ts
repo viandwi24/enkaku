@@ -7,6 +7,7 @@ import { openDb, runMigrations, type Db } from '../../db'
 import { scripts } from '../../db/schema'
 import { createDevSlotStore } from '../../plugins/dev-slots'
 import { createScriptRegistry } from '../../scripts/registry'
+import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
 import { createScriptExecutor } from './script'
 
@@ -45,7 +46,7 @@ function fakeSessions() {
     closeDevice: async () => {},
     closeIfIdle: async () => {},
     idleSessions: () => [],
-    closeAll: async () => {},
+    closeAll: async () => 0,
   }
 }
 
@@ -201,6 +202,66 @@ describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared acro
 
     expect(namespaces).toEqual(['tiktok', 'tiktok'])
   }, 20000)
+})
+
+/**
+ * `validateParams` (plan 95 §5 step 95.6, fixes F10) — before this plan the
+ * comment on this method said params were "just passed straight through";
+ * now it validates against the SAME `paramsSchema` a run form would read,
+ * looked up through the registry by the `scriptId` `validateScriptForRun`
+ * passes in (the fallback executor is one instance shared by every
+ * non-built-in script, so it cannot know which schema applies any other
+ * way).
+ */
+describe('createScriptExecutor.validateParams (plan 95 §5 step 95.6)', () => {
+  function registryWithSchema(db: Db, paramsSchema: unknown) {
+    db.insert(scripts)
+      .values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, paramsSchema, createdAt: new Date() })
+      .run()
+    return createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+  }
+
+  test('an out-of-range value is rejected with the path and message the plan names, and carries EnkakuError.issues', () => {
+    const db = setUpDb()
+    const registry = registryWithSchema(db, {
+      type: 'object',
+      properties: { videos: { type: 'integer', maximum: 2000 } },
+      required: ['videos'],
+    })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+
+    let caught: unknown
+    try {
+      executor.validateParams({ videos: 9999 }, 'checkout')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect((caught as EnkakuError).code).toBe('invalid_job_params')
+    expect((caught as EnkakuError).issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+  })
+
+  test('a value inside every bound passes through unchanged', () => {
+    const db = setUpDb()
+    const registry = registryWithSchema(db, { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } } })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(executor.validateParams({ videos: 30 }, 'checkout')).toEqual({ videos: 30 })
+  })
+
+  test('a script with no declared paramsSchema accepts anything (F10: no schema is not a violation)', () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'no-params', name: 'no-params', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(executor.validateParams({ anything: 'goes' }, 'no-params')).toEqual({ anything: 'goes' })
+  })
+
+  test('an unknown scriptId throws unknown_script rather than crashing on a missing entry', () => {
+    const db = setUpDb()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(() => executor.validateParams({}, 'does-not-exist')).toThrow(EnkakuError)
+  })
 })
 
 process.on('exit', () => {

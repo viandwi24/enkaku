@@ -3,15 +3,17 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ReconcileReport, RegistryResponse } from '@enkaku/protocol'
+import type { ReconcileReport, RegistryResponse, SweepReport } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices } from '../db/schema'
+import type { BatteryMonitor } from '../device/battery'
 import { createDeviceLifecycle } from '../device/lifecycle'
 import type { Lease, LeaseManager } from '../lease/lease-manager'
 import { deleteDeviceTags } from '../registry/device-tags'
+import { EnkakuError } from '../util/errors'
 import { createLogger } from '../util/logger'
 import { createDeviceRoutes } from './devices'
 
@@ -64,7 +66,15 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function makeApp(role: 'admin' | 'operator' | null = 'admin', opts: { rescan?: () => Promise<ReconcileReport> | null } = {}) {
+function makeApp(
+  role: 'admin' | 'operator' | null = 'admin',
+  opts: {
+    rescan?: () => Promise<ReconcileReport> | null
+    battery?: () => BatteryMonitor | null
+    registry?: () => Promise<RegistryResponse>
+    sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
+  } = {},
+) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -76,14 +86,15 @@ function makeApp(role: 'admin' | 'operator' | null = 'admin', opts: { rescan?: (
     role,
     createDeviceRoutes({
       db,
-      registry: async () => emptyRegistry(),
-      battery: () => null,
+      registry: opts.registry ?? (async () => emptyRegistry()),
+      battery: opts.battery ?? (() => null),
       audit,
       dataDir,
       lifecycle,
       heldByOf: () => null,
       broadcast: (msg) => broadcast.push(msg),
       ...(opts.rescan ? { rescan: opts.rescan } : {}),
+      ...(opts.sweeper ? { sweeper: opts.sweeper } : {}),
     }),
   )
   return { db, app, dataDir, broadcast }
@@ -313,6 +324,131 @@ describe('PUT /api/devices/:id/cluster (plan 22.0 §4.4, acceptance #1, #2)', ()
   })
 })
 
+/**
+ * Security fix (plan 09 §4.4's `device.owner.set`, never carried into the
+ * ACL until now): `PATCH /:id` let any authenticated operator set a
+ * device's `ownerId` to themselves or anyone else, with no permission check
+ * and no audit trail — defeating the ownership model `canUseDevice`
+ * otherwise enforces for lease acquisition, job enqueue, and the adb
+ * endpoint. Only the `ownerId` transition is gated; `label`/`settings`
+ * stay ordinary operator work.
+ */
+describe('PATCH /api/devices/:id — ownerId reassignment (security fix, plan 09 §4.4)', () => {
+  const patchReq = (body: unknown) => ({ method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+  test('an operator cannot reassign ownerId — 403 auth.forbidden, the row is untouched, and nothing is audited', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+
+    const res = await app.request('/a', patchReq({ ownerId: 'operator-self' }))
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.ownerId).toBeNull()
+    expect(db.select().from(auditLog).all()).toHaveLength(0)
+  })
+
+  test('an operator cannot CLEAR an existing owner\'s ownerId either', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+    db.update(devices).set({ ownerId: 'owner-1' }).where(eq(devices.id, 'a')).run()
+
+    const res = await app.request('/a', patchReq({ ownerId: null }))
+    expect(res.status).toBe(403)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.ownerId).toBe('owner-1')
+  })
+
+  test('an admin CAN reassign ownerId, and it is audited with both the old and the new owner', async () => {
+    const { db, app } = makeApp('admin')
+    seedDevice(db, 'a')
+    db.update(devices).set({ ownerId: 'owner-1' }).where(eq(devices.id, 'a')).run()
+
+    const res = await app.request('/a', patchReq({ ownerId: 'owner-2' }))
+    expect(res.status).toBe(200)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.ownerId).toBe('owner-2')
+
+    const entries = db.select().from(auditLog).all()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.action).toBe('device.owner')
+    expect(entries[0]!.target).toBe('a')
+    expect(entries[0]!.meta).toEqual({ from: 'owner-1', to: 'owner-2' })
+  })
+
+  test('no authenticated user is refused (403), same as every other admin-shaped mutation on this router', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a', patchReq({ ownerId: 'someone' }))
+    expect(res.status).toBe(403)
+  })
+
+  test('a PATCH that repeats the CURRENT ownerId is a no-op — not gated, not audited (idempotent)', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+    db.update(devices).set({ ownerId: 'owner-1' }).where(eq(devices.id, 'a')).run()
+
+    const res = await app.request('/a', patchReq({ ownerId: 'owner-1' }))
+    expect(res.status).toBe(200)
+    expect(db.select().from(auditLog).all()).toHaveLength(0)
+  })
+
+  test('an operator CAN still patch label/settings on the SAME request when ownerId is left out entirely', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+
+    const res = await app.request('/a', patchReq({ label: 'Renamed' }))
+    expect(res.status).toBe(200)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.label).toBe('Renamed')
+  })
+})
+
+/**
+ * `PATCH /:id` had NO blanket `requirePermission` at all before this fix —
+ * only the targeted `device.owner.set` check on the `ownerId` transition
+ * (the describe block above). A caller with no `ownerId` in the body could
+ * reach `label`/`settings` with no permission check whatsoever. Now gated on
+ * `device.settings`, the same permission every sibling mutation on this
+ * router already declares (`PUT /:id/tags`, `PATCH /:id/drivers`, …) — a
+ * no-op for who gets in today (both `admin` and `operator` already hold
+ * `device.settings`) but not for what the router says it requires.
+ */
+describe('PATCH /api/devices/:id — blanket device.settings gate (plan 87, mvp-3 Finding 3)', () => {
+  const patchReq = (body: unknown) => ({ method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+  test('no authenticated user is refused (403) for a label-only patch — no ownerId in the body at all', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'a')
+    const res = await app.request('/a', patchReq({ label: 'Renamed' }))
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.label).toBe('Test Phone')
+  })
+
+  test('an admin may still patch label — no lockout', async () => {
+    const { db, app } = makeApp('admin')
+    seedDevice(db, 'a')
+    const res = await app.request('/a', patchReq({ label: 'Renamed' }))
+    expect(res.status).toBe(200)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.label).toBe('Renamed')
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still patch label — no lockout', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'a')
+    const res = await app.request('/a', patchReq({ label: 'Renamed' }))
+    expect(res.status).toBe(200)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.label).toBe('Renamed')
+  })
+})
+
 describe('GET /api/devices?clusterId= (plan 22.0 §4.4, acceptance #4)', () => {
   test('clusterId=<id> returns only that cluster\'s members; clusterId=none returns exactly the unclustered devices', async () => {
     const { db, app } = makeApp()
@@ -454,6 +590,33 @@ describe('POST /:id/monitor/save (plan 24 §4.6) — "save last N lines" writes 
   })
 })
 
+/**
+ * `POST /:id/monitor/save` had NO permission check at all before this fix
+ * (plan 87, mvp-3 Finding 3 — the same "everyone has it anyway" gap `PATCH
+ * /:id` had): any authenticated caller could reach it. Now gated on
+ * `device.settings`, the same permission its siblings on this router
+ * already use.
+ */
+describe('POST /:id/monitor/save — device.settings gate (plan 87, mvp-3 Finding 3)', () => {
+  const saveReq = (body: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+  test('no authenticated user is refused (403)', async () => {
+    const { db, app } = makeApp(null)
+    seedDevice(db, 'dev-1')
+    const res = await app.request('/dev-1/monitor/save', saveReq({ kind: 'logcat', lines: ['x'] }))
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still save — no lockout', async () => {
+    const { db, app } = makeApp('operator')
+    seedDevice(db, 'dev-1')
+    const res = await app.request('/dev-1/monitor/save', saveReq({ kind: 'logcat', lines: ['x'] }))
+    expect(res.status).toBe(200)
+  })
+})
+
 describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, §4.5, acceptance #7)', () => {
   test('PUT /:id/tags is refused with no authenticated user', async () => {
     const { db, app } = makeApp(null)
@@ -517,6 +680,142 @@ describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, �
   })
 })
 
+/**
+ * `PATCH /:id/drivers` had NO `requirePermission` at all before this fix (a
+ * security-sweep finding, `packages/core/src/api/devices.ts:549`): any
+ * authenticated operator could change a device's transport/display/input/
+ * inspector engines. Now gated on `device.settings` — the same OPERATOR
+ * permission `PUT /:id/tags`/`PUT /:id/cluster` already use — and audited as
+ * `device.drivers`.
+ */
+describe('PATCH /api/devices/:id/drivers (security fix)', () => {
+  function driversRegistry(): RegistryResponse {
+    const engine = (id: string, kind: 'transport' | 'display' | 'input' | 'inspector' | 'network') => ({
+      id,
+      displayName: id,
+      kind,
+      capabilities: [],
+      locks: [],
+      requires: [],
+      configSchema: {},
+      available: true,
+    })
+    return {
+      transports: [engine('adb', 'transport')],
+      displays: [engine('scrcpy', 'display')],
+      inputs: [engine('adb', 'input')],
+      inspectors: [engine('ui-server', 'inspector')],
+      networks: [engine('none', 'network')],
+      tools: [],
+    }
+  }
+  const driversBody = { transport: 'adb', display: 'scrcpy', input: 'adb', inspection: 'ui-server' }
+  const req = () => ({ method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(driversBody) })
+
+  test('no authenticated user is refused (403), and the row is untouched', async () => {
+    const { db, app } = makeApp(null, { registry: async () => driversRegistry() })
+    seedDevice(db, 'a')
+    const res = await app.request('/a/drivers', req())
+    expect(res.status).toBe(403)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    // The schema default (`db/schema.ts`) — `driversBody.transport` ('adb') never lands.
+    expect(row?.transport).toBe('adb-usb')
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still change drivers — no lockout', async () => {
+    const { db, app } = makeApp('operator', { registry: async () => driversRegistry() })
+    seedDevice(db, 'a')
+    const res = await app.request('/a/drivers', req())
+    expect(res.status).toBe(200)
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect(row?.transport).toBe('adb')
+    expect(row?.display).toBe('scrcpy')
+  })
+
+  test('a successful change is audited as device.drivers with the before/after engines', async () => {
+    const { db, app } = makeApp('admin', { registry: async () => driversRegistry() })
+    seedDevice(db, 'a')
+    const res = await app.request('/a/drivers', req())
+    expect(res.status).toBe(200)
+    const entries = db.select().from(auditLog).all()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.action).toBe('device.drivers')
+    expect(entries[0]!.target).toBe('a')
+    // `seedDevice` never sets these columns explicitly, so the schema's own defaults apply
+    // (`db/schema.ts`) — asserted here rather than re-derived, so this test breaks loudly if
+    // those defaults ever change.
+    expect(entries[0]!.meta).toEqual({ from: { transport: 'adb-usb', display: 'scrcpy', input: 'scrcpy-uhid', inspection: 'ui-server' }, to: driversBody })
+  })
+
+  test('an unauthenticated request never even reaches engine-selection validation', async () => {
+    // A bogus engine combination would 400 (UNKNOWN_ENGINE) if the request got past auth —
+    // asserting 403 here proves the permission check runs FIRST, not merely that some check does.
+    const { db, app } = makeApp(null, { registry: async () => driversRegistry() })
+    seedDevice(db, 'a')
+    const res = await app.request(
+      '/a/drivers',
+      { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ transport: 'does-not-exist', display: 'x', input: 'x', inspection: 'x' }) },
+    )
+    expect(res.status).toBe(403)
+  })
+})
+
+/**
+ * `POST /:id/unquarantine` had NO permission check at all before this fix (a
+ * security-sweep finding, `packages/core/src/api/devices.ts:561`), while
+ * `device.quarantine` is admin-only in `auth/acl.ts`: any authenticated
+ * operator could clear a thermal/safety quarantine. Now gated on
+ * `device.quarantine` and audited as `device.unquarantine`.
+ */
+describe('POST /api/devices/:id/unquarantine (security fix)', () => {
+  function quarantinedBattery(unquarantined: string[]): () => BatteryMonitor {
+    return () => ({
+      start: () => {},
+      stop: () => {},
+      pollOnce: async () => {},
+      unquarantine: (deviceId: string) => {
+        unquarantined.push(deviceId)
+        return true
+      },
+    })
+  }
+
+  test('an operator is refused (403) — device.quarantine is admin-only — and unquarantine is never called', async () => {
+    const calls: string[] = []
+    const { db, app } = makeApp('operator', { battery: quarantinedBattery(calls) })
+    seedDevice(db, 'a')
+    const res = await app.request('/a/unquarantine', { method: 'POST' })
+    expect(res.status).toBe(403)
+    expect(calls).toEqual([])
+    expect(db.select().from(auditLog).all()).toHaveLength(0)
+  })
+
+  test('no authenticated user is refused (403)', async () => {
+    const calls: string[] = []
+    const { db, app } = makeApp(null, { battery: quarantinedBattery(calls) })
+    seedDevice(db, 'a')
+    const res = await app.request('/a/unquarantine', { method: 'POST' })
+    expect(res.status).toBe(403)
+  })
+
+  test('an admin CAN unquarantine, and it is audited', async () => {
+    const calls: string[] = []
+    const { db, app } = makeApp('admin', { battery: quarantinedBattery(calls) })
+    seedDevice(db, 'a')
+    db.update(devices).set({ status: 'quarantined', quarantineReason: 'overheating' }).where(eq(devices.id, 'a')).run()
+
+    const res = await app.request('/a/unquarantine', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(calls).toEqual(['a'])
+
+    const entries = db.select().from(auditLog).all()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.action).toBe('device.unquarantine')
+    expect(entries[0]!.target).toBe('a')
+    expect(entries[0]!.meta).toEqual({ reason: 'overheating' })
+  })
+})
+
 describe('POST /rescan (plan 85 §3.3, §4.4, §4.6, §5 step 85.2)', () => {
   const sampleReport: ReconcileReport = {
     seen: 5,
@@ -562,6 +861,80 @@ describe('POST /rescan (plan 85 §3.3, §4.4, §4.6, §5 step 85.2)', () => {
     const { app } = makeApp('admin', { rescan: () => null })
     const res = await app.request('/rescan', { method: 'POST' })
     expect(res.status).toBe(501)
+  })
+})
+
+describe('POST /scan (plan 88 §3.5, §4.5, §4.6, §5 step 88.3)', () => {
+  const sampleReport: SweepReport = {
+    networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', addresses: 256 }],
+    scanned: 251,
+    skipped: 3,
+    answered: 2,
+    connected: 2,
+    identified: 2,
+    adopted: ['SER1'],
+    discovered: ['SER2'],
+    conflicts: [],
+    durationMs: 1234,
+  }
+
+  test('returns the sweeper\'s report and audits it (as device.rescan, meta.via: "scan" — see the route\'s own comment)', async () => {
+    const { app, db } = makeApp('admin', { sweeper: { sweep: async () => sampleReport } })
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual(sampleReport)
+    const entries = db.select().from(auditLog).all()
+    const entry = entries.find((e) => e.action === 'device.rescan' && (e.meta as { via?: string } | null)?.via === 'scan')
+    expect(entry).toBeDefined()
+  })
+
+  test('is refused with no authenticated user, same as every other admin-style device mutation here', async () => {
+    const { app } = makeApp(null, { sweeper: { sweep: async () => sampleReport } })
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(403)
+  })
+
+  test('an operator (device.settings is an OPERATOR permission) may still trigger a scan', async () => {
+    const { app } = makeApp('operator', { sweeper: { sweep: async () => sampleReport } })
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(200)
+  })
+
+  test('refuses E_NOT_SUPPORTED when no sweeper is wired (orchestrator mode, or the adb subsystem is not ready)', async () => {
+    const { app } = makeApp('admin')
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(501)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NOT_SUPPORTED')
+  })
+
+  test('a sweeper that rejects E_SCAN_BUSY surfaces as 409, not a 500', async () => {
+    const { app } = makeApp('admin', {
+      sweeper: {
+        sweep: async () => {
+          throw new EnkakuError('E_SCAN_BUSY', 'a sweep is already running')
+        },
+      },
+    })
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_SCAN_BUSY')
+  })
+
+  test('a sweeper that rejects E_SCAN_UNAVAILABLE surfaces as 409, not a 500', async () => {
+    const { app } = makeApp('admin', {
+      sweeper: {
+        sweep: async () => {
+          throw new EnkakuError('E_SCAN_UNAVAILABLE', 'no scannable network is configured')
+        },
+      },
+    })
+    const res = await app.request('/scan', { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_SCAN_UNAVAILABLE')
   })
 })
 

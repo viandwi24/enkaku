@@ -115,7 +115,9 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
 }
 

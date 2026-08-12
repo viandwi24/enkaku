@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import { JobCancelResponseSchema, JobCreateResponseSchema, JobLogsResponseSchema, JobResponseSchema, JobStatusSchema, JobsPageResponseSchema, ScriptRefSchema } from '@enkaku/protocol'
 import type { JobLogEntry } from '@enkaku/session'
 import { z } from 'zod'
+import { canCancelJob } from '../auth/acl'
+import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
@@ -58,6 +60,22 @@ export interface JobRoutesDeps {
    * dependency here).
    */
   logBuffer?: { get(jobId: string): JobLogEntry[]; truncated(jobId: string): boolean }
+  /**
+   * `canUseDevice`'s device half (plan 34 §3.5, §4.4) — reused by
+   * `canCancelJob` (`auth/acl.ts`) to decide whether an operator without
+   * `job.cancel.any` may cancel THIS job, via the device it runs on.
+   * Optional, undefined meaning "no ownership data, no restriction", the
+   * same default every other optional ACL dep in this codebase uses (a test
+   * harness, or a host that has not wired auth).
+   */
+  getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
+  /**
+   * Security audit trail (plan 09 §4.5) — `job.cancel` lands here on every
+   * successful cancel, the same convention `batch.cancel`
+   * (`api/batches.ts`) and every device mutation in `api/devices.ts` already
+   * follow. Optional so an existing test harness keeps compiling unchanged.
+   */
+  audit?: AuditLogger
 }
 
 export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono<AuthEnv> {
@@ -152,9 +170,32 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
   // production). `JobCancelResponseSchema` is the schema that actually matches this route; both
   // sides now point at it. `?cancelDescendants=1` (plan 81 §4.4) is opt-in, never automatic — an
   // operator cancelling a runaway chain's root asks for it explicitly.
+  //
+  // `canCancelJob` (server-authoritative, spec §10.1: Studio hiding the button is never the
+  // control) — this route used to call `service.cancel` with no permission or ownership check at
+  // all, so any authenticated operator could cancel any job farm-wide. The job is looked up FIRST
+  // (rather than letting `service.cancel` 404 on a missing one) because the check needs its
+  // `deviceId`; a missing user (a test harness that has not wired auth) skips the check, the same
+  // permissive default `service.enqueue`'s own `actor` check above uses.
   app.post('/:id/cancel', (c) => {
+    const jobId = c.req.param('id')
+    const job = service.get(jobId)
+    if (!job) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const user = c.get('user')
+    if (user) {
+      const device = deps?.getDeviceOwner?.(job.deviceId) ?? null
+      if (!canCancelJob(user, device)) {
+        throw new EnkakuError('auth.forbidden', 'you do not have permission to cancel this job')
+      }
+    }
     const cancelDescendants = ['1', 'true'].includes(c.req.query('cancelDescendants') ?? '')
-    const result = service.cancel(c.req.param('id'), { cancelDescendants })
+    const result = service.cancel(jobId, { cancelDescendants })
+    deps?.audit?.record({
+      userId: user?.id ?? null,
+      action: 'job.cancel',
+      target: jobId,
+      meta: { deviceId: job.deviceId, cancelledDescendants: result.cancelledDescendants },
+    })
     return typedJson(c, JobCancelResponseSchema, result)
   })
 

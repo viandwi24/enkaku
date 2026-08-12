@@ -15,38 +15,17 @@ export const NodeStateSchema = z.object({
 export type NodeState = z.infer<typeof NodeStateSchema>
 
 /**
- * The shape written by a pre-plan-61 `@enkaku/agent` build — kept only for
- * the one-time adoption below (plan 61 §3.3). Never written by this package.
+ * The pre-plan-61 `agent.json` adoption (plan 61 §3.3) was removed per the
+ * dated follow-up in `00-overview.md` §9 (deadline v0.1.7, now passed). A
+ * node upgraded in place from that far back no longer has its old
+ * `agent.json` picked up automatically — see `packages/core/src/daemon.ts`'s
+ * `/agent/ws` rejection for what such a node now experiences on connect.
  */
-const LegacyAgentStateSchema = z.object({
-  agentId: z.string(),
-  credential: z.string(),
-  controlPlaneUrl: z.string(),
-})
-
 export async function loadState(dataDir: string): Promise<NodeState | null> {
   const nodeFile = Bun.file(join(dataDir, 'node.json'))
-  if (await nodeFile.exists()) {
-    const parsed = NodeStateSchema.safeParse(await nodeFile.json().catch(() => null))
-    return parsed.success ? parsed.data : null
-  }
-  // Plan 61 §3.3 compatibility window: a node upgraded in place still has the
-  // pre-rename `agent.json` on disk. Adopt it once and rewrite it as
-  // `node.json` so the node keeps its credential — it does not re-enroll and
-  // does not appear as a second row in the control plane's node list. The
-  // stale `agent.json` is left alone rather than deleted: nothing here should
-  // ever delete somebody's file.
-  const legacyFile = Bun.file(join(dataDir, 'agent.json'))
-  if (!(await legacyFile.exists())) return null
-  const legacy = LegacyAgentStateSchema.safeParse(await legacyFile.json().catch(() => null))
-  if (!legacy.success) return null
-  const state: NodeState = {
-    nodeId: legacy.data.agentId,
-    credential: legacy.data.credential,
-    controlPlaneUrl: legacy.data.controlPlaneUrl,
-  }
-  await saveState(dataDir, state)
-  return state
+  if (!(await nodeFile.exists())) return null
+  const parsed = NodeStateSchema.safeParse(await nodeFile.json().catch(() => null))
+  return parsed.success ? parsed.data : null
 }
 
 export async function saveState(dataDir: string, state: NodeState): Promise<void> {

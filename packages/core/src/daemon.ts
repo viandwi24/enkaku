@@ -26,6 +26,7 @@ import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
 import { createRetentionGc, type RetentionGc } from './maintenance/retention'
+import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes } from './api/artifacts'
 import { createDeviceRoutes } from './api/devices'
@@ -44,6 +45,7 @@ import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
+import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
 import { createAdbStatsRoutes } from './api/adb-stats'
 import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
@@ -125,6 +127,8 @@ import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
 import { createDeviceRegistry, listDevicesWithTags, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
+import { createEndpointStore, type EndpointStore } from './registry/endpoints'
+import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler } from './server/ws-handlers'
@@ -135,6 +139,7 @@ import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
 import { saveForDevice } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
+import { createAdbServerControl, type AdbServerControl } from './tools/adb-server-control'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { CRITICAL_TOOLS, REQUIRED_TOOLS } from './tools/required'
 import { createToolInstallStore } from './tools/store'
@@ -146,7 +151,6 @@ import { findPortHolder } from './doctor/context'
 import pkg from '../package.json'
 
 export const CORE_VERSION = pkg.version
-
 
 export interface Daemon {
   start(): Promise<void>
@@ -162,13 +166,18 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let registry: DeviceRegistry | null = null
   /** The discovery reconciler (plan 85 §3.3, §4.4, fixes F8/F9/F10) — null until the adb subsystem comes up (or in orchestrator mode, where it never does), and stopped/cleared in `stop()`. */
   let reconciler: DeviceReconciler | null = null
+  /** The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) — null until the adb subsystem comes up (mirrors `reconciler` above), cleared in `stop()`. Used by the restart flow's reattach step and (once step 88.4 lands) per-device connect/reconnect routes. */
+  let reconnector: DeviceReconnector | null = null
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
   let health: DeviceHealth | null = null
+  /** "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — null until the adb subsystem comes up (mirrors `health` above), stopped/cleared in `stop()`. Read-only: it never touches the adb server itself. */
+  let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
   let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
   let retention: RetentionGc | null = null
+let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
   let adbEndpointManager: AdbEndpointManager | null = null
   /** The one bounded adb CLI helper (plan 85 §3.4, §4.5) — `null` only before `start()` builds it and after `stop()` tears it down; `killAll()` is called from `stop()` below. */
@@ -266,6 +275,98 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         log: log.child('notify'),
       })
 
+      // The shared adb server control (plan 88 §3.10, §4.8, fixes F19) — the
+      // ONE function in the workspace that runs `kill-server` (spec §10.4).
+      // Both the Toolchain Manager's version swap (wired into `toolchain`
+      // immediately below) and the operator's Restart adb server button
+      // (`tools/routes.ts`, mounted much further down) call THIS SAME
+      // instance's `cycle()`, so the two share one mutex and can never
+      // interleave.
+      //
+      // Every dependency below is a forward reference — the same pattern
+      // `stopTracker`/`startTracker` already used for `registry` two lines
+      // down. `sessions`, `leases`, `jobStore`, `host`, `reconnector`,
+      // `reconciler` and `endpoints` do not exist yet at this point in
+      // `start()`; `cycle()` itself is never CALLED until long after every
+      // one of them does, because a version swap or a restart can only ever
+      // be triggered by an HTTP request arriving after `start()` finishes.
+      const adbServerControl: AdbServerControl = createAdbServerControl({
+        getClient: () => adb,
+        stopTracker: async () => {
+          await registry?.stop()
+        },
+        startTracker: async () => {
+          await registry?.start()
+        },
+        // F19: `drainSessions` was an unwired optional dep since M1 ("a
+        // no-op in M1 — filled in by Plan 04"). Plan 04 shipped long ago;
+        // the hook was never filled until now. Sessions and manual leases
+        // are always drained; a running JOB is force-failed only when the
+        // caller already decided to proceed despite it (`force` — see the
+        // route's own `E_ADB_BUSY_FARM` guard, which runs BEFORE `cycle()`
+        // is ever called).
+        drainSessions: async ({ force }) => {
+          const sessionsClosed = (await sessions?.closeAll('adb-server-restart')) ?? 0
+          const leasesReleased = leases.releaseAll?.({ reason: 'adb-server-restart' }) ?? 0
+          const jobsFailed: string[] = []
+          if (force) {
+            const running = jobStore.list({ status: 'running', limit: 1000 })
+            for (const job of running.rows) {
+              host.finishExternally(job.id, 'failed', 'the adb server restarted', 'ADB_SERVER_RESTARTED')
+              jobsFailed.push(job.id)
+            }
+          }
+          return { sessionsClosed, leasesReleased, jobsFailed }
+        },
+        // Reattach every remembered network address (plan 88 §3.2, §3.10) —
+        // after a stop, adb's transport table is empty and it will not go
+        // looking (F10); without this a 20-device OTG chassis would come
+        // back as 20 offline rows. Bounded concurrency: dialling twenty
+        // phones one at a time would blow well past "usually takes 5-15
+        // seconds" (§3.10); dialling all twenty at once would hammer the
+        // adb server the instant it comes back up.
+        reattachEndpoints: async () => {
+          if (!reconnector) return { attempted: 0, succeeded: 0, failed: [] }
+          const reconnectorRef = reconnector
+          const targets = endpoints.allWithEndpoints()
+          const labelFor = (stableId: string): string =>
+            db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()?.label ?? stableId
+          let succeeded = 0
+          const failed: Array<{ stableId: string; label: string }> = []
+          const REATTACH_CONCURRENCY = 6
+          const queue = [...targets]
+          async function worker(): Promise<void> {
+            for (;;) {
+              const next = queue.shift()
+              if (!next) return
+              const outcome = await reconnectorRef
+                .reconnect(next.stableId)
+                .catch((err): { result: 'not-found' } => {
+                  log.child('adb-server-control').warn(`reattach: ${next.stableId} threw, treating as not-found: ${String(err)}`)
+                  return { result: 'not-found' }
+                })
+              if (outcome.result === 'connected' || outcome.result === 'already-connected') succeeded += 1
+              else failed.push({ stableId: next.stableId, label: labelFor(next.stableId) })
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(REATTACH_CONCURRENCY, targets.length) }, () => worker()))
+          return { attempted: targets.length, succeeded, failed }
+        },
+        reconcileOnce: async () => {
+          await reconciler?.runOnce()
+        },
+        onPhase: (phase, reason, detail) => hub.broadcast({ type: 'adb.server.phase', payload: { phase, reason, detail } }),
+        log: log.child('adb-server-control'),
+        // `adbControl.drainTimeoutMs` (plan 88 §4.2, promoted to a real
+        // setting in step 88.9) — a forward reference to `settingsStore`,
+        // declared a few lines below this object literal but only ever READ
+        // once a request actually calls `cycle()`, long after `start()` has
+        // finished building it. Same pattern as `registry`/`sessions`/etc.
+        // elsewhere in this function, just against a `const` rather than a
+        // nullable `let` — read fresh on every call, never captured.
+        drainTimeoutMs: () => settingsStore.get().adbControl.drainTimeoutMs,
+      })
+
       const toolchain = new ToolchainManager({
         dataDir: cfg.dataDir,
         coreVersion: CORE_VERSION,
@@ -273,17 +374,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         emit: (ev) => hub.broadcast(toolchainEventToMessage(ev)),
         onLog: (level, msg) => log.child('toolchain')[level](msg),
         remoteManifestUrl: process.env.ENKAKU_TOOLS_MANIFEST_URL,
-        adbSwapHook: createAdbSwapCoordinator({
-          getClient: () => adb,
-          stopTracker: async () => {
-            await registry?.stop()
-          },
-          startTracker: async () => {
-            await registry?.start()
-          },
-          // drainSessions: a no-op in M1 — filled in by Plan 04 (draining live leases and sessions)
-          log: log.child('adb-swap'),
-        }),
+        adbSwapHook: createAdbSwapCoordinator(adbServerControl),
       })
       await toolchain.init() // layout + manifest cache + reconcile (adopt pre-baked)
 
@@ -294,6 +385,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // move that logic, just the one function call it was already making.
       const authMode = resolveAuthMode(cfg)
       const settingsStore = createFarmSettingsStore(db, { authMode })
+
+      // The address book (plan 88 §3.2, §4.3, fixes F10) — read-only about
+      // adb itself, so it can be built here, well before the adb subsystem
+      // exists: `observe`/`declare`/`candidates` only ever touch `db` and
+      // `settingsStore`. Passed into `createDeviceRegistry` below (its
+      // successful-probe path calls `endpoints.observe`) and into
+      // `adbServerControl`'s `reattachEndpoints` above (via forward ref).
+      const endpoints: EndpointStore = createEndpointStore({
+        db,
+        settings: () => settingsStore.get().discovery,
+      })
 
       // The ONE bounded adb CLI helper (plan 85 §3.4, §4.5, fixes F11/F12) —
       // built here, unconditionally, before `adb` exists, mirroring every
@@ -1341,6 +1443,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         listDevices: () => listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId)),
         deviceCount: () => db.select().from(devices).all().length,
         log: log.child('http'),
+        audit,
         version: CORE_VERSION,
         adbServerVersion: async () => {
           if (!adb) return null
@@ -1348,12 +1451,57 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         adbState: () => adbState,
         toolchain,
+        // The "Restart adb server" button's deps (plan 88 §3.10, §4.8, §5
+        // step 88.8) — every closure below is a forward reference exactly
+        // like `adbServerControl`'s own deps above; none of it is invoked
+        // until an operator's click arrives, long after boot finishes.
+        adbControl: {
+          control: adbServerControl,
+          binaryPath: () => adb?.binaryPath ?? null,
+          preview: () => ({
+            devicesTotal: db.select().from(devices).all().length,
+            sessionsActive: sessions?.activeDeviceIds?.().length ?? 0,
+            networkDevicesWithEndpoint: endpoints.allWithEndpoints().length,
+          }),
+          busyFarm: () => {
+            const running = jobStore.list({ status: 'running', limit: 1000 })
+            const deviceLabels = new Map(
+              db
+                .select({ id: devices.id, label: devices.label })
+                .from(devices)
+                .all()
+                .map((d) => [d.id, d.label] as const),
+            )
+            const runningJobs = running.rows.map((j) => ({
+              id: j.id,
+              label: `${j.scriptName ?? 'a script'} on ${deviceLabels.get(j.deviceId) ?? j.deviceId}`,
+            }))
+            const heldDevices = db
+              .select({ id: devices.id, label: devices.label })
+              .from(devices)
+              .where(eq(devices.status, 'manual'))
+              .all()
+              .map((d) => ({ deviceId: d.id, label: d.label }))
+            return { runningJobs, heldDevices }
+          },
+          // `adbControl.restartCooldownSec` (plan 88 §4.2, promoted to a real
+          // setting in step 88.9) — read fresh on every call, same as every
+          // other "settings, read live" dep in this codebase.
+          restartCooldownSec: () => settingsStore.get().adbControl.restartCooldownSec,
+        },
         // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
         // is written, so `jobs.scriptId` is always concrete.
         jobRoutes: createJobRoutes(jobService, {
           log: log.child('jobs'),
           resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
           logBuffer: jobLogBuffer,
+          // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
+          // `getDeviceOwner` closure `jobService`'s own `enqueue` check,
+          // `lease.acquire`, batch dispatch, and the adb endpoint already
+          // share, so `POST /:id/cancel` gets the identical ownership answer
+          // the WS `job.cancel` path (wired below) gets.
+          getDeviceOwner,
+          audit,
         }),
         deviceRoutes: createDeviceRoutes({
           db,
@@ -1386,6 +1534,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // Who holds a device's manual lease (plan 71 §4.4) — `leases` is
           // constructed synchronously above too.
           heldByOf: (deviceId) => leases.getHolder(deviceId),
+          // Per-device disconnect/reconnect (plan 88 §3.7, §4.6, §5 step
+          // 88.4) — `leases`/`endpoints`/`jobStore` are constructed
+          // synchronously above, the same reasoning as `heldByOf` just above.
+          // `reconnector`/`sessions` are forward-refs: both are assigned
+          // later in boot (or never, in orchestrator mode / if the adb
+          // subsystem failed to start), same pattern as `rescan`/`onAdmitted`.
+          leases,
+          jobStore,
+          connection: {
+            reconnector: () => reconnector,
+            sessions: () => sessions,
+          },
+          endpoints,
           // The lease-scoped adb endpoint (plan 27 §4.3) — `manager` is
           // constructed unconditionally above, before this point is reached.
           adbEndpoint: { manager: adbEndpointManager!, leases, shellSettings: () => settingsStore.get().shell },
@@ -1426,6 +1587,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           scriptNames: (ids) => jobStore.scriptNames(ids),
           registry: executors,
           findScript,
+          // Plan 95 §5 step 95.7 — rerun-failed's params-schema lookup; see
+          // `scheduleRoutes`'s own `scriptRegistry` wiring below for why.
+          scriptRegistry,
         }),
         scheduleRoutes: createScheduleRoutes({
           db,
@@ -1476,6 +1640,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // resolved once `attachWsRouter` runs.
           transport: () => transportStats?.() ?? null,
           hostAdb: () => hostAdbHandle.stats(),
+          adbHealth: () => adbHealthMonitor?.current() ?? null,
         }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
@@ -1506,7 +1671,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         nodeRoutes: createNodeRoutes({ nodeAuth, db }),
         auth,
         authMode,
-        scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
+        scriptRoutes: createScriptRoutes({ db, audit, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
         pluginRoutes: createPluginRoutes({
           runtime: pluginRuntime,
           audit,
@@ -1558,15 +1723,28 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           async fetch(req, srv) {
             const url = new URL(req.url)
             // The node tunnel authenticates with the credential from enrollment.
-            // `/agent/ws` is the pre-plan-61 path — accepted alongside `/node/ws`
-            // for the same compatibility window as `agent.hello` (§3.3): a node
-            // binary already deployed in the field has this URL hardcoded and
-            // cannot be told to dial somewhere else.
-            if (url.pathname === '/node/ws' || url.pathname === '/agent/ws') {
+            if (url.pathname === '/node/ws') {
               const nodeId = await nodeAuth.verify(req.headers.get('authorization'))
               if (!nodeId) return new Response('unauthorized', { status: 401 })
               if (srv.upgrade(req, { data: { nodeId } })) return undefined
               return new Response('upgrade failed', { status: 400 })
+            }
+            // `/agent/ws` was the pre-plan-61 path, accepted alongside `/node/ws`
+            // for one release (§3.3) so a node binary already deployed in the
+            // field — which has this URL hardcoded and cannot be told to dial
+            // somewhere else — could survive the upgrade. That window closed at
+            // v0.1.7 (00-overview.md §9, now past). Answered explicitly here,
+            // rather than left to fall through to the Studio SPA's 200
+            // catch-all: an old node's WS handshake would otherwise see a plain
+            // HTTP 200 with an HTML body, which is a confusing non-upgrade, not
+            // a legible refusal. `410 Gone` plus a warn naming the path gives
+            // an operator watching the core's logs the actual reason.
+            if (url.pathname === '/agent/ws') {
+              log.warn(`rejected a pre-rename node dialing the removed /agent/ws path — it must be upgraded past plan 61 (see docs/plans/00-overview.md §9)`)
+              return new Response(
+                'this control plane no longer accepts the pre-plan-61 /agent/ws tunnel path (removed at v0.1.7) — upgrade this node binary and re-enroll if needed',
+                { status: 410 },
+              )
             }
             if (url.pathname === '/ws') {
               // A WS handshake does not always carry cookies → support single-use tickets.
@@ -1681,6 +1859,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         onSwept: (r) => audit.record({ userId: null, action: 'retention.gc', meta: r }),
       })
       retention.start()
+
+      // Orphaned agent screenshot blobs (plan 87). These live INSIDE enkaku.db
+      // as full-resolution bytes, so an unswept farm grows the database file
+      // itself — the fastest-growing unbounded thing the MVP audit found. The
+      // sweep only ever deletes blobs no `agent_messages` row still references,
+      // so it can share `retention`'s interval without sharing its opt-in.
+      blobGc = createBlobGc({
+        db,
+        settings: settingsStore,
+        log: log.child('blob-gc'),
+        intervalMinutes: cfg.retention.sweepIntervalMinutes,
+      })
+      blobGc.start()
 
       leases.startReaper()
       stopReaper = () => leases.stopReaper()
@@ -2057,7 +2248,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         })
         const localExecutor = createScriptExecutor({ registry: scriptRegistry, runner })
         executors.setFallback({
-          validateParams: (params) => localExecutor.validateParams(params),
+          // `scriptId` forwarded through (plan 95 §5 step 95.6) — the local
+          // script executor is the SAME instance for every non-built-in
+          // scriptId and needs it to look up which script's `paramsSchema`
+          // to validate against; validity does not depend on which device
+          // (local or node-owned) ends up running the job.
+          validateParams: (params, scriptId) => localExecutor.validateParams(params, scriptId),
           run: (job, ctx) => {
             // Node-owned device → run it on the node; otherwise run locally.
             const owner = remoteSessions?.nodeIdFor(job.deviceId) ?? null
@@ -2099,6 +2295,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           hub,
           log: log.child('registry'),
           states,
+          // The address book's write path (plan 88 §3.2, §4.3, fixes F10) —
+          // a successful probe calls `endpoints.observe`, free and
+          // automatic, on a path that already ran.
+          endpoints,
           // A newly enrolled device inherits the farm defaults (spec §12).
           deviceDefaults: () => settingsStore.get().defaults,
           defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
@@ -2146,6 +2346,25 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         })
         await registry.start()
 
+        // The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) —
+        // built right after `registry` exists, since it needs `onOnline` to
+        // adopt a device it successfully reconnects exactly like a live
+        // tracker `add` event would. Only the ladder through remembered
+        // addresses (step 88.2's own deliverable): no sweep branch yet
+        // (step 88.3's), so an exhausted ladder always reports `not-found`
+        // rather than ever scanning a subnet.
+        reconnector = createDeviceReconnector({
+          client: adb,
+          db,
+          endpoints,
+          registry,
+          settings: () => ({
+            connectSettleMs: settingsStore.get().discovery.connectSettleMs,
+            probeTimeoutMs: settingsStore.get().discovery.scan.probeTimeoutMs,
+          }),
+          log: log.child('reconnect'),
+        })
+
         // The discovery reconciler (plan 85 §3.3, §4.4, §5 step 85.2, fixes
         // F8/F9/F10) — `host:track-devices` speaks on change only, so this
         // is the generalisation of the comment already on
@@ -2173,6 +2392,25 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           log.child('discovery').warn(`boot reconcile pass failed, the periodic scan will retry: ${String(err)}`)
         }
         reconciler.start()
+
+        // "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — built once
+        // `reconciler` exists, since it reads that same object's
+        // `nudgeCounts()`/`offlineSerials()` bookkeeping rather than keeping
+        // a second copy of either. Read-only: this never touches the adb
+        // server itself (F21's rule) — the restart action lives in plan 88
+        // §5 step 88.8's `tools/adb-server-control.ts`, an entirely
+        // different file.
+        const reconcilerRef = reconciler
+        adbHealthMonitor = createAdbServerHealth({
+          client: () => adb,
+          metrics: adbMetrics,
+          nudgeCounts: () => reconcilerRef.nudgeCounts(),
+          offlineSerials: () => reconcilerRef.offlineSerials(),
+          settings: () => settingsStore.get().adbControl,
+          onTransition: (h) => hub.broadcast({ type: 'adb.health', payload: h }),
+          log: log.child('adb-health'),
+        })
+        adbHealthMonitor.start()
 
         recomputeAdbConcurrency()
         adbState = 'ready'
@@ -2202,8 +2440,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       battery = null
       health?.stop()
       health = null
+      adbHealthMonitor?.stop()
+      adbHealthMonitor = null
       retention?.stop()
       retention = null
+      blobGc?.stop()
+      blobGc = null
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
@@ -2222,6 +2464,9 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // exists to catch.
       reconciler?.stop()
       reconciler = null
+      // No `.stop()` of its own — the ladder holds only an in-memory
+      // per-`stableId` mutex map, nothing that outlives the process.
+      reconnector = null
       await registry?.stop()
       registry = null
       // Plan 85 §3.4, §4.5, §5 step 85.3 (fixes F12) — the backstop. Every

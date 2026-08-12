@@ -13,7 +13,26 @@
 #   > Status: implemented — ...
 #   > Ships: packages/core/src/events/recorder.ts
 #
-# Plans with no `Ships:` line are skipped and counted, not guessed at.
+# A plan that genuinely ships no artefact of its own (a conventions document,
+# a draft blocked on a human decision — see FAIL_ON_UNDECLARED_SHIPS below)
+# says so explicitly instead of just omitting the line:
+#
+#   > Ships: none — this is a conventions document, not a milestone plan
+#
+# `none` is only recognised as a standalone word (`none`, or `none ` followed
+# by more prose) — never as a prefix match, so a real path could not
+# accidentally collide with it.
+#
+# THE HOLE THIS CLOSES: a plan with no `Ships:` line at all — neither a real
+# path nor an explicit `none` — used to be skipped and counted, not failed,
+# so it could claim any status in its prose and this script would nod along.
+# That is not hypothetical: plans 84, 85, and 87 each shipped with a stale
+# status line, and 87's went unnoticed for a stretch specifically BECAUSE it
+# had no `Ships:` line — the checker skipped it while reporting overall
+# success. Plan 84 §84.6 added a Definition-of-Done item to stop exactly this
+# drift, and it still happened on the very next plan. An omitted `Ships:`
+# line and a deliberate `Ships: none` now print differently and count
+# differently — see `undeclared` vs `none_count` below.
 #
 # A second rule catches a narrower, sneakier failure than "the artefact is
 # missing": a plan whose `Ships:` artefact genuinely exists, and whose own
@@ -29,9 +48,36 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 mismatch=0
-skipped=0
+undeclared=0
+none_count=0
 partial=0
 admits_unbuilt=0
+
+# ---------------------------------------------------------------------------
+# The switch, in the same shape as `scripts/spec-check.ts`'s `FAIL_ON_GAP`: a
+# single obvious constant, off today, with the count that justifies leaving
+# it off written right here instead of left to memory.
+#
+# `true` since 2026-08-12. When this rule was added it was `false`, because
+# 3 plans (00, 29, 86) had no `Ships:` line at all and failing on day one is
+# how a check like this gets disabled instead of obeyed (see
+# `scripts/spec-check.ts`'s own comment on the same trade-off). All three are
+# now resolved: 00 and 29 declare `Ships: none — ...` explicitly (00 is the
+# conventions document, not a milestone plan; 29 is a draft marked "DO NOT
+# EXECUTE", blocked on a human decision), and 86 — which shipped real,
+# hardware-verified code but predated this convention — had its header
+# reformatted into it, wording untouched. `undeclared` is 0, so the gate is
+# on.
+#
+# What this now costs: a new plan must declare `> Ships: <path>`, or say
+# `> Ships: none — <reason>` when it genuinely ships no artefact. Forgetting
+# fails CI. That is the point — plan 87's own status line drifted unnoticed
+# precisely because a missing `Ships:` line made the checker skip it while
+# reporting success, which is the third time in three plans that a status
+# claim went unchecked. If this ever needs to come off, flip it back here
+# and write down which plan forced it and why, rather than deleting the rule.
+# ---------------------------------------------------------------------------
+FAIL_ON_UNDECLARED_SHIPS=true
 
 # Second rule: a plan may not claim `implemented` while its OWN `> Status:`
 # header admits it did not build something it declared. This is not guessed
@@ -61,12 +107,40 @@ ADMISSION_REGEX='(was not built|were not built|not built|not done|scope cut|cut 
 
 for plan in docs/plans/*.md; do
   ships=$(grep -m1 '^> Ships: ' "$plan" | sed 's/^> Ships: //' | tr -d '\r')
+  status=$(grep -m1 '^> Status: ' "$plan" | sed 's/^> Status: //' | tr -d '\r')
+
   if [ -z "$ships" ]; then
-    skipped=$((skipped + 1))
+    # No `Ships:` line at all — not even an explicit `none`. This is the hole:
+    # print it and count it separately from a deliberate declaration, so it
+    # cannot pass silently no matter what the prose above claims.
+    undeclared=$((undeclared + 1))
+    if [ -n "$status" ]; then
+      printf '  UNDECLARED %-45s no Ships: line (status says "%s")\n' "$(basename "$plan")" "${status:0:40}"
+    else
+      printf '  UNDECLARED %-45s no Ships: line and no > Status: header either\n' "$(basename "$plan")"
+    fi
     continue
   fi
 
-  status=$(grep -m1 '^> Status: ' "$plan" | sed 's/^> Status: //' | tr -d '\r')
+  case "$ships" in
+    none | none\ *)
+      none_count=$((none_count + 1))
+      # A plan cannot both claim `implemented` (real code shipped) and
+      # declare `Ships: none` (nothing shipped) — that is the same
+      # contradiction the exists-check below catches for a real path, just
+      # for the explicit-none case instead of a missing file.
+      case "$status" in
+        implemented*)
+          mismatch=$((mismatch + 1))
+          printf '  MISMATCH %-46s says "implemented" but declares "Ships: none"\n' "$(basename "$plan")"
+          ;;
+        *)
+          printf '  NONE     %-46s %s\n' "$(basename "$plan")" "${ships:0:52}"
+          ;;
+      esac
+      continue
+      ;;
+  esac
 
   # `partial` is a third state, not a broken second one. A plan that shipped
   # half of itself has an artefact on disk AND unfinished work, so neither
@@ -140,8 +214,8 @@ for plan in docs/plans/*.md; do
 done
 
 total=$(ls docs/plans/*.md | wc -l | tr -d ' ')
-checked=$((total - skipped - partial))
-echo "  checked $checked of $total plans ($skipped declare no Ships: artefact, $partial are partial)"
+checked=$((total - undeclared - none_count - partial))
+echo "  checked $checked of $total plans ($undeclared have no Ships: line at all, $none_count declare \"Ships: none\" explicitly, $partial are partial)"
 
 fail=0
 if [ "$mismatch" -gt 0 ]; then
@@ -151,6 +225,12 @@ fi
 if [ "$admits_unbuilt" -gt 0 ]; then
   echo "  $admits_unbuilt plan(s) claim implemented but admit unbuilt work in their own header — mark them partial, or finish the work"
   fail=1
+fi
+if [ "$undeclared" -gt 0 ]; then
+  echo "  $undeclared plan(s) have no Ships: line and no explicit \"Ships: none\" declaration (see FAIL_ON_UNDECLARED_SHIPS in this script)"
+  if [ "$FAIL_ON_UNDECLARED_SHIPS" = true ]; then
+    fail=1
+  fi
 fi
 if [ "$fail" -gt 0 ]; then
   exit 1

@@ -15,6 +15,16 @@ export const ScriptRowSchema = z.object({
 })
 export const ScriptResponseSchema = z.object({ script: ScriptRowSchema })
 
+/**
+ * `GET /api/scripts` (the ungrouped, paginated list) — every field
+ * `ScriptRowSchema` has except `source`, which that route's own projection
+ * never selects (`packages/core/src/scripts/routes.ts`'s `GET /` handler).
+ * Plan 95 §5 step 95.5 (fixes F8): Studio's `fetchAllPages` used to read
+ * this list through a bare `as` cast; this is what lets it validate
+ * instead.
+ */
+export const ScriptListItemSchema = ScriptRowSchema.omit({ source: true })
+
 /** `GET /api/scripts/:name/versions`. */
 export const VersionOptionSchema = z.object({
   id: z.string(),
@@ -46,3 +56,32 @@ export const ScriptToggleResponseSchema = z.object({ script: z.object({ id: z.st
 
 /** `DELETE /api/scripts/:id` — `{ok: true}`, not an empty 204 body. */
 export const ScriptDeleteResponseSchema = z.object({ ok: z.literal(true) })
+
+/**
+ * A named parameter set (plan 95 §4.7, §5 step 95.8) — a convenience for a
+ * human filling a form, keyed on the script NAME rather than one published
+ * version, so it survives every publish. `params` is `z.unknown()`: like
+ * `ScriptRow.paramsSchema`'s sibling columns (`jobs.params`,
+ * `schedules.params`), it is validated against the SCHEMA it is about to
+ * meet at the moment it is applied (`reconcileParams`), not against any
+ * fixed shape here.
+ */
+export const ParamSetInfoSchema = z.object({
+  id: z.string(),
+  scriptName: z.string(),
+  name: z.string(),
+  params: z.unknown(),
+  createdBy: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+})
+export type ParamSetInfo = z.infer<typeof ParamSetInfoSchema>
+
+/** `GET /api/scripts/:name/param-sets`. */
+export const ParamSetListResponseSchema = z.object({ items: z.array(ParamSetInfoSchema) })
+
+/** `POST`/`PATCH /api/scripts/:name/param-sets(/:id)` — both echo the full row back. */
+export const ParamSetResponseSchema = z.object({ paramSet: ParamSetInfoSchema })
+
+/** `DELETE /api/scripts/:name/param-sets/:id` — `{ok: true}`, not an empty 204 body. */
+export const ParamSetDeleteResponseSchema = z.object({ ok: z.literal(true) })

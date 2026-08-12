@@ -306,7 +306,7 @@ function fakeHostServiceServer(handlers: { devicesL?: () => string; reconnectOff
 }
 
 describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () => {
-  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model/transport_id fields', async () => {
+  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model fields but keeping transport_id', async () => {
     const listener = fakeHostServiceServer({
       devicesL: () =>
         '0123456789ABCDEF       device product:sunfish model:Pixel_4a device:sunfish transport_id:1\n' +
@@ -317,9 +317,9 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
       expect(devices).toEqual([
-        { serial: '0123456789ABCDEF', state: 'device' },
+        { serial: '0123456789ABCDEF', state: 'device', transportId: 1 },
         { serial: 'ZY327K2XYZ', state: 'offline' },
-        { serial: 'ZP2222RMBS', state: 'unauthorized' },
+        { serial: 'ZP2222RMBS', state: 'unauthorized', transportId: 3 },
       ])
     } finally {
       listener.stop(true)
@@ -332,6 +332,52 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
       expect(devices).toEqual([])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  /**
+   * Plan 88 §3.1, §4.1, fixes F6: `usb:` is adb's own signal that a
+   * transport is USB rather than TCP — this used to be discarded outright.
+   * Modelled on a real `adb devices -l` line captured against the attached
+   * hardware for plan 88 §5 step 88.1's H6 spike.
+   */
+  test('keeps the usb: field for a USB transport and transport_id for both, ignoring product/model/device', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => 'ZP2222RMBS             device usb:3-1.4.3 product:lagos_gpn model:moto_g06_power device:lagos transport_id:10\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3', transportId: 10 }])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a TCP line has no usb: field', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => '10.20.0.37:5555       device product:sunfish model:Pixel_4a device:sunfish transport_id:7\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: '10.20.0.37:5555', state: 'device', transportId: 7 }])
+      expect(devices[0]!.usb).toBeUndefined()
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a malformed transport_id (non-numeric) is dropped rather than crashing the parse', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => 'ZP2222RMBS   device usb:3-1.4.3 transport_id:not-a-number\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3' }])
     } finally {
       listener.stop(true)
     }

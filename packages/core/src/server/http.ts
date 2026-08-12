@@ -3,11 +3,12 @@ import { cors } from 'hono/cors'
 import type { AuthMode } from '../config'
 import { authMiddleware, type AuthEnv } from '../auth/middleware'
 import type { AuthService } from '../auth/service'
+import type { AuditLogger } from '../auth/audit'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { HealthResponseSchema } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { buildRegistryResponse } from '../registry/engines'
-import { createToolsRoutes } from '../tools/routes'
+import { createToolsRoutes, type AdbControlRouteDeps } from '../tools/routes'
 import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -20,9 +21,24 @@ export interface HttpDeps {
   log: Logger
   version: string
   adbServerVersion: () => Promise<string | null>
-  /** Status subsistem adb: 'provisioning' | 'ready' | 'error'. */
+  /** The adb subsystem's status: 'provisioning' | 'ready' | 'error'. */
   adbState: () => string
+  /**
+   * The audit logger, threaded through so the Toolchain routes can record
+   * install/activate/delete/repair. Optional because several tests build a
+   * minimal `HttpDeps`; when absent those routes simply do not audit.
+   */
+  audit?: AuditLogger
   toolchain: ToolchainManager
+  /**
+   * The "Restart adb server" button's deps (plan 88 §3.10, §4.8, §5 step
+   * 88.8) — optional for the same reason `audit` is: several tests build a
+   * minimal `HttpDeps`, and a host with no adb subsystem (orchestrator mode,
+   * or before boot finishes provisioning) genuinely has nothing to restart.
+   * `createToolsRoutes` reports `E_ADB_UNAVAILABLE` on `/adb/restart` when
+   * this is absent, rather than the route not existing at all.
+   */
+  adbControl?: AdbControlRouteDeps
   jobRoutes: Hono<AuthEnv>
   scriptRoutes: Hono<AuthEnv>
   /** Stage/verify/activate/rollback/disable/remove/reload/restart, and the dev slot lifecycle (plan 82 §4.6, step 11). */
@@ -89,8 +105,8 @@ const ERROR_STATUS: Record<string, number> = {
  * this was easy to hit and the error it produced (a CORS block) said nothing
  * about the real cause.
  *
- * This stays dev-only: in production the check never runs, and the core is
- * single-origin.
+ * This stays local-mode-only (see the call site below): in server mode the
+ * check never runs, and the core is single-origin.
  */
 function isLoopbackOrigin(origin: string): boolean {
   try {
@@ -123,8 +139,28 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
     logSlowRequest(new URL(c.req.url).pathname, Date.now() - startedAt)
   })
 
-  // Studio dev mode (next dev on another port) — non-production only.
-  if (process.env.NODE_ENV !== 'production') {
+  // Studio dev mode (next dev on another port) — local-mode only.
+  //
+  // This used to gate on `process.env.NODE_ENV !== 'production'`. Nothing in
+  // this codebase's release binary, Docker image, or systemd unit ever sets
+  // `NODE_ENV=production`, so that check was always true and the "dev-only"
+  // grant was actually live in every documented production deployment —
+  // bounded (the `cors()` call below never sets `credentials: true`, so a
+  // cross-origin page cannot ride the session cookie this way), but still a
+  // gap worth closing outright rather than papering over.
+  //
+  // `authMode` is the correct replacement signal: it is already derived from
+  // the bind address (`resolveAuthMode` in ../config), it is 'local' if and
+  // only if the core is bound to loopback with auth not forced to 'server',
+  // and — unlike `NODE_ENV`, a Node convention a compiled Bun binary has no
+  // particular reason to carry — it is a value this process always computes
+  // for itself regardless of how it was started. `bun run dev` (and Studio's
+  // `dev` on :3001 against it) binds loopback by default, so `authMode` is
+  // 'local' and this keeps working unchanged; any real server-mode
+  // deployment — which by definition is not on loopback, or has server mode
+  // forced — never grants it, closing the gap for exactly the deployments
+  // that were actually exposed.
+  if (deps.authMode === 'local') {
     app.use('/api/*', cors({ origin: (origin) => (isLoopbackOrigin(origin) ? origin : null) }))
   }
 
@@ -138,6 +174,22 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // `deps.adbServerVersion()` resolves `string | null` — `HealthResponseSchema`'s
   // `adb.serverVersion` was widened to `z.string().nullable().optional()` (plan 72.5) so this
   // structurally matches rather than needing a silent `?? undefined`.
+  //
+  // `ok` is intentionally a LIVENESS signal, not a readiness one, and stays
+  // `true` unconditionally: this handler running at all already proves the
+  // HTTP layer is alive, and that is genuinely all `ok` has ever meant. It is
+  // deliberately NOT derived from `adb.state` — `packages/core/src/doctor/checks/port.ts`
+  // and `doctor/context.ts`'s `probeCore` both read `ok` to decide "is this
+  // port held by a legitimate enkaku core", a question that must stay `true`
+  // even while adb is still provisioning, or (per daemon.ts's own comment
+  // next to `adbState = 'error'`) after adb provisioning has failed — "the
+  // core stays up: the tools API can still be used to retry the install".
+  // Making `ok` false in either state would make `enkaku doctor` misreport a
+  // live, recoverable core as "port held by an unknown process". Readiness
+  // already has its own, real signal: `adb.state` (`'provisioning' |
+  // 'ready' | 'error' | 'orchestrator'`), which is exactly what a caller that
+  // wants to know "did the binary actually finish booting" should poll to a
+  // terminal value — see the release smoke test in `.github/workflows/release.yml`.
   app.get('/api/health', async (c) => {
     return typedJson(c, HealthResponseSchema, {
       ok: true,
@@ -183,7 +235,13 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // `enkaku doctor`'s checks, core-connected mode (plan 41 §4.5).
   app.route('/api/doctor', deps.doctorRoutes)
 
-  app.route('/api/tools', createToolsRoutes(deps.toolchain))
+  app.route(
+    '/api/tools',
+    createToolsRoutes(deps.toolchain, {
+      ...(deps.audit ? { audit: deps.audit } : {}),
+      ...(deps.adbControl ? { adb: deps.adbControl } : {}),
+    }),
+  )
 
   app.get('/api/registry', async (c) => c.json(await buildRegistryResponse(deps.toolchain)))
 

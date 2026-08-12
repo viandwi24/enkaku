@@ -6,14 +6,14 @@ services:
     volumes:
       - enkaku-data:/data
     environment:
-      # Bind non-loopback ⇒ mode server ⇒ login wajib.
+      # Non-loopback bind ⇒ server mode ⇒ login required.
       ENKAKU_BIND: 0.0.0.0
-      # Di belakang reverse proxy yang terminate TLS:
+      # Behind a reverse proxy that terminates TLS:
       ENKAKU_TLS_MODE: external
-      # Uji cepat tanpa TLS (JANGAN untuk produksi):
+      # Quick test without TLS (DO NOT use in production):
       # ENKAKU_ALLOW_INSECURE: '1'
-    # Wireless ADB direkomendasikan untuk container. Untuk USB passthrough
-    # di host Linux, buka komentar berikut:
+    # Wireless ADB is recommended for containers. For USB passthrough
+    # on a Linux host, uncomment the following:
     # devices:
     #   - /dev/bus/usb:/dev/bus/usb
     restart: unless-stopped

@@ -28,7 +28,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
-import { canUseDevice, canUseShell } from '../auth/acl'
+import { canCancelJob, canUseDevice, canUseShell } from '../auth/acl'
 import type { Role } from '../auth/service'
 import { createMonitorHub, runOneshotMonitor } from '../device/monitor-hub'
 import { createCrashWatcher, type CrashPolicy } from '../device/crash-watcher'
@@ -898,6 +898,14 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
           case 'agent.run.cancel': {
             deps.agent?.cancelRun(msg.payload.runId, deps.userLabel?.(state.userId) ?? state.userId)
+            // Audited to match its HTTP sibling (`POST /runs/:id/cancel`,
+            // `api/threads.ts`), which has always recorded this — the WS path
+            // simply never called `audit.record` (a sweep finding, not a
+            // permission gap: `agent.run` is an OPERATOR permission, so
+            // `requirePermission('agent.run')` on the HTTP route is already a
+            // no-op check for every authenticated caller in this codebase's
+            // two-role model, same as this message).
+            deps.audit.record({ userId: state.userId, action: 'agent.run.cancel', target: msg.payload.runId, meta: {} })
             return
           }
 
@@ -1512,9 +1520,32 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'job.cancel': {
+            // Server-authoritative permission + ownership check (spec §10.1)
+            // — same pattern `shell.exec` above establishes: resolve the
+            // role fresh, check before anything else. This route used to
+            // call `deps.jobs.cancel` directly with no check at all, so any
+            // authenticated operator could cancel any job farm-wide.
+            // `canCancelJob` (`auth/acl.ts`) admits `job.cancel.any` (the
+            // capability layer's admin-shaped rule) OR an operator cancelling
+            // a job on a device they are themselves allowed to use — the
+            // same ownership boundary `job.enqueue` above already enforces.
+            const job = deps.jobs.get(msg.payload.jobId)
+            if (!job) throw new EnkakuError('job_not_found', `no such job: ${msg.payload.jobId}`)
+            const role = deps.roleOf(state.userId)
+            const device = deps.getDeviceOwner?.(job.deviceId) ?? null
+            if (!canCancelJob({ id: state.userId ?? '', role }, device)) {
+              sendError(ws, 'auth.forbidden', 'you do not have permission to cancel this job', msgId)
+              return
+            }
             // The WS message has no way to ask for cancel-with-descendants
             // (plan 81 §4.4) — that opt-in lives only on the REST route.
             const { job: info } = deps.jobs.cancel(msg.payload.jobId)
+            deps.audit.record({
+              userId: state.userId,
+              action: 'job.cancel',
+              target: info.jobId,
+              meta: { deviceId: info.deviceId },
+            })
             send(ws, { type: 'job.status', payload: info })
             return
           }

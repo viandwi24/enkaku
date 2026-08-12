@@ -1,10 +1,13 @@
+import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import type { JobDetail, JobInfo } from '@enkaku/protocol'
+import type { AuditLogger } from '../auth/audit'
+import type { AuthEnv } from '../auth/middleware'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
-import { createJobRoutes } from './jobs'
+import { createJobRoutes, type JobRoutesDeps } from './jobs'
 
-function fakeJobInfo(scriptId: string): JobInfo {
+function fakeJobInfo(scriptId: string, overrides: Partial<JobInfo> = {}): JobInfo {
   return {
     jobId: 'job-1',
     deviceId: 'd1',
@@ -25,11 +28,16 @@ function fakeJobInfo(scriptId: string): JobInfo {
     triggeredByJobId: null,
     rootJobId: null,
     depth: 0,
+    ...overrides,
   }
 }
 
+function fakeJobDetail(scriptId: string, overrides: Partial<JobDetail> = {}): JobDetail {
+  return { ...fakeJobInfo(scriptId), result: null, params: null, ...overrides }
+}
+
 /** Records exactly what `enqueue` was called with, so the route's resolution logic is what's under test — not the service. */
-function fakeService(): JobService & {
+function fakeService(opts: { getResult?: JobDetail | null } = {}): JobService & {
   calls: Parameters<JobService['enqueue']>[0][]
   cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }>
   listCalls: Parameters<JobService['list']>[0][]
@@ -37,6 +45,7 @@ function fakeService(): JobService & {
   const calls: Parameters<JobService['enqueue']>[0][] = []
   const cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }> = []
   const listCalls: Parameters<JobService['list']>[0][] = []
+  const getResult = opts.getResult === undefined ? fakeJobDetail('x', { jobId: 'job-1', deviceId: 'd1' }) : opts.getResult
   return {
     calls,
     cancelCalls,
@@ -49,11 +58,33 @@ function fakeService(): JobService & {
       cancelCalls.push({ jobId, opts })
       return { job: fakeJobInfo('x'), cancelledDescendants: opts?.cancelDescendants ? 4 : 0 }
     },
-    get: (): JobDetail | null => null,
+    get: (): JobDetail | null => getResult,
     list: (filter) => {
       listCalls.push(filter)
       return { jobs: [], nextCursor: null, total: 0 }
     },
+  }
+}
+
+/** Mounts `createJobRoutes` behind a user-setting middleware, mirroring `devices.test.ts`'s `withUser` — `role: null` means no user (an auth-less test harness). */
+function withUser(role: 'admin' | 'operator' | null, service: JobService, deps?: JobRoutesDeps) {
+  const wrapper = new Hono<AuthEnv>()
+  wrapper.use('*', async (c, next) => {
+    if (role) c.set('user', { id: 'u1', email: 'u@test', role })
+    await next()
+  })
+  wrapper.route('/', createJobRoutes(service, deps))
+  return wrapper
+}
+
+function fakeAudit(): AuditLogger & { calls: Parameters<AuditLogger['record']>[0][] } {
+  const calls: Parameters<AuditLogger['record']>[0][] = []
+  return {
+    calls,
+    record: (input) => {
+      calls.push(input)
+    },
+    list: () => [],
   }
 }
 
@@ -158,6 +189,72 @@ describe('POST /api/jobs/:id/cancel — cancelDescendants (plan 81 §4.4)', () =
     expect(service.cancelCalls).toEqual([{ jobId: 'job-1', opts: { cancelDescendants: true } }])
     const body = (await res.json()) as { cancelledDescendants: number }
     expect(body.cancelledDescendants).toBe(4)
+  })
+})
+
+describe('POST /api/jobs/:id/cancel — ownership/permission check (security fix, plan 09 §4.4)', () => {
+  test('a job that does not exist is a 404 and never reaches the service', async () => {
+    const service = fakeService({ getResult: null })
+    const app = withUser('operator', service)
+    const res = await app.request('/nope/cancel', { method: 'POST' })
+    expect(res.status).toBe(404)
+    expect(service.cancelCalls).toHaveLength(0)
+  })
+
+  // The bug: an operator — the farm's lowest role — could cancel ANY job on
+  // ANY device, farm-wide, because this route never checked anything.
+  test('an operator without job.cancel.any is refused cancelling a job on a device owned by someone else', async () => {
+    const service = fakeService()
+    const audit = fakeAudit()
+    const app = withUser('operator', service, { getDeviceOwner: () => ({ ownerId: 'someone-else' }), audit })
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('auth.forbidden')
+    expect(service.cancelCalls).toHaveLength(0)
+    // A refusal is not an action taken — nothing to audit.
+    expect(audit.calls).toHaveLength(0)
+  })
+
+  test('an operator CAN cancel a job on a device they own — ordinary operator work — and it is audited with both ids', async () => {
+    const service = fakeService()
+    const audit = fakeAudit()
+    const app = withUser('operator', service, { getDeviceOwner: () => ({ ownerId: 'u1' }), audit })
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(service.cancelCalls).toEqual([{ jobId: 'job-1', opts: { cancelDescendants: false } }])
+    expect(audit.calls).toEqual([
+      { userId: 'u1', action: 'job.cancel', target: 'job-1', meta: { deviceId: 'd1', cancelledDescendants: 0 } },
+    ])
+  })
+
+  test('an operator CAN cancel a job on an unowned device (ownerId: null)', async () => {
+    const service = fakeService()
+    const app = withUser('operator', service, { getDeviceOwner: () => ({ ownerId: null }) })
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+  })
+
+  test('an admin can cancel any job regardless of device ownership (job.cancel.any)', async () => {
+    const service = fakeService()
+    const app = withUser('admin', service, { getDeviceOwner: () => ({ ownerId: 'someone-else' }) })
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(service.cancelCalls).toHaveLength(1)
+  })
+
+  test('no `getDeviceOwner` wired (a test harness / host that has not wired auth) is permissive, the same default every optional ACL dep here uses', async () => {
+    const service = fakeService()
+    const app = withUser('operator', service)
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+  })
+
+  test('no user in context is permissive too, matching `enqueue`’s own optional-actor convention just above', async () => {
+    const service = fakeService()
+    const app = withUser(null, service, { getDeviceOwner: () => ({ ownerId: 'someone-else' }) })
+    const res = await app.request('/job-1/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
   })
 })
 

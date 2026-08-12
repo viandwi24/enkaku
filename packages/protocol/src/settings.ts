@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { AgentDefaultsSchema } from './agent'
+import { ui } from './params/vocabulary'
 import { ReadinessSchema } from './readiness'
 
 /** Per-device battery and thermal state (spec §15.2). */
@@ -41,13 +42,17 @@ export const TimingSettingsSchema = z.object({
     .tuple([z.number(), z.number()])
     .default([40, 120])
     .describe('Random range for how long a tap is held, in milliseconds')
-    .meta({ title: 'Tap duration' }),
+    .meta(ui({ title: 'Tap duration', kind: 'duration', unit: 'ms' })),
   betweenActionMs: z
     .tuple([z.number(), z.number()])
     .default([300, 900])
     .describe('Random range for the pause between actions, in milliseconds')
-    .meta({ title: 'Pause between actions' }),
-  coordJitterPx: z.number().default(2).describe('Random offset applied to the tap point, in pixels').meta({ title: 'Tap point jitter' }),
+    .meta(ui({ title: 'Pause between actions', kind: 'duration', unit: 'ms' })),
+  coordJitterPx: z
+    .number()
+    .default(2)
+    .describe('Random offset applied to the tap point, in pixels')
+    .meta(ui({ title: 'Tap point jitter', kind: 'pixels' })),
   /**
    * Input realism (plan 40 §3.5, §4.3): `instant` reproduces the pre-plan-40
    * behaviour exactly — a straight-line swipe, and text delivered in one go —
@@ -65,6 +70,11 @@ export const TimingSettingsSchema = z.object({
       '"instant" sends a straight-line swipe and types text in one go — the pre-M17f behaviour. "natural" curves gestures and types character by character, which exercises fling physics, autocomplete, and debounced validation.',
     )
     .meta({ title: 'Input profile' }),
+  // NOT `kind: 'chance'` (plan 95 §3.3's own worked example): this is a
+  // fraction of a swipe's length, not a probability — the resolver would
+  // reject it anyway (chance requires the domain to be exactly [0, 1], and
+  // this one is [0, 0.5]), but left bare rather than writing a hint the
+  // resolver is documented to refuse.
   gestureCurvature: z
     .number()
     .min(0)
@@ -79,12 +89,12 @@ export const TimingSettingsSchema = z.object({
     .max(50)
     .default(8)
     .describe('Interval between touch-move events. Android needs several to compute a release velocity.')
-    .meta({ title: 'Gesture sample interval (ms)' }),
+    .meta(ui({ title: 'Gesture sample interval (ms)', kind: 'duration', unit: 'ms' })),
   perCharMs: z
     .tuple([z.number().int().min(0), z.number().int().min(0)])
     .default([40, 140])
     .describe('Delay range between characters when typing.')
-    .meta({ title: 'Typing cadence (ms)' }),
+    .meta(ui({ title: 'Typing cadence (ms)', kind: 'duration', unit: 'ms' })),
 }).meta({
   title: 'Human-like touch',
   description: 'A little randomness in tap timing and position, so automation does not fall into an obvious pattern.',
@@ -190,6 +200,37 @@ export const DeviceIdentitySchema = z
 export type DeviceIdentity = z.infer<typeof DeviceIdentitySchema>
 
 /**
+ * Device-under-automation marker (spec §9.4) — a device-scoped system
+ * property, applied at session start and cleared at close
+ * (`packages/session/src/farm-tag.ts`), that discloses a session is
+ * currently open on this device. It is deliberately not network-level
+ * tagging: it never touches a packet, a header, or a proxy hop, and it
+ * marks the device only for as long as a session is actually open.
+ * `tagTraffic: false` means the operator turned off that disclosure, not
+ * that they gained any new capability; nothing else about a session changes
+ * when it is off.
+ *
+ * Its own schema, thunk-defaulted like `DeviceIdentitySchema` above, so a
+ * field added here later cannot silently go unset the way a hand-written
+ * literal default would (same rule `TimingSettingsSchema`'s comment states).
+ */
+export const DeviceInstrumentationSchema = z
+  .object({
+    tagTraffic: z
+      .boolean()
+      .default(true)
+      .describe(
+        'Mark this device as under active Enkaku automation with a device-scoped system property (spec §9.4), set for the life of each session and cleared on close. Readable by any app on the device that checks for it. This is not network-level tagging — it never touches a packet. Turning it off removes a disclosure, not a capability: the marker can never be used to disguise an automated session even when it is on.',
+      )
+      .meta({ title: 'Mark device as under automation' }),
+  })
+  .meta({
+    title: 'Device instrumentation',
+    description: 'A device-scoped marker — not network-level tagging — that discloses a session is currently open on this device (spec §9.4).',
+  })
+export type DeviceInstrumentation = z.infer<typeof DeviceInstrumentationSchema>
+
+/**
  * Everything that is scoped to a single device (spec §12).
  *
  * This is the ONE schema for device-scoped settings, and `FarmSettings.defaults`
@@ -201,30 +242,30 @@ export type DeviceIdentity = z.infer<typeof DeviceIdentitySchema>
 export const DeviceSettingsSchema = z
   .object({
     // Enums, not free strings: the renderer builds a dropdown AND the server
-    // rejects values outside the list. `enumSource` tells the UI where to read
-    // engine display names and availability (spec §8).
+    // rejects values outside the list. `x-enkaku.source` (plan 95 §3.4) tells
+    // the UI where to read engine display names and availability (spec §8).
     engines: z
       .object({
         transport: z
           .enum(['adb-usb', 'adb-tcp'])
           .default('adb-usb')
           .describe('How the core talks to the device')
-          .meta({ title: 'Transport', enumSource: 'registry.transports' }),
+          .meta(ui({ title: 'Transport', source: 'registry.transports' })),
         display: z
           .enum(['scrcpy', 'screencap-loop'])
           .default('scrcpy')
           .describe('Where the picture sent to Studio comes from')
-          .meta({ title: 'Screen capture', enumSource: 'registry.displays' }),
+          .meta(ui({ title: 'Screen capture', source: 'registry.displays' })),
         input: z
           .enum(['scrcpy-uhid', 'scrcpy-sdk', 'adb-input'])
           .default('scrcpy-uhid')
           .describe('How taps, swipes, and typing reach the device')
-          .meta({ title: 'Input delivery', enumSource: 'registry.inputs' }),
+          .meta(ui({ title: 'Input delivery', source: 'registry.inputs' })),
         inspection: z
           .enum(['ui-server', 'uiautomator-dump', 'appium'])
           .default('ui-server')
           .describe('How scripts find elements on screen')
-          .meta({ title: 'Screen inspection', enumSource: 'registry.inspectors' }),
+          .meta(ui({ title: 'Screen inspection', source: 'registry.inspectors' })),
       })
       .default({
         transport: 'adb-usb',
@@ -232,10 +273,18 @@ export const DeviceSettingsSchema = z
         input: 'scrcpy-uhid',
         inspection: 'ui-server',
       })
-      .meta({
-        title: 'Engines',
-        description: 'The core rejects combinations that cannot work together.',
-      }),
+      .meta(
+        ui({
+          title: 'Engines',
+          description: 'The core rejects combinations that cannot work together.',
+          // Plan 95 §3.5, §5 step 95.4: `engines` and `input` below are the
+          // ONLY two top-level keys sharing this group, and they are
+          // declared back to back — a maximal consecutive run, so
+          // `deviceSections()` derives one "Engines" section from them with
+          // no parallel list (replaces the old hand-maintained `NAMED_GROUPS`).
+          group: 'Engines',
+        }),
+      ),
     input: z
       .object({
         preferredMode: z
@@ -245,14 +294,19 @@ export const DeviceSettingsSchema = z
           .meta({ title: 'Injection mode' }),
       })
       .default({ preferredMode: 'uhid' })
-      .meta({ title: 'Input injection' }),
+      .meta(ui({ title: 'Input injection', group: 'Engines' })),
     // A thunk, not a literal object (plan 40 §4.3): a literal default bypasses
     // schema validation, so a hand-written object here would silently omit
     // any field added to `TimingSettingsSchema` later (as this plan just did)
     // and every consumer would read `undefined` for it at runtime despite TS
     // believing it present. Parsing `{}` through the schema itself keeps this
     // in lockstep with `TimingSettingsSchema`'s own defaults, always.
-    timing: TimingSettingsSchema.default(() => TimingSettingsSchema.parse({})),
+    //
+    // The outer `.meta()` here only sets `title`/`group` (plan 95 §5 step
+    // 95.4) — `TimingSettingsSchema`'s own `description` still comes through
+    // unmerged (Zod merges an outer `.meta()` onto the inner schema's JSON
+    // Schema node key by key; a key this call does not set is left alone).
+    timing: TimingSettingsSchema.default(() => TimingSettingsSchema.parse({})).meta(ui({ title: 'Human-like touch', group: 'Timing' })),
     prep: z
       .preprocess(
         normaliseLegacyPrep,
@@ -285,7 +339,7 @@ export const DeviceSettingsSchema = z
         }),
       )
       .default({ disableAnimations: true, keepAwake: 'while-charging', standbyScreenOff: false, rotation: 'device' })
-      .meta({ title: 'Before a job runs' }),
+      .meta(ui({ title: 'Before a job runs', group: 'Power & readiness' })),
     autoReconnect: z
       .boolean()
       .default(true)
@@ -308,7 +362,18 @@ export const DeviceSettingsSchema = z
      * this in lockstep with `DeviceIdentitySchema`'s own shape; every inner
      * field is optional so an empty object parses to "leave everything alone".
      */
-    identity: DeviceIdentitySchema.default(() => DeviceIdentitySchema.parse({})),
+    identity: DeviceIdentitySchema.default(() => DeviceIdentitySchema.parse({})).meta(ui({ title: 'Identity', group: 'Identity' })),
+    /**
+     * Plan 87 §4.12, §5 step 87.13 — farm traffic tagging, persisted per
+     * device exactly like `identity` above. The applier lives in
+     * `packages/session/src/farm-tag.ts`, wired next to `prep.rotation`.
+     *
+     * Deliberately NOT `group`-annotated (plan 95 §5 step 95.4): it has no
+     * sibling of its own, and `autoReconnect`/`logInputText` above are
+     * likewise ungrouped, so this — like them — lands in "General", which is
+     * exactly K9's property (an unclaimed key can never silently vanish).
+     */
+    instrumentation: DeviceInstrumentationSchema.default(() => DeviceInstrumentationSchema.parse({})),
   })
   .meta({ title: 'Device settings' })
 export type DeviceSettings = z.infer<typeof DeviceSettingsSchema>
@@ -322,13 +387,17 @@ export type DeviceSettings = z.infer<typeof DeviceSettingsSchema>
  */
 export const JobSettingsSchema = z
   .object({
+    // `resetPolicy`/`resetTimeoutMs`/`resetStrict` are a maximal consecutive
+    // run of `group: 'Reset'` (plan 95 §3.5, §5 step 95.4) — `retry` right
+    // after them is already its own card (an object, K7), so it needs no
+    // group of its own.
     resetPolicy: z
       .enum(['none', 'home', 'declared', 'aggressive'])
       .default('home')
       .describe(
         'What to reset on a device before each job. "home" returns to the launcher; "declared" also stops the packages a script declares; "aggressive" stops every non-system app.',
       )
-      .meta({ title: 'Reset before each job' }),
+      .meta(ui({ title: 'Reset before each job', group: 'Reset' })),
     resetTimeoutMs: z
       .number()
       .int()
@@ -336,12 +405,12 @@ export const JobSettingsSchema = z
       .max(60_000)
       .default(15_000)
       .describe('Budget for the pre-job reset. Exceeding it logs a warning and the job continues.')
-      .meta({ title: 'Reset timeout (ms)' }),
+      .meta(ui({ title: 'Reset timeout (ms)', kind: 'duration', unit: 'ms', group: 'Reset' })),
     resetStrict: z
       .boolean()
       .default(false)
       .describe('Fail the job when its pre-job reset fails, instead of warning and continuing.')
-      .meta({ title: 'Fail on reset error' }),
+      .meta(ui({ title: 'Fail on reset error', group: 'Reset' })),
     /**
      * Retry classification and backoff (plan 36 §4.2): infra failures (device
      * lost, adb timeout) draw from `maxInfraAttempts`, a budget separate from
@@ -357,7 +426,7 @@ export const JobSettingsSchema = z
           .max(10)
           .default(2)
           .describe("Extra attempts allowed when a job fails for infrastructure reasons (device lost, adb timeout). Separate from a script's own retries.")
-          .meta({ title: 'Infrastructure retries' }),
+          .meta(ui({ title: 'Infrastructure retries', kind: 'count' })),
         backoffBaseMs: z
           .number()
           .int()
@@ -365,7 +434,7 @@ export const JobSettingsSchema = z
           .max(60_000)
           .default(2_000)
           .describe('First backoff delay; it doubles each infrastructure retry, with jitter.')
-          .meta({ title: 'Retry backoff base (ms)' }),
+          .meta(ui({ title: 'Retry backoff base (ms)', kind: 'duration', unit: 'ms' })),
         backoffMaxMs: z
           .number()
           .int()
@@ -373,7 +442,7 @@ export const JobSettingsSchema = z
           .max(300_000)
           .default(30_000)
           .describe('Upper bound on the backoff delay.')
-          .meta({ title: 'Retry backoff cap (ms)' }),
+          .meta(ui({ title: 'Retry backoff cap (ms)', kind: 'duration', unit: 'ms' })),
         timeoutIsInfra: z
           .boolean()
           .default(false)
@@ -418,7 +487,7 @@ export const JobSettingsSchema = z
       .max(600)
       .default(10)
       .describe('How long a device must have had no manual lease before a queued job may claim it.')
-      .meta({ title: 'Quiet period before claiming (sec)' }),
+      .meta(ui({ title: 'Quiet period before claiming (sec)', kind: 'duration', unit: 's', group: 'Queueing' })),
     maxWaitSec: z
       .number()
       .int()
@@ -426,7 +495,7 @@ export const JobSettingsSchema = z
       .max(3_600)
       .default(120)
       .describe('The most a job will wait for a quiet gap before claiming the device anyway.')
-      .meta({ title: 'Maximum wait for quiet (sec)' }),
+      .meta(ui({ title: 'Maximum wait for quiet (sec)', kind: 'duration', unit: 's', group: 'Queueing' })),
     /**
      * Plan 74 §3.1, §4.1 — replaces the hard-coded `DEFAULT_TIMEOUT_MS`
      * (`job-runner.ts`, 300_000) that appeared in no settings screen, no
@@ -441,7 +510,7 @@ export const JobSettingsSchema = z
       .max(86_400_000)
       .default(3_600_000)
       .describe("How long a job may run before it is killed, when its script does not declare its own timeout. A script's own `timeout` always wins.")
-      .meta({ title: 'Default job timeout (ms)' }),
+      .meta(ui({ title: 'Default job timeout (ms)', kind: 'duration', unit: 'ms', group: 'Timeouts' })),
     /**
      * Plan 74 §3.2 — raising `defaultTimeoutMs` from the old 5-minute
      * hard-code to 60 minutes makes the pre-`ready` window twelve times
@@ -458,7 +527,7 @@ export const JobSettingsSchema = z
       .max(600_000)
       .default(60_000)
       .describe("How long a job's process has to start and report ready before it is treated as broken. Separate from the run timeout.")
-      .meta({ title: 'Job startup timeout (ms)' }),
+      .meta(ui({ title: 'Job startup timeout (ms)', kind: 'duration', unit: 'ms', group: 'Timeouts' })),
     /**
      * Plan 74 §3.3 — off by default (`null`, no ceiling) because the user's
      * instruction is explicit: a script's own timeout has priority. Setting
@@ -474,7 +543,7 @@ export const JobSettingsSchema = z
       .nullable()
       .default(null)
       .describe("An optional ceiling on what a script may request. Null means no ceiling — a script's own timeout is honoured however long. A clamp is logged, never silent.")
-      .meta({ title: 'Maximum job timeout (ms)' }),
+      .meta(ui({ title: 'Maximum job timeout (ms)', kind: 'duration', unit: 'ms', group: 'Timeouts' })),
     /**
      * Bounds on `ctx.jobs.trigger()` (plan 81 §3.2) — the mechanism, not
      * guidance, that stops a runaway chain: every bound is a refusal
@@ -492,7 +561,7 @@ export const JobSettingsSchema = z
           .max(50)
           .default(5)
           .describe('How many links a trigger chain may have. A job that triggers a job that triggers a job... is refused past this depth.')
-          .meta({ title: 'Maximum trigger depth' }),
+          .meta(ui({ title: 'Maximum trigger depth', kind: 'count' })),
         maxPerChain: z
           .number()
           .int()
@@ -500,7 +569,7 @@ export const JobSettingsSchema = z
           .max(10_000)
           .default(200)
           .describe("The most jobs one chain may ever contain, counted from its root — the bound that actually stops a self-triggering script, since a chain that keeps re-rooting itself would otherwise never hit the depth limit.")
-          .meta({ title: 'Maximum jobs per chain' }),
+          .meta(ui({ title: 'Maximum jobs per chain', kind: 'count' })),
         maxPerJob: z
           .number()
           .int()
@@ -508,7 +577,7 @@ export const JobSettingsSchema = z
           .max(1_000)
           .default(10)
           .describe('How many jobs a single job may directly trigger, so one script cannot queue a thousand jobs in a loop.')
-          .meta({ title: 'Maximum jobs triggered by one job' }),
+          .meta(ui({ title: 'Maximum jobs triggered by one job', kind: 'count' })),
       })
       .default({ maxDepth: 5, maxPerChain: 200, maxPerJob: 10 })
       .meta({
@@ -535,6 +604,40 @@ export const JobSettingsSchema = z
   })
 export type JobSettings = z.infer<typeof JobSettingsSchema>
 
+/**
+ * `discovery.networks[].cidr` (plan 88 §3.5, §3.6, §4.2) — the bounded
+ * sweep's whole address space. IPv4 only: every example and every cost-model
+ * number in the plan is IPv4 (`10.20.0.0/24`, TEST-NET-1's `192.0.2.0/24`),
+ * and a farm chassis switch does not hand out IPv6 leases in practice.
+ */
+const IPV4_OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d|0)'
+const IPV4_CIDR_RE = new RegExp(`^${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}/(3[0-2]|[12]?\\d)$`)
+
+export const CidrSchema = z
+  .string()
+  .regex(IPV4_CIDR_RE, 'must be an IPv4 CIDR block, like 10.20.0.0/24')
+  .meta({ title: 'Network (CIDR)' })
+
+/**
+ * Total addresses a CIDR block contributes to `scan.maxAddresses`'s ceiling —
+ * `2 ** (32 - prefix)`, INCLUDING the network and broadcast address, so four
+ * `/24`s add up to exactly 1024 (`scan.maxAddresses`'s own default, plan 88
+ * §4.2 and §3.5's "four /24s" note). The sweep itself
+ * (`packages/core/src/registry/sweep.ts`) probes fewer addresses than this
+ * per block — it skips each block's network/broadcast address — because this
+ * function answers "how big is the ceiling", not "how many probes will this
+ * cost". Returns 0 for anything `CidrSchema` would already have rejected,
+ * rather than throwing — a save-time refinement over an array of these must
+ * never itself be the thing that crashes on a malformed row.
+ */
+export function addressCount(cidr: string): number {
+  const match = /\/(\d{1,2})$/.exec(cidr)
+  if (!match) return 0
+  const prefix = Number(match[1])
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return 0
+  return 2 ** (32 - prefix)
+}
+
 /** Farm-wide settings (a single row). */
 export const FarmSettingsSchema = z.object({
   // Literally the per-device schema — see the note on DeviceSettingsSchema.
@@ -547,9 +650,9 @@ export const FarmSettingsSchema = z.object({
   }),
   battery: z
     .object({
-      pollIntervalSec: z.number().int().min(10).default(60).describe('How often battery and temperature are read, in seconds').meta({ title: 'Polling interval' }),
+      pollIntervalSec: z.number().int().min(10).default(60).describe('How often battery and temperature are read, in seconds').meta(ui({ title: 'Polling interval', kind: 'duration', unit: 's' })),
       autoQuarantine: z.boolean().default(true).describe('Pull a device from the queue when it passes the temperature threshold').meta({ title: 'Auto-quarantine when hot' }),
-      tempThresholdC: z.number().default(45).describe('The temperature considered too hot, in °C').meta({ title: 'Temperature threshold' }),
+      tempThresholdC: z.number().default(45).describe('The temperature considered too hot, in °C').meta(ui({ title: 'Temperature threshold', kind: 'temperature' })),
     })
     .default({ pollIntervalSec: 60, autoQuarantine: true, tempThresholdC: 45 })
     .meta({
@@ -559,6 +662,13 @@ export const FarmSettingsSchema = z.object({
   retention: z
     .object({
       enabled: z.boolean().default(false).meta({ title: 'Clean up automatically' }),
+      // `maxAgeDays`/`maxTotalGb` and, below, `eventMainDays`/`eventInputDays`
+      // are deliberately left bare (plan 95 §5 step 95.4's report): `kind:
+      // 'duration'` requires a `unit` from `DURATION_UNITS` (`ms|s|min|h`) —
+      // there is no `'d'` — and `kind: 'bytes'` means the STORED value is a
+      // raw byte integer the control humanises on display (§4.6), which
+      // `maxTotalGb` (a plain GB count) is not. Writing either kind here
+      // would be a wrong, confidently-mislabelled control, not a bare one.
       maxAgeDays: z.number().int().default(30).describe('Artifacts older than this are deleted').meta({ title: 'Maximum age (days)' }),
       maxTotalGb: z.number().default(20).describe('The oldest are deleted first once the limit is passed').meta({ title: 'Maximum size (GB)' }),
       /**
@@ -587,9 +697,32 @@ export const FarmSettingsSchema = z.object({
         .min(1000)
         .default(50_000)
         .describe('Hard ceiling per device per stream; the oldest rows go first once the age budget is not enough')
-        .meta({ title: 'Max rows per device per stream' }),
+        .meta(ui({ title: 'Max rows per device per stream', kind: 'count' })),
+      /**
+       * Agent screenshot blob GC (`agent_blobs`, plan 70 §4.1) — content-
+       * addressed image bytes an AI agent's tool calls store, one row per
+       * distinct screenshot. Deliberately NOT the same shape as the artifact
+       * policy above: a blob referenced by a live thread's messages is NEVER
+       * a deletion candidate at any age (deleting one a live thread still
+       * renders would break that thread's transcript), so there is no
+       * `maxAgeDays`/`maxTotalGb` pair here to threaten one. Only a blob no
+       * message anywhere references — orphaned by a deleted thread (`agent/
+       * thread/store.ts`'s `deleteThread`), or an upload from `POST /api/v1/
+       * blobs` whose message was never sent — is ever a candidate, and only
+       * once it clears this grace window. Like `eventMainDays`/`eventInputDays`
+       * above, this is NOT gated by `enabled`: an unreferenced blob is dead
+       * weight by construction, never data a user expects to keep, so
+       * cleaning it up is not the opt-in convenience the artifact policy is.
+       */
+      blobOrphanGraceHours: z
+        .number()
+        .int()
+        .min(1)
+        .default(24)
+        .describe('An agent screenshot blob no message references anywhere is deleted once it is this old. Protects an upload still mid-compose from being swept before its message is sent.')
+        .meta(ui({ title: 'Unreferenced screenshot grace period (hours)', kind: 'duration', unit: 'h' })),
     })
-    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000 })
+    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24 })
     .meta({
       title: 'Artifact storage',
       description: 'Screenshots and job logs pile up over time. Turn this on to clear them automatically.',
@@ -610,7 +743,7 @@ export const FarmSettingsSchema = z.object({
           .max(24)
           .default(0)
           .describe('Total adb commands in flight across the farm. 0 = scale automatically with device count.')
-          .meta({ title: 'Max concurrent adb commands' }),
+          .meta(ui({ title: 'Max concurrent adb commands', kind: 'count' })),
         execTimeoutMs: z
           .number()
           .int()
@@ -618,7 +751,7 @@ export const FarmSettingsSchema = z.object({
           .max(120_000)
           .default(15_000)
           .describe('Default execution budget for a single adb command.')
-          .meta({ title: 'adb command timeout (ms)' }),
+          .meta(ui({ title: 'adb command timeout (ms)', kind: 'duration', unit: 'ms' })),
         maxQueueDepth: z
           .number()
           .int()
@@ -626,7 +759,7 @@ export const FarmSettingsSchema = z.object({
           .max(256)
           .default(32)
           .describe('Pending adb commands allowed per device before new ones are rejected.')
-          .meta({ title: 'Max queue depth per device' }),
+          .meta(ui({ title: 'Max queue depth per device', kind: 'count' })),
         /**
          * The streaming lane's own budget (plan 24 §3.2, §4.2) — completely
          * separate from `maxConcurrent` above: streams never draw from the
@@ -650,7 +783,7 @@ export const FarmSettingsSchema = z.object({
           .describe(
             'Concurrent adb streams (logcat, top, crash, file transfer, ...) allowed on one device. Kept above 1 because the ui-server inspector, the always-on crash watcher, and a file transfer or APK install each hold a slot of their own, on top of anything a human opens in the Monitor tab.',
           )
-          .meta({ title: 'Max streams per device' }),
+          .meta(ui({ title: 'Max streams per device', kind: 'count' })),
         // CHANGED (plan 85 §3.1, §4.1): 0 = auto (computeAutoStreams). A
         // stored 4 is rewritten to 0 by `normaliseLegacyAdb` above — tracked
         // removal, 00-overview §9.
@@ -661,7 +794,7 @@ export const FarmSettingsSchema = z.object({
           .max(64)
           .default(0)
           .describe('Concurrent adb streams allowed across the whole farm. 0 scales it automatically with the number of connected devices.')
-          .meta({ title: 'Max concurrent streams (farm-wide)' }),
+          .meta(ui({ title: 'Max concurrent streams (farm-wide)', kind: 'count' })),
         maxHostConcurrent: z
           .number()
           .int()
@@ -669,7 +802,7 @@ export const FarmSettingsSchema = z.object({
           .max(32)
           .default(4)
           .describe('How many adb command-line processes (install, push, forward) may run at once.')
-          .meta({ title: 'Max adb CLI processes' }),
+          .meta(ui({ title: 'Max adb CLI processes', kind: 'count' })),
         maxInstallConcurrent: z
           .number()
           .int()
@@ -677,7 +810,7 @@ export const FarmSettingsSchema = z.object({
           .max(16)
           .default(2)
           .describe('How many APK installs or file pushes may run at once across the farm. USB bandwidth is shared.')
-          .meta({ title: 'Max concurrent installs' }),
+          .meta(ui({ title: 'Max concurrent installs', kind: 'count' })),
       }),
     )
     .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 4, maxStreams: 0, maxHostConcurrent: 4, maxInstallConcurrent: 2 })
@@ -689,6 +822,15 @@ export const FarmSettingsSchema = z.object({
    * Device discovery reconciliation (plan 85 §3.3, §4.1) — schema only here;
    * the reconciler that reads these is plan 85.2. `scanIntervalSec: 0`
    * disables the periodic rescan entirely (regression watch, plan 85 §7.4).
+   *
+   * Plan 88 §4.2, §5 step 88.2 adds the address-book / reconnect-ladder
+   * fields (`tcpPort`, `endpointsPerDevice`, `endpointRetireAfter`,
+   * `connectSettleMs`) to this SAME block, since they answer the same
+   * question this block already asks — "how does the farm find its devices"
+   * — one field at a time rather than a new top-level block. Step 88.3 adds
+   * `networks` and `scan` (the farm-network list and the bounded subnet
+   * sweep) here too, plus the cross-field `maxAddresses` refinement below
+   * that needs both to exist first — still no new top-level key.
    */
   discovery: z
     .object({
@@ -699,7 +841,7 @@ export const FarmSettingsSchema = z.object({
         .max(300)
         .default(10)
         .describe('How often adb is re-scanned for devices the live event stream may have missed. 0 disables the rescan.')
-        .meta({ title: 'Device rescan interval (s)' }),
+        .meta(ui({ title: 'Device rescan interval (s)', kind: 'duration', unit: 's' })),
       offlineGraceSec: z
         .number()
         .int()
@@ -707,7 +849,7 @@ export const FarmSettingsSchema = z.object({
         .max(600)
         .default(20)
         .describe('How long a device may sit in adb’s "offline" state before one automatic reconnect is attempted.')
-        .meta({ title: 'Offline grace (s)' }),
+        .meta(ui({ title: 'Offline grace (s)', kind: 'duration', unit: 's' })),
       recoveryCooldownSec: z
         .number()
         .int()
@@ -715,12 +857,146 @@ export const FarmSettingsSchema = z.object({
         .max(3600)
         .default(120)
         .describe('Minimum gap between automatic reconnect attempts for the same device.')
-        .meta({ title: 'Recovery cooldown (s)' }),
+        .meta(ui({ title: 'Recovery cooldown (s)', kind: 'duration', unit: 's' })),
+      /** plan 88 §4.2, §5 step 88.2. */
+      tcpPort: z
+        .number()
+        .int()
+        .min(1024)
+        .max(65535)
+        .default(5555)
+        .describe('The port a device listens on for adb over the network. 5555 is the default everywhere.')
+        .meta({ title: 'adb TCP port' }),
+      /** plan 88 §3.2, §4.2, §5 step 88.2 — the address book's per-device cap. */
+      endpointsPerDevice: z
+        .number()
+        .int()
+        .min(1)
+        .max(16)
+        .default(4)
+        .describe('How many past network addresses to remember per device.')
+        .meta(ui({ title: 'Remembered addresses per device', kind: 'count' })),
+      /** plan 88 §3.3, §4.2, §5 step 88.2 — the ladder's own retirement rule. */
+      endpointRetireAfter: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(10)
+        .describe('Stop trying a remembered address after this many failures in a row.')
+        .meta(ui({ title: 'Retire an address after', kind: 'count' })),
+      /** plan 88 §3.3, §4.2, §5 step 88.2 — the ladder's settle-and-verify wait. */
+      connectSettleMs: z
+        .number()
+        .int()
+        .min(500)
+        .max(30_000)
+        .default(3_000)
+        .describe('How long to wait for a device to appear after connecting to it.')
+        .meta(ui({ title: 'Connect settle time (ms)', kind: 'duration', unit: 'ms' })),
+      /**
+       * Farm networks (plan 88 §3.5, §3.6, §4.2) — one list serves two
+       * separate facts so they never drift apart: `medium` labels a device
+       * found on it (§3.1's badge, `mediumSource: 'network'`), and
+       * `scan: true` includes it in the sweep's address space. Empty by
+       * default — a sweep with no configured network is unavailable and says
+       * so, rather than falling back to guessing at one.
+       */
+      networks: z
+        .array(
+          z.object({
+            cidr: CidrSchema,
+            label: z.string().max(40).default(''),
+            // NOT `ConnectionMediumSchema` from `./device`: device.ts already
+            // imports `BatteryStateSchema` from THIS file, so importing back
+            // from device.ts here would close an import cycle. Two string
+            // literals repeated is cheaper than that, and Zod still enforces
+            // the exact same two values.
+            medium: z.enum(['wired', 'wireless']).default('wired').meta({ title: 'Medium' }),
+            scan: z.boolean().default(true).meta({ title: 'Include in a sweep' }),
+          }),
+        )
+        .max(16)
+        .default([])
+        .describe('The networks your devices live on. Enkaku labels a device found here, and scans the ones you tick.')
+        .meta({ title: 'Farm networks' }),
+      /**
+       * The bounded sweep's own policy (plan 88 §3.5, §4.2) — address space
+       * comes from `networks` above, never auto-derived from the host's own
+       * subnets (a laptop on a corporate /16 would otherwise sweep 65,536
+       * addresses because someone pressed a button).
+       */
+      scan: z
+        .object({
+          // §9 Q1 (decided 2026-08-12): 'auto' was cut before shipping — the
+          // owner's decision is manual trigger only, full stop. No cooldown
+          // field exists either: it would exist solely to gate a background
+          // cadence this mode does not have.
+          mode: z
+            .enum(['off', 'on-demand'])
+            .default('on-demand')
+            .describe('When Enkaku may scan a network for devices. On demand = only when you ask, or during a guided move to the network. There is no automatic background scan.')
+            .meta({ title: 'Network scanning' }),
+          maxAddresses: z
+            .number()
+            .int()
+            .min(64)
+            .max(4096)
+            .default(1024)
+            .describe('The most addresses one scan may probe, across every scanned network.')
+            .meta(ui({ title: 'Max addresses per scan', kind: 'count' })),
+          concurrency: z
+            .number()
+            .int()
+            .min(1)
+            .max(256)
+            .default(32)
+            .describe('TCP pre-probes run at once during a sweep.')
+            .meta(ui({ title: 'Simultaneous probes', kind: 'count' })),
+          probeTimeoutMs: z
+            .number()
+            .int()
+            .min(50)
+            .max(5_000)
+            .default(300)
+            .describe('How long the cheap TCP pre-probe waits for an address to answer before moving on.')
+            .meta(ui({ title: 'Probe timeout (ms)', kind: 'duration', unit: 'ms' })),
+        })
+        .default({ mode: 'on-demand', maxAddresses: 1024, concurrency: 32, probeTimeoutMs: 300 })
+        .meta({
+          title: 'Network scan',
+          description: "The bounded subnet sweep's own policy (plan 88 §3.5) — on-demand only, never a background timer.",
+        }),
     })
-    .default({ scanIntervalSec: 10, offlineGraceSec: 20, recoveryCooldownSec: 120 })
+    .superRefine((d, ctx) => {
+      // The cross-field ceiling (plan 88 §4.2): a sum over `networks`, not a
+      // per-row bound, because one huge network and four small ones can both
+      // total the same packet cost — checked here, at save time, so an
+      // over-large config fails with a named message instead of at 2 a.m.
+      // during a scan.
+      const total = d.networks.filter((n) => n.scan).reduce((sum, n) => sum + addressCount(n.cidr), 0)
+      if (total > d.scan.maxAddresses) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['networks'],
+          message: `these networks add up to ${total} addresses, over the ${d.scan.maxAddresses} limit — untick one, narrow a range, or raise the limit`,
+        })
+      }
+    })
+    .default({
+      scanIntervalSec: 10,
+      offlineGraceSec: 20,
+      recoveryCooldownSec: 120,
+      tcpPort: 5555,
+      endpointsPerDevice: 4,
+      endpointRetireAfter: 10,
+      connectSettleMs: 3_000,
+      networks: [],
+      scan: { mode: 'on-demand', maxAddresses: 1024, concurrency: 32, probeTimeoutMs: 300 },
+    })
     .meta({
       title: 'Device discovery',
-      description: 'How often adb is re-scanned for devices the live event stream may have missed, and the recovery cadence for offline/unauthorized devices.',
+      description: 'How often adb is re-scanned for devices the live event stream may have missed, the recovery cadence for offline/unauthorized devices, how network addresses are remembered and retried, the farm-network list, and the bounded subnet sweep (plan 88).',
     }),
   /**
    * The always-on crash watcher's farm-wide switch (plan 85 §3.2, §4.1) —
@@ -754,7 +1030,7 @@ export const FarmSettingsSchema = z.object({
         .max(20)
         .default(3)
         .describe('Consecutive adb timeouts before a device is quarantined as unreachable.')
-        .meta({ title: 'Failures before quarantine' }),
+        .meta(ui({ title: 'Failures before quarantine', kind: 'count' })),
       autoQuarantine: z
         .boolean()
         .default(true)
@@ -767,12 +1043,69 @@ export const FarmSettingsSchema = z.object({
         .max(3600)
         .default(60)
         .describe('How often a device quarantined for adb failures is re-probed.')
-        .meta({ title: 'Recovery probe interval (s)' }),
+        .meta(ui({ title: 'Recovery probe interval (s)', kind: 'duration', unit: 's' })),
     })
     .default({ consecutiveFailures: 3, autoQuarantine: true, probeIntervalSec: 60 })
     .meta({
       title: 'Device health',
       description: 'A device that stops answering adb is pulled from the queue, and put back once it answers again.',
+    }),
+  /**
+   * adb SERVER health monitoring AND control (plan 88 §3.9, §3.10, §4.7,
+   * §4.8, §5 step 88.9) — distinct from `health` above, which quarantines
+   * one unreachable DEVICE. `healthIntervalSec`/`stuckTimeoutRate` watch the
+   * shared adb server itself, farm-wide, and answer "is adb stuck?" (F21,
+   * F23) rather than "is this phone stuck?" — the doctor check that reads
+   * them stays read-only and never restarts anything.
+   *
+   * `restartCooldownSec`/`drainTimeoutMs` govern the ONE thing in this block
+   * that actually touches the server: `adb-server-control.ts`'s `cycle()`,
+   * behind both the Toolchain Manager's version swap and the operator's
+   * Restart adb server button. These two fields shipped as local constants
+   * in `daemon.ts` (`ADB_CYCLE_DRAIN_TIMEOUT_MS`, `ADB_RESTART_COOLDOWN_SEC`)
+   * in step 88.8 because this file was under concurrent edit by another
+   * worker at the time; promoted to real settings here, same defaults,
+   * same call sites (both already read through a function, never a
+   * captured constant, so this was always a one-line follow-up).
+   */
+  adbControl: z
+    .object({
+      healthIntervalSec: z
+        .number()
+        .int()
+        .min(5)
+        .max(300)
+        .default(15)
+        .describe('How often the shared adb server is probed with host:version to measure whether it is still responding.')
+        .meta(ui({ title: 'adb health probe interval (s)', kind: 'duration', unit: 's' })),
+      stuckTimeoutRate: z
+        .number()
+        .min(0)
+        .max(1)
+        .default(0.5)
+        .describe('Share of adb commands timing out over the last 10 minutes (of at least 20) before that is reported as a timeout storm rather than ordinary load.')
+        .meta(ui({ title: 'Timeout-storm threshold', kind: 'chance' })),
+      restartCooldownSec: z
+        .number()
+        .int()
+        .min(10)
+        .max(3600)
+        .default(60)
+        .describe('Minimum gap between adb server restarts — refuses a second Restart adb server click before the farm has settled from the first.')
+        .meta(ui({ title: 'adb restart cooldown', kind: 'duration', unit: 's' })),
+      drainTimeoutMs: z
+        .number()
+        .int()
+        .min(5_000)
+        .max(300_000)
+        .default(30_000)
+        .describe('How long a restart or version swap waits for in-flight adb work and live sessions to finish before giving up.')
+        .meta(ui({ title: 'adb drain timeout (ms)', kind: 'duration', unit: 'ms' })),
+    })
+    .default({ healthIntervalSec: 15, stuckTimeoutRate: 0.5, restartCooldownSec: 60, drainTimeoutMs: 30_000 })
+    .meta({
+      title: 'adb server health',
+      description: 'How closely the shared adb server is watched for signs it is stuck, not just busy, and the drain/cooldown rules the Restart adb server action follows.',
     }),
   /**
    * The interactive device terminal (plan 26 §4.1). `mode` defaults to
@@ -783,9 +1116,14 @@ export const FarmSettingsSchema = z.object({
    */
   shell: z
     .object({
+      // `mode`/`execTimeoutMs`/`maxOutputBytes` are the terminal itself;
+      // `endpointEnabled`/`endpointBind`/`endpointIdleSec`/`maxEndpointStreams`
+      // below are the SEPARATE adb-endpoint opt-in this object's own doc
+      // comment already calls out as independent of `mode` — two maximal
+      // consecutive runs, grouped accordingly (plan 95 §5 step 95.4).
       mode: ShellModeSchema.default('admin')
         .describe('Who may run shell commands on a device. Off disables the terminal entirely.')
-        .meta({ title: 'Device terminal access' }),
+        .meta(ui({ title: 'Device terminal access', group: 'Terminal' })),
       execTimeoutMs: z
         .number()
         .int()
@@ -793,7 +1131,7 @@ export const FarmSettingsSchema = z.object({
         .max(120_000)
         .default(15_000)
         .describe('Budget for a single terminal command.')
-        .meta({ title: 'Terminal command timeout (ms)' }),
+        .meta(ui({ title: 'Terminal command timeout (ms)', kind: 'duration', unit: 'ms', group: 'Terminal' })),
       maxOutputBytes: z
         .number()
         .int()
@@ -801,7 +1139,7 @@ export const FarmSettingsSchema = z.object({
         .max(4_194_304)
         .default(262_144)
         .describe('Output kept per command before truncation.')
-        .meta({ title: 'Max output per command (bytes)' }),
+        .meta(ui({ title: 'Max output per command (bytes)', kind: 'bytes', group: 'Terminal' })),
       /**
        * The local adb endpoint (plan 27 §4.3) — a SEPARATE opt-in from
        * `mode` above: a farm can allow the terminal (`mode: 'admin'`) while
@@ -815,13 +1153,13 @@ export const FarmSettingsSchema = z.object({
         .boolean()
         .default(false)
         .describe('Allow lease holders to open a temporary adb endpoint for this farm.')
-        .meta({ title: 'Allow adb endpoint' }),
+        .meta(ui({ title: 'Allow adb endpoint', group: 'adb endpoint' })),
       endpointBind: z
         .string()
         .min(1)
         .default('127.0.0.1')
         .describe('Address the temporary adb endpoint binds to. Anything other than 127.0.0.1 exposes full device control to that network.')
-        .meta({ title: 'adb endpoint bind address' }),
+        .meta(ui({ title: 'adb endpoint bind address', group: 'adb endpoint' })),
       endpointIdleSec: z
         .number()
         .int()
@@ -829,7 +1167,7 @@ export const FarmSettingsSchema = z.object({
         .max(3_600)
         .default(300)
         .describe('Close the endpoint after this long with no connection.')
-        .meta({ title: 'adb endpoint idle timeout (s)' }),
+        .meta(ui({ title: 'adb endpoint idle timeout (s)', kind: 'duration', unit: 's', group: 'adb endpoint' })),
       maxEndpointStreams: z
         .number()
         .int()
@@ -837,7 +1175,7 @@ export const FarmSettingsSchema = z.object({
         .max(32)
         .default(8)
         .describe('Concurrent adb streams allowed per endpoint.')
-        .meta({ title: 'Max endpoint streams' }),
+        .meta(ui({ title: 'Max endpoint streams', kind: 'count', group: 'adb endpoint' })),
     })
     .default({
       mode: 'admin',
@@ -871,7 +1209,7 @@ export const FarmSettingsSchema = z.object({
         .max(3600)
         .default(300)
         .describe('How long a device session stays alive after the last viewer leaves, so returning is instant. 0 closes it immediately.')
-        .meta({ title: 'Idle session TTL (s)' }),
+        .meta(ui({ title: 'Idle session TTL (s)', kind: 'duration', unit: 's' })),
       maxIdleSessions: z
         .number()
         .int()
@@ -879,7 +1217,7 @@ export const FarmSettingsSchema = z.object({
         .max(64)
         .default(8)
         .describe('How many idle sessions may be held open across the farm before the oldest is closed.')
-        .meta({ title: 'Max idle sessions' }),
+        .meta(ui({ title: 'Max idle sessions', kind: 'count' })),
     })
     .default({ idleTtlSec: 300, maxIdleSessions: 8 })
     .meta({
@@ -900,7 +1238,7 @@ export const FarmSettingsSchema = z.object({
         .max(64)
         .default(8)
         .describe('How many wall tiles stream live at once. The rest show their status and a "show live" action.')
-        .meta({ title: 'Max live wall tiles' }),
+        .meta(ui({ title: 'Max live wall tiles', kind: 'count' })),
     })
     .default({ maxTiles: 8 })
     .meta({
@@ -922,7 +1260,7 @@ export const FarmSettingsSchema = z.object({
         .max(64)
         .default(8)
         .describe('How many devices may be held hot (session alive, encoder running) at once. Hot devices open instantly but the encoder costs device CPU and battery.')
-        .meta({ title: 'Max hot devices' }),
+        .meta(ui({ title: 'Max hot devices', kind: 'count' })),
       defaultDesired: ReadinessSchema.default('asleep')
         .describe('Readiness a newly enrolled device starts at.')
         .meta({ title: 'Default device readiness' }),
@@ -951,14 +1289,14 @@ export const FarmSettingsSchema = z.object({
         .min(1_048_576)
         .default(536_870_912)
         .describe('Largest file that may be pushed or installed.')
-        .meta({ title: 'Max push size (bytes)' }),
+        .meta(ui({ title: 'Max push size (bytes)', kind: 'bytes' })),
       maxPullBytes: z
         .number()
         .int()
         .min(1_048_576)
         .default(536_870_912)
         .describe('Largest file that may be pulled from a device.')
-        .meta({ title: 'Max pull size (bytes)' }),
+        .meta(ui({ title: 'Max pull size (bytes)', kind: 'bytes' })),
       installTimeoutMs: z
         .number()
         .int()
@@ -966,7 +1304,7 @@ export const FarmSettingsSchema = z.object({
         .max(1_800_000)
         .default(300_000)
         .describe('Budget for pm install once the APK is on the device. Runs on the streaming lane, not the 120s adb exec ceiling.')
-        .meta({ title: 'Install timeout (ms)' }),
+        .meta(ui({ title: 'Install timeout (ms)', kind: 'duration', unit: 'ms' })),
     })
     .default({ enabled: true, maxPushBytes: 536_870_912, maxPullBytes: 536_870_912, installTimeoutMs: 300_000 })
     .meta({
@@ -987,6 +1325,12 @@ export const FarmSettingsSchema = z.object({
    */
   network: z
     .object({
+      // NOT `kind: 'text'` (plan 95 §5 step 95.4's report): `.url()` already
+      // gives this node `format: 'uri'`, which the resolver's row 7 reads as
+      // JSON Schema's own semantics — a real URL control. `kind: 'text'`
+      // would win at row 3 (checked earlier) and downgrade it to a plain
+      // text box, losing that for no gain (`text` and bare render
+      // identically). Left off on purpose, not left off by oversight.
       geoProvider: z
         .string()
         .url()
@@ -1004,7 +1348,7 @@ export const FarmSettingsSchema = z.object({
         .describe(
           'How often a route\'s exit is re-checked against its declared region, in seconds. A residential pool that rotates every few minutes is still caught; a lookup on every 20s heartbeat tick would be real per-device traffic and cost at fleet scale (Plan 51 §9 Q1, Plan 55 §3.4) for no extra safety.',
         )
-        .meta({ title: 'Geo re-check interval (s)' }),
+        .meta(ui({ title: 'Geo re-check interval (s)', kind: 'duration', unit: 's' })),
     })
     .default({ geoIntervalSec: 300 })
     .meta({
@@ -1025,21 +1369,21 @@ export const FarmSettingsSchema = z.object({
         .min(1)
         .default(1_048_576)
         .describe('Largest single workspace file, in bytes.')
-        .meta({ title: 'Max file size (bytes)' }),
+        .meta(ui({ title: 'Max file size (bytes)', kind: 'bytes' })),
       maxFilesPerScope: z
         .number()
         .int()
         .min(1)
         .default(1_000)
         .describe('Largest number of files inside one top-level scope (a directory like /shared/, or one agent\'s /agents/<slug>/ home).')
-        .meta({ title: 'Max files per scope' }),
+        .meta(ui({ title: 'Max files per scope', kind: 'count' })),
       maxTotalBytesPerScope: z
         .number()
         .int()
         .min(1)
         .default(67_108_864)
         .describe('Largest total size of one scope\'s files, in bytes.')
-        .meta({ title: 'Max total bytes per scope' }),
+        .meta(ui({ title: 'Max total bytes per scope', kind: 'bytes' })),
     })
     .default({ maxFileBytes: 1_048_576, maxFilesPerScope: 1_000, maxTotalBytesPerScope: 67_108_864 })
     .meta({
@@ -1061,7 +1405,14 @@ export const FarmSettingsSchema = z.object({
         .min(1)
         .default(65_536)
         .describe('Largest single stored value, in bytes (the JSON-encoded plaintext — measured before encryption for a secret).')
-        .meta({ title: 'Max value size (bytes)' }),
+        .meta(ui({ title: 'Max value size (bytes)', kind: 'bytes' })),
+      // NOT `kind: 'bytes'` (this is a count of CHARACTERS in a key, not a
+      // byte size — `bytes`'s control humanises via 1024-based units, which
+      // would misreport "256" as "256 B" implying a storage size) and not
+      // confidently `kind: 'count'` either (`count`'s own examples —
+      // `videos`, `wall.maxTiles` — are all counts of discrete objects, not
+      // a string length). Left bare rather than picked between two
+      // plausible-but-not-quite-right kinds.
       maxKeyLength: z
         .number()
         .int()
@@ -1075,14 +1426,14 @@ export const FarmSettingsSchema = z.object({
         .min(1)
         .default(1_000)
         .describe('Largest number of keys one (scope, namespace) pair may hold.')
-        .meta({ title: 'Max entries per namespace' }),
+        .meta(ui({ title: 'Max entries per namespace', kind: 'count' })),
       maxEntriesPerDevice: z
         .number()
         .int()
         .min(1)
         .default(5_000)
         .describe('Largest number of device-scoped entries one device (across every namespace) may hold.')
-        .meta({ title: 'Max entries per device' }),
+        .meta(ui({ title: 'Max entries per device', kind: 'count' })),
     })
     .default({ maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 })
     .meta({
@@ -1119,14 +1470,14 @@ export const FarmSettingsSchema = z.object({
         .nullable()
         .default(null)
         .describe('Farm-wide output tokens allowed for SCHEDULED agent runs in a rolling 24 hours. Unset (off) by default. Never applies to an interactive chat run.')
-        .meta({ title: 'Spend cap — scheduled runs only' }),
+        .meta(ui({ title: 'Spend cap — scheduled runs only', kind: 'count' })),
       maxConcurrentScheduledRuns: z
         .number()
         .int()
         .min(1)
         .default(3)
         .describe('Scheduled agent runs allowed at once, farm-wide. A firing beyond this follows its own overlap policy.')
-        .meta({ title: 'Max concurrent scheduled runs' }),
+        .meta(ui({ title: 'Max concurrent scheduled runs', kind: 'count' })),
     })
     .default({ spendCapOutputTokensPer24h: null, maxConcurrentScheduledRuns: 3 })
     .meta({

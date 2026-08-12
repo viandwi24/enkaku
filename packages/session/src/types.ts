@@ -29,6 +29,14 @@ export interface DeviceSnapshot {
   /** DeviceSettings.prep.rotation (Plan 85 §3.7, §4.1). */
   rotation?: RotationMode
   /**
+   * DeviceSettings.instrumentation.tagTraffic (spec §9.4/§17; plan 87 §4.12,
+   * §5 step 87.13) — whether a session marks this device as farm-instrumented
+   * via `./farm-tag.ts`. Undefined behaves like `true` (on by default,
+   * matching §17), the same default `createSession` applies when the field
+   * is omitted entirely.
+   */
+  tagTraffic?: boolean
+  /**
    * DeviceSettings.identity (plan 58 §4.2) — the spoofed identity the device
    * presents (timezone/locale/GPS). Carried so a session/job can read what the
    * device claims to be, mirroring how `keepAwake`/`standbyScreenOff` flow.

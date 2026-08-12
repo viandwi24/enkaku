@@ -4,6 +4,24 @@ import type { EngineDescriptor } from '@enkaku/protocol'
  * Descriptors for the engines actually implemented in this package (spec §8;
  * locks follow the spec §9.5 pattern). Engines that are still only planned
  * are registered by the core with `available: false`.
+ *
+ * `displayName` is shown verbatim to users (Studio's device header resolves
+ * an engine id to this string — `packages/studio/src/components/device/
+ * DeviceHeader.tsx:92-93` — and it is served over `GET /api/registry`), so it
+ * must never assert a number nobody has measured as fact. It did once: the
+ * ui-server entry below claimed "<200 ms per find" through an entire shipped
+ * release with no test or benchmark backing it anywhere in the repo, and the
+ * number was wrong by roughly a factor of 10 for part of that time (plan 34's
+ * shipped-defect repair, S4 in plan 87's MVP-readiness audit). Per plan 87
+ * §4.6/step 87.6: softened to read as a design target, not a measured
+ * guarantee — "target" is the operative word, not a smaller or hedged
+ * number, because a qualified guess can still mislead if it reads as
+ * confidence. `packages/toolchain/src/manager.bench.test.ts` and
+ * `packages/core/src/jobs/spawn-overhead.bench.test.ts` now assert the parts
+ * of spec §16 that are checkable with no device; `scripts/bench-device-nfrs.ts`
+ * (gated behind ENKAKU_TEST_DEVICE=1, since it needs a real phone) is the
+ * harness that would turn this specific number into a measured one — see its
+ * own header comment for what it measures and what it deliberately cannot.
  */
 export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'available'>> = [
   {
@@ -16,7 +34,16 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'adb-tcp',
-    displayName: 'ADB (Wireless / TCP)',
+    // Plan 88 §3.1, §3.7 (fixes F3): 'ADB (Wireless / TCP)' asserted
+    // *wireless* about every device on this engine, including a wired OTG
+    // chassis — adb sees `10.20.0.37:5555` either way and cannot tell a
+    // switch port from a radio, the same "must never assert a number nobody
+    // has measured as fact" rule this file's own header states, applied to
+    // a medium instead of a number. Whether a device on this engine is
+    // wired or wireless is `DeviceInfo.connection.medium`
+    // (`packages/protocol/src/device.ts`) — declared or inferred from a
+    // configured farm network, never this string.
+    displayName: 'ADB over the network (TCP)',
     kind: 'transport',
     capabilities: ['shell', 'exec-out'],
     locks: [],
@@ -40,7 +67,7 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'ui-server',
-    displayName: 'UI server (persistent on-device, <200 ms per find)',
+    displayName: 'UI server (persistent on-device, target <200 ms per find)',
     kind: 'inspector',
     capabilities: ['dump', 'find', 'screenshot', 'set-text', 'long-click', 'double-click'],
     locks: ['instrumentation'],
@@ -72,7 +99,7 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
   },
   {
     id: 'uiautomator-dump',
-    displayName: 'UiAutomator dump (bridge, 0.5–2 s per query)',
+    displayName: 'UiAutomator dump (bridge, restarts UiAutomation per query — slower fallback)',
     kind: 'inspector',
     capabilities: ['dump', 'find', 'screenshot'],
     // It seizes UiAutomation too — it cannot run alongside ui-server or appium.

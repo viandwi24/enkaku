@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { Battery, Bug, MoreVertical, Play, ScreenShare, Thermometer, Trash2 } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
+import { ConnectionBadge } from '@/components/ConnectionBadge'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ReadinessControl } from '@/components/ReadinessControl'
@@ -22,6 +23,7 @@ export function DeviceCard({
   device,
   runningJob,
   onReleaseQuarantine,
+  canReleaseQuarantine = true,
   onRequestForget,
   selectable,
   selected,
@@ -30,6 +32,18 @@ export function DeviceCard({
   device: DeviceInfo
   runningJob?: JobInfo | null
   onReleaseQuarantine?: () => void
+  /**
+   * Whether the signed-in user may actually call `onReleaseQuarantine`
+   * (`device.quarantine`, admin-only in `packages/core/src/auth/acl.ts`) —
+   * defaults to `true` so a caller that does not care about the distinction
+   * (every caller before this) keeps today's behaviour. `false` keeps the
+   * button on screen rather than removing it: an operator who cannot act
+   * still needs to see that a way out exists and who to ask, the same
+   * reasoning the offline-device buttons below are disabled-with-a-reason
+   * rather than hidden. Studio-side convenience only — the server refuses
+   * the same call regardless (spec §10.1).
+   */
+  canReleaseQuarantine?: boolean
   /** Opens the Forget/Block dialog for this device (plan 47 §4.5). */
   onRequestForget?: () => void
   /** Multi-select for a batch action (plan 39 §4.7 — "Install on selected"). */
@@ -86,7 +100,19 @@ export function DeviceCard({
                 {device.label}
               </Link>
             </h3>
-            <p className="readout mt-0.5 truncate text-[11px] text-fg-subtle">{device.serial}</p>
+            {/* Badge + address (plan 88 §3.1, §4.1, F27) — replaces the raw
+                adb serial this used to print unlabelled. For a TCP device
+                that serial happened to look like an address by coincidence;
+                for USB it looked like nothing anyone but adb could read. The
+                badge names what kind of connection this is; the second half
+                is the real address when `connection` has one (TCP), or the
+                device's own USB serial when it does not — never blank. */}
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <ConnectionBadge connection={device.connection} />
+              <span className="readout truncate text-[11px] text-fg-subtle">
+                {device.connection.address ?? device.serial}
+              </span>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {/* A device crashing repeatedly should be visible without opening
@@ -208,7 +234,14 @@ export function DeviceCard({
                 : 'Pulled from the queue, with no reason recorded.'}
             </p>
             {onReleaseQuarantine && (
-              <Button variant="outline" size="sm" className="mt-2 h-7 text-[11.5px]" onClick={onReleaseQuarantine}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2 h-7 text-[11.5px]"
+                disabled={!canReleaseQuarantine}
+                title={canReleaseQuarantine ? undefined : 'Only an admin can return a quarantined device to the queue'}
+                onClick={onReleaseQuarantine}
+              >
                 Return to queue
               </Button>
             )}

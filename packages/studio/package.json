@@ -35,6 +35,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@enkaku/plugin-tiktok": "workspace:*",
     "@happy-dom/global-registrator": "^15",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/react": "^16",

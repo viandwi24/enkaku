@@ -19,8 +19,18 @@ export interface ExecutorContext {
 }
 
 export interface JobExecutor {
-  /** Validate params before enqueueing (a per-executor schema). */
-  validateParams(params: unknown): unknown
+  /**
+   * Validate params before enqueueing (a per-executor schema). `scriptId` is
+   * the CONCRETE id being enqueued (plan 95 §5 step 95.6) — a single-schema
+   * executor (sleep, install) ignores it; the shared script executor
+   * (`executors/script.ts`) is the SAME instance for every non-built-in
+   * scriptId (`ExecutorRegistry`'s fallback), so it needs this to look up
+   * which script's `paramsSchema` applies. Throws `EnkakuError` on an
+   * invalid value — `validateScriptForRun` never catches it, so a bad
+   * params object fails BEFORE a job row exists and BEFORE any device is
+   * leased, whether the caller is a single job or a batch.
+   */
+  validateParams(params: unknown, scriptId: string): unknown
   /** Run to completion; resolve means success, reject means failure. */
   run(job: JobRow, ctx: ExecutorContext): Promise<unknown>
 }
