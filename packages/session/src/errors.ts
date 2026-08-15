@@ -9,7 +9,9 @@ export class SessionError extends Error {
       | 'element_not_found'
       | 'waitfor_timeout'
       | 'artifact_too_large'
-      | 'unknown_script',
+      | 'unknown_script'
+      /** Plan 91 §3.3, §4.1 — the input arbiter's bounded queue refused an action; the message names the blocking action. */
+      | 'E_INPUT_BUSY',
     message: string,
     /**
      * Plan 74 §4.3 — carries a `FindOutcome`'s last non-ok reason/matches for

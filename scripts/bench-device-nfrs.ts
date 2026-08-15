@@ -1,0 +1,401 @@
+#!/usr/bin/env bun
+/**
+ * Device benchmark for four of spec §16's seven NFR numbers — plan 84's
+ * audit found none of the seven had any test, benchmark, or assertion
+ * anywhere in the repo; the sharpest case being the ui-server "<200 ms per
+ * find" claim shown verbatim in the product UI (`packages/drivers/src/
+ * descriptors.ts`), which the audit found wrong by roughly a factor of 10
+ * through an entire shipped release. This script is the harness that would
+ * catch that: it drives one real phone through the exact production code
+ * paths (`@enkaku/drivers`'s `UiServerLauncher`/`UiServerInspector`,
+ * `@enkaku/scrcpy`'s `startScrcpySession`) and reports real numbers.
+ *
+ *   ENKAKU_TEST_DEVICE=1 bun run bench:device-nfrs -- --serial <SERIAL>
+ *
+ * What this measures, and what it deliberately does NOT:
+ *
+ *   - Inspector `find` / `dump` latency (spec §16 "<200ms per find", §11.2's
+ *     "334-584ms" dump figure): measured directly, real RPC round trips
+ *     against the real on-device ui-server.
+ *   - "ui-server attach" time: the device-bound half of spec §16's "Job
+ *     overhead (spawn → prepare) < 3s" — install-verify, instrumentation
+ *     launch, port forward, first successful ping. The device-FREE half
+ *     (child process spawn + bundle import) is a separate, no-hardware-needed
+ *     benchmark: `packages/core/src/jobs/spawn-overhead.bench.test.ts`. This
+ *     script does not attempt the full spawn→prepare number end to end
+ *     because that requires `@enkaku/session`'s `JobRunner`/`SessionManager`
+ *     (a whole session/lease/reset lifecycle owned by another workstream on
+ *     this branch) — reproducing it here would mean re-deriving that wiring
+ *     from scratch with nothing to test it against, which is a worse kind of
+ *     fake than not measuring at all.
+ *   - Video FPS (spec §16 "≥ 24 fps"): counts REAL frame packets off the
+ *     scrcpy video socket (`ScrcpyPacket.kind === 'frame' | 'keyframe'`) over
+ *     a wall-clock window — the actual on-device H.264 encoder's output rate.
+ *   - "Time to first frame": session start to the first video packet
+ *     (config or frame) arriving on the socket — the server-side leg of
+ *     "glass-to-glass latency" and one of plan 85 §7.3's own ladder rows.
+ *
+ *   - Glass-to-glass latency (spec §16 "< 150ms") is NOT measured here and
+ *     cannot be, by any headless script: the spec's own definition is
+ *     "scrcpy H.264 plus WebCodecs" — i.e. input injected → the on-device
+ *     encoder → the network → BROWSER decode → BROWSER paint. The decode and
+ *     paint legs only exist inside a real browser tab (WebCodecs, a
+ *     `requestVideoFrameCallback` timestamp compared against the moment a
+ *     click was sent). Faking that leg from a Bun script — guessing a decode
+ *     time, or silently dropping it and calling the remainder "glass-to-
+ *     glass" — is exactly the failure mode plan 84's audit exists to stop.
+ *     A real measurement needs a browser-driving harness (Studio e2e,
+ *     Playwright + WebCodecs), which does not exist in this repo; this
+ *     script's "time to first frame" stage is the honest partial substitute
+ *     — the server-side leg only, reported and labelled as such.
+ *   - "Max devices per host" (both rows) is a fleet-scale measurement, not a
+ *     single-device one — `docs/plans/85-m50-windows-fleet-scale.md` §7.3
+ *     already IS that harness (a documented, one-rung-at-a-time procedure);
+ *     recorded there as "outstanding — not run" as of this writing. Nothing
+ *     here duplicates it.
+ *
+ * Prerequisites (same shape as `scripts/smoke-guest-agent.ts`):
+ *   - A real phone attached over adb, awake and unlocked (some stages act on
+ *     whatever is currently on screen).
+ *   - `bun run dev` has been started at least once against the SAME data dir
+ *     this script points at (`--data-dir`, default `.dev-data` — the same
+ *     default `bun run dev` uses), so adb/ui-server/ui-server-test/
+ *     scrcpy-server are already provisioned. This script never provisions
+ *     anything itself — same "adb is never bundled, only downloaded and
+ *     verified" rule as the rest of the toolchain.
+ *
+ * Optional:
+ *   ENKAKU_DATA_DIR / --data-dir   toolchain data dir (default $PWD/.dev-data)
+ *   --port <N>                    ui-server local forward port (default 27510)
+ *   --find-iterations <N>         per-find RPC samples (default 30)
+ *   --fps-window-sec <N>          scrcpy capture window, seconds (default 5)
+ *   --skip-inspector / --skip-video   run only the other stage group
+ */
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+// Relative imports across a package boundary are normally forbidden
+// (CLAUDE.md) — every other caller reaches these through the `@enkaku/*`
+// package name. This script is the same deliberate exception
+// `smoke-guest-agent.ts` already documents: root-level tooling with no
+// `package.json` dependency wiring of its own.
+import { AdbClient } from '../packages/adb/src/client'
+import { ToolchainManager, type ToolInstallStore } from '../packages/toolchain/src/manager'
+import { createUiServerLauncher, UiServerInspector } from '../packages/drivers/src/inspector/ui-server/index'
+import type { UiNode } from '../packages/protocol/src/ui-node'
+import { startScrcpySession, type AdbExecutor } from '../packages/scrcpy/src/session'
+import type { ScrcpyPacket } from '../packages/scrcpy/src/demuxer'
+
+const ROOT = join(import.meta.dir, '..')
+
+function usage(): string {
+  return `usage: ENKAKU_TEST_DEVICE=1 bun run bench:device-nfrs -- --serial <SERIAL> [options]
+
+  --serial <S>          required — the device to drive (never guessed, see smoke-guest-agent.ts's own note)
+  --data-dir <path>      toolchain data dir (default: \${ENKAKU_DATA_DIR:-$PWD/.dev-data})
+  --port <N>             ui-server local forward port (default 27510)
+  --find-iterations <N>  per-find RPC samples (default 30)
+  --fps-window-sec <N>   scrcpy capture window in seconds (default 5)
+  --skip-inspector       skip the ui-server attach/find/dump stages
+  --skip-video           skip the scrcpy FPS/time-to-first-frame stages
+  --help                 print this and exit, without touching adb or any device
+
+Env:
+  ENKAKU_TEST_DEVICE=1   required gate — this script drives real hardware
+`
+}
+
+function flag(args: string[], name: string): string | undefined {
+  const i = args.indexOf(`--${name}`)
+  return i === -1 ? undefined : args[i + 1]
+}
+
+/** A store implementation `ToolchainManager` never actually calls on this path (resolveToolPath reads the active pointer, not the DB rows) — matches `packages/toolchain/src/manager.test.ts`'s own `fakeStore()`. */
+function noopStore(): ToolInstallStore {
+  return {
+    list: () => [],
+    listByTool: () => [],
+    insert: () => {},
+    delete: () => {},
+    setActive: () => {},
+  }
+}
+
+function percentile(sortedMs: number[], p: number): number {
+  if (sortedMs.length === 0) return 0
+  const idx = Math.min(sortedMs.length - 1, Math.floor((p / 100) * sortedMs.length))
+  return sortedMs[idx] ?? 0
+}
+
+function firstNamedNode(node: UiNode): { sel: { id: string } | { text: string } | { desc: string }; label: string } | undefined {
+  if (node.resourceId) return { sel: { id: node.resourceId }, label: `id=${node.resourceId}` }
+  if (node.text) return { sel: { text: node.text }, label: `text=${JSON.stringify(node.text)}` }
+  if (node.desc) return { sel: { desc: node.desc }, label: `desc=${JSON.stringify(node.desc)}` }
+  for (const child of node.children) {
+    const found = firstNamedNode(child)
+    if (found) return found
+  }
+  return undefined
+}
+
+async function main() {
+  const args = process.argv.slice(2)
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(usage())
+    return
+  }
+  if (process.env.ENKAKU_TEST_DEVICE !== '1') {
+    console.error('✗ set ENKAKU_TEST_DEVICE=1 to run this against real hardware (repo convention, 00-overview.md §4.4)')
+    process.exit(1)
+  }
+  const serial = flag(args, 'serial')
+  if (!serial) {
+    console.error(usage())
+    console.error('✗ --serial is required')
+    process.exit(1)
+  }
+  const dataDir = flag(args, 'data-dir') ?? process.env.ENKAKU_DATA_DIR ?? join(ROOT, '.dev-data')
+  const localPort = Number(flag(args, 'port') ?? 27510)
+  const findIterations = Number(flag(args, 'find-iterations') ?? 30)
+  const fpsWindowSec = Number(flag(args, 'fps-window-sec') ?? 5)
+  const skipInspector = args.includes('--skip-inspector')
+  const skipVideo = args.includes('--skip-video')
+
+  if (!existsSync(dataDir)) {
+    console.error(`✗ data dir ${dataDir} does not exist — run \`bun run dev\` at least once first (see this script's own header comment)`)
+    process.exit(1)
+  }
+
+  console.log(`Resolving the toolchain from ${dataDir} …`)
+  const toolchain = new ToolchainManager({ dataDir, coreVersion: '0.0.0-bench', store: noopStore() })
+  await toolchain.init()
+
+  let adbPath: string
+  try {
+    adbPath = await toolchain.resolveToolPath('adb')
+  } catch (err) {
+    console.error(`✗ adb is not provisioned in ${dataDir}: ${String(err)}`)
+    console.error('  run `bun run dev` once against this data dir first, and let first-run provisioning finish.')
+    process.exit(1)
+  }
+
+  async function hostAdb(cliArgs: string[]): Promise<string> {
+    const proc = Bun.spawn([adbPath, ...cliArgs], { stdout: 'pipe', stderr: 'pipe' })
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
+    const code = await proc.exited
+    if (code !== 0) throw new Error(`adb ${cliArgs.join(' ')} failed (${code}): ${(err || out).trim()}`)
+    return out
+  }
+
+  const listed = await hostAdb(['devices'])
+  const attached = listed
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .some(([s, state]) => s === serial && state === 'device')
+  if (!attached) {
+    console.error(`✗ device ${serial} is not attached (adb devices does not list it as "device")`)
+    process.exit(1)
+  }
+
+  const client = new AdbClient({ adbPath })
+  // Neither `createUiServerLauncher` nor `verifyDeviceArtifact` ever pass
+  // `opts` at their `deps.exec` call sites — a plain arity-1 wrapper is
+  // structurally assignable to the `(cmd, opts?: TransportExecOptions) =>
+  // Promise<string>` shape both expect, with no profile↔AdbTimeoutProfile
+  // mapping needed (the mapping `packages/drivers/src/transport/adb-
+  // transport.ts` does exists for the real session path, not this one).
+  const exec = (cmd: string) => client.exec(serial, cmd).then((r) => r.stdout)
+
+  type Row = { metric: string; value: string; note: string }
+  const rows: Row[] = []
+  let failed = false
+
+  // ---- inspector stages (spec §16 "<200ms per find", §11.2's dump figure) --
+
+  if (!skipInspector) {
+    console.log(`\n== Inspector stages (ui-server) — ${findIterations} find() samples ==`)
+    const launcher = createUiServerLauncher({
+      serial,
+      exec,
+      hostAdb,
+      apkPaths: async () => ({
+        app: await toolchain.resolveToolPath('ui-server'),
+        test: await toolchain.resolveToolPath('ui-server-test'),
+      }),
+      execStream: (cmd, streamOpts) =>
+        client.execStream(serial, cmd, {
+          onData: () => {},
+          onEnd: (reason, err) => streamOpts.onEnd(reason, err),
+          idleTimeoutMs: 0,
+          absoluteTimeoutMs: 0,
+        }),
+      onLog: (level, msg) => console.log(`  [launcher:${level}] ${msg}`),
+    })
+
+    const inspector = new UiServerInspector({
+      serial,
+      localPort,
+      launcher,
+      screenSize: async () => {
+        const out = await exec('wm size')
+        const m = out.match(/(\d+)x(\d+)/)
+        return m ? { width: Number(m[1]), height: Number(m[2]) } : null
+      },
+      onLog: (level, msg) => console.log(`  [inspector:${level}] ${msg}`),
+    })
+
+    try {
+      const t0 = performance.now()
+      await inspector.start()
+      const attachMs = performance.now() - t0
+      rows.push({ metric: 'ui-server attach', value: `${attachMs.toFixed(0)} ms`, note: 'device-bound half of "job overhead" (spec §16)' })
+      console.log(`  attached in ${attachMs.toFixed(0)}ms`)
+
+      const dumpT0 = performance.now()
+      const tree = await inspector.dump()
+      const dumpMs = performance.now() - dumpT0
+      rows.push({ metric: 'dump() latency', value: `${dumpMs.toFixed(0)} ms`, note: 'spec §11.2 claims 334-584ms, unverified before this run' })
+      console.log(`  dump() in ${dumpMs.toFixed(0)}ms`)
+
+      const target = firstNamedNode(tree)
+      if (!target) {
+        console.log('  ⚠ no id/text/desc-bearing node found on the current screen — skipping find() timing (open any app with visible text/buttons and re-run)')
+      } else {
+        console.log(`  using selector ${target.label} for ${findIterations} find() samples`)
+        const samples: number[] = []
+        for (let i = 0; i < findIterations; i++) {
+          const t = performance.now()
+          await inspector.find(target.sel)
+          samples.push(performance.now() - t)
+        }
+        samples.sort((a, b) => a - b)
+        const p50 = percentile(samples, 50)
+        const p95 = percentile(samples, 95)
+        const max = samples[samples.length - 1] ?? 0
+        rows.push({ metric: 'find() p50', value: `${p50.toFixed(0)} ms`, note: 'spec §16 claims <200ms' })
+        rows.push({ metric: 'find() p95', value: `${p95.toFixed(0)} ms`, note: '' })
+        rows.push({ metric: 'find() max', value: `${max.toFixed(0)} ms`, note: '' })
+        console.log(`  p50=${p50.toFixed(0)}ms p95=${p95.toFixed(0)}ms max=${max.toFixed(0)}ms`)
+
+        // Generous: catches roughly a 10x regression against the 200ms
+        // claim, exactly the failure mode plan 84's audit found already
+        // happened once, rather than flaking on ordinary device jitter.
+        if (p95 > 2000) {
+          console.log(`  ✗ find() p95 (${p95.toFixed(0)}ms) exceeds the 2000ms (10x) regression bound`)
+          failed = true
+        } else {
+          console.log('  ✓ find() p95 within the 10x-regression bound')
+        }
+      }
+    } finally {
+      await inspector.stop().catch(() => undefined)
+    }
+  }
+
+  // ---- video stages (spec §16 "≥24fps", "glass-to-glass" server-side leg) --
+
+  if (!skipVideo) {
+    console.log(`\n== Video stages (scrcpy) — ${fpsWindowSec}s capture window ==`)
+    let scrcpyServerJar: string
+    try {
+      scrcpyServerJar = await toolchain.resolveToolPath('scrcpy-server')
+    } catch (err) {
+      console.log(`  ⚠ scrcpy-server is not provisioned (${String(err)}) — skipping video stages`)
+      scrcpyServerJar = ''
+    }
+
+    if (scrcpyServerJar) {
+      const adbExecutor: AdbExecutor = {
+        serial,
+        exec,
+        hostAdb,
+        spawnLongLived: (spawnArgs, opts) => {
+          const proc = Bun.spawn([adbPath, ...spawnArgs], { stdout: 'pipe', stderr: 'pipe' })
+          let tailBuf = ''
+          const pump = async (stream: ReadableStream<Uint8Array> | undefined) => {
+            if (!stream) return
+            const decoder = new TextDecoder()
+            for await (const chunk of stream) {
+              tailBuf = (tailBuf + decoder.decode(chunk, { stream: true })).slice(-65536)
+            }
+          }
+          void pump(proc.stdout)
+          void pump(proc.stderr)
+          void proc.exited.then((code) => opts?.onExit?.(code, tailBuf))
+          return { pid: proc.pid, tail: () => tailBuf, kill: () => proc.kill(), exited: proc.exited }
+        },
+      }
+
+      const sessionT0 = performance.now()
+      let firstFrameMs: number | null = null
+      const frameTimestamps: number[] = []
+      let session: Awaited<ReturnType<typeof startScrcpySession>> | undefined
+      try {
+        session = await startScrcpySession(adbExecutor, {
+          jarPath: scrcpyServerJar,
+          onLog: (level, msg) => console.log(`  [scrcpy:${level}] ${msg}`),
+        })
+        session.onPacket((p: ScrcpyPacket) => {
+          const now = performance.now()
+          if (firstFrameMs === null) firstFrameMs = now - sessionT0
+          if (p.kind === 'frame' || p.kind === 'keyframe') frameTimestamps.push(now)
+        })
+
+        await Bun.sleep(fpsWindowSec * 1000)
+
+        // A plain function boundary, not a ternary read straight off the
+        // closure-captured `let` — TS's control-flow narrowing of a variable
+        // reassigned inside a different closure does not carry back into the
+        // outer scope's read cleanly; a fresh parameter re-narrows fine.
+        const formatMsOrNever = (ms: number | null): string => (ms === null ? 'never arrived' : `${ms.toFixed(0)} ms`)
+        rows.push({
+          metric: 'time to first video packet',
+          value: formatMsOrNever(firstFrameMs),
+          note: 'server-side leg only — NOT full glass-to-glass (needs a browser decode+paint leg, see header comment)',
+        })
+        console.log(`  time to first packet: ${formatMsOrNever(firstFrameMs)}`)
+
+        if (frameTimestamps.length < 2) {
+          console.log(`  ✗ only ${frameTimestamps.length} frame packet(s) arrived in ${fpsWindowSec}s — cannot compute FPS`)
+          rows.push({ metric: 'video FPS', value: 'n/a', note: `only ${frameTimestamps.length} frame(s) received` })
+          failed = true
+        } else {
+          const spanSec = (frameTimestamps[frameTimestamps.length - 1]! - frameTimestamps[0]!) / 1000
+          const fps = spanSec > 0 ? (frameTimestamps.length - 1) / spanSec : 0
+          rows.push({ metric: 'video FPS', value: fps.toFixed(1), note: 'spec §16 claims ≥24fps (may legitimately drop while idle)' })
+          console.log(`  ${frameTimestamps.length} frames over ${spanSec.toFixed(1)}s → ${fps.toFixed(1)} fps`)
+          // Generous: catches roughly a 10x regression against the 24fps
+          // target (a healthy idle screen can legitimately sit well below
+          // 24fps per spec's own caveat — this bound is deliberately loose).
+          if (fps < 3) {
+            console.log(`  ✗ ${fps.toFixed(1)}fps is below the 3fps (~10x) regression bound`)
+            failed = true
+          } else {
+            console.log('  ✓ FPS within the 10x-regression bound')
+          }
+        }
+      } finally {
+        await session?.close().catch(() => undefined)
+      }
+    }
+  }
+
+  // ---- report -----------------------------------------------------------
+
+  console.log('\n== Results ==')
+  const widths = {
+    metric: Math.max(6, ...rows.map((r) => r.metric.length)),
+    value: Math.max(5, ...rows.map((r) => r.value.length)),
+  }
+  for (const r of rows) {
+    console.log(`  ${r.metric.padEnd(widths.metric)}  ${r.value.padEnd(widths.value)}  ${r.note}`)
+  }
+
+  console.log(failed ? '\n✗ one or more metrics exceeded their regression bound' : '\n✓ all measured metrics are within their regression bounds')
+  process.exit(failed ? 1 : 0)
+}
+
+main().catch((err) => {
+  console.error('✗ unexpected error:', err instanceof Error ? err.message : err)
+  process.exit(1)
+})

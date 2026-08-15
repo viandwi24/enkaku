@@ -44,6 +44,21 @@ export const MAIN_EVENT_KINDS = [
   'inspect.attached',
   /** The last Inspect tab viewer left and the inspector engine was released (plan 56 §3.7). */
   'inspect.detached',
+  /** Bounded automatic network-route recovery gave up after its attempt bound (plan 90 §3.7 rule 5, fixes F20) — carries { attempts, message }. */
+  'network.recovery.exhausted',
+  /** A network route that needed automatic recovery is carrying traffic again — either mid-attempt or after a genuine reconnect reset the bound (plan 90 §3.7 rule 5) — carries { attempts } or { attempts, wasExhausted }. */
+  'network.recovery.recovered',
+  /** The guest agent's provisioning state changed (plan 90 §3.8, §4.3) — carries { state, reason? }. Fired once per state transition, never per verification pass (a clean reconnect that changes nothing emits no event, acceptance criterion 5). */
+  'device.agent',
+  /** A co-control (Assist) grant started on this device (plan 91 §3.5, §3.4 item 4) — mirrors `control.acquired`/`control.released` for the SUBORDINATE grant rather than the lease. Carries { jobId, primaryKind }. */
+  'control.assist.started',
+  /** The bookend to `control.assist.started` — carries { jobId, primaryKind, reason }, `reason` one of `AssistEndReason` ('released' | 'ttl' | 'disconnected' | 'primary_ended' | 'mode_off'). */
+  'control.assist.ended',
+  // `'clipboard.overwritten'` — the text ladder's clipboard-paste rung (plan 90 §3.3 rule 3) —
+  // was added here for step 90.5's benefit and removed by the M61 hotfix pass
+  // (docs/plans/96-m61-hotfixes.md §96.7, §96.8): the rung it recorded was proven
+  // architecturally unreachable in this codebase, so the event could never fire. Do not re-add it
+  // without first re-adding a reachable clipboard-paste rung to `packages/session/src/text-input.ts`.
 ] as const
 
 /** Input-stream kinds (§4.2). */

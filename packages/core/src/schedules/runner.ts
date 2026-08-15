@@ -1,10 +1,12 @@
 import { eq } from 'drizzle-orm'
 import {
+  reconcileParams,
   ScriptRefSchema,
   type AgentRunStatus,
   type BatchOrder,
   type BatchStatusEvent,
   type JobInfo,
+  type JsonSchemaNode,
   type NotificationContext,
   type OnApprovalRequired,
   type ScheduleFiredEvent,
@@ -12,15 +14,16 @@ import {
   type ScheduleThreadMode,
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
+import { stopBatch } from '../api/batches'
 import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
 import { resolveCluster, resolveTarget } from '../clusters/resolve'
-import { recomputeBatchStatus } from '../clusters/status'
 import type { Db } from '../db'
 import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
+import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { nextFire, occurrencesBetween } from './cron'
@@ -105,6 +108,19 @@ export interface ScheduleRunnerDeps {
    * keeps compiling unedited and falls back to the old direct call.
    */
   registry?: ScriptRegistry
+  /**
+   * Plan 94 §3.9, §4.9, step 94.8 — `onOverlap: 'cancel-previous'`'s ONLY
+   * abort path for a `running` member of the previous batch (see
+   * `stopBatch`'s own doc in `api/batches.ts`, "no second abort path").
+   * Optional so every pre-94.8 test keeps compiling unedited: omitted,
+   * `stopBatch` counts every affected member `refused` rather than silently
+   * doing nothing (honest about doing zero work), so `cancel-previous`
+   * degrades to "the previous run's queued members are still cancelled
+   * nowhere" — flagged here rather than a silent behaviour change. Every
+   * real host (`daemon.ts`) wires the same `jobService` instance
+   * `createBatchRoutes` itself gets.
+   */
+  jobService?: Pick<JobService, 'cancel'>
 }
 
 interface ResolvedDeps extends ScheduleRunnerDeps {
@@ -173,20 +189,35 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
   let outcome: ScheduleRunOutcome
   let batchId: string | null = null
   let detail: string | null = null
+  // Plan 94 §3.7, F28 — the value `pickJitterMs` actually draws, materialised
+  // on `schedule_runs.jitterMs` below instead of thrown away. `0` here (a
+  // `skipped-overlap` fire never reaches the draw at all) is indistinguishable
+  // from "no jitter configured," which is correct: neither attributes any
+  // delay to jitter.
+  let jitterMs = 0
 
   if (active && schedule.onOverlap === 'skip') {
     outcome = 'skipped-overlap'
     detail = `the previous batch (${schedule.lastBatchId}) has not finished`
   } else {
     if (active && schedule.onOverlap === 'cancel-previous' && schedule.lastBatchId) {
-      const cancelled = deps.jobStore.cancelQueuedInBatch(schedule.lastBatchId)
-      recomputeBatchStatus({ db: deps.db, jobStore: deps.jobStore, broadcast: deps.broadcastBatchStatus }, schedule.lastBatchId)
-      detail = `cancelled ${cancelled} queued job(s) from the previous run before starting`
+      // Plan 94 §3.9, §4.9, step 94.8 — routed through the SAME stop `POST
+      // /api/batches/:id/stop` uses (no second implementation): before this,
+      // `cancelQueuedInBatch` alone left a `running` member going, and for a
+      // PACED batch also left the pacer planning further repetitions — a
+      // schedule set to `cancel-previous` would accumulate running work
+      // forever instead of ever actually stopping the previous run. No
+      // `actor` (no interactive caller at cron time — the same reasoning
+      // `assertDeviceAllowedFor` in `api/batches.ts` already states for this
+      // exact call site): every member is stoppable, matching this route's
+      // existing farm-wide authority to fire a schedule at all.
+      const stopped = stopBatch(deps, schedule.lastBatchId, null)
+      detail = `stopped the previous run before starting — ${stopped.cancelled} queued, ${stopped.aborted} running`
     }
 
     // Resolved once, at dispatch — shifts the batch creation time, never the
     // cron evaluation, so the schedule itself does not drift (plan 21 §3.6).
-    const jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
+    jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
     if (jitterMs > 0) await deps.sleep(jitterMs)
 
     const batchDeps: BatchDispatchDeps = {
@@ -195,6 +226,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       audit: deps.audit,
       onJobStatus: deps.onJobStatus,
       ...(deps.validateScript ? { validateScript: deps.validateScript } : {}),
+      ...(deps.registry ? { scriptNameOf: (scriptId: string) => deps.registry!.get(scriptId) } : {}),
     }
     try {
       // Resolved once, at the moment of dispatch — never per job (plan 62
@@ -208,19 +240,53 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       }
       const resolved = deps.registry ? deps.registry.resolve(parsedRef.data) : resolveScriptRef(deps.db, parsedRef.data)
 
+      // Reconciled against the RESOLVED version's schema (plan 95 §4.4, §5
+      // step 95.7) — the same discipline plan 62 §4.5 already applies to an
+      // unresolvable reference: a contract change (a field tightened, a
+      // required field added with no default) must stop an unattended
+      // firing rather than run a half-understood configuration. Blocking
+      // findings (`missing`/`invalid`) refuse the fire outright, below.
+      // `reconciliation.value` — not the raw `schedule.params` — is what
+      // actually gets dispatched further down: a NON-blocking finding (a
+      // field reset to its new default, a stale field the schema no longer
+      // declares dropped) must take effect, or the raw stored value would
+      // still fail `createBatch`'s own param validation for the exact field
+      // reconciliation just silently repaired.
+      const reconciliation = reconcileParams(resolved.paramsSchema as JsonSchemaNode | null, schedule.params)
+      if (reconciliation.blocking) {
+        const blocking = reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing')
+        throw new EnkakuError(
+          'params_incompatible',
+          `${resolved.name}@${resolved.version}'s parameter schema no longer matches this schedule's stored parameters: ${blocking.map((f) => `${f.path} (${f.detail})`).join('; ')}`,
+          undefined,
+          blocking.map((f) => ({ path: f.path, message: f.detail })),
+        )
+      }
+
       // The queue timeout lives on the job, set from whatever created it
       // (plan 21 §3.3) — a schedule is simply the first caller to set it.
       const expiresAt =
         schedule.queueTimeoutSec != null ? Math.floor(deps.clock().getTime() / 1000) + schedule.queueTimeoutSec : null
       const { batch } = createBatch(batchDeps, {
         scriptId: resolved.id,
-        params: schedule.params,
+        params: reconciliation.value,
         target: scheduleTarget(schedule),
         concurrency: schedule.concurrency,
         order: schedule.order as BatchOrder,
         priority: schedule.priority,
         createdBy: schedule.createdBy,
         expiresAt,
+        // Plan 94 §3.7, §4.8, step 94.9, F34 — passed through exactly like
+        // concurrency/order/priority above, the same seam a hand-started
+        // paced batch uses (`POST /api/batches`'s own `pacing` block). A
+        // schedule with `repeatCount: 1` and every interval `0` (the
+        // default) writes the on-the-wire equivalent of an unpaced batch;
+        // `createBatch` itself is what makes that a no-op, not this call.
+        pacing: {
+          count: schedule.repeatCount,
+          intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
+          deviceIntervalMs: schedule.deviceIntervalMs,
+        },
       })
       batchId = batch.id
       outcome = 'dispatched'
@@ -256,6 +322,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       batchId,
       detail,
       missedCount,
+      jitterMs,
     })
     .run()
 
@@ -332,6 +399,10 @@ async function fireAgentOnce(deps: ResolvedDeps, schedule: ScheduleRow, target: 
 
   let outcome: ScheduleRunOutcome
   let detail: string | null = null
+  // Plan 94 §3.7, F28 — same reasoning as the script branch above: the agent
+  // branch draws jitter through the SAME `pickJitterMs`, and F28's evidence
+  // names this branch too, so it gets the same fix in the same pass.
+  let jitterMs = 0
 
   if ((active || ceilingReached) && schedule.onOverlap === 'skip') {
     outcome = 'skipped-overlap'
@@ -344,7 +415,7 @@ async function fireAgentOnce(deps: ResolvedDeps, schedule: ScheduleRow, target: 
       detail = `cancelled the previous agent run (${target.lastAgentRunId}) before starting`
     }
 
-    const jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
+    jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
     if (jitterMs > 0) await deps.sleep(jitterMs)
 
     // Plan 68 §3.3 — the spend cap, checked right before dispatch, farm-wide, SCHEDULED runs only.
@@ -414,6 +485,7 @@ async function fireAgentOnce(deps: ResolvedDeps, schedule: ScheduleRow, target: 
       batchId: null,
       detail,
       missedCount,
+      jitterMs,
     })
     .run()
 

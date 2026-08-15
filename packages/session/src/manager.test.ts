@@ -4,6 +4,7 @@ import type { ScrcpySession } from '@enkaku/scrcpy'
 import { createSessionManager } from './manager'
 import type { DeviceSnapshot, DeviceSnapshotSource } from './types'
 import type { Logger } from './logger'
+import type { VideoProfile } from './video-profile'
 
 const DEVICE_ID = 'dev-1'
 
@@ -423,6 +424,562 @@ describe('SessionManager — AdbInput gesture degrade reported once per session 
     })
     await manager.acquire(DEVICE_ID, () => {})
     expect(events.some((e) => e.kind === 'session.degraded' && e.meta.to === 'adb-input')).toBe(false)
+    await manager.closeAll()
+  })
+})
+
+/**
+ * `closeAll(reason)` and `activeDeviceIds()` (plan 88 §3.10, §4.8, fixes
+ * F19) — the adb restart flow's drain reads BOTH: a live count before
+ * anything closes (for the confirmation dialog), and the real count of what
+ * it actually closed (for `AdbCycleReport.sessionsClosed`), with the reason
+ * threaded onto the wire so the device log reads as an operator action
+ * ("adb-server-restart") rather than an unexplained drop.
+ */
+describe('SessionManager.closeAll(reason) / activeDeviceIds() (plan 88 §3.10, §4.8)', () => {
+  test('activeDeviceIds() sees an open session before it is closed, and closeAll(reason) reports both the count and the reason', async () => {
+    const events: { deviceId: string; kind: string; meta: Record<string, unknown> }[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      onEvent: (deviceId, kind, meta) => events.push({ deviceId, kind, meta }),
+    })
+
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(manager.activeDeviceIds?.()).toEqual([DEVICE_ID])
+
+    const closed = await manager.closeAll('adb-server-restart')
+
+    expect(closed).toBe(1)
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    const closedEvent = events.find((e) => e.kind === 'session.closed')
+    expect(closedEvent?.meta.reason).toBe('adb-server-restart')
+  })
+
+  test('closeAll() with no reason defaults to \'shutdown\' and still reports the count', async () => {
+    const events: { deviceId: string; kind: string; meta: Record<string, unknown> }[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      onEvent: (deviceId, kind, meta) => events.push({ deviceId, kind, meta }),
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+
+    const closed = await manager.closeAll()
+
+    expect(closed).toBe(1)
+    expect(events.find((e) => e.kind === 'session.closed')?.meta.reason).toBe('shutdown')
+  })
+
+  test('nothing open: closeAll() closes zero and activeDeviceIds() is empty', async () => {
+    const manager = createSessionManager({ client: fakeClient(), devices, log: silentLog() })
+    expect(manager.activeDeviceIds?.()).toEqual([])
+    expect(await manager.closeAll()).toBe(0)
+  })
+})
+
+/**
+ * Plan 92 §3.5, §4.2, §4.3, step 92.1 — `SessionManagerDeps.resolveProfile`
+ * is the seam that turns a saved `video.*` farm setting into an actual
+ * scrcpy argument: `createEntry` calls it and threads the result into
+ * `CreateSessionOpts.videoProfile`, which `createSession` hands straight to
+ * `makeScrcpy` (`session.ts`, no `QUALITY_PROFILES[quality]` lookup left
+ * anywhere). This is the manager-level half of the step's own verifiable
+ * result — "setting `video.wallMaxFps: 3` and opening a new wall tile
+ * spawns scrcpy with `max_fps 3`" — proven here by faking `resolveProfile`
+ * the way a real settings change would resolve it, and asserting on the
+ * exact object `makeScrcpy` received.
+ */
+describe('SessionManager — resolveProfile threads a resolved video profile into makeScrcpy (plan 92 §3.5, §4.2, §4.3)', () => {
+  test('a custom resolveProfile reaches makeScrcpy verbatim — e.g. video.wallMaxFps: 3 spawns scrcpy with max_fps 3', async () => {
+    const received: VideoProfile[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async (_deviceId, _transport, profile) => {
+        received.push(profile)
+        return fakeScrcpy()
+      },
+      resolveProfile: (_deviceId, quality) => ({
+        quality,
+        maxSize: 480,
+        maxFps: 3, // the setting under test: video.wallMaxFps: 3
+        bitRate: 800_000,
+        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      }),
+    })
+
+    await manager.acquire(DEVICE_ID, () => {}, 'wall')
+
+    expect(received).toHaveLength(1)
+    expect(received[0]).toEqual({
+      quality: 'wall',
+      maxSize: 480,
+      maxFps: 3,
+      bitRate: 800_000,
+      source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+    })
+    await manager.closeAll()
+  })
+
+  test('resolveProfile is called with the requested quality and this device\'s id', async () => {
+    const calls: Array<{ deviceId: string; quality: string }> = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      resolveProfile: (deviceId, quality) => {
+        calls.push({ deviceId, quality })
+        return { quality, maxSize: 1600, maxFps: 30, bitRate: 4_000_000, source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' } }
+      },
+    })
+
+    await manager.acquire(DEVICE_ID, () => {}, 'control')
+
+    expect(calls).toEqual([{ deviceId: DEVICE_ID, quality: 'control' }])
+    await manager.closeAll()
+  })
+
+  test('with no resolveProfile at all (a fixture/test manager, or the node package\'s own mini-core), makeScrcpy still receives a concrete profile — the byte-identical schema default, not undefined', async () => {
+    const received: VideoProfile[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async (_deviceId, _transport, profile) => {
+        received.push(profile)
+        return fakeScrcpy()
+      },
+      // resolveProfile deliberately omitted.
+    })
+
+    await manager.acquire(DEVICE_ID, () => {}, 'wall')
+
+    expect(received).toHaveLength(1)
+    // Plan 100 §3.4/step 100.8 revised WALL_PRESETS.balanced (480px · 18fps ·
+    // 1.1Mbit/s, was 480px · 5fps · 800kbit/s pre-plan-100) — this assertion
+    // tracks the schema's own default, not a hand-picked number, so it moves
+    // with it on purpose.
+    expect(received[0]).toMatchObject({ maxSize: 480, maxFps: 18, bitRate: 1_100_000 })
+    await manager.closeAll()
+  })
+})
+
+/** Builds a `DeviceSnapshotSource` covering exactly the given ids, each a distinct device (not `DEVICE_ID`). */
+function makeDevicesSource(ids: string[]): DeviceSnapshotSource {
+  const map = new Map(ids.map((id) => [id, { ...snapshot, id, stableId: `STABLE-${id}`, serial: `SERIAL-${id}` }]))
+  return { get: (id) => map.get(id) ?? null }
+}
+
+/**
+ * The build lane (plan 92 §3.3, §4.3, §5 step 92.3, tests H1) — the
+ * counting semaphore around `createEntry` that fixes F9. Every test here
+ * proves one of the step's own load-bearing claims: it QUEUES rather than
+ * refuses (every caller past the cap still eventually gets a session, none
+ * errors), it releases on every path including a throw (a leaked permit
+ * would silently shrink farm capacity until a restart), and the permit wait
+ * sits OUTSIDE `inFlight`'s per-device dedupe (two callers for the SAME
+ * device never compete against each other for a second permit).
+ */
+describe('SessionManager — the build lane (plan 92 §3.3, §4.3, §5 step 92.3, tests H1)', () => {
+  test('bounds concurrent session builds to maxConcurrentBuilds() and every queued build still completes — none is refused', async () => {
+    const CAP = 2
+    const N = 6
+    const ids = Array.from({ length: N }, (_, i) => `dev-${i + 1}`)
+    const devicesSrc = makeDevicesSource(ids)
+
+    let concurrent = 0
+    let peakConcurrent = 0
+    const observedBuildsRunning: number[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      maxConcurrentBuilds: () => CAP,
+      makeScrcpy: async () => {
+        concurrent++
+        peakConcurrent = Math.max(peakConcurrent, concurrent)
+        observedBuildsRunning.push(manager.videoStats!().buildsRunning)
+        // Long enough that every caller below is queued behind the cap at some point.
+        await Bun.sleep(20)
+        concurrent--
+        return fakeScrcpy()
+      },
+    })
+
+    const sessions = await Promise.all(ids.map((id) => manager.acquire(id, () => {})))
+
+    // All 24-style callers eventually stream — none is refused.
+    expect(sessions).toHaveLength(N)
+    for (const id of ids) expect(manager.get(id)).not.toBeNull()
+    // The peak observed concurrency, both from the fake encoder's own
+    // counter and from the manager's own `videoStats()` read at the exact
+    // moment each build started, never exceeds the cap.
+    expect(peakConcurrent).toBeLessThanOrEqual(CAP)
+    expect(observedBuildsRunning.every((n) => n <= CAP)).toBe(true)
+    expect(manager.videoStats!().buildsRunning).toBe(0)
+    expect(manager.videoStats!().buildQueueDepth).toBe(0)
+
+    await manager.closeAll()
+  })
+
+  test('buildQueueDepth rises while extra builds wait for a permit and drains to 0 once every build finishes', async () => {
+    const CAP = 1
+    const ids = ['dev-a', 'dev-b', 'dev-c']
+    const devicesSrc = makeDevicesSource(ids)
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      maxConcurrentBuilds: () => CAP,
+      makeScrcpy: async () => {
+        await Bun.sleep(30)
+        return fakeScrcpy()
+      },
+    })
+
+    const pending = Promise.all(ids.map((id) => manager.acquire(id, () => {})))
+    // Give the first build a moment to actually start; the other two must
+    // be sitting in the queue by now.
+    await Bun.sleep(5)
+    expect(manager.videoStats!().buildsRunning).toBe(1)
+    expect(manager.videoStats!().buildQueueDepth).toBe(2)
+
+    await pending
+    expect(manager.videoStats!().buildsRunning).toBe(0)
+    expect(manager.videoStats!().buildQueueDepth).toBe(0)
+    await manager.closeAll()
+  })
+
+  test('a build that throws still releases its permit — the lane never leaks capacity', async () => {
+    const CAP = 1
+    const devicesSrc = makeDevicesSource(['dev-good'])
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      maxConcurrentBuilds: () => CAP,
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    // 'dev-missing' is not in the device source — createEntry throws
+    // `device_not_found` synchronously, from INSIDE the lane's permit.
+    await expect(manager.acquire('dev-missing', () => {})).rejects.toThrow()
+    expect(manager.videoStats!().buildsRunning).toBe(0)
+
+    // If the failed build's permit had leaked, this would hang forever at
+    // CAP=1 — it must not.
+    const session = await manager.acquire('dev-good', () => {})
+    expect(session).not.toBeNull()
+    await manager.closeAll()
+  })
+
+  test('two callers for the SAME device share the one queued build — they never compete against each other for a second permit', async () => {
+    const CAP = 1
+    const devicesSrc = makeDevicesSource(['dev-x', 'dev-y'])
+    let built = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      maxConcurrentBuilds: () => CAP,
+      makeScrcpy: async () => {
+        built++
+        await Bun.sleep(20)
+        return fakeScrcpy()
+      },
+    })
+
+    // dev-y occupies the lane's one permit first.
+    const yPromise = manager.acquire('dev-y', () => {})
+    await Bun.sleep(5)
+    expect(manager.videoStats!().buildsRunning).toBe(1)
+
+    // Two callers for dev-x arrive while dev-y still holds the permit: both
+    // must resolve to the SAME session once dev-x's queued build runs, and
+    // it must build exactly once for dev-x (not once per caller) — proving
+    // `inFlight`'s dedupe still coalesces them even though the lane is full.
+    const [x1, x2] = await Promise.all([manager.acquire('dev-x', () => {}), manager.acquire('dev-x', () => {})])
+    await yPromise
+
+    expect(x1).toBe(x2)
+    expect(built).toBe(2) // one build for dev-y, one shared build for dev-x
+    await manager.closeAll()
+  })
+
+  test('with no maxConcurrentBuilds accessor wired, the lane is unbounded — the pre-plan-92 behaviour (F9)', async () => {
+    const ids = ['dev-u1', 'dev-u2', 'dev-u3']
+    const devicesSrc = makeDevicesSource(ids)
+    let peakConcurrent = 0
+    let concurrent = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      // maxConcurrentBuilds deliberately omitted.
+      makeScrcpy: async () => {
+        concurrent++
+        peakConcurrent = Math.max(peakConcurrent, concurrent)
+        await Bun.sleep(15)
+        concurrent--
+        return fakeScrcpy()
+      },
+    })
+
+    await Promise.all(ids.map((id) => manager.acquire(id, () => {})))
+    expect(peakConcurrent).toBe(ids.length)
+    await manager.closeAll()
+  })
+})
+
+/** `SessionManager.videoStats()` (plan 92 §3.3, §4.3, §5 step 92.3) — the `/api/adb/stats` `video` block's data source. */
+describe('SessionManager.videoStats() (plan 92 §4.3)', () => {
+  test('reports live streams by quality and each entry\'s resolved profile', async () => {
+    const devicesSrc = makeDevicesSource(['dev-p', 'dev-q'])
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: devicesSrc,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      resolveProfile: (_deviceId, quality) =>
+        quality === 'control'
+          ? { quality, maxSize: 1600, maxFps: 30, bitRate: 4_000_000, source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' } }
+          : { quality, maxSize: 480, maxFps: 5, bitRate: 800_000, source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' } },
+    })
+
+    await manager.acquire('dev-p', () => {}, 'control')
+    await manager.acquire('dev-q', () => {}, 'wall')
+
+    const stats = manager.videoStats!()
+    expect(stats.streams).toEqual({ control: 1, wall: 1 })
+    expect(stats.buildsRunning).toBe(0)
+    expect(stats.buildQueueDepth).toBe(0)
+    expect(stats.profiles).toEqual(
+      expect.arrayContaining([
+        { deviceId: 'dev-p', quality: 'control', maxSize: 1600, maxFps: 30, bitRate: 4_000_000 },
+        { deviceId: 'dev-q', quality: 'wall', maxSize: 480, maxFps: 5, bitRate: 800_000 },
+      ]),
+    )
+    await manager.closeAll()
+  })
+
+  test('with no resolveProfile wired, profiles is empty rather than reporting made-up numbers', async () => {
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(manager.videoStats!().profiles).toEqual([])
+    expect(manager.videoStats!().streams).toEqual({ control: 1, wall: 0 })
+    await manager.closeAll()
+  })
+})
+
+/**
+ * `restartAt`/`reprofile` (plan 92 §3.8, §4.3, §5 step 92.2) — the "saved
+ * but never read" fix for a video setting on an ALREADY-OPEN session. Two
+ * clauses are the whole safety of this step, and each has its own test
+ * below: a device running a job must never be restarted (`skippedBusy`), and
+ * an existing viewer must never be dropped by the restart (the refcount
+ * carry-over `restartAt` inherits from the pre-plan-92 `upgradeToControl`).
+ */
+describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 92.2)', () => {
+  /** A `DeviceSnapshotSource` whose per-device `status` can be flipped mid-test (`reprofile`'s rule 4 needs a `busy` device). */
+  function makeMutableDevicesSource(ids: string[]): { source: DeviceSnapshotSource; setStatus: (id: string, status: DeviceSnapshot['status']) => void } {
+    const map = new Map(ids.map((id) => [id, { ...snapshot, id, stableId: `STABLE-${id}`, serial: `SERIAL-${id}` }]))
+    return {
+      source: { get: (id) => map.get(id) ?? null },
+      setStatus: (id, status) => {
+        const row = map.get(id)
+        if (row) map.set(id, { ...row, status })
+      },
+    }
+  }
+
+  test('restartAt is a no-op when the device has no open entry — nothing to restart, and a plain acquire builds the right thing directly', async () => {
+    const manager = createSessionManager({ client: fakeClient(), devices, log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+    await expect(manager.restartAt!('no-such-device', 'control')).resolves.toBeUndefined()
+    await manager.closeAll()
+  })
+
+  test('reprofile with no resolveProfile wired is a no-op — nothing to compare an open session against', async () => {
+    const manager = createSessionManager({ client: fakeClient(), devices, log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+    await manager.acquire(DEVICE_ID, () => {}, 'wall')
+    const result = await manager.reprofile!('farm settings changed')
+    expect(result).toEqual({ restarted: [], skippedBusy: [], unchanged: 0 })
+    await manager.closeAll()
+  })
+
+  test('reprofile restarts a session whose resolved profile changed, and leaves an unchanged one alone (rule 1)', async () => {
+    let builds = 0
+    const { source } = makeMutableDevicesSource(['dev-changed', 'dev-same'])
+    const wallFps = { current: 5 }
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: source,
+      log: silentLog(),
+      makeScrcpy: async () => {
+        builds++
+        return fakeScrcpy()
+      },
+      resolveProfile: (deviceId, quality) => ({
+        quality,
+        maxSize: 480,
+        // Only `dev-changed`'s profile moves; `dev-same` resolves to the
+        // exact numbers it was already built with.
+        maxFps: deviceId === 'dev-changed' ? wallFps.current : 5,
+        bitRate: 800_000,
+        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      }),
+    })
+
+    await manager.acquire('dev-changed', () => {}, 'wall')
+    await manager.acquire('dev-same', () => {}, 'wall')
+    expect(builds).toBe(2)
+
+    // The operator raises wall.wallMaxFps — only `dev-changed`'s RESOLVED
+    // numbers actually move.
+    wallFps.current = 8
+
+    const result = await manager.reprofile!('farm settings changed')
+    expect(result.restarted).toEqual(['dev-changed'])
+    expect(result.skippedBusy).toEqual([])
+    expect(result.unchanged).toBe(1)
+    // `dev-changed` was rebuilt (a fresh scrcpy build); `dev-same` was not.
+    expect(builds).toBe(3)
+
+    await manager.closeAll()
+  })
+
+  test('a device running a job (status: busy) is reported in skippedBusy and its session is never restarted (rule 4, the blast-radius bound)', async () => {
+    let builds = 0
+    const { source, setStatus } = makeMutableDevicesSource(['dev-busy', 'dev-idle'])
+    const wallFps = { current: 5 }
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices: source,
+      log: silentLog(),
+      makeScrcpy: async () => {
+        builds++
+        return fakeScrcpy()
+      },
+      // Every device's resolved profile will "change" once `wallFps.current`
+      // moves below — proves the busy device is skipped for BEING busy, not
+      // because it happened to look unchanged.
+      resolveProfile: (_deviceId, quality) => ({
+        quality,
+        maxSize: 480,
+        maxFps: wallFps.current,
+        bitRate: 800_000,
+        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      }),
+    })
+
+    const busySession = await manager.acquire('dev-busy', () => {}, 'wall')
+    await manager.acquire('dev-idle', () => {}, 'wall')
+    expect(builds).toBe(2)
+    setStatus('dev-busy', 'busy')
+    wallFps.current = 9
+
+    const result = await manager.reprofile!('farm settings changed')
+    expect(result.skippedBusy).toEqual(['dev-busy'])
+    expect(result.restarted).toEqual(['dev-idle'])
+    // The busy device's session is the EXACT SAME object — never closed, never rebuilt.
+    expect(manager.get('dev-busy')).toBe(busySession)
+    expect(builds).toBe(3) // only dev-idle rebuilt
+
+    await manager.closeAll()
+  })
+
+  test('a restarted session carries its subscriber and refcount across — the viewer is never dropped (the other safety clause)', async () => {
+    let builds = 0
+    const wallFps = { current: 5 }
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      // 0 closes a no-longer-subscribed session IMMEDIATELY, synchronously
+      // (Plan 42 §4.4 acceptance #10) — the mechanism this test leans on:
+      // with a real refcount carry-over, releasing ONE of two viewers must
+      // NOT close the session (refcount 2 → 1, still > 0); with a BROKEN
+      // carry-over (fresh entry starting at refcount 0), the very first
+      // release would already underflow to 0 and close it right there.
+      idleTtlSec: () => 0,
+      makeScrcpy: async () => {
+        builds++
+        return fakeScrcpy()
+      },
+      resolveProfile: (_deviceId, quality) => ({
+        quality,
+        maxSize: 480,
+        maxFps: wallFps.current,
+        bitRate: 800_000,
+        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      }),
+    })
+
+    // Two independent viewers (e.g. two wall tabs) — refcount 2.
+    const viewerA = () => {}
+    const viewerB = () => {}
+    await manager.acquire(DEVICE_ID, viewerA, 'wall')
+    await manager.acquire(DEVICE_ID, viewerB, 'wall')
+    expect(builds).toBe(1)
+
+    wallFps.current = 3
+    const result = await manager.reprofile!('farm settings changed')
+    expect(result.restarted).toEqual([DEVICE_ID])
+    expect(builds).toBe(2) // rebuilt once
+
+    // Releasing the FIRST of two carried-over viewers must leave the
+    // session open (refcount 2 → 1) — this is the assertion a broken
+    // carry-over would fail.
+    manager.release(DEVICE_ID, viewerA)
+    expect(manager.get(DEVICE_ID)).not.toBeNull()
+    // Releasing the SECOND drops refcount to 0 and — with `idleTtlSec: 0` —
+    // closes it right away, proving the manager was tracking a real count
+    // the whole time, not merely never closing.
+    manager.release(DEVICE_ID, viewerB)
+    expect(manager.get(DEVICE_ID)).toBeNull()
+
+    await manager.closeAll()
+  })
+
+  test('reprofile threads detail through onPhase for every restarted session — the operator sees WHY (rule 5, fixes F17)', async () => {
+    const phases: Array<{ deviceId: string; phase: string; detail?: string }> = []
+    const wallFps = { current: 5 }
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      onPhase: (deviceId, phase, detail) => phases.push({ deviceId, phase, ...(detail ? { detail } : {}) }),
+      resolveProfile: (_deviceId, quality) => ({
+        quality,
+        maxSize: 480,
+        maxFps: wallFps.current,
+        bitRate: 800_000,
+        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      }),
+    })
+
+    await manager.acquire(DEVICE_ID, () => {}, 'wall')
+    phases.length = 0 // only care about the RESTART's own phases
+
+    wallFps.current = 2
+    await manager.reprofile!('farm settings changed')
+
+    const restartPhases = phases.filter((p) => p.deviceId === DEVICE_ID)
+    expect(restartPhases.length).toBeGreaterThan(0)
+    expect(restartPhases.every((p) => p.detail === 'applying new video settings')).toBe(true)
+
     await manager.closeAll()
   })
 })

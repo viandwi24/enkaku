@@ -143,3 +143,36 @@ describe('TileChips', () => {
     expect(textOf(children[1])).toContain('30.0°C')
   })
 })
+
+/**
+ * The container-query drop order (plan 92 §4.8): temperature first, then
+ * battery, readiness and status never dropping — verified as compiled CSS
+ * (`docs/design.md`'s own warning: Tailwind v4 bracket-syntax classes that
+ * do not actually emit a rule fail SILENTLY, so "the class is in the JSX"
+ * is not proof by itself). Plan 48 §3.2's fixed ORDER and dash-for-missing
+ * rule stays completely untouched — these classes only ever hide a chip
+ * that is already rendered in its fixed position; they never reorder or
+ * remove it from the tree.
+ */
+describe('TileChips — container-query drop order (plan 92 §4.8)', () => {
+  test('temperature carries the narrower-viewport drop class, battery the even-narrower one', () => {
+    const [battery, temperature] = rowChildren({ device: device() })
+    // Temperature drops FIRST — at the wider of the two thresholds.
+    expect(classNameOf(temperature)).toContain('@max-[200px]:hidden')
+    // Battery survives longer — it only drops at the narrower threshold, so
+    // at any width between the two only temperature is gone.
+    expect(classNameOf(battery)).toContain('@max-[160px]:hidden')
+  })
+
+  test('readiness and status carry neither drop class — they never disappear under a narrow container', () => {
+    const [, , readiness, status] = rowChildren({ device: device() })
+    // `ReadinessBadge`/`DeviceStatusBadge` own their className instead of
+    // taking one from `TileChips` — asserting the ABSENCE of a container
+    // variant on the two elements `classNameOf` can see is what proves
+    // §4.8's "number, label, connection glyph, readiness, and status never
+    // drop" — battery/temperature are the only two rows this component
+    // itself ever hides.
+    expect(classNameOf(readiness)).not.toContain('@max-')
+    expect(classNameOf(status)).not.toContain('@max-')
+  })
+})

@@ -3,11 +3,12 @@ import { cors } from 'hono/cors'
 import type { AuthMode } from '../config'
 import { authMiddleware, type AuthEnv } from '../auth/middleware'
 import type { AuthService } from '../auth/service'
+import type { AuditLogger } from '../auth/audit'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { HealthResponseSchema } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { buildRegistryResponse } from '../registry/engines'
-import { createToolsRoutes } from '../tools/routes'
+import { createToolsRoutes, type AdbControlRouteDeps } from '../tools/routes'
 import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -20,11 +21,47 @@ export interface HttpDeps {
   log: Logger
   version: string
   adbServerVersion: () => Promise<string | null>
-  /** Status subsistem adb: 'provisioning' | 'ready' | 'error'. */
+  /** The adb subsystem's status: 'provisioning' | 'ready' | 'error'. */
   adbState: () => string
+  /**
+   * The audit logger, threaded through so the Toolchain routes can record
+   * install/activate/delete/repair. Optional because several tests build a
+   * minimal `HttpDeps`; when absent those routes simply do not audit.
+   */
+  audit?: AuditLogger
   toolchain: ToolchainManager
+  /**
+   * The "Restart adb server" button's deps (plan 88 §3.10, §4.8, §5 step
+   * 88.8) — optional for the same reason `audit` is: several tests build a
+   * minimal `HttpDeps`, and a host with no adb subsystem (orchestrator mode,
+   * or before boot finishes provisioning) genuinely has nothing to restart.
+   * `createToolsRoutes` reports `E_ADB_UNAVAILABLE` on `/adb/restart` when
+   * this is absent, rather than the route not existing at all.
+   */
+  adbControl?: AdbControlRouteDeps
   jobRoutes: Hono<AuthEnv>
   scriptRoutes: Hono<AuthEnv>
+  /**
+   * `POST /`, `POST /validate`, `GET /:name/versions` (plan 99 §4.5, §4.9,
+   * §5 step 99.6) — mounted at `/api/workflows`. Optional, the same way
+   * `audit`/`adbControl` above already are: `daemon.ts` is held by a
+   * concurrent worker as of this step, so it cannot be edited here to
+   * construct and pass a real value yet. Until it is wired, `/api/workflows`
+   * 404s through the catch-all below rather than the app failing to boot —
+   * see `packages/core/src/api/workflows-wiring.test.ts`, which fails with
+   * the exact lines to add for as long as this gap is open.
+   */
+  workflowRoutes?: Hono<AuthEnv>
+  /**
+   * `GET`/`GET :slug`/`POST`/`PATCH :slug`/`DELETE :slug`/`POST :slug/publish`/
+   * `POST :slug/detach` (plan 94 §4.9, §5 step 94.5) — mounted at
+   * `/api/recordings`. Optional for the SAME reason `workflowRoutes` above
+   * is: a build where `daemon.ts` has not been wired to construct one simply
+   * never mounts this route rather than failing to boot — see
+   * `packages/core/src/api/recordings-wiring.test.ts`, which fails with the
+   * exact lines to add for as long as this gap is open.
+   */
+  recordingRoutes?: Hono<AuthEnv>
   /** Stage/verify/activate/rollback/disable/remove/reload/restart, and the dev slot lifecycle (plan 82 §4.6, step 11). */
   pluginRoutes: Hono<AuthEnv>
   /** `POST /api/v1/cap/:id` and `GET /api/v1/cap` (plan 63 §3.6, §4.5). */
@@ -53,16 +90,39 @@ export interface HttpDeps {
   deviceRoutes: Hono<AuthEnv>
   /** `GET/POST/DELETE /:id/guest-agent` and `GET/PUT/DELETE /:id/network` (plan 44 §5.8) — mounted at the same `/api/devices` prefix as `deviceRoutes`, from its own Hono app so `packages/core/src/api/devices.ts` stays untouched beyond the registry fallout fix. */
   guestAgentRoutes: Hono<AuthEnv>
+  /** `POST /api/guest-agent/provision`, `GET /api/guest-agent/summary` (plan 90 §3.8, §4.7) — the fleet-wide provisioning surface, at its OWN `/api/guest-agent` prefix (never `/api/devices` — this is not device-scoped). */
+  agentProvisionerRoutes: Hono<AuthEnv>
   /** `GET/PUT/DELETE /:id/identity` and `POST /:id/identity/sync` (plan 58 §4.3, §5.3) — a third Hono app at the same `/api/devices` prefix, same reasoning as `guestAgentRoutes`. */
   deviceIdentityRoutes: Hono<AuthEnv>
   tagRoutes: Hono
   clusterRoutes: Hono<AuthEnv>
   topologyRoutes: Hono
   batchRoutes: Hono<AuthEnv>
+  /**
+   * `POST/GET/DELETE /api/command-runs`, `.../cancel`, `.../continue`,
+   * `.../rerun`, `.../members/:deviceId/output` (plan 93 §4.4, step 93.4).
+   * Optional, the same pattern `workflowRoutes` above already uses: a build
+   * where `daemon.ts` has not (yet) been touched to construct one simply
+   * never mounts this route — `/api/command-runs/*` falls through to the
+   * catch-all 404 below rather than the app failing to boot, and every
+   * existing `HttpDeps` object literal (this file's own `http.test.ts`) keeps
+   * compiling unedited.
+   */
+  commandRunRoutes?: Hono<AuthEnv>
+  /**
+   * `GET/POST/PATCH/DELETE /api/saved-commands[/:id]` (plan 93 §3.10, §4.4,
+   * step 93.6) — the same optional-mount pattern `commandRunRoutes` above
+   * already uses: a build where `daemon.ts` has not (yet) constructed one
+   * simply never mounts this route, and `/api/saved-commands/*` falls
+   * through to the catch-all 404 below rather than the app failing to boot.
+   */
+  savedCommandRoutes?: Hono<AuthEnv>
   scheduleRoutes: Hono<AuthEnv>
   settingsRoutes: Hono<AuthEnv>
   artifactRoutes: Hono<AuthEnv>
   adbStatsRoutes: Hono<AuthEnv>
+  /** `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2). */
+  videoRoutes: Hono<AuthEnv>
   /** `enkaku doctor`'s checks, rendered as JSON for the Tools page's diagnostics view (plan 41 §4.5). */
   doctorRoutes: Hono<AuthEnv>
   authRoutes: Hono<AuthEnv>
@@ -89,8 +149,8 @@ const ERROR_STATUS: Record<string, number> = {
  * this was easy to hit and the error it produced (a CORS block) said nothing
  * about the real cause.
  *
- * This stays dev-only: in production the check never runs, and the core is
- * single-origin.
+ * This stays local-mode-only (see the call site below): in server mode the
+ * check never runs, and the core is single-origin.
  */
 function isLoopbackOrigin(origin: string): boolean {
   try {
@@ -123,9 +183,50 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
     logSlowRequest(new URL(c.req.url).pathname, Date.now() - startedAt)
   })
 
-  // Studio dev mode (next dev on another port) — non-production only.
-  if (process.env.NODE_ENV !== 'production') {
-    app.use('/api/*', cors({ origin: (origin) => (isLoopbackOrigin(origin) ? origin : null) }))
+  // Studio dev mode (next dev on another port) — local-mode only.
+  //
+  // This used to gate on `process.env.NODE_ENV !== 'production'`. Nothing in
+  // this codebase's release binary, Docker image, or systemd unit ever sets
+  // `NODE_ENV=production`, so that check was always true and the "dev-only"
+  // grant was actually live in every documented production deployment —
+  // bounded (see the `credentials` note below), but still a gap worth
+  // closing outright rather than papering over.
+  //
+  // `authMode` is the correct replacement signal: it is already derived from
+  // the bind address (`resolveAuthMode` in ../config), it is 'local' if and
+  // only if the core is bound to loopback with auth not forced to 'server',
+  // and — unlike `NODE_ENV`, a Node convention a compiled Bun binary has no
+  // particular reason to carry — it is a value this process always computes
+  // for itself regardless of how it was started. `bun run dev` (and Studio's
+  // `dev` on :3001 against it) binds loopback by default, so `authMode` is
+  // 'local' and this keeps working unchanged; any real server-mode
+  // deployment — which by definition is not on loopback, or has server mode
+  // forced — never grants it, closing the gap for exactly the deployments
+  // that were actually exposed.
+  // `credentials: true` is required, not optional, and it grants nothing.
+  //
+  // Studio's own calls use `fetch(..., { credentials: 'include' })`
+  // (`packages/studio/src/lib/auth.ts`, `lib/ws.ts`) because server mode
+  // needs the session cookie. The CORS spec then requires the response to
+  // carry `Access-Control-Allow-Credentials: true` or the BROWSER discards
+  // it — the request reaches the core and returns 200, and the tab still
+  // sees a rejected promise. `AuthGate` cannot tell that apart from "no
+  // session" and sends the operator to `/login`, which in local mode has no
+  // credentials to offer. So without this flag `bun run dev:studio` — the
+  // workflow this whole block exists to support — is not merely degraded,
+  // it is unusable, and the symptom points at auth rather than at CORS.
+  //
+  // It cannot widen anything, and the reason is specific to the condition
+  // this block already runs under. `authMiddleware` in local mode sets an
+  // implicit admin for EVERY request before it ever looks at a cookie
+  // (`../auth/middleware.ts` — the `mode === 'local'` branch returns early),
+  // so there is no session cookie here for a cross-origin page to ride: any
+  // loopback origin this block admits is already fully authorised without
+  // sending one. The real gate is, and stays, `isLoopbackOrigin` plus local
+  // mode. Server mode never reaches this line at all, so its cookie keeps
+  // exactly the protection it has today.
+  if (deps.authMode === 'local') {
+    app.use('/api/*', cors({ origin: (origin) => (isLoopbackOrigin(origin) ? origin : null), credentials: true }))
   }
 
   // Auth: local mode (loopback) injects an implicit admin; server mode requires login.
@@ -138,6 +239,22 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // `deps.adbServerVersion()` resolves `string | null` — `HealthResponseSchema`'s
   // `adb.serverVersion` was widened to `z.string().nullable().optional()` (plan 72.5) so this
   // structurally matches rather than needing a silent `?? undefined`.
+  //
+  // `ok` is intentionally a LIVENESS signal, not a readiness one, and stays
+  // `true` unconditionally: this handler running at all already proves the
+  // HTTP layer is alive, and that is genuinely all `ok` has ever meant. It is
+  // deliberately NOT derived from `adb.state` — `packages/core/src/doctor/checks/port.ts`
+  // and `doctor/context.ts`'s `probeCore` both read `ok` to decide "is this
+  // port held by a legitimate enkaku core", a question that must stay `true`
+  // even while adb is still provisioning, or (per daemon.ts's own comment
+  // next to `adbState = 'error'`) after adb provisioning has failed — "the
+  // core stays up: the tools API can still be used to retry the install".
+  // Making `ok` false in either state would make `enkaku doctor` misreport a
+  // live, recoverable core as "port held by an unknown process". Readiness
+  // already has its own, real signal: `adb.state` (`'provisioning' |
+  // 'ready' | 'error' | 'orchestrator'`), which is exactly what a caller that
+  // wants to know "did the binary actually finish booting" should poll to a
+  // terminal value — see the release smoke test in `.github/workflows/release.yml`.
   app.get('/api/health', async (c) => {
     return typedJson(c, HealthResponseSchema, {
       ok: true,
@@ -157,6 +274,10 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // transfer routes (`api/devices.ts`'s `app.route('/', ...)` calls).
   app.route('/api/devices', deps.guestAgentRoutes)
 
+  // Plan 90 §3.8, §4.7 — the fleet-wide provisioning surface. A DIFFERENT
+  // prefix on purpose: this is not device-scoped, unlike every route above.
+  app.route('/api/guest-agent', deps.agentProvisionerRoutes)
+
   // Plan 58 §4.3, §5.3 — a third Hono app at the same base path, same reasoning as
   // `guestAgentRoutes` above: identity is a device-settings extension living beside the network
   // route, not part of it (plan 58 §3.1), so it gets its own route file rather than growing
@@ -171,6 +292,16 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/batches', deps.batchRoutes)
 
+  // The fleet command console (plan 93 §4.4, step 93.4) — see
+  // `commandRunRoutes`'s own doc comment on `HttpDeps` for why this is
+  // conditional.
+  if (deps.commandRunRoutes) app.route('/api/command-runs', deps.commandRunRoutes)
+
+  // Saved commands (plan 93 §3.10, §4.4, step 93.6) — see
+  // `savedCommandRoutes`'s own doc comment on `HttpDeps` for why this is
+  // conditional.
+  if (deps.savedCommandRoutes) app.route('/api/saved-commands', deps.savedCommandRoutes)
+
   app.route('/api/schedules', deps.scheduleRoutes)
 
   app.route('/api/settings', deps.settingsRoutes)
@@ -180,16 +311,35 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // adb concurrency and health diagnostics (plan 23 §4.6).
   app.route('/api/adb/stats', deps.adbStatsRoutes)
 
+  // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2).
+  app.route('/api/video', deps.videoRoutes)
+
   // `enkaku doctor`'s checks, core-connected mode (plan 41 §4.5).
   app.route('/api/doctor', deps.doctorRoutes)
 
-  app.route('/api/tools', createToolsRoutes(deps.toolchain))
+  app.route(
+    '/api/tools',
+    createToolsRoutes(deps.toolchain, {
+      ...(deps.audit ? { audit: deps.audit } : {}),
+      ...(deps.adbControl ? { adb: deps.adbControl } : {}),
+    }),
+  )
 
   app.get('/api/registry', async (c) => c.json(await buildRegistryResponse(deps.toolchain)))
 
   app.route('/api/jobs', deps.jobRoutes)
 
   app.route('/api/scripts', deps.scriptRoutes)
+
+  // Plan 99 §4.9, §5 step 99.6 — optional (see `workflowRoutes`'s own doc
+  // comment on `HttpDeps` for why); a build where `daemon.ts` has not yet
+  // been wired to construct one simply never mounts this route, and
+  // `/api/workflows/*` falls through to the catch-all 404 below like any
+  // other unmounted path — never a boot failure.
+  if (deps.workflowRoutes) app.route('/api/workflows', deps.workflowRoutes)
+
+  // Plan 94 §4.9, §5 step 94.5 — same optional-mount pattern as `workflowRoutes` above.
+  if (deps.recordingRoutes) app.route('/api/recordings', deps.recordingRoutes)
 
   app.route('/api/plugins', deps.pluginRoutes)
 

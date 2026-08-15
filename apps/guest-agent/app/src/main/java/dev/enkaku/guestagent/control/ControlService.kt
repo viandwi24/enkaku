@@ -14,6 +14,8 @@ import android.os.IBinder
 import android.util.Log
 import dev.enkaku.guestagent.R
 import dev.enkaku.guestagent.identity.MockLocation
+import dev.enkaku.guestagent.input.TextFacet
+import dev.enkaku.guestagent.label.WallpaperFacet
 import dev.enkaku.guestagent.route.DeadMansSwitch
 import dev.enkaku.guestagent.route.EgressProbe
 import dev.enkaku.guestagent.route.Ipv6Leak
@@ -299,6 +301,99 @@ class ControlService : Service() {
         ok(id) { put("cleared", true) }
       }
 
+      // Plan 90 §3.2, §3.3, §4.1, §4.2 — commits through the live EnkakuIme instance via
+      // TextFacet's static weak reference. `perCharMs` is re-validated here (never trust the wire
+      // even though the host's own Zod already bounds it — the same reasoning ROUTE_START's port
+      // check and LOCATION_SET's lat/lng re-validation already use).
+      Protocol.METHOD_TEXT_COMMIT -> {
+        if (!request.has("text")) return error(id, Protocol.ERR_BAD_REQUEST, "missing text")
+        val text = request.optString("text")
+        val perCharMsArray = request.optJSONArray("perCharMs")
+        val perCharMs = if (perCharMsArray != null) {
+          if (perCharMsArray.length() != 2) {
+            return error(id, Protocol.ERR_BAD_REQUEST, "perCharMs must be a [min, max] pair")
+          }
+          val min = perCharMsArray.optLong(0, -1)
+          val max = perCharMsArray.optLong(1, -1)
+          if (min < 0 || max < 0) {
+            return error(id, Protocol.ERR_BAD_REQUEST, "perCharMs values must be non-negative")
+          }
+          min to max
+        } else {
+          null
+        }
+        val outcome = TextFacet.commit(this, text, perCharMs)
+        ok(id) {
+          put("committed", outcome.committed)
+          put("ime", if (outcome.current) "current" else "not-current")
+        }
+      }
+
+      Protocol.METHOD_TEXT_STATUS -> {
+        val status = TextFacet.status(this)
+        ok(id) {
+          put("ime", status.ime)
+          put("id", status.id)
+          put("connected", status.connected)
+        }
+      }
+
+      // Plan 89 §4.5; plan 90 §3.6, §4.1, §4.2 (Task B — no step in plan 90 assigned this facet;
+      // see this file's own header note below `label.clear`). Same wire re-validation discipline
+      // as every other branch above: the host's Zod already bounds these, but this socket is
+      // reached by anything holding the pairing token, not only the host.
+      Protocol.METHOD_LABEL_APPLY -> {
+        val fingerprint = request.optString("fingerprint").takeIf { it.isNotEmpty() }
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing fingerprint")
+        val number = request.optString("number").takeIf { it.isNotEmpty() }
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing number")
+        // `name` is REQUIRED as a key (nullable, not optional) on the wire schema
+        // (`LabelApplyRequestSchema`) — `null` means number-only, a missing key is a bad request.
+        if (!request.has("name")) return error(id, Protocol.ERR_BAD_REQUEST, "missing name")
+        val name = if (request.isNull("name")) null else request.optString("name").takeIf { it.isNotEmpty() }
+        val surfacesArray = request.optJSONArray("surfaces")
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing surfaces")
+        val surfaces = (0 until surfacesArray.length()).map { surfacesArray.optString(it) }
+        if (surfaces.isEmpty() || surfaces.any { it != "home" && it != "lock" }) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "surfaces must be a non-empty array of 'home'/'lock'")
+        }
+        val result = WallpaperFacet.apply(this, fingerprint, number, name, surfaces)
+        ok(id) {
+          put("applied", JSONArray(result.applied))
+          put("fingerprint", result.fingerprint)
+          put("rendererVersion", result.rendererVersion)
+          put("widthPx", result.widthPx)
+          put("heightPx", result.heightPx)
+          putOrNull(this, "wallpaperIdHome", result.wallpaperIdHome)
+          putOrNull(this, "wallpaperIdLock", result.wallpaperIdLock)
+        }
+      }
+
+      Protocol.METHOD_LABEL_STATUS -> {
+        val status = WallpaperFacet.status(this)
+        ok(id) {
+          putOrNull(this, "fingerprint", status.fingerprint)
+          put("matchesOurs", status.matchesOurs)
+          putOrNull(this, "wallpaperIdHome", status.wallpaperIdHome)
+          putOrNull(this, "wallpaperIdLock", status.wallpaperIdLock)
+          put("originalCaptured", status.originalCaptured)
+          put("rendererVersion", status.rendererVersion)
+        }
+      }
+
+      Protocol.METHOD_LABEL_CLEAR -> {
+        if (!request.has("restoreOriginal")) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "missing restoreOriginal")
+        }
+        val restoreOriginal = request.optBoolean("restoreOriginal")
+        val result = WallpaperFacet.clear(this, restoreOriginal)
+        ok(id) {
+          put("restored", result.restored)
+          // `LabelClearResultSchema.fingerprint` is `z.null()` — always JSON null, never absent.
+          put("fingerprint", JSONObject.NULL)
+        }
+      }
+
       else -> error(id, Protocol.ERR_UNKNOWN_METHOD, "unknown method: $method")
     }
   }
@@ -333,6 +428,24 @@ class ControlService : Service() {
         put("message", message)
       })
     }
+
+  /**
+   * `org.json.JSONObject.put(key, value)` REMOVES the key outright when [value] is a Java `null`
+   * — it does not emit a JSON `null` (see the doc comment on `RouteStatusResultSchema` in
+   * `packages/protocol/src/guest-agent.ts`, which is why every field there is `.optional()` rather
+   * than `.nullable()`). The label schemas are the first ones on this wire that ARE genuinely
+   * `.nullable()` (`LabelApplyResultSchema.wallpaperIdHome`, etc.) — present, possibly `null` —
+   * so this writes the [JSONObject.NULL] sentinel explicitly instead of relying on `put`'s
+   * default removal behaviour. Takes [obj] explicitly (not a `JSONObject` extension function)
+   * so the call site inside `ok(id) { ... }`'s `JSONObject.() -> Unit` lambda is unambiguous.
+   */
+  private fun putOrNull(obj: JSONObject, key: String, value: Int?) {
+    obj.put(key, value ?: JSONObject.NULL)
+  }
+
+  private fun putOrNull(obj: JSONObject, key: String, value: String?) {
+    obj.put(key, value ?: JSONObject.NULL)
+  }
 
   companion object {
     private const val TAG = "EnkakuGuestAgent"

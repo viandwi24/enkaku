@@ -9,11 +9,21 @@
  * Not a database-backed store; a plain in-memory map is the whole
  * implementation, and that absence of persistence is the feature.
  */
+import type { RuntimeEnvelope } from '@enkaku/protocol'
 
 export interface DevSlotScript {
   /** The id inside the plugin bundle — `login`, not `tiktok/login`. */
   exportId: string
   paramsSchema: unknown
+  /**
+   * Plan 98 §3.1, §5 step 98.4 — a dev slot has no `scripts` row at all
+   * (this file's own doc comment above), so THIS is the "row" a dev script's
+   * runner compares its `ready` envelope against — the one legitimate case
+   * where the bundle and the "row" are allowed to differ moment to moment
+   * (a rebuild can change it), which is exactly why plan 98 §3.1 calls a dev
+   * slot out by name as the reason the reconciliation warning exists at all.
+   */
+  runtime: RuntimeEnvelope | null
 }
 
 export interface DevSessionOwner {

@@ -15,7 +15,7 @@ function publish(
   db: Db,
   name: string,
   version: string,
-  opts: { enabled?: boolean; pluginId?: string; exportId?: string } = {},
+  opts: { enabled?: boolean; pluginId?: string; exportId?: string; runtime?: unknown } = {},
 ): string {
   const id = `${name.replace('/', '-')}-${version}-${crypto.randomUUID().slice(0, 8)}`
   db.insert(scripts)
@@ -28,6 +28,11 @@ function publish(
       createdAt: new Date(1_700_000_000 * 1000),
       pluginId: opts.pluginId ?? null,
       exportId: opts.exportId ?? null,
+      // Plan 98 §3.1, §4.4, §5 step 98.4 — `unknown` here (never typed as
+      // `RuntimeEnvelope`) on purpose: some tests below deliberately write a
+      // shape `RuntimeEnvelopeSchema` will not accept, to pin the
+      // parse-failure-degrades-to-null behaviour `rowToEntry` promises.
+      runtime: opts.runtime ?? null,
     })
     .run()
   return id
@@ -62,7 +67,7 @@ function putDev(devSlots: DevSlotStore, pluginName: string, declaredVersion: str
     pluginName,
     declaredVersion,
     bundlePath: `/tmp/${pluginName}.mjs`,
-    scripts: exportIds.map((exportId) => ({ exportId, paramsSchema: {} })),
+    scripts: exportIds.map((exportId) => ({ exportId, paramsSchema: {}, runtime: null })),
     owner: { kind: 'workspace', label: `/scripts/${pluginName}` },
   })
 }
@@ -232,6 +237,46 @@ describe('ScriptRegistry — dev overlay (criteria 11, 12, 16, 17, 18)', () => {
   })
 })
 
+describe('ScriptRegistry — kind (plan 99 §3.1, §4.5, step 99.5)', () => {
+  test('a row inserted with no kind (every pre-plan-99 write) carries kind "script" through get() and resolve() via the column default', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const id = publish(db, 'checkout', '1.0.0') // publish() never sets `kind` — relies on the DB default
+    expect(registry.get(id)?.kind).toBe('script')
+    expect(registry.resolve('checkout@1.0.0').kind).toBe('script')
+  })
+
+  test('a row with kind "workflow" carries that through get() and resolve() unchanged — resolve() itself branches on nothing', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const id = 'wf-1'
+    db.insert(scripts)
+      .values({
+        id,
+        kind: 'workflow',
+        name: 'my-pipeline',
+        version: '1.0.0',
+        bundle: '{"schema":1}',
+        enabled: true,
+        createdAt: new Date(1_700_000_000 * 1000),
+      })
+      .run()
+    expect(registry.get(id)?.kind).toBe('workflow')
+    expect(registry.resolve('my-pipeline@1.0.0').kind).toBe('workflow')
+  })
+
+  test('a dev entry is always kind "script" — there is no dev workflow build', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    putDev(devSlots, 'onlydev', '0.1.0', ['run'])
+    const entry = registry.resolve('onlydev/run@latest', { allowDev: true })
+    expect(entry.kind).toBe('script')
+  })
+})
+
 describe('ScriptRegistry — get/list/bundlePath', () => {
   test('get() resolves a persisted id and a dev id', () => {
     const { db, dataDir } = setUp()
@@ -281,5 +326,48 @@ describe('ScriptRegistry — get/list/bundlePath', () => {
     const pluginOnly = registry.list({ pluginName: 'tiktok' })
     expect(pluginOnly.items).toHaveLength(1)
     expect(pluginOnly.items[0]?.name).toBe('tiktok/login')
+  })
+})
+
+describe('ScriptRegistry — runtime (plan 98 §3.1, §4.4, §5 step 98.4)', () => {
+  test('get() carries a row\'s declared runtime through, readable by scriptId alone — the shape plan 99\'s workflow budget checker needs', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const declared = { timeoutMs: 90_000, retries: 1 }
+    const id = publish(db, 'checkout', '1.0.0', { runtime: declared })
+    expect(registry.get(id)?.runtime).toEqual(declared)
+    // Exactly plan 98 §5 step 98.4's own downstream claim: a caller holding
+    // only a scriptId can read the declared timeout with no `ready` message,
+    // no child process, no job ever having run.
+    expect(registry.get(id)?.runtime?.timeoutMs).toBe(90_000)
+  })
+
+  test('a row published before this column existed (no `runtime` set at all) reads back null — identical to today\'s behaviour', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const id = publish(db, 'checkout', '1.0.0')
+    expect(registry.get(id)?.runtime).toBeNull()
+  })
+
+  test('a corrupt/unparseable runtime column degrades to null rather than throwing (matching the `workflow` field\'s own precedent)', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    // Below RuntimeEnvelopeSchema's 1s floor — not a shape a validated writer
+    // could have produced, standing in for a row from before a future tightening.
+    const id = publish(db, 'checkout', '1.0.0', { runtime: { timeoutMs: 1 } })
+    expect(() => registry.get(id)).not.toThrow()
+    expect(registry.get(id)?.runtime).toBeNull()
+  })
+
+  test('resolve() also carries runtime through (the pinned-at-enqueue path, spec §11.6)', () => {
+    const { db, dataDir } = setUp()
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const declared = { maxConcurrent: 3 }
+    publish(db, 'checkout', '1.0.0', { runtime: declared })
+    expect(registry.resolve('checkout@1.0.0').runtime).toEqual(declared)
   })
 })

@@ -115,7 +115,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
 
   /** Writes the N `scripts` rows a plugin version's manifest describes — never deletes an older version's rows (§3.9's "superseded still resolves pinned refs"). Idempotent: re-activating (or re-verifying then re-activating) the same version does not duplicate rows. */
   function writeScriptRows(p: PluginRow, manifest: NonNullable<PluginRow['manifest']>): void {
-    const m = manifest as { scripts: { id: string; paramsSchema: unknown }[] }
+    const m = manifest as { scripts: { id: string; paramsSchema: unknown; resultSchema?: unknown; runtime?: unknown }[] }
     for (const s of m.scripts) {
       const scriptId = `${p.id}:${s.id}`
       const existing = db.select().from(scripts).where(eq(scripts.id, scriptId)).get()
@@ -128,6 +128,15 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
           bundle: p.bundle,
           source: p.source,
           paramsSchema: s.paramsSchema,
+          // Plan 97 §4.4, §4.7, §5 step 97.2 — already `checkDeclaredSchema`-gated
+          // by the verify child; `?? null` only guards a MANIFEST written before
+          // this field existed, never a fresh verify, mirroring `runtime` below.
+          resultSchema: s.resultSchema ?? null,
+          // Plan 98 §3.1, §4.4, §5 step 98.4 — already validated by the
+          // verify child (`verify-child-entry.ts`); `?? null` only guards a
+          // MANIFEST written before this field existed (plan 82's `manifest`
+          // JSON column predates this plan), never a fresh verify.
+          runtime: s.runtime ?? null,
           enabled: true,
           createdBy: p.createdBy,
           createdAt: new Date(),
@@ -354,7 +363,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       pluginName: input.name,
       declaredVersion: report.version ?? '0.0.0',
       bundlePath,
-      scripts: report.scripts.map((s) => ({ exportId: s.id, paramsSchema: s.paramsSchema })),
+      scripts: report.scripts.map((s) => ({ exportId: s.id, paramsSchema: s.paramsSchema, runtime: s.runtime })),
       owner: input.owner,
     })
     registry.invalidate(input.name)

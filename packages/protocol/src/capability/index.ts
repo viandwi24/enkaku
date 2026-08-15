@@ -22,6 +22,10 @@ export {
   InstallArgsSchema,
   PushArgsSchema,
   PullArgsSchema,
+  GestureCallArgsSchema,
+  LongPressArgsSchema,
+  TapNormArgsSchema,
+  SwipeNormArgsSchema,
   DEVICE_CALL_ARGS,
   type DeviceCallMethod,
 } from './device-args'

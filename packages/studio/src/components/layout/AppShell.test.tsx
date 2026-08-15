@@ -54,3 +54,42 @@ describe('AppShell — the Plugins nav entry carries a farm-health WARNING while
     expect(screen.getByRole('link', { name: /plugins/i })).toBeTruthy()
   })
 })
+
+describe('every top-level page has a way in', () => {
+  /**
+   * `/workflows`, `/recordings` and `/topology` were all built, tested and
+   * shipped with no sidebar entry. Two were reachable only by a deep link
+   * that appears after you have already done something else
+   * (`RunScriptDialog`'s editor link; `RecordPanel`'s post-capture review
+   * link), so their LIST pages — the way you find work you did yesterday —
+   * could not be opened at all. `/topology` had no link anywhere in Studio.
+   *
+   * This test reads the router's own page files rather than a hand-kept
+   * list, so a future page added without a front door fails here instead of
+   * being found by an operator. It checks TOP-LEVEL routes only: detail
+   * pages are legitimately reached from their list, and auth/dev routes are
+   * legitimately not in the nav.
+   */
+  const NOT_IN_NAV_BY_DESIGN = new Set([
+    '/device', // opened from the device list and the wall
+    '/login', // auth route, AuthGate redirects here
+    '/setup', // first-run only
+    '/dev', // /dev/tools, a development-only surface
+  ])
+
+  test('no built top-level page is missing from the sidebar', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs')
+    const appDir = new URL('../../app/', import.meta.url).pathname
+
+    const topLevel = readdirSync(appDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => `/${e.name}`)
+      .filter((r) => !NOT_IN_NAV_BY_DESIGN.has(r))
+
+    const shell = readFileSync(new URL('./AppShell.tsx', import.meta.url).pathname, 'utf8')
+    const inNav = new Set([...shell.matchAll(/href: '([^']+)'/g)].map((m) => m[1]))
+
+    const orphaned = topLevel.filter((r) => !inNav.has(r))
+    expect(orphaned).toEqual([])
+  })
+})

@@ -44,6 +44,14 @@ export interface WsClientDeps {
   scheduler?: WsClientScheduler
   /** How long the connection may go silent before the watchdog force-closes it. Defaults to 45_000 — the core's `heartbeat` broadcasts every 15s (plan 85 §4.2), so this is three missed beats, not a merely-idle link. */
   watchdogMs?: number
+  /**
+   * Fetches a fresh single-use WS ticket (plan 09 §4.3). Only ever called
+   * when `setAuthMode('server')` has been used — local mode never needs one,
+   * and the default (no `setAuthMode` call at all) keeps `connect()`
+   * fully synchronous, exactly as it was before tickets existed. Defaults to
+   * `POST /api/auth/ws-ticket` against the core.
+   */
+  fetchTicket?: () => Promise<string>
 }
 
 /**
@@ -61,6 +69,22 @@ export class WsRequestError extends Error {
   ) {
     super(message)
     this.name = 'WsRequestError'
+  }
+}
+
+/**
+ * Thrown by the default `fetchTicket` when the core says the SESSION itself
+ * is gone (401 from `POST /api/auth/ws-ticket`) — distinct from a network
+ * hiccup, which should retry on the ordinary backoff schedule.
+ * `WsClient.connect()`'s ticket branch treats this one specially: it does
+ * NOT schedule a reconnect (that would just fail the same way forever) and
+ * instead tells whoever called `onAuthExpired` (the auth gate), so the tab
+ * can be sent back to `/login` instead of sitting quietly disconnected.
+ */
+export class WsAuthExpiredError extends Error {
+  constructor() {
+    super('the session has expired')
+    this.name = 'WsAuthExpiredError'
   }
 }
 
@@ -102,10 +126,20 @@ export class WsClient {
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null
   private watchdogReconnects = 0
 
+  /** Set via `setAuthMode('server')` — false (the old, ticketless behaviour) until then. */
+  private requiresTicket = false
+  /** Guards the async ticket-fetch branch of `connect()` against re-entry — the sync branch never needs this, `this.ws`'s own readyState check already covers it. */
+  private connecting = false
+  /** Set by `disconnect()` (e.g. logout) so `openSocket`'s `onclose` does not schedule a reconnect for a socket that was closed on purpose. Cleared at the top of `connect()` so the next login reconnects normally. */
+  private manualClose = false
+  private authExpiredHandlers = new Set<() => void>()
+  private readonly fetchTicket: () => Promise<string>
+
   constructor(deps: WsClientDeps = {}) {
     this.createSocket = deps.createSocket ?? ((url) => new WebSocket(url))
     this.scheduler = deps.scheduler ?? REAL_SCHEDULER
     this.watchdogMs = deps.watchdogMs ?? 45_000
+    this.fetchTicket = deps.fetchTicket ?? defaultFetchTicket
   }
 
   private armWatchdog(): void {
@@ -127,8 +161,64 @@ export class WsClient {
   connect(): void {
     if (typeof window === 'undefined') return
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+    if (this.connecting) return
+    this.manualClose = false
 
-    const url = `${coreBase().replace(/^http/, 'ws')}/ws`
+    if (!this.requiresTicket) {
+      this.openSocket(null)
+      return
+    }
+
+    // Server auth mode (plan 09 §4.3): a fresh single-use ticket per attempt
+    // rather than trusting the cookie alone — the same client code also runs
+    // cross-origin (Studio dev against a core in server mode, a future
+    // hosted Studio), where the browser will not attach it to the upgrade.
+    this.connecting = true
+    this.fetchTicket()
+      .then((ticket) => {
+        this.connecting = false
+        // A `disconnect()` (logout) may have landed while this was in flight —
+        // do not open a socket for a session that was just deliberately closed.
+        if (this.manualClose) return
+        this.openSocket(ticket)
+      })
+      .catch((err: unknown) => {
+        this.connecting = false
+        if (err instanceof WsAuthExpiredError) {
+          // The session is gone — the ordinary backoff loop would just fail
+          // the same way forever. Tell whoever is listening (the auth gate)
+          // instead, so the tab can be sent back to `/login` rather than
+          // sitting quietly disconnected.
+          for (const cb of this.authExpiredHandlers) cb()
+          return
+        }
+        // A transient failure (network blip, core briefly unreachable) —
+        // retry on the same backoff schedule `openSocket`'s `onclose` uses.
+        this.scheduler.setTimeout(() => this.connect(), this.backoffMs)
+        this.backoffMs = Math.min(this.backoffMs * 2, 10_000)
+      })
+  }
+
+  /** Immediate disconnect (e.g. logout) — unlike a network drop, this must NOT trigger a reconnect. The next `connect()` (a fresh login) clears the flag again. */
+  disconnect(): void {
+    this.manualClose = true
+    this.ws?.close()
+    this.ws = null
+  }
+
+  /** Server auth mode requires a ticket per connection attempt; local mode never does (the default, unchanged from before tickets existed). Called once the auth gate knows which mode the core is in. */
+  setAuthMode(mode: 'local' | 'server'): void {
+    this.requiresTicket = mode === 'server'
+  }
+
+  /** Fires when a ticket fetch discovers the session is gone (plan 09 §4.3) — see `WsAuthExpiredError`. */
+  onAuthExpired(cb: () => void): () => void {
+    this.authExpiredHandlers.add(cb)
+    return () => this.authExpiredHandlers.delete(cb)
+  }
+
+  private openSocket(ticket: string | null): void {
+    const url = `${coreBase().replace(/^http/, 'ws')}/ws${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ''}`
     const ws = this.createSocket(url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
@@ -144,6 +234,7 @@ export class WsClient {
       this.clearWatchdog()
       this.setConnected(false)
       this.ws = null
+      if (this.manualClose) return
       // Routed through the same injectable scheduler as the watchdog (not
       // the bare global `setTimeout`) so a test that injects a fake clock
       // never leaks a real, uncontrolled timer past the end of the test.
@@ -272,6 +363,20 @@ export class WsClient {
     this.onReconnect.add(cb)
     return () => this.onReconnect.delete(cb)
   }
+}
+
+/**
+ * `POST /api/auth/ws-ticket` (plan 09 §4.3) — a single-use, 60s-TTL ticket
+ * for the `/ws` upgrade. Only reached in server auth mode
+ * (`ws.setAuthMode('server')`, set once by the auth gate); local mode never
+ * calls this at all.
+ */
+async function defaultFetchTicket(): Promise<string> {
+  const res = await fetch(`${coreBase()}/api/auth/ws-ticket`, { method: 'POST', credentials: 'include' })
+  if (res.status === 401) throw new WsAuthExpiredError()
+  if (!res.ok) throw new Error(`POST /api/auth/ws-ticket → ${res.status}`)
+  const body = (await res.json()) as { ticket: string }
+  return body.ticket
 }
 
 export const ws = new WsClient()

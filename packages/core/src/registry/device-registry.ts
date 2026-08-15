@@ -1,5 +1,18 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
-import { DeviceInfoSchema, defaultDeviceSettings, type DeviceInfo, type DeviceReadiness, type DeviceSettings, type LeaseHolder, type Readiness } from '@enkaku/protocol'
+import {
+  AgentStatusSchema,
+  DEFAULT_AGENT_STATUS,
+  DeviceInfoSchema,
+  defaultDeviceSettings,
+  type AgentState,
+  type ConnectionMedium,
+  type DeviceConnection,
+  type DeviceInfo,
+  type DeviceReadiness,
+  type DeviceSettings,
+  type LeaseHolder,
+  type Readiness,
+} from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
@@ -10,7 +23,9 @@ import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
 import { loadDeviceTags } from './device-tags'
 import { classify, recordSighting } from './admission'
+import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './device-number'
 import type { EventRecorder } from '../events/recorder'
+import type { EndpointStore } from './endpoints'
 
 export interface DeviceRegistryDeps {
   client: AdbClient
@@ -37,6 +52,30 @@ export interface DeviceRegistryDeps {
   deviceDefaults?: () => DeviceSettings
   /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below for why this is a separate accessor from `deviceDefaults`. */
   defaultDesiredReadiness?: () => Readiness
+  /**
+   * The address book (plan 88 §3.2, §4.3). `onOnline`'s success path calls
+   * `observe(stableId, serial)` for an admitted device — free, no extra adb
+   * work, a no-op for a USB serial. Optional so every existing caller (tests,
+   * orchestrator mode before this is wired in `daemon.ts`) keeps constructing
+   * a registry exactly as before this plan.
+   */
+  endpoints?: EndpointStore
+  /**
+   * Farm networks (plan 88 §3.6, §4.1) — `discovery.networks`, read fresh on
+   * every call, the same discipline `endpoints` above already follows.
+   * Residual gap (found alongside `api/devices.ts`'s admit route and
+   * `api/clusters.ts`'s device list — 88.5's own pass wired `daemon.ts`,
+   * `capability/context.ts` and `api/topology.ts` but missed these three):
+   * without this, this registry's own `device.added` broadcast (the "new
+   * device registered" branch of `onOnline`, below) and `listDevices()`
+   * could only ever read `mediumSource: 'unknown'`/`'declared'`, never
+   * `'network'` — a device on a configured wired network could never badge
+   * OTG on its own. Optional, like `endpoints`: every existing caller
+   * (tests, orchestrator mode, and any caller that predates this field)
+   * keeps constructing a registry unedited, with no network ever matched —
+   * identical to passing `[]` explicitly.
+   */
+  networks?: () => FarmNetwork[]
 }
 
 export interface DeviceRegistry {
@@ -104,6 +143,153 @@ export function clusterRefFor(db: Db, clusterId: string | null): { id: string; n
   return row ? { id: clusterId, name: row.name } : null
 }
 
+/**
+ * `host:port` shape adb itself uses for a TCP transport — confirmed by
+ * `AdbTcpTransport`'s own comment ("serial adb-tcp = host:port",
+ * `packages/drivers/src/transport/adb-transport.ts`). A USB serial (e.g.
+ * `ZP2222RMBS`, or a 16-hex device id) never contains a colon, so this split
+ * is purely observational (plan 88 §3.1) — no guessing which one a device
+ * is. `host` may be bracketed IPv6 (`[::1]:5555`) or a bare hostname/IPv4;
+ * only IPv4 participates in `ipInCidr` below.
+ */
+const TCP_SERIAL_RE = /^(\[[0-9a-fA-F:]+\]|[^\s:]+):(\d{1,5})$/
+
+function parseIPv4(host: string): number | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!m) return null
+  const octets = [m[1]!, m[2]!, m[3]!, m[4]!].map(Number)
+  if (octets.some((o) => o > 255)) return null
+  return (((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0) >>> 0
+}
+
+/**
+ * Whether the IPv4 dotted-quad `host` falls inside `cidr` ('10.20.0.0/24').
+ * A hostname or IPv6 host, or a malformed `cidr`, never matches — nobody has
+ * configured a network wide enough to say what those are (plan 88 §3.6
+ * configures IPv4 ranges only), and a non-match just means `mediumSource`
+ * stays `'unknown'` rather than guessing.
+ */
+function ipInCidr(host: string, cidr: string): boolean {
+  const slash = cidr.indexOf('/')
+  if (slash < 0) return false
+  const bits = Number(cidr.slice(slash + 1))
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false
+  const hostInt = parseIPv4(host)
+  const baseInt = parseIPv4(cidr.slice(0, slash))
+  if (hostInt === null || baseInt === null) return false
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0
+  return (hostInt & mask) === (baseInt & mask)
+}
+
+/**
+ * A farm network (plan 88 §3.6) — the shape `discovery.networks` will have
+ * once step 88.3 adds it to `packages/protocol/src/settings.ts`. Declared
+ * here, ahead of that settings field, so `deriveConnection` below has
+ * something concrete to accept; every call site passes `[]` until 88.3
+ * wires real configuration through, which is then a settings change, not a
+ * rewrite of this function.
+ */
+export interface FarmNetwork {
+  cidr: string
+  label: string
+  medium: ConnectionMedium
+  scan: boolean
+}
+
+/**
+ * The ONE place a device's connection is computed (plan 88 §3.1, §4.1) —
+ * `kind` from adb's own serial shape (OBSERVED), `medium` from either an
+ * operator's DECLARATION (the endpoint store's `source: 'declared'` rows,
+ * plan 88 §3.2/§4.3 — `PATCH /:id/connection` and the cutover wizard, §5
+ * step 88.5, both write there) or, failing that, whether a `tcp` address
+ * falls inside a configured farm network (INFERRED, `mediumSource:
+ * 'network'`). Declared always wins (§3.1: "neither is ever overwritten by
+ * the other silently: a declaration wins") — closing the gap step 88.4's own
+ * report flagged: a declaration used to be reflected only in that route's
+ * immediate response, never on a later `GET /api/devices`/`GET /:id`, which
+ * re-derived `medium` from `networks` alone and could never produce
+ * `mediumSource: 'declared'`. Called from `rowToDeviceInfo`, so the list,
+ * the wall, the card, the device page and every WS broadcast agree — no
+ * caller re-derives this itself.
+ */
+export function deriveConnection(
+  serial: string,
+  networks: FarmNetwork[],
+  /**
+   * The endpoint store's declared medium for THIS EXACT `host:port` address
+   * (plan 88 §3.2/§4.3), resolved by the caller via `loadDeclaredMedia`
+   * below — `undefined` when no declaration exists for this address (fall
+   * through to the network match), `null` when an operator explicitly
+   * declared "unknown" (still wins over a network guess), a value when they
+   * declared a medium outright.
+   */
+  declaredMedium?: ConnectionMedium | null,
+): DeviceConnection {
+  const match = TCP_SERIAL_RE.exec(serial)
+  if (!match) {
+    return { kind: 'usb', medium: null, mediumSource: 'unknown', address: null, port: null, networkLabel: null }
+  }
+  const hostRaw = match[1]!
+  const host = hostRaw.startsWith('[') ? hostRaw.slice(1, -1) : hostRaw
+  const port = Number(match[2])
+  const network = networks.find((n) => ipInCidr(host, n.cidr))
+  if (declaredMedium !== undefined) {
+    return { kind: 'tcp', medium: declaredMedium, mediumSource: 'declared', address: host, port, networkLabel: network?.label || null }
+  }
+  return {
+    kind: 'tcp',
+    medium: network?.medium ?? null,
+    mediumSource: network ? 'network' : 'unknown',
+    address: host,
+    port,
+    networkLabel: network?.label || null,
+  }
+}
+
+/**
+ * The chip-only agent state for `DeviceInfoSchema.agent` (plan 90 §3.8, §4.3,
+ * §4.7; docs/plans/96-m61-hotfixes.md's Gap 1 fix) — Zod-validated straight
+ * off `row.agent` (CLAUDE.md: never trust a JSON DB column with an
+ * `as`-cast), the SAME `AgentStatusSchema` `agent-provisioner.ts`'s own
+ * `readCached` validates the identical column with. Deliberately NOT a
+ * `rowToDeviceInfo` parameter threaded by each caller (unlike
+ * `readiness`/`heldBy`/`networks`, which come from managers external to the
+ * row): `agent` is a column on `devices`, already present on every
+ * `DeviceRow` this file's callers select in full (`db.select().from(devices)`,
+ * never a partial projection) — so reading it here, once, inside the one
+ * function every list/broadcast/detail response already funnels through,
+ * reaches every caller automatically and removes the "one call site was
+ * missed" failure mode entirely, rather than adding a fourth accessor a
+ * future caller could forget to pass. A corrupt or pre-migration value reads
+ * as `'absent'` (never a 500), the same fallback `readCached` gives an
+ * invalid `devices.agent` row.
+ */
+export function deriveAgentState(row: Pick<DeviceRow, 'agent'>): AgentState {
+  if (row.agent === null || row.agent === undefined) return DEFAULT_AGENT_STATUS.state
+  const parsed = AgentStatusSchema.safeParse(row.agent)
+  return parsed.success ? parsed.data.state : DEFAULT_AGENT_STATUS.state
+}
+
+/**
+ * Declared medium per `stableId` + exact address (plan 88 §3.1, §3.2, §4.3)
+ * — the endpoint store's `source: 'declared'` rows only, keyed
+ * `stableId address` so `deriveConnection` can look up THIS device's
+ * CURRENT serial in one map hit. Resolved once for the whole device list
+ * (`endpoints.allWithEndpoints()` already reads every row for the restart
+ * flow's reattach list, §3.10) — the same N+1 discipline
+ * `loadClusterNames`/`loadRecentCrashes` above already use, extended to
+ * `connection.medium`.
+ */
+export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoints'>): Map<string, ConnectionMedium | null> {
+  const map = new Map<string, ConnectionMedium | null>()
+  for (const { stableId, candidates } of endpoints.allWithEndpoints()) {
+    for (const ep of candidates) {
+      if (ep.source === 'declared') map.set(`${stableId} ${ep.address}`, ep.medium)
+    }
+  }
+  return map
+}
+
 export function rowToDeviceInfo(
   row: DeviceRow,
   tags: string[] = [],
@@ -125,6 +311,34 @@ export function rowToDeviceInfo(
    * manager to hand (orchestrator mode, most tests) gets by default.
    */
   heldBy: LeaseHolder | null = null,
+  /**
+   * Farm networks (plan 88 §3.6) — used only to infer `connection.medium`
+   * for a `tcp` serial. Defaulted to `[]` (every network match then misses,
+   * so `mediumSource` reads `'unknown'`) until a caller threads
+   * `discovery.networks` through; every existing caller keeps parsing
+   * unchanged in the meantime.
+   */
+  networks: FarmNetwork[] = [],
+  /**
+   * Declared medium per `stableId`+address (plan 88 §3.1, §3.2, §4.3, §5
+   * step 88.5) — `loadDeclaredMedia`'s own return shape, resolved ONCE by
+   * the caller (same N+1 discipline as `networks`/`tags`/`cluster` above),
+   * not re-queried per row. Defaulted to an empty map so every existing
+   * caller (tests, orchestrator mode, call sites that predate this
+   * parameter) keeps parsing exactly as before — `mediumSource` then simply
+   * never reads `'declared'`, falling through to the network match same as
+   * always.
+   */
+  declaredMedia: Map<string, ConnectionMedium | null> = new Map(),
+  /**
+   * The device's short number (plan 89 §3.1, §3.2, §4.3) — a lookup against
+   * `device_numbers`, keyed by `stableId`, NEVER a column on `row` (§3.2: the
+   * reservation must survive a Forget that deletes this very row). Defaulted
+   * to `null` so every existing caller (tests, and any call site not yet
+   * threading it) keeps parsing exactly as before this plan, reading a device
+   * as numberless rather than throwing.
+   */
+  number: number | null = null,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
@@ -145,6 +359,9 @@ export function rowToDeviceInfo(
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
     heldBy,
+    connection: deriveConnection(row.serial, networks, declaredMedia.get(`${row.stableId} ${row.serial}`)),
+    agent: deriveAgentState(row),
+    number,
   })
 }
 
@@ -179,6 +396,22 @@ export function listDevicesWithTags(
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
   /** Lease holder (plan 71 §4.4) — omitted call sites fall back to `null` (unheld), same as `rowToDeviceInfo` itself. */
   heldByOf?: (deviceId: string) => LeaseHolder | null,
+  /**
+   * Farm networks (plan 88 §3.6), resolved ONCE for the whole list — the
+   * same N+1 discipline this function already applies to tags, clusters and
+   * crashes above, extended to `connection.medium`. `rowToDeviceInfo` NEVER
+   * re-resolves this per row.
+   */
+  networks: FarmNetwork[] = [],
+  /**
+   * The address book's declared media (plan 88 §3.1, §3.2, §4.3, §5 step
+   * 88.5), also resolved ONCE for the whole list — `loadDeclaredMedia`'s own
+   * return shape. `undefined` (the default) means no endpoint store was
+   * available to this caller (orchestrator mode, most tests): every device
+   * then falls through to the network match exactly as before this
+   * parameter existed.
+   */
+  declaredMedia?: Map<string, ConnectionMedium | null>,
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
@@ -186,6 +419,10 @@ export function listDevicesWithTags(
   // The device card crash badge (plan 37 §4.5) — one query for the whole
   // fleet, not one per device.
   const recentCrashes = loadRecentCrashes(db, Math.floor(Date.now() / 1000) - 3600)
+  // The number (plan 89 §4.3) — one query for the whole fleet, joining the
+  // existing ones (F25's "never one query per device" rule), never resolved
+  // per row.
+  const numbers = loadDeviceNumbers(db)
   return rows.map((r) =>
     rowToDeviceInfo(
       r,
@@ -194,6 +431,9 @@ export function listDevicesWithTags(
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
       heldByOf?.(r.id) ?? null,
+      networks,
+      declaredMedia ?? new Map(),
+      numbers.get(r.stableId) ?? null,
     ),
   )
 }
@@ -382,15 +622,40 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       serialToStableId.set(serial, probe.stableId)
       const row = db.select().from(devices).where(eq(devices.stableId, probe.stableId)).get()
       if (!row) return
+      // The address book's whole cost (plan 88 §3.2, §4.3, fixes F10): free,
+      // because this probe already ran for an ordinary reason.
+      deps.endpoints?.observe(probe.stableId, serial)
+      // The number (plan 89 §1, §5 step 89.4) — an operator matching a
+      // browser row to a phone in their hand needs it in the SAME log line
+      // that already names the label, not just in the database.
+      const number = lookupDeviceNumber(db, row.stableId)
       if (existing) {
         // The official transition (offline→idle; quarantined stays quarantined).
         deps.states.apply(row.id, 'DEVICE_CONNECTED')
-        log.info(`device online: ${row.label} (${probe.stableId}) via ${serial}`)
+        log.info(`device online: ${formatDeviceLabel(number, row.label)} (${probe.stableId}) via ${serial}`)
       } else {
-        hub.broadcast({ type: 'device.added', payload: rowToDeviceInfo(row) })
-        log.info(`new device registered: ${row.label} (${probe.stableId}) via ${serial}`)
+        // A `declare` this early is unusual (a device nobody has enrolled yet
+        // cannot have been declared through) but not impossible — a
+        // forget/re-admit cycle keeps the endpoint store's rows (F15) — so
+        // this reads the same declared-medium map every other broadcast does
+        // rather than a bare `[]`.
+        hub.broadcast({
+          type: 'device.added',
+          payload: rowToDeviceInfo(
+            row,
+            [],
+            null,
+            null,
+            null,
+            null,
+            deps.networks?.() ?? [],
+            deps.endpoints ? loadDeclaredMedia(deps.endpoints) : undefined,
+            number,
+          ),
+        })
+        log.info(`new device registered: ${formatDeviceLabel(number, row.label)} (${probe.stableId}) via ${serial}`)
       }
-      deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb' } })
+      deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb', number } })
       deps.onDeviceReady?.(row.id)
     } catch (err) {
       // Used to be a dead end (F9): the device stayed invisible until
@@ -429,8 +694,9 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     // Any running job on this device is failed and its session closed by the caller.
     deps.onDeviceGone?.(row.id)
     deps.states.apply(row.id, 'DEVICE_DISCONNECTED')
-    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.offline', meta: { reason: 'disconnected' } })
-    log.info(`device offline: ${row.label} (${row.stableId})`)
+    const number = lookupDeviceNumber(db, row.stableId)
+    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.offline', meta: { reason: 'disconnected', number } })
+    log.info(`device offline: ${formatDeviceLabel(number, row.label)} (${row.stableId})`)
   }
 
   function onTrackerEvent(ev: TrackerEvent): void {
@@ -490,7 +756,16 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       await client.trackDevices().stop()
     },
     listDevices() {
-      return listDevicesWithTags(db)
+      // Wired for consistency with `listDevicesWithTags`'s other production
+      // call sites (`daemon.ts`, `capability/context.ts`, `api/topology.ts`,
+      // `api/devices.ts`) even though this method itself has no production
+      // caller today (`DeviceRegistry.listDevices` — every real list route
+      // goes through `listDevicesWithTags`/`rowToDeviceInfo` directly, with
+      // its own live accessors) — leaving it hardcoded to `[]` would be a
+      // second dark corner the moment a caller is added, and the fix is a
+      // one-line reuse of the same accessor `onOnline`'s broadcast just above
+      // was given.
+      return listDevicesWithTags(db, undefined, undefined, deps.networks?.() ?? [], deps.endpoints ? loadDeclaredMedia(deps.endpoints) : undefined)
     },
     deviceCount() {
       return db.select().from(devices).all().length

@@ -1,10 +1,11 @@
 import { join } from 'node:path'
 import { UiautomatorDumpInspector } from '@enkaku/drivers'
-import { defaultFarmSettings, FindOutcomeSchema, type JobSettings } from '@enkaku/protocol'
+import { defaultFarmSettings, FindOutcomeSchema, resolveRuntime, RESULT_LIMITS, type JobSettings, type ResultOutcome, type RuntimeEnvelope } from '@enkaku/protocol'
 import type { Subprocess } from 'bun'
 import { backoffDelayMs } from './backoff'
 import { createDeviceExecutor, type TimingSettings } from '../device-executor'
 import { SessionError } from '../errors'
+import type { InputSource } from '../input-arbiter'
 import type { Logger } from '../logger'
 import type { SessionManager } from '../manager'
 import { resetDevice, type ResetOutcome, type ResetPlan } from '../reset'
@@ -46,6 +47,18 @@ const FINISH_ONLY_TIMEOUT_MS = 30_000
 const SIGKILL_DELAY_MS = 5_000
 /** The child counts as hung after this long with no message at all. */
 const SILENCE_LIMIT_MS = 30_000
+/**
+ * Plan 98 §4.7 — the cadence the parent asks the child to self-report RSS on
+ * WHEN NO MEMORY LIMIT IS CONFIGURED (`resolved.maxRssBytes === null`).
+ * Cheap, coarse, peak-recording-only cadence — matches 98.2 exactly. Once a
+ * limit IS configured (step 98.3), the cadence tightens to
+ * `job.memory.sampleIntervalMs` for that attempt (`memoryLimitConfigured`
+ * below), independent of `enforce` — sampling faster costs nothing and keeps
+ * the recorded peak accurate even under `enforce: 'off'`.
+ */
+const RSS_SAMPLE_MS = 10_000
+/** A breach is reported once, at 80% of the limit — see `checkMemoryBreach` (plan 98 §3.6). */
+const MEMORY_WARN_FRACTION = 0.8
 
 export interface ScriptFailure {
   code: string
@@ -58,6 +71,16 @@ export interface AttemptOutcome {
   value?: unknown
   error?: ScriptFailure
   finishRan: boolean
+  /** Plan 98 §4.8, H1 — the highest `rss` sample seen this attempt. Undefined when the child never reported one (e.g. it died before `init`, or before its own first sample). */
+  peakRssBytes?: number
+  /**
+   * Plan 97 §3.3, §3.4, §3.8, §4.3 — the child's own verdict on `value`,
+   * carried straight from the `result` IPC message's own `outcome` (see
+   * `ipc.ts`'s doc comment on it). Undefined whenever the child sent none:
+   * a pre-plan-97 bundle, a `finish-only`/abort settle, or any attempt that
+   * never reached the success branch that builds one.
+   */
+  outcome?: ResultOutcome
 }
 
 /**
@@ -78,6 +101,73 @@ export interface JobSpec {
    * export exactly as before this field existed.
    */
   scriptExportId?: string
+  /**
+   * Plan 99 §3.3, §4.8. `'farm'` (the default, and today's behaviour
+   * exactly) runs the pre-job reset per `job.resetPolicy`; `'none'` skips it,
+   * the same way a `finish-only` attempt already does and for a related
+   * reason — a workflow node after the first needs the state a reset would
+   * wipe. Undefined for every job outside a workflow.
+   */
+  reset?: 'farm' | 'none'
+  /**
+   * Plan 99 §3.2, §4.8. The workflow node this execution belongs to.
+   * Threaded into the child's `init` and into `ctx.jobs.trigger()`'s default
+   * idempotency key, because several nodes share one `jobId` and one
+   * `attempt` counter and would otherwise derive colliding keys (plan 99
+   * F20). Undefined for a standalone job, which keeps deriving the exact key
+   * shape it always has.
+   */
+  nodeId?: string
+  /**
+   * Plan 99 §3.5, §4.8 — overrides `ScriptDefinition.retries` for this
+   * execution (a workflow's per-node override). Undefined defers entirely to
+   * the script's own declared `retries`, exactly as before this field
+   * existed.
+   */
+  retries?: number
+  /**
+   * Plan 98 §3.1, §4.4, §5 step 98.4 — the script's own declared execution
+   * envelope, pinned at the moment the host resolved this job's script
+   * (spec §11.6: a job pins the code it was pinned to, and the envelope
+   * pins the same way — read once, from the row this job was enqueued
+   * against, never re-read from a since-republished row). This runner
+   * "knows nothing about the database or the `scripts` table" (this
+   * interface's own doc comment above), so this field is how the host
+   * hands over what it already knows: `null` means "the host looked and
+   * this script declared nothing" (a pre-plan-98 script, or a dev slot with
+   * no declaration); `undefined` means "the host has not been updated to
+   * supply this at all" (only true of a caller — chiefly a test — that
+   * predates this field).
+   *
+   * This is the ONE layer `resolveRuntime`'s `script` argument was always
+   * going to receive once persistence landed (see 98.3's own comment at its
+   * call site, `execute()` below) — no other line changes for that.
+   *
+   * It is also the DB side of the `ready`-message reconciliation check
+   * (plan 98 §3.1): the child's own `ready.runtime` is compared against
+   * THIS value, never the other way around, and a disagreement is logged
+   * once as a warning naming both — the DB value here is what actually
+   * gets used; the bundle's own report is a diagnostic only.
+   */
+  runtime?: RuntimeEnvelope | null
+  /**
+   * Plan 98 §3.8, §4.4, §5 step 98.7 — the operator's own per-job layer,
+   * pinned onto `jobs.runtime_override` at enqueue and already validated and
+   * ceiling-checked there (`services/job-service.ts`'s `E_RUNTIME_OVER_CEILING`
+   * refusal) — this runner never re-validates it, only resolves precedence
+   * with it. This is the `override` argument `resolveRuntime` has taken
+   * since step 98.3 first called it and has been passing `null` for ever
+   * since (that step's own comment named this exact field as the one still
+   * to come): `resolveRuntime({ farm, script: job.runtime ?? null, override:
+   * job.runtimeOverride ?? null })` is now the WHOLE change this step makes
+   * to `execute()` below — no other line at that call site moves. `null`
+   * means "no override for this job" (the overwhelming common case, and
+   * every job before this field existed); `undefined` means "the host has
+   * not been updated to supply this at all" (only true of a caller — a
+   * test — that predates this field), matching `runtime` just above's own
+   * two-value convention exactly.
+   */
+  runtimeOverride?: RuntimeEnvelope | null
 }
 
 /**
@@ -177,6 +267,18 @@ export interface JobRunnerDeps {
   /** `ctx.jobs` (plan 80 §4.2) — undefined when the host has not wired one (`jobs.call` then
    * refuses cleanly with `E_JOBS_UNAVAILABLE`, the same pattern `kv`/`transfer` above already use). */
   jobs?: JobsRunnerDeps
+  /**
+   * `ctx.progress()` (plan 97 §3.7, §4.3) — one call per coalesced `progress`
+   * message the child sends, forwarded VERBATIM: this runner does not
+   * measure, drop, or rate-limit anything itself (the child's own timer
+   * already coalesced it to at most one per `progressIntervalMs`) — sizing
+   * and the one-warn-per-job rule live one hop further out
+   * (`executor-host.ts`, §5 step 97.7), the same "the runner reports, the
+   * host decides" split `onReset`/`onRetry` above already use. Optional: a
+   * host that has not wired this simply never learns a script called
+   * `ctx.progress()`, which is exactly today's (pre-97.7) behaviour.
+   */
+  onProgress?: (jobId: string, value: unknown) => void
 }
 
 /**
@@ -189,21 +291,43 @@ export interface JobRunnerDeps {
  * fires from a SEPARATE, shorter timer than the run timeout (§4.2), so
  * raising the run timeout's default from 5 minutes to 60 does not also make
  * a child that never starts twelve times slower to notice.
+ *
+ * `'memory'` (plan 98 §3.6, §4.8): the child self-reported an RSS sample at
+ * or above the resolved `maxRssBytes` ceiling while `job.memory.enforce`
+ * is `'kill'`. Deliberately NOT handled like the other four reasons —
+ * `doAbort` below skips the `abort` message and the grace period entirely
+ * for this one reason, because a process already over its declared ceiling
+ * cannot be trusted to unwind politely (§3.6). `finish()` still runs: this
+ * attempt's `finishRan` stays false (the child never got to send its own
+ * `result`), so `execute()`'s existing finish-only re-run (spec §11.2)
+ * fires in a fresh process exactly as it does for any other attempt that
+ * dies before reporting one.
  */
-export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout'
+export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | 'memory'
 
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
   abort(reason: AbortReason, detail?: string): void
+  /** Plan 91 §3.6, §4.8 — delivers `{t:'assist', at, actor}` to the running child. NOT an abort — no grace timer, no kill, the process is entirely unaffected beyond receiving the message. */
+  notifyAssist(e: { at: number; actor: string | null }): void
 }
 
 export interface JobRunner {
-  execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure }>
+  execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure; peakRssBytes?: number; outcome?: ResultOutcome }>
   abort(jobId: string, reason: AbortReason, detail?: string): boolean
+  /**
+   * Plan 91 §3.6, §4.8 — the second unsolicited parent→child push ever
+   * (`abort` is the first). Returns whether a live child was found — a job
+   * that finished (or was never running) between the assist and this call is
+   * a harmless no-op, the same shape `abort` above already has.
+   */
+  notifyAssist(jobId: string, e: { at: number; actor: string | null }): boolean
 }
 
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
 const defaultIsolation = resolveIsolation()
+/** Plan 97 §3.7, §4.9 — mirrors `job.progressIntervalMs`'s own zod default (`packages/protocol/src/settings.ts`). */
+const DEFAULT_PROGRESS_INTERVAL_MS = 1_000
 
 /** The `ScriptFailure.code` an abort reason settles as (plan 37 §4.4, plan 74 §4.2). */
 function abortErrorCode(reason: AbortReason): string {
@@ -214,6 +338,10 @@ function abortErrorCode(reason: AbortReason): string {
   // what lets `failure-class.ts` classify it as infrastructure unconditionally
   // rather than depending on the operator's `timeoutIsInfra` flag.
   if (reason === 'startup-timeout') return 'STARTUP_TIMEOUT'
+  // Plan 98 §3.6, §4.8 — a distinct code from 'TIMEOUT' so `failure-class.ts`
+  // can assert it script-class explicitly (SCRIPT_CODES) rather than falling
+  // through the default, exactly like 'APP_CRASHED' above it.
+  if (reason === 'memory') return 'MEMORY_LIMIT'
   return 'TIMEOUT'
 }
 
@@ -230,6 +358,27 @@ function clampTimeoutMs(requested: number, maxTimeoutMs: number | null, scriptLa
   if (maxTimeoutMs === null || requested <= maxTimeoutMs) return requested
   log(`timeout clamp: ${scriptLabel} requested ${requested}ms, but maxTimeoutMs is ${maxTimeoutMs}ms — using ${maxTimeoutMs}ms`)
   return maxTimeoutMs
+}
+
+/**
+ * Plan 98 §3.1, §5 step 98.4 — field-by-field, never a JSON-string
+ * comparison: `a` (a DB column, parsed by `RuntimeEnvelopeSchema`) and `b`
+ * (a folded SDK object that crossed an IPC boundary) are built by two
+ * completely independent code paths with no reason to enumerate their keys
+ * in the same order, so a naive `JSON.stringify(a) !== JSON.stringify(b)`
+ * would false-positive on nothing more than key order. `null`/`undefined`
+ * both mean "declared nothing" here (matching `resolveRuntime`'s own
+ * treatment of the same two shapes, plan 98 §3.8) — comparing either against
+ * an empty object rather than against each other's exact JS type.
+ */
+function runtimeEnvelopesDiffer(a: RuntimeEnvelope | null | undefined, b: RuntimeEnvelope | null | undefined): boolean {
+  const left = (a ?? {}) as Record<string, unknown>
+  const right = (b ?? {}) as Record<string, unknown>
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const key of keys) {
+    if (left[key] !== right[key]) return true
+  }
+  return false
 }
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
@@ -251,10 +400,55 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
+    /** Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter` above, same ref-cell shape. */
+    assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
+    /**
+     * Plan 97 §3.4, §4.9 — `job.maxResultBytes`, resolved by the CALLER
+     * (which holds the live settings store) and handed to the child via
+     * `init` (`sendInit` below). Undefined for a finish-only attempt (its
+     * own result path is 97.4's, not this one's) — `sendInit` falls back to
+     * `RESULT_LIMITS.defaultMaxResultBytes` for any caller that omits this,
+     * the same "read fresh, default sanely" shape `resetPolicy` already has.
+     */
+    maxResultBytes?: number
+    /**
+     * Plan 97 §3.7, §4.9 — `job.progressIntervalMs`, resolved by the CALLER
+     * the same way `maxResultBytes` above is, and handed to the child via
+     * `init`. Undefined for a finish-only attempt (§9's own "no live
+     * audience for that short window" reasoning) — `sendInit` falls back to
+     * a sane default for any caller that omits this.
+     */
+    progressIntervalMs?: number
+    /**
+     * Plan 98 §3.5, §3.6, §4.7, §4.8 — the resolved memory ceiling for this
+     * attempt. Undefined for a finish-only attempt (§9 Q7 — `finish()` gets
+     * no memory budget of its own, deliberately) and for a farm/script that
+     * declared no ceiling at all. `maxRssBytes: null` inside a defined object
+     * never happens in practice (the caller only builds this when a ceiling
+     * resolved to a real number) but stays nullable here to mirror
+     * `ResolvedRuntime.maxRssBytes`'s own shape rather than inventing a second one.
+     */
+    memory?: { maxRssBytes: number | null; enforce: 'kill' | 'warn' | 'off'; sampleIntervalMs: number }
   }): Promise<AttemptOutcome> {
     const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
+    // Plan 98 §4.7 — "a limit is in effect" (tighter rss cadence, tighter
+    // silence watchdog) is decided purely by whether a CEILING NUMBER
+    // resolved, never by `enforce`: even `enforce: 'off'` benefits from a
+    // more accurate recorded peak, and sampling faster costs nothing extra
+    // (an `rss` message never triggers a lease-renewal write — see below).
+    const memory = opts.memory
+    const memoryLimitConfigured = memory !== undefined && memory.maxRssBytes !== null
+    const effectiveRssSampleMs = memory !== undefined && memory.maxRssBytes !== null ? memory.sampleIntervalMs : RSS_SAMPLE_MS
+    // Plan 98 §3.6 — "when a memory limit is in effect the silence limit
+    // tightens to min(SILENCE_LIMIT_MS, 3 × sampleIntervalMs)": narrows the
+    // one honest gap this design has (H2) — a script that blocks its own
+    // event loop while allocating cannot report an `rss` sample at all, so
+    // the sampler cannot see it; the tightened silence watchdog is what
+    // still catches that shape, just slower than the sampler catches the
+    // await-point shape.
+    const effectiveSilenceLimitMs = memoryLimitConfigured ? Math.min(SILENCE_LIMIT_MS, 3 * effectiveRssSampleMs) : SILENCE_LIMIT_MS
 
     // Target-package tracking (plan 37 §3.4, §4.4): `declaredPackages` comes
     // from the `ready` message's `reset.packages` once it arrives;
@@ -267,17 +461,29 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     const reportTargetPackages = (): void => {
       deps.onTargetPackages?.(job.id, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
     }
+    // Plan 91 §3.3, §4.1 — this attempt's identity for the input arbiter's
+    // attribution and priority lane. `id: job.id` (not `attempt`): an assist
+    // and a retry both belong to the SAME job for §3.5's attribution, and the
+    // arbiter's `job`/`agent` priority tier does not distinguish attempts.
+    const source: InputSource = { kind: 'job', id: job.id, userId: null }
     const execDevice = createDeviceExecutor({
       session,
+      source,
       onAppLaunch: (pkg) => {
         if (launchedPackages.has(pkg)) return
         launchedPackages.add(pkg)
         reportTargetPackages()
       },
       ...(deps.transfer ? { transfer: deps.transfer } : {}),
-      // Read fresh per attempt, not captured at daemon start (plan 34 §3.3,
-      // §4.2) — so a Timing settings change reaches the very next job.
-      ...(deps.timing ? { timing: deps.timing() } : {}),
+      // Plan 94 §4.5, F10, step 94.2: the accessor ITSELF, not the value it
+      // returns right now — `createDeviceExecutor` re-resolves it on every
+      // device call, not once here. Before this change, `deps.timing()` was
+      // called exactly once, at attempt construction: a real improvement
+      // over "captured at daemon start" (still the comment's own point), but
+      // a setting change made while THIS attempt's script was still running
+      // never reached it — the same shape of bug this repo has shipped
+      // before (a co-control queue budget read once and never again).
+      ...(deps.timing ? { timing: deps.timing } : {}),
     })
 
     return new Promise<AttemptOutcome>((resolve) => {
@@ -292,6 +498,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       let silenceTimer: ReturnType<typeof setTimeout> | null = null
       let abortReason: AbortReason | null = null
       let abortDetail: string | undefined
+      // Plan 98 §4.7, §4.8, H1 — the peak of every `rss` sample this attempt
+      // has reported. `null` until the first sample arrives (never 0 — a real
+      // RSS reading of exactly zero bytes cannot happen, so this stays a
+      // clean "no sample yet" rather than a plausible-looking measurement).
+      let peakRssBytes: number | null = null
+      // Plan 98 §3.6 — set the moment EITHER warning fires (the 80% pre-kill
+      // warning under `enforce: 'kill'`, or the single breach warning under
+      // `enforce: 'warn'`), so a long-running job never gets a second one:
+      // "exactly one warning" is the acceptance bar, not "one warning per
+      // threshold crossing".
+      let memoryWarningLogged = false
 
       const isolation = deps.isolation ?? defaultIsolation
       const child: Subprocess<'ignore', 'pipe', 'pipe'> = isolation.spawn(
@@ -320,6 +537,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         settled = true
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
+        opts.assistNotifier.current = null
         try {
           child.kill()
         } catch {
@@ -331,9 +549,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const resetSilenceTimer = () => {
         if (silenceTimer) clearTimeout(silenceTimer)
         silenceTimer = setTimeout(() => {
-          logger.append('error', 'runner', `child diam > ${SILENCE_LIMIT_MS}ms — dianggap hang`)
+          logger.append('error', 'runner', `child diam > ${effectiveSilenceLimitMs}ms — dianggap hang`)
           doAbort('hung')
-        }, SILENCE_LIMIT_MS)
+        }, effectiveSilenceLimitMs)
       }
 
       const doAbort = (reason: AbortReason, detail?: string) => {
@@ -341,6 +559,29 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         abortReason = reason
         abortDetail = detail
         logger.append('warn', 'runner', `abort attempt ${attempt}: ${reason}${detail ? ` (${detail})` : ''}`)
+        if (reason === 'memory') {
+          // Plan 98 §3.6 — deliberately harsher than every other abort
+          // reason: NO `abort` IPC message, NO grace period. A process
+          // already at (or past) its declared memory ceiling cannot be
+          // trusted to unwind politely — asking it to allocate further for a
+          // clean shutdown, or even to receive and parse one more IPC
+          // message, is asking it to fail worse against a host that is
+          // already unhappy. SIGKILL immediately.
+          //
+          // This does NOT skip `finish()` — it relocates it. This attempt's
+          // `finishRan` stays false (the child never gets to send a `result`
+          // with `finishRan: true`), so `execute()`'s existing finish-only
+          // re-run (spec §11.2, F15) fires unconditionally in a FRESH
+          // process, with clean memory and `ctx.error.code === 'MEMORY_LIMIT'`
+          // populated. That re-run is unaffected by anything that happens to
+          // this doomed process from here on.
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            // already gone
+          }
+          return
+        }
         send({ t: 'abort', reason })
         // Give `finish` a chance to run; past the grace period → SIGTERM then SIGKILL.
         graceTimer = setTimeout(() => {
@@ -358,16 +599,96 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           }, SIGKILL_DELAY_MS)
         }, FINISH_GRACE_MS)
       }
+      /**
+       * Plan 98 §3.5, §3.6, §4.8 — the three `job.memory.enforce` modes,
+       * evaluated on every self-reported `rss` sample. `off` and "no ceiling
+       * configured" both no-op immediately: peak recording (above, in
+       * `handleChildMessage`) is unconditional and already covers "record
+       * the peak either way" on its own.
+       *
+       * `'kill'`: one `warn` at `MEMORY_WARN_FRACTION` (80%) of the limit,
+       * once per attempt — "a kill with no warning is a mystery; a kill with
+       * a warning 40s earlier is a diagnosis" (§3.6) — then `doAbort('memory', …)`
+       * the moment a sample reaches the limit itself. No repeated warnings:
+       * once `abortReason` is set, `doAbort` is a no-op on every later call
+       * (its own top-of-function guard), so a burst of samples all above the
+       * limit before the child actually dies can never double-kill.
+       *
+       * `'warn'`: the job is never touched — exactly ONE `warn` the first
+       * time a sample reaches the limit, then silence for the rest of the
+       * attempt even if it stays over the limit for its whole remaining run.
+       * This is deliberately a DIFFERENT warning than the 80% one above: the
+       * 80% warning exists to precede a kill that is coming; under `'warn'`
+       * no kill is coming, so there is nothing to precede — the breach
+       * itself is the whole story, and printing both would double the log
+       * line for the exact one-warning bar this mode is measured against.
+       */
+      const checkMemoryBreach = (bytes: number): void => {
+        // `memory` closes over the SAME `const` `runAttempt` computed
+        // `memoryLimitConfigured`/`effectiveRssSampleMs` from, above.
+        if (!memory || memory.maxRssBytes === null || memory.enforce === 'off') return
+        const limit = memory.maxRssBytes
+        if (memory.enforce === 'kill') {
+          if (bytes >= limit) {
+            doAbort('memory', `rss ${bytes} bytes >= limit ${limit} bytes`)
+            return
+          }
+          if (!memoryWarningLogged && bytes >= limit * MEMORY_WARN_FRACTION) {
+            memoryWarningLogged = true
+            logger.append(
+              'warn',
+              'runner',
+              `memory approaching limit: rss ${bytes} bytes is ${Math.round((bytes / limit) * 100)}% of the ${limit} byte limit`,
+            )
+          }
+          return
+        }
+        // memory.enforce === 'warn'
+        if (!memoryWarningLogged && bytes >= limit) {
+          memoryWarningLogged = true
+          logger.append(
+            'warn',
+            'runner',
+            `memory limit exceeded: rss ${bytes} bytes >= the ${limit} byte limit (enforce=warn — the job continues)`,
+          )
+        }
+      }
+
       opts.aborter.current = doAbort
+      // Plan 91 §3.6, §4.8 — NOT gated on `settled`/`abortReason` the way
+      // `doAbort` is: an assist notification is not mutually exclusive with
+      // anything else that can happen to this attempt, and firing it after
+      // `finish()` already nulled the ref is exactly the harmless no-op
+      // `opts.assistNotifier.current?.(e)` at the call site expects.
+      opts.assistNotifier.current = (e) => send({ t: 'assist', at: e.at, actor: e.actor })
 
       const sendInit = () => {
         if (settled) return
         send({
           t: 'init',
           mode,
-          job: { id: job.id, attempt, deviceId: job.deviceId },
+          // `nodeId` (plan 99 §3.2, §4.8) is the workflow node this
+          // execution belongs to — undefined for every job outside a
+          // workflow, which keeps this shape exactly what it was before.
+          job: { id: job.id, attempt, deviceId: job.deviceId, ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}) },
           params: job.params ?? {},
           ...(opts.priorError ? { priorError: opts.priorError } : {}),
+          // Plan 98 §4.7 — `job.memory.sampleIntervalMs` once a ceiling is
+          // configured for this attempt, the coarse default otherwise.
+          rssSampleMs: effectiveRssSampleMs,
+          // Plan 97 §3.4, §4.9 — the farm's own setting when the caller
+          // resolved one, `RESULT_LIMITS.defaultMaxResultBytes` otherwise
+          // (a finish-only attempt, or a caller — chiefly a test — that
+          // predates this field).
+          maxResultBytes: opts.maxResultBytes ?? RESULT_LIMITS.defaultMaxResultBytes,
+          // Plan 97 §3.7, §4.9 — `DEFAULT_PROGRESS_INTERVAL_MS` mirrors
+          // `job.progressIntervalMs`'s own zod default (`settings.ts`) the
+          // same way `RESULT_LIMITS.defaultMaxResultBytes` mirrors
+          // `maxResultBytes`'s: one hardcoded number per file, not a shared
+          // import, because a caller — chiefly a test — that predates this
+          // field should not need to reach into `@enkaku/protocol` just to
+          // get a runner working.
+          progressIntervalMs: opts.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS,
         })
       }
 
@@ -382,6 +703,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
        */
       const afterReady = async (msg: Extract<ChildToParent, { t: 'ready' }>): Promise<void> => {
         if (mode === 'finish-only') {
+          sendInit()
+          return
+        }
+        // Plan 99 §3.3, §3.4, §4.8: a workflow node declares `reset: 'none'`
+        // when it needs the state the PREVIOUS node left the device in — the
+        // same reason the finish-only branch above skips the reset ("finish
+        // needs the state a reset would wipe"), applied to a whole node
+        // rather than just its finish(). `job.reset` is undefined for every
+        // job outside a workflow, which takes the farm's normal
+        // `resetPolicy` below exactly as before this field existed.
+        if (job.reset === 'none') {
           sendInit()
           return
         }
@@ -430,6 +762,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             ok: false,
             error: { code: 'RESET_FAILED', message: `pre-job reset failed: ${outcome.warnings.join('; ')}`, phase: 'reset' },
             finishRan: false,
+            ...(peakRssBytes !== null ? { peakRssBytes } : {}),
           })
           return
         }
@@ -441,9 +774,19 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         if (!parsed.success) return
         const msg = parsed.data as ChildToParent
         resetSilenceTimer()
-        deps.heartbeat(job.id)
+        // Plan 98 §4.7 — an `rss` sample is proof of life (the silence timer
+        // above still resets) but NOT lease-renewal activity: at a fast
+        // sample cadence, treating every sample as a heartbeat would multiply
+        // lease-renewal writes for no benefit.
+        if (msg.t !== 'rss') deps.heartbeat(job.id)
 
-        if (msg.t === 'ready') {
+        if (msg.t === 'rss') {
+          if (peakRssBytes === null || msg.bytes > peakRssBytes) peakRssBytes = msg.bytes
+          // Plan 98 §3.6, §4.8 — checked on EVERY sample, peak recording or
+          // not: a limit is enforced by sampling, so the sample that reports
+          // the breach is also the sample that decides it.
+          checkMemoryBreach(msg.bytes)
+        } else if (msg.t === 'ready') {
           logger.append('debug', 'runner', `child ready: ${msg.scriptId}@${msg.version}`)
           // The startup backstop's job is done the moment the child has
           // spoken at all (plan 74 §3.2) — a slow-but-alive child is not
@@ -451,6 +794,27 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           if (startupTimer) {
             clearTimeout(startupTimer)
             startupTimer = null
+          }
+          // Plan 98 §3.1, §5 step 98.4 — the reconciliation check. Once a
+          // script is persisted, `ready.runtime` (the bundle's own report)
+          // stops being a source of truth and becomes a CHECK against the
+          // row this job was pinned to (`job.runtime`, handed over by the
+          // host — see `JobSpec.runtime`'s doc comment). `job.runtime ===
+          // undefined` means the host never wired this at all (a caller
+          // that predates this field) — skip the check rather than warn
+          // about something nobody can act on. Exactly ONE warning per
+          // attempt, naming BOTH values, no matter how many fields differ —
+          // never a warning per field. The DB value (`job.runtime`) is what
+          // actually governs this attempt (see the `resolveRuntime` call in
+          // `execute()` below); this comparison changes nothing about that
+          // — it only makes a stale or hand-doctored bundle visible instead
+          // of silently authoritative.
+          if (job.runtime !== undefined && runtimeEnvelopesDiffer(job.runtime, msg.runtime)) {
+            logger.append(
+              'warn',
+              'runner',
+              `runtime envelope mismatch for ${msg.scriptId}@${msg.version}: the published row declares ${JSON.stringify(job.runtime ?? null)}, the running bundle reports ${JSON.stringify(msg.runtime ?? null)} — the published row is used`,
+            )
           }
           if (opts.meta) {
             if (msg.timeoutMs !== undefined) opts.meta.timeoutMs = msg.timeoutMs
@@ -485,6 +849,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           if (msg.phase === 'finish') finishRan = true
         } else if (msg.t === 'log') {
           logger.append(msg.level, 'script', msg.msg, msg.fields)
+        } else if (msg.t === 'progress') {
+          // Plan 97 §3.7, §4.3 — forwarded verbatim; already coalesced by the
+          // child's own timer. No DB write, no size check, no rate limit
+          // here — those live one hop further out (`executor-host.ts`).
+          deps.onProgress?.(job.id, msg.value)
         } else if (msg.t === 'heartbeat') {
           // already handled by resetSilenceTimer and the lease heartbeat
         } else if (msg.t === 'device.call') {
@@ -617,6 +986,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                 phase: 'timeout',
               },
               finishRan: msg.finishRan || finishRan,
+              ...(peakRssBytes !== null ? { peakRssBytes } : {}),
             })
             return
           }
@@ -625,6 +995,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             ...(msg.value !== undefined ? { value: msg.value } : {}),
             ...(msg.error ? { error: { code: msg.error.code, message: msg.error.message, phase: msg.error.phase } } : {}),
             finishRan: msg.finishRan || finishRan,
+            ...(peakRssBytes !== null ? { peakRssBytes } : {}),
+            // Plan 97 §3.3, §4.3 — carried straight through; `undefined` for
+            // every message a pre-plan-97 bundle sends (`outcome` is optional
+            // on the wire precisely so that still parses).
+            ...(msg.outcome !== undefined ? { outcome: msg.outcome } : {}),
           })
         }
       }
@@ -641,6 +1016,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             ? { code: abortErrorCode(abortReason), message: abortDetail ?? `child di-abort (${abortReason})`, phase: 'timeout' }
             : { code: 'CHILD_CRASHED', message: `child exited ${code} without sending a result`, phase: 'run' },
           finishRan,
+          ...(peakRssBytes !== null ? { peakRssBytes } : {}),
         })
       })
 
@@ -669,6 +1045,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       return true
     },
 
+    notifyAssist(jobId, e) {
+      const running = active.get(jobId)
+      if (!running) return false
+      running.notifyAssist(e)
+      return true
+    },
+
     async execute(job) {
       // timeout, retries, and the kv namespace (plan 79 §3.2) are only known
       // once the child has imported the bundle; it sends them in the `ready`
@@ -684,7 +1067,15 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       })
       const artifacts = deps.artifacts(job.id)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
-      active.set(job.id, { abort: (reason, detail) => aborter.current?.(reason, detail) })
+      // Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter`
+      // above, same ref-cell indirection (`runAttempt` assigns the real
+      // sender once the child is actually spawned; `active` is populated
+      // here, before that happens).
+      const assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null } = { current: null }
+      active.set(job.id, {
+        abort: (reason, detail) => aborter.current?.(reason, detail),
+        notifyAssist: (e) => assistNotifier.current?.(e),
+      })
 
       let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
       let session: DeviceSession | null = null
@@ -698,6 +1089,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // without needing a separate combined check.
       let scriptAttempts = 0
       let infraAttempts = 0
+      // Plan 98 §4.8, H1 — the job's own peak, the MAX across every attempt
+      // (retries and the finish-only re-run alike), not just the last one:
+      // a job that fails on attempt 1 with a high watermark and succeeds on
+      // attempt 2 at a lower one should still report the high number — it
+      // really did use that much memory at some point during this job.
+      let jobPeakRssBytes: number | null = null
+      const noteAttemptPeak = (o: AttemptOutcome | undefined) => {
+        if (o?.peakRssBytes !== undefined && (jobPeakRssBytes === null || o.peakRssBytes > jobPeakRssBytes)) {
+          jobPeakRssBytes = o.peakRssBytes
+        }
+      }
 
       try {
         const bundlePath = job.bundlePath
@@ -742,6 +1144,52 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                     logger.append('warn', 'runner', line),
                   )
                 : settings.defaultTimeoutMs
+            // Plan 98 §3.5, §3.6, §3.8, §4.8, step 98.7 — the memory ceiling
+            // for this attempt. `script` is the job's own pinned declaration
+            // (step 98.4 — `job.runtime`, read by the host straight off the
+            // `scripts` row this job was enqueued against, per spec §11.6);
+            // `override` is the operator's own per-job layer (step 98.7 —
+            // `job.runtimeOverride`, pinned onto `jobs.runtime_override` at
+            // enqueue and already ceiling-checked there — this is the exact
+            // one-line change step 98.3's own comment at this call site
+            // predicted, and no other line here moved). `resolveRuntime`
+            // already treats "layer declared nothing" (`null`) identically
+            // to "no such layer exists" (§3.8), so a pre-plan-98 script
+            // (`job.runtime` undefined or null) with no override resolves to
+            // exactly what it did before this plan existed: the farm's own
+            // `job.memory.defaultMaxRssBytes`, clamped against its own
+            // `job.memory.maxRssBytes` ceiling.
+            const { resolved: resolvedMemory, clamps: memClamps } = resolveRuntime({
+              farm: settings,
+              script: job.runtime ?? null,
+              override: job.runtimeOverride ?? null,
+            })
+            // Plan 98 §3.8, §4.8, step 98.7 — "the origin (script / farm /
+            // override / clamped) recorded in the job log", so a job's OWN
+            // log answers "why did this run get the number it got" even
+            // after farm settings change later, not just Studio's live
+            // Runtime card (§3.9 item 3). A CLAMP always wins the naming —
+            // it is the one case that changed what was actually asked for —
+            // and covers a plain SCRIPT declaration over the ceiling too
+            // (§3.8's own asymmetry: clamped and logged, never refused),
+            // extending `clampTimeoutMs`'s existing "never silent" precedent
+            // to `maxRssBytes`, which `resolveRuntime` has always computed a
+            // clamp for but nothing here consumed until this step. Otherwise,
+            // an override actually in effect (not clamped) gets exactly one
+            // line naming it — the new thing this step introduces; a plain
+            // script-or-farm resolution (unchanged since before this step)
+            // stays silent, matching `clampTimeoutMs`'s own "only log what
+            // changed" philosophy.
+            const memClamp = memClamps.find((c) => c.field === 'maxRssBytes')
+            if (memClamp) {
+              logger.append(
+                'warn',
+                'runner',
+                `memory ceiling clamp: ${meta.scriptId ?? job.id} requested ${memClamp.requested} bytes (from ${memClamp.from}) — clamped to the farm ceiling of ${memClamp.ceiling} bytes`,
+              )
+            } else if (job.runtimeOverride?.maxRssBytes !== undefined) {
+              logger.append('info', 'runner', `attempt ${attempt} memory ceiling ${resolvedMemory.maxRssBytes} bytes (origin: override)`)
+            }
             logger.append('info', 'runner', `attempt ${attempt} starting`)
             outcome = await runAttempt({
               job,
@@ -752,11 +1200,23 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               startupTimeoutMs: settings.startupTimeoutMs,
               maxTimeoutMs: settings.maxTimeoutMs,
               mode: 'full',
+              // Plan 97 §3.4, §4.9 — same "read fresh per attempt" settings
+              // read every other farm-level field on this call already uses.
+              maxResultBytes: settings.maxResultBytes,
+              // Plan 97 §3.7, §4.9 — same freshness convention, one line below.
+              progressIntervalMs: settings.progressIntervalMs,
+              memory: {
+                maxRssBytes: resolvedMemory.maxRssBytes,
+                enforce: settings.memory.enforce,
+                sampleIntervalMs: settings.memory.sampleIntervalMs,
+              },
               logger,
               artifacts,
               aborter,
+              assistNotifier,
               meta,
             })
+            noteAttemptPeak(outcome)
           }
           if (outcome.ok) {
             if (session) deps.sessions.release(job.deviceId, noopFrame)
@@ -770,7 +1230,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // failure never spawned a child in the first place.
           if (session && !outcome.finishRan) {
             logger.append('warn', 'runner', 'finish has not run — starting a finish-only attempt')
-            await runAttempt({
+            const finishOutcome = await runAttempt({
               job,
               attempt,
               bundlePath,
@@ -781,11 +1241,30 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
+              assistNotifier,
               // `finish()` may call ctx.kv too — carry the namespace already learned from this job's
               // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
               // no namespace at all.
               meta,
             }).catch(() => undefined)
+            // A finish-only re-run gets a fresh process (spec §11.2) that can
+            // allocate its own memory — its peak counts toward the job's
+            // overall peak exactly like any other attempt's (plan 98 §4.8).
+            noteAttemptPeak(finishOutcome)
+            // Plan 97 §3.5, §4.2, step 97.4 — the finish-only re-attempt is
+            // the ONLY carrier for a `finish()` salvage once THIS attempt
+            // reaches here: whenever `!outcome.finishRan` is true, `outcome`
+            // itself has no value/outcome of its own to lose (an abort
+            // branch in `handleChildMessage` above deliberately drops
+            // whatever the original child reported, and a child that never
+            // sent a `result` at all obviously has none either) — so merging
+            // is always safe, never an overwrite of a real run() value.
+            // `outcome.error`/`.code`/`.finishRan` stay THIS attempt's own —
+            // the retry classifier just below reads `outcome.error`, and a
+            // finish-only run has no error of its own to classify.
+            if (finishOutcome?.value !== undefined) {
+              outcome = { ...outcome, value: finishOutcome.value, ...(finishOutcome.outcome !== undefined ? { outcome: finishOutcome.outcome } : {}) }
+            }
           }
 
           // Release now — BEFORE deciding whether/how long to back off.
@@ -812,7 +1291,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs })
             if (delayMs > 0) await Bun.sleep(delayMs)
           } else {
-            if (scriptAttempts >= (meta.retries ?? 0)) break
+            // Plan 99 §3.5, §4.8: `job.retries` (a workflow's per-node
+            // override) wins over the script's own declared `meta.retries`
+            // when set; undefined defers to it exactly as before this field
+            // existed.
+            if (scriptAttempts >= (job.retries ?? meta.retries ?? 0)) break
             scriptAttempts += 1
             logger.append('warn', 'runner', `attempt ${attempt} failed (${classified.class}:${classified.code}) — retrying`)
             deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs: 0 })
@@ -836,6 +1319,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         ok: outcome.ok,
         ...(outcome.value !== undefined ? { value: outcome.value } : {}),
         ...(outcome.error ? { error: outcome.error } : {}),
+        ...(jobPeakRssBytes !== null ? { peakRssBytes: jobPeakRssBytes } : {}),
+        // Plan 97 §3.3, §4.3 — the LAST attempt's own verdict (retries do not
+        // accumulate a result the way `jobPeakRssBytes` accumulates a peak;
+        // only the attempt that actually settled the job has one that matters).
+        ...(outcome.outcome !== undefined ? { outcome: outcome.outcome } : {}),
       }
     },
   }

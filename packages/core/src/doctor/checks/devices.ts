@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
+import { formatDeviceLabel } from '../../registry/device-number'
 import type { Check } from '../types'
 
 /**
@@ -20,7 +21,18 @@ import type { Check } from '../types'
  * yet" state (first run, or the `db` check above already owns reporting a
  * corrupt one) — this returns `null`, never throws.
  */
-function readRegistrySerials(dataDir: string): Map<string, string> | null {
+interface RegistryDeviceRow {
+  status: string
+  /** Plan 89 §1, §5 step 89.4 — the number the rack itself carries, joined in below. `null` for a device with no reservation (a real state, never an error). */
+  display: string
+}
+
+/**
+ * Joins `device_numbers` in the same read (plan 89 §5 step 89.4) — a LEFT
+ * JOIN, since a numberless device (an explicit release, §3.2) is a real
+ * state this check must still show, never a row this query silently drops.
+ */
+function readRegistrySerials(dataDir: string): Map<string, RegistryDeviceRow> | null {
   const path = join(dataDir, 'enkaku.db')
   if (!existsSync(path)) return null
   let sqlite: Database
@@ -30,8 +42,12 @@ function readRegistrySerials(dataDir: string): Map<string, string> | null {
     return null
   }
   try {
-    const rows = sqlite.query('SELECT serial, status FROM devices').all() as Array<{ serial: string; status: string | null }>
-    return new Map(rows.map((r) => [r.serial, r.status ?? 'offline']))
+    const rows = sqlite
+      .query(
+        'SELECT d.serial AS serial, d.status AS status, d.label AS label, n.number AS number FROM devices d LEFT JOIN device_numbers n ON n.stable_id = d.stable_id',
+      )
+      .all() as Array<{ serial: string; status: string | null; label: string; number: number | null }>
+    return new Map(rows.map((r) => [r.serial, { status: r.status ?? 'offline', display: formatDeviceLabel(r.number, r.label) }]))
   } catch {
     return null
   } finally {
@@ -52,7 +68,7 @@ export const devicesCheck: Check = {
         ? 'registry: no local database yet'
         : registry.size === 0
           ? 'registry: no devices enrolled'
-          : `registry: ${[...registry.entries()].map(([serial, status]) => `${serial}:${status}`).join(', ')}`
+          : `registry: ${[...registry.entries()].map(([serial, r]) => `${r.display} (${serial}):${r.status}`).join(', ')}`
     const observed = `${adbSummary}; ${registrySummary}`
 
     // Disagreements (plan 85 §3.3, §5 step 85.2 — this is what makes H3
@@ -66,13 +82,14 @@ export const devicesCheck: Check = {
     const disagreements: string[] = []
     if (registry) {
       for (const d of list) {
-        if (d.state === 'device' && registry.get(d.serial) === 'offline') {
-          disagreements.push(`${d.serial}: adb sees it connected, the registry still has it marked offline`)
+        const r = registry.get(d.serial)
+        if (d.state === 'device' && r?.status === 'offline') {
+          disagreements.push(`${r.display} (${d.serial}): adb sees it connected, the registry still has it marked offline`)
         }
       }
-      for (const [serial, status] of registry) {
-        if (status !== 'offline' && !list.some((d) => d.serial === serial)) {
-          disagreements.push(`${serial}: the registry has it as ${status}, adb does not see it at all`)
+      for (const [serial, r] of registry) {
+        if (r.status !== 'offline' && !list.some((d) => d.serial === serial)) {
+          disagreements.push(`${r.display} (${serial}): the registry has it as ${r.status}, adb does not see it at all`)
         }
       }
     }

@@ -67,6 +67,18 @@ export const ScheduleInfoSchema = z.object({
   catchUp: CatchUpSchema,
   jitterSec: z.number().int(),
   priority: z.number().int(),
+  /**
+   * Plan 94 §3.7, §4.8, step 94.9, F34 — the batch pacing this schedule
+   * passes straight through to `createBatch`, exactly like `concurrency`/
+   * `order`/`priority` above. Distinct from `jitterSec` above: `jitterSec`
+   * shifts the WHOLE firing before a batch exists; these four shift EACH
+   * repetition once it does. `repeatCount: 1` with every interval `0` (the
+   * default, and every schedule created before this step) is unpaced.
+   */
+  repeatCount: z.number().int().default(1),
+  intervalMinMs: z.number().int().default(0),
+  intervalMaxMs: z.number().int().default(0),
+  deviceIntervalMs: z.number().int().default(0),
   /** Plan 68 §3.2 — only meaningful for an agent target. */
   threadMode: ScheduleThreadModeSchema,
   /** The reused thread when `threadMode === 'continue'`; null otherwise, or before the first firing. */
@@ -81,6 +93,17 @@ export const ScheduleInfoSchema = z.object({
   createdAt: z.number(),
   /** The next fire time, computed on read (plan 21 §4.4) — null if disabled or the cron is invalid. */
   nextFireAt: z.number().nullable().default(null),
+  /**
+   * Plan 95 §4.4, §4.8, §5 step 95.7 — computed on EVERY read against what
+   * `target`/`scriptRef` resolves to RIGHT NOW, never cached from the last
+   * firing: a schedule that WILL fail is visible the moment the new script
+   * version is published, not the morning after it silently enqueued
+   * nothing. `true`/`0` for an agent target, or a script target with no
+   * declared params — nothing to reconcile. Defaulted so every pre-95.7
+   * caller's fixture literal keeps compiling unedited.
+   */
+  paramsCompatible: z.boolean().default(true),
+  paramsFindingCount: z.number().int().default(0),
 })
 export type ScheduleInfo = z.infer<typeof ScheduleInfoSchema>
 
@@ -94,6 +117,14 @@ export const ScheduleRunInfoSchema = z.object({
   batchId: z.string().nullable(),
   detail: z.string().nullable(),
   missedCount: z.number().int(),
+  /**
+   * The value `pickJitterMs` actually drew for this fire, in milliseconds
+   * (plan 94 §3.7, F28) — `0` for a schedule with no jitter configured AND
+   * for every run recorded before this field existed, both meaning
+   * "nothing to attribute a delay to." Defaulted so every pre-94.9 caller's
+   * fixture literal keeps compiling unedited.
+   */
+  jitterMs: z.number().int().default(0),
 })
 export type ScheduleRunInfo = z.infer<typeof ScheduleRunInfoSchema>
 

@@ -115,23 +115,43 @@ export class StreamLane {
 }
 
 /**
- * `host:devices-l`'s response body (plan 85 §3.3, §4.3). Unlike
- * `host:track-devices` (tab-separated, `tracker.ts`'s `parseSnapshot`), adb's
- * long-listing format left-pads the serial to a fixed column width with
- * plain spaces and then appends unstructured `key:value` fields
- * (product/model/device/transport_id) after the state — so this splits on
- * ANY whitespace run rather than assuming a tab, and simply ignores
- * everything past the second column. A zero-length block (no devices at
- * all) parses to `[]`.
+ * `host:devices-l`'s response body (plan 85 §3.3, §4.3; plan 88 §3.1, fixes
+ * F6). Unlike `host:track-devices` (tab-separated, `tracker.ts`'s
+ * `parseSnapshot`), adb's long-listing format left-pads the serial to a
+ * fixed column width with plain spaces and then appends unstructured
+ * `key:value` fields (product/model/device/transport_id, and — USB only —
+ * usb) after the state — so this splits on ANY whitespace run rather than
+ * assuming a tab. `product`/`model`/`device` are still ignored (nothing
+ * reads them); `usb` and `transport_id` are now kept, because `usb:` is
+ * adb's own signal that a transport is USB rather than TCP — the exact
+ * field this function used to throw away. Verified against a real
+ * `adb devices -l` line (plan 88 §5 step 88.1's H6 spike):
+ * `ZP2222RMBS   device usb:3-1.4.3 product:lagos_gpn model:moto_g06_power
+ * device:lagos transport_id:10` — confirming the field order and that a
+ * USB line always carries `usb:`. A zero-length block (no devices at all)
+ * parses to `[]`.
  */
 function parseDevicesLongBlock(raw: string): TrackedDevice[] {
   const out: TrackedDevice[] = []
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
-    const [serial, state] = trimmed.split(/\s+/)
+    const [serial, state, ...fields] = trimmed.split(/\s+/)
     if (!serial || !state) continue
-    out.push({ serial, state })
+    const device: TrackedDevice = { serial, state }
+    for (const field of fields) {
+      const colon = field.indexOf(':')
+      if (colon < 0) continue
+      const key = field.slice(0, colon)
+      const value = field.slice(colon + 1)
+      if (!value) continue
+      if (key === 'usb') device.usb = value
+      else if (key === 'transport_id') {
+        const transportId = Number(value)
+        if (Number.isFinite(transportId)) device.transportId = transportId
+      }
+    }
+    out.push(device)
   }
   return out
 }
@@ -691,6 +711,33 @@ export class AdbClient {
       socket.send(`host:disconnect:${hostPort}`)
       await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
       return await socket.readBlock({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+    })
+  }
+
+  /**
+   * `tcpip:<port>` as a DEVICE service (plan 88 §0.2 H1, §5 step 88.5) — NOT
+   * one of the HOST services above (`host:connect`/`host:disconnect`, which
+   * ask the adb SERVER to dial or drop a transport it already has). This
+   * asks adbd itself, on ONE already-attached (normally USB) device, to
+   * restart its own listener in TCP mode on `port` — the first half of the
+   * OTG/Wi-Fi cutover (§3.4 step 2), before any network address exists to
+   * `connect` to. `host:transport:<serial>` selects the device exactly like
+   * `openRaw` (F16) already does; `tcpip:<port>` is the device service this
+   * plan's H1 hypothesis is about — whether adbd accepts it this way with no
+   * CLI spawn. The reply is not parsed for correctness: `cutover.ts` verifies
+   * the effect independently by reading back `getprop service.adb.tcp.port`
+   * (§3.4's own "verify by read-back" rule) — this method only reports
+   * whether the SERVICE REQUEST itself was accepted (`readStatus` throws
+   * `E_ADB_FAIL` otherwise), so a caller can fall back to
+   * `hostAdb.run(['-s', serial, 'tcpip', String(port)])` on any throw here,
+   * per H1's own documented fallback.
+   */
+  async tcpip(serial: string, port: number): Promise<void> {
+    await this.withSocket(async (socket) => {
+      socket.send(`host:transport:${serial}`)
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      socket.send(`tcpip:${port}`)
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
     })
   }
 

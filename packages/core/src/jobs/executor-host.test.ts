@@ -51,12 +51,44 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     rootJobId: null,
     depth: 0,
     triggerKey: null,
+    peakRssBytes: null,
+    assistCount: 0,
+    // Plan 98 §4.4, §4.6, step 98.5 — null here: this helper builds a bare
+    // row, and nothing in these tests exercises the claim's concurrency gate.
+    maxConcurrent: null,
+    // Plan 98 §3.8, §4.4, step 98.7 — null here: this helper builds a bare
+    // row, and nothing in these tests exercises a per-job override.
+    runtimeOverride: null,
+    // Plan 94 §3.8, §4.8, step 94.6 — null here: this helper builds a bare
+    // row, and nothing in these tests exercises the pacer.
+    notBefore: null,
+    batchRepeat: null,
+    pacedDelayMs: null,
+    // Plan 97 §3.3, §4.4 — null here: this helper builds a bare row; tests
+    // that exercise `recordResult`'s wiring pass their own overrides.
+    resultStatus: null,
+    resultBytes: null,
+    resultSummary: null,
+    resultIssues: null,
     ...overrides,
   }
 }
 
 interface Recorded {
-  finishCalls: Array<{ jobId: string; status: string; data: { result?: unknown; error?: string; failureClass?: string | null } }>
+  finishCalls: Array<{
+    jobId: string
+    status: string
+    data: {
+      result?: unknown
+      error?: string
+      failureClass?: string | null
+      peakRssBytes?: number | null
+      resultStatus?: string | null
+      resultBytes?: number | null
+      resultSummary?: string | null
+      resultIssues?: unknown
+    }
+  }>
   requeueCalls: Array<{ jobId: string; newDeviceId: string }>
   stateEvents: Array<{ deviceId: string; event: string }>
   clearedLeases: string[]
@@ -95,6 +127,7 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
     expireQueued: () => [],
     failOrphanRunning: () => 0,
     runningByDevice: () => null,
+    assists: () => [],
   }
 
   const states: DeviceStateMachine = {
@@ -334,6 +367,48 @@ describe('createExecutorHost — notifyCrash (plan 37 §4.4)', () => {
   })
 })
 
+describe('createExecutorHost — notifyAssist (plan 91 §3.6, §4.8, §5 step 91.5)', () => {
+  test('an assist is delivered to a running job that registered ctx.onAssist, and does NOT settle the job — mirrors notifyCrash\'s shape, but is never an abort', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    const seen: Array<{ at: number; actor: string | null }> = []
+    let resolveRun: (() => void) | undefined
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: (_job, ctx) =>
+        new Promise((resolve) => {
+          ctx.onAssist?.((e) => seen.push(e))
+          resolveRun = () => resolve('unused')
+        }),
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(5)
+
+    const handled = host.notifyAssist(job.id, { at: 1_700_000_000, actor: 'user-1' })
+    expect(handled).toBe(true)
+    expect(seen).toEqual([{ at: 1_700_000_000, actor: 'user-1' }])
+    // The job is still running — an assist is NOT an abort (plan 91 §3.6).
+    expect(recorded.finishCalls).toEqual([])
+    resolveRun?.()
+    await Bun.sleep(10)
+    expect(recorded.finishCalls[0]?.status).toBe('success')
+  })
+
+  test('notifyAssist for a job with no registered handler (or no longer running) is a harmless no-op', async () => {
+    const job = makeJob()
+    const { deps } = makeDeps(job)
+    const host = createExecutorHost(deps)
+    expect(host.notifyAssist('no-such-job', { at: 1_700_000_000, actor: 'user-1' })).toBe(false)
+
+    deps.registry.register('test-script', { validateParams: (p) => p, run: async () => 'ok' })
+    host.start(job)
+    await Bun.sleep(10)
+    // The job already finished, never having called ctx.onAssist — its handler entry is gone.
+    expect(host.notifyAssist(job.id, { at: 1_700_000_000, actor: 'user-1' })).toBe(false)
+  })
+})
+
 describe('createExecutorHost — an unknown error code classifies script, not infra (acceptance #9)', () => {
   test('a totally unrecognised code fails the job as class "script" and never notes health', async () => {
     const job = makeJob()
@@ -350,5 +425,218 @@ describe('createExecutorHost — an unknown error code classifies script, not in
 
     expect(recorded.finishCalls[0]?.data.failureClass).toBe('script')
     expect(recorded.healthNotes).toEqual([])
+  })
+})
+
+/**
+ * Plan 98 §3.9 item 4, §4.4, §4.8, H1 — step 98.2, "measure before limiting":
+ * the seam between an executor that measured its own subprocess (`ctx.onPeakRss`)
+ * and the job row's `peakRssBytes` column. No limit is enforced here or
+ * anywhere in this step — only that the number reaches `jobStore.finish`.
+ */
+describe('createExecutorHost — ctx.onPeakRss reaches jobStore.finish (plan 98 §4.8, H1)', () => {
+  test('a successful job that reported a peak carries it into finish()', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onPeakRss?.(314_572_800)
+        return 'ok'
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('success')
+    expect(recorded.finishCalls[0]?.data.peakRssBytes).toBe(314_572_800)
+  })
+
+  test('a FAILED job that reported a peak still carries it into finish() — the measurement is not conditional on success', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onPeakRss?.(52_428_800)
+        throw Object.assign(new Error('assertion failed'), { code: 'SCRIPT_ERROR' })
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('failed')
+    expect(recorded.finishCalls[0]?.data.peakRssBytes).toBe(52_428_800)
+  })
+
+  test('an executor that never calls onPeakRss (no subprocess) omits the field entirely — never a bare 0', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', { validateParams: (p) => p, run: async () => 'ok' })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('success')
+    expect(recorded.finishCalls[0]?.data.peakRssBytes).toBeUndefined()
+  })
+})
+
+/**
+ * Plan 97 §3.3, §3.4, §3.8, §4.5 — `ctx.onResultOutcome` (the `onPeakRss`
+ * counterpart this step adds) reaches `settle()`, which calls
+ * `result-store.ts`'s `recordResult` and writes its four columns into the
+ * SAME `jobStore.finish()` call `peakRssBytes` above already proves reaches.
+ * `recordResult` itself is unit-tested alone in `result-store.test.ts`; this
+ * describes ONLY the wiring — that the value actually gets there.
+ */
+describe('createExecutorHost — the result outcome reaches finish() (plan 97 §3.3, §4.5)', () => {
+  test('a script executor reporting a valid outcome writes all four result columns', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onResultOutcome?.({ status: 'valid', bytes: 12 })
+        return { videos: 5 }
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('success')
+    const data = recorded.finishCalls[0]?.data ?? ({} as (typeof recorded.finishCalls)[number]['data'])
+    expect(data.result).toEqual({ videos: 5 })
+    expect(data.resultStatus).toBe('valid')
+    expect(typeof data.resultBytes).toBe('number')
+    expect(data.resultIssues).toBeNull()
+  })
+
+  test('an oversize outcome nulls the stored result even though the executor returned a value', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        // The child never actually sends `value` for a real oversize case
+        // (§3.4) — this executor returning one anyway is exactly the
+        // defensive case §3.8 names: "the parent re-checks what it can
+        // cheaply and independently know" and drops it regardless.
+        ctx.onResultOutcome?.({ status: 'oversize', bytes: 52_428_800 })
+        return { blob: 'should not survive' }
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    const data = recorded.finishCalls[0]?.data ?? ({} as (typeof recorded.finishCalls)[number]['data'])
+    expect(data.resultStatus).toBe('oversize')
+    expect(data.result).toBeNull()
+    expect(data.resultBytes).toBe(52_428_800)
+  })
+
+  test('an executor that never calls onResultOutcome (sleep, install, workflow) still settles undeclared on a SUCCESS — a missing outcome means undeclared (§4.3), the same rule a pre-plan-97 bundle gets', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', { validateParams: (p) => p, run: async () => 'done' })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    const data = recorded.finishCalls[0]?.data ?? ({} as (typeof recorded.finishCalls)[number]['data'])
+    expect(data.resultStatus).toBe('undeclared')
+    expect(typeof data.resultBytes).toBe('number')
+    expect(data.resultSummary).toBeNull()
+    expect(data.resultIssues).toBeNull()
+    // The raw value is still written to `result` exactly as it always has been.
+    expect(data.result).toBe('done')
+  })
+
+  test('a FAILED job with no reported outcome still leaves every result_* column untouched — the common case, nothing to report (unchanged by step 97.4)', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async () => {
+        throw Object.assign(new Error('boom'), { code: 'SCRIPT_ERROR' })
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('failed')
+    expect(recorded.finishCalls[0]?.data.resultStatus).toBeUndefined()
+  })
+
+  /**
+   * Plan 97 §3.5, step 97.4 — "a failed run can still say something": once
+   * an executor DOES report an outcome alongside a failure (the shape a real
+   * `finish()` salvage takes — `child-entry.ts`'s own salvage call always
+   * forces `status: 'partial'`, never `valid`/`undeclared`, since it never
+   * passes a declared schema), the settle now writes it, closing the gap the
+   * previous test (above) used to pin as `97.4's ... not this step's`.
+   */
+  test('a FAILED job DOES get a resultStatus written when the executor reported one (97.4 closes the gap the test above used to pin)', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onResultOutcome?.({ status: 'partial', bytes: 4 })
+        throw Object.assign(new Error('boom'), { code: 'SCRIPT_ERROR' })
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('failed')
+    expect(recorded.finishCalls[0]?.data.resultStatus).toBe('partial')
+    // The verifiable result names `error`/`failureClass`/`errorPhase` as
+    // unchanged from today — a salvage adds a value, it must not touch how
+    // the failure itself is classified or reported.
+    expect(recorded.finishCalls[0]?.data.error).toBe('boom')
+    expect(recorded.finishCalls[0]?.data.failureClass).toBeTruthy()
+  })
+
+  test('a CANCELLED job DOES get a resultStatus written when the executor reported one — treated the same as a failure, not only "failed" specifically', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onResultOutcome?.({ status: 'partial', bytes: 4 })
+        throw Object.assign(new Error('cancelled'), { code: 'job_cancelled' })
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('cancelled')
+    expect(recorded.finishCalls[0]?.data.resultStatus).toBe('partial')
+  })
+
+  test('a FAILED job\'s reported partial never overwrites an already-recorded valid — existingStatus threads from job.resultStatus', async () => {
+    const job = makeJob({ resultStatus: 'valid' })
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.onResultOutcome?.({ status: 'partial', bytes: 4 })
+        throw Object.assign(new Error('boom'), { code: 'SCRIPT_ERROR' })
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.finishCalls[0]?.status).toBe('failed')
+    expect(recorded.finishCalls[0]?.data.resultStatus).toBeUndefined()
   })
 })

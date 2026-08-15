@@ -25,6 +25,7 @@ function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: 
     isInstalled: async () => true,
     ensureInstalled: async () => {
       calls.push('ensureInstalled')
+      return { versionCode: null }
     },
     ensurePreGranted: async () => {
       calls.push('ensurePreGranted')
@@ -66,6 +67,28 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): { client: GuestA
     routeHold: async (): Promise<RouteHoldResult> => ({ held: true }),
     locationSet: async (): Promise<LocationSetResult> => ({ set: true }),
     locationClear: async (): Promise<LocationClearResult> => ({ cleared: true }),
+    // Not exercised by this file's tests (route/vpn-helper only) — stubs to satisfy the widened
+    // `GuestAgentClient` interface (plan 90 §4.1, §3.9's `screen-label`/`text-input` capabilities).
+    labelApply: async () => ({
+      applied: [],
+      fingerprint: '',
+      rendererVersion: 0,
+      widthPx: 0,
+      heightPx: 0,
+      wallpaperIdHome: null,
+      wallpaperIdLock: null,
+    }),
+    labelStatus: async () => ({
+      fingerprint: null,
+      matchesOurs: false,
+      wallpaperIdHome: null,
+      wallpaperIdLock: null,
+      originalCaptured: false,
+      rendererVersion: 0,
+    }),
+    labelClear: async () => ({ restored: 'system-default', fingerprint: null }),
+    textCommit: async () => ({ committed: 0, ime: 'not-current' }),
+    textStatus: async () => ({ ime: 'disabled', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: false }),
     ...overrides,
   }
   return { client, factory: () => client }

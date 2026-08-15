@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { waitFor } from '@testing-library/react'
+import { fireEvent, waitFor } from '@testing-library/react'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 
 // `fetchNetworkStatus`/`enableNetworkRoute`/`disableNetworkRoute` (`@/lib/api`,
@@ -27,6 +27,7 @@ const status = {
   checks: [],
   lastError: null,
   exitHistory: [],
+  recovery: null,
 }
 
 describe('NetworkRouteForm', () => {
@@ -45,5 +46,45 @@ describe('NetworkRouteForm', () => {
       },
     })
     await waitFor(() => expect(getByText('Route off')).toBeTruthy())
+  })
+
+  // Plan 90 §3.7 rule 5, fixes F20 — before this the only operator-visible
+  // artefact of exhaustion was a static string; this proves the countdown,
+  // the attempt count, and the Retry now action actually render.
+  describe('automatic recovery (plan 90 §3.7 rule 5, fixes F20)', () => {
+    test('a mid-backoff attempt shows a countdown and an attempt count', async () => {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const { getByText, getAllByText } = renderWithApi(<NetworkRouteForm deviceId="dev-3" canUse={true} />, {
+        '/api/devices/dev-3/network': {
+          body: { ...status, recovery: { attempts: 2, maxAttempts: 3, nextAttemptAt: nowSec + 14, exhausted: false, reconnectCycles: 1 } },
+        },
+      })
+      await waitFor(() => expect(getByText(/attempt 2 of 3/)).toBeTruthy())
+      expect(getAllByText('Retry now').length).toBeGreaterThan(0)
+    })
+
+    test('an exhausted bound says so, and Retry now clears it (plan 90 §3.7 rule 4, fixes F17)', async () => {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const { getAllByText, apiMock } = renderWithApi(<NetworkRouteForm deviceId="dev-4" canUse={true} />, {
+        '/api/devices/dev-4/network': (req) => {
+          if (req.method === 'POST' && req.path === '/api/devices/dev-4/network/retry') {
+            return { body: { ...status, recovery: null } }
+          }
+          return { body: { ...status, recovery: { attempts: 3, maxAttempts: 3, nextAttemptAt: nowSec + 107, exhausted: true, reconnectCycles: 0 } } }
+        },
+      })
+      await waitFor(() => expect(getAllByText(/Gave up after 3 attempts/).length).toBeGreaterThan(0))
+      const [retryButton] = getAllByText('Retry now')
+      fireEvent.click(retryButton!)
+      await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'POST' && c.path === '/api/devices/dev-4/network/retry')).toBe(true))
+    })
+
+    test('no recovery info renders no countdown and no Retry now button — the common case stays quiet', async () => {
+      const { queryByText } = renderWithApi(<NetworkRouteForm deviceId="dev-5" canUse={true} />, {
+        '/api/devices/dev-5/network': { body: status },
+      })
+      await waitFor(() => expect(queryByText('Route on')).toBeTruthy())
+      expect(queryByText('Retry now')).toBeNull()
+    })
   })
 })

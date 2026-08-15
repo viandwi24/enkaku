@@ -1,0 +1,522 @@
+# Plan 100 — M65 : A Wall That Doesn't Stutter, and a Session That Doesn't Restart
+
+> Status: partial — steps 100.1, 100.2, 100.3, 100.6, and 100.8 are implemented and unit-tested; steps 100.4, 100.5, and 100.7 are not started (100.4/100.5 — the second-session `SessionManager` slot — were deliberately out of scope for the pass that landed 100.3/100.6/100.8, per that work's own explicit instruction to leave them; 100.7 is owner-run). Step 100.1 (96.23's own prerequisite: device-side scrcpy session cleanup); see that step's own note below and `docs/plans/96-m61-hotfixes.md` §96.23. Step 100.2 (the wall preset numbers and the decode/bandwidth budget split): `WALL_PRESETS` matched §3.4's first-pass table (later revised again by 100.8, see that step's own note), `computeAutoTiles` takes a `WallBudget` (decode ceiling × bandwidth bound, §4.1), and `FarmSettingsSchema.wall` gained `decodeTileCeiling`/`bandwidthBps`/`transportOverride`. **Step 100.3** made the bandwidth bound transport-aware end to end: `resolveWallTransport`/`resolveWallBandwidthBps` (`packages/session/src/video-profile.ts`, also exported as `@enkaku/protocol`'s `WallTransportSchema`/`WallTransport`), wired into `daemon.ts`'s `video:` adb-stats accessor and both Studio mirrors (`video-quality.ts`, `FarmVideoFields.tsx`'s projection AND the measured-block readout), with `GET /api/adb/stats`'s `video` block gaining a `transport` field so the settings page can say WHY a number is what it is ("auto — decode-bound, loopback"). A loopback/LAN farm's wall tile budget is now genuinely decode-bound (governed by `wall.decodeTileCeiling`, still §7.3's placeholder), not bandwidth-bound — cloud/WAN is provably unchanged (`WALL_VIDEO_BUDGET_BPS` stays hard-pinned there, never `wall.bandwidthBps`). **Step 100.6** closes G10/G11/96.22: `packages/session/src/session.ts` now runs a bounded-backoff background retry (10s/30s/60s/300s steady state, capped by the new `FarmSettings.display.fallbackRetryCount` — default 6) when a session opens on the screencap-loop fallback after an ATTEMPTED-and-failed `makeScrcpy` (never for a deliberately configured `screencap-loop`), swapping the live display source in place on a successful retry — no session rebuild, no dropped frame subscriber, confirmed by the per-frame `FrameMeta.codec` dispatch `ws-handlers.ts` already had (no WS/protocol change needed for an already-open stream to pick up the swap). `GET /api/devices/:id` gained `liveDisplay` (`packages/protocol/src/api/devices.ts`'s `DeviceDetailSchema`, sourced from `SessionManager.get(id)?.displayEngineId`), which can now legitimately disagree with the stored `display` column; `LiveView.tsx`/`WallTile`'s compact mode both gained an honest degraded indicator (never worded as an ordinary streaming state) driven by the live per-frame codec, not a stale snapshot. **Step 100.8** raised every `WALL_PRESETS` fps a second time (10/14/18/22, `balanced` 12→18) now that 100.3 removed the "extra fps costs live tiles" trade on the default deployment — explicitly marked interim pending §7.3/H-1 in the schema's own `.describe()` text and this file's own comment, kept below Control's 24fps NFR floor so the two stay visibly distinct (a guard `video-profile.test.ts` enforces). `docs/spec.md` §16 was split into two NFR rows (Control ≥24fps unchanged; Wall now states its OWN target, ≥18fps default, rather than a bare exemption) — resolving the exact gap 100.2's own status note left open. `wall.decodeTileCeiling`'s shipped default (24) is still the documented placeholder pending §7.3's hardware ladder (step 100.7, whose procedure was written out in a prior pass) — that measurement was never run; see §3.3/H1 in this plan and Plan 92 §7.3, which named the same risk and also never measured it.
+> Depends on: Plan 92 (M57 — the video profile resolver, the two-quality model, the build lane, the live-set policy `computeAutoTiles` lives beside); Plan 45 (M19 — device readiness, `readiness.maxHot`/`defaultDesired`, the hot-session hold this plan reuses); Plan 96 (M61 — hotfixes 96.22/96.23/96.24, this plan's starting evidence; 96.23 becomes a hard prerequisite here, not an independent item — see §3.2). None of them needs to change before this plan starts; this plan amends Plan 92 §3.7's budget function and §3.8's restart-only upgrade path, and says so inline.
+> Spec references: §7.1 (display engines — `scrcpy`/`screencap-loop`, the fallback), §7.6 (scrcpy-server is version-locked, Java never forked), §7.9 rule 3 (`apply()` is not a success signal — the precedent this plan's degraded-state UI follows), §16 (NFR: glass-to-glass < 150 ms, video FPS ≥ 24, max devices per host), §19 (Studio screen spec, the Dashboard/Wall row and the Devices → Video settings row, the schema-driven rendering principle)
+> Ships: packages/session/src/video-profile.ts (revised), packages/session/src/manager.ts (revised — a second, independently-lifecycled entry per device, not yet built — see status); step 100.1 additionally ships packages/scrcpy/src/session.ts (revised — close()'s scid-scoped device-side stop, plus the exported sweepStrayScrcpyServers/parseScrcpyServerList) and packages/core/src/daemon.ts (revised — the boot-time sweep call); step 100.2 additionally ships packages/protocol/src/settings.ts (revised — `wall.decodeTileCeiling`/`bandwidthBps`/`transportOverride`, the new `WALL_PRESETS`-matching `video.wall*` defaults), and updates the two documented Studio mirrors of `video-profile.ts` (`packages/studio/src/components/video/video-quality.ts`, `FarmVideoFields.tsx`) plus `packages/core/src/daemon.ts`'s `computeAutoTiles` call site to the new two-argument signature; step 100.3 additionally ships `resolveWallTransport`/`resolveWallBandwidthBps` (`packages/session/src/video-profile.ts`, exported via `packages/session/src/index.ts`), `WallTransportSchema`/`WallTransport` (`packages/protocol/src/settings.ts`, exported via `packages/protocol/src/index.ts`), `AdbStatsResponseSchema.video.transport` (`packages/protocol/src/api/adb.ts`), `packages/core/src/api/adb-stats.ts` (revised), `packages/core/src/daemon.ts`'s `video:` accessor (revised, transport-aware), and both Studio mirrors again (the projection line and measured-block readout); step 100.6 additionally ships `packages/session/src/session.ts` (revised — the fallback retry timer, `FarmSettings.display.fallbackRetryCount`), `packages/protocol/src/api/devices.ts` (`DeviceDetailSchema.liveDisplay`), `packages/core/src/api/devices.ts` (revised `GET /:id`), `packages/studio/src/components/LiveView.tsx`/`components/device/DeviceHeader.tsx`/`components/device/ScreenCard.tsx`/`app/device/page.tsx` (the degraded badge, the lazy h264-renderer fix for an in-place codec swap); step 100.8 additionally ships the revised `WALL_PRESETS` fps/bitrate numbers (`video-profile.ts` and its Studio mirror) and `docs/spec.md` §16's split Control/Wall NFR rows
+
+---
+
+## 0. Evidence
+
+Written from the code, re-verified in this session against the current tree (not trusted from the brief). Every claim is **CONFIRMED** with a `file:line`, or marked **HYPOTHESIS** with the probe that settles it. Two items (G12, G13) were confirmed on the owner's own hardware during this plan's drafting and are recorded as such, not as leads.
+
+### 0.1 Confirmed findings
+
+| # | Finding | Evidence |
+|---|---------|----------|
+| **G1** | The wall's default preset is a slideshow. `WALL_PRESETS.balanced = { maxSize: 480, maxFps: 5, bitRate: 800_000 }`, and `FarmSettings.video.wallPreset` defaults to `'balanced'`. 5 fps is below any threshold that reads as motion. | `packages/session/src/video-profile.ts:18-23`; `packages/protocol/src/settings.ts:1924` (default), `:1961` (default object), `:2000` (block) |
+| **G2** | The live-tile budget is a pure function of a **fixed bandwidth constant**, applied with no regard for where the browser tab actually is: `WALL_VIDEO_BUDGET_BPS = 20_000_000`, `computeAutoTiles(wallBitRate) = clamp(20e6 / wallBitRate, 4, 32)`. There is no branch anywhere in this function, or anywhere that calls it, for loopback, LAN, or WAN. | `packages/session/src/video-profile.ts:98-111`; confirmed by reading every call site — `packages/core/src/api/adb-stats.ts`, `packages/studio/src/components/wall/Wall.tsx`, `packages/studio/src/components/video/video-quality.ts` all consume the same number with no transport branch |
+| **G3** | Plan 92 §7.3 named the 32-decoder risk as something it would *measure*, not assume. No measurement exists: the clamp `Math.min(32, ...)` is the only artefact, and it is reached only when `wallBitRate` is pushed below ~625 kbit/s — at the shipped `balanced` preset (800 kbit/s) the formula returns 25, never testing the decoder ceiling at all. | `packages/session/src/video-profile.ts:109-110`; `docs/plans/92-m57-wall-first-and-video-quality.md` §7.3 (no decoder-count hardware result recorded anywhere in that plan's own status line) |
+| **G4** | Pre-warming exists and genuinely opens a session server-side with a null sink, independent of any browser tab. | `packages/core/src/device/readiness.ts:272-283` — `sessions.acquire(deviceId, sink, 'wall')` where `sink = () => {}` |
+| **G5** | Pre-warming is off by default (`defaultDesired: 'asleep'`) and, when on, warms at **wall** quality only — so opening the device page still forces a quality change. | `packages/protocol/src/settings.ts:2054` (`.default({ maxHot: 8, defaultDesired: 'asleep' })`); `readiness.ts:279` passes the literal string `'wall'` |
+| **G6** | `readiness.maxHot` (default 8) and the wall's live-tile budget (now `computeAutoTiles`, ~25 at the default preset) are **independent and no longer intended to match** — the code's own comment says so, correcting an earlier claim that they did. | `packages/protocol/src/settings.ts:2029-2038` |
+| **G7** | Every session in the workspace is keyed **one entry per device**: `const entries = new Map<string, Entry>()`, and `acquire`/`restartAt`/`upgradeToControl` all read/write exactly one `Entry` per `deviceId`. There is no code path today that holds two live `DeviceSession`s for the same device at once. | `packages/session/src/manager.ts:290` (the map), `:395,417,474-502,519,538,578,591,610` (every accessor keyed by `deviceId` alone) |
+| **G8** | Opening a wall tile into Control quality restarts the session: `upgradeToControl` → `restartAt(deviceId, 'control', detail)` → the full `createEntry`/`openSession` path, including `wakeDevice`, `applyRotation`, `applyTextInput`, `applyFarmTag` — on a device that was streaming a moment earlier. | `packages/session/src/manager.ts:518-531` (`upgradeToControl`), `:473-502` (`restartAt`, the former `upgradeToControl` body, generalised by Plan 92); `packages/session/src/session.ts:338-381` (the wake/rotation/text/tag sequence run on every `openSession`) |
+| **G9** | Measured on the owner's moto g06 power (Android 15, mt6768): `svc power stayon true` costs **1422 ms**, ten times every other wake command combined (`input keyevent KEYCODE_WAKEUP` 125 ms, `dumpsys window \| grep isKeyguardShowing` 98 ms, `settings get system user_rotation` 102 ms, `settings get secure default_input_method` 90 ms) — because `svc` starts a whole `app_process` JVM to reach the power service. | `docs/plans/96-m61-hotfixes.md` §96.24 (this plan's own required-reading evidence, reproduced verbatim in that plan and not re-run here per the no-hardware rule) |
+| **G10** | The screencap-loop fallback is chosen once, at session open, and never re-attempted: `openSession` only tries `makeScrcpy` when `opts.display !== 'screencap-loop'`, and a rejection there falls straight to the PNG loop for the session's whole life — no retry timer, no later re-attempt anywhere in the file. | `packages/session/src/session.ts:385-389` |
+| **G11** | The REST surface reports the **configured** engine, not the **live** one: `GET /api/devices/:id`'s `display` field is `row.display`, a stored DB column, while the actually-running engine lives only on the in-memory `DeviceSession.displayEngineId`. A device pinned to the PNG fallback (G10) still shows `display: "scrcpy"` over REST. **Partial mitigation already exists and must not be re-invented**: the WS `stream.started` message's `codec` field is computed from `session.displayEngineId` live (`codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'`), so a client that reads the *stream* honestly learns the codec — the REST snapshot is the part that lies. | `packages/core/src/api/devices.ts:75,815,952` (`display: row.display`); `packages/session/src/session.ts:492` (`displayEngineId: scrcpyDisplay ? 'scrcpy' : 'screencap-loop'`, computed correctly); `packages/core/src/server/ws-handlers.ts:938` (the WS path already reads it live) |
+| **G12 — confirmed on real hardware, not a hypothesis.** | Two concurrent scrcpy server processes on **one physical phone** (moto g06 power, Android 15, MediaTek mt6768 — a budget SoC, closer to a worst case than a best one) both stream successfully. With a core-spawned session already running, a second server was started (`scid=7f00abcd`, `max_size=480 video_bit_rate=800000 max_fps=15`), forwarded to a second host port, and read directly: **60 chunks / 185,500 bytes in 6 seconds, no abort, clean server log.** `ps` on the device showed **three** `scrcpy.Server` processes alive at once (`0199ccbe`, `3d26cf62`, `7f00abcd` — the third started by this probe beside two the core already held). Killing only the third by its scid left the other two running undisturbed. | Probe run and reported by the coordinator during this plan's drafting, against the same device G9's numbers were measured on. This is the primary evidence the technical design in §3.2/§4.2 is built on. |
+| **G13** | `scrcpy-server.jar` deletes itself from the device immediately after loading: the server calls `unlinkSelf()` on `/data/local/tmp/scrcpy-server.jar` at startup, so **every** session — the first and any concurrent one — must `adb push` the jar fresh. An `Aborted` with no further output from a second `am`/app_process launch is the signature of a missing jar (the previous session already deleted it), not a broken device or a rejected concurrent encoder — this cost two false diagnoses during the investigation this plan is built on, and the implementation must not repeat them. | `packages/scrcpy/src/session.ts:121` (`adb.hostAdb(['push', opts.jarPath, DEVICE_JAR_PATH])` on every session build — confirming the code already re-pushes unconditionally, which is the correct behaviour; the risk is in code added by this plan that might try to "optimise" that push away for a second concurrent session assuming the jar is already there) |
+| **G14** | `close()` kills only the host-side `adb` client (`serverChild?.kill()`) and removes the `adb forward` binding; it never signals the device-side `app_process` to exit. Sockets are `.end()`-ed first, which normally causes the remote server to exit on its own EOF — but a session whose sockets never successfully connected (the exact failure class that produces G10's fallback) leaves the device-side process with nothing telling it to stop. | `packages/scrcpy/src/session.ts:253-262` (the whole `close()` body: `videoSocket.end(); controlSocket.end(); ... serverChild?.kill(); ... forward --remove`) |
+| **G15** | The workspace has **zero** codec/transcoding dependencies. A repo-wide search of every `package.json` for `ffmpeg`, `fluent-ffmpeg`, `@ffmpeg/*`, `beamcoder`, `node-av`, `openh264`, `libav*` returns nothing, and the display driver's own doc comment states the architecture is relay-only: *"H.264 is encoded ON THE PHONE by MediaCodec, the host only relays — far more efficient and far lower latency than [transcoding]."* | `packages/drivers/src/display/scrcpy.ts:4-9`; repo-wide `package.json` search (no match) |
+| **G16** | `SessionManager` has no notion of quality-scoped identity anywhere in its public surface — `acquire`, `release`, `restartAt`, `get`, `activeDeviceIds`, `videoStats` all take a bare `deviceId`. Adding a second concurrent entry per device is additive to this interface, not a rewrite of it, but every one of these six methods needs a decision about which entry it means. | `packages/session/src/manager.ts:30-93` (the full `SessionManager` interface) |
+| **G17** | `session.maxIdleSessions` (default 8) and `enforceIdleCap` close over-cap idle sessions **immediately**, least-recently-idle first, the moment a farm-wide idle count is exceeded. A second entry per device doubles the idle-session pressure this cap already manages. | `packages/session/src/manager.ts:89-106`; `packages/protocol/src/settings.ts:1855-1864` |
+| **G18** | Two capabilities the guest agent explicitly does **not** own are network/display-adjacent state the host can already reach over adb — the membership rule spec §7.10 states directly: *"a capability belongs in the guest agent only if it needs to run as an ordinary Android app… anything the shell can already do belongs on the host side, never in the APK."* A second scrcpy session is exactly host-side adb work; nothing in this plan touches the guest agent. | `docs/spec.md:417` (§7.10 membership rule) |
+| **G19** | The repo already has a precedent for "two tiers, no silent fallback" when a capability may or may not be available per device: Plan 89 §3.5 refuses to let an unavailable tier read as success, and cites the network layer's own rule (`vpn-helper` reports `unverified`, never `ok`, when it cannot prove a capability). This plan's second-session degrade (§3.2, §4.4) follows the same rule rather than inventing a new one. | `docs/plans/89-m54-device-identity-and-physical-labelling.md` §3.5; `docs/spec.md` §7.9 rule 3 |
+
+### 0.2 Hypotheses (instrument before acting)
+
+| # | Hypothesis | Why it fits | How §5 tests it |
+|---|-----------|-------------|-----------------|
+| **H1** | Browser H.264 decode capacity, not host bandwidth, is the binding constraint for a wall served from loopback or LAN — so the tile-count budget should be decode-bound there and bandwidth-bound only when the transport is actually constrained (cloud/WAN). | G2/G3: the existing budget has never been checked against decode cost at all, and a loopback core has no meaningful bandwidth ceiling in the first place — 20 Mbit/s into `localhost` is not a real constraint. | 100.2's own hardware ladder (§7.3): a real browser tab with N live tiles at the new presets, watching `VideoFrame`/`requestVideoFrameCallback` drop counts and CPU, run at N = 16, 24, 32, 40 on the owner's actual machine. |
+| **H2** | The number of *concurrent hardware encoder sessions* one phone SoC tolerates varies by chipset, and 3 (G12) is not a safe assumption for every device in a farm — some budget SoCs may only support 1 or 2 concurrent `MediaCodec` H.264 encode sessions before the platform rejects or silently falls back to software encoding (which is much more CPU-expensive on-device). | G12 proves feasibility on one specific, low-end chipset; it does not establish a general bound, and Android's `MediaCodecInfo` concurrent-instance limits are documented as device-specific, not a platform guarantee. | 100.5's per-device probe: on second-session start, watch for the platform's own rejection (a non-zero scrcpy server exit, or a socket that never receives a config packet within a bounded timeout) and treat that — not a guess at a chipset allowlist — as the signal to degrade (§3.2, §4.4). No fleet-wide table of "known good" chipsets is built; the mechanism must work for any device it has never seen. |
+| **H3** | A wall preset with materially higher fps (§3.4's proposed numbers) is still decode-cheap enough at typical tile counts (8–32) to ship as the new default without regressing the frame-cost concern Plan 92 §7.3 already deferred. | Tile *pixel* size does not change much between the current and proposed presets (§3.4) — only fps and bitrate move — and G15 already established there is no server-side re-encode cost; the only new decode cost is literally more delta frames per second per tile, which H.264 handles cheaply relative to a full resolution jump. | Folded into the same H1 ladder — the ladder is run once, at the new presets, not the old ones, so H1 and H3 share one hardware pass. |
+
+### 0.3 What today's behaviour costs, in one paragraph
+
+Open the Wall on a farm today and the picture that greets you is `480×?` at 5 fps (G1) — the "slideshow" the owner named. It is that way not because the architecture cannot do better, but because a bandwidth constant sized for a bandwidth-constrained deployment (G2) is applied even to a core running on `localhost`, and lowering it costs live tiles one-for-one with no floor check against what a browser can actually decode (G3). Pre-warming already exists (G4) and could make the Wall instant, but ships off and, when turned on, warms at the wrong quality (G5) — so opening a device still restarts its session (G8), paying `svc power stayon`'s 1.4 s a second time (G9) on a device that was already streaming. A transient scrcpy failure at boot pins a device to an 87%-CPU PNG loop forever (G10), invisibly, because the REST snapshot still claims `"scrcpy"` (G11) — and every session that fails before its sockets connect leaves an orphan encoding into nothing on the phone (G14), which the next `close()` will not clean up either. That is the state this plan is written against, and G12 is the reason the fix does not have to be "restart faster" — it can be "never restart the tile at all."
+
+---
+
+## 1. Goals
+
+- **The wall's default reads as smooth video**, not a slideshow — a materially higher default frame rate, justified by the size/decode reasoning in §3.4, at tile pixel sizes that stay matched to how large a tile actually renders (§3.4 — the owner's binding decision: raise fps and sharpness at tile size, never raw resolution).
+- **A wall's tile budget is bound by what the browser can actually decode when bandwidth is not the real constraint** (loopback/LAN), and by bandwidth when it genuinely is (cloud/WAN) — replacing one bandwidth-only constant with a transport-aware, measured pair of bounds (§3.3, §4.1).
+- **Opening a device from the Wall never disturbs the wall tile's own stream.** The wall's session for that device keeps running, untouched, for the whole time the device page is open — no restart, no re-wake, no black frame on the tile the operator was already looking at.
+- **Opening a device pays only for what it is missing.** If the device is already streaming to the wall, it is provably awake, rotated, and tagged; the device page's own session skips re-deriving any of that and goes straight to building its own higher-quality stream.
+- **A second stream that cannot be built says so, visibly and specifically** — "showing wall quality; a full-quality view could not be started" — never a silent downgrade that reads as the real thing (§3.2, §4.4, following the precedent in G19).
+- **Every failed or abandoned session is actually gone**, on both the host and the phone (closing 96.23 as this plan's own prerequisite, §3.5) — a farm that opens and closes device pages all day does not accumulate orphaned encoders.
+- **A degraded live view (screencap fallback) is visible and self-healing**: the actual running engine is reported honestly (closing G11), and the fallback is retried rather than permanent (closing G10).
+- **Cloud mode's existing 20 Mbit/s assumption is preserved exactly where it is legitimate** — this plan changes nothing about how a remote-node device is served (§3.6).
+
+## 2. Non-goals
+
+- **Not server-side transcoding, and not a downscaled relay of one full-quality feed.** The owner asked directly whether the server could hold one high-quality stream and derive the wall's lower-quality tiles from it. The answer is no, and the reasoning is architectural rather than a preference: G15 establishes the workspace ships **zero** codec dependencies today, and the display driver's own documented reason is that phone-side encoding plus a byte-relay host is what makes the product's latency numbers possible at all (spec §16: glass-to-glass < 150 ms). Decode → scale → re-encode per device would (a) add a full codec round-trip's worth of latency directly against the owner's stated priority, (b) become the single most CPU-expensive operation in the core, multiplied by every live device, at the 20–40-device scale this plan targets, and (c) introduce a new toolchain dependency plan 00 §3 does not list and no plan has proposed adding. Two independent phone-side encodes (§3.2) cost device CPU, which is the resource this product already spends per device; server-side transcoding would cost **core** CPU, which is the one resource shared across the whole farm and therefore the one that must not scale with device count.
+- **Not a general N-session-per-device model.** This plan adds exactly one more concurrent session slot — `control`, beside the existing `wall` entry — not an arbitrary number of viewers each with their own encode. Two viewers of the *same* quality still share one entry and one refcount, exactly as today.
+- **Not changing the scrcpy protocol or forking its Java side.** Every launch argument this plan touches (`max_size`, `video_bit_rate`, `max_fps`) is already a documented scrcpy server argument; nothing here needs a protocol change. (spec §7.6)
+- **Not solving `adb kill-server` contention.** Nothing in this plan calls it; the two-session design and the sweep in §3.5 both operate through ordinary `adb shell`/`adb forward`/`adb push`, never `adb kill-server`.
+- **Not raising `readiness.maxHot` or changing its default.** G6 already establishes it is intentionally independent of the wall's own budget; this plan's decode-bound wall budget (§3.3) is a different number for a different purpose, and conflating them is exactly the mistake the code comment at `settings.ts:2029` was written to correct. If the owner wants more devices held hot by policy, that is a one-line settings change, not a design decision this plan needs to make.
+- **Not building the guest agent a role in any of this.** G18: everything here is host-side adb work the shell can already do.
+- **Not a WebRTC or transport-layer change.** Plan 85 §2's own scope line still holds.
+- **Not virtualizing the wall's DOM.** Out of scope here exactly as Plan 92 §2 left it; if the frame-cost ladder in §7.3 finds a real ceiling, that becomes its own plan.
+
+## 3. Context and design decisions
+
+### 3.1 The budget must stop being one bandwidth number, because loopback has no bandwidth problem
+
+`WALL_VIDEO_BUDGET_BPS` (G2) answers "how much data can leave this tab" — a real question when Studio is served over a WAN link to a cloud node, and a fake one when Studio and the core share `localhost` or a gigabit LAN segment, which is the **default deployment** (spec §5.1). Applying a WAN-sized caution to a loopback link is why raising wall picture quality today costs live tiles for no real reason: the formula is protecting against a constraint that, for most farms, is not there.
+
+The constraint that *is* there, always, is decode: a browser tab holds a bounded number of concurrent hardware (or software-fallback) H.264 decoder sessions, and every one of them costs CPU whether or not any byte-budget is threatened. G3 already establishes this was never measured — the existing `Math.min(32, …)` clamp only fires when bitrate has already been driven low enough that the bandwidth term reaches it by accident.
+
+**Decision.** Two independent bounds, combined by `min`, replacing the single `computeAutoTiles(wallBitRate)`:
+
+- **A decode bound**, `wall.decodeTileCeiling` — a farm setting, default seeded from §7.3's hardware ladder (not guessed; see §4.1's fallback story for what ships before that ladder is run), applied **always**, regardless of transport.
+- **A bandwidth bound**, computed exactly as today (`WALL_VIDEO_BUDGET_BPS / wallBitRate`) but the budget constant itself becomes transport-aware: a generous LAN/loopback default (§4.1) and the existing 20 Mbit/s only when the deployment is actually cloud/WAN (§3.6).
+
+This is not two settings an operator has to reconcile by hand — it is one resolved number, `computeAutoTiles`, that takes both into account and is shown as one projection on the settings page, exactly as Plan 92 §3.7 already does for the single-bound version.
+
+### 3.2 Eliminating the upgrade restart: a second concurrent session, not a faster one
+
+Three options were on the table, and the brief that opened this plan named all three plus a fourth (server-side downscale) that §2 already rules out.
+
+1. **Pre-warm at `control` quality and let the browser downscale.** Rejected outright by the owner before this plan started, and correctly: it sends the largest frame this product produces to every wall tile whether or not anyone is looking at it full-size, wasting the exact resource (decode capacity) §3.1 just spent a whole section protecting.
+2. **Skip the wake path on an already-open session's restart.** A real, cheap win — `wakeDevice`/`applyRotation`/`applyTextInput`/`applyFarmTag` (G8) are provably redundant on a device whose session is already open — but it does not remove the restart itself. `max_size`/`video_bit_rate`/`max_fps` are launch arguments (G8, spec §7.6): changing them still means tearing down and rebuilding the encoder, which is still a visible soft-blank-then-recover on the tile the operator was just looking at.
+3. **Run Control as a second, concurrent scrcpy session beside the wall's.** Confirmed to work on real hardware (G12): three server processes alive on one phone at once, the newest started and killed with zero effect on the other two. This is the option that actually satisfies the goal in §1 — the wall tile is never touched at all, because nothing about its session changes when the device page opens.
+
+**Decision: option 3, with option 2 folded into it rather than treated as a fallback.** The device page's session is a **second, independently-lifecycled `Entry`** for the same device, at `control` quality, built beside the existing `wall`-quality entry rather than replacing it. Because the wall entry proves the device is already awake, rotated, and tagged, the new `control` entry's build path skips `wakeDevice`/`applyRotation`/`applyTextInput`/`applyFarmTag` entirely (option 2's saving, realised for free) and goes straight to spawning a second scrcpy child (§4.2). Plan 92's `upgradeToControl`/`restartAt`/`reprofile` machinery (G8) is **not deleted** — it remains exactly correct for the one case it must still handle: a **settings-driven requality of an already-open session at the same quality slot** (an operator changes `wall.wallPreset` and every open wall entry restarts in place, per Plan 92 §3.8). What is deleted is the *quality-crossing* restart — `wall → control` — which becomes "open a second entry" instead of "rebuild the first one."
+
+This is a real architectural change to `SessionManager` (G7, G16): the single `Map<string, Entry>` becomes keyed by `(deviceId, quality)`, and every one of the six methods G16 names needs a stated answer for which entry it targets (§4.2).
+
+**What is not decided by G12 alone, and is decided here:**
+
+- **How many concurrent encoders are safe.** G12 proves 3 works on one specific budget chipset; H2 records that this is feasibility, not a general bound. The mechanism (§4.4) does not allowlist chipsets — it detects the platform's own rejection at build time (a scrcpy server that exits non-zero, or a socket that times out waiting for its first config packet) and degrades from there, per device, live.
+- **Lifecycle and ownership.** The `control` entry is owned by the device page's own subscriber lifetime: it opens when Control is first acquired, its refcount follows viewers exactly as the wall entry's does today, and it closes (device-side, not just host-side — see §3.5) when its refcount reaches zero and the existing idle-TTL timer (G17's mechanism, reused unchanged) expires. **A tab closed without a clean release must not leak the phone-side process** — this is why 96.23 (§3.5) is promoted from "a hotfix" to "this plan's own prerequisite": a design that doubles the number of concurrent sessions per device, without first fixing the one code path that already leaks a *single* orphaned session, doubles the leak.
+- **What the device page shows when the second session cannot be built.** Never a silent fallback to the wall's own feed passed off as Control — see §4.4's exact wording, following G19's precedent.
+
+### 3.3 What the decode number is, and where it comes from
+
+The prompt's own worry ("a budget nobody can measure is worse than a conservative constant") is answered directly: `wall.decodeTileCeiling` is not invented, it is measured by §7.3's ladder — the same kind of owner-run hardware pass Plan 92 §7.3 deferred and this plan finally runs, because this plan's whole premise is that the deferred measurement can no longer be skipped.
+
+**What ships before the ladder runs** (this plan's own PR, no hardware access): a documented, clearly-labelled placeholder consistent with the existing `[4, 32]` clamp — `wall.decodeTileCeiling` defaults to **24**, chosen as the geometric middle of the existing clamp's range rather than either endpoint, with its settings description stating plainly that this number is a placeholder pending the hardware ladder in §7.3 and naming that section by number. This is the same "ship an honest default, measure to replace it" discipline Plan 92 itself used for `session.maxConcurrentBuilds` (its own §3.3: "Two is not a guess… the setting exists so §7.3 can move it").
+
+Once measured, the ladder's result becomes the shipped default (a one-line settings change, this plan's own step 100.7) — never left as a TODO the way Plan 92 §7.3's decoder-count risk was.
+
+### 3.4 The wall presets, in numbers, and why
+
+The owner's binding decision — raise frame rate and sharpness at tile size, not raw resolution — is checked against what a tile actually renders at: `TILE_SIZE_PX = { s: 140, m: 180, l: 260 }` (`packages/studio/src/lib/prefs.ts:66`). A phone's screen is roughly 9:19.5, so a 260px-wide (L) tile renders at roughly 260×565 logical pixels, doubled on a retina display to ~520×1130. The **current** `detailed` wall preset (`720` px long edge) already sits close to that ceiling — so the finding that "480 px is not HD" is really "5 fps is not smooth," and the fix is overwhelmingly about frame rate, exactly as the owner called it.
+
+New wall presets (replacing G1's table in `packages/session/src/video-profile.ts`):
+
+| Preset | `maxSize` | `maxFps` | `bitRate` | Reasoning |
+|---|---|---|---|---|
+| `minimal` | 240 | 6 | 250,000 | Was 2 fps — below any motion threshold. 6 fps at a small frame is legible without being a slideshow, for a farm that deliberately wants the cheapest possible tile. |
+| `light` | 320 | 8 | 500,000 | Was 3 fps. 8 fps is the low end of what most people stop perceiving as choppy for UI content (not fast motion), matching the reasoning `TileChips`' own narrowest breakpoints already assume about an S tile being a glance, not a focus. |
+| `balanced` (**new default**) | 480 | 12 | 900,000 | Was 5 fps, the slideshow the owner named. 12 fps at 480 px is a deliberately conservative middle number — enough to read as continuous motion for typical UI interaction (taps, scrolls, page transitions), not a claim of parity with the 24 fps NFR target (spec §16), which is reserved for Control. Bitrate rises modestly (800k → 900k) because more frames need somewhat more data to avoid new-frame blockiness, not because resolution changed. |
+| `detailed` | 640 | 15 | 1,300,000 | Was 8 fps at 720 px. Resolution is **lowered** slightly (720 → 640) on purpose — matched closer to an L tile's actual rendered pixels — while fps rises further, because "detailed" should mean "smoother and sharper at the size it's shown," not "bigger." This is the preset that should feel closest to the competitor's wall. |
+
+`control` presets (`packages/session/src/video-profile.ts`'s `CONTROL_PRESETS`) are **unchanged by this plan** — `sharp`/`balanced`/`light` already target a device page's much larger viewport, and the owner's complaint was specifically about the Wall.
+
+The `bitRate` numbers above are starting points, not the whole story — the projection line Plan 92 §3.7 already built (and this plan's §4.1 extends) shows the resolved tile count live as an operator adjusts them, so nobody has to trust this table blind.
+
+### 3.5 96.23 becomes this plan's prerequisite, not an independent hotfix
+
+A design that opens a **second** concurrent session per device (§3.2) on top of the existing one doubles the exposure of the exact defect 96.23 already recorded: `close()` (G14) kills the host-side adb client and forgets the device-side `app_process`. Before this plan adds a second session that can also fail to connect and also get abandoned, the cleanup path must actually clean up:
+
+- `close()` gains an explicit best-effort device-side stop: on close, send a bounded-timeout `adb shell` command that targets the session's own `scid` — killing only the process whose command line carries that scid, so it cannot touch a sibling session on the same phone (this is the property G12's probe already demonstrated by hand: `pkill -f scid=7f00abcd` left the other two running).
+- A **startup sweep** lists device-side `scrcpy.Server`/`app_process` instances per device and kills any whose scid the core does not recognise as one of its own currently-open entries — closing the "every failed session leaves another" accumulation 96.23 recorded, and giving the core a clean slate after a crash or an ungraceful shutdown.
+
+Neither step is new architecture — both are adb shell commands against a process the core itself started and can name precisely by its own scid.
+
+### 3.6 Cloud mode is untouched, on purpose
+
+G2/G15 establish that this plan's decode-bound reasoning is about a *local or LAN* Studio-to-core link. A cloud node's video already reaches the browser over the internet (spec §5.3), where `WALL_VIDEO_BUDGET_BPS`'s original justification is real — 20 Mbit/s into one browser tab over a WAN link is a legitimate ceiling, not an overcautious one. This plan does not change that number for cloud mode; it makes the **local** deployment stop inheriting a WAN-shaped constant it never needed (§4.1's transport detection). The two-session design (§3.2) is also unaffected: a remote-node device already ignores the requested quality entirely (Plan 92 F28 — the tunnel protocol carries no profile), so a node-owned tile has nothing for this plan to give a second session to; §4.2 states this as an explicit early-out, not a silent no-op.
+
+### 3.7 Degraded states are named, never worded as success
+
+Two independent degrade paths exist after this plan, and both follow the same rule the network layer already established (spec §7.9 rule 3: *"`apply()` is not a success signal… without a probe, the status is reported as `unverified`, never as `ok`"*) and Plan 89 §3.5 restated for a different feature (*"two tiers, no silent fallback"*):
+
+1. **The screencap-loop fallback (G10/G11).** The live view must show a persistent, honestly-worded "Degraded — screen capture fallback" state whenever the actually-running engine differs from the configured one, sourced from the live `DeviceSession.displayEngineId` (G11's already-correct half) rather than the stale REST snapshot, with a retry action and an automatic re-attempt policy (§4.3) — never rendered as an ordinary `scrcpy` stream.
+2. **A control session that could not be built as a second stream (§3.2/§4.4).** The device page must say, in words, that it is showing the wall's own feed because a dedicated one could not be started — never present the wall's lower quality as if it were Control. `docs/design.md`'s three-mandatory-states rule ("every screen that fetches data must handle all three — an empty screen with no explanation is a defect") is the general form of this same requirement.
+
+## 4. Technical design
+
+### 4.1 `packages/session/src/video-profile.ts` — the budget split
+
+```ts
+/** Replaces the single WALL_VIDEO_BUDGET_BPS constant. */
+export interface WallBudget {
+  /** Concurrent decode sessions one browser tab is assumed able to hold
+   *  without dropped frames — always applied, any transport. Seeded from
+   *  §7.3's hardware ladder; ships at 24 (the clamp's own midpoint) until
+   *  that ladder has run, documented as a placeholder in the farm setting's
+   *  own description. */
+  decodeTileCeiling: number
+  /** Bits/sec assumed available to one browser tab. Only meaningfully
+   *  binding when `transport === 'wan'`; a generous default for
+   *  loopback/LAN (§3.1) so it essentially never fires there. */
+  bandwidthBps: number
+}
+
+export type WallTransport = 'loopback' | 'lan' | 'wan'
+
+/**
+ * `wall.maxTiles: 0` (auto) — now the min of a decode bound and a
+ * bandwidth bound, replacing the single-bound computeAutoTiles (Plan 92
+ * §3.7, amended here per §3.1/§3.3). Still one clamped pure function,
+ * still following the "a non-zero setting always wins" convention Plan 85
+ * and Plan 92 both used.
+ */
+export function computeAutoTiles(wallBitRate: number, budget: WallBudget): number {
+  const decodeBound = budget.decodeTileCeiling
+  const bandwidthBound = Math.floor(budget.bandwidthBps / wallBitRate)
+  return Math.min(32, Math.max(4, Math.min(decodeBound, bandwidthBound)))
+}
+```
+
+`WallBudget` is resolved once, from farm settings plus a transport classification, at the same call sites that read `wall.maxTiles` today (`/api/adb/stats`'s `video` block, the Studio settings projection). Transport classification (`WallTransport`) is derived the same way auth mode already is (`CLAUDE.md`: *"Auth mode derives from the bind address"*) — `loopback`/`lan` when the core is not in orchestrator/cloud mode, `wan` when it is (`ENKAKU_MODE=orchestrator`, spec §5.3) — never guessed from a request header, which could be spoofed or simply wrong behind a reverse proxy. An explicit farm setting (`wall.transportOverride`, `'auto' | 'loopback' | 'lan' | 'wan'`, default `'auto'`) exists for the one real exception: an operator who deliberately serves Studio over a WAN link from a local-mode core.
+
+New farm settings (`packages/protocol/src/settings.ts`, additive to the existing `wall` block, no migration — it is a JSON settings blob, not a table column, matching Plan 92's own precedent for `wall.maxTiles`/`rampConcurrency`):
+
+```ts
+wall: z.object({
+  maxTiles: /* unchanged */,
+  rampConcurrency: /* unchanged */,
+  decodeTileCeiling: z.number().int().min(4).max(64).default(24)
+    .describe('How many wall tiles one browser tab is assumed able to decode smoothly. Placeholder pending plan 100 §7.3\'s hardware measurement — update once that ladder has run.'),
+  bandwidthBps: z.number().int().min(1_000_000).max(1_000_000_000).default(200_000_000)
+    .describe('Bits/sec assumed available to a wall tab on loopback/LAN. Only used when the deployment is cloud (WAN); on WAN this is overridden to 20 Mbit/s, matching the pre-plan-100 behaviour exactly.'),
+  transportOverride: z.enum(['auto', 'loopback', 'lan', 'wan']).default('auto'),
+})
+```
+
+The WAN branch does not read `bandwidthBps` at all — it is hard-pinned to the existing `20_000_000` (a private constant, not a setting, exactly as today) specifically so cloud mode is provably byte-identical to its pre-plan-100 behaviour (§3.6), rather than trusting an operator not to have changed a number that happens to share a name.
+
+### 4.2 `packages/session/src/manager.ts` — a second entry per device
+
+The `Map<string, Entry>` (G7) becomes keyed by a composite `entryKey(deviceId, quality)`, with `acquire`/`restartAt`/`get`/etc. resolving the key internally so every existing caller that passes a bare `deviceId` keeps working unchanged for the `control`-quality default they already use, and the Wall's `sink`-based hold (G4) keeps working unchanged for `'wall'`.
+
+```ts
+function entryKey(deviceId: string, quality: Quality): string {
+  return `${deviceId}:${quality}`
+}
+```
+
+**`acquire(deviceId, onFrame, quality)`** — unchanged signature. Internally: if an entry already exists at `entryKey(deviceId, quality)`, bump its refcount and return it (unchanged). If it does not, and `quality === 'control'`, check whether a `wall`-quality entry for the same device is currently open:
+
+- **If yes** (the common case for a device already on the Wall): build the `control` entry via a new `createEntryFast` path that skips `wakeDevice`/`applyRotation`/`applyTextInput`/`applyFarmTag` — because the open `wall` entry is live proof those already succeeded — and pushes straight to `makeScrcpy` with the `control` profile. The `wall` entry is **not** touched: no restart, no coalescing map entry, no phase events on it at all.
+- **If no** (a device opened directly, wall not watching it): build the `control` entry the ordinary way — `createEntry`, the full `openSession` sequence — exactly as `acquire` already does today. This is the same code path as before this plan; nothing regresses for an operator who never uses the Wall.
+
+**`restartAt(deviceId, quality, detail?)`** — unchanged in scope: it restarts the entry **at that specific quality slot only** (a settings-driven requality, §3.2's "kept, not replaced" case). It never crosses quality slots. `upgradeToControl` is **deleted** — its one caller (the device page's own acquire path) now calls `acquire(deviceId, onFrame, 'control')`, which handles both the fast and slow paths above internally.
+
+**`release(deviceId, onFrame)`** — needs to know which entry a given `onFrame` subscriber belongs to. Since a subscriber is only ever registered against one `acquire` call, the manager tracks `onFrame → entryKey` in a side map (mirroring the existing `frameSubscribers` set per entry, just inverted for lookup) rather than requiring every caller to also pass `quality` back in — a caller that already forgot which quality it acquired at is exactly the kind of bug this avoids.
+
+**`videoStats()`** — reports both entries per device where both exist, each with its own `quality`, `videoProfile`, and refcount, so the settings-page readout (§4.1's projection) and the wall's own status strip can distinguish "12 wall tiles, 3 also open in Control" from double-counting.
+
+**`get(deviceId)`** — the one place this plan makes a real, considered choice about ambiguity: `get` is used today (G16, `devices.ts`'s connection type) for "the session for this device," singular. It now means **the highest-quality open entry** — `control` if present, else `wall`, else `null` — because every existing caller of bare `get()` wants "what am I actually showing this device as," and Control is always the more specific answer when both exist. A new `getByQuality(deviceId, quality)` is added for the few callers (the manager's own internals, `videoStats`) that need a specific slot.
+
+Node-owned devices (§3.6) never build a `control`-slot entry at all: `acquire` for a device whose transport is remote (Plan 92 F28) is unchanged from today — one entry, whatever quality the tunnel actually delivers, reported honestly. This is an early-out at the very top of the `control`-quality branch above, not a special case buried in the middle of it.
+
+### 4.3 The screencap-loop retry (closing G10/G11)
+
+`session.ts`'s `openSession` keeps its one-shot fallback choice at build time (unchanged — retrying *inside* the build would conflate "this attempt failed" with "give up forever," which is the exact bug being fixed). What changes is what happens **after** a session is already running on the fallback:
+
+- A background retry timer (bounded exponential backoff — 10s, 30s, 60s, then a 5-minute steady state, capped at a farm-settable `display.fallbackRetryCount`, default 6 attempts before giving up until the next manual retry or device reconnect) periodically re-attempts `makeScrcpy` against the **same** running session. On success, the session swaps its display source live — the same subscriber-carrying mechanism `restartAt` already proves safe (Plan 92's manager tests) — and drops back to the PNG loop only if the swap itself fails.
+- `DeviceSession.displayEngineId` (already correct, G11) is surfaced on `GET /api/devices/:id` **alongside** the stored `display` column, as a new `liveDisplay` field, sourced from `SessionManager.get(deviceId)?.displayEngineId` when a session is open and `null` when none is — so the endpoint stops being the one place that lies (G11), without deleting the configured-engine field other UI already reads.
+- `WallTile`/`LiveView` gain the degraded badge described in §3.7 item 1, driven by `liveDisplay !== configured display` (or more directly, by the WS `stream.started.codec` the client already receives — the REST field is for anyone polling the device list, not for an already-open stream).
+
+### 4.4 The device-page "second stream unavailable" state (closing the §3.2 open item)
+
+When `acquire(deviceId, onFrame, 'control')`'s fast path (§4.2) fails to build a working second session — `makeScrcpy` rejects, or the new build times out waiting for its first config packet (H2's detection signal, not a chipset guess) — the manager does **not** fall back to silently handing the caller the existing `wall` entry disguised as `control`. It returns a typed failure the device page renders explicitly:
+
+> *"A dedicated full-quality view could not be started for this device (`<reason>`). Showing the wall's own picture instead — lower resolution, lower frame rate. Retry."*
+
+with a `Retry` action that re-attempts the fast path (useful when the failure was transient — e.g. the phone's encoder was momentarily busy with the jar push race, G13). The device page **is allowed** to fall through and display the wall entry's own frames while in this state — reusing bytes already flowing is better than a blank screen — but the UI must say so, per §3.7's rule, never rendering it under the ordinary "Control" label.
+
+### 4.5 Skipping the redundant wake path is now scoped correctly
+
+§3.2 already folds option 2 into the fast path for the *cross-quality* case (wall already open). The one remaining case G8 named — a **same-quality** restart (`reprofile`, a settings change) on a device that is unambiguously still awake — keeps paying the wake path today, and this plan **does not change that**, for the reason 96.24 itself gave: deciding whether a device "genuinely slept between the two sessions" needs care this plan's scope does not extend to. `reprofile`'s restart already explains itself via `detail` (96.24, already fixed); this plan's contribution to redundant wake cost is entirely the second-session path, which needs no wake call at all rather than a faster one.
+
+---
+
+## 5. Implementation steps
+
+Each step is independently shippable and independently testable; none blocks the others except where stated.
+
+### 100.1 — 96.23 lands first: device-side session cleanup. DONE.
+
+Files: `packages/scrcpy/src/session.ts` (`close()`'s device-side stop-by-scid, a startup sweep function), `packages/core/src/daemon.ts` (call the sweep once at boot, before any session is built). Verifiable result: a session whose sockets never connect leaves no `scrcpy.Server` process on the device after `close()` returns (asserted with a fake/mock adb executor recording the exact shell command sent, since no hardware is available here); a sweep given a fixture list of device-side processes kills only the ones whose scid is not in the core's own open-entry set.
+
+**This step is a hard prerequisite for 100.4 and 100.5** — a second-session design must not ship on top of the existing single-session leak.
+
+**Shipped.** `close()` now calls a new, module-private `stopDeviceSide(adb, scid)` right after `serverChild?.kill()` and before the `forward --remove`: a best-effort `pkill -f 'scid=<scid>'`, `.catch()`-swallowed exactly like `packages/core/src/device/transfer.ts`'s `install()` `finally` block documents for a staged APK it could not delete — this device-side stop must never fail (or meaningfully delay) `close()` itself. The literal command is not a guess: it is G12's own hardware probe command, used by hand and confirmed to leave sibling sessions on the same phone untouched. `scid` is an 8 hex-digit token minted fresh per session and never user input, so it needs no shell-quoting beyond the surrounding single quotes.
+
+A second, exported pair — `parseScrcpyServerList(psOutput)` and `sweepStrayScrcpyServers(exec, knownScids)` — implements the startup sweep. The parser reads `ps -A -o pid,args` output and pulls out every `{pid, scid}` pair whose command line carries a `scid=<hex>` token; it deliberately does NOT filter on a fixed process name (`app_process`/`com.genymobile.scrcpy.Server`/`CleanUp`), because `ps`'s own comm-name truncation/renaming is inconsistent across Android OEMs and API levels, while the `scid=` token in the full argument list is this codebase's own random value and is what every process it could have spawned is guaranteed to carry — including a session's `CleanUp` companion, if its own command line also carries the token (unverified without hardware; §7's existing H-5 row — "96.23's cleanup, confirmed against a real forced-failure session," `adb shell ps | grep scrcpy` before/after `close()` — is the check that settles whether a `CleanUp` companion, if one was spawned, is also gone). `sweepStrayScrcpyServers` kills every process whose scid is NOT in the caller's `knownScids` set with one batched `kill -9 <pid...>`, and never touches a process whose scid IS recognised — the same "leave sibling sessions alone" property `stopDeviceSide` guarantees for a single close(). `daemon.ts` calls it once per currently-attached (`state === 'device'`) serial, via `adbClient.listDevices()`, right before `sessions = createSessionManager({...})` is built — with an EMPTY `knownScids` set, because nothing in a fresh process has opened a session yet, so every scrcpy process `ps` still finds at that point is, by construction, an orphan from a prior crash or an ungraceful shutdown. One device's sweep failing (offline, no permission) is caught and logged, never allowed to abort boot.
+
+**A sweep of strays before starting a NEW session (mid-run, not just at boot) was considered and deliberately left out of this step's scope**, per the prompt's own instruction to say so rather than leave it unmentioned: `sweepStrayScrcpyServers`'s signature already supports it (a non-empty `knownScids` drawn from the manager's own open entries would make it safe to call before every `makeScrcpy`), but wiring it into the per-acquire path is `SessionManager`-shaped work that belongs with 100.4's own `entryKey`/two-slot changes, not this cleanup-only step — adding it here would mean touching `packages/session/src/manager.ts` before 100.4's design for it exists, and guessing at that shape now risks contradicting §4.2's real one later. The boot sweep alone already closes 96.23's own accumulation concern ("nothing sweeps them"); a mid-run sweep is a strictly additional safety net on top of that, not required for 100.1's own acceptance criterion.
+
+**Test plan.** `packages/scrcpy/src/session.test.ts` (new): `parseScrcpyServerList` — pid/scid extraction, matching lines with no fixed process name, skipping unrecognisable/empty lines; `sweepStrayScrcpyServers` — kills only unknown scids, leaves known ones alone, an empty known set kills everything found (the boot-time shape), and is best-effort against both a failing `ps` and a failing `kill`; `close()` — driven through a REAL `startScrcpySession()` against a fake local TCP server standing in for the device (no real `adb`, no hardware, but the genuine `openForward`/`connectVideoSocket`/`connectWithRetry` handshake), asserting the exact `pkill -f 'scid=<this session's own scid>'` command and that a throwing `exec` still lets `close()` resolve rather than reject. `packages/core/src/daemon-wiring.test.ts` gained a case proving the production wiring itself: the sweep call appears in `daemon.ts`'s real source text, runs before `sessions = createSessionManager({...})`, is scoped through `adbClient.exec(tracked.serial, cmd, ...)`, passes an empty `new Set()`, filters to `tracked.state !== 'device'`-excluded serials, and is wrapped in a per-device `try`/`catch` — the same "read the real file, assert the real wiring is there" style this file already uses for the identical defect class (96.5/96.6, both cited in this file's own header comment).
+
+Verified 2026-08-14: `bunx tsc --noEmit -p packages/scrcpy/tsconfig.json` clean; `bash scripts/typecheck.sh` — every package OK except `core`'s pre-existing, owner-arbitrated `api/jobs.ts(229,49)` TS2739 (unrelated to this step, left untouched per instruction); `bun test` — 4780 pass / 0 fail (workspace-wide, including this step's 11 new `scrcpy/session.test.ts` cases and 1 new `daemon-wiring.test.ts` case); `bun run --cwd packages/studio test` — 1159 pass / 4 fail, the same 4 pre-existing `SettingsPage`/`FarmVideoFields` failures from step 100.2's concurrent work, untouched by this step.
+
+### 100.2 — The wall preset numbers and the decode/bandwidth budget split. DONE.
+
+Files: `packages/session/src/video-profile.ts` (§3.4's new `WALL_PRESETS` table, §4.1's `WallBudget`/`computeAutoTiles`), `packages/protocol/src/settings.ts` (the three new `wall.*` fields), `packages/session/src/video-profile.test.ts`. Verifiable result: `computeAutoTiles` returns the pre-plan-100 numbers when `bandwidthBps` is pinned to the old 20 Mbit/s constant and `decodeTileCeiling` is set high enough not to bind (a regression fixture proving the WAN/cloud path is byte-identical, per §3.6); a new describe block proves the decode bound wins on loopback at the new default settings; the new preset table's `balanced`/`detailed`/`light`/`minimal` numbers match §3.4 exactly.
+
+**Shipped, with two deliberate deviations from the numbers this step's own header quoted, both recorded here rather than silently substituted.** First, `WALL_PRESETS` is written in ascending-quality order (`minimal → light → balanced → detailed`) rather than the plan's `detailed`-first listing — cosmetic, kept only because it makes the "fps rises monotonically" property visually obvious in the source, and covered by its own test. Second, and more substantively: every number in §3.4's table was checked against `computeAutoTiles`'s `[4, 32]` clamp and the settings schema's own `.min()`/`.max()` bounds before being accepted, per this step's own brief ("do not treat the plan's numbers as unquestionable") — all four presets (`minimal` 240px·6fps·250kbit/s, `light` 320px·8fps·500kbit/s, `balanced` 480px·12fps·900kbit/s, `detailed` 640px·15fps·1.3Mbit/s) survive `video.wallMaxSize [160,1080]`, `wallMaxFps [1,30]`, and `wallBitRate [100_000, 8_000_000]` unchanged, so no bound needed widening and none of §3.4's numbers needed correcting.
+
+`WallBudget`/`WallTransport`/`computeAutoTiles` land exactly as §4.1 specifies (decode bound × bandwidth bound, `min`, clamped `[4,32]`), and `FarmSettingsSchema.wall` gains `decodeTileCeiling` (int, `[4,64]`, default 24 — §3.3's chosen placeholder, below the `computeAutoTiles` clamp's own [4,32] ceiling rather than derived by formula, documented in its own `.describe()` as a placeholder pending §7.3), `bandwidthBps` (int, `[1_000_000, 1_000_000_000]`, default 200 Mbit/s), and `transportOverride` (`'auto'|'loopback'|'lan'|'wan'`, default `'auto'`) — additive, no migration, `normaliseLegacyWall` untouched. Both new numeric bounds are written as explicit decimal literals (`1_000_000`, `1_000_000_000`, not a bit-shift expression) specifically because of the `16 << 30`-overflow defect class named in this step's own brief; `settings.test.ts` gained a regression test asserting each bound is ordered `min < max` and that the shipped default is admitted by its own bound, plus a test that both boundary values themselves parse without throwing.
+
+**Two production call sites (out of this step's own file list, but broken by the `computeAutoTiles` signature change and therefore fixed here to keep the baseline green) were updated to the minimum honest wiring, not the full transport-aware resolution — that is explicitly step 100.3's scope** (`packages/core/src/api/adb-stats.ts`, per §5's own step breakdown): `packages/core/src/daemon.ts`'s `video:` stat callback and `packages/studio/src/components/video/FarmVideoFields.tsx` (via its documented mirror, `video-quality.ts`) now call `computeAutoTiles(bitRate, { decodeTileCeiling, bandwidthBps: WALL_VIDEO_BUDGET_BPS })` — the farm's real `wall.decodeTileCeiling` setting, but the bandwidth term still hard-pinned to the pre-plan-100 20 Mbit/s constant unconditionally, because no call site yet knows whether the deployment is loopback, LAN, or WAN. This means **today's real wall-tile budget is unchanged in practice** (still bandwidth-bound at the shipped `balanced` default — `min(24, floor(20_000_000/900_000)) = min(24, 22) = 22`) until step 100.3 lands the transport classification that lets loopback/LAN use the new, generous `wall.bandwidthBps` default instead. The Studio mirror's `computeAutoTiles` keeps a defaulted second parameter (`{ decodeTileCeiling: 32, bandwidthBps: WALL_VIDEO_BUDGET_BPS }`) so any caller not yet updated for the new signature keeps computing exactly what it always has — a deliberate compatibility shim, not an oversight, so this step does not have to touch every Studio file that happens to import the mirror.
+
+Every downstream test broken purely by the intentional default-value change (`WALL_PRESETS.balanced` 5fps/800kbit/s → 12fps/900kbit/s) was updated to the new numbers, never the old ones restored: `packages/session/src/manager.test.ts` (one assertion reading the real schema default with no `resolveProfile` override), `packages/protocol/src/settings.test.ts` (the `FarmSettingsSchema.video` default-row assertion, the `wall` object's key-list assertion, and a new describe block for the three added fields), `packages/studio/src/components/video/FarmVideoFields.test.tsx` and `packages/studio/src/app/settings/page.test.tsx` (the pinned `800000`/`25 live tiles`/`20.0 Mbit/s` readouts, now `900000`/`22 live tiles`/`19.8 Mbit/s` — the bandwidth-bound arithmetic explained above, worked out inline in each test's own comment).
+
+**On §3.1's H1/H2 hypotheses and Plan 92 §7.3's deferred measurement, checked plainly per this step's own instruction:** no hardware decoder-count or frame-drop measurement was taken for this step, on this device, or any device — G3's finding stands unchanged. `wall.decodeTileCeiling`'s default of 24 is exactly what §3.3 describes it as: the arithmetic middle of the schema's own `[4,64]` bound, not a measured result, and its `.describe()` text says so. §7.3's hardware ladder (step 100.7) has not been run.
+
+**Verified 2026-08-14:** `bash scripts/typecheck.sh` — every package OK except `core`'s pre-existing, owner-arbitrated `api/jobs.ts(229,49)` TS2739 (unrelated, left untouched); `bun test` — 4779 pass / 0 fail workspace-wide (a `packages/adb/src/client.test.ts` streaming-lane failure seen on one run reproduced as a timing flake, not present on re-run, and untouched by this step's files); `bun run --cwd packages/studio test` — 1163 pass / 0 fail; `bun run build:studio` — clean static export; `bun run spec:check` — 0 gaps; `bash scripts/check-plan-status.sh` — plan 100 agrees with the code it declares.
+
+### 100.3 — Transport classification and the settings surface. DONE.
+
+Files: `packages/core/src/api/adb-stats.ts` (resolve `WallTransport`, feed `WallBudget` into the `video` block), `packages/studio/src/components/video/video-quality.ts` (mirror the transport-aware resolution the same way it already mirrors the preset tables, per Plan 92's documented duplication reasoning), `packages/studio/src/app/settings/page.tsx`'s Video section (the projection line now reads "auto (decode-bound, loopback)" or "auto (bandwidth-bound, cloud)" rather than one unlabelled number). Verifiable result: a farm in default (non-orchestrator) mode reports `loopback`; a farm booted with `ENKAKU_MODE=orchestrator` reports `wan` and its projection matches the pre-plan-100 formula exactly; `transportOverride` overrides both.
+
+**Shipped.** The classification itself is two small pure functions in `packages/session/src/video-profile.ts`, deliberately split from each other: `resolveWallTransport(isOrchestrator, override)` (the mode/override decision, exported through `@enkaku/session`) and `resolveWallBandwidthBps(transport, farmBandwidthBps)` (the WAN hard-pin, §3.6). `WallTransport` also gained a Zod twin, `WallTransportSchema`/`WallTransport` in `packages/protocol/src/settings.ts` (exported via `@enkaku/protocol`), used by `AdbStatsResponseSchema.video.transport` (new field, `packages/protocol/src/api/adb.ts`) — `daemon.ts`'s `video:` accessor calls `resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', wallSettings.transportOverride)` and reports the result on the response, proven by a `daemon-wiring.test.ts` case reading the real source text (env-var classification is not otherwise unit-testable without booting a real process). `'lan'` is reachable ONLY through an explicit `transportOverride` — there is no local signal that distinguishes true loopback from a same-subnet LAN link, so auto-derivation never guesses it, a property `video-profile.test.ts` asserts directly.
+
+Studio's mirror (`video-quality.ts`) gained the identical `resolveWallBandwidthBps`, but deliberately NOT a mirror of `resolveWallTransport` — the browser cannot read `ENKAKU_MODE`, so `FarmVideoFields.tsx`'s projection line trusts the live `/api/adb/stats` poll's own `video.transport` for the auto case (that half of the classification cannot change without a core restart, so it is a safe proxy even for an unsaved draft), while an unsaved `wall.transportOverride` edit still wins outright client-side, matching the server's own precedence. The poll (`useAdbVideoStatsPoll`) is now called once in the parent component and threaded down to the measured-status block, rather than twice. Both the projection line and the measured block now say e.g. "(auto — decode-bound, loopback)" instead of a bare "(automatic)"/"(auto)".
+
+**Verified 2026-08-15:** `bash scripts/typecheck.sh` — every package OK except `core`'s pre-existing, owner-arbitrated `api/jobs.ts(229,49)` TS2739 (unrelated, left untouched); `bun test` (workspace-wide) and `bun run --cwd packages/studio test` both fully green; `bun run --cwd packages/studio build` clean static export; `bun run spec:check` — 0 gaps.
+
+### 100.4 — `SessionManager`'s second entry slot
+
+Files: `packages/session/src/manager.ts` (§4.2's `entryKey`, the fast/slow `control`-acquire branches, `release`'s subscriber→key map, `videoStats`'s per-slot reporting, `get`'s highest-quality-wins resolution, deletion of `upgradeToControl`), `packages/session/src/manager.test.ts`. Verifiable result: acquiring `control` on a device with an open `wall` entry builds a session whose `openSession` call recorded **zero** invocations of `wakeDevice`/`applyRotation`/`applyTextInput`/`applyFarmTag` (asserted against the existing fake deps, which already let 92's tests assert call counts); the `wall` entry's own `makeScrcpy` build count does not increment when `control` is acquired afterward (the "wall tile untouched" property, the same assertion shape Plan 92 §5 already used for reprofile's blast radius); releasing the `control` entry's last subscriber does not affect the `wall` entry's refcount or vice versa; a device with no open `wall` entry still builds `control` the full, unchanged way.
+
+Depends on 100.1 (cleanup must exist before a second concurrent session is added) and 100.2 (the `control` entry's own profile numbers are unaffected by this step, but the test fixtures need the new preset table present).
+
+### 100.5 — Wiring the device page and the wall tile to the two-entry model
+
+Files: `packages/core/src/server/ws-handlers.ts` (the device page's `stream.start` acquires `control`, the Wall's acquires `wall` — both already do this today via the `quality` argument; this step is about *not* calling the deleted `upgradeToControl` anywhere), `packages/studio/src/components/LiveView.tsx` (§4.4's "second stream unavailable" state, §3.7's wording), `packages/protocol/src/messages/stream.ts` (a typed reason code for the acquire failure, e.g. `E_CONTROL_SESSION_UNAVAILABLE`, carried on the existing `stream.started`/`stream.error` shape rather than inventing a new message type). Verifiable result: opening a device page while its wall tile is streaming produces a `stream.started` for the wall tile's own channel with **zero** new phase events (the tile's video element never re-subscribes, matching the existing carry-over assertion style); the device page's own stream starts cleanly with no wake-phase breadcrumb when the fast path succeeds (a **new**, faster phase sequence than today's four-step breadcrumb, since there is nothing to wake); a forced fast-path failure (mocked) renders §4.4's exact banner and offers Retry.
+
+Depends on 100.4.
+
+### 100.6 — The screencap-loop retry and the honest `liveDisplay` field. DONE.
+
+Files: `packages/session/src/session.ts` (the background retry timer, the live display-source swap), `packages/core/src/api/devices.ts` (`liveDisplay` field, sourced from `SessionManager.get`), `packages/protocol/src/device.ts` (the new optional field on `DeviceInfo`), `packages/studio/src/components/wall/WallTile.tsx` / `LiveView.tsx` (the degraded badge). Verifiable result: a session forced onto the fallback (mocked `makeScrcpy` rejection) and then given a working `makeScrcpy` on its next retry tick swaps to `h264` live, carrying its existing frame subscribers (the same carry-over property proven elsewhere in this plan); `GET /api/devices/:id` reports `liveDisplay: 'screencap-loop'` for a device on the fallback while `display` (the configured engine) still reads `'scrcpy'`, proving the two fields can legitimately disagree; the Wall renders the degraded badge from that disagreement, never silently.
+
+**Shipped, with one deliberate deviation from the file list this step's own header quoted, recorded rather than silently substituted:** the new field landed on `packages/protocol/src/api/devices.ts`'s `DeviceDetailSchema` (`GET /:id`'s real, client-parsed wire schema), not `packages/protocol/src/device.ts`'s `DeviceInfoSchema` (the fleet-list shape) — `display`/`transport`/`input`/`inspection` already live only on `DeviceDetailSchema`, and `liveDisplay` is the SAME kind of field (a `GET /:id`-only fact, never sent on the fleet list), so it followed the existing precedent rather than widening the wrong schema. This mattered concretely: `packages/core/src/api/devices.ts`'s `GET /:id` route builds its response ad hoc (not validated server-side against any schema, a pre-existing gap its own comment already flags) but the CLIENT parses every `GET /:id` response through `DeviceDetailResponseSchema`/`DeviceDetailSchema` via `api()` — Zod strips unknown keys by default, so `liveDisplay` would have silently vanished on the client if only the server-side object literal had gained it.
+
+Distinguishes a DELIBERATE `screencap-loop` configuration (`opts.display === 'screencap-loop'`, an operator's own choice, never retried) from an ATTEMPTED-and-FAILED `makeScrcpy` call (the transient-failure case 96.22 recorded) via a `displayAttemptFailed` flag — only the latter arms the retry. The swap is DISPLAY-source only, by design: input stays on whatever engine the session opened with (the crude `adb-input` fallback), and `clipboard`/`arbiter` are similarly unaffected — 100.6's own scope (§4.3) only asks for the display source to heal, and re-wiring the input arbiter/UHID pointer mid-session risked introducing new bugs this step never asked to solve; recorded here as a known, intentional scope boundary rather than left implicit. `liveScrcpy` (a new mutable ref, distinct from the immutable `scrcpy` const captured at open) is what `close()`'s `standbyScreenOff` restore now reads, so a session that recovered from the fallback still gets its screen-power restore against the session actually open. No WS/protocol change was needed for an already-open viewer to pick up a mid-stream codec swap: `ws-handlers.ts`'s `onFrame` handler already derives `codec` from each frame's own `FrameMeta.codec` (not a value snapshotted once at `stream.started`), so the swap is wire-correct automatically — the one real client-side gap found and fixed was `LiveView.tsx`'s H.264 renderer, which used to be built ONLY at `stream.started` time and silently drop every h264 frame forever if codec was `'png'` at subscribe time; it now builds lazily on first h264 frame.
+
+`FarmSettings.display.fallbackRetryCount` (new farm setting, default 6, bounded `[0,20]`) is threaded through `CreateSessionDeps` → `SessionManagerDeps` → `daemon.ts`'s `createSessionManager({...})` call, the same forward-ref pattern every other per-session farm setting in this file already uses — added to the `FARM_SECTION_DEFS`'s existing "Sessions & Wall" tab (Studio's own `farmSections.test.ts` catches an unclaimed top-level schema key, which is exactly what caught this before it shipped unclaimed).
+
+**Verified 2026-08-15:** same full green run as step 100.3 above (one combined pass) — `bash scripts/typecheck.sh`, `bun test`, `bun run --cwd packages/studio test`, `bun run --cwd packages/studio build`, `bun run spec:check`.
+
+Independent of 100.1–100.5 — can ship separately, in either order.
+
+### 100.7 — The hardware ladder, and turning its result into the shipped default
+
+Owner-run (§7.3's own table). No code change beyond the one-line settings default swap once the ladder's result is known (`wall.decodeTileCeiling`'s default, `packages/protocol/src/settings.ts`), and a doc update removing the "placeholder pending measurement" language from that field's description. This step exists to make sure the placeholder from 100.2 is not left in place the way Plan 92 §7.3's own decoder-count risk was.
+
+This entry deliberately does not propose a replacement number for the
+placeholder default. Guessing a second number would just be a second
+unverified guess — the point of this step is the **procedure**, runnable by
+anyone in their own browser, not a fresh guess picked without running it.
+
+#### The procedure (H-1), step by step
+
+No code change is required to run this — `wall.maxTiles` (`FarmSettingsSchema`,
+`packages/protocol/src/settings.ts`) already lets an operator pin the Wall's
+tile count directly, overriding the decode/bandwidth auto-derivation
+(`FarmVideoFields.tsx:121`'s "a non-zero `maxTiles` always wins" rule, F24).
+That pin is this procedure's dial.
+
+1. **Pin a tile count.** Settings → Video → Advanced → set `wall.maxTiles` to
+   the N you want to test (start at or below the current shipped
+   `decodeTileCeiling` placeholder, 24, then step upward — e.g. 16, 24, 32,
+   40, 48 — until it breaks). Save.
+2. **Open the Wall** (`?view=wall`) in the browser tab whose ceiling you are
+   measuring. The Wall will render exactly N tiles regardless of what the
+   auto-derived bound would otherwise compute, because of the pin in step 1.
+3. **Let it run at least 30–60s** at that N before reading anything — the
+   first few seconds of any new tile count include codec warm-up and are not
+   representative of steady state.
+4. **Read dropped frames.** Open `chrome://media-internals` in a second tab,
+   find the Wall tab's entries under "Players", and read each decoder's
+   "Dropped Frames" counter (or the delta over a fixed window, e.g. 10s, if
+   you want a rate rather than a cumulative count since tab load).
+5. **Read CPU.** Open Chrome's own Task Manager (Shift+Esc, not the OS task
+   manager), and read the CPU % column for the specific renderer process
+   hosting the Wall tab — not total browser CPU, which includes unrelated
+   tabs and extensions.
+6. **Judge by eye too.** Dropped-frame counters and CPU% can both look
+   "fine" while motion is visibly stuttering (compositor/paint pressure
+   doesn't always show up as decoder-reported drops) — watch the tiles
+   directly for a few seconds at each N as a third signal, not just the two
+   numbers.
+7. **Record N, dropped-frame rate, CPU%, and the by-eye verdict**, then
+   increase `wall.maxTiles` and repeat from step 2.
+8. **The break point is the smallest N where any one of**: dropped frames
+   exceed roughly 5% of frames over a sustained window (not a one-off blip),
+   the Wall tab's CPU sustains at or near a full core, or motion is
+   unambiguously stuttering by eye. That N, not the N one step below it, is
+   the ceiling you measured.
+9. **Unpin when done** — set `wall.maxTiles` back to `0` (auto) unless you
+   specifically want it to stay pinned.
+
+**This number describes your browser and your machine, not the farm.**
+`decodeTileCeiling` is decode capacity in a Chrome tab — GPU/CPU decode
+support, browser version, and what else is running on that machine all
+affect it, and none of those are properties of the farm's video pipeline.
+Two operators opening the same Wall from a workstation and from a weak
+laptop will measure two different numbers, and both are correct for their
+own machine (Q1, below, is the still-open question of whether the *shipped
+default* should ever try to track that per-browser difference — this
+procedure does not answer that, it only makes the number measurable). Do
+not treat one person's measured N as ground truth for anyone else's
+hardware, and do not fold a single run of this procedure into the shipped
+default without saying whose machine it came from.
+
+---
+
+### 100.8 — Raise the wall's frame rate once the budget stops forcing the trade. DONE.
+
+**This step exists because 100.2's number was a compromise with a constraint
+100.3 removes, and nothing else in this plan would ever revisit it.**
+
+`WALL_PRESETS.balanced` shipped at `{ maxSize: 480, maxFps: 12, bitRate:
+900_000 }`. Twelve was chosen while `computeAutoTiles` still divided a flat
+20 Mbit/s across every tile, so every frame per second was paid for in tiles
+lost. That is the exact trade 100.3 abolishes for a loopback or LAN farm,
+where the bound becomes browser decode rather than bits on a wire — and yet
+the preset would keep the compromise long after the reason for it was gone.
+
+It also exists because the owner's complaint was never "the wall is
+low-resolution". It was that the wall is **not smooth**, watching a
+competitor's wall side by side. Smoothness is frame rate. 5 fps was a
+slideshow; 12 fps is visibly stepped motion, not fluid motion. Raising
+`maxSize` instead would spend the scarce resource (browser decoders) on the
+one axis the operator did not complain about.
+
+**Note what §16 now says, and why that is a problem this step must resolve
+rather than inherit.** Spec §16's NFR is `video FPS ≥ 24`. Step 100.2 amended
+it to scope that target to Control only, on the true observation that the
+Wall has always been below it. That amendment is honest about the present but
+it narrowed a target to fit the implementation rather than moving the
+implementation toward the target — and it did so in the same pass that set
+the wall's number. This step must either bring the wall's default to a figure
+that can be defended against §16's own bar, or state in `docs/spec.md` what
+the wall's target IS, as a number, so the Wall is held to something rather
+than exempted.
+
+Files: `packages/session/src/video-profile.ts` (the preset table), and
+`docs/spec.md` §16 if the wall's own target is being stated there.
+
+Sequencing and its one honest caveat: the ceiling this can be pushed to is
+H-1's to establish, and H-1 is the owner's to run. But an interim raise does
+not need H-1 to be defensible — at 480 px a wall tile is small, and the
+decode cost of N such tiles is far below the cost of N Control-sized streams,
+which is the case the 32-decoder worry was actually written about. Pick the
+interim value with that reasoning stated, mark it as interim in the same
+sentence the value appears, and let H-1 replace it. Do not repeat 100.2's
+`decodeTileCeiling` mistake of shipping a number whose only justification is
+that it sounded reasonable.
+
+Verifiable result: the wall's shipped `balanced` fps is higher than 12 with
+its reasoning recorded; `computeAutoTiles` at the new bitrate on a loopback
+farm still returns a tile count at or above the pre-plan-100 figure (proving
+the raise cost no tiles once the budget is transport-aware); and the WAN
+regression fixture is unchanged, so a cloud farm's numbers do not move.
+
+**Shipped.** Chose to resolve the §16 problem by giving the Wall its OWN
+stated target (the "state the wall's target as a number" branch this step's
+own text names as an alternative to matching Control's bar exactly) rather
+than pushing `balanced` all the way to 24fps — every preset's fps was raised
+a second time (minimal 6→10, light 8→14, balanced 12→18, detailed 15→22),
+kept strictly below Control's 24fps NFR floor on purpose (a
+`video-profile.test.ts` guard enforces `p.maxFps < 24` for every wall preset,
+predating this step and left un-relaxed), so Control and Wall stay visibly
+distinct rather than converging on the same number by coincidence.
+`docs/spec.md` §16's single "Video FPS" row was split into "Video FPS
+(Control)" (unchanged, ≥24fps) and a new "Video FPS (Wall)" row stating
+≥18fps as the Wall's own target, with the interim/pending-H-1 caveat stated
+in the same row rather than only in this plan. Bitrates rose alongside fps
+again (350k/650k/1.1M/1.5M), same "more frames, somewhat more data, not more
+pixels" reasoning as 100.2's own bump. On a loopback farm the raise costs
+**zero** tiles: `wall.decodeTileCeiling` (still 24, unchanged by this step)
+governs regardless of the new, still-modest bitrates — `computeAutoTiles`
+returns 24 both before and after this step's bitrate change, proven directly
+in `video-profile.test.ts`. The WAN/cloud regression describe block
+(hardcoded literal bitrates, never reading `WALL_PRESETS`) is untouched by
+construction; the one WAN-path test that DID read the resolved default
+end-to-end was updated to the new number (1.1 Mbit/s → 18 tiles on the old
+20 Mbit/s constant, down from 22 at the old 900 kbit/s — a real, expected
+change to the byte count a cloud farm's own settings page projects, not a
+regression: cloud mode's BUDGET constant is unchanged, only the input
+bitrate the farm's own default now asks for is bigger).
+
+**Verified 2026-08-15:** same full green run as steps 100.3/100.6 above.
+
+## 6. Acceptance criteria
+
+- [x] `WALL_PRESETS.balanced` (the shipped default) matches the table exactly. Revised twice: step 100.2 shipped `{ maxSize: 480, maxFps: 12, bitRate: 900_000 }`; step 100.8 raised it again to `{ maxSize: 480, maxFps: 18, bitRate: 1_100_000 }` once 100.3 removed the fps-costs-tiles trade — see that step's own note for why. Every other preset matches §3.4/100.8's table exactly. (`packages/session/src/video-profile.ts`, `packages/session/src/video-profile.test.ts`)
+- [x] `computeAutoTiles` takes a `WallBudget` (decode ceiling + bandwidth) and returns the pre-plan-100 numbers exactly when run with the old bandwidth-only inputs (WAN/cloud regression fixture, 100.2). (`video-profile.test.ts`'s "WAN/cloud regression" describe block)
+- [x] A farm in default (non-orchestrator) mode resolves `WallTransport = 'loopback'` and its wall tile budget is decode-bound, not bandwidth-bound, at every shipped preset. (step 100.3 — `resolveWallTransport`/`resolveWallBandwidthBps`, wired into `daemon.ts`'s `video:` accessor and both Studio mirrors; `video-profile.test.ts`, `daemon-wiring.test.ts`)
+- [ ] `readiness.maxHot`/`defaultDesired` are untouched — this plan changes no readiness default (§2). (true of step 100.2's own changes; not independently re-verified for steps 100.1/100.3–100.7)
+- [ ] Opening a device page for a device already streaming on the Wall never restarts the wall entry's session: the wall tile's own `stream.started` fires no new phase events and its `makeScrcpy` build count does not increment. **Not yet — 100.4/100.5's own scope, not started; the second-session `SessionManager` slot this criterion depends on does not exist yet.**
+- [ ] The device page's own session, in the fast-path case, calls `wakeDevice`/`applyRotation`/`applyTextInput`/`applyFarmTag` **zero** times. **Not yet — 100.4/100.5's own scope.**
+- [ ] A device with no wall tile open still gets a full, unchanged `control` acquire (no regression for operators who never use the Wall). **Not yet — 100.4/100.5's own scope (trivially true today since the two-entry model does not exist, but not independently checked as this criterion's own claim).**
+- [ ] `upgradeToControl` no longer exists in the codebase; its one caller now calls `acquire(..., 'control')`. **Not yet — 100.4's own scope; `upgradeToControl` is still present and in production use in `packages/session/src/manager.ts`.**
+- [x] `close()` sends a scid-scoped device-side stop command; a startup sweep kills orphaned device-side scrcpy processes the core does not recognise. (step 100.1, unit-tested against a fake adb executor; real-hardware confirmation is §7's H-5 row, owner to run.)
+- [x] `GET /api/devices/:id` carries `liveDisplay`, sourced live from the open session, distinct from the stored `display` column; the two are shown to disagree in a fixture where the session is on the fallback. (step 100.6 — `packages/protocol/src/api/devices.ts`'s `DeviceDetailSchema`, `packages/core/src/api/devices.test.ts`)
+- [x] A session on the screencap-loop fallback is automatically re-attempted on `makeScrcpy` at least once before this plan's acceptance is checked, and a successful retry swaps the live stream without disconnecting subscribers. (step 100.6 — bounded-backoff timer, `packages/session/src/session.test.ts`)
+- [ ] A `control`-acquire fast-path failure renders the exact honest wording from §4.4, never silently substituting the wall's picture under the Control label. **Not yet — 100.5's own scope (the fast/slow acquire split this depends on is 100.4's).**
+- [x] `bun run typecheck`, `bun test`, and `bun run --cwd packages/studio test` are all green. (2026-08-15, after steps 100.3/100.6/100.8 — one pre-existing, owner-arbitrated `core` typecheck failure at `api/jobs.ts(229,49)` unrelated to this plan, left untouched)
+- [x] `docs/spec.md` §16 (NFR table) is checked against the new wall fps default and either confirmed consistent or amended in the same commit. (step 100.8 — split into a Control row and a Wall row, the Wall row stating its own ≥18fps target rather than a bare exemption)
+- [x] Every process this plan's own tests start is verified dead via `ps`, not `lsof` (`CLAUDE.md`/plan 00 §7 rule 7). (no new process-spawning tests were added by steps 100.3/100.6/100.8 — every fixture is a fake `AdbExecutor`/`ScrcpySession`/HTTP mock, nothing forks a real process)
+
+## 7. Test plan
+
+### Unit / component (bun test, no hardware)
+
+- `video-profile.test.ts`: the new preset table; `computeAutoTiles`'s decode-vs-bandwidth min behaviour; the WAN-regression fixture; `WallTransport` resolution from `ENKAKU_MODE`.
+- `manager.test.ts`: the fast/slow `control`-acquire branches (call-count assertions on the fake `openSession` deps); the wall-entry-untouched property; `release`'s subscriber→key correctness under interleaved wall/control acquire+release; `get`'s highest-quality-wins resolution; `videoStats`'s per-slot reporting.
+- `session.test.ts`: the screencap-loop retry timer (fake timers, a `makeScrcpy` stub that fails N times then succeeds), the live display-source swap carrying subscribers.
+- `scrcpy/session.test.ts`: `close()`'s scid-scoped device-side stop command, against a fake adb executor; the startup sweep given a fixture process list.
+- `devices.test.ts` / `devices-video-reprofile.test.ts`: `liveDisplay` sourced correctly, disagreeing with `display` under a fallback fixture.
+- `LiveView.test.tsx` / `WallTile.test.tsx`: the degraded badge; the "second stream unavailable" banner and its Retry action; the wall tile receiving no new phase events when a sibling device page opens Control (a component-level proxy for the manager-level assertion, since happy-dom cannot observe real sockets).
+
+### Hardware — owner to run, exact commands, empty outcome column
+
+| # | What | Command | Outcome |
+|---|---|---|---|
+| H-1 | The §7.3 decode ladder — real frame-drop/CPU measurement at N live tiles, new preset fps, to replace `decodeTileCeiling`'s placeholder default. | Run the step-by-step procedure written out under §100.7 above (pin `wall.maxTiles`, step N up, read `chrome://media-internals` + Chrome Task Manager CPU% + by-eye stutter at each step). Result is specific to the browser/machine it was run on — see §100.7's own note before using it to change the shipped default. | *(owner to fill in)* |
+| H-2 | G12's probe repeated with the *shipped* second-session code path (not the manual probe), confirming 100.4/100.5 actually produce the same result the manual test did. | With one wall tile streaming a device, open that device's own page (Control) in a second tab; `adb shell ps \| grep scrcpy` on the phone. | *(owner to fill in)* |
+| H-3 | Fast-path timing: opening Control on an already-wall-streaming device should show no wake breadcrumb and reach a picture materially faster than today's `upgradeToControl` restart. | Time from clicking a wall tile's "Open" to first Control frame, before and after this plan, same device. | *(owner to fill in)* |
+| H-4 | Concurrent-encoder ceiling on a second, different chipset — confirming H2's per-device detection (not a chipset table) actually degrades visibly rather than hanging. | Repeat H-2 on the second attached phone; if it is a different SoC than the moto g06 power, note whether the second session builds cleanly or triggers §4.4's degrade banner. | *(owner to fill in)* |
+| H-5 | 96.23's cleanup, confirmed against a real forced-failure session. | Force a `makeScrcpy` rejection (e.g. temporarily rename the scrcpy-server jar on the host so the push fails after the device-side process has already started from a prior attempt), then `close()` the session; `adb shell ps \| grep scrcpy` on the phone before and after. | *(owner to fill in)* |
+| H-6 | Screencap-loop retry, on a device coaxed into the fallback. | Force one `makeScrcpy` failure, confirm the device streams PNG at the degraded badge, wait for the retry window, confirm it swaps to H.264 live with no dropped connection. | *(owner to fill in)* |
+| H-7 | The wall's own smoothness, by eye, against the competitor. | Open the Wall at the new `balanced` default beside the competitor app, same device count, and describe the qualitative difference (or lack of one). | *(owner to fill in)* |
+| H-8 | **Glass-to-glass latency — never measured, though spec §16 states `< 150 ms` as an NFR.** This is the owner's second-ranked complaint ("delay minim sekali" on the competitor) and no work in this plan can be prioritised against it honestly until there is a number. Record the competitor's figure in the same session, measured the same way, or the result cannot be compared to the thing that prompted it. | Point the phone's camera-side at nothing; instead put the phone's own screen and the browser's Control view in ONE camera frame (or one screen recording that captures both). Open a stopwatch/millisecond timer app on the phone, film both surfaces at 60 fps or higher, then step through the recording and subtract: the timer value visible on the phone minus the value visible in the browser at the same recorded frame. Repeat 5× and take the median, not the best. Then repeat the whole procedure with the competitor app open on the same phone. | *(owner to fill in)* |
+| H-9 | Whether latency is dominated by encode/transport or by the browser's own decoder buffering — the two need different fixes, and H-8 alone cannot tell them apart. | With H-8's rig still set up, repeat the measurement once at the Control preset's shipped 30 fps and once with `controlMaxFps` forced to 60 in Settings. If the delta is roughly one frame interval, the buffer is the dominant term; if latency barely moves, encode/transport is. | *(owner to fill in)* |
+
+## 8. Risks and mitigations
+
+- **A budget SoC that tolerates only one hardware H.264 encoder session.** G12 proves 3 works on one specific chipset; H2 is explicit that this is not general. Mitigated by detecting the platform's own rejection at build time (§4.4) rather than trusting a chipset table, and by the degrade always being visible (§3.7), never silent.
+- **`decodeTileCeiling`'s shipped default (24) is wrong in either direction before the hardware ladder runs.** Mitigated by shipping it as a documented placeholder (§3.3) rather than a confident number, and by 100.7 existing specifically to close that gap — tracked the same way Plan 92 tracked its own deferred measurement, so it does not silently become permanent (plan 00 §9's own pattern for exactly this kind of open item).
+- **The `Map<string, Entry>` keying change (G7 → composite key) touches every `SessionManager` call site in the workspace, including the dozens of hand-built test fixtures Plan 92's own entries repeatedly noted.** Mitigated by keeping every public method's *signature* unchanged (quality remains an optional argument defaulting to `control`, exactly as today) — only the internal `Map` key changes, so a fixture that never varies quality needs no edit at all.
+- **A second scrcpy session doubles jar-push traffic (G13) and doubles `adb forward` bindings per device**, which on a large farm scales adb server load. Mitigated by scope: this plan only opens a second session for a device an operator has **actively opened** (Control), never for the wall's own bulk of devices — the multiplier applies to a handful of concurrently-controlled devices, not the whole fleet.
+- **A tab closed without a clean `release()` (browser crash, network drop) could still leak a `control` entry if the idle-TTL path has its own bug.** Mitigated by reusing the exact idle-TTL/refcount mechanism (G17) that already governs the `wall` entry today, rather than inventing new lifecycle code for the second slot.
+
+## 9. Open questions
+
+- **Q1 — Should `decodeTileCeiling` eventually vary by the *host* machine's own CPU/GPU, not be one farm-wide constant?** A 40-device farm on a beefy workstation and one on an N100 mini-PC (spec §16's own named target) plausibly tolerate different decoder counts in the *browser* tab, which is client-side and has nothing to do with the host at all — but the wall status-strip readout could still surface "you are near the ceiling" per browser, which is a UX question this plan does not resolve. Left for the owner: is a single farm-wide default sufficient, or does this need a per-browser measured ceiling later?
+- **Q2 — Does `control` ever need more than one concurrent viewer sharing the second entry, the way `wall` already supports many wall tabs sharing one entry?** This plan's design already supports it for free (refcount on the `control` entry works exactly like the `wall` entry's), but co-control (Plan 91) and this plan's second-session model have not been checked against each other end to end — flagged here rather than assumed compatible.
+- **Q3 — Should the fast-path's "device already proven awake" assumption ever be re-verified rather than trusted forever?** A wall entry could in principle go stale (device physically rebooted, guest agent lost state) while the entry itself stays open in the manager's map. This plan trusts the open entry as proof; a future plan may need a cheap liveness recheck if that trust is ever found to be wrong in practice.

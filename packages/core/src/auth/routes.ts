@@ -25,6 +25,58 @@ const ERROR_STATUS: Record<string, number> = {
   'auth.rate_limited': 429,
 }
 
+/**
+ * `packages/core/src/daemon.ts`'s `Bun.serve({ async fetch(req, srv) { ...
+ * return app.fetch(req, srv) } })` hands the live `Bun.Server` in as Hono's
+ * `env` argument, so `c.env` IS that server for every request dispatched
+ * through the app — the same object `hono/bun`'s own `getConnInfo` helper
+ * reads via `server.requestIP(request)`. Duck-typed rather than imported
+ * from `bun-types`, so a test can hand in a minimal stand-in with no real
+ * socket behind it.
+ */
+interface BunServerLike {
+  requestIP: (req: Request) => { address: string } | null
+}
+
+/** The verified TCP peer address — unforgeable, unlike any header. `null` only when
+ * `c.env` was not given a real (or stand-in) Bun server, e.g. a test that never passes one. */
+function peerAddress(c: Context): string | null {
+  const server = c.env as BunServerLike | undefined
+  if (!server || typeof server.requestIP !== 'function') return null
+  return server.requestIP(c.req.raw)?.address ?? null
+}
+
+/**
+ * Identifies the caller for the login rate limiter (and the `sessions.ip`
+ * audit column). Defaults to the socket peer address — a client reaching the
+ * core directly cannot spoof it, unlike `X-Forwarded-For`, which used to be
+ * trusted unconditionally and made the lockout decorative for anyone not
+ * going through a proxy.
+ *
+ * `X-Forwarded-For` is honoured ONLY when `trustProxy` is true, i.e. the
+ * operator has told us a reverse proxy they control sits in front (see
+ * `ENKAKU_TRUST_PROXY` in `.env.example`, alongside the documented
+ * Caddy/nginx + `ENKAKU_TLS_MODE=external` path in docs/guide/install.md).
+ * Even then, the RIGHTMOST hop of the chain is used — the one the trusted
+ * proxy itself appended when it forwarded the request — never the leftmost,
+ * which is whatever the client already put in the header before it ever
+ * reached the proxy and is exactly as spoofable as before.
+ */
+function clientIp(c: Context, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = c.req.header('x-forwarded-for')
+    if (forwarded) {
+      const hops = forwarded
+        .split(',')
+        .map((hop) => hop.trim())
+        .filter(Boolean)
+      const rightmost = hops.at(-1)
+      if (rightmost) return rightmost
+    }
+  }
+  return peerAddress(c) ?? 'unknown'
+}
+
 export function createAuthRoutes(deps: {
   auth: AuthService
   audit: AuditLogger
@@ -32,8 +84,19 @@ export function createAuthRoutes(deps: {
   secureCookie: boolean
   maxAttempts: number
   lockoutSeconds: number
+  /**
+   * Trust `X-Forwarded-For` for rate limiting and session auditing — only
+   * turn this on when the core sits behind a reverse proxy the operator
+   * controls (docs/guide/install.md's Caddy/nginx + `ENKAKU_TLS_MODE=external`
+   * path). Left undefined, this reads `ENKAKU_TRUST_PROXY` itself so
+   * `daemon.ts`'s call site does not need to thread a farm/config value
+   * through just for this; the field exists so callers (and tests) can
+   * still override it directly.
+   */
+  trustProxy?: boolean
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
+  const trustProxy = deps.trustProxy ?? process.env.ENKAKU_TRUST_PROXY === '1'
   /** In-memory login rate limit per ip+email (enough for a LAN). */
   const attempts = new Map<string, { count: number; until: number }>()
 
@@ -63,7 +126,7 @@ export function createAuthRoutes(deps: {
   app.post('/login', async (c) => {
     const body = Credentials.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('auth.invalid_credentials', 'invalid email or password')
-    const ip = c.req.header('x-forwarded-for') ?? 'local'
+    const ip = clientIp(c, trustProxy)
     const key = `${ip}|${body.data.email}`
     const entry = attempts.get(key)
     if (entry && entry.until > Date.now()) {

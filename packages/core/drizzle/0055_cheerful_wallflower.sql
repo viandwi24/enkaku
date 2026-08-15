@@ -1,0 +1,1 @@
+ALTER TABLE `scripts` ADD `result_schema` text;

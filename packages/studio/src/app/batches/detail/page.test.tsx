@@ -1,13 +1,57 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { screen, waitFor, within } from '@testing-library/react'
 import '@/lib/test/nav'
 import { setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import BatchDetailPage from './page'
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
-afterEach(cleanup)
+// Plan 94 §3.7, §4.9, F25, step 94.10 — a live `job.waiting` push has no
+// real `WebSocket` to arrive over in a test, so `@/lib/ws` is mocked the
+// same way `app/console/page.test.tsx` already does it: `ws.on` just
+// records callbacks, and `emit` below drives them directly. The page's
+// static import is replaced by a dynamic one (`await import('./page')`,
+// below) so this mock is in place BEFORE the page module — and its own
+// `ws.on` call — first evaluates.
+type Handler = (msg: unknown) => void
+let handlers: Handler[] = []
+
+mock.module('@/lib/ws', () => ({
+  ws: {
+    on: (cb: Handler) => {
+      handlers.push(cb)
+      return () => {
+        handlers = handlers.filter((h) => h !== cb)
+      }
+    },
+    onBinary: () => () => {},
+    onStatus: (cb: (v: boolean) => void) => {
+      cb(true)
+      return () => {}
+    },
+    onReconnected: () => () => {},
+    getSessionId: () => 'session-1',
+    isConnected: () => true,
+    send: () => {},
+    request: () => Promise.reject(new Error('ws.request not used by the batch detail page')),
+  },
+  coreBase: () => 'http://core.test',
+  newId: (() => {
+    let n = 0
+    return () => `test-id-${n++}`
+  })(),
+}))
+
+function emit(msg: { type: string; payload?: unknown }): void {
+  for (const h of handlers) h(msg)
+}
+
+const { default: BatchDetailPage } = await import('./page')
+
+afterEach(() => {
+  handlers = []
+  cleanup()
+})
 
 const batch = {
   id: 'batch-1',
@@ -70,5 +114,234 @@ describe('BatchDetailPage — smoke render', () => {
     setSearchParams({})
     renderWithApi(<BatchDetailPage />, {})
     expect(screen.getByText('The address is missing an id parameter.')).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 94 §3.9, §4.9, step 94.8 — "Stop" replaces "Cancel", with a dialog
+ * naming what happens to running members before it sends `POST
+ * /api/batches/:id/stop`.
+ */
+describe('BatchDetailPage — Stop (plan 94 §3.9, §4.9, step 94.8)', () => {
+  test('a running batch shows Stop; confirming it calls POST /stop and reports the result', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'batch-1' })
+    let stopCalled = false
+    renderWithApi(
+      <BatchDetailPage />,
+      {
+        '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+        '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+        '/api/batches/batch-1/stop': (req) => {
+          stopCalled = req.method === 'POST'
+          return { body: { cancelled: 0, aborted: 1, refused: 0, refusedDeviceIds: [] } }
+        },
+      },
+    )
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: 'Stop batch' }))
+    const dialog = await screen.findByRole('alertdialog')
+    // Names what happens to running members, not just "are you sure" (the task's own requirement).
+    expect(within(dialog).getByText(/aborted/)).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: 'Stop batch' }))
+
+    await waitFor(() => expect(stopCalled).toBe(true))
+  })
+
+  test('a paced batch names that pacing stops too, in the confirmation dialog', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'batch-1' })
+    const pacedBatch = {
+      ...batch,
+      pacing: { repeatCount: 4, intervalMinMs: 1000, intervalMaxMs: 2000, deviceIntervalMs: 0 },
+      repeats: [{ deviceId: 'device-1', completed: 1, planned: 4 }],
+    }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pacedBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: 'Stop batch' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/No further repetition is planned/)).toBeTruthy()
+  })
+
+  test('a "stopping" batch shows the stopping badge and no Stop control', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const stoppingBatch = { ...batch, status: 'stopping' }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: stoppingBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('stopping')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Stop batch' })).toBeNull()
+  })
+
+  test('a stopped/terminal batch shows no Stop control', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const doneBatch = { ...batch, status: 'success', counts: { total: 1, queued: 0, running: 0, success: 1, failed: 0, cancelled: 0 } }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: doneBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Stop batch' })).toBeNull()
+  })
+})
+
+/**
+ * Plan 94 §3.7, §4.10, step 94.10 — "Repeat pacing" aside: the config the
+ * batch was actually created with, per-device repetition progress, and the
+ * delay/next-start each device shows — "makes §3.7's promise visible rather
+ * than merely true".
+ */
+describe('BatchDetailPage — Repeat pacing aside (plan 94 §3.7, §4.10, step 94.10)', () => {
+  const pacedBatch = {
+    ...batch,
+    pacing: { repeatCount: 4, intervalMinMs: 180_000, intervalMaxMs: 480_000, deviceIntervalMs: 30_000 },
+    repeats: [{ deviceId: 'device-1', completed: 1, planned: 4 }],
+  }
+
+  test('an unpaced batch shows no Repeat pacing aside', async () => {
+    setSearchParams({ id: 'batch-1' })
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.queryByText('repeat pacing')).toBeNull()
+  })
+
+  test('a paced batch shows its config and per-device progress', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const nextJob = { ...job, jobId: 'job-2', status: 'queued', batchRepeat: 1, notBefore: Math.floor(Date.now() / 1000) + 42 }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pacedBatch, jobs: [{ ...job, batchRepeat: 0, pacedDelayMs: 30_000 }, nextJob] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.getByText('repeat pacing')).toBeTruthy()
+    expect(screen.getByText('4')).toBeTruthy() // repetitions
+    expect(screen.getByText('3–8 min')).toBeTruthy() // interval
+    expect(screen.getByText('30 s')).toBeTruthy() // stagger
+    expect(screen.getByText('1/4')).toBeTruthy() // completed/planned for device-1
+  })
+
+  test('a live job.waiting push with reason "paced" renders on the row (F25)', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const queuedJob = { ...job, jobId: 'job-2', status: 'queued', batchRepeat: 1, notBefore: null }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pacedBatch, jobs: [queuedJob] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+
+    emit({
+      type: 'job.waiting',
+      payload: { jobId: 'job-2', deviceId: 'device-1', waiting: true, reason: 'paced', heldBy: null, remainingSec: 4 },
+    })
+    await waitFor(() => expect(screen.getByText(/waiting — next repetition in 4s/)).toBeTruthy())
+  })
+})
+
+// Plan 93 §3.12, §3.15, §4.8, F11, F15, H3, step 93.11 — the same
+// three-part `OutcomeSummary`/`SkippedGroups` report every other bulk
+// surface in this plan shows, and "Retry skipped" using the `?only=skipped`
+// route step 93.8 already built.
+describe('BatchDetailPage — outcome, skipped, and retry (plan 93 step 93.11)', () => {
+  const skippedBatch = {
+    ...batch,
+    status: 'success',
+    counts: { total: 1, queued: 0, running: 0, success: 0, failed: 1, cancelled: 0 },
+    skipped: [{ deviceId: 'device-2', reason: 'offline' }],
+  }
+  const failedJob = { ...job, status: 'failed', error: 'exit 1' }
+
+  test('shows the outcome summary and names every skipped device by reason', async () => {
+    setSearchParams({ id: 'batch-1' })
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: skippedBatch, jobs: [failedJob] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    // 0 ok, 1 failed, 1 skipped, out of 2 total (1 job + 1 skipped device — F11: skipped never counted in `counts.total`).
+    expect(screen.getByText('0 ok · 1 failed · 1 skipped (2/2)')).toBeTruthy()
+    expect(screen.getByText('offline')).toBeTruthy()
+    expect(screen.getByText('exit 1')).toBeTruthy()
+    // The header action names the exact count behind it, per H3.
+    expect(screen.getByText('Retry skipped (1)')).toBeTruthy()
+  })
+
+  test('Retry skipped posts POST .../rerun?only=skipped and navigates to the new batch', async () => {
+    setSearchParams({ id: 'batch-1' })
+    let rerunQuery: string | null = null
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: skippedBatch, jobs: [failedJob] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/batches/batch-1/rerun*': (req) => {
+        rerunQuery = req.path.split('?')[1] ?? null
+        return { body: { batch: { ...skippedBatch, id: 'batch-2' } } }
+      },
+    })
+    await waitFor(() => expect(screen.getByText('Retry skipped (1)')).toBeTruthy())
+    screen.getByText('Retry skipped (1)').click()
+    await waitFor(() => expect(rerunQuery).toBe('only=skipped'))
+  })
+
+  test('a non-pull batch shows no collected-files table', async () => {
+    setSearchParams({ id: 'batch-1' })
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.queryByText('collected files')).toBeNull()
+  })
+
+  test('a pull batch shows the collected-files table with Download all', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const pullBatch = { ...batch, scriptId: 'internal:pull', scriptName: null, scriptVersion: null }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pullBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/batches/batch-1/artifacts': {
+        body: {
+          items: [
+            {
+              artifactId: 'art-1',
+              jobId: 'job-1',
+              deviceId: 'device-1',
+              deviceLabel: 'Pixel 6',
+              stableId: 'stable-1',
+              filename: 'report.txt',
+              sizeBytes: 128,
+              createdAt: 0,
+              contentUrl: '/api/artifacts/art-1/content',
+            },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('collected files')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('report.txt')).toBeTruthy())
+    expect(screen.getByText('Pixel 6')).toBeTruthy()
+    const downloadAll = screen.getByText('Download all').closest('a')
+    expect(downloadAll?.getAttribute('href')).toBe('http://core.test/api/batches/batch-1/artifacts.zip')
+  })
+
+  test('a pull batch with nothing collected yet shows an honest empty state, not a broken table', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const pullBatch = { ...batch, scriptId: 'internal:pull', scriptName: null, scriptVersion: null }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pullBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/batches/batch-1/artifacts': { body: { items: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('No files collected yet.')).toBeTruthy())
+    expect(screen.queryByText('Download all')).toBeNull()
   })
 })

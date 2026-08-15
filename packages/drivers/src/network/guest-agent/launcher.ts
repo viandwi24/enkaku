@@ -3,6 +3,10 @@ import { shellQuote } from '@enkaku/adb'
 // re-exported here so callers of this launcher don't need a second import
 // for the one constant they need alongside it.
 import { GUEST_AGENT_SOCKET, type ShellResult } from '@enkaku/protocol'
+// On-device artifact verification (plan 41 §3.1, §4.2) — the SAME function
+// `ui-server/launcher.ts` uses, not a second copy (plan 90 §3.8, F8): "the
+// `ui-server` algorithm, not a new one".
+import { verifyDeviceArtifact, type DeviceArtifactExpectation } from '../../inspector/ui-server/verify'
 
 export { GUEST_AGENT_SOCKET }
 
@@ -25,6 +29,20 @@ const BOOTSTRAP_ACTIVITY = `${GUEST_AGENT_PACKAGE}/.BootstrapActivity`
  */
 const ACTIVATE_VPN_OP = 'ACTIVATE_VPN'
 
+/**
+ * Reported once, when a repair attempt still leaves the artifact mismatched
+ * (plan 90 §3.8, mirrors `UiServerArtifactMismatch` — F8). `not_installed`
+ * is included alongside the two mismatch reasons because the repair path
+ * re-verifies after reinstalling — if THAT install itself did not stick
+ * (e.g. `adb install` reported success but the package manager silently
+ * dropped it), that is just as much "the repair did not work" as a
+ * version/signature mismatch.
+ */
+export interface GuestAgentArtifactMismatch {
+  reason: 'not_installed' | 'version_mismatch' | 'signature_mismatch'
+  observed?: { versionCode?: number; signature?: string }
+}
+
 export interface GuestAgentLauncherDeps {
   serial: string
   /**
@@ -33,16 +51,60 @@ export interface GuestAgentLauncherDeps {
    * the real exit code rather than by matching text.
    */
   exec: (cmd: string) => Promise<ShellResult>
-  /** `adb install` and `adb forward` need CLI-level adb, supplied by the core. */
-  hostAdb: (args: string[]) => Promise<string>
+  /**
+   * `adb install`/`uninstall`/`forward` need CLI-level adb, supplied by the
+   * core. Installs pass `{ lane: 'install', serial }` (plan 90 §3.8, F12,
+   * mirrors `packages/drivers/src/inspector/ui-server/launcher.ts`) so the
+   * core's bounded host-adb helper (plan 85 §3.4, §4.5) can serialise them
+   * per device AND apply the farm's `adb.maxInstallConcurrent` cap — a
+   * fleet-wide admission wave must queue, not saturate one USB tree.
+   */
+  hostAdb: (args: string[], opts?: { lane?: 'default' | 'install'; serial?: string }) => Promise<string>
   /** APK path from the Toolchain Manager (or `ENKAKU_GUEST_AGENT_PATH`, plan 44 §7). */
   apkPath: () => Promise<string>
+  /**
+   * The manifest's on-device expectation for this build (plan 90 §3.8, F6's
+   * fix — the manifest previously had no `guest-agent` entry at all, so this
+   * was always empty). `undefined`/empty fields mean `ensureInstalled()`
+   * only verifies presence, never blocking on missing metadata of our own —
+   * the identical rule `ui-server/launcher.ts` already follows.
+   */
+  expectedArtifact?: { versionCode?: number; signatureSha256?: string }
+  /**
+   * Called at most once per `ensureInstalled()` call, and only when a single
+   * uninstall-reinstall-reverify cycle still leaves the artifact mismatched
+   * (plan 90 §3.8) — the caller's (`AgentProvisioner`'s) cue to record
+   * `device.agent`/report `outdated` or `failed`. `ensureInstalled()` still
+   * throws afterward; this callback exists purely for observability, not
+   * for control flow.
+   */
+  onMismatch?: (info: GuestAgentArtifactMismatch) => void
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
 }
 
 export interface GuestAgentLauncher {
   isInstalled(): Promise<boolean>
-  ensureInstalled(): Promise<void>
+  /**
+   * Verify → (not installed → install) → (mismatch → uninstall, reinstall,
+   * re-verify ONCE) → (still mismatched → report and stop) — the exact
+   * `ui-server` algorithm (F8), replacing the old presence-only check (F7).
+   *
+   * Resolves with the versionCode this pass leaves the device with: the
+   * OBSERVED one whenever a verify pass actually read it back, the pinned
+   * EXPECTED one on a blind not-installed→install (no re-verify there,
+   * mirroring `ui-server/launcher.ts`'s identical choice), and `null` when
+   * the device's `dumpsys package` output was unreadable (never treated as
+   * a mismatch — `dumpsys` output is not stable across OEMs).
+   *
+   * `opts.force` skips the fast "already matches" path and goes straight to
+   * uninstall+reinstall+reverify once — used for the version-skew repair
+   * (plan 90 §3.9 rule 1, R1): a live protocol mismatch discovered over
+   * `hello()` that the on-device artifact check alone cannot see (the
+   * installed versionCode can still read as expected while the running
+   * process answers an old protocol, in principle — R1 exists to repair
+   * that case exactly once too, never loop).
+   */
+  ensureInstalled(opts?: { force?: boolean }): Promise<{ versionCode: number | null }>
   ensurePreGranted(): Promise<void>
   bootstrap(token: string): Promise<void>
   forward(localPort: number): Promise<void>
@@ -54,17 +116,27 @@ export interface GuestAgentLauncher {
  * On-device agent lifecycle: install the APK, pre-grant the VPN app op,
  * clear the stopped state, forward the control-channel socket. Mirrors
  * `packages/drivers/src/inspector/ui-server/launcher.ts` file for file
- * (plan 44 §4.4).
- *
- * `installedVersion()` is deliberately not part of this surface: the only
- * cheap on-device source for it is `dumpsys package <pkg>`, whose output
- * has no format contract (the same reason
- * docs/research/android-guest-agent.md §6 says VPN state must come from the
- * agent's control channel rather than from parsing `dumpsys`) — getting a
- * version cheaply and reliably needs the agent's own `hello` response
- * (plan 44 §4.2), not a shell command.
+ * (plan 44 §4.4; `ensureInstalled` specifically mirrors it again for plan 90
+ * §3.8, F7/F8).
  */
 export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAgentLauncher {
+  const expectation = (): DeviceArtifactExpectation => ({ packageName: GUEST_AGENT_PACKAGE, ...deps.expectedArtifact })
+
+  /** Adapts `deps.exec`'s structured `ShellResult` to the plain-stdout shape `verifyDeviceArtifact` expects. */
+  const verifyExec = (cmd: string): Promise<string> => deps.exec(cmd).then((r) => r.stdout)
+
+  const install = async (): Promise<void> => {
+    const apk = await deps.apkPath()
+    deps.onLog?.('info', `installing the guest agent on ${deps.serial}`)
+    // -g auto-grants runtime permissions; -r replaces a different version.
+    // -g cannot grant ACTIVATE_VPN — that is an app op, not a permission,
+    // hence the separate ensurePreGranted() below.
+    // `lane: 'install'` (plan 85 §3.4, plan 90 §3.8, F12): this install for
+    // THIS device never runs concurrently with more than
+    // `adb.maxInstallConcurrent` installs farm-wide.
+    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', apk], { lane: 'install', serial: deps.serial })
+  }
+
   return {
     async isInstalled() {
       // `cmd package path <pkg>` takes the package name as an argument, not
@@ -72,6 +144,11 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // false-positive on a sibling package (docs/research/android-guest-agent.md
       // §6). It prints `package:/data/app/.../base.apk` and exits 0 when
       // installed, or nothing and exit 1 when it is not.
+      //
+      // Deliberately UNCHANGED by plan 90 (presence-only): this is still
+      // what `packages/core/src/api/guest-agent.ts`'s pre-plan-90 GET/POST/
+      // DELETE `/:id/guest-agent` endpoints call — `ensureInstalled()` below
+      // is where F7's fix actually lives.
       //
       // Unlike `dumpsys` — which exits 0 even for a service that does not
       // exist, verified on hardware in plan 53 §5.5 — this command reports
@@ -87,14 +164,71 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       return exitCode === 0 && stdout.startsWith('package:')
     },
 
-    async ensureInstalled() {
-      if (await this.isInstalled()) return
-      const apk = await deps.apkPath()
-      deps.onLog?.('info', `installing the guest agent on ${deps.serial}`)
-      // -g auto-grants runtime permissions; -r replaces a different version.
-      // -g cannot grant ACTIVATE_VPN — that is an app op, not a permission,
-      // hence the separate ensurePreGranted() below.
-      await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', apk])
+    async ensureInstalled(opts) {
+      const expected = expectation()
+
+      if (!opts?.force) {
+        if (expected.versionCode === undefined && expected.signatureSha256 === undefined) {
+          deps.onLog?.(
+            'info',
+            `no versionCode/signature expectation recorded for ${GUEST_AGENT_PACKAGE} — verifying installed presence only (plan 90 §3.8, fixes F6)`,
+          )
+        }
+
+        const result = await verifyDeviceArtifact(verifyExec, expected)
+        if (result.ok) return { versionCode: result.versionCode }
+
+        if (result.reason === 'not_installed') {
+          await install()
+          // No re-verify here — mirrors `ui-server/launcher.ts`'s identical
+          // choice: a blind install's versionCode is reported as the pinned
+          // expectation until the NEXT pass confirms it for real.
+          return { versionCode: expected.versionCode ?? null }
+        }
+        if (result.reason === 'unreadable') {
+          deps.onLog?.(
+            'warn',
+            `could not read ${GUEST_AGENT_PACKAGE}'s installed version/signature on ${deps.serial} — skipping artifact verification for this pass`,
+          )
+          return { versionCode: null }
+        }
+
+        // version_mismatch or signature_mismatch: repair exactly once, below.
+        deps.onLog?.(
+          'warn',
+          `${GUEST_AGENT_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — reinstalling`,
+        )
+      } else {
+        deps.onLog?.('info', `forcing a reinstall of ${GUEST_AGENT_PACKAGE} on ${deps.serial} (plan 90 §3.9 rule 1)`)
+      }
+
+      // Repair-once: uninstall, reinstall, re-verify (plan 41 §3.3's rule,
+      // reused as-is). Reached either because verify reported a mismatch
+      // above, or because the caller asked for a forced repair (R1's
+      // protocol-mismatch case, where the on-device artifact may read as
+      // matching yet the running process answers stale).
+      await deps.hostAdb(['-s', deps.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
+      await install()
+      const reverified = await verifyDeviceArtifact(verifyExec, expected)
+      if (reverified.ok) {
+        deps.onLog?.('info', `${GUEST_AGENT_PACKAGE} reinstalled and reverified on ${deps.serial}`)
+        return { versionCode: reverified.versionCode }
+      }
+      if (reverified.reason === 'unreadable') {
+        deps.onLog?.(
+          'warn',
+          `could not re-verify ${GUEST_AGENT_PACKAGE} on ${deps.serial} after reinstalling — skipping artifact verification for this pass`,
+        )
+        return { versionCode: null }
+      }
+
+      // Still mismatched after one repair attempt — stop, do not loop.
+      deps.onLog?.(
+        'warn',
+        `${GUEST_AGENT_PACKAGE} on ${deps.serial} is still ${reverified.reason} after one repair attempt — giving up`,
+      )
+      deps.onMismatch?.({ reason: reverified.reason, ...(reverified.observed ? { observed: reverified.observed } : {}) })
+      throw new Error(`guest agent artifact verification failed after one repair attempt: ${reverified.reason}`)
     },
 
     async ensurePreGranted() {

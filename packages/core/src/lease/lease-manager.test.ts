@@ -45,21 +45,21 @@ describe('toHolder — the wire shape of a Lease (plan 71 §3.2, §7)', () => {
     const lease: Lease = { deviceId: 'd1', type: 'job', holder: 'job-1', acquiredAt: 100, expiresAt: 200 }
     const resolveLabel: ResolveLabel = (kind, id) => `${kind}:${id}`
     const holder = toHolder(lease, resolveLabel)
-    expect(holder).toEqual({ kind: 'job', id: 'job-1', label: 'job:job-1', runId: null, takeable: false, acquiredAt: 100, expiresAt: 200 })
+    expect(holder).toEqual({ kind: 'job', id: 'job-1', label: 'job:job-1', runId: null, takeable: false, acquiredAt: 100, expiresAt: 200, purpose: 'control' })
   })
 
   test('an agent lease (holder prefixed agent-run:): kind agent, id is the agent id (holderUserId), runId is the root run id, takeable', () => {
     const lease: Lease = { deviceId: 'd1', type: 'manual', holder: `${AGENT_LEASE_PREFIX}run-42`, holderUserId: 'agent-7', acquiredAt: 100, expiresAt: 200 }
     const resolveLabel: ResolveLabel = (kind, id) => `${kind}:${id}`
     const holder = toHolder(lease, resolveLabel)
-    expect(holder).toEqual({ kind: 'agent', id: 'agent-7', label: 'agent:agent-7', runId: 'run-42', takeable: true, acquiredAt: 100, expiresAt: 200 })
+    expect(holder).toEqual({ kind: 'agent', id: 'agent-7', label: 'agent:agent-7', runId: 'run-42', takeable: true, acquiredAt: 100, expiresAt: 200, purpose: 'control' })
   })
 
   test('a person lease: kind user, id is holderUserId when known, takeable', () => {
     const lease: Lease = { deviceId: 'd1', type: 'manual', holder: 'client-abc', holderUserId: 'user-9', acquiredAt: 100, expiresAt: 200 }
     const resolveLabel: ResolveLabel = (kind, id) => `${kind}:${id}`
     const holder = toHolder(lease, resolveLabel)
-    expect(holder).toEqual({ kind: 'user', id: 'user-9', label: 'user:user-9', runId: null, takeable: true, acquiredAt: 100, expiresAt: 200 })
+    expect(holder).toEqual({ kind: 'user', id: 'user-9', label: 'user:user-9', runId: null, takeable: true, acquiredAt: 100, expiresAt: 200, purpose: 'control' })
   })
 
   test('a person lease with no authenticated user (local mode, no login): falls back to the bare clientId', () => {
@@ -265,5 +265,129 @@ describe('lastManualReleaseAt / lastManualHolder — feeds the quiet-period wait
     leases.acquireManual('d1', 'client-b', 'user-b', { takeOverFrom: 'client-a' })
     leases.releaseManual('d1', 'client-b')
     expect(leases.lastManualHolder('d1')?.label).toBe('user:user-b')
+  })
+})
+
+describe('releaseAll — the adb restart flow\'s farm-wide drain (plan 88 §3.10, §4.8, fixes F19)', () => {
+  function setUpFarm() {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db as Db
+    db.insert(devices)
+      .values([
+        { id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' },
+        { id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'idle' },
+        { id: 'd3', stableId: 'stable-3', serial: 'SER3', label: 'Phone Three', status: 'idle' },
+      ])
+      .run()
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    return { db, states }
+  }
+
+  test('releases every manual lease farm-wide with the given reason, and returns the count', () => {
+    const { states } = setUpFarm()
+    const revoked: Array<{ deviceId: string; reason: string }> = []
+    const leases = makeLeases({
+      states,
+      onManualRevoked: (deviceId, reason) => {
+        revoked.push({ deviceId, reason })
+      },
+    })
+    leases.acquireManual('d1', 'client-a')
+    leases.acquireManual('d2', 'client-b')
+    // d3 stays idle — never leased, so it must not appear in the count or the revoke callback.
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(2)
+    expect(leases.getLease('d1')).toBeNull()
+    expect(leases.getLease('d2')).toBeNull()
+    expect(revoked.sort((a, b) => a.deviceId.localeCompare(b.deviceId))).toEqual([
+      { deviceId: 'd1', reason: 'adb-server-restart' },
+      { deviceId: 'd2', reason: 'adb-server-restart' },
+    ])
+  })
+
+  test('never touches a JOB lease — only a manual one', () => {
+    const { states } = setUpFarm()
+    const leases = makeLeases({ states })
+    leases.acquireManual('d1', 'client-a')
+    leases.noteJobLease('d2', 'job-1', 60)
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(1)
+    expect(leases.getLease('d1')).toBeNull()
+    expect(leases.getLease('d2')?.type).toBe('job')
+  })
+
+  test('no manual leases held: returns 0 and revokes nobody', () => {
+    const { states } = setUpFarm()
+    const revoked: string[] = []
+    const leases = makeLeases({
+      states,
+      onManualRevoked: (deviceId) => {
+        revoked.push(deviceId)
+      },
+    })
+
+    const count = leases.releaseAll?.({ reason: 'adb-server-restart' })
+
+    expect(count).toBe(0)
+    expect(revoked).toEqual([])
+  })
+})
+
+describe('releaseDevice — the per-device disconnect flow\'s forced release (plan 88 §3.7, §4.6, §5 step 88.4)', () => {
+  function setUpFarm() {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db as Db
+    db.insert(devices)
+      .values([
+        { id: 'd1', stableId: 'stable-1', serial: '10.0.0.5:5555', label: 'Phone One', status: 'idle' },
+        { id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'idle' },
+      ])
+      .run()
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    return { db, states }
+  }
+
+  test('force-releases a manual lease regardless of WHO holds it — unlike releaseManual, no clientId match is needed', () => {
+    const { states } = setUpFarm()
+    const revoked: Array<{ deviceId: string; reason: string; holderUserId: string | null }> = []
+    const leases = makeLeases({
+      states,
+      onManualRevoked: (deviceId, reason, holderUserId) => {
+        revoked.push({ deviceId, reason, holderUserId })
+      },
+    })
+    leases.acquireManual('d1', 'someone-elses-browser-tab', 'user-a')
+
+    const released = leases.releaseDevice?.('d1', 'disconnected')
+
+    expect(released).toBe(true)
+    expect(leases.getLease('d1')).toBeNull()
+    expect(revoked).toEqual([{ deviceId: 'd1', reason: 'disconnected', holderUserId: 'user-a' }])
+  })
+
+  test('a no-op (returns false) when the device carries no manual lease — a caller need not check getHolder first', () => {
+    const { states } = setUpFarm()
+    const leases = makeLeases({ states })
+
+    const released = leases.releaseDevice?.('d2', 'disconnected')
+
+    expect(released).toBe(false)
+  })
+
+  test('never touches a JOB lease', () => {
+    const { states } = setUpFarm()
+    const leases = makeLeases({ states })
+    leases.noteJobLease('d1', 'job-1', 60)
+
+    const released = leases.releaseDevice?.('d1', 'disconnected')
+
+    expect(released).toBe(false)
+    expect(leases.getLease('d1')?.type).toBe('job')
   })
 })

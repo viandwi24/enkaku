@@ -164,10 +164,12 @@ describe('db check', () => {
     expect(result.status).toBe('ok')
   })
 
-  test('fails with a remedy on a corrupt database', async () => {
+  test('fails with a remedy on a corrupt database, pointing at the real backup command', async () => {
     const result = await dbCheck.run(fakeDoctorContext({ db: { inspect: async () => ({ state: 'corrupt', detail: 'malformed' }) } }))
     expect(result.status).toBe('fail')
-    expect(result.remedy).toBeDefined()
+    // `enkaku backup` exists (packages/core/src/backup/) — the remedy must not
+    // point an operator at a backup mechanism the product never gave them.
+    expect(result.remedy).toContain('enkaku backup')
   })
 
   test('warns with a remedy on pending migrations', async () => {
@@ -263,7 +265,10 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
       expect(result.status).toBe('ok')
       expect(result.observed).toContain('adb: ZP1:device')
-      expect(result.observed).toContain('registry: ZP1:idle')
+      // Plan 89 §4.7, §5 step 89.4 — the registry summary now names the
+      // device by its own composed `#N label` (here numberless, so just the
+      // bare label) alongside the serial, not the serial alone.
+      expect(result.observed).toContain('registry: Phone 0 (ZP1):idle')
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plan 90 §3.2, §4.2, step 90.5 — the standard IME manifest declaration EnkakuIme's `<service>`
+  points at via `android.view.im`. `settingsActivity` sends a human who opens system "Language &
+  input" settings for this keyboard back to StatusActivity, the one screen that explains what this
+  app is.
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="dev.enkaku.guestagent.StatusActivity" />

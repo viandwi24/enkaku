@@ -69,6 +69,9 @@ describe('classifyFailure — script-class codes (the result, not the farm\'s pr
     'E_ADB_STREAM_DEADLINE',
     // plan 37 §4.4, acceptance #10 — a crash is a result, not a farm fault.
     'APP_CRASHED',
+    // plan 98 §3.6 — a script that blew its own declared memory budget is
+    // likewise a result, never the farm's fault.
+    'MEMORY_LIMIT',
   ]
 
   for (const code of scriptCodes) {

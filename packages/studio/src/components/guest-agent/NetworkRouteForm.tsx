@@ -14,14 +14,18 @@ import {
   disableNetworkRoute,
   enableNetworkRoute,
   fetchNetworkStatus,
+  retryNetworkRoute,
   type GeoObservation,
   type NetworkHealth,
+  type NetworkRecoveryStatus,
   type NetworkStatus,
   type NetworkUdpMode,
   type RouteCheck,
   type RouteCheckId,
   type RouteCheckState,
 } from '@/lib/api'
+import { duration } from '@/lib/format'
+import { useNow } from '@/lib/useNow'
 import { cn } from '@/lib/utils'
 
 /**
@@ -208,6 +212,30 @@ function describeToggle(status: NetworkStatus): { checked: boolean; tone: Toggle
   }
 }
 
+/**
+ * Bounded automatic route recovery, in plain language (plan 90 §3.7 rule 5,
+ * fixes F20) — before this the only operator-visible artefact of exhaustion
+ * was a static string on the route form; "why was this device dark for four
+ * minutes" was unanswerable after the fact. `null` when no automatic
+ * recovery has ever run for this route, or once it has genuinely recovered
+ * (`attempts` resets to 0 the moment a pass reaches `ready`, plan 90 §3.7
+ * rule 1) — this is not shown as a permanent ledger, only a live one.
+ */
+function describeRecovery(recovery: NetworkRecoveryStatus | null, nowMs: number): string | null {
+  if (!recovery || recovery.attempts === 0) return null
+  const nowSec = Math.floor(nowMs / 1000)
+  const countdown =
+    recovery.nextAttemptAt !== null && recovery.nextAttemptAt > nowSec ? duration(nowSec, recovery.nextAttemptAt, nowMs) : null
+  if (recovery.exhausted) {
+    return countdown
+      ? `Gave up after ${recovery.maxAttempts} attempts — retrying in ${countdown}`
+      : `Gave up after ${recovery.maxAttempts} attempts — retrying shortly`
+  }
+  return countdown
+    ? `Retrying in ${countdown} (attempt ${recovery.attempts} of ${recovery.maxAttempts})`
+    : `Attempt ${recovery.attempts} of ${recovery.maxAttempts} in progress`
+}
+
 const TOGGLE_TONE_CLASS: Record<ToggleTone, string> = {
   off: 'text-fg-muted',
   ok: 'text-led-ok',
@@ -242,6 +270,10 @@ export function NetworkRouteForm({
   const [status, setStatus] = useState<NetworkStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
+  // The recovery countdown ticks on its own (plan 90 §3.7 rule 5) — a
+  // stopped clock reading "retrying in 14s" forever is worse than the
+  // static sentence it replaces.
+  const now = useNow()
   // The form is seeded from `config` exactly once, the first time it
   // loads — re-seeding on every reload would stomp on an operator's
   // in-progress edit the moment `apply`'s response comes back.
@@ -385,11 +417,25 @@ export function NetworkRouteForm({
       onSuccess: setStatus,
     })
 
+  /**
+   * Plan 90 §3.7 rule 4 — the honest version of the disable-then-enable
+   * workaround (F17): clears the recovery bound and applies once,
+   * immediately, without the teardown round trip or the misleading "route
+   * is off" UI state along the way.
+   */
+  const retryRecovery = () =>
+    run('retry', () => retryNetworkRoute(deviceId), {
+      success: 'Retrying now',
+      failure: 'Could not retry the route',
+      onSuccess: setStatus,
+    })
+
   if (error) return <ErrorState message={error} onRetry={load} />
   if (status === null) return <LoadingRows rows={2} />
 
   const toggle = describeToggle(status)
   const toggling = isPending('enable') || isPending('disable')
+  const recoveryNote = describeRecovery(status.recovery, now)
 
   return (
     <div className="space-y-4">
@@ -413,6 +459,24 @@ export function NetworkRouteForm({
             {toggling && <span className="text-[11.5px] text-fg-subtle">Working…</span>}
           </div>
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">{toggle.note}</p>
+          {/* Plan 90 §3.7 rule 5, fixes F20 — an attempt count and a live
+              countdown instead of the static "not routed" sentence this
+              banner showed before this. */}
+          {recoveryNote && (
+            <p className="mt-1 flex flex-wrap items-center gap-2 text-[11.5px] text-led-warn">
+              {recoveryNote}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                disabled={!canUse || isPending('retry')}
+                onClick={() => void retryRecovery()}
+              >
+                {isPending('retry') ? 'Retrying…' : 'Retry now'}
+              </Button>
+            </p>
+          )}
         </div>
         {status.config && (
           <ConfirmDialog
@@ -771,6 +835,37 @@ export function NetworkRouteForm({
             <div className="mt-2.5 rounded border border-led-danger/40 bg-led-danger/5 px-2.5 py-2 text-[11.5px]">
               <span className="readout font-medium text-led-danger">{status.lastError.code}</span>
               <p className="mt-0.5 text-fg-muted">{status.lastError.message}</p>
+            </div>
+          )}
+
+          {/* Plan 90 §3.7 rule 5, fixes F20 — the full bookkeeping behind the
+              banner's short countdown, so "why was this device dark for four
+              minutes" is answerable from this panel, not only the Logs tab's
+              `network.recovery.*` events. */}
+          {status.recovery && (
+            <div className="mt-2.5 border-t pt-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-[12px] font-medium text-fg-subtle">automatic recovery</h4>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={!canUse || isPending('retry')}
+                  onClick={() => void retryRecovery()}
+                >
+                  {isPending('retry') ? 'Retrying…' : 'Retry now'}
+                </Button>
+              </div>
+              <dl className="mt-1 space-y-1.5">
+                <Row label="attempts" value={`${status.recovery.attempts} of ${status.recovery.maxAttempts}`} />
+                <Row label="exhausted" value={status.recovery.exhausted ? 'yes' : 'no'} />
+                <Row
+                  label="next attempt"
+                  value={status.recovery.nextAttemptAt ? new Date(status.recovery.nextAttemptAt * 1000).toLocaleTimeString() : '—'}
+                />
+                <Row label="resets this hour" value={`${status.recovery.reconnectCycles}`} />
+              </dl>
             </div>
           )}
 

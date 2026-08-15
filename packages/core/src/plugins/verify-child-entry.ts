@@ -19,6 +19,7 @@
  */
 import { isPlugin } from '@enkaku/sdk'
 import { z } from 'zod'
+import { checkDeclaredSchema, RuntimeEnvelopeSchema, type RuntimeEnvelope } from '@enkaku/protocol'
 
 export type VerifyChildMessage =
   | {
@@ -27,7 +28,7 @@ export type VerifyChildMessage =
       version: string
       title?: string
       description?: string
-      scripts: { id: string; paramsSchema: unknown }[]
+      scripts: { id: string; paramsSchema: unknown; resultSchema?: unknown; runtime: RuntimeEnvelope | null }[]
       resetPackages: string[]
     }
   | { ok: false; error: string }
@@ -50,7 +51,51 @@ async function main(): Promise<void> {
     if (!isPlugin(def)) {
       throw new Error('the bundle has no default export produced by definePlugin() — expected a `scripts` array')
     }
-    const scripts = def.scripts.map((s) => ({ id: s.id, paramsSchema: z.toJSONSchema(s.params as z.ZodTypeAny) }))
+    // Publish path 2 of 3 (plan 95 §4.9, §5 step 95.5) — the same
+    // `checkDeclaredSchema` gate `POST /api/scripts` runs for a standalone
+    // script, applied here to every member of a plugin bundle so a plugin
+    // cannot take the path a standalone script cannot. A `'group'` finding
+    // is the non-consecutive-group WARNING (plan 95 §3.5) and does not
+    // fail verification on its own — every other finding does.
+    const scripts = def.scripts.map((s) => {
+      const paramsSchema = z.toJSONSchema(s.params as z.ZodTypeAny)
+      const findings = checkDeclaredSchema(paramsSchema).filter((f) => f.limit !== 'group')
+      if (findings.length > 0) {
+        throw new Error(
+          `E_PARAMS_SCHEMA_INVALID: script "${s.id}"'s params schema: ${findings.map((f) => (f.path ? `${f.path}: ${f.message}` : f.message)).join('; ')}`,
+        )
+      }
+      // Plan 97 §4.4, §4.7, §5 step 97.2 — publish path 2 of 3 for a
+      // RESULT schema, mirroring `paramsSchema` immediately above:
+      // OPTIONAL (a member declaring no `result` reports `null` and is
+      // never checked), `io: 'output'` (F24 — a defaulted result field is
+      // already applied by the time `run()` resolves, unlike a param).
+      const memberResult = (s as { result?: unknown }).result
+      let resultSchema: unknown = null
+      if (memberResult !== undefined) {
+        resultSchema = z.toJSONSchema(memberResult as z.ZodTypeAny, { io: 'output' })
+        const resultFindings = checkDeclaredSchema(resultSchema).filter((f) => f.limit !== 'group')
+        if (resultFindings.length > 0) {
+          throw new Error(
+            `E_RESULT_SCHEMA_INVALID: script "${s.id}"'s result schema: ${resultFindings.map((f) => (f.path ? `${f.path}: ${f.message}` : f.message)).join('; ')}`,
+          )
+        }
+      }
+      // Plan 98 §3.1, §4.5, §5 step 98.4 — a member's `runtime` was already
+      // folded and shape-validated by `definePlugin` on the author's own
+      // machine (plan 98 §4.2); re-validated here too, independently,
+      // exactly matching this file's own doc comment on why params schemas
+      // are re-checked here rather than trusted from the SDK alone — a
+      // hand-crafted bundle can carry a `scripts` array that never went
+      // through `definePlugin` at all.
+      const runtimeParse = RuntimeEnvelopeSchema.nullable().safeParse((s as { runtime?: unknown }).runtime ?? null)
+      if (!runtimeParse.success) {
+        throw new Error(
+          `E_RUNTIME_ENVELOPE_INVALID: script "${s.id}"'s runtime envelope: ${runtimeParse.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+        )
+      }
+      return { id: s.id, paramsSchema, resultSchema, runtime: runtimeParse.data }
+    })
     send({
       ok: true,
       pluginId: def.id,

@@ -20,6 +20,16 @@ import {
   LocationSetResultSchema,
   LocationClearRequestSchema,
   LocationClearResultSchema,
+  LabelApplyRequestSchema,
+  LabelApplyResultSchema,
+  LabelStatusRequestSchema,
+  LabelStatusResultSchema,
+  LabelClearRequestSchema,
+  LabelClearResultSchema,
+  TextCommitRequestSchema,
+  TextCommitResultSchema,
+  TextStatusRequestSchema,
+  TextStatusResultSchema,
   type GuestAgentErrorCode,
   type GuestAgentRequest,
   type HelloResult,
@@ -31,6 +41,11 @@ import {
   type RouteHoldResult,
   type LocationSetResult,
   type LocationClearResult,
+  type LabelApplyResult,
+  type LabelStatusResult,
+  type LabelClearResult,
+  type TextCommitResult,
+  type TextStatusResult,
   type Socks5RouteConfig,
 } from '@enkaku/protocol'
 
@@ -61,6 +76,23 @@ export class GuestAgentClientError extends Error {
     this.name = 'GuestAgentClientError'
   }
 }
+
+/**
+ * R1 (plan 90 §3.9) — the version-skew seam. `hello()` below still throws `E_PROTOCOL_MISMATCH`
+ * synchronously, out of its own retry loop, and does not retry it — "a different protocol version
+ * will not fix itself" (F39) is still true of THIS call. What changed is what a caller is now
+ * expected to do with it: before the manifest pinned a build (90.1), nothing knew which APK was
+ * right, so a mismatch was a dead end. Now it is not — a caller that catches a code in this set is
+ * expected to mark the device `outdated` (the state plan 90 §3.8 defines) and hand it to
+ * `AgentProvisioner.ensure()` (`packages/core/src/device/agent-provisioner.ts`, step 90.3, not yet
+ * built) for exactly one reinstall of the pinned build plus one re-`hello()`, the same
+ * one-repair-then-degrade rule `ui-server` already uses (F8) — never a loop, never a second
+ * attempt at the same repair. This client's own refusal to retry is unchanged; only the caller's
+ * response to that refusal is no longer "give up forever".
+ */
+export const GUEST_AGENT_REPAIRABLE_ERROR_CODES: ReadonlySet<GuestAgentClientErrorCode> = new Set<GuestAgentClientErrorCode>([
+  'E_PROTOCOL_MISMATCH',
+])
 
 /** The minimal surface this client needs from a connected socket — matches `Bun.Socket`. */
 export interface GuestAgentSocketHandle {
@@ -138,6 +170,28 @@ export interface GuestAgentClient {
   locationSet(lat: number, lng: number, accuracy?: number): Promise<LocationSetResult>
   /** Plan 58 §4.4. Removes the mock provider, restoring real location. Same capability gate as `locationSet`. */
   locationClear(): Promise<LocationClearResult>
+  /**
+   * Plan 89 §4.5; plan 90 §3.6, §4.1. Always present on this interface — like every other method
+   * here, the wire request can always be sent; whether the agent actually understands it is a
+   * property of the INSTALLED BUILD, discovered from `hello().capabilities` (`'screen-label'`),
+   * not of this client. An older build (or one predating the label facet) answers
+   * `E_UNKNOWN_METHOD`, which plan 89 §3.5's `unavailable` tier treats as a precondition, not a
+   * route failure.
+   */
+  labelApply(params: { fingerprint: string; number: string; name: string | null; surfaces: Array<'home' | 'lock'> }): Promise<LabelApplyResult>
+  /** Plan 89 §4.5; plan 90 §3.6, §4.1. Same "always present, gated on `hello().capabilities`" treatment as `labelApply`. */
+  labelStatus(): Promise<LabelStatusResult>
+  /** Plan 89 §4.5; plan 90 §3.6, §4.1. Same gate as `labelApply`. `restoreOriginal` picks which of `label.clear`'s two possible writes runs. */
+  labelClear(restoreOriginal: boolean): Promise<LabelClearResult>
+  /**
+   * Plan 90 §3.2, §3.3, §4.1. Same "always present on the client, gated on `hello().capabilities`"
+   * treatment as `egressProbe`/`routeHold` above — an older build (or one predating the IME facet)
+   * answers `E_UNKNOWN_METHOD`, which the text-routing resolver (`resolveTextRoute`, §4.5) reads as
+   * "rung 1 (`agent-ime`) unavailable" and falls down the ladder rather than failing the call.
+   */
+  textCommit(text: string, perCharMs?: [number, number]): Promise<TextCommitResult>
+  /** Plan 90 §3.2, §3.3, §4.1. Same gate as `textCommit` — reports whether the agent's IME is currently the live one. */
+  textStatus(): Promise<TextStatusResult>
 }
 
 /** One connect → write one line → read one line → close, with a hard timeout. */
@@ -368,6 +422,58 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
         method: 'location.clear',
       })
       return call(connect, opts.port, timeoutMs, req, LocationClearResultSchema)
+    },
+
+    labelApply(params) {
+      const req = LabelApplyRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'label.apply',
+        fingerprint: params.fingerprint,
+        number: params.number,
+        name: params.name,
+        surfaces: params.surfaces,
+      })
+      return call(connect, opts.port, timeoutMs, req, LabelApplyResultSchema)
+    },
+
+    labelStatus() {
+      const req = LabelStatusRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'label.status',
+      })
+      return call(connect, opts.port, timeoutMs, req, LabelStatusResultSchema)
+    },
+
+    labelClear(restoreOriginal) {
+      const req = LabelClearRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'label.clear',
+        restoreOriginal,
+      })
+      return call(connect, opts.port, timeoutMs, req, LabelClearResultSchema)
+    },
+
+    textCommit(text, perCharMs) {
+      const req = TextCommitRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'text.commit',
+        text,
+        ...(perCharMs !== undefined ? { perCharMs } : {}),
+      })
+      return call(connect, opts.port, timeoutMs, req, TextCommitResultSchema)
+    },
+
+    textStatus() {
+      const req = TextStatusRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'text.status',
+      })
+      return call(connect, opts.port, timeoutMs, req, TextStatusResultSchema)
     },
   }
 }

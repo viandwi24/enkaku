@@ -101,6 +101,20 @@ describe('buildMonitorCommand (plan 24 §4.3) — the only place a monitor comma
     expect(buildMonitorCommand('df', {})).toBe('df -h')
   })
 
+  test('meminfo: an optional package scopes the dump to one app (plan 90 §3.5)', () => {
+    expect(buildMonitorCommand('meminfo', { package: 'com.example.app' })).toBe("dumpsys meminfo 'com.example.app'")
+  })
+
+  test('meminfo: the package is shell-quoted, same guarantee as every other interpolated value (defence in depth — the regex already refuses metacharacters)', () => {
+    const cmd = buildMonitorCommand('meminfo', { package: 'com.example.app' })
+    expect(cmd.startsWith("dumpsys meminfo '")).toBe(true)
+    expect(cmd.endsWith("'")).toBe(true)
+  })
+
+  test('meminfo: a malformed package is rejected before any command is built', () => {
+    expect(() => buildMonitorCommand('meminfo', { package: 'not a package!' })).toThrow(EnkakuError)
+  })
+
   test('an unknown kind never reaches this function — the type system enforces MonitorKindSchema at the boundary', () => {
     // @ts-expect-error — exercising the runtime guard for defence in depth,
     // in case a caller ever bypasses the Zod parse upstream.

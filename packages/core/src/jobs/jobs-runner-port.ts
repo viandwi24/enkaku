@@ -1,4 +1,5 @@
 import type { JobsCall } from '@enkaku/session'
+import type { JobSettings } from '@enkaku/protocol'
 import type { Db } from '../db'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
@@ -28,6 +29,14 @@ export interface JobsRunnerPortDeps {
   registry: ScriptRegistry
   /** Read fresh per call, not captured at daemon start — a Settings change reaches the very next trigger. */
   triggerBudgets: () => TriggerBudgets
+  /**
+   * Plan 98 §3.7, §4.6, step 98.5 — forwarded straight into `createJobTrigger`'s
+   * own `farmJobSettings` (see that interface's doc comment for why an
+   * omitted getter still resolves `maxConcurrent` correctly). Optional for
+   * the same reason `onTriggered` is: a host built before this step keeps
+   * compiling and behaving unchanged.
+   */
+  farmJobSettings?: () => JobSettings
   /** One `job.triggered` device event per successful (non-deduped) trigger (plan 81 §4.5) — the host turns this into a main-stream event on the TARGET device. */
   onTriggered?: (from: JobRow, targetDeviceId: string, result: TriggerResult) => void
   log?: Logger
@@ -39,7 +48,13 @@ export interface JobsRunnerPort {
 
 export function createJobsRunnerPort(deps: JobsRunnerPortDeps): JobsRunnerPort {
   const reader = createScriptJobsReader({ jobStore: deps.jobStore, db: deps.db })
-  const trigger = createJobTrigger({ db: deps.db, registry: deps.registry, budgets: deps.triggerBudgets, ...(deps.log ? { log: deps.log } : {}) })
+  const trigger = createJobTrigger({
+    db: deps.db,
+    registry: deps.registry,
+    budgets: deps.triggerBudgets,
+    ...(deps.farmJobSettings ? { farmJobSettings: deps.farmJobSettings } : {}),
+    ...(deps.log ? { log: deps.log } : {}),
+  })
 
   return {
     async call(ctx, call) {

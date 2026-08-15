@@ -99,7 +99,7 @@ describe('a plugin-published script runs end to end through a real queued job (p
         closeDevice: async () => {},
         closeIfIdle: async () => {},
         idleSessions: () => [],
-        closeAll: async () => {},
+        closeAll: async () => 0,
       },
       artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
@@ -223,7 +223,7 @@ describe('a plugin-published script runs end to end through a real queued job (p
         closeDevice: async () => {},
         closeIfIdle: async () => {},
         idleSessions: () => [],
-        closeAll: async () => {},
+        closeAll: async () => 0,
       },
       artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
@@ -310,7 +310,7 @@ describe('restart() does not disturb a running job (plan 82, criterion 26 — th
     const devSlots = createDevSlotStore()
     const registry = createScriptRegistry({ db, dataDir, devSlots })
     const kv = createKvStore(db, dataDir, () => ({ maxValueBytes: 65536, maxKeyLength: 256, maxEntriesPerNamespace: 1000, maxEntriesPerDevice: 5000 }))
-    const healthyReport: VerifyReport = { ok: true, pluginId: 'tiktok', version: '1.0.0', scripts: [{ id: 'login', paramsSchema: {} }], resetPackages: [] }
+    const healthyReport: VerifyReport = { ok: true, pluginId: 'tiktok', version: '1.0.0', scripts: [{ id: 'login', paramsSchema: {}, runtime: null }], resetPackages: [] }
     const runtime = createPluginRuntime({ db, dataDir, registry, kv, devSlots, verify: async () => healthyReport })
 
     const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: SLOW_PLUGIN_BUNDLE })
@@ -332,7 +332,7 @@ describe('restart() does not disturb a running job (plan 82, criterion 26 — th
         closeDevice: async () => {},
         closeIfIdle: async () => {},
         idleSessions: () => [],
-        closeAll: async () => {},
+        closeAll: async () => 0,
       },
       artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,

@@ -3,17 +3,32 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle } from 'lucide-react'
+import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, Network } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { NotificationBell } from '@/components/NotificationBell'
 import { ProvisioningBanner } from '@/components/ProvisioningBanner'
+import { AdbServerBanner } from '@/components/layout/AdbServerBanner'
+import { useAuth, type AuthUser } from '@/lib/auth'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
   { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
+  // Workflows sit at the SAME level as scripts, not underneath them — the
+  // owner's own ruling, and the reason `RunScriptDialog` offers a
+  // Workflow | Script choice rather than burying one inside the other. The
+  // list page existed from plan 99 §5 step 99.9 but had no nav entry, so the
+  // only way in was `RunScriptDialog`'s "Open the workflow editor" link:
+  // a workflow could be created and edited, never browsed.
+  { href: '/workflows', label: 'Workflows', icon: Workflow, countKey: null },
+  // Recordings (plan 94 §5 step 94.5). Same gap: `/recordings/detail?slug=`
+  // was linked from `RecordPanel` right after a capture, so an operator
+  // could review the recording they had just made and never find an older
+  // one again. It sits beside Scripts because publishing a recording is how
+  // a script gets made here.
+  { href: '/recordings', label: 'Recordings', icon: CircleDot, countKey: null },
   // Plan 82 §4.6, criterion 30 — the badge is a farm-health WARNING (danger
   // tone, not the neutral count every other item uses) while any plugin is
   // `failed`, and it already links to the page: this nav entry IS the
@@ -21,7 +36,16 @@ const NAV = [
   { href: '/plugins', label: 'Plugins', icon: Puzzle, countKey: 'failedPlugins' as const },
   { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
+  // The fleet command console (plan 93 §3.16, §4.8, step 93.7) — one adb
+  // command to one device or the whole farm, with history and saved
+  // commands. Distinct from a device's own Terminal tab, which stays put.
+  { href: '/console', label: 'Console', icon: Terminal, countKey: null },
   { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
+  // Topology — devices grouped by cluster, plus the node/transport view.
+  // It had no nav entry AND no link from anywhere else in Studio, so the
+  // page was reachable only by typing the URL. Placed next to Clusters
+  // because it is the same data seen spatially.
+  { href: '/topology', label: 'Topology', icon: Network, countKey: null },
   { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
   { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },
   { href: '/tools', label: 'Tools', icon: Wrench, countKey: null },
@@ -54,6 +78,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<string>('local')
   const [mobileOpen, setMobileOpen] = useState(false)
   const pathname = usePathname()
+  // Who is signed in, from `AuthGate` (plan 09 §4.14) — `authMode` here is
+  // 'local'|'server' (is a login wall in effect at all), a different axis
+  // from the `mode` state above ('local'|'orchestrator', which core binary
+  // this is talking to). `authMode === 'local'` hides the user menu
+  // entirely: local mode's implicit admin has no session to sign out of.
+  const { user, authMode, logout } = useAuth()
 
   useEffect(() => {
     const load = async () => {
@@ -108,7 +138,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => setMobileOpen(false), [pathname])
 
   const body = (
-    <SidebarBody counts={counts} connected={connected} version={version} pathname={pathname} mode={mode} />
+    <SidebarBody
+      counts={counts}
+      connected={connected}
+      version={version}
+      pathname={pathname}
+      mode={mode}
+      user={user}
+      authMode={authMode}
+      onLogout={() => void logout()}
+    />
   )
 
   return (
@@ -138,6 +177,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             provisioning is the one thing an operator needs to see before
             they have navigated anywhere, and it must not scroll away. */}
         <ProvisioningBanner />
+        {/* Same reasoning, same placement (plan 88 §3.10, §5 step 88.8): a
+            restart drops every device on every page, not just Tools. */}
+        <AdbServerBanner />
 
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
       </div>
@@ -162,12 +204,18 @@ function SidebarBody({
   version,
   pathname,
   mode,
+  user,
+  authMode,
+  onLogout,
 }: {
   counts: Counts
   connected: boolean
   version: string | null
   pathname: string
   mode: string
+  user: AuthUser | null
+  authMode: string
+  onLogout: () => void
 }) {
   return (
     <>
@@ -220,6 +268,27 @@ function SidebarBody({
       </nav>
 
       <div className="border-t p-3">
+        {/* Signed-in user + logout (plan 09 §4.14) — hidden entirely in
+            local mode, where there is no session to sign out of. Lives here,
+            not in a new place: this footer is already where "facts about
+            this instance" (connection, version) sit. */}
+        {authMode === 'server' && user && (
+          <div className="mb-2 flex items-center justify-between gap-2 border-b pb-2">
+            <div className="min-w-0">
+              <p className="truncate text-[12px] font-medium text-fg">{user.email}</p>
+              <p className="rack-label text-fg-subtle">{user.role}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onLogout}
+              title="Log out"
+              aria-label="Log out"
+              className="shrink-0 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            >
+              <LogOut className="size-3.5" aria-hidden />
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-2 text-[11px]">
           <span
             className={cn('size-1.5 rounded-full', connected ? 'bg-led-ok' : 'bg-led-danger')}

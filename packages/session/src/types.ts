@@ -1,4 +1,4 @@
-import type { DeviceStatus, KeepAwakeMode, RotationMode } from '@enkaku/protocol'
+import type { DeviceSettings, DeviceStatus, KeepAwakeMode, MediaScanMode, PushResult, RotationMode, TextInputMode } from '@enkaku/protocol'
 
 /**
  * The data contract the session needs, **with no knowledge of any database**.
@@ -28,6 +28,16 @@ export interface DeviceSnapshot {
   standbyScreenOff?: boolean
   /** DeviceSettings.prep.rotation (Plan 85 §3.7, §4.1). */
   rotation?: RotationMode
+  /** DeviceSettings.prep.textInput (plan 90 §3.2, §4.4, §5 step 90.5). */
+  textInput?: TextInputMode
+  /**
+   * DeviceSettings.instrumentation.tagTraffic (spec §9.4/§17; plan 87 §4.12,
+   * §5 step 87.13) — whether a session marks this device as farm-instrumented
+   * via `./farm-tag.ts`. Undefined behaves like `true` (on by default,
+   * matching §17), the same default `createSession` applies when the field
+   * is omitted entirely.
+   */
+  tagTraffic?: boolean
   /**
    * DeviceSettings.identity (plan 58 §4.2) — the spoofed identity the device
    * presents (timezone/locale/GPS). Carried so a session/job can read what the
@@ -38,6 +48,16 @@ export interface DeviceSnapshot {
     locale?: string
     gps?: { lat: number; lng: number; accuracy?: number }
   }
+  /**
+   * DeviceSettings.video (plan 92 §3.5, §4.4) — this device's own video
+   * picture override, projected at the same seam as `keepAwake`/`identity`
+   * above so it cannot be saved-and-never-read (F18). `resolveVideoProfile`
+   * (`./video-profile.ts`) reads it as the "device" layer, farm settings
+   * underneath. Undefined behaves exactly like `{}` (follow the farm on
+   * every field) — the default a device with no override, or no row at all,
+   * always resolves to.
+   */
+  video?: DeviceSettings['video']
 }
 
 export interface DeviceSnapshotSource {
@@ -80,6 +100,7 @@ export interface TransferPort {
     deviceId: string,
     opts: { artifactId: string; reinstall?: boolean; grantPermissions?: boolean; allowDowngrade?: boolean },
   ): Promise<{ package: string | null; durationMs: number; output: string }>
-  push(deviceId: string, opts: { artifactId: string; remotePath: string }): Promise<void>
+  /** `mediaScan` (plan 90 §4.6) defaults to `'auto'` at the executor when omitted. */
+  push(deviceId: string, opts: { artifactId: string; remotePath: string; mediaScan?: MediaScanMode }): Promise<PushResult>
   pull(deviceId: string, opts: { remotePath: string }): Promise<{ artifactId: string; bytes: number }>
 }

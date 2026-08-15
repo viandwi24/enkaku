@@ -8,11 +8,13 @@ import { assertTlsPolicy, loadConfig, resolveAuthMode } from '../config'
 import { EnkakuError } from '../util/errors'
 import { embeddedAssets } from '../embedded'
 import type {
+  AdbServerHealthProbe,
   ConfigLoadResult,
   CoreProbeResult,
   DbInspectResult,
   DoctorContext,
   HostAdbCoreStats,
+  InputStatsProbe,
   PortHolder,
   StreamsStatus,
 } from './types'
@@ -207,13 +209,14 @@ async function countAdbProcesses(runWindows: WindowsCommandRunner = runCommandCa
 
 /**
  * The subset of `GET /api/adb/stats` this file reads, validated locally
- * (plan 85 §5 85.6): both `streams` and `hostAdb` are required fields on the
+ * (plan 85 §5 85.6, extended by plan 88 §5 step 88.7 with `adbHealth`):
+ * `streams`, `hostAdb` and `adbHealth` are all required fields on the
  * canonical `AdbStatsResponseSchema` (`@enkaku/protocol`) now, but this stays
  * a hand-rolled, fully-optional local copy rather than importing that schema
- * directly — an OLDER core (pre-plan-85, or one that has not yet added the
- * `transport` block) must keep answering with either block simply absent,
- * never a thrown parse error, and coupling this probe to the live schema's
- * shape would break that the next time either block grows a field.
+ * directly — an OLDER core (pre-plan-85, or one that has not yet added a
+ * given block) must keep answering with any of them simply absent, never a
+ * thrown parse error, and coupling this probe to the live schema's shape
+ * would break that the next time any block grows a field.
  */
 const AdbStatsProbeSchema = z.object({
   streams: z
@@ -232,18 +235,63 @@ const AdbStatsProbeSchema = z.object({
       longLived: z.number(),
     })
     .optional(),
+  adbHealth: z
+    .object({
+      status: z.enum(['ok', 'degraded', 'stuck']),
+      versionRttMs: z.number().nullable(),
+      lastCheckedAt: z.number(),
+      window: z.object({ seconds: z.number(), execs: z.number(), timeouts: z.number(), timeoutRate: z.number() }),
+      wedged: z.array(z.object({ serial: z.string(), consecutiveTimeouts: z.number(), adbState: z.string() })),
+      stuckOffline: z.array(z.object({ serial: z.string(), state: z.string(), sinceSec: z.number(), nudges: z.number() })),
+      symptoms: z.array(
+        z.object({
+          symptom: z.enum(['server-unreachable', 'server-unresponsive', 'transports-wedged', 'reconnect-ineffective', 'timeout-storm']),
+          detail: z.string(),
+          since: z.number(),
+        }),
+      ),
+      restartAdvised: z.boolean(),
+    })
+    .optional(),
+  /** Plan 91 §4.10, §5 step 91.10 — same "hand-rolled, fully optional" reasoning as `streams`/`hostAdb`/`adbHealth` above: an older core simply omits this block. */
+  input: z
+    .object({
+      lanes: z.record(z.string(), z.object({ depth: z.number(), waitMsP50: z.number(), waitMsP95: z.number(), refusals: z.number() })),
+      assistsActive: z.number(),
+      mirrorGroups: z.number(),
+      mirrorMembers: z.number(),
+      mirrorFanoutMsP50: z.number(),
+      mirrorFanoutMsP95: z.number(),
+      queueWaitMs: z.number(),
+      uncollectedGrants: z.number(),
+      orphanedMirrorGroups: z.number(),
+    })
+    .optional(),
 })
 
-/** Fetches `/api/adb/stats` once and returns both blocks this file cares about — `null`/`null` on any failure (unreachable core, bad JSON, schema mismatch), same "a diagnostic never throws" rule as every other probe in this file. */
-async function probeAdbStats(host: string, port: number): Promise<{ streams: StreamsStatus | null; hostAdb: HostAdbCoreStats | null }> {
+/** Fetches `/api/adb/stats` once and returns every block this file cares about — `null` on any failure (unreachable core, bad JSON, schema mismatch), same "a diagnostic never throws" rule as every other probe in this file. */
+async function probeAdbStats(
+  host: string,
+  port: number,
+): Promise<{
+  streams: StreamsStatus | null
+  hostAdb: HostAdbCoreStats | null
+  adbHealth: AdbServerHealthProbe | null
+  input: InputStatsProbe | null
+}> {
   try {
     const res = await fetch(`http://${host}:${port}/api/adb/stats`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
-    if (!res.ok) return { streams: null, hostAdb: null }
+    if (!res.ok) return { streams: null, hostAdb: null, adbHealth: null, input: null }
     const parsed = AdbStatsProbeSchema.safeParse(await res.json())
-    if (!parsed.success) return { streams: null, hostAdb: null }
-    return { streams: parsed.data.streams ?? null, hostAdb: parsed.data.hostAdb ?? null }
+    if (!parsed.success) return { streams: null, hostAdb: null, adbHealth: null, input: null }
+    return {
+      streams: parsed.data.streams ?? null,
+      hostAdb: parsed.data.hostAdb ?? null,
+      adbHealth: parsed.data.adbHealth ?? null,
+      input: parsed.data.input ?? null,
+    }
   } catch {
-    return { streams: null, hostAdb: null }
+    return { streams: null, hostAdb: null, adbHealth: null, input: null }
   }
 }
 
@@ -438,5 +486,7 @@ export async function createRealDoctorContext(dataDir: string): Promise<DoctorCo
       countAdbProcesses: () => countAdbProcesses(),
       probeCoreStats: async () => (await probeAdbStats(host, port)).hostAdb,
     },
+    adbHealth: { probe: async () => (await probeAdbStats(host, port)).adbHealth },
+    coControl: { probe: async () => (await probeAdbStats(host, port)).input },
   }
 }

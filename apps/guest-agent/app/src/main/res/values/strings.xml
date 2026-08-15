@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">Enkaku Guest Agent</string>
+    <string name="status_explanation">This device is managed by an Enkaku device farm. The app has no controls; everything is driven by the host over adb.</string>
+    <string name="switch_keyboard">Switch keyboard</string>
+    <string name="state_routing">Routing this device\'s traffic through a test proxy.</string>
+    <string name="state_paired_no_route">Paired with a farm host. No route is active.</string>
+    <string name="state_idle">Idle — no host has paired yet.</string>
+    <string name="keyboard_not_available">Enkaku keyboard is not installed on this build yet.</string>
+    <string name="ime_notice">Enkaku input — driven by the farm host</string>
 </resources>

@@ -45,10 +45,33 @@ export type LogcatOptions = z.infer<typeof LogcatOptionsSchema>
 export const EmptyMonitorOptionsSchema = z.object({}).strict()
 
 /**
- * The options shape for a given kind, resolved by `monitor.start` (§4.4).
- * `logcat` is the only kind with real options today; every other kind
- * accepts none, and passing any is rejected rather than silently ignored.
+ * `meminfo`'s optional package scope (plan 90 §3.5, step 90.7) — narrows
+ * `dumpsys meminfo` to one app instead of the whole device, adopted as one
+ * of the two host-side corrections plan 90 keeps instead of an on-device
+ * monitoring facet ("the host currently runs `dumpsys meminfo` with no
+ * package argument" — ten lines, not an APK). The regex mirrors Android's
+ * own package-name rules (kept local rather than importing
+ * `PackageNameSchema` from `../capability/device-args`, so `messages/` does
+ * not reach into `capability/`); the actual shell-injection guarantee is
+ * `shellQuote` at the command builder in `packages/core/src/device/monitors.ts`.
+ */
+export const MeminfoOptionsSchema = z.object({
+  package: z
+    .string()
+    .regex(/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/)
+    .optional()
+    .describe('Restrict dumpsys meminfo to this package'),
+})
+export type MeminfoOptions = z.infer<typeof MeminfoOptionsSchema>
+
+/**
+ * The options shape for a given kind, resolved by `monitor.start`/
+ * `monitor.oneshot` (§4.4). `logcat` and `meminfo` are the only kinds with
+ * real options; every other kind accepts none, and passing any is rejected
+ * rather than silently ignored.
  */
 export function optionsSchemaFor(kind: MonitorKind): z.ZodType {
-  return kind === 'logcat' ? LogcatOptionsSchema : EmptyMonitorOptionsSchema
+  if (kind === 'logcat') return LogcatOptionsSchema
+  if (kind === 'meminfo') return MeminfoOptionsSchema
+  return EmptyMonitorOptionsSchema
 }

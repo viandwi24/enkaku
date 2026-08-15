@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import { foldRuntimeEnvelope } from './runtime-fold'
 import type { ScriptDefinition } from './types'
 
 const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
@@ -22,8 +23,17 @@ const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/
  * below stamps a real `version` onto it before anything downstream ever
  * sees it — so every `ScriptDefinition` that leaves this module, in a
  * plugin or not, still has a required, validated, semver `version`.
+ *
+ * The second type parameter `R` (plan 97 §3.2, §4.2, §5 step 97.8) mirrors
+ * `ScriptDefinition`'s own — a plugin member can now declare `result` and
+ * get the same author-time `run`-return check a standalone `defineScript`
+ * script gets (H1). Defaults to `undefined`, exactly like `ScriptDefinition`
+ * itself: a member declaring no `result` is unaffected.
  */
-export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny> = Omit<ScriptDefinition<S>, 'version'> & {
+export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny, R extends z.ZodTypeAny | undefined = undefined> = Omit<
+  ScriptDefinition<S, R>,
+  'version'
+> & {
   /** Optional — must equal the plugin's own version when given (plan 82 §3.6). Omit it; `definePlugin` fills it in. */
   version?: string
   /**
@@ -58,8 +68,25 @@ export interface PluginDefinition {
  * `run`. That is the asymmetry this fixes: `defineScript<S>` infers a standalone script's params,
  * so a plugin member should infer its own too. The homomorphic mapped type below is what makes
  * TypeScript infer `S[K]` per element instead of collapsing the array to its constraint.
+ *
+ * `result`'s own type (plan 97 §3.2, §5 step 97.8) is deliberately NOT
+ * threaded through this same per-element inference — a second, independent
+ * `readonly (z.ZodTypeAny | undefined)[]` array cannot be reverse-inferred
+ * alongside `S` from the SAME array argument (tried; `tsc` silently falls
+ * back to the constraint and every member's `result` collapses to
+ * `undefined` — a real limit of TypeScript's homomorphic-mapped-type
+ * inference, not a mistake in the attempt). Each element's `result` type is
+ * instead left as the WIDE `z.ZodTypeAny | undefined` here — H1 for a
+ * plugin member is proven at the member's own `const` DECLARATION site
+ * instead (`const foo: PluginMemberScript<typeof params, typeof result> =
+ * {...}`, exactly how `switch-account.ts`/`search-follow.ts` already
+ * declare their members), where a plain generic-annotated assignment checks
+ * `run`'s return against the CONCRETE `R`, not this array's necessarily
+ * loosened one — see `plugin-result.type-test.ts`.
  */
-type PluginMemberScripts<S extends readonly z.ZodTypeAny[]> = { [K in keyof S]: PluginMemberScript<S[K]> }
+type PluginMemberScripts<S extends readonly z.ZodTypeAny[]> = {
+  [K in keyof S]: PluginMemberScript<S[K], z.ZodTypeAny | undefined>
+}
 
 /** `definePlugin`'s return: every member has been stamped with a real, required `version` — a genuine `ScriptDefinition[]`. */
 export interface Plugin extends Omit<PluginDefinition, 'scripts'> {
@@ -92,6 +119,14 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   }
 
   const seen = new Set<string>()
+  // Plan 98 §4.2 — the same `timeout`/`retries` ⇒ `runtime` fold
+  // `defineScript` applies, per member: a plugin member never goes through
+  // `defineScript` itself (this type's own doc comment above), so this is
+  // the ONLY place that fold happens for a plugin script. Computed in this
+  // validation pass (which already throws on the author's own machine, at
+  // import time, for every other per-member defect) and applied in the
+  // `.map()` below, keyed by id since ids are already known unique here.
+  const runtimeById = new Map<string, ReturnType<typeof foldRuntimeEnvelope>>()
   for (const s of def.scripts) {
     if (!s.id || s.id.trim().length === 0) {
       throw new Error('definePlugin: every script needs an `id`')
@@ -111,9 +146,20 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
     if (!s.params || typeof (s.params as { safeParse?: unknown }).safeParse !== 'function') {
       throw new Error(`definePlugin: script "${s.id}" — \`params\` must be a Zod schema`)
     }
+    // Plan 97 §3.2, §4.2, §5 step 97.8 — the same runtime check `defineScript`
+    // makes for a standalone script (`define-script.ts`): `result` is
+    // validated the same way `params` just above is, only when present — an
+    // output schema is optional and always optional (plan 97 §1, criterion 1).
+    if (s.result !== undefined && typeof (s.result as { safeParse?: unknown }).safeParse !== 'function') {
+      throw new Error(`definePlugin: script "${s.id}" — \`result\`, when present, must be a Zod schema`)
+    }
+    runtimeById.set(s.id, foldRuntimeEnvelope(s, `definePlugin: script "${s.id}" (plugin "${def.id}")`))
   }
 
-  const scripts: ScriptDefinition[] = def.scripts.map((s) => Object.freeze({ ...s, version: def.version }) as ScriptDefinition)
+  const scripts: ScriptDefinition[] = def.scripts.map((s) => {
+    const runtime = runtimeById.get(s.id)
+    return Object.freeze({ ...s, version: def.version, ...(runtime !== undefined ? { runtime } : {}) }) as ScriptDefinition
+  })
 
   return Object.freeze({ ...def, scripts })
 }

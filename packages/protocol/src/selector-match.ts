@@ -28,6 +28,44 @@ export function matches(node: UiNode, sel: Selector): boolean {
   return false
 }
 
+/**
+ * The deepest node in `root` whose bounds contain `point`, preferring a
+ * `clickable` node when the point falls inside more than one child's bounds at
+ * the same recursion level (plan 94 §4.6, step 94.1) — the primitive the
+ * recorder's anchor-based candidate proposal (`RecordingCandidateSchema`,
+ * `./recording.ts`) hit-tests against before calling `proposeSelectors`
+ * (`./selector-analysis.ts`, F13). Bounds are inclusive on every edge, so a
+ * point exactly on a shared border matches both neighbours — normal for
+ * adjacent siblings and resolved the same way as any other tie, by
+ * `clickable`.
+ *
+ * "Deepest, preferring clickable" is depth-first with `clickable` as the
+ * tie-break ACROSS SIBLING SUBTREES at one level — not a rule that climbs
+ * back up past a genuinely deeper match. A container's own bounds always
+ * enclose its children's in a real dump, so the common case (one child chain
+ * containing the point) is unambiguous; the tie-break only matters when two
+ * siblings both contain the point, which happens with overlapping decoration
+ * (a badge drawn over a button, for instance).
+ *
+ * Returns `null` when `point` falls outside `root` itself — a genuine miss,
+ * never a synthetic node the way `matchSelector`'s `{ point }` case fabricates
+ * one, because a hit-test's whole purpose is telling a miss from a hit.
+ */
+export function hitTest(root: UiNode, point: Point): UiNode | null {
+  if (!containsPoint(root.bounds, point)) return null
+  const hits: UiNode[] = []
+  for (const child of root.children) {
+    const found = hitTest(child, point)
+    if (found) hits.push(found)
+  }
+  if (hits.length === 0) return root
+  return hits.find((n) => n.clickable) ?? hits[0] ?? root
+}
+
+function containsPoint(b: Bounds, p: Point): boolean {
+  return p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom
+}
+
 /** Depth-first traversal, returning the first match. */
 export function matchSelector(root: UiNode, sel: Selector): UiNode | null {
   if ('point' in sel) {

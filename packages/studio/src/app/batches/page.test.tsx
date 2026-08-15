@@ -50,4 +50,15 @@ describe('BatchesPage — smoke render', () => {
     })
     await waitFor(() => expect(screen.getByText('batches boom')).toBeTruthy())
   })
+
+  // Plan 94 §3.9, §4.9, step 94.8 — `'stopping'` widened onto the wire; this
+  // is the exhaustive `STATUS_TONE`/`BatchStatusBadge` map that would go
+  // silently non-exhaustive (a TS error, per this file's own history) if a
+  // status value were ever added without a matching row here.
+  test('a "stopping" batch renders its own status badge, not a crash', async () => {
+    renderWithApi(<BatchesPage />, {
+      '/api/batches*': { body: { items: [{ ...batch, status: 'stopping' }], nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('stopping')).toBeTruthy())
+  })
 })

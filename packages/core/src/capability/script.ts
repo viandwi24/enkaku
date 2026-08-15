@@ -1,3 +1,4 @@
+import { JsonSchemaNodeSchema, type JsonSchemaNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { buildScriptFromWorkspace } from '../scripts/build'
 import { EnkakuError } from '../util/errors'
@@ -28,6 +29,14 @@ const ScriptDetailSchema = z.object({
   enabled: z.boolean(),
   createdBy: z.string().nullable(),
   createdAt: z.number().int().nullable(),
+  /**
+   * Plan 97 §4.7 — so a model can read what a script PROMISES to return
+   * before running it (the cheap half of plan 95 §9 Q3), needing no tool
+   * roster change. `.nullable().default(null)`: `null` for a row published
+   * before `scripts.resultSchema` existed (plan 97.2's storage column,
+   * §4.4), or for a script that still declares nothing.
+   */
+  resultSchema: JsonSchemaNodeSchema.nullable().default(null),
 })
 
 export const scriptList = defineCapability({
@@ -54,11 +63,23 @@ export const scriptGet = defineCapability({
   handler: (ctx, { id }) => {
     const script = ctx.scripts.get(id)
     if (!script) throw new EnkakuError('script_not_found', `no such script: ${id}`)
-    return Promise.resolve(script)
+    // Plan 97 §4.4, §4.7 — `ScriptDetail.resultSchema` now carries the real
+    // stored value (or `null` for a pre-plan-97/undeclared row). Reconciled
+    // the same way `scripts/routes.ts`'s `GET /:id` reconciles its own raw
+    // `unknown`-typed JSON column against `JsonSchemaNodeSchema` — not a
+    // bypass of validation, since `ScriptDetailSchema` above still Zod-checks
+    // it on the way out.
+    return Promise.resolve({ ...script, resultSchema: script.resultSchema as JsonSchemaNode | null })
   },
 })
 
-const PublishFields = { name: z.string().min(1), version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/), paramsSchema: z.unknown().optional() }
+const PublishFields = {
+  name: z.string().min(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/),
+  paramsSchema: z.unknown().optional(),
+  /** Plan 97 §4.4, §4.7 — mirrors `paramsSchema` above exactly. */
+  resultSchema: z.unknown().optional(),
+}
 
 /**
  * Two input forms (plan 64 §3.5, §4.4): a pre-built bundle (what `enkaku
@@ -89,7 +110,14 @@ export const scriptPublish = defineCapability({
   handler: async (ctx, input) => {
     if ('path' in input) {
       const { bundle, source } = await buildScriptFromWorkspace(ctx.workspace, input.path)
-      return ctx.scripts.publish({ name: input.name, version: input.version, bundle, source, paramsSchema: input.paramsSchema })
+      return ctx.scripts.publish({
+        name: input.name,
+        version: input.version,
+        bundle,
+        source,
+        paramsSchema: input.paramsSchema,
+        resultSchema: input.resultSchema,
+      })
     }
     return ctx.scripts.publish(input)
   },

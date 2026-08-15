@@ -57,6 +57,52 @@ export default {
 }
 `
 
+// Plan 95 §4.9, §5 step 95.5 — publish path 2 of 3: a plugin member with a
+// hostile params schema (here, a non-identifier field name) must be refused
+// the same way a standalone script's `POST /api/scripts` would be.
+const HOSTILE_PARAMS = `
+import { z } from 'zod'
+export default {
+  id: 'p',
+  version: '1.0.0',
+  scripts: [
+    { id: 'ok', params: z.object({}), run: async () => {} },
+    { id: 'hostile', params: z.object({ 'bad name': z.string() }), run: async () => {} },
+  ],
+}
+`
+
+// Plan 98 §3.1, §4.5, §5 step 98.4 — a raw object literal default export
+// (NOT `definePlugin()`), exactly like every other bundle in this file: this
+// is the "hand-crafted bundle" `verify-child-entry.ts`'s own doc comment
+// names as the reason params schemas are re-validated here rather than
+// trusted from the SDK alone, applied to `runtime` too.
+const HEALTHY_WITH_RUNTIME = `
+import { z } from 'zod'
+export default {
+  id: 'p',
+  version: '1.0.0',
+  scripts: [
+    { id: 'login', params: z.object({}), run: async () => {}, runtime: { timeoutMs: 45_000, maxRssBytes: 128 * 1024 * 1024 } },
+  ],
+}
+`
+
+const HOSTILE_RUNTIME = `
+import { z } from 'zod'
+export default {
+  id: 'p',
+  version: '1.0.0',
+  scripts: [
+    { id: 'ok', params: z.object({}), run: async () => {} },
+    // Below RuntimeEnvelopeSchema's 1s floor — bypassing definePlugin() (and
+    // therefore its author-machine fold/validate) entirely, since this
+    // bundle never calls it.
+    { id: 'hostile', params: z.object({}), run: async () => {}, runtime: { timeoutMs: 500 } },
+  ],
+}
+`
+
 describe('verifyPluginBundle', () => {
   test('a healthy bundle reports the plugin id, version, every script id, and JSON-Schema params', async () => {
     const path = writeBundle(HEALTHY)
@@ -109,5 +155,29 @@ describe('verifyPluginBundle', () => {
   test('a missing bundle file is reported failed, not thrown', async () => {
     const report = await verifyPluginBundle('/no/such/file.mjs')
     expect(report.ok).toBe(false)
+  }, 10_000)
+
+  test('a plugin member with a hostile params schema is refused, naming the member and the finding (plan 95 §4.9, §5 step 95.5)', async () => {
+    const path = writeBundle(HOSTILE_PARAMS)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.error).toContain('E_PARAMS_SCHEMA_INVALID')
+    expect(report.error).toContain('hostile')
+    expect(report.error).toContain('bad name')
+  }, 10_000)
+
+  test('a member\'s runtime envelope is reported through the verify report (plan 98 §3.1, §5 step 98.4)', async () => {
+    const path = writeBundle(HEALTHY_WITH_RUNTIME)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.scripts[0]?.runtime).toEqual({ timeoutMs: 45_000, maxRssBytes: 128 * 1024 * 1024 })
+  }, 10_000)
+
+  test('a plugin member with a hostile runtime envelope (bypassing definePlugin entirely) is refused with E_RUNTIME_ENVELOPE_INVALID, naming the member', async () => {
+    const path = writeBundle(HOSTILE_RUNTIME)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.error).toContain('E_RUNTIME_ENVELOPE_INVALID')
+    expect(report.error).toContain('hostile')
   }, 10_000)
 })

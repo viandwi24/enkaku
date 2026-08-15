@@ -33,6 +33,16 @@ export function createArtifactStore(deps: {
   dataDir: string
   jobId: string
   onSaved: (info: ArtifactInfo) => void
+  /**
+   * Plan 99 §3.2, §4.6, §4.7 — read FRESH on every save (the same
+   * "accessor, not a value" convention `resetPolicy`/`adb.maxConcurrent`
+   * already use), so a save that lands while node 2 is running stamps node
+   * 2 even though this whole `ArtifactStore` was built once, at job start,
+   * for the job's WHOLE lifetime. Undefined (every non-workflow job) stamps
+   * nothing — `nodeId` reads back `null`, byte-identical to before this
+   * field existed. See this file's own module doc for the full mechanism.
+   */
+  nodeId?: () => string | null
 }): ArtifactStore {
   const dir = join(deps.dataDir, 'artifacts', deps.jobId)
   let seq = 0
@@ -60,6 +70,7 @@ export function createArtifactStore(deps: {
         path: join('artifacts', deps.jobId, filename),
         sizeBytes: size,
         createdAt: Math.floor(Date.now() / 1000),
+        nodeId: deps.nodeId?.() ?? null,
       }
       deps.db
         .insert(artifacts)
@@ -71,10 +82,77 @@ export function createArtifactStore(deps: {
           path: info.path,
           sizeBytes: size,
           createdAt: new Date(),
+          nodeId: info.nodeId,
         })
         .run()
       deps.onSaved(info)
       return info
+    },
+  }
+}
+
+/**
+ * Plan 99 §3.2, §4.6, §4.7 — tracks which workflow NODE is currently
+ * executing for a given job, so `createArtifactStore`'s `nodeId` accessor
+ * above (read fresh on every save, from `createDbArtifactSink` in
+ * `session/adapters.ts`, which is the SAME factory `createJobRunner`'s
+ * `artifacts: (jobId) => ArtifactSink` is built from in `daemon.ts`) can
+ * stamp `artifacts.node_id` with ZERO changes to `@enkaku/session` or the
+ * child boundary (plan 99 §3.1, §3.2's "the runner learns nothing about
+ * nodes").
+ *
+ * The mechanism, in one sentence: `JobRunner.execute()` calls
+ * `deps.artifacts(job.id)` exactly once per node execution (every node in a
+ * workflow shares the SAME `job.id`, §3.2) — the workflow executor
+ * (`jobs/executors/workflow.ts`) calls `begin(job.id, node.id)`
+ * immediately before that `execute()` call and `end(job.id)` immediately
+ * after it resolves, so any artifact the child saves DURING that window
+ * (through the ordinary, unmodified `ctx.artifact.save()` IPC path) is
+ * attributed correctly. A standalone (non-workflow) job never calls
+ * `begin`, so `current()` reads back `null` for it — the pre-plan-99
+ * behaviour, unchanged.
+ *
+ * `noteAttempt`/`attempts` piggyback on the SAME per-job window for a
+ * second fact `job_nodes.attempts` needs and has no other seam for:
+ * `JobRunnerDeps.onPhase(jobId, attempt, phase)` already fires on every
+ * attempt of every execution (daemon.ts's own callback, extended to call
+ * `noteAttempt` here), and `attempt` resets to 1 at the top of every
+ * `execute()` call (`job-runner.ts`'s own `let attempt = 0` inside
+ * `execute()`) — so the highest value seen between one `begin`/`end` pair is
+ * exactly how many attempts THIS node execution spent, with no new IPC
+ * message and no runner change.
+ */
+export interface JobNodeTracker {
+  begin(jobId: string, nodeId: string): void
+  end(jobId: string): void
+  current(jobId: string): string | null
+  noteAttempt(jobId: string, attempt: number): void
+  /** The highest attempt number seen since the last `begin` for this job; 0 if none (a gate, or a resolve/binding failure that never called `runner.execute()`). */
+  attempts(jobId: string): number
+}
+
+export function createJobNodeTracker(): JobNodeTracker {
+  const nodeByJob = new Map<string, string>()
+  const attemptsByJob = new Map<string, number>()
+  return {
+    begin(jobId, nodeId) {
+      nodeByJob.set(jobId, nodeId)
+      attemptsByJob.set(jobId, 0)
+    },
+    end(jobId) {
+      nodeByJob.delete(jobId)
+      attemptsByJob.delete(jobId)
+    },
+    current(jobId) {
+      return nodeByJob.get(jobId) ?? null
+    },
+    noteAttempt(jobId, attempt) {
+      const prev = attemptsByJob.get(jobId)
+      if (prev === undefined) return // no workflow node currently in flight for this job — nothing to attribute the attempt to
+      if (attempt > prev) attemptsByJob.set(jobId, attempt)
+    },
+    attempts(jobId) {
+      return attemptsByJob.get(jobId) ?? 0
     },
   }
 }
@@ -156,14 +234,21 @@ export function devicePullArtifactPath(
  * N lines" style artifacts), and it was already enforced twice before this
  * point — once by `statRemote` and again by `pullFile`'s running-total check
  * — so re-applying the smaller cap here would be both redundant and wrong.
+ *
+ * `jobId` (plan 93 §3.13, §4.6, step 93.9 — closes F12): a pull performed by
+ * a batch/job passes `job.id` here so the artifact can be traced back to the
+ * run that produced it; a pull with no job behind it (the REST route, the
+ * script IPC bridge) passes `null`, exactly the pre-plan-93 value. Threaded
+ * explicitly by every caller — never defaulted — so a caller that forgets it
+ * fails to typecheck rather than silently landing `null`.
  */
 export function registerDeviceArtifact(
   deps: { db: Db },
-  opts: { deviceId: string; label: string; relPath: string; sizeBytes: number },
+  opts: { deviceId: string; label: string; relPath: string; sizeBytes: number; jobId: string | null },
 ): ArtifactInfo {
   const info: ArtifactInfo = {
     id: crypto.randomUUID(),
-    jobId: null,
+    jobId: opts.jobId,
     deviceId: opts.deviceId,
     kind: 'file',
     label: opts.label,
@@ -175,6 +260,7 @@ export function registerDeviceArtifact(
     .insert(artifacts)
     .values({
       id: info.id,
+      jobId: info.jobId,
       deviceId: info.deviceId,
       kind: info.kind,
       label: info.label,

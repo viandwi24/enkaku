@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Upload } from 'lucide-react'
-import { InstallResponseSchema, PullResponseSchema, type InstallResult } from '@enkaku/protocol'
-import { z } from 'zod'
+import { InstallResponseSchema, PullResponseSchema, PushResponseSchema, type InstallResult, type MediaScanResult } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { api, useAction } from '@/lib/actions'
 import { coreBase, ws } from '@/lib/ws'
 import { fileSize } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 /**
  * The device page's Files tab (plan 39 §4.7): install an APK in one flow
@@ -29,6 +29,29 @@ interface TransferProgress {
 }
 
 const EMPTY_PROGRESS: TransferProgress = { transferId: null, sent: 0, total: null }
+
+/**
+ * Destination presets (plan 90 §3.4, §4.6) — "gallery" as a farm operator
+ * experiences it is picking a file and picking where it goes, without
+ * having to already know that `/sdcard/Pictures` is the right answer.
+ * `mediaScan` on the push itself (server-side, defaulting to `'auto'`) is
+ * what actually tells MediaStore; these presets exist only to steer the
+ * remote path under a root that default scans.
+ */
+const MEDIA_PRESETS: Array<{ id: 'pictures' | 'movies' | 'downloads'; label: string; dir: string }> = [
+  { id: 'pictures', label: 'Pictures', dir: '/sdcard/Pictures/' },
+  { id: 'movies', label: 'Movies', dir: '/sdcard/Movies/' },
+  { id: 'downloads', label: 'Downloads', dir: '/sdcard/Download/' },
+]
+type DestPreset = 'custom' | (typeof MEDIA_PRESETS)[number]['id']
+
+/** A line saying whether the media library was told (plan 90 §3.4, step
+ * 90.7) — never silence, including the case where both scan methods failed. */
+function mediaScanLine(scan: MediaScanResult): string {
+  if (scan.ran) return `Told the media library (${scan.method}, ${scan.ms}ms).`
+  if (scan.error) return `Media library was not told: ${scan.error}`
+  return 'Media library was not told — the destination is outside Pictures/Movies/Music/Download/DCIM.'
+}
 
 /** A raw multipart upload — the `api()` helper is JSON-only, and a browser must set its own multipart boundary, not a fixed content-type. */
 async function uploadArtifact(file: File, label: string): Promise<{ id: string }> {
@@ -73,11 +96,25 @@ export function FilesPanel({
   const installFileRef = useRef<HTMLInputElement>(null)
   const pushFileRef = useRef<HTMLInputElement>(null)
   const [pushPath, setPushPath] = useState('/data/local/tmp/')
+  const [destPreset, setDestPreset] = useState<DestPreset>('custom')
+  const [pushFileName, setPushFileName] = useState('')
   const [pullPath, setPullPath] = useState('')
   const [installResult, setInstallResult] = useState<InstallResult | null>(null)
+  const [pushResult, setPushResult] = useState<MediaScanResult | null>(null)
   const [pullArtifactId, setPullArtifactId] = useState<string | null>(null)
   const [installProgress, setInstallProgress] = useState<TransferProgress>(EMPTY_PROGRESS)
   const [pushProgress, setPushProgress] = useState<TransferProgress>(EMPTY_PROGRESS)
+
+  /** Selecting a preset (or picking a new file while one is active) rewrites
+   * `pushPath` to `<root>/<filename>`; typing in the path field by hand
+   * falls back to `'custom'` (see the `Input`'s `onChange` below), so the
+   * two never fight over which one is authoritative. */
+  function selectPreset(preset: DestPreset, fileName: string): void {
+    setDestPreset(preset)
+    if (preset === 'custom') return
+    const dir = MEDIA_PRESETS.find((p) => p.id === preset)?.dir ?? ''
+    setPushPath(dir + fileName)
+  }
 
   useEffect(() => {
     return ws.on((msg) => {
@@ -118,18 +155,21 @@ export function FilesPanel({
   async function pushFile(): Promise<void> {
     const file = pushFileRef.current?.files?.[0]
     if (!file || !clientId || !pushPath.trim()) return
+    setPushResult(null)
     await run(
       'files-push',
       async () => {
         const uploaded = await uploadArtifact(file, file.name)
-        // `POST /:id/push` returns `{ ok: true }` (`packages/core/src/api/transfer.ts`) — no
-        // envelope for that exists in `@enkaku/protocol` yet and this call site never reads the
-        // body, so a small ad-hoc schema rather than a new export for a value nothing reads.
-        await api(`/api/devices/${deviceId}/push`, z.object({ ok: z.boolean() }), {
+        // `mediaScan` is left to the server's own default ('auto') — it
+        // scans exactly when `remotePath` resolves under a known media
+        // root, which is what the destination presets below steer toward.
+        const body = await api(`/api/devices/${deviceId}/push`, PushResponseSchema, {
           method: 'POST',
           json: { artifactId: uploaded.id, remotePath: pushPath.trim(), clientId },
         })
+        setPushResult(body.result.mediaScan)
         if (pushFileRef.current) pushFileRef.current.value = ''
+        setPushFileName('')
       },
       { success: 'Pushed', failure: 'Push failed' },
     )
@@ -203,17 +243,47 @@ export function FilesPanel({
 
         <section className="rounded-lg border bg-surface p-4">
           <h3 className="text-[13.5px] font-semibold tracking-tight">Push a file</h3>
-          <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">Uploads a file, then writes it to a path on the device.</p>
+          <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+            Uploads a file, then writes it to a path on the device. Pushing into Pictures, Movies, or Downloads also
+            tells the device's media library about it, so it shows up in a photo/file picker with no reboot.
+          </p>
           <input
             ref={pushFileRef}
             type="file"
+            aria-label="File to push"
             disabled={disabled}
+            onChange={(e) => {
+              const name = e.target.files?.[0]?.name ?? ''
+              setPushFileName(name)
+              if (destPreset !== 'custom') selectPreset(destPreset, name)
+            }}
             className="mt-3 block w-full text-[12px] disabled:opacity-50"
           />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[...MEDIA_PRESETS, { id: 'custom' as const, label: 'Custom', dir: '' }].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                disabled={disabled}
+                onClick={() => selectPreset(p.id, pushFileName)}
+                className={cn(
+                  'rounded-full border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50',
+                  destPreset === p.id
+                    ? 'border-accent/40 bg-accent/10 text-accent'
+                    : 'border-line bg-surface-2 text-fg-muted hover:text-fg',
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
           <Input
             className="mt-2 h-8 text-[12px]"
             value={pushPath}
-            onChange={(e) => setPushPath(e.target.value)}
+            onChange={(e) => {
+              setPushPath(e.target.value)
+              setDestPreset('custom')
+            }}
             placeholder="/data/local/tmp/file.bin"
             disabled={disabled}
           />
@@ -225,6 +295,16 @@ export function FilesPanel({
             <Button size="sm" variant="outline" className="mt-2" onClick={() => cancel(pushProgress)}>
               Cancel
             </Button>
+          )}
+          {pushResult && (
+            <p
+              className={cn(
+                'mt-3 rounded-md border px-2.5 py-2 text-[12px]',
+                pushResult.ran ? 'border-led-ok/35 bg-led-ok/5' : 'border-line bg-surface-2 text-fg-muted',
+              )}
+            >
+              {mediaScanLine(pushResult)}
+            </p>
           )}
         </section>
 

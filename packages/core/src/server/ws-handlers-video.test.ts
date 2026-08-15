@@ -54,6 +54,9 @@ function fakeSession(deviceId: string, cached: { config: Uint8Array | null; keyf
     transport: {} as unknown as Transport,
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
+    // Plan 91 §4.1 — `arbiter` is required on `DeviceSession` now; this fixture never sends
+    // input.* and never exercises it, so a bare stub keeps the type honest without wiring one up.
+    arbiter: {} as unknown as DeviceSession['arbiter'],
     displayEngineId: 'scrcpy',
     quality: 'control',
     inputEngineId: 'adb-input',
@@ -69,6 +72,14 @@ function fakeSession(deviceId: string, cached: { config: Uint8Array | null; keyf
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
     clipboard: null,
+    textInput: {
+      mode: 'device',
+      agentCapabilities: null,
+      imeCurrent: false,
+      commitViaAgent: async () => {
+        throw new Error('no guest agent client wired in this fixture')
+      },
+    },
     close: async () => {},
   }
   return {
@@ -89,7 +100,9 @@ function fakeSessionManager(session: DeviceSession): SessionManager {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
 }
 

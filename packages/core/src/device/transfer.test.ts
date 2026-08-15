@@ -150,6 +150,9 @@ class FakeAdbBackend implements AdbBackend {
   execCalls: string[] = []
   openRawCalls = 0
   pmInstall: { output: string; reason: AdbStreamEndReason } = { output: '12345\nSuccess\n', reason: 'closed' }
+  /** Media-scan exec results (plan 90 §4.6) — defaults model a device where `scan_file` succeeds outright. */
+  scanFileResult: ShellResult | 'throw' = { stdout: '', stderr: '', exitCode: 0 }
+  scanVolumeResult: ShellResult | 'throw' = { stdout: '', stderr: '', exitCode: 0 }
 
   async openRaw(_serial: string, _service: string): Promise<RawStream> {
     this.openRawCalls++
@@ -158,6 +161,14 @@ class FakeAdbBackend implements AdbBackend {
 
   async exec(_serial: string, cmd: string): Promise<ShellResult> {
     this.execCalls.push(cmd)
+    if (cmd.includes('scan_file')) {
+      if (this.scanFileResult === 'throw') throw new Error('adb exec failed (scan_file)')
+      return this.scanFileResult
+    }
+    if (cmd.includes('scan_volume')) {
+      if (this.scanVolumeResult === 'throw') throw new Error('adb exec failed (scan_volume)')
+      return this.scanVolumeResult
+    }
     return { stdout: '', stderr: '', exitCode: null }
   }
 
@@ -310,6 +321,116 @@ describe('TransferService.push', () => {
   })
 })
 
+describe('TransferService.push — mediaScan (plan 90 §3.4, §4.6)', () => {
+  test('auto: a path outside any media root is not scanned, and pays nothing for it (acceptance #21)', async () => {
+    const h = harness()
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/data/local/tmp/out.bin', { transferId: nextTransferId() })
+
+    expect(result.mediaScan).toEqual({ ran: false, method: null, ms: 0 })
+    expect(h.backend.execCalls.some((c) => c.includes('content call'))).toBe(false)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('auto: a path under /sdcard/Pictures is scanned with scan_file, shell-quoted (H3)', async () => {
+    const h = harness()
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/sdcard/Pictures/f.jpg', { transferId: nextTransferId() })
+
+    expect(result.mediaScan.ran).toBe(true)
+    expect(result.mediaScan.method).toBe('scan_file')
+    expect(typeof result.mediaScan.ms).toBe('number')
+    expect(h.backend.execCalls).toEqual([
+      `content call --uri content://media --method scan_file --arg '/sdcard/Pictures/f.jpg'`,
+    ])
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('auto: the /storage/emulated/0 spelling of a media root also scans', async () => {
+    const h = harness()
+    const artifactId = h.addArtifact({ path: 'artifacts/f.mp4', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/storage/emulated/0/Movies/f.mp4', {
+      transferId: nextTransferId(),
+    })
+
+    expect(result.mediaScan).toMatchObject({ ran: true, method: 'scan_file' })
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('scan_file failing falls back to scan_volume — the first to exit 0 wins (H3)', async () => {
+    const h = harness()
+    h.backend.scanFileResult = { stdout: '', stderr: 'no such method', exitCode: 1 }
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/sdcard/Pictures/f.jpg', { transferId: nextTransferId() })
+
+    expect(result.mediaScan).toMatchObject({ ran: true, method: 'scan_volume' })
+    expect(h.backend.execCalls).toEqual([
+      `content call --uri content://media --method scan_file --arg '/sdcard/Pictures/f.jpg'`,
+      `content call --uri content://media --method scan_volume --arg external_primary`,
+    ])
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('both scan_file and scan_volume failing degrades visibly — never fails the push, and the bytes still landed', async () => {
+    const h = harness()
+    h.backend.scanFileResult = { stdout: '', stderr: '', exitCode: 1 }
+    h.backend.scanVolumeResult = { stdout: '', stderr: '', exitCode: 1 }
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10).fill(9) })
+
+    const result = await h.service.push('dev1', artifactId, '/sdcard/Pictures/f.jpg', { transferId: nextTransferId() })
+
+    expect(result.mediaScan.ran).toBe(false)
+    expect(result.mediaScan.method).toBeNull()
+    expect(result.mediaScan.error).toBeDefined()
+    expect(h.backend.fs.get('/sdcard/Pictures/f.jpg')?.content.length).toBe(10)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('both scan_file and scan_volume throwing (e.g. the device drops mid-scan) also degrades visibly, never throws', async () => {
+    const h = harness()
+    h.backend.scanFileResult = 'throw'
+    h.backend.scanVolumeResult = 'throw'
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/sdcard/Pictures/f.jpg', { transferId: nextTransferId() })
+
+    expect(result.mediaScan).toMatchObject({ ran: false, method: null })
+    expect(result.mediaScan.error).toBeDefined()
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test("mediaScan: 'never' issues no scan even under a media root (regression watch §7.4)", async () => {
+    const h = harness()
+    const artifactId = h.addArtifact({ path: 'artifacts/f.jpg', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/sdcard/Pictures/f.jpg', {
+      transferId: nextTransferId(),
+      mediaScan: 'never',
+    })
+
+    expect(result.mediaScan).toEqual({ ran: false, method: null, ms: 0 })
+    expect(h.backend.execCalls.some((c) => c.includes('content call'))).toBe(false)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test("mediaScan: 'always' scans even a path outside any media root", async () => {
+    const h = harness()
+    const artifactId = h.addArtifact({ path: 'artifacts/f.bin', content: new Uint8Array(10) })
+
+    const result = await h.service.push('dev1', artifactId, '/data/local/tmp/out.bin', {
+      transferId: nextTransferId(),
+      mediaScan: 'always',
+    })
+
+    expect(result.mediaScan).toMatchObject({ ran: true, method: 'scan_file' })
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+})
+
 describe('TransferService.pull', () => {
   test('round-trips a remote file into a device-scoped artifact', async () => {
     const h = harness()
@@ -326,6 +447,18 @@ describe('TransferService.pull', () => {
     const abs = join(h.dataDir, row!.path)
     const onDisk = readFileSync(abs)
     expect(onDisk.length).toBe(content.length)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('threads opts.jobId onto the registered artifact — plan 93 §3.13, §4.6, F12: without this, a bulk pull\'s files cannot be traced back to the batch that produced them', async () => {
+    const h = harness()
+    h.backend.fs.set('/sdcard/report.txt', { content: new Uint8Array([1, 2, 3]) })
+
+    const result = await h.service.pull('dev1', '/sdcard/report.txt', { transferId: nextTransferId(), jobId: 'job-abc' })
+
+    const row = h.db.select().from(artifacts).all().find((r) => r.id === result.artifactId)
+    expect(row?.jobId).toBe('job-abc')
+    expect(row?.deviceId).toBe('dev1')
     rmSync(h.dataDir, { recursive: true, force: true })
   })
 

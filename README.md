@@ -2,6 +2,24 @@
 
 A device farm platform for remote control and automation of Android phones — self-hosted, zero-config. Full spec: [`docs/spec.md`](docs/spec.md); the sequential work plan: [`docs/plans/`](docs/plans/).
 
+## Running it (prebuilt binary)
+
+Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained binary per platform — Studio, the database migrations, and the example plugin packs are embedded, so nothing else is needed. No Bun, no checkout.
+
+```bash
+# Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
+# Set VERSION to the tag you want — the Releases page lists them.
+VERSION=v0.1.6
+curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
+tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
+./enkaku
+# open http://localhost:7700
+```
+
+On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
+
+Full install guide, including the systemd service and Docker: [`docs/guide/install.md`](docs/guide/install.md).
+
 ## Running it (dev)
 
 ```bash

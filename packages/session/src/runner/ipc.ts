@@ -1,4 +1,4 @@
-import { DEVICE_CALL_ARGS, JobStatusSchema, ScriptRefSchema } from '@enkaku/protocol'
+import { DEVICE_CALL_ARGS, JobStatusSchema, ResultOutcomeSchema, RuntimeEnvelopeSchema, ScriptRefSchema } from '@enkaku/protocol'
 import { z } from 'zod'
 
 /**
@@ -14,7 +14,9 @@ import { z } from 'zod'
  * cannot import the capability registry itself (core depends on session,
  * never the reverse), so the shared source sits one level below both,
  * in protocol; only the `{ method: literal, args }` IPC framing stays here.
- * The seventeen device operations are declared once either way.
+ * Twenty-one device operations are declared once either way (plan 94 §4.4,
+ * step 94.2 added the last four: `gesture`, `longPress`, `tapNorm`,
+ * `swipeNorm` — the replay's own verbs, F6/F7).
  */
 export const DeviceCallSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('tap'), args: DEVICE_CALL_ARGS.tap }),
@@ -48,6 +50,15 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('install'), args: DEVICE_CALL_ARGS.install }),
   z.object({ method: z.literal('push'), args: DEVICE_CALL_ARGS.push }),
   z.object({ method: z.literal('pull'), args: DEVICE_CALL_ARGS.pull }),
+  // Plan 94 §4.4, step 94.2 (F6, F7) — the replay's own four verbs. `gesture`
+  // and `tapNorm`/`swipeNorm` carry NORMALISED coordinates on purpose (see
+  // `device-args.ts`'s own comment on `TapNormArgsSchema` for the full rule)
+  // — `device-executor.ts` is where they get mapped to this run's actual
+  // device pixels, exactly like manual input already is.
+  z.object({ method: z.literal('gesture'), args: DEVICE_CALL_ARGS.gesture }),
+  z.object({ method: z.literal('longPress'), args: DEVICE_CALL_ARGS.longPress }),
+  z.object({ method: z.literal('tapNorm'), args: DEVICE_CALL_ARGS.tapNorm }),
+  z.object({ method: z.literal('swipeNorm'), args: DEVICE_CALL_ARGS.swipeNorm }),
 ])
 export type DeviceCall = z.infer<typeof DeviceCallSchema>
 
@@ -163,6 +174,18 @@ export const ChildToParentSchema = z.union([
     timeoutMs: z.number().int().positive().optional(),
     retries: z.number().int().min(0).max(10).optional(),
     /**
+     * `ScriptDefinition.runtime` (plan 98 §3.1, §4.7, §5 step 98.4) — the
+     * bundle's OWN declared envelope, folded from `timeout`/`retries` by
+     * `defineScript`/`definePlugin` on the author's machine. This message
+     * has stopped being the source of truth for a persisted script (the
+     * pinned `scripts.runtime` DB row is, per §3.1's table) and become a
+     * CHECK: the runner compares this against the row it was pinned to and
+     * logs a warning naming both when they disagree, but always uses the
+     * DB's value. The one case where this legitimately IS authoritative is
+     * a plugin dev slot, which has no `scripts` row at all (§3.1).
+     */
+    runtime: RuntimeEnvelopeSchema.optional(),
+    /**
      * ScriptDefinition.reset (plan 35 §4.3) — carried here so the parent
      * learns the declaration without importing the bundle itself. The
      * runner reads this to build the `declared`/`aggressive` reset plan.
@@ -173,6 +196,15 @@ export const ChildToParentSchema = z.union([
         clearData: z.boolean().optional(),
       })
       .optional(),
+    /**
+     * `ScriptDefinition.assist` (plan 91 §3.6, §4.8) — whether an operator
+     * may assist this script's job. Undefined for a pre-plan-91 bundle,
+     * which the parent's `scriptAssistPolicy` hook reads as permissive
+     * (`co-control.ts`'s own default), the same "omitted means allowed"
+     * shape `reset` above already established for a field the child only
+     * learns from the bundle.
+     */
+    assist: z.enum(['allow', 'deny']).optional(),
   }),
   z.object({ t: z.literal('phase'), phase: z.enum(['prepare', 'run', 'finish']) }),
   z.intersection(z.object({ t: z.literal('device.call'), callId: z.string() }), DeviceCallSchema),
@@ -194,6 +226,16 @@ export const ChildToParentSchema = z.union([
     fields: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({ t: z.literal('heartbeat') }),
+  /**
+   * Self-reported RSS (plan 98 §3.5, §4.7, H1) — measured with
+   * `process.memoryUsage.rss()`, the same call §0.3 measurement M2/M4
+   * verified works with no flags. Sent once immediately when a 'full' or
+   * 'finish-only' attempt starts (so even a job shorter than the sample
+   * interval gets at least one reading) and then on `init.rssSampleMs`'s own
+   * cadence. This step records the PEAK unconditionally; no limit reads it
+   * yet — that is step 98.3.
+   */
+  z.object({ t: z.literal('rss'), bytes: z.number().int().nonnegative() }),
   z.object({
     t: z.literal('result'),
     ok: z.boolean(),
@@ -201,7 +243,32 @@ export const ChildToParentSchema = z.union([
     error: ScriptErrorSchema.optional(),
     /** Lets the parent know whether a finish-only attempt is still needed. */
     finishRan: z.boolean(),
+    /**
+     * Plan 97 §3.3, §3.4, §3.8, §4.3 — the child's own verdict on `value`:
+     * measured, walked for a prototype-hijack field name, and (when the
+     * script declared `result:`) checked against the real Zod schema, in
+     * that order (H2, step 97.3's own title — "measure, then check, then
+     * store"). OPTIONAL so a bundle built before this plan — a real case,
+     * bundles are stored in the DB — still parses; a MISSING `outcome` means
+     * `undeclared` (a pre-plan-97 bundle never reports one, even though it
+     * still sends `value` exactly as it always has). Present only when
+     * `ok: true` in this step (97.3's own scope is the success path only —
+     * `outcome.status: 'partial'` for a `finish()` salvage is step 97.4's).
+     */
+    outcome: ResultOutcomeSchema.optional(),
   }),
+  /**
+   * Plan 97 §3.7, §4.3 — a live, unpersisted progress snapshot. Coalesced in
+   * the CHILD (`child-entry.ts`'s own timer, last value wins) so a script
+   * calling `ctx.progress()` in a tight loop costs one assignment, not one
+   * IPC message per call — at most one of these arrives per
+   * `job.progressIntervalMs`. The parent re-checks size and drops an
+   * oversize push with one `warn` per job (`executor-host.ts`) rather than
+   * trusting the child the way it does for `outcome` above (§3.8) — a
+   * progress value has no measured-size counterpart the child reports back,
+   * unlike a result's `outcome.bytes`.
+   */
+  z.object({ t: z.literal('progress'), value: z.unknown() }),
 ])
 export type ChildToParent = z.infer<typeof ChildToParentSchema>
 
@@ -209,9 +276,50 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('init'),
     mode: z.enum(['full', 'finish-only']),
-    job: z.object({ id: z.string(), attempt: z.number().int(), deviceId: z.string() }),
+    job: z.object({
+      id: z.string(),
+      attempt: z.number().int(),
+      deviceId: z.string(),
+      /**
+       * The workflow node this execution belongs to (plan 99 §3.2, §4.8) —
+       * absent for every job outside a workflow. Threaded through to
+       * `createJobsApiFor` (`jobs-client.ts`) so `ctx.jobs.trigger()`'s
+       * default idempotency key does not collide across two nodes sharing
+       * one `jobId` (plan 99 F20).
+       */
+      nodeId: z.string().optional(),
+    }),
     params: z.unknown(),
     priorError: z.object({ code: z.string(), message: z.string(), phase: z.string() }).optional(),
+    /**
+     * Plan 98 §4.7 — the cadence the PARENT wants `rss` samples on. Fixed at
+     * 10s in this step ("cadence 10 s, no limit anywhere") — once a memory
+     * limit exists (step 98.3), the parent will send `job.memory.sampleIntervalMs`
+     * instead whenever one is in effect.
+     */
+    rssSampleMs: z.number().int().positive(),
+    /**
+     * Plan 97 §3.4, §4.9 — the farm's `job.maxResultBytes` setting, resolved
+     * by the parent (which holds the live settings store) and handed down so
+     * the CHILD can enforce the cap before a value ever crosses IPC (F10,
+     * F11 — the cap cannot be enforced after the fact, only before). Required
+     * rather than optional, the same convention `rssSampleMs` above already
+     * uses: the caller always resolves a concrete number (the farm default
+     * when nothing is configured), never leaves the child to guess one.
+     */
+    maxResultBytes: z.number().int().positive(),
+    /**
+     * Plan 97 §3.7, §4.9 — the farm's `job.progressIntervalMs` setting,
+     * resolved by the parent (which holds the live settings store) and
+     * handed down so the CHILD's own coalescing timer (§3.7: "coalescing
+     * lives in the child") runs at the operator's chosen cadence rather than
+     * a hardcoded one. Optional, unlike `maxResultBytes` above: the runner
+     * only resolves this for a 'full' attempt (`job-runner.ts`'s `sendInit`)
+     * — a finish-only re-run's own short window has no live audience worth
+     * the timer, and the child falls back to a sane default when it is
+     * absent.
+     */
+    progressIntervalMs: z.number().int().positive().optional(),
   }),
   z.object({
     t: z.literal('device.result'),
@@ -247,5 +355,16 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
   // it is not slow, it is broken, and this fires long before the run
   // timeout would.
   z.object({ t: z.literal('abort'), reason: z.enum(['timeout', 'cancelled', 'hung', 'crashed', 'startup-timeout']) }),
+  /**
+   * The SECOND unsolicited parent→child push ever (plan 91 §3.6, §4.8) —
+   * `abort` above is the first. A human sent input to this device while this
+   * job was running. NOT an abort: the job keeps its lease, keeps running,
+   * and `finish()` is not invoked because of this message. `actor` is
+   * `userId`, or null when the assisting client is unauthenticated (local
+   * mode) — the same "userId, or null when the core itself is the actor"
+   * convention `DeviceEvent.actor` already documents, minus the `'job:<id>'`
+   * form, which never applies here (a job cannot assist itself).
+   */
+  z.object({ t: z.literal('assist'), at: z.number().int(), actor: z.string().nullable() }),
 ])
 export type ParentToChild = z.infer<typeof ParentToChildSchema>

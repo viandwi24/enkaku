@@ -306,7 +306,7 @@ function fakeHostServiceServer(handlers: { devicesL?: () => string; reconnectOff
 }
 
 describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () => {
-  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model/transport_id fields', async () => {
+  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model fields but keeping transport_id', async () => {
     const listener = fakeHostServiceServer({
       devicesL: () =>
         '0123456789ABCDEF       device product:sunfish model:Pixel_4a device:sunfish transport_id:1\n' +
@@ -317,9 +317,9 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
       expect(devices).toEqual([
-        { serial: '0123456789ABCDEF', state: 'device' },
+        { serial: '0123456789ABCDEF', state: 'device', transportId: 1 },
         { serial: 'ZY327K2XYZ', state: 'offline' },
-        { serial: 'ZP2222RMBS', state: 'unauthorized' },
+        { serial: 'ZP2222RMBS', state: 'unauthorized', transportId: 3 },
       ])
     } finally {
       listener.stop(true)
@@ -332,6 +332,52 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
       expect(devices).toEqual([])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  /**
+   * Plan 88 §3.1, §4.1, fixes F6: `usb:` is adb's own signal that a
+   * transport is USB rather than TCP — this used to be discarded outright.
+   * Modelled on a real `adb devices -l` line captured against the attached
+   * hardware for plan 88 §5 step 88.1's H6 spike.
+   */
+  test('keeps the usb: field for a USB transport and transport_id for both, ignoring product/model/device', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => 'ZP2222RMBS             device usb:3-1.4.3 product:lagos_gpn model:moto_g06_power device:lagos transport_id:10\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3', transportId: 10 }])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a TCP line has no usb: field', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => '10.20.0.37:5555       device product:sunfish model:Pixel_4a device:sunfish transport_id:7\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: '10.20.0.37:5555', state: 'device', transportId: 7 }])
+      expect(devices[0]!.usb).toBeUndefined()
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('a malformed transport_id (non-numeric) is dropped rather than crashing the parse', async () => {
+    const listener = fakeHostServiceServer({
+      devicesL: () => 'ZP2222RMBS   device usb:3-1.4.3 transport_id:not-a-number\n',
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const devices = await client.listDevices()
+      expect(devices).toEqual([{ serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3' }])
     } finally {
       listener.stop(true)
     }
@@ -356,6 +402,66 @@ describe('AdbClient.reconnectOffline — host:reconnect-offline (plan 85 §3.3, 
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const result = await client.reconnectOffline()
       expect(result).toBe('')
+    } finally {
+      listener.stop(true)
+    }
+  })
+})
+
+/**
+ * `tcpip:<port>` as a DEVICE service (plan 88 §0.2 H1, §5 step 88.5) — a
+ * `host:transport:<serial>` handshake (same shape `exec` already uses,
+ * always OKAY here) followed by the `tcpip:<port>` device service itself,
+ * which this fake server answers OKAY or FAIL depending on the test. This
+ * proves the WIRE FRAMING `cutover.ts` relies on; whether a real adbd
+ * actually accepts `tcpip:` this way (as opposed to needing the `adb`
+ * CLI) is H1 itself, unverified without hardware — see plan 88 §5 step
+ * 88.5's write-up.
+ */
+function fakeTcpipServer(onTcpip: (socket: import('bun').Socket, port: string) => void) {
+  return Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      data(s, data) {
+        const text = new TextDecoder().decode(data)
+        if (text.includes('host:transport:')) {
+          s.write(Buffer.from('OKAY'))
+          return
+        }
+        const marker = 'tcpip:'
+        const idx = text.indexOf(marker)
+        if (idx !== -1) onTcpip(s, text.slice(idx + marker.length))
+      },
+      close() {},
+      error() {},
+    },
+  })
+}
+
+describe('AdbClient.tcpip — the device service H1 is about (plan 88 §0.2, §5 step 88.5)', () => {
+  test('selects the device via host:transport, then resolves once tcpip:<port> replies OKAY', async () => {
+    const requested: string[] = []
+    const listener = fakeTcpipServer((s, port) => {
+      requested.push(port)
+      s.write(Buffer.from('OKAY'))
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expect(client.tcpip('ZP2222RMBS', 5555)).resolves.toBeUndefined()
+      expect(requested).toEqual(['5555'])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('rejects E_ADB_FAIL when adbd refuses the service, so the caller can fall back to hostAdb.run', async () => {
+    const listener = fakeTcpipServer((s) => {
+      s.write(failBuffer('device unauthorized'))
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(client.tcpip('ZP2222RMBS', 5555), 'E_ADB_FAIL')
     } finally {
       listener.stop(true)
     }

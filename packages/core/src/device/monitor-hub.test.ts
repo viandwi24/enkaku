@@ -258,4 +258,54 @@ describe('runOneshotMonitor (plan 24 §4.3) — ps/meminfo/df, through the norma
     }
     await expect(runOneshotMonitor({ shellPort }, 'ghost', 'ps')).rejects.toThrow()
   })
+
+  test('meminfo: an options object with a package reaches buildMonitorCommand (plan 90 §3.5, step 90.7)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    seedDevice(opened.db, 'dev-1', 'SER1')
+    const seenCommands: string[] = []
+    const shellPort = (): ShellPort => ({
+      async exec(cmd) {
+        seenCommands.push(cmd)
+        return { stdout: 'app meminfo', stderr: '', exitCode: null, truncated: false }
+      },
+      async stream() {
+        throw new Error('not used by this test')
+      },
+    })
+    const result = await runOneshotMonitor({ shellPort }, 'dev-1', 'meminfo', { package: 'com.example.app' })
+    expect(seenCommands).toEqual([`dumpsys meminfo 'com.example.app'`])
+    expect(result).toEqual({ text: 'app meminfo', truncated: false })
+  })
+
+  test('meminfo: omitted options (or {}) still scan the whole device — this is purely additive', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    seedDevice(opened.db, 'dev-1', 'SER1')
+    const seenCommands: string[] = []
+    const shellPort = (): ShellPort => ({
+      async exec(cmd) {
+        seenCommands.push(cmd)
+        return { stdout: '', stderr: '', exitCode: null, truncated: false }
+      },
+      async stream() {
+        throw new Error('not used by this test')
+      },
+    })
+    await runOneshotMonitor({ shellPort }, 'dev-1', 'meminfo')
+    await runOneshotMonitor({ shellPort }, 'dev-1', 'meminfo', {})
+    expect(seenCommands).toEqual(['dumpsys meminfo', 'dumpsys meminfo'])
+  })
+
+  test('an invalid meminfo option is rejected the same way any other monitor rejects bad options', async () => {
+    const shellPort = (): ShellPort => ({
+      async exec() {
+        return { stdout: '', stderr: '', exitCode: null, truncated: false }
+      },
+      async stream() {
+        throw new Error('not used by this test')
+      },
+    })
+    await expect(runOneshotMonitor({ shellPort }, 'dev-1', 'meminfo', { package: 'not a package!' })).rejects.toThrow()
+  })
 })

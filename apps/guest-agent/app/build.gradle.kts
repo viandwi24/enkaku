@@ -1,6 +1,5 @@
 plugins {
   alias(libs.plugins.android.application)
-  alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 }
 
@@ -14,8 +13,13 @@ android {
         // Studio (plan 43 §4.5) rather than failing at runtime.
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Release-driven, not a constant (plan 90 §3.11/§4.8, R4): `.github/workflows/release.yml`
+        // derives both from the `v*` tag and exports them before Gradle runs, so the value the
+        // toolchain manifest pins (`deviceArtifact.versionCode`) and the value baked into the APK
+        // are always the same tag. A local dev build has no tag and no env override, so it falls
+        // back to 1/"dev" — fine, because nothing verifies a dev build's version.
+        versionCode = System.getenv("ENKAKU_GUEST_AGENT_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("ENKAKU_GUEST_AGENT_VERSION_NAME") ?: "dev"
 
         externalNativeBuild {
             ndkBuild {
@@ -45,10 +49,32 @@ android {
         }
     }
 
+    // CI-only (`ENKAKU_GUEST_AGENT_KEYSTORE_PATH` unset locally): a release build with no keystore
+    // configured stays unsigned, exactly as it always has (`app-release-unsigned.apk`), so a local
+    // `bun run build:guest-agent` needs no secrets. `.github/workflows/release.yml` decodes the CI
+    // keystore secret to a file and sets the four env vars below before invoking Gradle.
+    val releaseKeystorePath = System.getenv("ENKAKU_GUEST_AGENT_KEYSTORE_PATH")
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("ENKAKU_GUEST_AGENT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ENKAKU_GUEST_AGENT_KEY_ALIAS")
+                keyPassword = System.getenv("ENKAKU_GUEST_AGENT_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 on (plan 90 §3.11, fixes F2): it was off with `proguardFiles(...)` configured on
+            // the very next line and therefore never applied. `proguard-rules.pro` keeps the JNI
+            // peer, the manifest-declared components, and the (not-yet-landed) IME by name.
+            isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystorePath != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
@@ -56,7 +82,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
-      compose = true
       aidl = false
       buildConfig = false
       shaders = false
@@ -74,28 +99,9 @@ kotlin {
 }
 
 dependencies {
-  val composeBom = platform(libs.androidx.compose.bom)
-  implementation(composeBom)
-  androidTestImplementation(composeBom)
-
   // Core Android dependencies
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.lifecycle.runtime.ktx)
-  implementation(libs.androidx.activity.compose)
-
-  // Arch Components
-  implementation(libs.androidx.lifecycle.runtime.compose)
-  implementation(libs.androidx.lifecycle.viewmodel.compose)
-
-  // Compose
-  implementation(libs.androidx.compose.ui)
-  implementation(libs.androidx.compose.ui.tooling.preview)
-  implementation(libs.androidx.compose.material3)
-  // Tooling
-  debugImplementation(libs.androidx.compose.ui.tooling)
-  // Instrumented tests
-  androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-  debugImplementation(libs.androidx.compose.ui.test.manifest)
 
   // Local tests: jUnit, coroutines, Android runner
   testImplementation(libs.junit)

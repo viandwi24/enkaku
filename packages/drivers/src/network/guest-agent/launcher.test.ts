@@ -3,6 +3,7 @@ import {
   createGuestAgentLauncher,
   GUEST_AGENT_PACKAGE,
   GUEST_AGENT_SOCKET,
+  type GuestAgentArtifactMismatch,
   type GuestAgentLauncherDeps,
 } from './launcher'
 
@@ -11,21 +12,37 @@ function sh(stdout = '', exitCode: number | null = 0, stderr = ''): { stdout: st
   return { stdout, stderr, exitCode }
 }
 
+/** A realistic `dumpsys package <pkg>` excerpt, shaped like `verify.test.ts`'s fixture — mirrors `ui-server/launcher.test.ts`'s own helper (plan 90 §3.8, F8). */
+function dumpsysOutput(opts: { installed?: boolean; versionCode?: number } = {}): string {
+  if (opts.installed === false) return 'Unable to find package: dev.enkaku.guestagent\n'
+  const versionCode = opts.versionCode ?? 5
+  return ['Packages:', `  Package [${GUEST_AGENT_PACKAGE}] (39a4179):`, `    versionCode=${versionCode} minSdk=29 targetSdk=34`, '    versionName=1.0.0', ''].join(
+    '\n',
+  )
+}
+
 /**
  * A fake `exec`/`hostAdb` good enough to drive the happy path: the package
- * is already installed, `appops get` echoes back `allow`, and
- * `forward --list` reports the port as owned by the launcher's own serial —
- * matching real device behaviour once `adb forward` has run.
+ * is already installed and matches (`dumpsysReply`'s default), `cmd package
+ * path` (still used by `isInstalled()`, unchanged by plan 90) reports
+ * installed, `appops get` echoes back `allow`, and `forward --list` reports
+ * the port as owned by the launcher's own serial — matching real device
+ * behaviour once `adb forward` has run.
  */
-function fakeDeps(overrides: Partial<GuestAgentLauncherDeps> = {}): {
+function fakeDeps(
+  overrides: Partial<GuestAgentLauncherDeps> = {},
+  opts: { dumpsysReply?: (cmd: string) => string } = {},
+): {
   deps: GuestAgentLauncherDeps
   execCalls: string[]
-  hostAdbCalls: string[][]
+  hostAdbCalls: Array<{ args: string[]; opts?: { lane?: 'default' | 'install'; serial?: string } }>
   logs: Array<{ level: string; msg: string }>
+  mismatches: GuestAgentArtifactMismatch[]
 } {
   const execCalls: string[] = []
-  const hostAdbCalls: string[][] = []
+  const hostAdbCalls: Array<{ args: string[]; opts?: { lane?: 'default' | 'install'; serial?: string } }> = []
   const logs: Array<{ level: string; msg: string }> = []
+  const mismatches: GuestAgentArtifactMismatch[] = []
   const serial = 'serial-1'
 
   const deps: GuestAgentLauncherDeps = {
@@ -35,11 +52,12 @@ function fakeDeps(overrides: Partial<GuestAgentLauncherDeps> = {}): {
       if (cmd.startsWith('cmd package path')) {
         return { stdout: `package:/data/app/~~x/${GUEST_AGENT_PACKAGE}/base.apk`, stderr: '', exitCode: 0 }
       }
+      if (cmd.startsWith('dumpsys package')) return { stdout: opts.dumpsysReply?.(cmd) ?? dumpsysOutput(), stderr: '', exitCode: 0 }
       if (cmd.startsWith('appops get')) return { stdout: 'ACTIVATE_VPN: allow', stderr: '', exitCode: 0 }
       return { stdout: '', stderr: '', exitCode: 0 }
     },
-    hostAdb: async (args) => {
-      hostAdbCalls.push(args)
+    hostAdb: async (args, hostAdbOpts) => {
+      hostAdbCalls.push({ args, opts: hostAdbOpts })
       if (args[0] === 'forward' && args[1] === '--list') {
         return `${serial} tcp:9200 localabstract:${GUEST_AGENT_SOCKET}\n`
       }
@@ -47,9 +65,15 @@ function fakeDeps(overrides: Partial<GuestAgentLauncherDeps> = {}): {
     },
     apkPath: async () => '/tools/guest-agent.apk',
     onLog: (level, msg) => logs.push({ level, msg }),
+    onMismatch: (info) => mismatches.push(info),
     ...overrides,
   }
-  return { deps, execCalls, hostAdbCalls, logs }
+  return { deps, execCalls, hostAdbCalls, logs, mismatches }
+}
+
+/** Flattened arg lists — most assertions below only care about `args`, not the lane opts. */
+function argLists(calls: Array<{ args: string[] }>): string[][] {
+  return calls.map((c) => c.args)
 }
 
 describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
@@ -110,26 +134,134 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     })
   })
 
-  describe('ensureInstalled', () => {
-    test('is idempotent: does not reinstall when already installed', async () => {
-      const { deps, hostAdbCalls } = fakeDeps()
+  describe('ensureInstalled() — on-device artifact verification (plan 90 §3.8, fixes F7, mirrors ui-server/launcher.ts, F8)', () => {
+    test('already matching: verifies via dumpsys, installs nothing, reports the observed versionCode', async () => {
+      const { deps, hostAdbCalls } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 5 }) })
       const launcher = createGuestAgentLauncher(deps)
-      await launcher.ensureInstalled()
-      expect(hostAdbCalls.some((c) => c.includes('install'))).toBe(false)
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5 })
+      expect(argLists(hostAdbCalls).some((a) => a.includes('install'))).toBe(false)
+      expect(argLists(hostAdbCalls).some((a) => a.includes('uninstall'))).toBe(false)
     })
 
-    test('installs with -r -g when not installed', async () => {
-      const { deps, hostAdbCalls } = fakeDeps({
-        exec: async (cmd) => {
-          // A real device prints nothing and exits 1 when the package is absent.
-          if (cmd.startsWith('cmd package path')) return sh('', 1)
-          return sh()
+    test('not installed at all → installed once via the install lane, no uninstall, no mismatch report', async () => {
+      const { deps, hostAdbCalls, mismatches } = fakeDeps(
+        { expectedArtifact: { versionCode: 5 } },
+        { dumpsysReply: () => dumpsysOutput({ installed: false }) },
+      )
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5 })
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(0)
+      const installCall = hostAdbCalls.find((c) => c.args.includes('install'))
+      expect(installCall?.args).toEqual(['-s', 'serial-1', 'install', '-r', '-g', '/tools/guest-agent.apk'])
+      // F12: installs ride the bounded install lane, serialised per device — the same rule
+      // `ui-server/launcher.ts` already follows.
+      expect(installCall?.opts).toEqual({ lane: 'install', serial: 'serial-1' })
+      expect(mismatches).toHaveLength(0)
+    })
+
+    test('a versionCode mismatch is detected, reinstalled exactly once, and reverified', async () => {
+      let dumpsysCalls = 0
+      const { deps, hostAdbCalls, mismatches } = fakeDeps(
+        { expectedArtifact: { versionCode: 5 } },
+        {
+          dumpsysReply: () => {
+            dumpsysCalls++
+            // First read: the stale version installed elsewhere. After the reinstall
+            // (second read onward): the expected version.
+            return dumpsysCalls === 1 ? dumpsysOutput({ versionCode: 3 }) : dumpsysOutput({ versionCode: 5 })
+          },
         },
-      })
+      )
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5 })
+
+      expect(dumpsysCalls).toBe(2) // verify → mismatch → reinstall → re-verify, no more
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('install'))).toHaveLength(1)
+      expect(mismatches).toHaveLength(0) // repaired — never reaches onMismatch
+    })
+
+    test('a repair that fails a second time reports the mismatch once, throws, and does not loop', async () => {
+      // Always reports the stale version, even after the reinstall — the scenario
+      // where something keeps reinstalling a conflicting package.
+      const { deps, hostAdbCalls, mismatches } = fakeDeps(
+        { expectedArtifact: { versionCode: 5 } },
+        { dumpsysReply: () => dumpsysOutput({ versionCode: 3 }) },
+      )
+      const launcher = createGuestAgentLauncher(deps)
+
+      await expect(launcher.ensureInstalled()).rejects.toThrow(/version_mismatch/)
+
+      // Exactly ONE uninstall/reinstall cycle — not a retry loop (plan 41 §3.3, reused as-is).
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('install'))).toHaveLength(1)
+      expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 3 } }])
+    })
+
+    test('a signature mismatch is detected and reinstalled the same way as a versionCode mismatch', async () => {
+      const expectedSig = 'AA'.repeat(32)
+      const wrongSigOutput = `${dumpsysOutput({ versionCode: 5 })}    signatures=PackageSignatures{x [1]}\n    cert=${'BB'.repeat(32)}\n`
+      const okOutput = `${dumpsysOutput({ versionCode: 5 })}    signatures=PackageSignatures{x [1]}\n    cert=${expectedSig}\n`
+      let dumpsysCalls = 0
+      const { deps, hostAdbCalls, mismatches } = fakeDeps(
+        { expectedArtifact: { versionCode: 5, signatureSha256: expectedSig } },
+        { dumpsysReply: () => (++dumpsysCalls === 1 ? wrongSigOutput : okOutput) },
+      )
       const launcher = createGuestAgentLauncher(deps)
       await launcher.ensureInstalled()
-      const installCall = hostAdbCalls.find((c) => c.includes('install'))
-      expect(installCall).toEqual(['-s', 'serial-1', 'install', '-r', '-g', '/tools/guest-agent.apk'])
+
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
+      expect(mismatches).toHaveLength(0)
+    })
+
+    test('a manifest with no recorded expectation never blocks provisioning, and logs a notice (F6)', async () => {
+      const { deps, hostAdbCalls, logs } = fakeDeps({}, { dumpsysReply: () => dumpsysOutput({ versionCode: 999 }) })
+      const launcher = createGuestAgentLauncher(deps)
+      await launcher.ensureInstalled()
+
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(0)
+      expect(logs.some((l) => l.level === 'info' && l.msg.includes('installed presence only'))).toBe(true)
+    })
+
+    test('an unreadable verification result is skipped, not treated as a mismatch', async () => {
+      const { deps, hostAdbCalls, logs } = fakeDeps(
+        { expectedArtifact: { versionCode: 5 } },
+        // Installed, but no versionCode line at all — unparseable.
+        { dumpsysReply: () => `Packages:\n  Package [${GUEST_AGENT_PACKAGE}] (39a4179):\n` },
+      )
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: null })
+
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(0)
+      expect(logs.some((l) => l.level === 'warn' && l.msg.includes('skipping artifact verification'))).toBe(true)
+    })
+
+    test('opts.force skips the fast path and goes straight to uninstall/reinstall/reverify once (R1)', async () => {
+      // Reports as already matching throughout — force must still trigger the full repair cycle
+      // rather than short-circuiting on the "already ok" fast path.
+      const { deps, hostAdbCalls, execCalls } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 5 }) })
+      const launcher = createGuestAgentLauncher(deps)
+      execCalls.length = 0
+      await expect(launcher.ensureInstalled({ force: true })).resolves.toEqual({ versionCode: 5 })
+
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('install'))).toHaveLength(1)
+      // Two dumpsys reads: the re-verify after the forced reinstall. No FIRST verify pass — the
+      // fast path never ran.
+      expect(execCalls.filter((c) => c.startsWith('dumpsys package'))).toHaveLength(1)
+    })
+
+    test('opts.force still throws and reports the mismatch when the forced repair does not fix it', async () => {
+      const { deps, mismatches } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 3 }) })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.ensureInstalled({ force: true })).rejects.toThrow(/version_mismatch/)
+      expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 3 } }])
+    })
+
+    test('isInstalled() is unchanged by this rewrite — still a presence-only `cmd package path` check', async () => {
+      // Deliberately mismatched by dumpsys standards, but isInstalled() never calls verifyDeviceArtifact.
+      const { deps } = fakeDeps({ expectedArtifact: { versionCode: 999 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 5 }) })
+      await expect(createGuestAgentLauncher(deps).isInstalled()).resolves.toBe(true)
     })
   })
 
@@ -214,7 +346,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
       const { deps, hostAdbCalls } = fakeDeps()
       const launcher = createGuestAgentLauncher(deps)
       await launcher.forward(9200)
-      expect(hostAdbCalls).toContainEqual([
+      expect(argLists(hostAdbCalls)).toContainEqual([
         '-s',
         'serial-1',
         'forward',

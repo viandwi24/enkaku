@@ -201,6 +201,59 @@ describe('DeviceReconciler.runOnce — offline recovery (plan 85 §3.3 point 5, 
   })
 })
 
+describe('DeviceReconciler.nudgeCounts / offlineSerials (plan 88 §3.9, §4.7 — "is adb stuck?")', () => {
+  test('nudgeCounts starts at 0 and increments once per reconnect issued, across cooldown windows', async () => {
+    const { deps } = makeDeps({
+      list: [{ serial: 'SER1', state: 'offline' }],
+      settings: settingsOf({ offlineGraceSec: 0, recoveryCooldownSec: 0 }),
+    })
+    const reconciler = createDeviceReconciler(deps)
+    expect(reconciler.nudgeCounts().get('SER1')).toBeUndefined()
+
+    await reconciler.runOnce()
+    expect(reconciler.nudgeCounts().get('SER1')).toBe(1)
+    await reconciler.runOnce()
+    expect(reconciler.nudgeCounts().get('SER1')).toBe(2)
+    await reconciler.runOnce()
+    expect(reconciler.nudgeCounts().get('SER1')).toBe(3)
+  })
+
+  test('nudgeCounts resets to gone the moment the serial recovers', async () => {
+    const { deps } = makeDeps({
+      list: [{ serial: 'SER1', state: 'offline' }],
+      settings: settingsOf({ offlineGraceSec: 0, recoveryCooldownSec: 0 }),
+    })
+    const reconciler = createDeviceReconciler(deps)
+    await reconciler.runOnce()
+    await reconciler.runOnce()
+    expect(reconciler.nudgeCounts().get('SER1')).toBe(2)
+
+    deps.client = { listDevices: async () => [{ serial: 'SER1', state: 'device' }], reconnectOffline: async () => 'ok' } as unknown as AdbClient
+    await reconciler.runOnce()
+    expect(reconciler.nudgeCounts().get('SER1')).toBeUndefined()
+  })
+
+  test('returns a snapshot copy, not the live map', async () => {
+    const { deps } = makeDeps({ list: [{ serial: 'SER1', state: 'offline' }], settings: settingsOf({ offlineGraceSec: 0 }) })
+    const reconciler = createDeviceReconciler(deps)
+    await reconciler.runOnce()
+    const snap = reconciler.nudgeCounts()
+    snap.set('SER1', 999)
+    expect(reconciler.nudgeCounts().get('SER1')).toBe(1)
+  })
+
+  test('offlineSerials reports every serial currently offline, cleared on recovery or disappearance', async () => {
+    const { deps } = makeDeps({ list: [{ serial: 'SER1', state: 'offline' }], settings: settingsOf({ offlineGraceSec: 0 }) })
+    const reconciler = createDeviceReconciler(deps)
+    await reconciler.runOnce()
+    expect(reconciler.offlineSerials().has('SER1')).toBe(true)
+
+    deps.client = { listDevices: async () => [], reconnectOffline: async () => 'ok' } as unknown as AdbClient
+    await reconciler.runOnce()
+    expect(reconciler.offlineSerials().has('SER1')).toBe(false)
+  })
+})
+
 describe('DeviceReconciler.runOnce — unauthorized (plan 85 §3.3 point 6)', () => {
   test('broadcasts device.unauthorized on every pass it persists, not just once', async () => {
     const { deps, broadcasts } = makeDeps({ list: [{ serial: 'SER1', state: 'unauthorized' }] })

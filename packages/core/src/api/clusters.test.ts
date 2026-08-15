@@ -1,16 +1,29 @@
 import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
+import type { ConnectionMedium } from '@enkaku/protocol'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { clusters, devices } from '../db/schema'
+import type { FarmNetwork } from '../registry/device-registry'
+import { allocateDeviceNumber } from '../registry/device-number'
 import { createClusterRoutes } from './clusters'
+import { createDeviceStateMachine } from '../device/state-machine'
+import { createLeaseManager } from '../lease/lease-manager'
+import { createCoControlManager } from '../lease/co-control'
+import { createLogger } from '../util/logger'
 
 function seedDevice(db: Db, id: string, clusterId: string | null = null): void {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'idle', clusterId })
     .run()
+}
+
+/** Seeds a device whose serial is already `host:port`-shaped — `deriveConnection`'s ONLY signal for `kind: 'tcp'` (plan 88 §3.1). `seedDevice` alone always seeds a USB-shaped serial. */
+function seedTcpDevice(db: Db, id: string, clusterId: string | null = null, address = '10.0.0.5:5555'): void {
+  seedDevice(db, id, clusterId)
+  db.update(devices).set({ serial: address }).where(eq(devices.id, id)).run()
 }
 
 function setUp() {
@@ -35,9 +48,26 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function makeApp(db: Db, role: 'admin' | 'operator' | null = 'admin') {
+function makeApp(
+  db: Db,
+  role: 'admin' | 'operator' | null = 'admin',
+  opts: {
+    networks?: FarmNetwork[]
+    declaredMedia?: Map<string, ConnectionMedium | null>
+    assistedByOf?: (deviceId: string) => import('@enkaku/protocol').LeaseHolder[]
+  } = {},
+) {
   const audit = createAuditLogger(db)
-  return withUser(role, createClusterRoutes({ db, audit }))
+  return withUser(
+    role,
+    createClusterRoutes({
+      db,
+      audit,
+      ...(opts.networks ? { networks: () => opts.networks! } : {}),
+      ...(opts.declaredMedia ? { declaredMedia: () => opts.declaredMedia } : {}),
+      ...(opts.assistedByOf ? { assistedByOf: opts.assistedByOf } : {}),
+    }),
+  )
 }
 
 let seq = 0
@@ -157,6 +187,164 @@ describe('GET /api/clusters/:id/devices', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { items: Array<{ id: string }> }
     expect(body.items.map((d) => d.id).sort()).toEqual(['a', 'b'])
+  })
+})
+
+/**
+ * Plan 89 §3.1, §3.2, §4.2, §4.3 — this route builds `DeviceInfo` through its
+ * own direct `rowToDeviceInfo` call (`api/clusters.ts`), not through
+ * `listDevicesWithTags`, so the number has to be threaded here explicitly —
+ * the same class of gap plan 88 §5 step 88.5 already found and fixed for
+ * `connection.medium` on this exact route (see the describe block above).
+ */
+describe('GET /api/clusters/:id/devices — number (plan 89 §4.2, §4.3)', () => {
+  test('a member device\'s number reads the same as GET /api/devices would', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedDevice(db, 'a', c1)
+    allocateDeviceNumber(db, 'stable-a')
+    const app = makeApp(db)
+
+    const res = await app.request(`/${c1}/devices`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ id: string; number: number | null }> }
+    expect(body.items.find((d) => d.id === 'a')?.number).toBe(1)
+  })
+})
+
+/**
+ * Residual gap left by plan 88 step 88.5's own pass (fixed here): this route
+ * called `rowToDeviceInfo(r, tags, cluster, null, null, heldBy)` with NEITHER
+ * `networks` NOR `declaredMedia` — both defaulted to `[]`/`new Map()`, so a
+ * device's connection badge on its own device page (`GET /api/devices/:id`,
+ * already fixed) could read `OTG` while the exact same device, viewed
+ * through its cluster's device list, read the honest-but-incomplete `TCP`.
+ * Proven through the real HTTP route and the real response payload, not
+ * `deriveConnection`/`rowToDeviceInfo` in isolation.
+ */
+describe('GET /api/clusters/:id/devices — connection.medium (plan 88 §3.6, §4.1, residual gap)', () => {
+  test('a farm network match badges a member device OTG, not TCP', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedTcpDevice(db, 'a', c1) // 10.0.0.5:5555 — inside the configured /24
+    const app = makeApp(db, 'admin', { networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }] })
+
+    const res = await app.request(`/${c1}/devices`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      items: Array<{ id: string; connection: { medium: string | null; mediumSource: string; networkLabel: string | null } }>
+    }
+    const item = body.items.find((d) => d.id === 'a')
+    expect(item?.connection).toMatchObject({ medium: 'wired', mediumSource: 'network', networkLabel: 'Chassis A' })
+  })
+
+  test('a declared medium wins over a network match', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedTcpDevice(db, 'a', c1)
+    const declaredMedia = new Map<string, ConnectionMedium | null>([['stable-a 10.0.0.5:5555', 'wired']])
+    const app = makeApp(db, 'admin', {
+      networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', medium: 'wireless', scan: true }],
+      declaredMedia,
+    })
+
+    const res = await app.request(`/${c1}/devices`)
+    const body = (await res.json()) as { items: Array<{ id: string; connection: { medium: string | null; mediumSource: string } }> }
+    const item = body.items.find((d) => d.id === 'a')
+    expect(item?.connection).toMatchObject({ medium: 'wired', mediumSource: 'declared' })
+  })
+
+  test('with no networks configured, a member device reads the honest TCP — never a guessed WI-FI', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedTcpDevice(db, 'a', c1)
+    const app = makeApp(db)
+
+    const res = await app.request(`/${c1}/devices`)
+    const body = (await res.json()) as { items: Array<{ id: string; connection: { medium: string | null; mediumSource: string } }> }
+    const item = body.items.find((d) => d.id === 'a')
+    expect(item?.connection).toMatchObject({ medium: null, mediumSource: 'unknown' })
+  })
+})
+
+/**
+ * Plan 91 §3.4 item 4, §4.4 — the producer gap step 91.4 flagged and left
+ * open: this router's own device list never threaded `assistedByOf`, so a
+ * device genuinely being assisted read `assistedBy: []` here while `GET
+ * /api/devices` (already fixed in step 91.4) read it correctly. Proven
+ * through the real HTTP route, the same discipline the `connection.medium`
+ * describe block just above already established.
+ */
+describe('GET /api/clusters/:id/devices — assistedBy (plan 91 §3.4 item 4, §4.4)', () => {
+  test('a member device with an active assist grant reports assistedBy; an unassisted one reports []', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedDevice(db, 'a', c1)
+    seedDevice(db, 'b', c1)
+    const assistHolder = { kind: 'user' as const, id: 'u-assist', label: 'operator@enkaku', runId: null, takeable: false, acquiredAt: 100, expiresAt: 200 }
+    const app = makeApp(db, 'admin', { assistedByOf: (deviceId) => (deviceId === 'a' ? [assistHolder] : []) })
+
+    const res = await app.request(`/${c1}/devices`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: unknown }> }
+    expect(body.items.find((d) => d.id === 'a')?.assistedBy).toEqual([assistHolder])
+    expect(body.items.find((d) => d.id === 'b')?.assistedBy).toEqual([])
+  })
+
+  test('an omitted assistedByOf dep falls back to [] rather than throwing or guessing', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedDevice(db, 'a', c1)
+    const app = makeApp(db)
+
+    const res = await app.request(`/${c1}/devices`)
+    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: unknown }> }
+    expect(body.items.find((d) => d.id === 'a')?.assistedBy).toEqual([])
+  })
+
+  /**
+   * docs/plans/96-m61-hotfixes.md §96.10, daemon.ts's own residual — the two
+   * tests above prove `createClusterRoutes` correctly THREADS whatever
+   * `assistedByOf` it is handed; they do not prove the real production
+   * expression (`(deviceId) => coControl.assistedBy(deviceId)`, wired into
+   * `daemon.ts`'s `createClusterRoutes({...})` call) behaves correctly end to
+   * end. This test builds a REAL `CoControlManager` — the same
+   * `leases`-then-`coControl` construction order `daemon.ts` uses — grants a
+   * real assist through it, and passes the identical accessor expression
+   * `daemon.ts` now contains, so the mechanism under test is the production
+   * wiring itself, not a hand-rolled fake array.
+   */
+  test('a REAL CoControlManager, wired with `assistedByOf: (deviceId) => coControl.assistedBy(deviceId)` — the exact daemon.ts expression — reports the granted assist through GET /api/clusters/:id/devices', async () => {
+    const db = setUp()
+    const [c1] = seed(db, 1)
+    seedDevice(db, 'a', c1)
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    let coControlRef: ReturnType<typeof createCoControlManager> | null = null
+    const leases = createLeaseManager({
+      states,
+      jobStore: { expiredRunning: () => [] } as never,
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
+      log: createLogger('test'),
+      onJobLeaseExpired: () => {},
+      onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
+      onManualTakenOver: ({ deviceId }) => coControlRef?.onPrimaryEnded(deviceId),
+    })
+    const coControl = createCoControlManager({
+      leases,
+      config: { grantTtlSec: () => 300, maxConcurrentPerDevice: () => 1 },
+      log: createLogger('test'),
+    })
+    coControlRef = coControl
+
+    leases.acquireManual('a', 'primary-client', 'primary-user')
+    coControl.grant('a', 'assist-client', 'assisting-user')
+
+    const app = makeApp(db, 'admin', { assistedByOf: (deviceId) => coControl.assistedBy(deviceId) })
+    const res = await app.request(`/${c1}/devices`)
+    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: Array<{ kind: string; id: string }> }> }
+    const assistedBy = body.items.find((d) => d.id === 'a')?.assistedBy
+    expect(assistedBy).toHaveLength(1)
+    expect(assistedBy?.[0]).toMatchObject({ kind: 'user', id: 'assisting-user' })
   })
 })
 

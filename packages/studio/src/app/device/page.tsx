@@ -3,15 +3,22 @@
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { toast } from 'sonner'
 import {
   DeviceDetailResponseSchema,
+  DeviceLabelStateSchema,
   DeviceResponseSchema,
   DeviceViewersResponseSchema,
   JobsPageResponseSchema,
   PluginDevSlotsResponseSchema,
+  ReconnectOutcomeSchema,
+  ScriptListItemSchema,
   SettingsResponseSchema,
   type BatteryState,
+  type CoControlMode,
+  type DeviceLabelState,
   type DeviceStatus,
+  type FarmSettings,
   type JobInfo,
   type LeaseHolder,
   type RegistryResponse,
@@ -19,17 +26,23 @@ import {
   type Viewer,
 } from '@enkaku/protocol'
 import { DeviceLog } from '@/components/DeviceLog'
+import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
+import { CutoverDialog } from '@/components/device/CutoverDialog'
 import { CrashesPanel } from '@/components/CrashesPanel'
 import { MonitorPane } from '@/components/monitor/MonitorPane'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
 import { FilesPanel } from '@/components/FilesPanel'
+import { AgentPanel } from '@/components/guest-agent/AgentPanel'
 import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 import { IdentityPanel } from '@/components/identity/IdentityPanel'
 import { KvPanel } from '@/components/kv/KvPanel'
 import { DeviceHeader, type DeviceDetailInfo } from '@/components/device/DeviceHeader'
+import { DeviceNumberField } from '@/components/device/DeviceNumberField'
+import { PhysicalLabellingPanel } from '@/components/device/PhysicalLabellingPanel'
 import { RotationQuickAction } from '@/components/device/RotationQuickAction'
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
+import { AssistDialog } from '@/components/device/AssistDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { JobStatusBadge } from '@/components/StatusBadge'
@@ -48,9 +61,10 @@ import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { deviceSections } from '@/components/settings/deviceSections'
+import { DeviceVideoFields } from '@/components/video/DeviceVideoFields'
 import { Button } from '@/components/ui/button'
 import { api, useAction } from '@/lib/actions'
-import { fetchAllPages, fetchDeviceRefs, type DeviceRef } from '@/lib/api'
+import { fetchAllPages, fetchDeviceRefs, fetchGuestAgentStatus, type DeviceRef } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
 
 function DeviceDetail() {
@@ -100,6 +114,14 @@ function DeviceDetail() {
   // Removal (plan 47 §4.5) — the smallest additive hook into this page: a
   // single dialog, no new tab, no restructuring of what is already here.
   const [forgetOpen, setForgetOpen] = useState(false)
+  // Per-device disconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4) — same
+  // "lift the dialog's open state, keep DeviceHeader hook-free" shape as
+  // `forgetOpen` above. Reconnect has no dialog of its own (§3.8: it is not
+  // destructive) — it fires directly from the menu.
+  const [disconnectOpen, setDisconnectOpen] = useState(false)
+  // The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) —
+  // same lifted-open-state shape as `disconnectOpen` above.
+  const [cutoverOpen, setCutoverOpen] = useState(false)
   const [schema, setSchema] = useState<JsonSchemaNode | null>(null)
   // The terminal tab is hidden entirely when the farm switches it off (plan
   // 26 §5, step 26.1) — defaults to 'admin' (the loopback default) until the
@@ -123,6 +145,20 @@ function DeviceDetail() {
   // happened. `null` means "no fallback reported for the current session" —
   // the configured engine is presumed to be the one actually running.
   const [inspectorFallback, setInspectorFallback] = useState<{ to: string; reason: string } | null>(null)
+  // The guest agent's `appVersion` (plan 90 §5 step 90.6, fixes F11) —
+  // `DeviceHeader` keeps no hooks of its own, so this is fetched here and
+  // handed down as a prop, the same shape every other looked-up fact on
+  // that component already follows. `null` while loading or unknown — a
+  // failed fetch (agent never provisioned) is tolerated silently, same as
+  // `fetchRegistry`/dev-slot scripts below.
+  const [agentVersion, setAgentVersion] = useState<string | null>(null)
+  // Physical labelling's applied state (plan 89 §3.5, §4.3, §5 step 89.8) —
+  // fetched once here (not inside `DeviceHeader`, which keeps no hooks of
+  // its own — same rule `agentVersion` above follows) and shared with
+  // `PhysicalLabellingPanel` on the Settings tab, so the header badge and
+  // the panel's own status row can never disagree about what was last
+  // checked. `null` until the first `GET .../label` resolves.
+  const [labelState, setLabelState] = useState<DeviceLabelState | null>(null)
   const idleTimeoutRef = useRef(300)
   const { run, isPending } = useAction()
   // The lease countdown and the jobs tab tick without a refresh (Plan 17 §4.6).
@@ -133,6 +169,28 @@ function DeviceDetail() {
   // driving the phone visible here without polling (plan 69 §3.5's old
   // `lib/agent-holders.ts`, deleted).
   const [heldBy, setHeldBy] = useState<LeaseHolder | null>(null)
+  // Assist (plan 91 §3.2, §3.4, §3.12) — a narrow, subordinate grant to touch
+  // a device someone/something else already controls, WITHOUT taking `heldBy`
+  // away from them. `assisting` is THIS TAB's own grant (null when we hold
+  // none); `expiresAt` is ms epoch, the same unit `expiresAt`/`secondsLeft`
+  // above already use for the lease countdown, so both can tick off the same
+  // `now`.
+  const [assisting, setAssisting] = useState<{ expiresAt: number; primary: LeaseHolder } | null>(null)
+  const [assistOpen, setAssistOpen] = useState(false)
+  // The farm-wide switch and the grant TTL (plan 91 §4.5) — read from
+  // `/api/settings` exactly like `shellMode`/`transferEnabled` above.
+  // `grantTtlSec` is named in the confirmation dialog's own copy (§3.12), so
+  // an operator knows how long their grant lasts before they confirm it.
+  const [coControlMode, setCoControlMode] = useState<CoControlMode>('operator')
+  const [assistGrantTtlSec, setAssistGrantTtlSec] = useState(300)
+  // The farm's own video settings (plan 92 §3.9, §5 step 92.8) — read from
+  // the SAME `/api/settings` fetch `shellMode`/`coControlMode` above already
+  // use, not a second request: `DeviceVideoFields`' effective-profile
+  // readout needs it to name "the farm" as the source for any empty field
+  // (this step's own acceptance criterion 3). `null` until that fetch
+  // resolves, or if it fails — the readout shows a loading/neutral state
+  // rather than guessing.
+  const [farmVideo, setFarmVideo] = useState<FarmSettings['video'] | null>(null)
 
   /**
    * The published fact (plan 31 §4.3), not an inference from local state: the
@@ -171,6 +229,24 @@ function DeviceDetail() {
           .catch(() => undefined)
       })
     void fetchRegistry().then(setRegistry)
+    // Plan 90 §5 step 90.6, fixes F11 — `GET .../guest-agent` already
+    // returned `appVersion`; nothing rendered it. A fetch failure (agent
+    // never provisioned, or the device is offline) leaves it `null`, read
+    // as "unknown" by `DeviceHeader`'s popover, never a thrown error on
+    // this page.
+    setAgentVersion(null)
+    void fetchGuestAgentStatus(deviceId)
+      .then((s) => setAgentVersion(s.appVersion ?? null))
+      .catch(() => setAgentVersion(null))
+    // Physical labelling's applied state (plan 89 §5 step 89.8) — a fetch
+    // failure (labelling not available on this host, or the device is
+    // offline and nothing was ever cached) leaves it `null`, read as "not
+    // yet checked" by `LabelStateBadge` and `PhysicalLabellingPanel`, never
+    // a thrown page error.
+    setLabelState(null)
+    void api(`/api/devices/${deviceId}/label`, DeviceLabelStateSchema)
+      .then(setLabelState)
+      .catch(() => undefined)
     // The very same schema the farm defaults are rendered from, so a field can
     // never exist in one place and be missing in the other.
     void api('/api/settings', SettingsResponseSchema)
@@ -187,10 +263,19 @@ function DeviceDetail() {
         setShellMode(b.settings.shell.mode)
         setEndpointEnabled(b.settings.shell.endpointEnabled)
         setTransferEnabled(b.settings.transfer.enabled)
+        setFarmVideo(b.settings.video)
+        // Assist (plan 91 §4.5) — `mode` decides whether the button is even
+        // offered; `grantTtlSec` is named in the confirmation dialog's copy.
+        setCoControlMode(b.settings.coControl.mode)
+        setAssistGrantTtlSec(b.settings.coControl.grantTtlSec)
       })
       .catch(() => undefined)
-    void fetchAllPages<ScriptRow>('/api/scripts')
-      .then((scripts) => setScripts(scripts.filter((x) => x.enabled)))
+    // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8): a
+    // `paramsSchema` here is author-controlled input (F7) — this used to
+    // reach the page through a bare `as` cast with nothing checking its
+    // shape at all.
+    void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
+      .then((scripts) => setScripts((scripts as ScriptRow[]).filter((x) => x.enabled)))
       .catch(() => setScripts([]))
     // Dev-slot scripts (plan 82 §3.5) are never rows in `/api/scripts` —
     // that is the whole point of a dev slot not surviving a restart — so
@@ -241,6 +326,33 @@ function DeviceDetail() {
         // The panel used to show whatever the first fetch returned; a device
         // that heats up or drains while you watch it looked frozen.
         setBattery(msg.payload.battery)
+      } else if (msg.type === 'assist.changed' && msg.payload.deviceId === deviceId) {
+        // "Everyone else sees it" (plan 91 §3.4 item 4, F25) — broadcast to
+        // every viewer, live, the same shape `lease.changed` already
+        // established for `heldBy` above. Kept on `device.assistedBy` itself
+        // (rather than a second piece of state) so `DeviceHeader`/the header
+        // badge read one source, exactly like `heldBy`.
+        setDevice((d) => (d ? { ...d, assistedBy: msg.payload.assistedBy } : d))
+      } else if (msg.type === 'assist.stopped' && msg.payload.deviceId === deviceId) {
+        // Unicast to the (former) assisting connection only
+        // (`AssistStoppedMessage`'s own doc comment, `@enkaku/protocol`) —
+        // receiving this at all means it is about OUR OWN grant, whatever
+        // the reason. `released` is the operator's own "Stop assisting"
+        // click (or this dialog's own success path already closed) and
+        // needs no notice, the same restraint `releaseControl` shows for a
+        // deliberate release.
+        setAssisting(null)
+        if (msg.payload.reason !== 'released') {
+          setNotice(
+            msg.payload.reason === 'ttl'
+              ? 'Assisting stopped automatically after a period of inactivity.'
+              : msg.payload.reason === 'primary_ended'
+                ? 'Assisting stopped — the job it was helping has finished.'
+                : msg.payload.reason === 'mode_off'
+                  ? 'Assisting was turned off for this farm.'
+                  : 'Assisting stopped — the connection dropped.',
+          )
+        }
       } else if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === deviceId) {
         // The effective engine for the CURRENT session dropped to the
         // fallback (plan 34 §4.6) — reported until the next session start.
@@ -265,7 +377,9 @@ function DeviceDetail() {
               ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
               : msg.payload.reason === 'taken-over'
                 ? `${msg.payload.takenBy ?? 'Someone else'} took control from you.`
-                : `Control was released automatically (${msg.payload.reason}).`,
+                : msg.payload.reason === 'adb-server-restart'
+                  ? 'Control was released — the adb server just restarted. Take it again once the device reconnects.'
+                  : `Control was released automatically (${msg.payload.reason}).`,
           )
         }
       }
@@ -277,6 +391,10 @@ function DeviceDetail() {
   // people deserve to see that coming rather than have the screen go dead.
   // Derived from the shared `now` tick rather than its own interval (Plan 17 §4.6).
   const secondsLeft = expiresAt === null ? null : Math.max(0, Math.round((expiresAt - now) / 1000))
+  // The assist grant's own countdown (plan 91 §3.4 item 2) — the SAME shape
+  // as `secondsLeft` above, ticked off the same shared `now`, rendered in
+  // `ScreenCard`'s amber `.readout` beside its `.rack-label`.
+  const assistSecondsLeft = assisting === null ? null : Math.max(0, Math.round((assisting.expiresAt - now) / 1000))
 
   async function takeControl() {
     if (!deviceId) return
@@ -314,8 +432,19 @@ function DeviceDetail() {
 
   // Every input refreshes the lease on the server (touchManual); mirror that
   // here so the countdown stays honest instead of alarming for no reason.
+  // Plan 91 §3.6: the assist path calls `coControl.touch` instead — this
+  // refreshes ITS OWN countdown the same way, so a working assist never
+  // alarms either.
   const noteActivity = () => {
     if (expiresAt !== null) setExpiresAt(Date.now() + idleTimeoutRef.current * 1000)
+    if (assisting !== null) setAssisting((a) => (a ? { ...a, expiresAt: Date.now() + assistGrantTtlSec * 1000 } : a))
+  }
+
+  /** Ends this tab's own assist grant early (plan 91 §3.12's own dialog never mentions a stop button, but `AssistStopMessage` exists for exactly this — "ending your own help early is always allowed", `ws-handlers.ts`'s own comment on `assist.stop`). No confirmation: it only gives something back, the same reasoning `releaseControl` above needs none. */
+  function stopAssisting() {
+    if (!deviceId) return
+    ws.send({ type: 'assist.stop', payload: { deviceId } })
+    setAssisting(null)
   }
 
   const saveSettings = () =>
@@ -331,6 +460,36 @@ function DeviceDetail() {
         success: 'Device settings saved',
         failure: 'Could not save the device settings',
         onSuccess: () => setSavedSettings(draftSettings),
+      },
+    )
+
+  // Re-fetches the whole device (plan 88 §5 step 88.4) — a disconnect or a
+  // reconnect changes `connection`/`serial`, which `device.status`'s WS
+  // broadcast above (`msg.payload.status`) does not carry.
+  const reloadDevice = () =>
+    void api(`/api/devices/${deviceId}`, DeviceDetailResponseSchema)
+      .then((b) => {
+        setDevice(b.device)
+        setStatus(b.device.status)
+        setHeldBy(b.device.heldBy)
+      })
+      .catch(() => undefined)
+
+  /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
+  const reconnectDevice = () =>
+    run(
+      'reconnect',
+      () => api(`/api/devices/${deviceId}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }),
+      {
+        failure: 'Could not reconnect the device',
+        onSuccess: (outcome) => {
+          const label = device?.label ?? 'The device'
+          if (outcome.result === 'already-connected') toast.success(`${label} is already connected`)
+          else if (outcome.result === 'connected') toast.success(`${label} reconnected from ${outcome.address}`)
+          else if (outcome.result === 'not-found') toast.error(`Could not find ${label} on the network`, { description: 'It did not answer at any remembered address.' })
+          else toast.error(`Could not reconnect ${label}`, { description: outcome.detail })
+          reloadDevice()
+        },
       },
     )
 
@@ -369,7 +528,15 @@ function DeviceDetail() {
 
   const currentStatus = status ?? device.status
   const busy = currentStatus === 'busy'
-  const inputEnabled = iHoldControl && !busy
+  // Assist (plan 91 §3.4, §5 step 91.6): a co-control grant authorises input
+  // WITHOUT taking control away from whoever holds the lease — `busy` keeps
+  // meaning exactly what it always has (F3/F4 unchanged), so this is an `||`
+  // widening the existing rule, never a replacement of it. Spec §10.1's own
+  // amendment (plan 91 §3.4): "unless that client holds a co-control grant
+  // on the device, which authorises the five manual input verbs and nothing
+  // else."
+  const iAmAssisting = assisting !== null
+  const inputEnabled = (iHoldControl && !busy) || iAmAssisting
   /**
    * Why `Take control` cannot be pressed right now, or null when it can — the
    * same rule the header's own button follows, so a panel that offers the
@@ -401,17 +568,84 @@ function DeviceDetail() {
     ? deviceSections(schema).map((s) => ({
         id: s.id,
         title: s.title,
-        render: () => (
-          <SchemaForm
-            schema={narrowSchema(schema, s.keys)}
-            value={draftSettings}
-            onChange={setDraftSettings}
-            onSubmit={saveSettings}
-            onReset={() => setDraftSettings(savedSettings)}
-            busy={isPending('settings')}
-            dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
-          />
-        ),
+        render: () =>
+          s.id === 'video' ? (
+            // Plan 92 §5 step 92.8, acceptance criterion 3 — still entirely
+            // `SchemaForm`-rendered (spec §19); `DeviceVideoFields` only adds
+            // the Advanced disclosure and the effective-profile readout
+            // AROUND those fields, the same pattern `FarmVideoFields` uses
+            // on the farm Settings page.
+            <DeviceVideoFields
+              schema={narrowSchema(schema, s.keys)}
+              draft={draftSettings as Record<string, unknown>}
+              onChange={setDraftSettings}
+              onSubmit={saveSettings}
+              onReset={() => setDraftSettings(savedSettings)}
+              busy={isPending('settings')}
+              dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
+              farmVideo={farmVideo}
+            />
+          ) : s.id === 'physical-labelling' ? (
+            // Plan 89 §3.4, §3.5, §3.6, §3.8, §5 step 89.8 — the same
+            // schema-plus-extra shape `DeviceVideoFields` uses above:
+            // `mode`/`showName` are still entirely `SchemaForm`-rendered
+            // (spec §19); this component only adds the content preview, the
+            // live applied-state badge, and the `Re-apply`/`Clear` actions a
+            // schema cannot describe.
+            <PhysicalLabellingPanel
+              device={{ id: device.id, label: device.label, number: device.number ?? null, screenW: device.screenW, screenH: device.screenH }}
+              schema={narrowSchema(schema, s.keys)}
+              draft={draftSettings as Record<string, unknown>}
+              onChange={setDraftSettings}
+              onSubmit={saveSettings}
+              onReset={() => setDraftSettings(savedSettings)}
+              busy={isPending('settings')}
+              dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
+              labelState={labelState}
+              onLabelStateChange={setLabelState}
+            />
+          ) : (
+            <>
+              {/* Plan 89 §5 step 89.3 — hand-authored, not schema-driven:
+                  `number` lives in `device_numbers`, keyed by `stableId`,
+                  never on `DeviceSettingsSchema` (§4.1), so it can never be
+                  one of `s.keys` below. `general` is always present
+                  (`deviceSections`'s own guarantee), which is why it lives
+                  here rather than needing a section of its own. */}
+              {s.id === 'general' && (
+                <DeviceNumberField
+                  device={device}
+                  onSaved={(patch) => setDevice((d) => (d ? { ...d, ...patch } : d))}
+                />
+              )}
+              {/* Plan 94 §3.6, §4.10, step 94.10 — the cross-reference this
+                  step's brief asked for: this panel is layer 1 (sub-second,
+                  INSIDE one action, applies to everything this device does)
+                  and never the run form's own pacing (layer 2/3 — the gap
+                  BETWEEN actions/repetitions and the fleet stagger, which
+                  apply only to one run and live on the run form, not here).
+                  The two are separate settings, deliberately never shown on
+                  the same screen (§3.6: "No screen shows both") — this is a
+                  pointer, not a duplication. */}
+              {s.id === 'timing' && (
+                <p className="mb-3 rounded-lg border bg-surface-2/40 px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
+                  This is how THIS device performs one action — hold duration, coordinate jitter, typing cadence — and
+                  it applies to everything this device runs. Repeat pacing (how many times a run repeats, and how
+                  long to wait between repetitions or across a fleet) is a property of the RUN, not the device — set
+                  it in the run form's Repeat section instead.
+                </p>
+              )}
+              <SchemaForm
+                schema={narrowSchema(schema, s.keys)}
+                value={draftSettings}
+                onChange={setDraftSettings}
+                onSubmit={saveSettings}
+                onReset={() => setDraftSettings(savedSettings)}
+                busy={isPending('settings')}
+                dirty={JSON.stringify(draftSettings) !== JSON.stringify(savedSettings)}
+              />
+            </>
+          ),
       }))
     : []
 
@@ -448,11 +682,16 @@ function DeviceDetail() {
         onTakeControl={() => void takeControl()}
         onControlTaken={onControlTaken}
         onReleaseControl={releaseControl}
+        onDisconnect={() => setDisconnectOpen(true)}
+        onReconnect={reconnectDevice}
+        onOpenCutover={() => setCutoverOpen(true)}
         onRemove={() => setForgetOpen(true)}
         takeOverOpen={takeOverOpen}
         onTakeOverOpenChange={setTakeOverOpen}
         askAgentOpen={askAgentOpen}
         onAskAgentOpenChange={setAskAgentOpen}
+        agentVersion={agentVersion}
+        labelState={labelState}
       />
 
       <EntityTabs
@@ -469,6 +708,11 @@ function DeviceDetail() {
           ...(shellMode === 'off' ? [] : [{ key: 'terminal', label: 'Terminal' }]),
           ...(transferEnabled ? [{ key: 'files', label: 'Files' }] : []),
           { key: 'network', label: 'Network' },
+          // Plan 90 §5 step 90.6 — the agent's own lifecycle (install/update/
+          // retry/remove, version, capabilities) moved out of Network and
+          // into its own tab (§3.8: it is a device property, not a route
+          // concern).
+          { key: 'agent', label: 'Agent' },
           { key: 'identity', label: 'Identity' },
           { key: 'logs', label: 'Logs' },
           // Plan 79 §5.9 — device-scoped ctx.kv values a script wrote for THIS device.
@@ -526,6 +770,11 @@ function DeviceDetail() {
             // (plan 56 §2 non-goals) — disabled with a stated reason rather
             // than a dead end (design.md's quality floor).
             {...(device.nodeId ? { inspectDisabledReason: 'Inspecting a node-owned device is not available yet.' } : {})}
+            // Plan 94 §5 step 94.3's own `ws-handlers.ts` refusal
+            // (`recording is not available for cloud (node-owned) devices
+            // yet`) — named here rather than left for the operator to
+            // discover only as a WS error after pressing Start.
+            {...(device.nodeId ? { recordDisabledReason: 'Recording is not available for cloud (node-owned) devices yet.' } : {})}
             jobRunning={busy}
             inputEnabled={inputEnabled}
             // The same server-published fact every other panel on this page
@@ -538,7 +787,18 @@ function DeviceDetail() {
             {...(takeControlReason ? { takeControlDisabledReason: takeControlReason } : {})}
             onActivity={noteActivity}
             autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
+            configuredDisplay={device.display}
             visible={tab === 'control'}
+            // Assist (plan 91 §3.4, §3.12, §5 step 91.6) — `heldBy?.label` is
+            // the running script's `name@version` (F25's `LeaseHolder.label`),
+            // named in the pre-assist banner so the operator knows exactly
+            // what they would be reaching into before they even open the
+            // dialog.
+            assistPrimaryLabel={heldBy?.label ?? null}
+            onAssist={() => setAssistOpen(true)}
+            {...(coControlMode === 'off' ? { assistDisabledReason: 'Assisting is turned off for this farm.' } : {})}
+            assisting={assisting && assistSecondsLeft !== null ? { secondsLeft: assistSecondsLeft } : null}
+            onStopAssisting={stopAssisting}
           />
         </div>
       </TabPanel>
@@ -606,7 +866,11 @@ function DeviceDetail() {
       )}
 
       <TabPanel active={tab === 'network'}>
-        <NetworkPanel deviceId={device.id} deviceLabel={device.label} canUse={iHoldControl && !busy} />
+        <NetworkPanel deviceId={device.id} canUse={iHoldControl && !busy} />
+      </TabPanel>
+
+      <TabPanel active={tab === 'agent'}>
+        <AgentPanel deviceId={device.id} deviceLabel={device.label} canUse={iHoldControl && !busy} />
       </TabPanel>
 
       <TabPanel active={tab === 'identity'}>
@@ -677,6 +941,36 @@ function DeviceDetail() {
         onOpenChange={setForgetOpen}
         onDone={() => router.push('/')}
       />
+
+      <DisconnectDeviceDialog
+        device={device}
+        open={disconnectOpen}
+        onOpenChange={setDisconnectOpen}
+        onDone={reloadDevice}
+      />
+
+      <CutoverDialog
+        device={device}
+        open={cutoverOpen}
+        onOpenChange={setCutoverOpen}
+        onDone={reloadDevice}
+      />
+
+      {/* Assist (plan 91 §3.2, §3.12, §5 step 91.6) — a WARNING the operator
+          acknowledges, never a takeover: `heldBy` (the job or user this
+          targets) is untouched by confirming it, the same guard
+          `TakeControlDialog` above uses for its own `heldBy`. */}
+      {heldBy && (
+        <AssistDialog
+          deviceId={device.id}
+          deviceLabel={device.label}
+          primary={heldBy}
+          grantTtlSec={assistGrantTtlSec}
+          open={assistOpen}
+          onOpenChange={setAssistOpen}
+          onAssisted={(expiresAtMs, primary) => setAssisting({ expiresAt: expiresAtMs, primary })}
+        />
+      )}
     </>
   )
 }

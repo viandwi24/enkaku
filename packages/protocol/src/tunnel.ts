@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { DeviceInfoSchema } from './device'
+import { ResultOutcomeSchema } from './schema/result'
 import { PointSchema } from './ui-node'
 
 /**
@@ -32,29 +33,8 @@ export const NodeHelloMessage = z.object({
   }),
 })
 
-/**
- * Plan 61 §3.3 compatibility window: a node binary built before the rename
- * still sends `agent.hello` — the control plane accepts it for one release
- * with a warn-level log naming the node, so an operator can see which nodes
- * still need upgrading. Dated removal tracked in `00-overview.md`.
- */
-export const NodeHelloLegacyMessage = z.object({
-  type: z.literal('agent.hello'),
-  payload: z.object({
-    agentVersion: z.string(),
-    platform: z.string(),
-    toolVersions: z.record(z.string(), z.string()),
-  }),
-})
-
 export const NodeDevicesMessage = z.object({
   type: z.literal('node.devices'),
-  payload: z.object({ devices: z.array(DeviceInfoSchema) }),
-})
-
-/** Plan 61 §3.3 compatibility window — same payload shape as `NodeDevicesMessage`, a pre-rename node still sends this type string. */
-export const NodeDevicesLegacyMessage = z.object({
-  type: z.literal('agent.devices'),
   payload: z.object({ devices: z.array(DeviceInfoSchema) }),
 })
 
@@ -259,6 +239,16 @@ export const JobProgressMessage = z.object({
         value: z.unknown().optional(),
         /** `phase` (plan 60 §3.4) — where the failure happened, so a cloud job's Summary reads the same as a local one's. */
         error: z.object({ code: z.string(), message: z.string(), phase: z.string().optional() }).optional(),
+        /**
+         * Plan 97 §3.3, §3.4, §3.8, §4.3, F6 — the SAME child verdict the
+         * local path already carries on its own `result` IPC message,
+         * mirrored here so a node-owned device's job gets the same
+         * `resultStatus`/`resultBytes`/`resultSummary`/`resultIssues`
+         * treatment a local job does. Optional so a node running an older
+         * `@enkaku/session` still parses — a normal condition on a farm that
+         * updates in stages, never an error (plan 59's rule).
+         */
+        outcome: ResultOutcomeSchema.optional(),
       })
       .optional(),
   }),
@@ -465,9 +455,7 @@ export const AdbAckMessage = z.object({
 
 export const NodeToControlSchema = z.discriminatedUnion('type', [
   NodeHelloMessage,
-  NodeHelloLegacyMessage,
   NodeDevicesMessage,
-  NodeDevicesLegacyMessage,
   SessionStartedMessage,
   SessionFailedMessage,
   JobProgressMessage,

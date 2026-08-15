@@ -8,7 +8,7 @@
  * parent. This is crash containment (spec §11.3) — NOT a security sandbox:
  * the bundle has full fs and network access as the core's OS user.
  */
-import { FindOutcomeSchema } from '@enkaku/protocol'
+import { DANGEROUS_FIELD_NAMES, FindOutcomeSchema, RESULT_LIMITS, type ResultOutcome, type RuntimeEnvelope } from '@enkaku/protocol'
 import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type JobsCall, type KvCall, type ParentToChild } from './ipc'
 import { createJobsApiFor } from './jobs-client'
 import { createKvApiFor } from './kv-client'
@@ -29,6 +29,15 @@ const pendingKv = new Map<string, { resolve: (v: unknown) => void; reject: (e: u
 const pendingJobs = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const abortController = new AbortController()
 let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
+
+/**
+ * `ctx.onAssist` registrations (plan 91 §3.6, §4.8) — a list, not a single
+ * slot, so a script that calls `ctx.onAssist` more than once (unusual, but
+ * never silently drops a caller's registration the way overwriting a single
+ * slot would). Never cleared mid-process: this child runs exactly one
+ * attempt, so there is no "next job" to leak into.
+ */
+const assistHandlers: Array<(e: { at: number; actor: string | null }) => void> = []
 
 function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>): Promise<T> {
   const callId = crypto.randomUUID()
@@ -159,7 +168,11 @@ const deviceApi = {
   },
   install: (opts: { artifactId: string; reinstall?: boolean; grantPermissions?: boolean; allowDowngrade?: boolean }) =>
     request<{ package: string | null; durationMs: number; output: string }>({ method: 'install', args: opts } as never),
-  push: (opts: { artifactId: string; remotePath: string }) => request<void>({ method: 'push', args: opts } as never),
+  push: (opts: { artifactId: string; remotePath: string; mediaScan?: 'auto' | 'always' | 'never' }) =>
+    request<{ mediaScan: { ran: boolean; method: 'scan_file' | 'scan_volume' | null; ms: number; error?: string } }>({
+      method: 'push',
+      args: opts,
+    } as never),
   pull: (opts: { remotePath: string }) =>
     request<{ artifactId: string; bytes: number }>({ method: 'pull', args: opts } as never),
 }
@@ -212,6 +225,11 @@ process.on('message', (raw: unknown) => {
     pendingKv.clear()
     for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job di-abort (${msg.reason})`))
     pendingJobs.clear()
+  } else if (msg.t === 'assist') {
+    // NOT an abort (plan 91 §3.6) — the job keeps running exactly as before;
+    // a script that never called `ctx.onAssist` is unaffected. Delivered to
+    // every registration, in order.
+    for (const cb of assistHandlers) cb({ at: msg.at, actor: msg.actor })
   } else if (msg.t === 'init') {
     void runScript(msg)
   }
@@ -245,6 +263,145 @@ function toScriptError(err: unknown, phase: string): { code: string; message: st
   return { code: 'SCRIPT_ERROR', message: String(err), phase }
 }
 
+/**
+ * Plan 97 §3.8, V3 — a safety valve for the WALK itself, not the real bound
+ * (the byte cap already runs first — see `buildResultOutcome` below — so a
+ * value reaching this walk is already at most `maxResultBytes`, which is at
+ * most 1 MiB per `job.maxResultBytes`'s own ceiling). Generous enough that
+ * no honest result — even a maximally wide, maximally deep one within that
+ * byte budget — ever trips it.
+ */
+const MAX_RESULT_WALK_VISITS = 50_000
+
+/**
+ * Iterative, not recursive (a `JSON.stringify`-safe value can still nest
+ * deeply while staying small — a stack-based walk cannot overflow the call
+ * stack the way a recursive one could). Returns the dot/bracket path of the
+ * first `__proto__`/`constructor`/`prototype` OWN key found at any depth, or
+ * `null` when none exists. Checked with `Object.keys` — the same set
+ * `JSON.stringify` itself would visit — so this mirrors exactly what will
+ * end up in the stored text (plan 97 §3.8, V3): a prototype already hijacked
+ * via `obj['__proto__'] = x` (rather than a genuine own property, e.g. from
+ * `JSON.parse` or a spread) never shows up as an own key at all, and neither
+ * would it appear in the JSON this value is about to become — nothing to
+ * flag, because nothing dangerous will be READ back out of the stored text.
+ */
+function findDangerousKey(value: unknown): string | null {
+  const stack: Array<{ node: unknown; path: string }> = [{ node: value, path: '' }]
+  let visits = 0
+  while (stack.length > 0) {
+    const { node, path } = stack.pop() as { node: unknown; path: string }
+    visits++
+    if (visits > MAX_RESULT_WALK_VISITS) break
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) stack.push({ node: node[i], path: `${path}[${i}]` })
+    } else if (node !== null && typeof node === 'object') {
+      for (const key of Object.keys(node as Record<string, unknown>)) {
+        if (DANGEROUS_FIELD_NAMES.has(key)) return path ? `${path}.${key}` : key
+        stack.push({ node: (node as Record<string, unknown>)[key], path: path ? `${path}.${key}` : key })
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Plan 97 §3.3, §3.4, §3.8, H2 — measure, then check, then store, in that
+ * order (this step's own title): measuring after validating would run the
+ * expensive schema check on a payload that was always going to be refused
+ * for its size, and walking before measuring would walk a payload that was
+ * never going to be sent at all.
+ *
+ * `sendValue: false` means exactly two things happened: the value never
+ * crossed IPC (`oversize` — F10, F11), or it never COULD (a circular
+ * reference — V2, H2, F10: `process.send` uses the same JSON serialisation
+ * `JSON.stringify` does here, so a value that cannot survive one cannot
+ * survive the other; letting it reach `send()` unchecked is what produced
+ * today's silent hang to the 30s silence timer). Every other outcome sends
+ * the value verbatim — never `safeParse`'s coerced/stripped `.data` (F25) —
+ * because the verdict decides `status`, never the stored value (§3.3).
+ *
+ * `statusWhenNoSchema` (plan 97 §3.5, §4.2, step 97.4) — the status this
+ * function reports when `resultSchema` is absent. `runScript`'s two success-
+ * path callers below keep the default, `'undeclared'`. The two `finish()`-
+ * salvage call sites (main-branch failure, and the finish-only re-attempt)
+ * always pass `undefined` for `resultSchema` itself — a salvage is NEVER
+ * checked against `def.result`, even when the script declared one (§3.5:
+ * "there is no honest lenient schema") — and pass `'partial'` here, so they
+ * still get every size/circularity/prototype-pollution guard this function
+ * already gives a normal result (F10/V1/V2/V3 do not stop mattering just
+ * because the value came from `finish()` instead of `run()`).
+ */
+function buildResultOutcome(
+  value: unknown,
+  resultSchema: BundleDef['result'],
+  maxResultBytes: number,
+  statusWhenNoSchema: 'undeclared' | 'partial' = 'undeclared',
+): { outcome: ResultOutcome; sendValue: boolean } {
+  // 1. Serialise inside a try. `process.send` itself would throw on exactly
+  //    the same input (F10) — doing it here, first, turns that crash into a
+  //    reported, terminal `invalid` instead of a silent hang (H2).
+  let serialized: string
+  try {
+    serialized = JSON.stringify(value)
+  } catch {
+    return {
+      outcome: {
+        status: 'invalid',
+        // Nothing here to measure — the value never became text at all, and
+        // that is the one honest number for a payload that "could not be
+        // stored" (this outcome's own issue message).
+        bytes: 0,
+        issues: [{ path: '', message: 'the result contains a circular reference and could not be stored' }],
+      },
+      sendValue: false,
+    }
+  }
+
+  // 2. Measure — BEFORE any check runs, so an oversized payload never pays
+  //    for the walk or the schema validation below.
+  const bytes = new TextEncoder().encode(serialized).length
+  if (bytes > maxResultBytes) {
+    return { outcome: { status: 'oversize', bytes }, sendValue: false }
+  }
+
+  // 3. Walk for a prototype-hijack field name (V3) — the value still gets
+  //    stored (as inert JSON text no walker ever dereferences); only the
+  //    verdict changes, and the path is named so an operator can find it.
+  const dangerousPath = findDangerousKey(value)
+  if (dangerousPath !== null) {
+    return {
+      outcome: {
+        status: 'invalid',
+        bytes,
+        issues: [
+          {
+            path: dangerousPath,
+            message: `the result contains a reserved field name at "${dangerousPath}" ("__proto__"/"constructor"/"prototype" are refused as a prototype-pollution risk)`,
+          },
+        ],
+      },
+      sendValue: true,
+    }
+  }
+
+  // 4. Only now — check against the declared schema, if any. The VERDICT
+  //    decides `status`; `value` (never `parsed.data`) is what gets sent and
+  //    stored either way (§3.3, F25).
+  if (!resultSchema) {
+    return { outcome: { status: statusWhenNoSchema, bytes }, sendValue: true }
+  }
+  const parsed = resultSchema.safeParse(value)
+  if (parsed.success) {
+    return { outcome: { status: 'valid', bytes }, sendValue: true }
+  }
+  const issues = parsed.error.issues.slice(0, RESULT_LIMITS.maxIssues).map((issue) => ({
+    path: issue.path.map(String).join('.'),
+    message: issue.message,
+  }))
+  return { outcome: { status: 'invalid', bytes, issues }, sendValue: true }
+}
+
 /** Dev shape: the bundle is argv[2]; compiled shape: it follows `--job-child`. */
 function resolveBundlePath(): string | undefined {
   const flag = process.argv.indexOf('--job-child')
@@ -256,11 +413,34 @@ interface BundleDef {
   version: string
   timeout?: number
   retries?: number
+  /**
+   * Plan 98 §3.1, §4.7, §5 step 98.4 — already folded from `timeout`/
+   * `retries` by `defineScript`/`definePlugin` (`@enkaku/sdk`) on the
+   * author's own machine. Reported in `ready`, undefined for a pre-plan-98
+   * bundle (which keeps reporting only the bare `timeoutMs`/`retries` top-
+   * level fields below, exactly as before this plan existed).
+   */
+  runtime?: RuntimeEnvelope
   params: { parse(v: unknown): unknown }
+  /**
+   * Plan 97 §3.2, §4.2 — present only when the author declared `result:` on
+   * `defineScript`/`definePlugin`; a genuine Zod schema (`defineScript`
+   * already refuses anything else at the author's own machine, before this
+   * file ever sees it). `safeParse` is used purely as an oracle (§3.3): the
+   * child stores whatever `run()` actually returned, never `.data`, which
+   * Zod's `.parse()` would have coerced/stripped unknown keys from (F25).
+   * Undefined for every script that declares nothing — `undeclared` — which
+   * is the entire rest of this file's behaviour, unchanged (criterion 1).
+   */
+  result?: {
+    safeParse(v: unknown): { success: true; data: unknown } | { success: false; error: { issues: Array<{ path: (string | number | symbol)[]; message: string }> } }
+  }
   prepare?: (ctx: unknown) => Promise<void>
   run: (ctx: unknown) => Promise<unknown>
   finish?: (ctx: unknown) => Promise<void>
   reset?: { packages: string[]; clearData?: boolean }
+  /** Plan 91 §3.6, §4.8 — whether an operator may assist this script's job. Reported in `ready`, undefined for a pre-plan-91 bundle. */
+  assist?: 'allow' | 'deny'
 }
 
 /**
@@ -357,7 +537,9 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
       ...(pluginId !== undefined ? { pluginId } : {}),
       ...(typeof def.timeout === 'number' ? { timeoutMs: def.timeout } : {}),
       ...(typeof def.retries === 'number' ? { retries: def.retries } : {}),
+      ...(def.runtime !== undefined ? { runtime: def.runtime } : {}),
       ...(reset ? { reset } : {}),
+      ...(def.assist !== undefined ? { assist: def.assist } : {}),
     })
     return { bundlePath, def }
   } catch (err) {
@@ -370,12 +552,63 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
 /** Kicked off immediately at process start — see `loadBundle` above. */
 const loaded = loadBundle()
 
+/** Plan 97 §3.7, §4.9 — mirrors `job.progressIntervalMs`'s own zod default (`packages/protocol/src/settings.ts`); used only when `init.progressIntervalMs` is absent (a caller — chiefly a test — that predates this field). */
+const DEFAULT_PROGRESS_INTERVAL_MS = 1_000
+
+/**
+ * Plan 97 §3.7, §4.3 — `ctx.progress()`'s child-side coalescing: ONE timer
+ * for the whole attempt, started lazily on the FIRST call (a script that
+ * never calls `progress()` never runs a timer at all), last value wins. A
+ * script calling this in a tight loop costs one assignment per call — the
+ * timer, not the caller, decides when a message actually crosses IPC, and at
+ * most one crosses per tick no matter how many calls happened in between.
+ * Returns the timer handle so the caller can clear it — a coalescing timer
+ * must not outlive the attempt (00-overview §7), the same reason
+ * `heartbeat`/`rssTimer` below are cleared in `runScript`'s own `finally`.
+ */
+function createProgressReporter(intervalMs: number): { progress: (value: unknown) => void; stop: () => void } {
+  let timer: ReturnType<typeof setInterval> | null = null
+  let pending: { value: unknown } | undefined
+  return {
+    progress(value: unknown) {
+      pending = { value }
+      if (timer) return
+      timer = setInterval(() => {
+        if (!pending) return
+        const value = pending.value
+        pending = undefined
+        try {
+          send({ t: 'progress', value })
+        } catch {
+          // A circular/unserialisable progress value is dropped silently —
+          // `ctx.progress` is best-effort live state, never a guarantee
+          // (unlike `run()`'s own return value, which reports the same
+          // failure as `resultStatus: 'invalid'` — §3.7: only one of them is
+          // a commitment).
+        }
+      }, intervalMs)
+    },
+    stop() {
+      if (timer) clearInterval(timer)
+      timer = null
+    },
+  }
+}
+
 async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<void> {
   let finishRan = false
   let failure: { code: string; message: string; phase: string; stack?: string } | undefined
   let value: unknown
 
+  const progressReporter = createProgressReporter(init.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS)
   const heartbeat = setInterval(() => send({ t: 'heartbeat' }), HEARTBEAT_MS)
+  // Plan 98 §3.5, §4.7, H1 — self-reported RSS. One sample fires immediately
+  // (a job that finishes before the first `rssSampleMs` tick must still get
+  // at least one reading — most test/dev jobs run in well under 10s), then
+  // one per tick. No limit reads this yet; the parent only accumulates a
+  // peak (step 98.3 adds the limit).
+  send({ t: 'rss', bytes: process.memoryUsage.rss() })
+  const rssTimer = setInterval(() => send({ t: 'rss', bytes: process.memoryUsage.rss() }), init.rssSampleMs)
 
   try {
     const bundle = await loaded
@@ -392,7 +625,19 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       kv: kvApi,
       // Bound to THIS attempt (plan 81 §3.3, §4.2) — see the module-level
       // comment above `jobsRequest` for why this cannot be built earlier.
-      jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt }),
+      // `nodeId` (plan 99 §3.2, §4.8) is undefined outside a workflow, which
+      // reproduces the exact key derivation this had before that field
+      // existed.
+      jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt, nodeId: init.job.nodeId }),
+      // Plan 91 §3.6, §4.8 — a running script's own view of `{t:'assist'}`
+      // pushes (handled at module scope, above `process.on('message', ...)`).
+      // A script that never calls this is affected in NO way.
+      onAssist: (cb: (e: { at: number; actor: string | null }) => void) => {
+        assistHandlers.push(cb)
+      },
+      // Plan 97 §3.7, §4.2 — a live, unpersisted snapshot; coalesced here,
+      // never validated, never stored, never `resultOf`-readable.
+      progress: progressReporter.progress,
     }
 
     if (init.mode === 'finish-only') {
@@ -403,12 +648,26 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       } catch {
         ctx.params = init.params
       }
+      let finishValue: unknown
       if (def.finish) {
         send({ t: 'phase', phase: 'finish' })
-        await def.finish(ctx)
+        finishValue = await def.finish(ctx)
       }
       finishRan = true
-      send({ t: 'result', ok: false, error: ctx.error as never, finishRan })
+      // Plan 97 §3.5, §4.2, step 97.4 — this fresh process is the ONLY
+      // carrier for a `finish()` salvage after a timeout kill: the ORIGINAL
+      // attempt's own result (whatever it was) is discarded by the parent's
+      // abort handling before this re-attempt is even spawned (`job-runner.ts`'s
+      // own "the parent decides to abort, the parent also decides the
+      // reason" comment). No schema check (§3.5 — "there is no honest
+      // lenient schema"); `buildResultOutcome`'s size/circularity/
+      // prototype-pollution guards still apply.
+      if (finishValue === undefined) {
+        send({ t: 'result', ok: false, error: ctx.error as never, finishRan })
+      } else {
+        const { outcome, sendValue } = buildResultOutcome(finishValue, undefined, init.maxResultBytes, 'partial')
+        send({ t: 'result', ok: false, error: ctx.error as never, finishRan, ...(sendValue ? { value: finishValue } : {}), outcome })
+      }
       return
     }
 
@@ -419,6 +678,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
     }
 
     let currentPhase: 'prepare' | 'run' = 'prepare'
+    let finishValue: unknown
     try {
       if (def.prepare) {
         send({ t: 'phase', phase: 'prepare' })
@@ -437,7 +697,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       if (failure) ctx.error = failure
       send({ t: 'phase', phase: 'finish' })
       try {
-        await def.finish(ctx)
+        finishValue = await def.finish(ctx)
       } catch (err) {
         // The first error wins; a failure in finish is only logged.
         const finishErr = toScriptError(err, 'finish')
@@ -446,17 +706,41 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       }
     }
     finishRan = true
-    send({
-      t: 'result',
-      ok: !failure,
-      ...(failure ? { error: failure } : { value }),
-      finishRan,
-    })
+    if (failure) {
+      // Plan 97 §3.5, §4.2, step 97.4 — a failed run can still say
+      // something: `run()`'s own value wins when both it and `finish()`
+      // produced one. (The only way both are defined at once is `run()`
+      // succeeding — setting `value` — and `finish()` itself then throwing —
+      // producing no `finishValue` and setting `failure` — so in practice
+      // this is never a real conflict, but the precedence is still coded
+      // explicitly rather than left to accident.) Sent as `partial`, never
+      // validated against `def.result` (§3.5: "there is no honest lenient
+      // schema").
+      const salvage = value !== undefined ? value : finishValue
+      if (salvage === undefined) {
+        send({ t: 'result', ok: false, error: failure, finishRan })
+      } else {
+        const { outcome, sendValue } = buildResultOutcome(salvage, undefined, init.maxResultBytes, 'partial')
+        send({ t: 'result', ok: false, error: failure, finishRan, ...(sendValue ? { value: salvage } : {}), outcome })
+      }
+    } else {
+      // Plan 97 §3.3, §3.4, §3.8, H2 — measure, then check, then store: only
+      // on the success path (97.4's `finish()` salvage, above, is the
+      // failure path's own outcome).
+      const { outcome, sendValue } = buildResultOutcome(value, def.result, init.maxResultBytes)
+      send({ t: 'result', ok: true, ...(sendValue ? { value } : {}), finishRan, outcome })
+    }
   } catch (err) {
     const e = toScriptError(err, 'run')
     send({ t: 'result', ok: false, error: e, finishRan })
   } finally {
     clearInterval(heartbeat)
+    clearInterval(rssTimer)
+    // Plan 97 §3.7 — the coalescing timer must not outlive the attempt
+    // (00-overview §7): a script that called `progress()` once and then hung
+    // in `run()` (later killed by the parent's abort/timeout) must not leave
+    // a live `setInterval` behind when this process exits.
+    progressReporter.stop()
     // Give the last message time to flush before the process exits.
     setTimeout(() => process.exit(0), 50)
   }

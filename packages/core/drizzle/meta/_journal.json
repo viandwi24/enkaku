@@ -288,6 +288,125 @@
       "when": 1786037279666,
       "tag": "0040_misty_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1786527540322,
+      "tag": "0041_colorful_nick_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1786540470665,
+      "tag": "0042_brave_madelyne_pryor",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1786557060748,
+      "tag": "0043_silly_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1786569657192,
+      "tag": "0044_huge_sandman",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1786572143063,
+      "tag": "0045_workable_venus",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1786574991958,
+      "tag": "0046_watery_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1786578884036,
+      "tag": "0047_dear_quasar",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1786582518619,
+      "tag": "0048_tiny_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1786585097205,
+      "tag": "0049_lovely_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1786590821596,
+      "tag": "0050_narrow_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1786597410131,
+      "tag": "0051_amazing_leo",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1786614379279,
+      "tag": "0052_petite_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1786619043221,
+      "tag": "0053_bizarre_james_howlett",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1786631976856,
+      "tag": "0054_curly_vivisector",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1786636594384,
+      "tag": "0055_cheerful_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1786640871601,
+      "tag": "0056_complete_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1786648198031,
+      "tag": "0057_calm_wolfpack",
+      "breakpoints": true
     }
   ]
 }

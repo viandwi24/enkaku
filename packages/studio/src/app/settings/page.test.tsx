@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { FarmSettingsSchema, toJsonSchema } from '@enkaku/protocol'
 import '@/lib/test/nav'
 import { setSearchParams } from '@/lib/test/nav'
@@ -74,5 +74,134 @@ describe('SettingsPage — smoke render', () => {
       '/api/settings': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'settings boom' } } },
     })
     await waitFor(() => expect(screen.getByText('settings boom')).toBeTruthy())
+  })
+})
+
+/**
+ * The Guest agent tab's fleet-wide summary and "Provision all" action (plan
+ * 90 §3.8, §5 step 90.6) — `farmSections.ts`'s own comment on this section
+ * reserved this exact spot for it.
+ */
+/**
+ * Plan 91 §3.5, F24 — `AuditEntrySchema` gained `meta` in step 91.3, written
+ * by `AuditLogger.record` since M7 but dropped by this table until now. The
+ * `device.assist` row this plan writes is exactly what makes `meta.jobId`
+ * worth reading here — "assisted which JOB", not just "which device".
+ */
+describe('SettingsPage — audit meta (plan 91 §3.5, F24)', () => {
+  test('a row with meta gets an expand toggle; opening it shows the JSON', async () => {
+    setSearchParams({ tab: 'audit' })
+    renderWithApi(
+      <SettingsPage />,
+      baseResponses({
+        '/api/auth/audit*': {
+          body: {
+            entries: [
+              { id: 'a1', userId: 'user-1', action: 'device.assist', target: 'dev-1', meta: { jobId: 'job-1', primaryKind: 'job' }, at: 1000 },
+            ],
+          },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('device.assist')).toBeTruthy())
+    const toggle = screen.getByRole('button', { name: 'Show details' })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.getByText(/"jobId": "job-1"/)).toBeTruthy())
+  })
+
+  test('a row with no meta gets no expand toggle at all', async () => {
+    setSearchParams({ tab: 'audit' })
+    renderWithApi(
+      <SettingsPage />,
+      baseResponses({
+        '/api/auth/audit*': {
+          body: { entries: [{ id: 'a2', userId: 'user-1', action: 'device.control', target: 'dev-1', meta: null, at: 1000 }] },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('device.control')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Show details' })).toBeNull()
+  })
+})
+
+/**
+ * Plan 92 §3.6, §3.9, §5 step 92.8 — the Video section reached through the
+ * REAL page (`FARM_SECTION_DEFS`'s own `video` entry → `FarmForm`'s
+ * `render` prop → `FarmVideoFields`), not the standalone component test in
+ * `components/video/FarmVideoFields.test.tsx` — this is what proves the
+ * wiring, not just the component in isolation.
+ */
+describe('SettingsPage — Video (plan 92 §3.6, §3.9, §5 step 92.8)', () => {
+  test('renders both preset dropdowns, the projection line, and the Apply to live sessions action', async () => {
+    setSearchParams({ tab: 'video' })
+    renderWithApi(
+      <SettingsPage />,
+      baseResponses({
+        '/api/adb/stats': {
+          body: {
+            global: { maxConcurrent: 4, auto: true, inFlight: 0, waiting: 0 },
+            streams: { maxStreams: 8, maxStreamsPerDevice: 1, active: 0, perDevice: {} },
+            idleSessions: [],
+            devices: [],
+            transport: { connections: 1, bufferedBytesMax: 0, bufferedBytesP95: 0, videoBytesPerSec: 0, controlReplyMsP50: 0, controlReplyMsP95: 0, watchdogReconnects: 0 },
+            hostAdb: { running: 0, maxConcurrent: 4, installsRunning: 0, longLived: 0 },
+            adbHealth: { status: 'ok', versionRttMs: 1, lastCheckedAt: 0, window: { seconds: 60, execs: 0, timeouts: 0, timeoutRate: 0 }, wedged: [], stuckOffline: [], symptoms: [], restartAdvised: false },
+            video: { controlStreams: 0, wallStreams: 0, buildsRunning: 0, buildQueueDepth: 0, maxConcurrentBuilds: 2, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' },
+          },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('Device page picture')).toBeTruthy())
+    expect(screen.getByText('Wall tile picture')).toBeTruthy()
+    // Plan 100 §3.4/step 100.8 revised the wall default (480px · 18fps ·
+    // 1.1Mbit/s); step 100.3 made the bandwidth bound transport-aware —
+    // before the live poll resolves the projection defaults to `loopback`
+    // (this farm's own generous 200 Mbit/s `wall.bandwidthBps`), so
+    // computeAutoTiles(1_100_000, { decodeTileCeiling: 24, bandwidthBps: 200_000_000 })
+    // = min(24, floor(200_000_000 / 1_100_000)) = 24 — decode-bound, not
+    // bandwidth-bound.
+    expect(screen.getByText(/24 live tiles/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Apply to live sessions/ })).toBeTruthy()
+  })
+})
+
+describe('SettingsPage — Guest agent (plan 90 §5 step 90.6)', () => {
+  test('renders the fleet summary and a state breakdown from GET /api/guest-agent/summary', async () => {
+    setSearchParams({ tab: 'guest-agent' })
+    renderWithApi(
+      <SettingsPage />,
+      baseResponses({
+        '/api/guest-agent/summary': {
+          body: { total: 20, byState: { ready: 18, outdated: 2 }, byVersion: { '1.2.0': 18, '1.1.0': 2 } },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('18 of 20 devices on 1.2.0')).toBeTruthy())
+    expect(screen.getByText('outdated')).toBeTruthy()
+  })
+
+  test('Provision all calls POST /api/guest-agent/provision and refreshes the summary', async () => {
+    setSearchParams({ tab: 'guest-agent' })
+    let provisioned = false
+    const { apiMock } = renderWithApi(
+      <SettingsPage />,
+      baseResponses({
+        '/api/guest-agent/summary': () => ({
+          body: provisioned
+            ? { total: 2, byState: { ready: 2 }, byVersion: { '1.2.0': 2 } }
+            : { total: 2, byState: { ready: 1, failed: 1 }, byVersion: { '1.2.0': 1, unknown: 1 } },
+        }),
+        '/api/guest-agent/provision': () => {
+          provisioned = true
+          return { body: { total: 2, results: [{ deviceId: 'd1', state: 'ready', reason: null }, { deviceId: 'd2', state: 'ready', reason: null }] } }
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('failed')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Provision all' }))
+    await waitFor(() =>
+      expect(apiMock.calls.some((c) => c.method === 'POST' && c.path === '/api/guest-agent/provision')).toBe(true),
+    )
+    await waitFor(() => expect(screen.queryByText('failed')).toBeNull())
   })
 })

@@ -62,7 +62,7 @@
 
 Noted rather than worked around in the client:
 
-- **Structured job results (finding 3).** Rendering `findings[]` well needs the shape to be a convention the SDK documents, not a guess the UI makes. Today `result` is `unknown` by design (a script may return anything). The client can recognise a shape opportunistically; making it reliable is an SDK decision.
+- **Structured job results (finding 3). ANSWERED — plan 97 (M62), 2026-08-13.** Rendering `findings[]` well needs the shape to be a convention the SDK documents, not a guess the UI makes. Today `result` is `unknown` by design (a script may return anything). The client can recognise a shape opportunistically; making it reliable is an SDK decision. Plan 97 is that decision: `defineScript`'s optional `result: z.object({...})` is a documented, published, typed convention (`packages/sdk/README.md`'s "Declaring a result"), checked against the real value in the child and stored verbatim with a status (`undeclared`/`valid`/`invalid`/`partial`/`oversize`, `docs/spec.md` §11.9). The opportunistic `readFindings`/`severityTone`/`JobFinding` guess this finding described is deleted; a script that declares `findings: z.array(z.object({ title, severity, detail }))` now renders as a real table through the same resolver `params` already uses (`docs/design.md`'s "Result views"), and every other declared shape renders as values too, not only that one guessed shape.
 
 ---
 

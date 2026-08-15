@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import type { GuestAgentClient, GuestAgentClientOptions, GuestAgentLauncher } from '@enkaku/drivers'
 import { GuestAgentClientError } from '@enkaku/drivers'
 import type {
+  AgentStatus,
   EgressProbeResult,
   HelloResult,
   LocationClearResult,
@@ -23,8 +24,8 @@ import { devices, type DeviceRow } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
 import type { JobStore } from '../queue/job-store'
-import { createLogger } from '../util/logger'
-import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps } from './guest-agent'
+import { createLogger, type Logger } from '../util/logger'
+import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps, type NetworkStatusResult } from './guest-agent'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch (same pattern `adb-endpoint.test.ts` uses). */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -58,6 +59,7 @@ function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: 
     isInstalled: async () => true,
     ensureInstalled: async () => {
       calls.push('ensureInstalled')
+      return { versionCode: null }
     },
     ensurePreGranted: async () => {
       calls.push('ensurePreGranted')
@@ -105,6 +107,28 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): GuestAgentClient
     // runs without that, so this default only matters for the identity-specific tests below.
     locationSet: async (): Promise<LocationSetResult> => ({ set: true }),
     locationClear: async (): Promise<LocationClearResult> => ({ cleared: true }),
+    // Not exercised by this file's tests — stubs to satisfy the widened `GuestAgentClient`
+    // interface (plan 90 §4.1, §3.9's `screen-label`/`text-input` capabilities).
+    labelApply: async () => ({
+      applied: [],
+      fingerprint: '',
+      rendererVersion: 0,
+      widthPx: 0,
+      heightPx: 0,
+      wallpaperIdHome: null,
+      wallpaperIdLock: null,
+    }),
+    labelStatus: async () => ({
+      fingerprint: null,
+      matchesOurs: false,
+      wallpaperIdHome: null,
+      wallpaperIdLock: null,
+      originalCaptured: false,
+      rendererVersion: 0,
+    }),
+    labelClear: async () => ({ restored: 'system-default', fingerprint: null }),
+    textCommit: async () => ({ committed: 0, ime: 'not-current' }),
+    textStatus: async () => ({ ime: 'disabled', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: false }),
     ...overrides,
   }
 }
@@ -133,6 +157,41 @@ function fakePorts() {
   }
 }
 
+/** A `Logger` that records every `warn` call's message instead of writing to the console — plan 90 §3.7 rule 2's breaker tests assert a warning fired exactly once, which a real logger's console output cannot be asserted against. */
+function fakeLog(): { log: Logger; warns: string[] } {
+  const warns: string[] = []
+  const log: Logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (msg) => {
+      warns.push(msg)
+    },
+    error: () => {},
+    child: () => log,
+  }
+  return { log, warns }
+}
+
+/**
+ * Freezes `Date.now()` at `startMs` for the duration of `fn`, restoring the real clock afterward
+ * even if `fn` throws — plan 90 §3.7's tests need to move `offlineAt`/`exhaustedAt` seconds apart
+ * from each other deterministically (`nowSeconds()` floors to the current second, so two calls
+ * inside one fast synchronous test can otherwise land in the same second and never satisfy a
+ * strict `>` comparison). `advance` moves the frozen clock forward; nothing here sleeps for real.
+ */
+async function withFakeClock<T>(startMs: number, fn: (advance: (deltaMs: number) => void) => Promise<T>): Promise<T> {
+  const realNow = Date.now
+  let current = startMs
+  Date.now = () => current
+  try {
+    return await fn((deltaMs) => {
+      current += deltaMs
+    })
+  } finally {
+    Date.now = realNow
+  }
+}
+
 interface Harness {
   db: Db
   app: Hono<AuthEnv>
@@ -158,6 +217,22 @@ function makeHarness(opts: {
   recoveryRearmS?: number
   /** Plan 55 §3.2, §5.1 — the geo half of `FarmSettingsSchema.network`, overridden in the geo/dns tests below. Defaults to no provider configured, matching a farm that never touched Settings → Network. */
   networkSettings?: () => { geoProvider?: string; geoIntervalSec: number }
+  /** Plan 90 §3.7, §4.4 — `FarmSettingsSchema.guestAgent`'s recovery half, overridden in the breaker tests below. Defaults to the schema's own defaults. */
+  guestAgentSettings?: () => { maxRecoveryCyclesPerHour: number; recoveryRearmSec: number }
+  /**
+   * Plan 90 §3.8, §4.7 — the "on demand, single device" provisioning hook
+   * POST /:id/guest-agent fires; `status`/`remove` are GET's and DELETE's own
+   * producers (docs/plans/96-m61-hotfixes.md's Gap 2 fix). Undefined by
+   * default, matching every existing test/call site that predates the
+   * provisioner — GET then falls back to the pre-plan-90 live probe.
+   */
+  agentProvisioner?: {
+    ensure: (deviceId: string, opts?: { force?: boolean }) => Promise<unknown>
+    status?: (deviceId: string) => Promise<AgentStatus>
+    remove?: (deviceId: string, actor: string | null) => Promise<unknown>
+  }
+  /** Overrides the default `createLogger('test')` — the breaker tests below need to assert a `warn` fired exactly once, which a real logger's console output cannot be asserted against. */
+  log?: Logger
 }): Harness {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
@@ -177,7 +252,7 @@ function makeHarness(opts: {
     dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
     leases: fakeLeases(opts.leaseHeld ?? true),
     record: (e) => events.push(e),
-    log: createLogger('test'),
+    log: opts.log ?? createLogger('test'),
     // These drive fakes; sitting out the real multi-second settle/poll budgets would only make the
     // suite slow and flaky.
     routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
@@ -186,6 +261,8 @@ function makeHarness(opts: {
     ...(opts.launcher ? { makeLauncher: () => opts.launcher! } : {}),
     makeClient: opts.makeClient ?? (() => opts.client ?? fakeClient()),
     ...(opts.networkSettings ? { networkSettings: opts.networkSettings } : {}),
+    ...(opts.guestAgentSettings ? { guestAgentSettings: opts.guestAgentSettings } : {}),
+    ...(opts.agentProvisioner ? { agentProvisioner: opts.agentProvisioner } : {}),
   }
   const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline } = createGuestAgentRoutes(deps)
   const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
@@ -286,6 +363,117 @@ describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)
   })
 })
 
+/**
+ * Plan 90 §4.7, docs/plans/96-m61-hotfixes.md's Gap 2 fix: `GET` reads from
+ * `AgentProvisioner.status()` when it is wired, instead of running its own
+ * live presence+hello probe — the only way `outdated`/`failed` and
+ * `versionCode`/`checkedAt`/`attempts`/`nextAttemptAt` (all declared on
+ * `GuestAgentStatusResponseSchema` by step 90.6, none of them producible by
+ * the pre-plan-90 probe) ever reach this endpoint. Every test above this
+ * block proves the OLD path still works unchanged when `status` is absent
+ * (the default); every test below proves the NEW path.
+ */
+describe('GET /api/devices/:id/guest-agent — wired to AgentProvisioner.status() (plan 90 §4.7, docs/plans/96-m61-hotfixes.md Gap 2 fix)', () => {
+  function agentStatus(overrides: Partial<AgentStatus> = {}): AgentStatus {
+    return {
+      state: 'ready',
+      appVersion: '1.0.0',
+      versionCode: 5,
+      androidSdkInt: 34,
+      capabilities: ['socks5-route', 'vpn-status'],
+      reason: null,
+      checkedAt: 1_700_000_000,
+      attempts: 0,
+      nextAttemptAt: null,
+      ...overrides,
+    }
+  }
+
+  test('reports "outdated" — a state the pre-plan-90 live probe could never produce — with versionCode/checkedAt/attempts/nextAttemptAt all populated', async () => {
+    const status = agentStatus({ state: 'outdated', appVersion: '1.0.0', versionCode: 3, reason: 'signature_mismatch', attempts: 0, nextAttemptAt: null, checkedAt: 1_700_000_042 })
+    const { db, app } = makeHarness({ agentProvisioner: { ensure: async () => undefined, status: async () => status } })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      state: string
+      versionCode: number | null
+      checkedAt: number | null
+      attempts: number
+      nextAttemptAt: number | null
+      reason?: string
+    }
+    expect(body.state).toBe('outdated')
+    expect(body.versionCode).toBe(3)
+    expect(body.checkedAt).toBe(1_700_000_042)
+    expect(body.attempts).toBe(0)
+    expect(body.nextAttemptAt).toBeNull()
+    expect(body.reason).toBe('signature_mismatch')
+  })
+
+  test('reports "failed" with the verbatim reason and a nonzero attempts/nextAttemptAt', async () => {
+    const status = agentStatus({ state: 'failed', appVersion: null, versionCode: null, capabilities: [], reason: 'E_CHECKSUM_MISSING: no signed release published yet', attempts: 2, nextAttemptAt: 1_700_000_100 })
+    const { db, app } = makeHarness({ agentProvisioner: { ensure: async () => undefined, status: async () => status } })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent')
+    const body = (await res.json()) as { state: string; reason?: string; attempts: number; nextAttemptAt: number | null }
+    expect(body.state).toBe('failed')
+    expect(body.reason).toBe('E_CHECKSUM_MISSING: no signed release published yet')
+    expect(body.attempts).toBe(2)
+    expect(body.nextAttemptAt).toBe(1_700_000_100)
+  })
+
+  test('maps the provisioner\'s "absent" onto this endpoint\'s pre-plan-90 "not-installed" — additive, never a new value Studio has not seen', async () => {
+    const status = agentStatus({ state: 'absent', appVersion: null, versionCode: null, androidSdkInt: null, capabilities: [], reason: null, checkedAt: null, attempts: 0, nextAttemptAt: null })
+    const { db, app } = makeHarness({ agentProvisioner: { ensure: async () => undefined, status: async () => status } })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent')
+    const body = (await res.json()) as { state: string }
+    expect(body.state).toBe('not-installed')
+  })
+
+  test('"ready" still carries appVersion/androidSdkInt/capabilities through the provisioner path', async () => {
+    const status = agentStatus({ state: 'ready' })
+    const { db, app } = makeHarness({ agentProvisioner: { ensure: async () => undefined, status: async () => status } })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent')
+    const body = (await res.json()) as { state: string; appVersion?: string; androidSdkInt?: number; capabilities?: string[] }
+    expect(body.state).toBe('ready')
+    expect(body.appVersion).toBe('1.0.0')
+    expect(body.androidSdkInt).toBe(34)
+    expect(body.capabilities).toEqual(['socks5-route', 'vpn-status'])
+  })
+
+  test('DELETE clears the persisted row through agentProvisioner.remove(), so a GET right after does not keep reporting a stale state', async () => {
+    const { launcher } = fakeLauncher()
+    let stored: AgentStatus = agentStatus({ state: 'ready' })
+    const { db, app } = makeHarness({
+      launcher,
+      agentProvisioner: {
+        ensure: async () => undefined,
+        status: async () => stored,
+        remove: async () => {
+          stored = agentStatus({ state: 'absent', appVersion: null, versionCode: null, androidSdkInt: null, capabilities: [], reason: null, checkedAt: null, attempts: 0, nextAttemptAt: null })
+        },
+      },
+    })
+    seedDevice(db)
+
+    const before = (await (await app.request('/dev-1/guest-agent')).json()) as { state: string }
+    expect(before.state).toBe('ready')
+
+    const delRes = await app.request('/dev-1/guest-agent', { method: 'DELETE' })
+    expect(delRes.status).toBe(200)
+    // `remove()` is fire-and-forget after DELETE's own uninstall — give its
+    // microtask a turn to run before asserting the follow-up GET.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const after = (await (await app.request('/dev-1/guest-agent')).json()) as { state: string }
+    expect(after.state).toBe('not-installed')
+  })
+})
+
 describe('POST /api/devices/:id/guest-agent — install/repair (plan 44 §5.8)', () => {
   test('installs and probes, then records a guest-agent.installed event with no secret in it', async () => {
     const { launcher, calls } = fakeLauncher()
@@ -300,6 +488,50 @@ describe('POST /api/devices/:id/guest-agent — install/repair (plan 44 §5.8)',
     const ev = events.find((e) => e.kind === 'guest-agent.installed')
     expect(ev).toBeTruthy()
     expect(ev?.meta).toEqual({ state: 'ready' })
+  })
+
+  test('also runs a forced pass through the agent provisioner, without changing this endpoint\'s own response shape (plan 90 §3.8, §4.7)', async () => {
+    const { launcher } = fakeLauncher()
+    const called: { value: { deviceId: string; opts?: { force?: boolean } } | null } = { value: null }
+    let resolveEnsure: () => void = () => undefined
+    const ensured = new Promise<void>((resolve) => {
+      resolveEnsure = resolve
+    })
+    const { db, app } = makeHarness({
+      launcher,
+      agentProvisioner: {
+        ensure: async (deviceId, opts) => {
+          called.value = { deviceId, opts }
+          resolveEnsure()
+        },
+      },
+    })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { state: string }
+    // Unchanged: still the pre-plan-90 `GuestAgentStatusResult` shape, per this
+    // dep's own doc comment (`GuestAgentStatusResponseSchema` is a strict enum
+    // Studio's NetworkPanel already parses against).
+    expect(body.state).toBe('ready')
+
+    await ensured
+    expect(called.value).toEqual({ deviceId: 'dev-1', opts: { force: true } })
+  })
+
+  test('a failing agent provisioner never turns a successful install+probe into an error response', async () => {
+    const { launcher } = fakeLauncher()
+    const { db, app } = makeHarness({
+      launcher,
+      agentProvisioner: {
+        ensure: async () => {
+          throw new Error('boom')
+        },
+      },
+    })
+    seedDevice(db)
+    const res = await app.request('/dev-1/guest-agent', { method: 'POST' })
+    expect(res.status).toBe(200)
   })
 
   test('refuses without a held lease, even for an admin', async () => {
@@ -385,6 +617,7 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       failClosed: unknown
       lastError: unknown
       exitHistory: unknown[]
+      recovery: unknown
     }
     expect(body).toEqual({
       engine: 'none',
@@ -400,6 +633,8 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       checks: [],
       lastError: null,
       exitHistory: [],
+      // Plan 90 §3.7 rule 5 — no recovery has ever been needed for a route that does not exist yet.
+      recovery: null,
     })
   })
 
@@ -631,6 +866,63 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     expect(res1.status).toBe(409)
     const res2 = await app.request('/dev-1/network/disable', { method: 'POST' })
     expect(res2.status).toBe(409)
+  })
+})
+
+describe('POST /api/devices/:id/network/retry (plan 90 §3.7 rule 4, fixes F17) — the honest disable/enable workaround', () => {
+  test('refused with E_NO_ROUTE_CONFIG when there is no enabled route', async () => {
+    const { launcher } = fakeLauncher()
+    const { db, app } = makeHarness({ launcher })
+    seedDevice(db)
+    const res = await app.request('/dev-1/network/retry', { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NO_ROUTE_CONFIG')
+  })
+
+  test('refuses without a held lease', async () => {
+    const { launcher } = fakeLauncher()
+    const { db, app } = makeHarness({ launcher, leaseHeld: false })
+    seedDevice(db)
+    const res = await app.request('/dev-1/network/retry', { method: 'POST' })
+    expect(res.status).toBe(409)
+  })
+
+  test('clears an exhausted bound and applies once, immediately — what disable-then-enable achieved by accident, without the teardown round trip', async () => {
+    const routeStartCalls: string[] = []
+    let shouldFail = true
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        if (shouldFail) throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+        return { started: true }
+      },
+      routeStatus: async () => (shouldFail ? { prepared: true, up: false, state: 'down' as const } : { prepared: true, up: true, upstream: 'proxy.example:1080' }),
+    })
+    const { db, restoreDeviceRoute, app } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    for (let i = 0; i < 3; i++) await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3)
+    const before = (await (await app.request('/dev-1/network')).json()) as NetworkStatusResult
+    expect(before.recovery?.exhausted).toBe(true)
+
+    // The upstream is fixed by the time the operator retries — the honest disable/enable
+    // equivalent should not need it to still be broken to prove the counter was cleared.
+    shouldFail = false
+    const res = await app.request('/dev-1/network/retry', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(routeStartCalls).toHaveLength(4) // applied once, immediately — no waiting for the re-arm
+
+    const body = (await res.json()) as NetworkStatusResult
+    // The apply succeeded outright — the recovery state is gone entirely, not merely un-exhausted.
+    expect(body.recovery).toBeNull()
+    expect(body.enabled).toBe(true) // never the misleading "route is off" state disable-then-enable passes through
   })
 })
 
@@ -2082,6 +2374,178 @@ describe('plan 54 §3.2, §4.2 — restore actually applies, bounded and shared 
 
     for (let i = 0; i < 6; i++) await restoreDeviceRoute('dev-1')
     expect(routeStartCalls).toHaveLength(3) // bounded at 3, no matter how many callers ask
+  })
+})
+
+/**
+ * Plan 90 §3.7, §5 step 90.4 — the actual fix for F16, and the regression test the plan's own
+ * §7.1 test plan calls for: exhaust the bound, then prove a GENUINE offline→online transition (not
+ * just another `restoreDeviceRoute` call) is what restarts it — and that the reconnect-cycle
+ * breaker is what stops that from becoming plan 54 §9 Q2's own feared infinite-retry loop against
+ * a permanently dead proxy. Every assertion below reads the real `/network` GET response and the
+ * real device event log — the API surface an operator actually reads (this plan's own stated
+ * lesson) — never `recoveryByDevice` directly, which this file cannot reach from outside
+ * `guest-agent.ts` in any case.
+ */
+describe('plan 90 §3.7 — recovery that knows the device came back (fixes F13–F20, answers plan 54 §9 Q2)', () => {
+  test('a bare reconnect (no offline transition) does not reset an exhausted bound — F16 confirmed: a naive `resetRecovery` grep would wrongly conclude this already worked', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    const { db, restoreDeviceRoute } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    for (let i = 0; i < 3; i++) await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3) // bound reached
+
+    // Exactly the shape `restoreDeviceRoute`'s `!persisted?.enabled` early return already handled
+    // BEFORE this plan (F16's "wrong branch") — this proves the RIGHT branch does not fire on its
+    // own just because the function was called again.
+    await restoreDeviceRoute('dev-1')
+    expect(routeStartCalls).toHaveLength(3) // still held — nothing "new" happened
+  })
+
+  test('a genuine offline→online transition resets an exhausted bound and restarts recovery within one heartbeat, instead of waiting out the re-arm — the actual fix for F16', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    // The default re-arm is 120s (`guestAgent.recoveryRearmSec`'s own default) — deliberately NOT
+    // overridden here, so the ONLY way a fourth attempt can happen within this test's few
+    // simulated seconds is the reconnect reset, not the re-arm clock.
+    const { db, restoreDeviceRoute, handleDeviceOffline, app } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await withFakeClock(Date.parse('2026-01-01T00:00:00Z'), async (advance) => {
+      for (let i = 0; i < 3; i++) {
+        advance(1_000)
+        await restoreDeviceRoute('dev-1')
+      }
+      expect(routeStartCalls).toHaveLength(3) // bound reached
+
+      const exhausted = (await (await app.request('/dev-1/network')).json()) as NetworkStatusResult
+      expect(exhausted.recovery?.exhausted).toBe(true)
+      expect(exhausted.recovery?.attempts).toBe(3)
+
+      // The device genuinely went offline (a USB re-enumeration, F18) and reconnected — well
+      // inside the 120s re-arm window, so only the reconnect reset can explain a fourth attempt.
+      advance(5_000)
+      await handleDeviceOffline('dev-1')
+      advance(1_000)
+      await restoreDeviceRoute('dev-1')
+      expect(routeStartCalls).toHaveLength(4) // a fresh attempt — the bound was reset, not re-armed
+
+      const restarted = (await (await app.request('/dev-1/network')).json()) as NetworkStatusResult
+      expect(restarted.recovery?.exhausted).toBe(false)
+      expect(restarted.recovery?.attempts).toBe(1) // a fresh attempt budget, not attempt 4 of 3
+      // The operator never had to touch the toggle — this is the whole point (plan 90's own
+      // stated verifiable result).
+    })
+  })
+
+  test('network.recovery.exhausted and network.recovery.recovered are recorded on the device event log (fixes F20)', async () => {
+    let shouldFail = true
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        if (shouldFail) throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+        return { started: true }
+      },
+      routeStatus: async () => (shouldFail ? { prepared: true, up: false, state: 'down' as const } : { prepared: true, up: true, upstream: 'proxy.example:1080' }),
+    })
+    const { db, restoreDeviceRoute, handleDeviceOffline, events } = makeHarness({ launcher, client, recoveryBackoffS: [0, 0, 0] })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await withFakeClock(Date.parse('2026-01-01T00:00:00Z'), async (advance) => {
+      for (let i = 0; i < 3; i++) {
+        advance(1_000)
+        await restoreDeviceRoute('dev-1')
+      }
+      expect(events.some((e) => e.kind === 'network.recovery.exhausted')).toBe(true)
+
+      // The upstream comes back, and a genuine reconnect resets the bound in time to catch it.
+      shouldFail = false
+      advance(5_000)
+      await handleDeviceOffline('dev-1')
+      advance(1_000)
+      await restoreDeviceRoute('dev-1')
+
+      expect(events.some((e) => e.kind === 'network.recovery.recovered')).toBe(true)
+    })
+  })
+
+  test('six replugs inside an hour engage the reconnect-cycle breaker on the fifth, log it once, and fall back to the re-arm clock — no infinite retry against a genuinely dead proxy (plan 54 §9 Q2\'s own stated fear)', async () => {
+    const routeStartCalls: string[] = []
+    const { launcher } = fakeLauncher()
+    const client = fakeClient({
+      routeStart: async () => {
+        routeStartCalls.push('start')
+        throw new GuestAgentClientError('E_TRANSPORT', 'connection refused')
+      },
+      routeStatus: async () => ({ prepared: true, up: false, state: 'down' as const }),
+    })
+    const { warns, log } = fakeLog()
+    const { db, restoreDeviceRoute, handleDeviceOffline, app } = makeHarness({
+      launcher,
+      client,
+      log,
+      recoveryBackoffS: [0, 0, 0],
+      // The default (4) — spelled out so this test keeps meaning "the fifth" even if the schema's
+      // own default ever changes.
+      guestAgentSettings: () => ({ maxRecoveryCyclesPerHour: 4, recoveryRearmSec: 120 }),
+    })
+    seedDevice(db)
+    db.update(devices)
+      .set({ networkRoute: { config: { host: 'proxy.example', port: 1080, udpMode: 'udp' }, enabled: true } })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+
+    await withFakeClock(Date.parse('2026-01-01T00:00:00Z'), async (advance) => {
+      // Exhaust the bound once, the ordinary way — no offline transition yet.
+      for (let i = 0; i < 3; i++) {
+        advance(1_000)
+        await restoreDeviceRoute('dev-1')
+      }
+      expect(routeStartCalls).toHaveLength(3)
+
+      // Six replugs, a minute apart — comfortably inside one rolling hour.
+      for (let i = 0; i < 6; i++) {
+        advance(60_000)
+        await handleDeviceOffline('dev-1')
+        advance(1_000)
+        await restoreDeviceRoute('dev-1')
+      }
+
+      const status = (await (await app.request('/dev-1/network')).json()) as NetworkStatusResult
+      // The breaker's own ceiling — never climbs past it, no matter how many more replugs happen.
+      expect(status.recovery?.reconnectCycles).toBe(4)
+
+      const breakerWarnings = warns.filter((w) => w.includes('reconnect-cycle breaker is engaged'))
+      expect(breakerWarnings).toHaveLength(1) // logged once, not once per refused reset
+    })
   })
 })
 

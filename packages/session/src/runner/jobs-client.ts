@@ -24,11 +24,15 @@ export interface TriggerInput {
   /** Defaults to 0 — a triggered job never jumps the queue (§8 risk table). */
   priority?: number
   /**
-   * Idempotency key (§3.3). Omitted, the runtime derives
-   * `${jobId}:${attempt}:${callIndex}` — the same script code re-executed
-   * (a re-run `finish()`) reproduces the same sequence of default keys, so
-   * the second call dedupes; a genuine retry has a different `attempt` and
-   * therefore triggers a fresh job.
+   * Idempotency key (§3.3; plan 99 §3.2, §4.8 folds in `nodeId`). Omitted,
+   * the runtime derives `${jobId}:${nodeId ?? ''}:${attempt}:${callIndex}` —
+   * the same script code re-executed (a re-run `finish()`) reproduces the
+   * same sequence of default keys, so the second call dedupes; a genuine
+   * retry has a different `attempt` and therefore triggers a fresh job. Two
+   * workflow nodes sharing one `jobId` and one `attempt` counter derive
+   * DIFFERENT keys because `nodeId` differs between them, closing a
+   * data-loss bug where node 2's trigger would otherwise silently dedupe
+   * into node 1's (plan 99 F20).
    */
   key?: string
   /** Defaults to the triggering job's own `expiresAt` (§8) — explicit `null` means no expiry, overriding that inheritance. */
@@ -56,6 +60,15 @@ export interface JobsApiClient {
    */
   resultOf(jobId: string): Promise<unknown | null>
   /**
+   * The schema check lives HERE, not on the server (plan 97 §4.6, §5 step
+   * 97.5) — the same reasoning `kv-client.ts`'s `get` already gives: the
+   * server does not know what shape a READING script expects, so this
+   * boundary validates against the CALLER's own schema before handing the
+   * value back, throwing an error that names the job and the mismatched
+   * path (never a silently mis-shaped object).
+   */
+  resultOf<T>(jobId: string, schema: z.ZodType<T>): Promise<T | null>
+  /**
    * Fire-and-forget (plan 81 §3.6): resolves once the job is QUEUED, never
    * once it runs or finishes — awaiting a job on the same device would
    * deadlock against the very job that is awaiting it. A refusal (too deep,
@@ -75,9 +88,17 @@ export interface JobsApiClient {
  * `job` (plan 81 §3.3, §4.2) is the caller's own `{ id, attempt }` — needed
  * ONLY to derive `trigger()`'s default idempotency key. It is not read from
  * anywhere else in this module: `list`/`previous`/`queuedAfter`/`resultOf`
- * are unaffected by plan 81 and take no such parameter.
+ * are unaffected by plan 81 and take no such parameter. `nodeId` (plan 99
+ * §3.2, §4.8, closes F20) is the workflow node this execution belongs to —
+ * undefined for every job outside a workflow — folded into the SAME key
+ * derivation, because several nodes of one workflow share one `jobId` and
+ * one `attempt` counter and would otherwise derive colliding default keys,
+ * silently deduping node 2's trigger into node 1's.
  */
-export function createJobsApiFor(request: <T>(call: JobsCall) => Promise<T>, job: { id: string; attempt: number }): JobsApiClient {
+export function createJobsApiFor(
+  request: <T>(call: JobsCall) => Promise<T>,
+  job: { id: string; attempt: number; nodeId?: string },
+): JobsApiClient {
   // The count of `trigger()` calls made so far in THIS attempt (§3.3) — a
   // plain in-process counter, not a database query: a fresh process (a
   // re-run `finish()`, or a genuinely new retry attempt) naturally restarts
@@ -110,13 +131,23 @@ export function createJobsApiFor(request: <T>(call: JobsCall) => Promise<T>, job
       return z.array(JobSummarySchema).parse(raw)
     },
 
-    resultOf(jobId) {
-      return request<unknown>({ method: 'resultOf', jobId })
+    async resultOf<T>(jobId: string, schema?: z.ZodType<T>) {
+      const raw = await request<unknown>({ method: 'resultOf', jobId })
+      if (!schema) return raw
+      if (raw === null || raw === undefined) return null
+      const parsed = schema.safeParse(raw)
+      if (!parsed.success) {
+        throw Object.assign(
+          new Error(`jobs.resultOf("${jobId}"): the stored result does not match the given schema — ${parsed.error.message}`),
+          { code: 'E_RESULT_SCHEMA_MISMATCH' },
+        )
+      }
+      return parsed.data
     },
 
     async trigger(input) {
       const idx = triggerCallIndex++
-      const key = input.key ?? `${job.id}:${job.attempt}:${idx}`
+      const key = input.key ?? `${job.id}:${job.nodeId ?? ''}:${job.attempt}:${idx}`
       const raw = await request<unknown>({
         method: 'trigger',
         script: input.script,

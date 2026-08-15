@@ -1,4 +1,4 @@
-import { LogcatOptionsSchema, optionsSchemaFor, type LogcatOptions, type MonitorKind } from '@enkaku/protocol'
+import { LogcatOptionsSchema, MeminfoOptionsSchema, optionsSchemaFor, type LogcatOptions, type MonitorKind } from '@enkaku/protocol'
 import { shellQuote } from '@enkaku/adb'
 import { EnkakuError } from '../util/errors'
 
@@ -63,8 +63,14 @@ export function buildMonitorCommand(kind: MonitorKind, rawOptions: unknown): str
       return 'logcat -b crash,main -v threadtime -T 1'
     case 'ps':
       return 'ps -A'
-    case 'meminfo':
-      return 'dumpsys meminfo'
+    case 'meminfo': {
+      // §3.5's first host-side correction: `meminfo` gains an optional
+      // `package` scope so it can answer "how much memory is THIS app
+      // using" instead of only the whole-device dump — ten lines, not an
+      // on-device monitoring facet.
+      const { package: pkg } = MeminfoOptionsSchema.parse(parsed.data)
+      return pkg ? `dumpsys meminfo ${shellQuote(pkg)}` : 'dumpsys meminfo'
+    }
     case 'df':
       return 'df -h'
     default: {

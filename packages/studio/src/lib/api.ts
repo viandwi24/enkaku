@@ -1,4 +1,6 @@
-import type { DeviceInfo } from '@enkaku/protocol'
+import { z } from 'zod'
+import { JobNodeInfoSchema, type DeviceInfo, type JobNodeInfo, type WorkflowDoc, type WorkflowFinding } from '@enkaku/protocol'
+import { BadResponseError } from './actions'
 import { coreBase } from './ws'
 
 interface ItemsPage<T> {
@@ -13,16 +15,37 @@ interface ItemsPage<T> {
  * lookup — rather than a "load more" table. Walks the cursor internally so
  * no call site re-invents that loop, capped generously so a runaway server
  * response can never hang the tab.
+ *
+ * `parser` is optional (plan 95 §5 step 95.5, fixes F8): omitted, this
+ * behaves exactly as before — a bare cast to the caller's own type
+ * parameter, unchanged for every existing call site. Passed, EVERY item is
+ * validated through it rather than trusted — an author-controlled blob
+ * (a script's `paramsSchema`, F7) reaching a `fetchAllPages<ScriptRow>`
+ * call used to cross this boundary with no check at all. A row that fails
+ * throws `BadResponseError`, the SAME "this build of Studio does not
+ * understand the response" failure `api()` already raises for a single
+ * fetch — a bad row is not swallowed or skipped, because a caller silently
+ * missing an item it asked for is worse than a visible failure.
  */
-export async function fetchAllPages<T>(path: string, extraQuery?: Record<string, string>): Promise<T[]> {
-  const all: T[] = []
+export async function fetchAllPages<T>(path: string, extraQuery?: Record<string, string>): Promise<T[]>
+export async function fetchAllPages<S extends z.ZodType>(path: string, extraQuery: Record<string, string> | undefined, parser: S): Promise<z.output<S>[]>
+export async function fetchAllPages(path: string, extraQuery?: Record<string, string>, parser?: z.ZodType): Promise<unknown[]> {
+  const all: unknown[] = []
   let cursor: string | null = null
   for (let page = 0; page < 25; page++) {
     const qs = new URLSearchParams({ limit: '200', ...extraQuery, ...(cursor ? { cursor } : {}) })
     const res = await fetch(`${coreBase()}${path}?${qs.toString()}`)
     if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
-    const body = (await res.json()) as ItemsPage<T>
-    all.push(...body.items)
+    const body = (await res.json()) as ItemsPage<unknown>
+    if (parser) {
+      for (const item of body.items) {
+        const parsed = parser.safeParse(item)
+        if (!parsed.success) throw new BadResponseError(path, z.prettifyError(parsed.error))
+        all.push(parsed.data)
+      }
+    } else {
+      all.push(...body.items)
+    }
     if (!body.nextCursor) break
     cursor = body.nextCursor
   }
@@ -143,7 +166,7 @@ export async function fetchTopology(): Promise<TopologyResponse> {
   return (await res.json()) as TopologyResponse
 }
 
-// ---- Guest agent (plan 44 §4.6, §5.8) ----
+// ---- Guest agent (plan 44 §4.6, §5.8; widened plan 90 §3.8, §4.7) ----
 
 /**
  * The on-device guest agent's install/reachability state, from
@@ -154,8 +177,15 @@ export async function fetchTopology(): Promise<TopologyResponse> {
  * 44 §4.6): a package being present on the device says nothing about
  * whether its control socket actually answers, and collapsing the two would
  * report a broken device as healthy.
+ *
+ * `outdated`/`failed` (plan 90 §3.8, fixes F10/F11) are the states
+ * `AgentProvisioner` computes and persists on `devices.agent` — mirrors
+ * `GuestAgentStatusResponseSchema` (`@enkaku/protocol`) exactly, which is
+ * the source of truth this type is kept in sync with by hand (this file
+ * predates that schema and still reads the response with a raw cast rather
+ * than `.parse()` — see `fetchGuestAgentStatus` below).
  */
-export type GuestAgentState = 'not-installed' | 'installed' | 'ready' | 'unreachable' | 'unsupported'
+export type GuestAgentState = 'not-installed' | 'installed' | 'ready' | 'unreachable' | 'unsupported' | 'outdated' | 'failed'
 
 export interface GuestAgentStatus {
   state: GuestAgentState
@@ -164,6 +194,19 @@ export interface GuestAgentStatus {
   capabilities?: string[]
   /** Why the device cannot run the agent at all — only meaningful when `state` is `unsupported`. */
   reason?: string
+  /**
+   * Plan 90 §4.7's stated extension to this endpoint — `AgentProvisioner`'s
+   * own bookkeeping fields. Optional because the handler behind this
+   * endpoint (`packages/core/src/api/guest-agent.ts`) is not wired onto
+   * `AgentProvisioner.status()` yet (out of step 90.6's file allowlist —
+   * see its own status note): these read `undefined` today, and
+   * `AgentPanel` renders that absence honestly rather than a placeholder.
+   */
+  versionCode?: number | null
+  /** Unix epoch seconds of the last completed provisioning pass. No producer on this endpoint yet — see `versionCode`'s comment. */
+  checkedAt?: number | null
+  attempts?: number
+  nextAttemptAt?: number | null
 }
 
 export async function fetchGuestAgentStatus(deviceId: string): Promise<GuestAgentStatus> {
@@ -252,6 +295,20 @@ export interface NetworkObserved {
   stats?: number[]
 }
 
+/**
+ * Bounded automatic route recovery's own live state (plan 90 §3.7 rule 5,
+ * fixes F20) — mirrors `NetworkRecoveryStatusSchema` (`@enkaku/protocol`).
+ * Null on `NetworkStatus.recovery` when no automatic recovery has ever been
+ * needed for this device's current route.
+ */
+export interface NetworkRecoveryStatus {
+  attempts: number
+  maxAttempts: number
+  nextAttemptAt: number | null
+  exhausted: boolean
+  reconnectCycles: number
+}
+
 export interface NetworkStatus {
   engine: NetworkEngineId
   config: NetworkConfig | null
@@ -278,6 +335,12 @@ export interface NetworkStatus {
   lastError: { code: string; message: string } | null
   /** Plan 55 §4.3, §5.5 — past exit observations, newest first, so a rotating pool is visible as a sequence rather than one current value. Always present (possibly empty). */
   exitHistory: GeoObservation[]
+  /**
+   * Plan 90 §3.7 rule 5, fixes F20 — null when no automatic recovery has
+   * ever been needed for this device's current route, same reading
+   * `exitHistory` gives an unconfigured geo provider.
+   */
+  recovery: NetworkRecoveryStatus | null
 }
 
 export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatus> {
@@ -286,7 +349,7 @@ export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatu
   return (await res.json()) as NetworkStatus
 }
 
-async function postNetworkAction(deviceId: string, action: 'enable' | 'disable'): Promise<NetworkStatus> {
+async function postNetworkAction(deviceId: string, action: 'enable' | 'disable' | 'retry'): Promise<NetworkStatus> {
   const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/network/${action}`, {
     method: 'POST',
   })
@@ -311,6 +374,16 @@ export function enableNetworkRoute(deviceId: string): Promise<NetworkStatus> {
 /** Switch a route off. The saved config is kept — distinct from removing it entirely. */
 export function disableNetworkRoute(deviceId: string): Promise<NetworkStatus> {
   return postNetworkAction(deviceId, 'disable')
+}
+
+/**
+ * Plan 90 §3.7 rule 4 — the honest version of the disable-then-enable
+ * workaround (F17): clears the recovery bound and applies once, immediately,
+ * without the teardown round trip. 409s with `E_NO_ROUTE_CONFIG` when there
+ * is no enabled route to retry.
+ */
+export function retryNetworkRoute(deviceId: string): Promise<NetworkStatus> {
+  return postNetworkAction(deviceId, 'retry')
 }
 
 // ---- Identity: timezone, locale, GPS (plan 58 §4.3, §5.7) ----
@@ -399,3 +472,206 @@ export async function syncDeviceIdentity(deviceId: string): Promise<IdentitySync
   }
   return (await res.json()) as IdentitySyncSuggestion
 }
+
+// ---- Workflows (plan 99 / M64, step 99.9) ----
+
+/**
+ * Mirrors `WorkflowFinding` (`@enkaku/protocol`'s `workflow-check.ts`)
+ * structurally — that file exports the TYPE (used below for `WorkflowFinding[]`),
+ * never a Zod schema for it (`checkWorkflow`'s return value is produced, not
+ * parsed, on the core side), so the wire shape is validated here the same
+ * way every other ad-hoc core response in this file already is (`code` kept
+ * as a plain `z.string()` rather than the closed `WorkflowFindingCode` union
+ * so a finding code added by a newer core still round-trips instead of
+ * failing `BadResponseError` on an unrecognised member).
+ */
+const WorkflowFindingSchema = z.object({
+  path: z.string(),
+  code: z.string(),
+  message: z.string(),
+  severity: z.enum(['error', 'warning']),
+})
+const WorkflowFindingsResponseSchema = z.array(WorkflowFindingSchema)
+
+/** Thrown by `publishWorkflow` on a 400/409 — `findings` is populated only for `E_WORKFLOW_INVALID`/the `checkWorkflow` gate, so a caller can render the SAME inline finding list `validateWorkflow` produces instead of a bare toast. */
+export class WorkflowPublishError extends Error {
+  readonly code: string
+  readonly findings: WorkflowFinding[]
+  constructor(message: string, code: string, findings: WorkflowFinding[]) {
+    super(message)
+    this.name = 'WorkflowPublishError'
+    this.code = code
+    this.findings = findings
+  }
+}
+
+/** `POST /api/workflows/validate` (plan 99 §4.5, §4.9) — the SAME `checkWorkflow` call the publish gate runs, so the editor's Validate button and Publish can never disagree (`workflow-check.ts`'s own module doc). A structurally invalid document (a bad node id, an empty node list) comes back as ordinary `E_WORKFLOW_INVALID` findings, never a thrown error. */
+export async function validateWorkflow(doc: WorkflowDoc | Record<string, unknown>): Promise<WorkflowFinding[]> {
+  const res = await fetch(`${coreBase()}/api/workflows/validate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ doc }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    const message = (body as { error?: { message?: string } } | null)?.error?.message ?? `POST /api/workflows/validate → ${res.status}`
+    throw new Error(message)
+  }
+  const parsed = WorkflowFindingsResponseSchema.safeParse(body)
+  if (!parsed.success) throw new BadResponseError('/api/workflows/validate', z.prettifyError(parsed.error))
+  return parsed.data as WorkflowFinding[]
+}
+
+/** `POST /api/workflows` (plan 99 §4.5) — publishes a new `(name, version)` `scripts` row with `kind: 'workflow'`. Throws `WorkflowPublishError` on `E_WORKFLOW_INVALID`/`E_PARAMS_SCHEMA_INVALID` (carrying `findings` when the server sent them) or the plain `script_version_exists` conflict. */
+export async function publishWorkflow(doc: WorkflowDoc | Record<string, unknown>): Promise<{ id: string; name: string; version: string }> {
+  const res = await fetch(`${coreBase()}/api/workflows`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ doc }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    const err = (body as { error?: { code?: string; message?: string; findings?: unknown } } | null)?.error
+    const findingsParsed = WorkflowFindingsResponseSchema.safeParse(err?.findings ?? [])
+    throw new WorkflowPublishError(
+      err?.message ?? `POST /api/workflows → ${res.status}`,
+      err?.code ?? 'unknown',
+      findingsParsed.success ? (findingsParsed.data as WorkflowFinding[]) : [],
+    )
+  }
+  return (body as { script: { id: string; name: string; version: string } }).script
+}
+
+export interface WorkflowVersionOption {
+  id: string
+  version: string
+  enabled: boolean
+  createdAt: number | null
+}
+
+/** `GET /api/workflows/:name/versions` (plan 99 §4.9) — the editor's own "start from version" picker; a thin alias over the same query `GET /api/scripts/:name/versions` runs, kept as its own endpoint since a workflow name and a script name never legitimately collide. */
+export async function fetchWorkflowVersions(name: string): Promise<WorkflowVersionOption[]> {
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}/versions`)
+  if (!res.ok) throw new Error(`GET /api/workflows/${name}/versions → ${res.status}`)
+  const body = (await res.json()) as { items: WorkflowVersionOption[] }
+  return body.items
+}
+
+// ---- Job node timeline (plan 99 §3.5, §4.9, step 99.10) ----
+
+/**
+ * `GET /api/jobs/:id/nodes`'s REAL response envelope — `{ items, finalized }`,
+ * exactly what `packages/core/src/services/job-service.ts`'s `nodes()`
+ * returns and `packages/core/src/api/jobs.ts`'s route hands back unchanged
+ * (`typedJson`, `packages/core/src/api/typed-json.ts`, is a compile-time
+ * constraint only — it never calls `.parse()`, so the route's real runtime
+ * output is whatever `service.nodes()` built).
+ *
+ * Declared HERE rather than imported as `JobNodesResponseSchema` from
+ * `@enkaku/protocol`, on purpose: as of this step, that name is SHADOWED at
+ * the package boundary. `packages/protocol/src/index.ts` has an explicit
+ * `export { JobNodesResponseSchema, ... } from './messages/job'` which wins
+ * over its own earlier `export * from './api'` — and `./messages/job`'s
+ * version is a SECOND, differently-shaped schema (`{ jobId, nodes, finalized }`)
+ * left by a concurrent session working the same step 99.8, per this plan's
+ * own `> Status:` block. That paragraph frames the collision as a
+ * `bash scripts/typecheck.sh` failure at `packages/core/src/api/jobs.ts(204,49)`
+ * (confirmed still present as of this step) — it is worse than a type error
+ * for a Studio caller: `api()` (`lib/actions.ts`) runs `schema.safeParse(body)`
+ * on every response, so importing the shadowed `JobNodesResponseSchema` here
+ * would make EVERY real `GET /api/jobs/:id/nodes` response fail
+ * `BadResponseError` at runtime (the real body has no `jobId`/`nodes` keys),
+ * silently emptying the node timeline this whole step exists to render.
+ * Confirmed by hand: `import * as P from '@enkaku/protocol'` resolves
+ * `P.JobNodesResponseSchema` to a schema whose `.shape` keys are
+ * `['jobId', 'nodes', 'finalized']`, not `['items', 'finalized']`.
+ *
+ * `JobNodeInfoSchema` (the ROW shape, imported above) has no such collision —
+ * only the ENVELOPE name does — so only the envelope is redeclared here,
+ * against the same `JobNodeInfoSchema` the real route's own row type is
+ * built from (`packages/protocol/src/api/jobs.ts`).
+ */
+export const JobNodesEnvelopeSchema = z.object({ items: z.array(JobNodeInfoSchema), finalized: z.boolean() })
+export type JobNodesEnvelope = z.infer<typeof JobNodesEnvelopeSchema>
+
+// ---- Workflow duration estimate (plan 99 §3.11, §4.11, step 99.10) ----
+
+/**
+ * The "up to about" duration estimate for one device's run of a workflow
+ * (plan 99 §4.11's consequence-sentence example: *"4 nodes, up to about 42
+ * min per device"*) — the sum of every resolvable node's own declared
+ * `runtime.timeoutMs` (plan 98 step 98.4's producer, the same fact
+ * `E_WORKFLOW_BUDGET_IMPOSSIBLE`'s publish-time arithmetic reads). A gate
+ * node costs nothing (§3.7 — evaluated in-process, no child, no device call).
+ *
+ * `unknownNodes` names every SCRIPT node whose timeout could not be counted
+ * — either its ref could not be resolved against the scripts already known
+ * to the caller, or the resolved script simply declares no `timeoutMs`
+ * (optional metadata most scripts do not set). This is the SAME honest
+ * distinction `checkWorkflow`'s `W_WORKFLOW_BUDGET_UNKNOWN` makes at publish
+ * time (`packages/protocol/src/workflow-check.ts`): undeclared is UNKNOWN,
+ * never silently zero. `totalMs` is the sum over every node that DID
+ * resolve — `0` only when nothing resolved at all, which `unknownNodes`
+ * (non-empty in that case) always explains.
+ */
+export interface WorkflowDurationEstimate {
+  nodeCount: number
+  totalMs: number
+  unknownNodes: string[]
+}
+
+/**
+ * Computes `WorkflowDurationEstimate` for `doc` (plan 99 §4.11). No endpoint
+ * returns this number — `POST /api/workflows/validate`'s check 7 answers
+ * "does this fit a budget", never "how long, roughly" — so it is computed
+ * client-side: `resolveScriptId` turns a node's `name@version`/`name@latest`
+ * ref into a concrete `scripts.id` (the caller already has the full scripts
+ * list loaded for its own picker, so this never needs a network call), then
+ * each DISTINCT resolved id's own row is fetched once
+ * (`GET /api/scripts/:id`, deduped, in parallel) to read `runtime.timeoutMs`.
+ * Never throws: a script that fails to resolve or fails to fetch is simply
+ * added to `unknownNodes` — a duration estimate degrading is a UI nicety
+ * going missing, not a run failing.
+ */
+export async function estimateWorkflowDuration(
+  doc: WorkflowDoc,
+  resolveScriptId: (ref: string) => string | null,
+): Promise<WorkflowDurationEstimate> {
+  const scriptNodeIds = new Map<string, string>() // document nodeId -> resolved scripts.id
+  const unknownNodes: string[] = []
+  for (const node of doc.nodes) {
+    if (node.kind !== 'script') continue
+    const id = resolveScriptId(node.script)
+    if (id) scriptNodeIds.set(node.id, id)
+    else unknownNodes.push(node.id)
+  }
+
+  const uniqueIds = [...new Set(scriptNodeIds.values())]
+  const timeoutById = new Map<string, number | null>()
+  await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        const res = await fetch(`${coreBase()}/api/scripts/${id}`)
+        if (!res.ok) {
+          timeoutById.set(id, null)
+          return
+        }
+        const body = (await res.json()) as { script?: { runtime?: { timeoutMs?: number | null } | null } }
+        timeoutById.set(id, body.script?.runtime?.timeoutMs ?? null)
+      } catch {
+        timeoutById.set(id, null)
+      }
+    }),
+  )
+
+  let totalMs = 0
+  for (const [nodeId, id] of scriptNodeIds) {
+    const timeoutMs = timeoutById.get(id)
+    if (timeoutMs === null || timeoutMs === undefined) unknownNodes.push(nodeId)
+    else totalMs += timeoutMs
+  }
+
+  return { nodeCount: doc.nodes.length, totalMs, unknownNodes }
+}
+
+export type { JobNodeInfo }

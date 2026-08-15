@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `peak_rss_bytes` integer;

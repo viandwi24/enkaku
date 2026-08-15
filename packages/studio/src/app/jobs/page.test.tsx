@@ -64,3 +64,24 @@ describe('JobsPage — smoke render', () => {
     await waitFor(() => expect(screen.getByText('jobs boom')).toBeTruthy())
   })
 })
+
+/** Plan 91 §1, §5 step 91.5 — the job row's own "was this helped" tell (`JobsList.tsx`). */
+describe('JobsPage — the assisted badge (plan 91 §5 step 91.5)', () => {
+  test('a job with assistCount > 0 shows the "assisted" badge', async () => {
+    renderWithApi(<Wrapped />, {
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/jobs*': { body: { items: [{ ...job, assistCount: 3 }], nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.getByText('assisted')).toBeTruthy()
+  })
+
+  test('an ordinary job (assistCount 0) shows no "assisted" badge', async () => {
+    renderWithApi(<Wrapped />, {
+      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/jobs*': { body: { items: [{ ...job, assistCount: 0 }], nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('checkout@1.0.0')).toBeTruthy())
+    expect(screen.queryByText('assisted')).toBeNull()
+  })
+})

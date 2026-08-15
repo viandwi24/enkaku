@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { defaultDeviceSettings, type DeviceSettings, type Readiness } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { blockedDevices, devices, discoveredDevices, type DeviceRow } from '../db/schema'
+import { allocateDeviceNumber } from './device-number'
 
 /**
  * Whether a phone adb just reported is allowed into the farm (plan 56).
@@ -101,22 +102,30 @@ export function admitDevice(db: Db, stableId: string, opts: AdmitOptions = {}): 
   const sighting = db.select().from(discoveredDevices).where(eq(discoveredDevices.stableId, stableId)).get()
   if (!sighting) return null
 
-  db.insert(devices)
-    .values({
-      id: crypto.randomUUID(),
-      stableId,
-      serial: sighting.serial,
-      label: opts.label?.trim() || sighting.label || stableId,
-      androidVersion: sighting.androidVersion,
-      status: 'offline',
-      lastSeen: sighting.lastSeen,
-      ...(opts.clusterId ? { clusterId: opts.clusterId } : {}),
-      ...defaultsForNewDevice(opts),
-    })
-    .run()
+  // One transaction (plan 89 §3.1, §4.2): the insert and the number
+  // allocation must land together, or not at all. `allocateDeviceNumber`
+  // requires being called inside the caller's own transaction for exactly
+  // this reason — a failed insert must never consume a number.
+  return db.transaction((tx) => {
+    tx.insert(devices)
+      .values({
+        id: crypto.randomUUID(),
+        stableId,
+        serial: sighting.serial,
+        label: opts.label?.trim() || sighting.label || stableId,
+        androidVersion: sighting.androidVersion,
+        status: 'offline',
+        lastSeen: sighting.lastSeen,
+        ...(opts.clusterId ? { clusterId: opts.clusterId } : {}),
+        ...defaultsForNewDevice(opts),
+      })
+      .run()
 
-  db.delete(discoveredDevices).where(eq(discoveredDevices.stableId, stableId)).run()
-  return db.select().from(devices).where(eq(devices.stableId, stableId)).get() ?? null
+    allocateDeviceNumber(tx, stableId)
+
+    tx.delete(discoveredDevices).where(eq(discoveredDevices.stableId, stableId)).run()
+    return tx.select().from(devices).where(eq(devices.stableId, stableId)).get() ?? null
+  })
 }
 
 /** What the registry learned about a phone it is not allowed to enrol yet. */

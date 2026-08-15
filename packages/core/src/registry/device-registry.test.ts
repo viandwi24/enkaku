@@ -3,12 +3,14 @@ import type { AdbClient } from '@enkaku/adb'
 import { defaultDeviceSettings, type DeviceSettings } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations } from '../db'
-import { blockedDevices, clusters, deviceEvents, devices } from '../db/schema'
+import { blockedDevices, clusters, deviceEvents, devices, discoveredDevices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
 import { admitDevice } from './admission'
-import { createDeviceRegistry, listDevicesWithTags } from './device-registry'
+import { createDeviceRegistry, deriveConnection, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from './device-registry'
+import { allocateDeviceNumber, lookupDeviceNumber } from './device-number'
+import type { EndpointStore } from './endpoints'
 
 /**
  * A device enrolled for the first time must inherit the farm defaults.
@@ -308,5 +310,394 @@ describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §
     expect(byId.get('d-recent')?.lastCrashAt).toBeGreaterThan(nowSec - 400)
     expect(byId.get('d-old')?.lastCrashAt).toBeNull()
     expect(byId.get('d-none')?.lastCrashAt).toBeNull()
+  })
+})
+
+/**
+ * `deriveConnection` (plan 88 §3.1, §4.1, §5 step 88.1) — the ONE place
+ * `kind`/`medium` are computed. `kind` is purely observational (adb's own
+ * serial shape); `medium` is inferred ONLY from a configured farm network,
+ * never guessed, which is why a `tcp` serial with no matching network stays
+ * `mediumSource: 'unknown'` rather than defaulting to WI-FI — the exact
+ * mistake `packages/drivers/src/descriptors.ts`'s old `adb-tcp` display name
+ * made (F3).
+ */
+describe('deriveConnection (plan 88 §3.1, §4.1)', () => {
+  test('a USB serial (no colon) reads kind: usb with everything else null/unknown', () => {
+    expect(deriveConnection('ZP2222RMBS', [])).toEqual({
+      kind: 'usb',
+      medium: null,
+      mediumSource: 'unknown',
+      address: null,
+      port: null,
+      networkLabel: null,
+    })
+  })
+
+  test('a 16-hex USB serial also reads usb — no colon, no guess', () => {
+    expect(deriveConnection('0123456789ABCDEF', []).kind).toBe('usb')
+  })
+
+  test('a host:port serial with no configured networks reads tcp with mediumSource unknown, never a guessed WI-FI', () => {
+    expect(deriveConnection('10.20.0.37:5555', [])).toEqual({
+      kind: 'tcp',
+      medium: null,
+      mediumSource: 'unknown',
+      address: '10.20.0.37',
+      port: 5555,
+      networkLabel: null,
+    })
+  })
+
+  test('a host:port serial matching a configured wired network reads medium: wired, mediumSource: network, with the label', () => {
+    const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
+    expect(deriveConnection('10.20.0.37:5555', networks)).toEqual({
+      kind: 'tcp',
+      medium: 'wired',
+      mediumSource: 'network',
+      address: '10.20.0.37',
+      port: 5555,
+      networkLabel: 'Chassis A',
+    })
+  })
+
+  test('a host:port serial matching a configured wireless network reads medium: wireless', () => {
+    const networks: FarmNetwork[] = [{ cidr: '192.168.1.0/24', label: 'Office Wi-Fi', medium: 'wireless', scan: false }]
+    expect(deriveConnection('192.168.1.51:5555', networks).medium).toBe('wireless')
+  })
+
+  test('an address outside every configured network stays mediumSource: unknown', () => {
+    const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
+    const c = deriveConnection('192.168.1.51:5555', networks)
+    expect(c.mediumSource).toBe('unknown')
+    expect(c.medium).toBeNull()
+  })
+
+  test('the first matching network wins when configured ranges overlap', () => {
+    const networks: FarmNetwork[] = [
+      { cidr: '10.20.0.0/16', label: 'Wide', medium: 'wireless', scan: false },
+      { cidr: '10.20.0.0/24', label: 'Narrow', medium: 'wired', scan: true },
+    ]
+    expect(deriveConnection('10.20.0.37:5555', networks).networkLabel).toBe('Wide')
+  })
+
+  test('a malformed CIDR is skipped rather than throwing', () => {
+    const networks: FarmNetwork[] = [{ cidr: 'not-a-cidr', label: 'Bad', medium: 'wired', scan: true }]
+    expect(() => deriveConnection('10.20.0.37:5555', networks)).not.toThrow()
+    expect(deriveConnection('10.20.0.37:5555', networks).mediumSource).toBe('unknown')
+  })
+
+  test('a bracketed IPv6 host parses its address but never matches an IPv4-only network', () => {
+    const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
+    expect(deriveConnection('[::1]:5555', networks)).toEqual({
+      kind: 'tcp',
+      medium: null,
+      mediumSource: 'unknown',
+      address: '::1',
+      port: 5555,
+      networkLabel: null,
+    })
+  })
+})
+
+describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, §4.1)', () => {
+  test('GET-style listing returns a connection object for every device: usb stays usb, a tcp address inside the configured network reads OTG-eligible, one outside it stays TCP-unknown', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd-usb', stableId: 's-usb', serial: 'ZP2222RMBS', label: 'USB phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-tcp-known', stableId: 's-tcp-known', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'idle' }).run()
+
+    const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
+    const infos = listDevicesWithTags(db, undefined, undefined, networks)
+    const byId = new Map(infos.map((d) => [d.id, d]))
+
+    expect(byId.get('d-usb')?.connection).toEqual({
+      kind: 'usb',
+      medium: null,
+      mediumSource: 'unknown',
+      address: null,
+      port: null,
+      networkLabel: null,
+    })
+    expect(byId.get('d-tcp-known')?.connection).toEqual({
+      kind: 'tcp',
+      medium: 'wired',
+      mediumSource: 'network',
+      address: '10.20.0.37',
+      port: 5555,
+      networkLabel: 'Chassis A',
+    })
+    expect(byId.get('d-tcp-unknown')?.connection).toEqual({
+      kind: 'tcp',
+      medium: null,
+      mediumSource: 'unknown',
+      address: '192.168.1.51',
+      port: 5555,
+      networkLabel: null,
+    })
+  })
+
+  test('omitting networks entirely still parses (defaulted to [], every existing call site keeps working)', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'idle' }).run()
+    const infos = listDevicesWithTags(db)
+    expect(infos[0]?.connection.kind).toBe('tcp')
+    expect(infos[0]?.connection.mediumSource).toBe('unknown')
+  })
+
+  test('rowToDeviceInfo called directly (no networks arg) also defaults connection to usb/unknown for a usb serial', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    const info = rowToDeviceInfo(row)
+    expect(info.connection.kind).toBe('usb')
+  })
+})
+
+/**
+ * The device number (plan 89 §3.1, §3.2, §4.2, §4.3) — a lookup against
+ * `device_numbers`, keyed by `stableId`, never a column on `devices` (§3.2).
+ * `rowToDeviceInfo` defaults `number` to `null` so every existing call site
+ * that omits it keeps parsing exactly as before this plan; `listDevicesWithTags`
+ * resolves it once for the whole fleet, the same N+1 discipline `networks`/
+ * `tags`/`clusters` above already follow.
+ */
+describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3)', () => {
+  test('listDevicesWithTags populates every device\'s number from one query, never N+1', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone 1', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ZP2222RMBT', label: 'Phone 2', status: 'idle' }).run()
+    allocateDeviceNumber(db, 's1')
+    allocateDeviceNumber(db, 's2')
+
+    let numberQueries = 0
+    const originalPrepare = opened.sqlite.prepare.bind(opened.sqlite) as (sql: string, params?: unknown) => unknown
+    opened.sqlite.prepare = ((sql: string, params?: unknown) => {
+      if (sql.includes('device_numbers')) numberQueries++
+      return originalPrepare(sql, params)
+    }) as typeof opened.sqlite.prepare
+
+    const infos = listDevicesWithTags(db)
+    const byId = new Map(infos.map((d) => [d.id, d.number]))
+    expect(byId.get('d1')).toBe(1)
+    expect(byId.get('d2')).toBe(2)
+    expect(numberQueries).toBe(1)
+  })
+
+  test('a device with no reservation reads number: null through listDevicesWithTags, not 0 or undefined', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    const infos = listDevicesWithTags(db)
+    expect(infos[0]?.number).toBeNull()
+  })
+
+  test('rowToDeviceInfo called directly (no number arg) defaults to null, so every existing call site keeps parsing', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    const info = rowToDeviceInfo(row)
+    expect(info.number).toBeNull()
+  })
+
+  test('rowToDeviceInfo passed a number returns it verbatim', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    const info = rowToDeviceInfo(row, [], null, null, null, null, [], new Map(), 7)
+    expect(info.number).toBe(7)
+  })
+
+  test('admitDevice → the row carries a real number the moment it is fetched (the class of bug this plan is against: a schema field no route populates)', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(discoveredDevices).values({ stableId: 'sid-new', serial: 'serial-new', label: 'New Phone', firstSeen: new Date(), lastSeen: new Date() }).run()
+    const row = admitDevice(db, 'sid-new')
+    expect(row).not.toBeNull()
+    const info = rowToDeviceInfo(row!, [], null, null, null, null, [], new Map(), lookupDeviceNumber(db, row!.stableId))
+    expect(info.number).toBe(1)
+  })
+})
+
+/**
+ * Residual gap left by plan 88 step 88.5's own pass (fixed here):
+ * `DeviceRegistryDeps` had no `networks` accessor at all — `onOnline`'s own
+ * `device.added` broadcast and this registry's `listDevices()` were both
+ * hardcoded to `[]`, so a device on a configured wired network could never
+ * badge OTG through either path. Proven through the registry's own public
+ * surface (`createDeviceRegistry(...).listDevices()`), not `deriveConnection`
+ * in isolation.
+ */
+describe('DeviceRegistry — networks (plan 88 §3.6, §4.1, residual gap)', () => {
+  test('listDevices() reflects a configured farm network — medium: wired, not TCP-unknown', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+
+    const registry = createDeviceRegistry({
+      client: fakeAdb(),
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+      networks: () => [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }],
+    })
+
+    const infos = registry.listDevices()
+    expect(infos).toHaveLength(1)
+    expect(infos[0]?.connection).toMatchObject({ medium: 'wired', mediumSource: 'network', networkLabel: 'Chassis A' })
+  })
+
+  test('without a networks accessor, listDevices() matches no network — same as before this field existed', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+
+    const registry = createDeviceRegistry({
+      client: fakeAdb(),
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+    })
+
+    const infos = registry.listDevices()
+    expect(infos[0]?.connection).toMatchObject({ medium: null, mediumSource: 'unknown' })
+  })
+})
+
+describe('EndpointStore wiring — observe() on a successful probe (plan 88 §3.2, §4.3, fixes F10)', () => {
+  type AddEvent = { kind: 'add'; serial: string; state: string }
+
+  function fakeEndpointStore(): { store: EndpointStore; calls: Array<{ stableId: string; serial: string }> } {
+    const calls: Array<{ stableId: string; serial: string }> = []
+    const store: EndpointStore = {
+      observe: (stableId, serial) => {
+        calls.push({ stableId, serial })
+      },
+      declare: () => {},
+      candidates: () => [],
+      noteAttempt: () => {},
+      forget: () => {},
+      allWithEndpoints: () => [],
+    }
+    return { store, calls }
+  }
+
+  test('a successful probe of an ADMITTED device calls observe(stableId, serial) — the whole cost of the address book (plan 88 §3.2)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const client = fakeAdb()
+    const listeners: Array<(ev: AddEvent) => void> = []
+    ;(client as unknown as { trackDevices: () => unknown }).trackDevices = () => ({
+      on: (cb: (ev: AddEvent) => void) => {
+        listeners.push(cb)
+        return () => {}
+      },
+      start: async () => {},
+      stop: () => {},
+    })
+    const { store, calls } = fakeEndpointStore()
+
+    const registry = createDeviceRegistry({
+      client,
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+      endpoints: store,
+    })
+    await registry.start()
+
+    // First sighting: plan 56 routes an unadmitted device to the Discovered
+    // tray, not into `devices` — observe() must NOT fire for a sighting
+    // nobody admitted (the address book only ever serves an enrolled device).
+    for (const cb of listeners) cb({ kind: 'add', serial: '10.0.0.5:5555', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls).toEqual([])
+
+    admitDevice(db, 'HW-SERIAL-1', {})
+    for (const cb of listeners) cb({ kind: 'add', serial: '10.0.0.5:5555', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+
+    expect(calls).toEqual([{ stableId: 'HW-SERIAL-1', serial: '10.0.0.5:5555' }])
+    await registry.stop()
+  })
+
+  test('a USB serial still reaches observe() — filtering non-TCP shapes is EndpointStore\'s own job, not the registry\'s', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const client = fakeAdb()
+    const listeners: Array<(ev: AddEvent) => void> = []
+    ;(client as unknown as { trackDevices: () => unknown }).trackDevices = () => ({
+      on: (cb: (ev: AddEvent) => void) => {
+        listeners.push(cb)
+        return () => {}
+      },
+      start: async () => {},
+      stop: () => {},
+    })
+    const { store, calls } = fakeEndpointStore()
+    const registry = createDeviceRegistry({
+      client,
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+      endpoints: store,
+    })
+    await registry.start()
+    for (const cb of listeners) cb({ kind: 'add', serial: 'USB-SERIAL-1', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    admitDevice(db, 'HW-SERIAL-1', {})
+    for (const cb of listeners) cb({ kind: 'add', serial: 'USB-SERIAL-1', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls).toEqual([{ stableId: 'HW-SERIAL-1', serial: 'USB-SERIAL-1' }])
+    await registry.stop()
+  })
+
+  test('without an EndpointStore dependency the registry behaves exactly as before this plan (optional dep, no crash)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const client = fakeAdb()
+    const listeners: Array<(ev: AddEvent) => void> = []
+    ;(client as unknown as { trackDevices: () => unknown }).trackDevices = () => ({
+      on: (cb: (ev: AddEvent) => void) => {
+        listeners.push(cb)
+        return () => {}
+      },
+      start: async () => {},
+      stop: () => {},
+    })
+    const registry = createDeviceRegistry({ client, db, hub: new WsHub(log), log, states: createDeviceStateMachine({ db, log, onChange: () => {} }) })
+    await registry.start()
+    admitDevice(db, 'HW-SERIAL-1', {}) // no sighting yet — returns null, harmless
+    for (const cb of listeners) cb({ kind: 'add', serial: '10.0.0.5:5555', state: 'device' })
+    await expect(new Promise((r) => setTimeout(r, 150))).resolves.toBeUndefined()
+    await registry.stop()
   })
 })

@@ -1,13 +1,17 @@
 'use client'
 
 import Link from 'next/link'
-import { Battery, Bug, MoreVertical, Play, ScreenShare, Thermometer, Trash2 } from 'lucide-react'
+import { Battery, Bug, MoreVertical, Play, RefreshCw, ScreenShare, Thermometer, Trash2, Unplug } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
+import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
+import { ConnectionBadge } from '@/components/ConnectionBadge'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReadinessControl } from '@/components/ReadinessControl'
 import { HolderBadge } from '@/components/HolderBadge'
+import { tileIdentityOf } from '@/components/wall/tile-identity'
 import { cn } from '@/lib/utils'
 
 /**
@@ -22,7 +26,10 @@ export function DeviceCard({
   device,
   runningJob,
   onReleaseQuarantine,
+  canReleaseQuarantine = true,
   onRequestForget,
+  onRequestDisconnect,
+  onReconnect,
   selectable,
   selected,
   onToggleSelect,
@@ -30,8 +37,30 @@ export function DeviceCard({
   device: DeviceInfo
   runningJob?: JobInfo | null
   onReleaseQuarantine?: () => void
+  /**
+   * Whether the signed-in user may actually call `onReleaseQuarantine`
+   * (`device.quarantine`, admin-only in `packages/core/src/auth/acl.ts`) —
+   * defaults to `true` so a caller that does not care about the distinction
+   * (every caller before this) keeps today's behaviour. `false` keeps the
+   * button on screen rather than removing it: an operator who cannot act
+   * still needs to see that a way out exists and who to ask, the same
+   * reasoning the offline-device buttons below are disabled-with-a-reason
+   * rather than hidden. Studio-side convenience only — the server refuses
+   * the same call regardless (spec §10.1).
+   */
+  canReleaseQuarantine?: boolean
   /** Opens the Forget/Block dialog for this device (plan 47 §4.5). */
   onRequestForget?: () => void
+  /**
+   * Opens the disconnect confirmation for this device (plan 88 §3.7, §3.8,
+   * §4.6, §5 step 88.4) — the SAME words `DeviceHeader`'s Connection group
+   * uses ("a verb keeps its name through the whole flow",
+   * `DeviceHeader.tsx`). Disabled-with-a-reason on a `usb` device, never
+   * hidden and never a silent no-op.
+   */
+  onRequestDisconnect?: () => void
+  /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — fires directly, no confirmation. */
+  onReconnect?: () => void
   /** Multi-select for a batch action (plan 39 §4.7 — "Install on selected"). */
   selectable?: boolean
   selected?: boolean
@@ -40,6 +69,10 @@ export function DeviceCard({
   const offline = device.status === 'offline'
   const hot = device.battery && device.battery.temperatureC >= 45
   const lowBattery = device.battery && device.battery.level < 20
+  // The plans-88/89 fields, behind one adapter (plan 92 §4.8, H4) — same
+  // adapter `WallTile` reads, so the number and the connection glyph read
+  // identically wherever a device appears.
+  const identity = tileIdentityOf(device)
 
   return (
     <div
@@ -78,15 +111,40 @@ export function DeviceCard({
                 settings and past artifacts are exactly what an operator wants
                 when a device drops off; that is usually why they are looking.
                 It is also where people already try to click. */}
-            <h3 className="truncate text-[14px] font-semibold tracking-tight">
+            <h3 className="flex min-w-0 items-baseline gap-1.5 truncate text-[14px] font-semibold tracking-tight">
+              {/* The same number the Wall's tile shows on its own line 1
+                  (plan 92 §4.8, plan 48 §9 Q1, plan 89 §3.3) — so the two
+                  views read as the same fleet rather than two different
+                  ones. Outside the link: it identifies the row, it is not
+                  part of what the label navigates to. Number first, per
+                  §3.3: it is the key an operator scans for. Never
+                  concatenated into `label` — a separate span composed
+                  beside it. `null` only for a device whose reservation was
+                  explicitly released (§3.2), rendered honestly as a dash
+                  rather than a fake `#0`. */}
+              <span className="readout shrink-0 text-[11px] font-normal text-fg-subtle" aria-hidden="true">
+                {identity.number !== null ? `#${identity.number}` : '—'}
+              </span>
               <Link
                 href={`/device?id=${encodeURIComponent(device.id)}`}
-                className="transition-colors hover:text-accent-strong"
+                className="min-w-0 truncate transition-colors hover:text-accent-strong"
               >
                 {device.label}
               </Link>
             </h3>
-            <p className="readout mt-0.5 truncate text-[11px] text-fg-subtle">{device.serial}</p>
+            {/* Badge + address (plan 88 §3.1, §4.1, F27) — replaces the raw
+                adb serial this used to print unlabelled. For a TCP device
+                that serial happened to look like an address by coincidence;
+                for USB it looked like nothing anyone but adb could read. The
+                badge names what kind of connection this is; the second half
+                is the real address when `connection` has one (TCP), or the
+                device's own USB serial when it does not — never blank. */}
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <ConnectionBadge connection={device.connection} />
+              <span className="readout truncate text-[11px] text-fg-subtle">
+                {device.connection.address ?? device.serial}
+              </span>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {/* A device crashing repeatedly should be visible without opening
@@ -101,8 +159,10 @@ export function DeviceCard({
                 Crash
               </span>
             )}
+            {/* Plan 90 §5 step 90.6 — quiet for `ready`/`absent`/`provisioning`/`unsupported`; only `failed`/`outdated` need an operator (F10). */}
+            <AgentAlertChip agent={device.agent ?? 'absent'} />
             <DeviceStatusBadge status={device.status} />
-            {onRequestForget && (
+            {(onRequestForget || onRequestDisconnect || onReconnect) && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="size-6" aria-label={`More actions for ${device.label}`}>
@@ -110,10 +170,47 @@ export function DeviceCard({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={onRequestForget} className="text-led-danger focus:text-led-danger">
-                    <Trash2 className="size-3.5" aria-hidden />
-                    Remove from farm…
-                  </DropdownMenuItem>
+                  {/* The Connection group (plan 88 §3.7, §3.8, §4.6, §5 step
+                      88.4) — the SAME words and the SAME disabled-with-a-
+                      reason USB case `DeviceHeader`'s menu has, above its
+                      own separator from the destructive Remove item below. */}
+                  {(onRequestDisconnect || onReconnect) && (
+                    <>
+                      {onRequestDisconnect &&
+                        ((device.connection?.kind ?? 'usb') === 'usb' ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <DropdownMenuItem
+                                onSelect={(e) => e.preventDefault()}
+                                className="text-fg-subtle data-[highlighted]:bg-transparent data-[highlighted]:text-fg-subtle"
+                              >
+                                <Unplug className="size-3.5" aria-hidden />
+                                Disconnect from the network
+                              </DropdownMenuItem>
+                            </TooltipTrigger>
+                            <TooltipContent>adb has no way to release a single USB transport. Unplug the cable to disconnect it.</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <DropdownMenuItem onSelect={onRequestDisconnect}>
+                            <Unplug className="size-3.5" aria-hidden />
+                            Disconnect from the network
+                          </DropdownMenuItem>
+                        ))}
+                      {onReconnect && (
+                        <DropdownMenuItem onSelect={onReconnect}>
+                          <RefreshCw className="size-3.5" aria-hidden />
+                          Reconnect
+                        </DropdownMenuItem>
+                      )}
+                      {onRequestForget && <DropdownMenuSeparator />}
+                    </>
+                  )}
+                  {onRequestForget && (
+                    <DropdownMenuItem onSelect={onRequestForget} className="text-led-danger focus:text-led-danger">
+                      <Trash2 className="size-3.5" aria-hidden />
+                      Remove from farm…
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
@@ -127,6 +224,20 @@ export function DeviceCard({
         {device.heldBy && (
           <div onClick={(e) => e.stopPropagation()}>
             <HolderBadge holder={device.heldBy} />
+          </div>
+        )}
+
+        {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25) —
+            a narrow, subordinate grant, never a takeover: `heldBy` above is
+            unaffected by it. `?? []` covers a caller that predates the
+            field (`assistedBy` defaults server-side, but a fixture built as
+            a plain object rather than parsed by `DeviceInfoSchema` has no
+            such default to fall back on). */}
+        {(device.assistedBy ?? []).length > 0 && (
+          <div onClick={(e) => e.stopPropagation()} className="flex flex-wrap gap-1">
+            {(device.assistedBy ?? []).map((a) => (
+              <HolderBadge key={a.id} holder={a} variant="assists" />
+            ))}
           </div>
         )}
 
@@ -208,7 +319,14 @@ export function DeviceCard({
                 : 'Pulled from the queue, with no reason recorded.'}
             </p>
             {onReleaseQuarantine && (
-              <Button variant="outline" size="sm" className="mt-2 h-7 text-[11.5px]" onClick={onReleaseQuarantine}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2 h-7 text-[11.5px]"
+                disabled={!canReleaseQuarantine}
+                title={canReleaseQuarantine ? undefined : 'Only an admin can return a quarantined device to the queue'}
+                onClick={onReleaseQuarantine}
+              >
                 Return to queue
               </Button>
             )}

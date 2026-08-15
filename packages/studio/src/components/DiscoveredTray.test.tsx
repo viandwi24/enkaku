@@ -27,15 +27,30 @@ const entry = {
 describe('DiscoveredTray', () => {
   test('renders a row per discovered device', () => {
     const { getByText } = renderWithApi(
-      <DiscoveredTray discovered={[entry]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      <DiscoveredTray discovered={[entry]} clusters={[]} farmLabellingMode="off" open={true} onOpenChange={() => {}} onChanged={() => {}} />,
       {},
     )
     expect(getByText('moto g06')).toBeTruthy()
   })
 
+  /**
+   * Plan 89 §3.8, §5 step 89.8 — `farmLabellingMode` reaches the admit
+   * wizard's own checkbox unchanged, so a farm that already opted in shows
+   * every subsequent admission pre-checked, per §3.8's own words ("every
+   * phone admitted afterwards is labelled with no further thought").
+   */
+  test('forwards farmLabellingMode to the admit dialog\'s checkbox', () => {
+    const { getByText, getByRole } = renderWithApi(
+      <DiscoveredTray discovered={[entry]} clusters={[]} farmLabellingMode="wallpaper" open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      {},
+    )
+    fireEvent.click(getByText('Add to farm'))
+    expect(getByRole('switch', { name: "Label this phone's screen" }).getAttribute('aria-checked')).toBe('true')
+  })
+
   test('empty tray shows the empty state', () => {
     const { getByText } = renderWithApi(
-      <DiscoveredTray discovered={[]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      <DiscoveredTray discovered={[]} clusters={[]} farmLabellingMode="off" open={true} onOpenChange={() => {}} onChanged={() => {}} />,
       {},
     )
     expect(getByText('Nothing waiting')).toBeTruthy()
@@ -56,6 +71,7 @@ describe('DiscoveredTray', () => {
       <DiscoveredTray
         discovered={[entry]}
         clusters={[]}
+        farmLabellingMode="off"
         open={true}
         onOpenChange={() => {}}
         onChanged={() => {
@@ -78,7 +94,7 @@ describe('DiscoveredTray', () => {
   test('Rescan calls POST /api/devices/rescan, renders the report as one line, and refetches the tray', async () => {
     let changed = false
     const { getByText, apiMock } = renderWithApi(
-      <DiscoveredTray discovered={[entry]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => (changed = true)} />,
+      <DiscoveredTray discovered={[entry]} clusters={[]} farmLabellingMode="off" open={true} onOpenChange={() => {}} onChanged={() => (changed = true)} />,
       {
         '/api/devices/rescan': {
           body: { seen: 5, adopted: ['SER1'], dropped: [], offline: [], unauthorized: [], reconnectIssued: false, retriesPending: 0 },
@@ -93,7 +109,7 @@ describe('DiscoveredTray', () => {
 
   test('a scan that changed nothing reads "nothing changed", without "else"', async () => {
     const { getByText } = renderWithApi(
-      <DiscoveredTray discovered={[]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      <DiscoveredTray discovered={[]} clusters={[]} farmLabellingMode="off" open={true} onOpenChange={() => {}} onChanged={() => {}} />,
       {
         '/api/devices/rescan': {
           body: { seen: 2, adopted: [], dropped: [], offline: [], unauthorized: [], reconnectIssued: false, retriesPending: 0 },
@@ -106,7 +122,7 @@ describe('DiscoveredTray', () => {
 
   test('a failed rescan surfaces the server error and leaves the tray otherwise unaffected', async () => {
     const { getByText } = renderWithApi(
-      <DiscoveredTray discovered={[entry]} clusters={[]} open={true} onOpenChange={() => {}} onChanged={() => {}} />,
+      <DiscoveredTray discovered={[entry]} clusters={[]} farmLabellingMode="off" open={true} onOpenChange={() => {}} onChanged={() => {}} />,
       { '/api/devices/rescan': { status: 500, body: { error: { code: 'E_ADB_UNAVAILABLE', message: 'adb is not ready yet' } } } },
     )
     fireEvent.click(getByText('Rescan'))

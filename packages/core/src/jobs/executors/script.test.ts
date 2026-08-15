@@ -7,6 +7,7 @@ import { openDb, runMigrations, type Db } from '../../db'
 import { scripts } from '../../db/schema'
 import { createDevSlotStore } from '../../plugins/dev-slots'
 import { createScriptRegistry } from '../../scripts/registry'
+import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
 import { createScriptExecutor } from './script'
 
@@ -45,7 +46,7 @@ function fakeSessions() {
     closeDevice: async () => {},
     closeIfIdle: async () => {},
     idleSessions: () => [],
-    closeAll: async () => {},
+    closeAll: async () => 0,
   }
 }
 
@@ -84,7 +85,7 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
       pluginName: 'tiktok',
       declaredVersion: '1.0.0',
       bundlePath,
-      scripts: [{ exportId: 'login', paramsSchema: {} }],
+      scripts: [{ exportId: 'login', paramsSchema: {}, runtime: null }],
       owner: { kind: 'workspace', label: '/scripts/tiktok' },
     })
 
@@ -201,6 +202,285 @@ describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared acro
 
     expect(namespaces).toEqual(['tiktok', 'tiktok'])
   }, 20000)
+})
+
+/**
+ * `validateParams` (plan 95 §5 step 95.6, fixes F10) — before this plan the
+ * comment on this method said params were "just passed straight through";
+ * now it validates against the SAME `paramsSchema` a run form would read,
+ * looked up through the registry by the `scriptId` `validateScriptForRun`
+ * passes in (the fallback executor is one instance shared by every
+ * non-built-in script, so it cannot know which schema applies any other
+ * way).
+ */
+describe('createScriptExecutor.validateParams (plan 95 §5 step 95.6)', () => {
+  function registryWithSchema(db: Db, paramsSchema: unknown) {
+    db.insert(scripts)
+      .values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, paramsSchema, createdAt: new Date() })
+      .run()
+    return createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+  }
+
+  test('an out-of-range value is rejected with the path and message the plan names, and carries EnkakuError.issues', () => {
+    const db = setUpDb()
+    const registry = registryWithSchema(db, {
+      type: 'object',
+      properties: { videos: { type: 'integer', maximum: 2000 } },
+      required: ['videos'],
+    })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+
+    let caught: unknown
+    try {
+      executor.validateParams({ videos: 9999 }, 'checkout')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect((caught as EnkakuError).code).toBe('invalid_job_params')
+    expect((caught as EnkakuError).issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
+  })
+
+  test('a value inside every bound passes through unchanged', () => {
+    const db = setUpDb()
+    const registry = registryWithSchema(db, { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } } })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(executor.validateParams({ videos: 30 }, 'checkout')).toEqual({ videos: 30 })
+  })
+
+  test('a script with no declared paramsSchema accepts anything (F10: no schema is not a violation)', () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'no-params', name: 'no-params', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(executor.validateParams({ anything: 'goes' }, 'no-params')).toEqual({ anything: 'goes' })
+  })
+
+  test('an unknown scriptId throws unknown_script rather than crashing on a missing entry', () => {
+    const db = setUpDb()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const executor = createScriptExecutor({ registry, runner: {} as never })
+    expect(() => executor.validateParams({}, 'does-not-exist')).toThrow(EnkakuError)
+  })
+})
+
+/**
+ * Plan 98 §3.1, §4.4, §5 step 98.4 — the registry entry's `runtime` (read
+ * straight off the `scripts` row this job pinned) must reach
+ * `JobRunner.execute()` unchanged, since `@enkaku/session` "knows nothing
+ * about the database or the `scripts` table" and can only act on what the
+ * host hands it (`JobSpec.runtime`'s own doc comment).
+ */
+describe("createScriptExecutor threads the registry entry's runtime through to JobRunner.execute (plan 98 §3.1, §5 step 98.4)", () => {
+  function fakeRunner(): { runner: { execute: (spec: unknown) => Promise<{ ok: true; value: string }>; abort: () => boolean; notifyAssist: () => boolean }; seen: { spec?: unknown } } {
+    const seen: { spec?: unknown } = {}
+    return {
+      seen,
+      runner: {
+        execute: async (spec: unknown) => {
+          seen.spec = spec
+          return { ok: true, value: 'done' }
+        },
+        abort: () => false,
+        notifyAssist: () => false,
+      },
+    }
+  }
+
+  test("a published script's declared runtime reaches runner.execute() unchanged", async () => {
+    const db = setUpDb()
+    const declared = { timeoutMs: 45_000, maxRssBytes: 128 * 1024 * 1024 }
+    db.insert(scripts)
+      .values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, runtime: declared, createdAt: new Date() })
+      .run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const { runner, seen } = fakeRunner()
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+
+    await executor.run({ id: 'job-rt-1', scriptId: 'checkout', deviceId: 'd1', params: {} } as never, ctx as never)
+
+    expect((seen.spec as { runtime?: unknown })?.runtime).toEqual(declared)
+  })
+
+  test('a script with no declared runtime passes `null` through — never `undefined`, so the runner can tell "declared nothing" apart from "the host never wired this"', async () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'no-runtime', name: 'no-runtime', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const { runner, seen } = fakeRunner()
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+
+    await executor.run({ id: 'job-rt-2', scriptId: 'no-runtime', deviceId: 'd1', params: {} } as never, ctx as never)
+
+    expect(seen.spec).toHaveProperty('runtime', null)
+  })
+})
+
+/**
+ * Plan 97 §3.3, §3.4, §3.8, §4.5, §5 step 97.4 — `ctx.onResultOutcome` must
+ * fire whether `runner.execute()` resolved `ok: true` OR `ok: false` (a
+ * `finish()` salvage, §3.5), mirroring `ctx.onPeakRss`'s own "called at most
+ * once, right before this method settles either way" shape exactly. And a
+ * salvage `value`, when the runner reports one alongside a failure, must
+ * ride the thrown error as `partialResult` — `JobExecutor.run()` rejects on
+ * failure and has no resolved return value left to carry it on.
+ */
+describe('createScriptExecutor — a finish() salvage on failure (plan 97 §3.5, §5 step 97.4)', () => {
+  function fakeRunner(result: { ok: boolean; value?: unknown; error?: { code: string; message: string; phase: string }; outcome?: unknown }) {
+    return {
+      execute: async () => result,
+      abort: () => false,
+      notifyAssist: () => false,
+    }
+  }
+
+  function baseRegistry(db: Db, scriptId: string) {
+    db.insert(scripts).values({ id: scriptId, name: scriptId, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    return createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-partial-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+  }
+
+  test('a FAILURE with an outcome still calls ctx.onResultOutcome, and the salvage value rides the thrown error as partialResult', async () => {
+    const db = setUpDb()
+    const registry = baseRegistry(db, 'checkout')
+    const runner = fakeRunner({
+      ok: false,
+      error: { code: 'SCRIPT_ERROR', message: 'boom', phase: 'run' },
+      value: { videosBeforeFailure: 280 },
+      outcome: { status: 'partial', bytes: 30 },
+    })
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const outcomesSeen: unknown[] = []
+    const ctx = {
+      signal: new AbortController().signal,
+      heartbeat: () => {},
+      log: silentLog(),
+      onResultOutcome: (o: unknown) => outcomesSeen.push(o),
+    }
+
+    let caught: unknown
+    try {
+      await executor.run({ id: 'job-1', scriptId: 'checkout', deviceId: 'd1', params: {} } as never, ctx as never)
+    } catch (err) {
+      caught = err
+    }
+
+    expect(outcomesSeen).toEqual([{ status: 'partial', bytes: 30 }])
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect((caught as EnkakuError & { code: string }).code).toBe('SCRIPT_ERROR')
+    expect((caught as unknown as { partialResult: unknown }).partialResult).toEqual({ videosBeforeFailure: 280 })
+  })
+
+  test('a FAILURE with no outcome/value at all never calls onResultOutcome and the thrown error carries no partialResult — unchanged from today', async () => {
+    const db = setUpDb()
+    const registry = baseRegistry(db, 'checkout-2')
+    const runner = fakeRunner({ ok: false, error: { code: 'SCRIPT_ERROR', message: 'boom', phase: 'run' } })
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const outcomesSeen: unknown[] = []
+    const ctx = {
+      signal: new AbortController().signal,
+      heartbeat: () => {},
+      log: silentLog(),
+      onResultOutcome: (o: unknown) => outcomesSeen.push(o),
+    }
+
+    let caught: unknown
+    try {
+      await executor.run({ id: 'job-2', scriptId: 'checkout-2', deviceId: 'd1', params: {} } as never, ctx as never)
+    } catch (err) {
+      caught = err
+    }
+
+    expect(outcomesSeen).toEqual([])
+    expect('partialResult' in (caught as object)).toBe(false)
+  })
+
+  test('a SUCCESS still calls onResultOutcome exactly as before (unchanged by 97.4)', async () => {
+    const db = setUpDb()
+    const registry = baseRegistry(db, 'checkout-3')
+    const runner = fakeRunner({ ok: true, value: { videos: 5 }, outcome: { status: 'valid', bytes: 12 } })
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const outcomesSeen: unknown[] = []
+    const ctx = {
+      signal: new AbortController().signal,
+      heartbeat: () => {},
+      log: silentLog(),
+      onResultOutcome: (o: unknown) => outcomesSeen.push(o),
+    }
+
+    const value = await executor.run({ id: 'job-3', scriptId: 'checkout-3', deviceId: 'd1', params: {} } as never, ctx as never)
+
+    expect(outcomesSeen).toEqual([{ status: 'valid', bytes: 12 }])
+    expect(value).toEqual({ videos: 5 })
+  })
+})
+
+/**
+ * Plan 98 §3.8, §4.4, §5 step 98.7 — `job.runtimeOverride` (the operator's
+ * own per-job layer, already validated and ceiling-checked at enqueue by
+ * `services/job-service.ts`) reaches `JobRunner.execute()` the SAME way
+ * `entry.runtime` does above: read straight off the `JobRow` this executor
+ * already holds, parsed defensively through `parseJobRuntimeOverride`
+ * (never an `as`-cast), never re-validated a second time here.
+ */
+describe("createScriptExecutor threads jobs.runtime_override through to JobRunner.execute (plan 98 §3.8, §5 step 98.7)", () => {
+  function fakeRunner(): { runner: { execute: (spec: unknown) => Promise<{ ok: true; value: string }>; abort: () => boolean; notifyAssist: () => boolean }; seen: { spec?: unknown } } {
+    const seen: { spec?: unknown } = {}
+    return {
+      seen,
+      runner: {
+        execute: async (spec: unknown) => {
+          seen.spec = spec
+          return { ok: true, value: 'done' }
+        },
+        abort: () => false,
+        notifyAssist: () => false,
+      },
+    }
+  }
+
+  test("a job's own runtimeOverride reaches runner.execute() unchanged, parsed off the JobRow", async () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const { runner, seen } = fakeRunner()
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const override = { maxRssBytes: 256 * 1024 * 1024 }
+
+    await executor.run({ id: 'job-rto-1', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: override } as never, ctx as never)
+
+    expect((seen.spec as { runtimeOverride?: unknown })?.runtimeOverride).toEqual(override)
+  })
+
+  test('a job with no override at all passes `null` through', async () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const { runner, seen } = fakeRunner()
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+
+    await executor.run({ id: 'job-rto-2', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: null } as never, ctx as never)
+
+    expect(seen.spec).toHaveProperty('runtimeOverride', null)
+  })
+
+  test('a corrupt column value degrades to null rather than throwing — the same discipline `scripts.runtime` already has', async () => {
+    const db = setUpDb()
+    db.insert(scripts).values({ id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const { runner, seen } = fakeRunner()
+    const executor = createScriptExecutor({ registry, runner: runner as never })
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+
+    await executor.run(
+      { id: 'job-rto-3', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: { retries: -99 } } as never,
+      ctx as never,
+    )
+
+    expect(seen.spec).toHaveProperty('runtimeOverride', null)
+  })
 })
 
 process.on('exit', () => {

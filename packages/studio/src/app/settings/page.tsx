@@ -1,13 +1,17 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Plus, UserPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, UserPlus } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { KvPanel } from '@/components/kv/KvPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { FarmNetworksEditor } from '@/components/settings/FarmNetworksEditor'
+import { FarmVideoFields } from '@/components/video/FarmVideoFields'
+import { FARM_SECTION_DEFS } from '@/components/settings/farmSections'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Badge } from '@/components/ui/badge'
@@ -20,10 +24,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { z } from 'zod'
 import {
   AdbStatsResponseSchema,
+  AgentProvisionReportSchema,
   AuditResponseSchema,
   ConnectorResponseSchema,
   ConnectorTestResultSchema,
   DevicesBlockedResponseSchema,
+  GuestAgentSummaryResponseSchema,
   ListConnectorsResponseSchema,
   SettingsResponseSchema,
   UpdateSettingsResponseSchema,
@@ -50,6 +56,15 @@ interface AuditEntry {
   action: string
   target: string | null
   at: number | null
+  /**
+   * Plan 91 §3.5, F24 — written by `AuditLogger.record` since M7, but
+   * dropped by this table until now: `AuditEntrySchema` gained `meta` in
+   * plan 91 §4.4 step 91.3, and this is the first render of it. Notably,
+   * this is exactly what makes `device.assist`'s `jobId` legible here — the
+   * part of the row that answers "assisted which JOB", not just "which
+   * device".
+   */
+  meta: unknown
 }
 
 // Small envelopes with no shared home in `@enkaku/protocol` — each is read
@@ -58,48 +73,6 @@ interface AuditEntry {
 const OkResponseSchema = z.object({ ok: z.boolean() })
 const WebhookEndpointResponseSchema = z.object({ endpoint: WebhookEndpointSchema })
 const UserCreateResponseSchema = z.object({ user: UserSchema })
-
-/**
- * The farm Settings page's section list. Grouped (plan 73 §3.4, §4.5) —
- * `Connectors`, `Webhooks`, and `Spend` used to sit as three flat AI
- * concerns among `adb`, `Storage`, and `Blocked devices`; `SectionNav`'s new
- * optional `group` (plan 73 §3.4) puts them under one **AI Agents** heading
- * instead, alongside a **Defaults** sub-section that finally renders
- * `agentDefaults` — built by plan 65, editable nowhere until now (criterion
- * 13). Content is otherwise unchanged; only the container and this list's
- * shape moved.
- */
-const FARM_SECTION_DEFS: readonly { id: string; title: string; group: string }[] = [
-  { id: 'defaults', title: 'Defaults', group: 'Devices' },
-  { id: 'battery', title: 'Battery', group: 'Devices' },
-  { id: 'adb', title: 'adb', group: 'Devices' },
-  { id: 'sessions', title: 'Sessions & Wall', group: 'Devices' },
-  { id: 'job', title: 'Jobs', group: 'Jobs' },
-  { id: 'storage', title: 'Storage', group: 'Jobs' },
-  // AI Agents (plan 73 §3.4) — `agentDefaults` rendered through the same
-  // schema-driven `FarmForm` every other section already uses, so a field
-  // added to `AgentDefaultsSchema` appears here automatically (criterion 13).
-  { id: 'ai-defaults', title: 'Defaults', group: 'AI Agents' },
-  // Farm-level provider connectors (plan 65 §3.8) — appear inside the agent
-  // editor only as a picker plus a link, because a credential edited from
-  // inside one agent's page but affecting every other agent is a trap.
-  { id: 'connectors', title: 'Connectors', group: 'AI Agents' },
-  // Plan 68 §3.4, §4.5 — farm-level, admin-managed webhook endpoints an
-  // agent's `notify.send` chooses among by NAME (never a raw URL).
-  { id: 'webhooks', title: 'Webhooks', group: 'AI Agents' },
-  // Plan 68 §3.3, §4.5 — the spend cap and scheduled-concurrency ceiling.
-  // Both apply ONLY to scheduled agent runs; an interactive chat run is
-  // never blocked by either, stated here in `scheduledAgents`'s own
-  // `.meta()` description (rendered by the generic `FarmForm` below — no
-  // bespoke UI needed, same as `job`/`sessions`/`battery`).
-  { id: 'spend', title: 'Spend', group: 'AI Agents' },
-  { id: 'blocked', title: 'Blocked devices', group: 'Farm' },
-  // Plan 79 §5.9 — global-scope ctx.kv values (device scope lives on each
-  // device's own Storage tab instead, since it needs a device to browse).
-  { id: 'kv', title: 'Key/Value store', group: 'Farm' },
-  { id: 'users', title: 'Users', group: 'Farm' },
-  { id: 'audit', title: 'Audit log', group: 'Farm' },
-]
 
 /**
  * Farm settings, split by subject rather than stacked into one long scroll.
@@ -111,7 +84,7 @@ function SettingsView() {
   const router = useRouter()
   const tab = useSearchParams().get('tab') ?? 'defaults'
 
-  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title, group }) => ({
+  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title, group, keys }) => ({
     id,
     title,
     group,
@@ -119,7 +92,14 @@ function SettingsView() {
       id === 'blocked' ? (
         <BlockedDevicesSection />
       ) : id === 'kv' ? (
-        <KvPanel scope={{ kind: 'global' }} />
+        // Plan 96 item 96.4 — the browser sits above the quota `FarmForm`
+        // for the SAME `kv` schema block (`maxValueBytes`, `maxKeyLength`,
+        // ...), so one tab covers both browsing entries and the limits
+        // that bound them.
+        <>
+          <KvPanel scope={{ kind: 'global' }} />
+          <FarmForm keys={keys} />
+        </>
       ) : id === 'connectors' ? (
         <ConnectorsSection />
       ) : id === 'webhooks' ? (
@@ -130,16 +110,41 @@ function SettingsView() {
         <AuditSection />
       ) : id === 'adb' ? (
         <>
-          <FarmForm section={id} />
+          <FarmForm keys={keys} />
           <AdbDiagnosticsPanel />
         </>
+      ) : id === 'discovery' ? (
+        // Plan 88 §3.6, §5 step 88.6 — `networks` is excluded from the
+        // generic form here (see `FarmForm`'s `omit` prop) so it has exactly
+        // ONE editor: `FarmNetworksEditor`'s own live count/ceiling/copy,
+        // never the generic table underneath it disagreeing about the same
+        // array between saves.
+        <>
+          <FarmForm keys={keys} omit={['discovery.networks']} />
+          <FarmNetworksEditor />
+        </>
+      ) : id === 'video' ? (
+        // Plan 92 §3.6, §3.7, §3.9, §5 step 92.8 — still entirely
+        // `SchemaForm`-rendered (spec §19); `FarmVideoFields` only adds the
+        // Advanced disclosure, the effective-profile readout, the §3.7
+        // projection line, and the §3.9 measured block AROUND those fields.
+        <FarmForm keys={keys} render={(p) => <FarmVideoFields {...p} />} />
       ) : id === 'spend' ? (
         <>
-          <FarmForm section={id} />
+          <FarmForm keys={keys} />
           <ObservedSpendPanel />
         </>
+      ) : id === 'guest-agent' ? (
+        // Plan 90 §5 step 90.6 — the farm-wide "are all my phones on the
+        // current agent" answer this tab's own comment (`farmSections.ts`)
+        // already reserved a home for, alongside the `provision`/recovery
+        // settings the generic form renders.
+        <>
+          <FarmForm keys={keys} />
+          <GuestAgentSummarySection />
+        </>
       ) : (
-        <FarmForm section={id} />
+        <FarmForm keys={keys} />
       ),
   }))
 
@@ -157,35 +162,77 @@ function SettingsView() {
   )
 }
 
-/** Which top-level FarmSettings keys a tab renders — most tabs are one section; `adb` groups two (plan 23 §4.1). */
-function keysForSection(section: string): string[] {
-  if (section === 'battery') return ['battery']
-  if (section === 'storage') return ['retention']
-  if (section === 'adb') return ['adb', 'health']
-  // Session hygiene between jobs (plan 35 §4.1) — its own tab, no UI code
-  // beyond this mapping: the fields render from `.describe()`/`.meta()`.
-  if (section === 'job') return ['job']
-  // Idle session TTL and the fleet Wall's tile cap (plan 42 §4.4, §4.6) —
-  // same pattern: no bespoke UI, the fields render from `.describe()`/`.meta()`.
-  if (section === 'sessions') return ['session', 'wall']
-  // Plan 73 §3.4, §4.5 — the farm defaults plan 65 built and never exposed a screen for. Rendered
-  // through the SAME schema-driven `FarmForm` every other section already uses, so a field added
-  // to `AgentDefaultsSchema` appears here with no UI change at all (criterion 13).
-  if (section === 'ai-defaults') return ['agentDefaults']
-  // Plan 68 §3.3 — the scheduled-agent spend cap and concurrency ceiling.
-  if (section === 'spend') return ['scheduledAgents']
-  return ['defaults']
+/**
+ * A schema node with one NESTED property removed — `narrowSchema` only
+ * trims `properties` at its own top level, by design (its own doc comment),
+ * so a section that needs to drop a property one level down (`discovery.
+ * networks`, owned outright by `FarmNetworksEditor` — see its doc comment)
+ * needs one more step after that. `path` is a dotted path relative to the
+ * schema passed in; each segment recurses into that property's own nested
+ * `properties` and rebuilds the object immutably on the way back out, same
+ * as `narrowSchema`'s own "drop, don't blank" rule — the removed key is
+ * gone from the plan entirely, never rendered as an escape hatch.
+ */
+function omitProperty(schema: JsonSchemaNode, path: string): JsonSchemaNode {
+  const [head, ...rest] = path.split('.')
+  if (!head || !schema.properties?.[head]) return schema
+  if (rest.length === 0) {
+    const { [head]: _dropped, ...properties } = schema.properties
+    return { ...schema, properties, required: schema.required?.filter((k) => k !== head) }
+  }
+  return { ...schema, properties: { ...schema.properties, [head]: omitProperty(schema.properties[head], rest.join('.')) } }
 }
 
-/** One schema, rendered a section at a time by trimming its properties. */
-function FarmForm({ section }: { section: string }) {
+/**
+ * One schema, rendered a section at a time by trimming its properties to
+ * `keys` — the top-level `FarmSettingsSchema` keys `FARM_SECTION_DEFS`
+ * assigns the calling section (plan 96 item 96.4: the old `keysForSection`
+ * switch was a second hand-maintained id → keys mapping living apart from
+ * `FARM_SECTION_DEFS`'s own id → title/group; folding `keys` into that same
+ * array removes the seam a key could go missing from one list but not the
+ * other, and is what `farmSections.test.ts` checks directly against the
+ * schema).
+ *
+ * `omit` (plan 88 §5 step 88.6) — dotted paths, applied after `narrowSchema`,
+ * for the rare field a BESPOKE panel owns outright rather than the generic
+ * form: without it, `discovery.networks` would render twice (once here as a
+ * plain `TableControl`, once in `FarmNetworksEditor`'s own live-count/
+ * ceiling editor below it) against two independently-loaded drafts that
+ * never see each other's unsaved edits.
+ *
+ * `render` (plan 92 §3.6, §3.9, §5 step 92.8) — an escape hatch for the ONE
+ * section (`video`) that needs custom LAYOUT around otherwise entirely
+ * `SchemaForm`-rendered fields (an Advanced disclosure, an effective-profile
+ * readout, a projection line — none of which are form CONTROLS, so none of
+ * this is the "hardcoded UI per component" spec §19 forbids). When given, it
+ * replaces the default `<SchemaForm>` body but keeps every load/save/dirty/
+ * `beforeunload` mechanic below untouched — `FarmVideoFields` renders its
+ * own nested `SchemaForm`s against the exact same `draft`/`onChange`, so
+ * saving and discarding still go through the ONE `run('save', ...)` call
+ * below either way.
+ */
+function FarmForm({
+  keys,
+  omit,
+  render,
+}: {
+  keys: string[]
+  omit?: string[]
+  render?: (props: {
+    schema: JsonSchemaNode
+    draft: Record<string, unknown>
+    onChange: (next: unknown) => void
+    onSubmit: () => void
+    onReset: () => void
+    busy: boolean
+    dirty: boolean
+  }) => ReactNode
+}) {
   const [schema, setSchema] = useState<JsonSchemaNode | null>(null)
   const [saved, setSaved] = useState<Record<string, unknown> | undefined>(undefined)
   const [draft, setDraft] = useState<Record<string, unknown> | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
-
-  const keys = keysForSection(section)
 
   const load = () => {
     setError(null)
@@ -213,32 +260,33 @@ function FarmForm({ section }: { section: string }) {
 
   // Narrow the schema to this section's keys, so the form renders one
   // subject at a time while the value stays the whole settings object the
-  // API expects.
-  const sectionSchema: JsonSchemaNode = {
-    ...schema,
-    properties: Object.fromEntries(keys.map((k) => [k, schema.properties?.[k] as JsonSchemaNode])),
-  }
+  // API expects. `narrowSchema` (plan 95 §5 step 95.4) — not a third inline
+  // copy of the same handful of lines: unlike a hand-rolled `.map`, it DROPS
+  // a key `schema.properties` does not (yet) have instead of putting
+  // `undefined` in its place, which is exactly the crash
+  // `deviceSections.test.ts`'s own fixture-schema doc comment guards
+  // against (`SchemaForm` rendering an undefined field definition).
+  const sectionSchema: JsonSchemaNode = (omit ?? []).reduce((s, path) => omitProperty(s, path), narrowSchema(schema, keys))
+
+  const onChange = (v: unknown) => setDraft(v as Record<string, unknown>)
+  const onSubmit = () =>
+    run('save', () => api('/api/settings', UpdateSettingsResponseSchema, { method: 'PATCH', json: draft }), {
+      success: 'Settings saved',
+      failure: 'Could not save the settings',
+      onSuccess: (b) => {
+        setSaved(b.settings)
+        setDraft(b.settings)
+      },
+    })
+  const onReset = () => setDraft(saved)
 
   return (
     <div className="max-w-3xl py-4">
-      <SchemaForm
-        schema={sectionSchema}
-        value={draft}
-        onChange={(v) => setDraft(v as Record<string, unknown>)}
-        onSubmit={() =>
-          run('save', () => api('/api/settings', UpdateSettingsResponseSchema, { method: 'PATCH', json: draft }), {
-            success: 'Settings saved',
-            failure: 'Could not save the settings',
-            onSuccess: (b) => {
-              setSaved(b.settings)
-              setDraft(b.settings)
-            },
-          })
-        }
-        onReset={() => setDraft(saved)}
-        busy={isPending('save')}
-        dirty={dirty}
-      />
+      {render ? (
+        render({ schema: sectionSchema, draft, onChange, onSubmit: () => void onSubmit(), onReset, busy: isPending('save'), dirty })
+      ) : (
+        <SchemaForm schema={sectionSchema} value={draft} onChange={onChange} onSubmit={onSubmit} onReset={onReset} busy={isPending('save')} dirty={dirty} />
+      )}
     </div>
   )
 }
@@ -394,6 +442,83 @@ function AdbDiagnosticsPanel() {
               )}
             </>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Canonical order for the state breakdown — the same rule `TileChips`' `ALL_TILE_CHIPS` follows: fixed, never reflowing with wire order. */
+const AGENT_STATE_ORDER = ['ready', 'outdated', 'failed', 'provisioning', 'absent', 'unsupported']
+const AGENT_STATE_LABEL: Record<string, string> = {
+  ready: 'ready',
+  outdated: 'outdated',
+  failed: 'failed',
+  provisioning: 'installing',
+  absent: 'never provisioned',
+  unsupported: 'unsupported',
+}
+
+/**
+ * The farm-wide "are all my phones on the current agent" answer (plan 90
+ * §3.8, §5 step 90.6) — counted straight off `devices.agent` by
+ * `GET /api/guest-agent/summary`, with a **Provision all** action that runs
+ * the same bounded pass `AgentProvisioner.ensureAll({force:true})` performs
+ * for a single device's Retry button, fleet-wide.
+ */
+function GuestAgentSummarySection() {
+  const [summary, setSummary] = useState<{ total: number; byState: Record<string, number>; byVersion: Record<string, number> } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const { run, isPending } = useAction()
+
+  const load = () => {
+    setError(null)
+    api('/api/guest-agent/summary', GuestAgentSummaryResponseSchema)
+      .then(setSummary)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }
+  useEffect(load, [])
+
+  const provisionAll = () =>
+    run('provision-all', () => api('/api/guest-agent/provision', AgentProvisionReportSchema, { method: 'POST' }), {
+      success: 'Provisioning started on every admitted device',
+      failure: 'Could not start fleet-wide provisioning',
+      onSuccess: load,
+    })
+
+  const topVersion = summary
+    ? Object.entries(summary.byVersion)
+        .filter(([v]) => v !== 'unknown')
+        .sort((a, b) => b[1] - a[1])[0]
+    : undefined
+
+  return (
+    <div className="max-w-3xl pb-6">
+      <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+        <h3 className="rack-label">fleet summary</h3>
+        <Button size="sm" variant="outline" disabled={isPending('provision-all')} onClick={() => void provisionAll()}>
+          {isPending('provision-all') ? 'Provisioning…' : 'Provision all'}
+        </Button>
+      </div>
+
+      {error ? (
+        <ErrorState message={error} onRetry={load} />
+      ) : summary === null ? (
+        <LoadingRows rows={2} />
+      ) : summary.total === 0 ? (
+        <EmptyState title="No devices yet" description="A fleet-wide agent summary appears once a device is admitted." />
+      ) : (
+        <div className="rounded-lg border bg-surface p-3">
+          <p className="readout text-[16px] font-semibold">
+            {topVersion ? `${topVersion[1]} of ${summary.total} devices on ${topVersion[0]}` : `${summary.total} device${summary.total === 1 ? '' : 's'}`}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-fg-muted">
+            {AGENT_STATE_ORDER.filter((s) => (summary.byState[s] ?? 0) > 0).map((s) => (
+              <span key={s}>
+                <span className="readout font-medium text-fg">{summary.byState[s]}</span> {AGENT_STATE_LABEL[s]}
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -987,6 +1112,45 @@ function UsersSection() {
   )
 }
 
+/** One audit row, with the expandable `meta` disclosure `DeviceLog.tsx`'s `EventRow` already established (plan 91 §3.5, F24). */
+function AuditRow({ e }: { e: AuditEntry }) {
+  const [open, setOpen] = useState(false)
+  const hasMeta = e.meta !== null && e.meta !== undefined && (typeof e.meta !== 'object' || Object.keys(e.meta).length > 0)
+  return (
+    <>
+      <TableRow>
+        <TableCell className="readout text-[12px]">{e.action}</TableCell>
+        <TableCell className="min-w-0 truncate text-[12.5px] text-fg-muted">{e.target ?? '—'}</TableCell>
+        <TableCell className="readout text-[11.5px] text-fg-muted">
+          {e.userId ? e.userId.slice(0, 8) : 'system'}
+        </TableCell>
+        <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(e.at)}</TableCell>
+        <TableCell className="w-8">
+          {hasMeta && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="text-fg-subtle hover:text-fg"
+              aria-label={open ? 'Hide details' : 'Show details'}
+            >
+              {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+            </button>
+          )}
+        </TableCell>
+      </TableRow>
+      {open && hasMeta && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={5} className="bg-surface-2 py-2">
+            <pre className="readout max-h-60 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-fg-muted">
+              {JSON.stringify(e.meta, null, 2)}
+            </pre>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  )
+}
+
 function AuditSection() {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1020,18 +1184,12 @@ function AuditSection() {
                 <TableHead>Target</TableHead>
                 <TableHead>By</TableHead>
                 <TableHead>When</TableHead>
+                <TableHead className="w-8" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {entries.map((e) => (
-                <TableRow key={e.id}>
-                  <TableCell className="readout text-[12px]">{e.action}</TableCell>
-                  <TableCell className="min-w-0 truncate text-[12.5px] text-fg-muted">{e.target ?? '—'}</TableCell>
-                  <TableCell className="readout text-[11.5px] text-fg-muted">
-                    {e.userId ? e.userId.slice(0, 8) : 'system'}
-                  </TableCell>
-                  <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(e.at)}</TableCell>
-                </TableRow>
+                <AuditRow key={e.id} e={e} />
               ))}
             </TableBody>
           </Table>

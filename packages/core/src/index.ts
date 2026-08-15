@@ -12,9 +12,11 @@ async function startDaemon(): Promise<void> {
   const { createDaemon } = await import('./daemon')
   const { EnkakuError } = await import('./util/errors')
   const { createLogger } = await import('./util/logger')
+  const { maybeOpenBrowser, buildStudioUrl } = await import('./util/open-browser')
 
   const log = createLogger('main')
-  const daemon = createDaemon(loadConfig())
+  const cfg = loadConfig()
+  const daemon = createDaemon(cfg)
 
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
@@ -52,17 +54,37 @@ async function startDaemon(): Promise<void> {
     }
     process.exit(1)
   }
+
+  // Spec §2/§5.1, plan 87 §4.11 — "Studio opens in the browser," but only
+  // now: `daemon.start()` resolving without throwing is the confirmation
+  // that `Bun.serve()` already succeeded and Studio is being served (true in
+  // every mode, including orchestrator's early return, which still happens
+  // after `listen`). Suppressed by default for anything that is not an
+  // interactive desktop session — see `shouldOpenBrowser`'s own doc comment.
+  maybeOpenBrowser({
+    url: buildStudioUrl(cfg),
+    mode: process.env.ENKAKU_MODE,
+    host: cfg.host,
+    isTTY: process.stdout.isTTY === true,
+    noOpen: process.env.ENKAKU_NO_OPEN,
+    log,
+  })
 }
 
 /**
- * A deliberately minimal CLI layer (plan 41 §3.4, §4.4) — three commands,
+ * A deliberately minimal CLI layer (plan 41 §3.4, §4.4) — four commands,
  * one if/else chain, on purpose: `doctor` is the diagnostic that must work
  * even when the daemon itself cannot start (a bad config, a busy port, a
  * missing data directory), so it cannot be an API endpoint and cannot depend
- * on `startDaemon()` succeeding. `entry-release.gen.ts` (the compiled
- * binary's entrypoint) ends with `await import('./index')`, so this exact
- * dispatch runs identically from source and from the compiled binary — a
- * `doctor` that only worked from source would miss its whole audience.
+ * on `startDaemon()` succeeding. `backup` (`packages/core/src/backup/index.ts`)
+ * has the same requirement for a related reason: an operator reaching for a
+ * backup is often already worried something is wrong with the daemon, so it
+ * must not depend on `startDaemon()` succeeding either, and must not share a
+ * process with a daemon whose live `enkaku.db` it reads out from under it.
+ * `entry-release.gen.ts` (the compiled binary's entrypoint) ends with
+ * `await import('./index')`, so this exact dispatch runs identically from
+ * source and from the compiled binary — a `doctor` or `backup` that only
+ * worked from source would miss its whole audience.
  */
 if (process.argv.includes('--job-child')) {
   // A compiled binary cannot spawn `bun child-entry.ts`, so the job runner
@@ -80,6 +102,10 @@ if (process.argv.includes('--job-child')) {
   if (cmd === 'doctor') {
     const { runDoctor } = await import('./doctor/index')
     const exitCode = await runDoctor({ json: process.argv.includes('--json') })
+    process.exit(exitCode)
+  } else if (cmd === 'backup') {
+    const { runBackup } = await import('./backup/index')
+    const exitCode = await runBackup(process.argv.slice(3))
     process.exit(exitCode)
   } else if (cmd === '--version' || cmd === '-v') {
     const pkg = await import('../package.json')

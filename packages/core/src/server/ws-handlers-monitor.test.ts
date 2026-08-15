@@ -35,6 +35,9 @@ function fakeSession(deviceId: string): DeviceSession {
     transport: {} as unknown as Transport,
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
+    // Plan 91 §4.1 — `arbiter` is required on `DeviceSession` now; this fixture never sends
+    // input.* and never exercises it, so a bare stub keeps the type honest without wiring one up.
+    arbiter: {} as unknown as DeviceSession['arbiter'],
     displayEngineId: 'screencap-loop',
     quality: 'control',
     inputEngineId: 'adb-input',
@@ -47,6 +50,14 @@ function fakeSession(deviceId: string): DeviceSession {
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
     clipboard: null,
+    textInput: {
+      mode: 'device',
+      agentCapabilities: null,
+      imeCurrent: false,
+      commitViaAgent: async () => {
+        throw new Error('no guest agent client wired in this fixture')
+      },
+    },
     close: async () => {},
   }
 }
@@ -67,7 +78,9 @@ function fakeSessionManager(): SessionManager {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
 }
 
@@ -89,8 +102,9 @@ interface FakeHandleRecord {
   emit(text: string): void
 }
 
-function fakeAdbClient(): { client: AdbClient; calls: FakeHandleRecord[] } {
+function fakeAdbClient(): { client: AdbClient; calls: FakeHandleRecord[]; execCalls: string[] } {
   const calls: FakeHandleRecord[] = []
+  const execCalls: string[] = []
   const client = {
     execStream: async (serial: string, cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle> => {
       const record: FakeHandleRecord = {
@@ -108,8 +122,15 @@ function fakeAdbClient(): { client: AdbClient; calls: FakeHandleRecord[] } {
         },
       }
     },
+    // `monitor.oneshot` (ps/meminfo/df) runs through `ShellPort.exec`, not
+    // `execStream` (plan 24 §4.3) — needed here for the meminfo `package`
+    // option's end-to-end test below.
+    exec: async (_serial: string, cmd: string) => {
+      execCalls.push(cmd)
+      return { stdout: 'output for: ' + cmd, stderr: '', exitCode: 0 }
+    },
   } as unknown as AdbClient
-  return { client, calls }
+  return { client, calls, execCalls }
 }
 
 function setUpHandler(db: Db, client: AdbClient) {
@@ -143,6 +164,13 @@ function setUpHandler(db: Db, client: AdbClient) {
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
+      assists: () => [],
+      // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these monitor
+      // tests; present only so this fixture keeps satisfying `JobService`.
+      nodes: () => ({ items: [], finalized: false }),
+      resume: () => {
+        throw new Error('not used')
+      },
     },
     broadcast: () => {},
     recorder: { record: () => {}, stop: async () => {} },
@@ -263,5 +291,48 @@ describe('Monitor WS wiring (plan 24 §4.4, §4.5)', () => {
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'monitor.start', id: 'm1', payload: { deviceId: 'dev-1', kind: 'shell' } }))
     expect(calls).toHaveLength(0)
     expect(a.sent.some((m) => m.type === 'error')).toBe(true)
+  })
+
+  /**
+   * The end-to-end check for plan 90 §3.5, step 90.7's `meminfo` `package`
+   * option — from the WS message a real Studio tab sends, through
+   * `MonitorOneshotMessage`'s new `options` field, `runOneshotMonitor`, and
+   * `buildMonitorCommand`, down to the exact adb command. Unit tests on
+   * `optionsSchemaFor`/`buildMonitorCommand`/`runOneshotMonitor` already
+   * cover each layer alone; this is the "the value actually reaches a
+   * caller" check the repo's own retrospective calls for.
+   */
+  test('monitor.oneshot with a meminfo package option reaches the built adb command', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'SER1')
+    const { client, execCalls } = fakeAdbClient()
+    const handler = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await handler.handleMessage(
+      a.ws,
+      JSON.stringify({
+        type: 'monitor.oneshot',
+        id: 'm1',
+        payload: { deviceId: 'dev-1', kind: 'meminfo', options: { package: 'com.example.app' } },
+      }),
+    )
+
+    expect(execCalls).toEqual([`dumpsys meminfo 'com.example.app'`])
+    const result = a.sent.find((m) => m.type === 'monitor.result')
+    expect(result).toBeDefined()
+    if (result && result.type === 'monitor.result') expect(result.payload.text).toContain('com.example.app')
+  })
+
+  test('monitor.oneshot with no options still scans the whole device (purely additive)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'SER1')
+    const { client, execCalls } = fakeAdbClient()
+    const handler = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'monitor.oneshot', id: 'm1', payload: { deviceId: 'dev-1', kind: 'meminfo' } }))
+
+    expect(execCalls).toEqual(['dumpsys meminfo'])
   })
 })

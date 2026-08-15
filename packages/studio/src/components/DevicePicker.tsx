@@ -21,9 +21,25 @@ export const UNAVAILABLE_REASON: Partial<Record<DeviceStatus, string>> = {
   quarantined: 'The device was pulled from the queue — return it from the Devices page first',
 }
 
-/** Only these two truly cannot accept a new job — a busy or manual device still queues one. */
+/**
+ * Only `quarantined` truly cannot accept a new job.
+ *
+ * `busy` and `manual` already queued one — and so does `offline`, which used
+ * to be listed here and should not have been. The core is the authority and
+ * it disagrees with the old reading in two places: `createJobStore.enqueue`
+ * (`packages/core/src/queue/job-store.ts`) rejects ONLY `quarantined`, and
+ * `claimNext`'s SQL predicate holds a job until `d.status = 'idle'`, which an
+ * offline device reaches by itself the moment it reconnects. Nothing expires
+ * the job while it waits: no default `expiresAt` is set on the enqueue path.
+ *
+ * So a job aimed at an offline phone was never "certain to be rejected" — it
+ * was a job the server would have queued and run, that this picker refused to
+ * let anyone create. Note this is about taking a JOB; taking CONTROL of an
+ * offline device is genuinely impossible, which is why `UNAVAILABLE_REASON`
+ * above still carries an `offline` entry for the device page and header.
+ */
 function cannotTakeJob(status: DeviceStatus): boolean {
-  return status === 'offline' || status === 'quarantined'
+  return status === 'quarantined'
 }
 
 type DevicePickerProps =
@@ -62,7 +78,18 @@ export function DevicePicker(props: DevicePickerProps) {
     return devices.filter((d) => {
       if (activeTag && !d.tags.includes(activeTag)) return false
       if (!q) return true
-      return d.label.toLowerCase().includes(q) || d.stableId.toLowerCase().includes(q) || d.tags.some((t) => t.includes(q))
+      // A bare digit or a `#`-prefixed one both match the number (plan 89
+      // §3.3: "typing `7` matches `#7`") — an operator standing in front of
+      // a phone reads the number off it, not off the label. `?? null`
+      // guards a hand-built test fixture that omits the field (undefined).
+      const number = d.number ?? null
+      const numberMatch = number !== null && (String(number) === q.replace(/^#/, '') || `#${number}` === q)
+      return (
+        numberMatch ||
+        d.label.toLowerCase().includes(q) ||
+        d.stableId.toLowerCase().includes(q) ||
+        d.tags.some((t) => t.includes(q))
+      )
     })
   }, [devices, query, activeTag])
 
@@ -120,7 +147,7 @@ export function DevicePicker(props: DevicePickerProps) {
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search label, stable id, or tag…"
+          placeholder="Search number, label, stable id, or tag…"
           aria-label="Search devices"
           className="h-8 pl-8 text-[12.5px]"
         />
@@ -194,6 +221,14 @@ export function DevicePicker(props: DevicePickerProps) {
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+            {/* The number leads, composed beside the label — never baked
+                into it (plan 89 §3.3). `null` only for a device whose
+                reservation was explicitly released. */}
+            {d.number !== null && d.number !== undefined && (
+              <span className="readout shrink-0 text-[11px] text-fg-subtle" aria-hidden="true">
+                #{d.number}
+              </span>
+            )}
             <span className="truncate text-[13px] font-medium">{d.label}</span>
             <DeviceStatusBadge status={d.status} />
           </div>
@@ -208,6 +243,22 @@ export function DevicePicker(props: DevicePickerProps) {
                 for it to go quiet (plan 71 §3.7) — so who holds it now is
                 worth showing here rather than only a status word. */}
             {d.heldBy && <HolderBadge holder={d.heldBy} />}
+            {/* An offline device is pickable (see `cannotTakeJob`), but the
+                status word alone reads as "this will not run". Say what
+                actually happens instead: the job is created now and sits in
+                the queue until the phone reconnects. Without this line the
+                operator has to already know `claimNext`'s predicate to trust
+                the choice they are being offered. */}
+            {d.status === 'offline' && (
+              <span className="text-[10.5px] text-fg-subtle">Queues until this device reconnects</span>
+            )}
+            {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25)
+                — a narrow, subordinate grant beside `heldBy` above, never a
+                takeover. `?? []` covers a caller that predates the field,
+                the same guard `DeviceCard`/`WallTile` use. */}
+            {(d.assistedBy ?? []).map((a) => (
+              <HolderBadge key={a.id} holder={a} variant="assists" />
+            ))}
           </div>
         </div>
       </button>

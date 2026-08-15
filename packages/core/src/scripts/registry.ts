@@ -1,11 +1,12 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { compareSemver, isPrereleaseVersion, parseScriptRef, type ScriptRef } from '@enkaku/protocol'
+import { compareSemver, isPrereleaseVersion, parseScriptRef, type RuntimeEnvelope, type ScriptRef } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { plugins, scripts, type ScriptRow } from '../db/schema'
+import { plugins, scripts, type ScriptKind, type ScriptRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { DevSlot, DevSlotStore } from '../plugins/dev-slots'
 import { resolveScriptRef } from './resolve'
 import { materializeBundle } from './bundle-cache'
+import { parseScriptRuntime } from './service'
 
 /**
  * The single source of truth for "what scripts exist" and "resolve this
@@ -26,12 +27,28 @@ export interface ScriptEntry {
   /** `login` for a standalone script, `tiktok/login` for a plugin member (published or dev). */
   name: string
   version: string
+  /**
+   * Plan 99 §3.1, §4.5 — carried straight from `scripts.kind`; a dev entry
+   * (there is no such thing as a dev workflow build) is always `'script'`.
+   * `ScriptRegistry.resolve` reads and returns this like any other field —
+   * it does not branch on it, which is the containment §3.1 asks for.
+   */
+  kind: ScriptKind
   origin: ScriptOrigin
   pluginName: string | null
   /** The script's id INSIDE its plugin bundle; null for a standalone script. */
   exportId: string | null
   enabled: boolean
   paramsSchema: unknown
+  /**
+   * Plan 98 §3.1, §4.4, §5 step 98.4 — the script's own declared execution
+   * envelope, pinned exactly as `paramsSchema` is: read straight off the
+   * row (or the dev slot) at the moment a job pins this entry, never
+   * re-resolved later. `null` for a pre-plan-98 row and for a dev slot whose
+   * bundle declared nothing — `resolveRuntime` already treats both
+   * identically to "this layer declared nothing" (plan 98 §3.1).
+   */
+  runtime: RuntimeEnvelope | null
   /** Where the bundle comes from — the executor asks for this, never for a column. */
   bundle: { kind: 'db'; scriptId: string } | { kind: 'file'; path: string }
   /** A dev entry disappears when its session ends; a persisted one does not. */
@@ -94,11 +111,14 @@ function devEntryFromSlot(slot: DevSlot, exportId: string): ScriptEntry | undefi
     id: devEntryId(slot.pluginName, exportId),
     name: `${slot.pluginName}/${exportId}`,
     version: slot.buildVersion,
+    // A dev slot is always a plugin build; there is no dev workflow (plan 99 §2 non-goals).
+    kind: 'script',
     origin: 'dev',
     pluginName: slot.pluginName,
     exportId,
     enabled: true,
     paramsSchema: s.paramsSchema,
+    runtime: s.runtime,
     bundle: { kind: 'file', path: slot.bundlePath },
     ephemeral: true,
     devOwner: slot.owner.label,
@@ -121,11 +141,17 @@ function rowToEntry(row: ScriptRow): ScriptEntry {
     id: row.id,
     name: row.name,
     version: row.version,
+    // Carried through, never branched on here (plan 99 §3.1's containment
+    // claim: comparing this value against 'workflow' belongs only in the
+    // three sanctioned files — this is not one of them, and resolve()/get()
+    // below do nothing different for either value).
+    kind: row.kind,
     origin: row.pluginId ? 'plugin' : 'standalone',
     pluginName: row.pluginId ? row.name.split('/')[0] ?? null : null,
     exportId: row.exportId ?? null,
     enabled: row.enabled ?? true,
     paramsSchema: row.paramsSchema,
+    runtime: parseScriptRuntime(row.runtime),
     bundle: { kind: 'db', scriptId: row.id },
     ephemeral: false,
   }

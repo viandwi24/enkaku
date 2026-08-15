@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `runtime_override` text;

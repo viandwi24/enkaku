@@ -1,6 +1,47 @@
 import { z } from 'zod'
 import { BatteryStateSchema } from './settings'
 import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
+import { GuestAgentCapabilitySchema } from './guest-agent'
+
+/** How a device's transport is reached — OBSERVED from adb (plan 88 §3.1, §4.1). */
+export const ConnectionKindSchema = z.enum(['usb', 'tcp'])
+export type ConnectionKind = z.infer<typeof ConnectionKindSchema>
+
+/** The physical medium a `tcp` connection rides on — DECLARED by an operator or INFERRED from a configured farm network; never observed (plan 88 §3.1). */
+export const ConnectionMediumSchema = z.enum(['wired', 'wireless'])
+export type ConnectionMedium = z.infer<typeof ConnectionMediumSchema>
+
+/**
+ * How a device is reached (plan 88 §3.1). TWO fields, deliberately:
+ * `kind` is OBSERVED (adb's serial shape, plus the `usb:` field
+ * `host:devices-l` carries), `medium` is DECLARED by an operator or
+ * INFERRED from a configured farm network — adb cannot see the difference
+ * between a switch port and a radio, and a schema that stores 'otg' as an
+ * observed value stores a claim as a fact. Same observed-vs-declared split
+ * as readiness (desired/actual) and network routes (declared/observed).
+ */
+export const DeviceConnectionSchema = z.object({
+  kind: ConnectionKindSchema,
+  medium: ConnectionMediumSchema.nullable(),
+  mediumSource: z.enum(['declared', 'network', 'unknown']),
+  /** Host part of a `host:port` serial; null for USB. */
+  address: z.string().nullable(),
+  port: z.number().int().nullable(),
+  /** `discovery.networks[].label` when the address matched one — for the tooltip and the sweep report. */
+  networkLabel: z.string().nullable(),
+})
+export type DeviceConnection = z.infer<typeof DeviceConnectionSchema>
+
+/** USB | WI-FI | OTG | TCP — the ONE place the badge string is computed, so no surface can disagree with another (plan 88 §3.1, §4.1). */
+export function connectionBadge(c: DeviceConnection): 'USB' | 'WI-FI' | 'OTG' | 'TCP' {
+  if (c.kind === 'usb') return 'USB'
+  if (c.medium === 'wired') return 'OTG'
+  if (c.medium === 'wireless') return 'WI-FI'
+  // tcp with no known medium — honest uncertainty, never a guessed WI-FI (the
+  // exact mistake `packages/drivers/src/descriptors.ts`'s `adb-tcp` display
+  // name made before this plan; see its own updated comment).
+  return 'TCP'
+}
 
 /**
  * Device status (spec §12): M0 only ever produces 'offline' | 'idle'; the
@@ -30,6 +71,62 @@ export const LeaseHolderSchema = z.object({
   expiresAt: z.number().nullable(),
 })
 export type LeaseHolder = z.infer<typeof LeaseHolderSchema>
+
+/**
+ * The on-device Enkaku guest agent's provisioning state (plan 90 §3.8, §4.3) —
+ * a DEVICE property, not a session step (§3.8's decision): it exists whether
+ * or not a session is open, exactly like `status` above.
+ *
+ * `absent` — never successfully provisioned (or removed).
+ * `provisioning` — a pass is in flight right now.
+ * `ready` — installed, matches the manifest's pinned build, and answered `hello`.
+ * `outdated` — installed, but the version/signature (or protocol) does not
+ *   match the pinned build after one repair attempt (R1, §3.9) — a repairable,
+ *   actionable state ("Update agent"), never a crash.
+ * `failed` — a provisioning pass could not install or reach the agent, with a
+ *   verbatim reason. Load-bearing (§3.8): `failed` NEVER quarantines, blocks,
+ *   or changes scheduling — a device with a failed agent still streams video,
+ *   takes input, runs jobs, and answers a shell.
+ * `unsupported` — the device's API level is below the agent's floor
+ *   (`MIN_SUPPORTED_SDK`), terminal by design, not a failure to retry.
+ */
+export const AgentStateSchema = z.enum(['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported'])
+export type AgentState = z.infer<typeof AgentStateSchema>
+
+/**
+ * The provisioner's full persisted record for one device (`devices.agent`,
+ * plan 90 §4.3) — Zod-validated on every read (CLAUDE.md: never trust a JSON
+ * DB column). `reason` is always verbatim, never summarised (§3.8) —
+ * `AgentProvisioner` callers show it directly to an operator. `attempts`/
+ * `nextAttemptAt` mirror the bounded-retry shape network route recovery
+ * already uses (plan 90 §3.7).
+ */
+export const AgentStatusSchema = z.object({
+  state: AgentStateSchema,
+  appVersion: z.string().nullable(),
+  versionCode: z.number().int().nullable(),
+  androidSdkInt: z.number().int().nullable(),
+  capabilities: z.array(GuestAgentCapabilitySchema),
+  reason: z.string().nullable(),
+  /** Unix epoch seconds of the last completed pass. */
+  checkedAt: z.number().int().nullable(),
+  attempts: z.number().int(),
+  nextAttemptAt: z.number().int().nullable(),
+})
+export type AgentStatus = z.infer<typeof AgentStatusSchema>
+
+/** A device that has never been provisioned — the default for a brand-new row, and the safe fallback for a stored value that fails validation. */
+export const DEFAULT_AGENT_STATUS: AgentStatus = {
+  state: 'absent',
+  appVersion: null,
+  versionCode: null,
+  androidSdkInt: null,
+  capabilities: [],
+  reason: null,
+  checkedAt: null,
+  attempts: 0,
+  nextAttemptAt: null,
+}
 
 export const DeviceInfoSchema = z.object({
   id: z.string(),
@@ -82,6 +179,53 @@ export const DeviceInfoSchema = z.object({
    * fallback with no lease manager to hand) still parses.
    */
   heldBy: LeaseHolderSchema.nullable().default(null),
+  /**
+   * Who is currently assisting this device — a narrow, subordinate grant to
+   * touch a device someone/something else already controls, never a
+   * takeover (plan 91 §3.2, §3.4 item 4, F25). Empty, never null, so callers
+   * need no guard (the same reasoning `tags` above uses). Every entry's
+   * `takeable` is `false`: an assist is granted or refused, never taken over
+   * (§3.2), so the takeover dialog must never target one. Defaulted so a
+   * caller that constructs a `DeviceInfo` without it (existing tests, or a
+   * fallback with no co-control manager to hand) still parses; every
+   * production call site populates it alongside `heldBy`.
+   */
+  assistedBy: z.array(LeaseHolderSchema).default([]),
+  /**
+   * How this device is reached (plan 88 §3.1, §4.1) — computed by
+   * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),
+   * never by a client. Defaulted so a caller that constructs a `DeviceInfo`
+   * without it (existing tests, or a fallback with no live derivation to
+   * hand) still parses; every production call site populates it for real.
+   */
+  connection: DeviceConnectionSchema.default(() => ({
+    kind: 'usb' as const,
+    medium: null,
+    mediumSource: 'unknown' as const,
+    address: null,
+    port: null,
+    networkLabel: null,
+  })),
+  /**
+   * The guest agent's provisioning state (plan 90 §3.8, §4.3, §4.7) — the
+   * narrow chip-only field on purpose: the version and capability list stay
+   * on the per-device `GET /:id/guest-agent` endpoint, so this payload does
+   * not grow for every device on every fleet fetch (§8's risk table).
+   * Defaulted to `'absent'` so a caller that constructs a `DeviceInfo`
+   * without it (existing tests, or a fallback with no provisioner to hand)
+   * still parses.
+   */
+  agent: AgentStateSchema.default('absent'),
+  /**
+   * The device's short operator-facing number (plan 89 §3.1, §3.2). Lives in
+   * its own `device_numbers` table keyed by `stableId`, NOT a column on
+   * `devices` — that is what lets it survive Forget. Nullable only for a
+   * device whose reservation was explicitly released; every admitted device
+   * has one. Rendered as `#7`, never zero-padded — padding width would change
+   * for the whole fleet the day it crosses 100. Composes with `label`; never
+   * concatenated into it (§3.3).
+   */
+  number: z.number().int().positive().nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

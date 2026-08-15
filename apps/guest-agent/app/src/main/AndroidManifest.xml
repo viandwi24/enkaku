@@ -21,6 +21,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Plan 89 §4.5; plan 90 §3.6 — a NORMAL, install-time permission: `adb install -r -g` already
+      covers it, so unlike ACTIVATE_VPN and android:mock_location (both `@hide` app-ops needing a
+      readback-verified `appops set`), no extra provisioning step is needed for the label facet.
+    -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
 
     <application
         android:allowBackup="false"
@@ -94,6 +100,28 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="device_farm_test_route" />
+        </service>
+
+        <!--
+          Plan 90 §3.2, §4.2, step 90.5 — the farm's keyboard. `BIND_INPUT_METHOD` is a
+          system-held permission attribute (like `RouteVpnService`'s `BIND_VPN_SERVICE` above),
+          not a `<uses-permission>` this app declares for itself. `exported="true"` is required
+          for the system's IME picker/binder to reach it at all — restricted to callers holding
+          `BIND_INPUT_METHOD` regardless. `android.view.im`/`res/xml/method.xml` is the standard
+          IME manifest wiring; `settingsActivity` points back at `StatusActivity` so "Language &
+          input" settings has somewhere to send a human who taps in from there.
+        -->
+        <service
+            android:name=".input.EnkakuIme"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
         </service>
 
         <receiver

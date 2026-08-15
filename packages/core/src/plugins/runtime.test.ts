@@ -15,8 +15,8 @@ function healthyReport(overrides: Partial<VerifyReport> = {}): VerifyReport {
     pluginId: 'tiktok',
     version: '1.0.0',
     scripts: [
-      { id: 'login', paramsSchema: { type: 'object' } },
-      { id: 'warmup', paramsSchema: { type: 'object' } },
+      { id: 'login', paramsSchema: { type: 'object' }, runtime: null },
+      { id: 'warmup', paramsSchema: { type: 'object' }, runtime: null },
     ],
     resetPackages: ['com.zhiliaoapp.musically'],
     ...overrides,
@@ -87,6 +87,59 @@ describe('PluginRuntime — stage/verify/activate (criteria 1, 6, 7)', () => {
     expect(stillPinned.bundle).toEqual(pinned.bundle)
     // @latest now resolves to the NEW version — future enqueues only.
     expect(registry.resolve('tiktok/login@latest').version).toBe('1.1.0')
+  })
+})
+
+describe('PluginRuntime — the runtime envelope persists through activation (plan 98 §3.1, §5 step 98.4)', () => {
+  test('a member\'s declared runtime lands on its scripts row, readable through the registry by scriptId alone', async () => {
+    const declared = { timeoutMs: 45_000, maxRssBytes: 128 * 1024 * 1024 }
+    const { runtime, registry } = setUp({
+      verify: async () => healthyReport({ scripts: [{ id: 'login', paramsSchema: { type: 'object' }, runtime: declared }] }),
+    })
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    const entry = registry.get(`${staged.id}:login`)
+    expect(entry?.runtime).toEqual(declared)
+  })
+
+  test('a member declaring no runtime persists null, not undefined or a parse failure', async () => {
+    const { runtime, registry } = setUp() // the default healthyReport() already declares runtime: null for every member.
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    const entry = registry.get(`${staged.id}:login`)
+    expect(entry?.runtime).toBeNull()
+  })
+
+  test('a dev slot carries its own member runtime the same way (plan 82\'s in-memory path, plan 98 §3.1)', async () => {
+    const declared = { maxConcurrent: 2 }
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db: Db = opened.db
+    const dataDir = `/tmp/enkaku-plugin-runtime-test-${crypto.randomUUID()}`
+    const kv = createKvStore(db, dataDir, () => ({ maxValueBytes: 65536, maxKeyLength: 256, maxEntriesPerNamespace: 1000, maxEntriesPerDevice: 5000 }))
+    // A dev slot lives ONLY in the DevSlotStore, so — matching the "dev
+    // slots" describe block below — the SAME instance must be threaded into
+    // both `registry` (the reader) and `runtime` (the writer), or the two
+    // never see each other's state, exactly like a real daemon.ts boot wires
+    // one shared store into both.
+    const devSlots = createDevSlotStore()
+    const registry = createScriptRegistry({ db, dataDir, devSlots })
+    const runtime = createPluginRuntime({
+      db,
+      dataDir,
+      registry,
+      kv,
+      devSlots,
+      verify: async () => healthyReport({ scripts: [{ id: 'login', paramsSchema: { type: 'object' }, runtime: declared }] }),
+    })
+    const report = await runtime.putDevSlot({
+      name: 'tiktok',
+      owner: { kind: 'cli', label: 'me@host' },
+      source: { kind: 'bundle', bundle: 'export {}' },
+    })
+    expect(report.ok).toBe(true)
+    const entry = registry.get('dev:tiktok/login')
+    expect(entry?.runtime).toEqual(declared)
   })
 })
 
@@ -314,7 +367,7 @@ describe('PluginRuntime — dev slots (criteria 15-19, via the slot store direct
     const registry = createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore() })
     const devSlots = createDevSlotStore()
     const runtime = createPluginRuntime({ db, dataDir, registry, kv, devSlots })
-    devSlots.put({ pluginName: 'tiktok', declaredVersion: '1.0.0', bundlePath: '/tmp/x.mjs', scripts: [{ exportId: 'login', paramsSchema: {} }], owner: { kind: 'cli', label: 'me@host' } })
+    devSlots.put({ pluginName: 'tiktok', declaredVersion: '1.0.0', bundlePath: '/tmp/x.mjs', scripts: [{ exportId: 'login', paramsSchema: {}, runtime: null }], owner: { kind: 'cli', label: 'me@host' } })
     const views = runtime.devSlots()
     expect(views).toHaveLength(1)
     expect(views[0]?.kvNamespace).toBe('tiktok')

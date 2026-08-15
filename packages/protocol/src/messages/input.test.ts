@@ -1,5 +1,39 @@
 import { describe, expect, test } from 'bun:test'
-import { InputGestureMessage } from './input'
+import { InputGestureMessage, InputTapMessage } from './input'
+
+/**
+ * `input.tap`'s `holdMs` (plan 94 §4.4, closes F4/F5) — the operator's
+ * measured pointer down→up duration, absent on an older client.
+ */
+describe('InputTapMessage (plan 94 §4.4)', () => {
+  const base = { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } }
+
+  test('accepts a tap with no holdMs at all — an older client keeps working unchanged', () => {
+    const result = InputTapMessage.safeParse({ type: 'input.tap', payload: base })
+    expect(result.success).toBe(true)
+  })
+
+  test('accepts a tap carrying holdMs', () => {
+    const result = InputTapMessage.safeParse({ type: 'input.tap', payload: { ...base, holdMs: 650 } })
+    expect(result.success).toBe(true)
+    expect(result.success && result.data.payload.holdMs).toBe(650)
+  })
+
+  test('rejects a negative holdMs', () => {
+    const result = InputTapMessage.safeParse({ type: 'input.tap', payload: { ...base, holdMs: -1 } })
+    expect(result.success).toBe(false)
+  })
+
+  test('rejects a holdMs above the 60s ceiling', () => {
+    const result = InputTapMessage.safeParse({ type: 'input.tap', payload: { ...base, holdMs: 60_001 } })
+    expect(result.success).toBe(false)
+  })
+
+  test('accepts holdMs: 0 — a tap released the instant it landed', () => {
+    const result = InputTapMessage.safeParse({ type: 'input.tap', payload: { ...base, holdMs: 0 } })
+    expect(result.success).toBe(true)
+  })
+})
 
 /**
  * Manual control sends the operator's real pointer trace as one batched

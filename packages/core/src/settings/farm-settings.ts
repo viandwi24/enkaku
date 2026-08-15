@@ -33,7 +33,11 @@ export function createFarmSettingsStore(db: Db, opts?: { authMode?: AuthMode }):
     // config precedence rule — never a silent fallback, so this only ever
     // touches a BRAND NEW row, never overwrites an operator's own choice on
     // an existing farm).
-    if (opts?.authMode === 'server') cached = { ...cached, shell: { ...cached.shell, mode: 'off' } }
+    // Plan 93 §3.8, §4.1 — fleet fan-out gets the SAME server-mode override
+    // as `shell.mode` above, forced off alongside it: running one gated
+    // shell and running a hundred at once on a network-exposed farm are two
+    // different decisions, and the second must never be a discovery either.
+    if (opts?.authMode === 'server') cached = { ...cached, shell: { ...cached.shell, mode: 'off', fanoutEnabled: false } }
     db.insert(farmSettings).values({ id: ROW_ID, value: cached, updatedAt: new Date() }).run()
   }
 

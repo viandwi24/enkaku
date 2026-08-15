@@ -1,5 +1,19 @@
 import type { z } from 'zod'
-import type { FindOutcome, JobStatus, JobSummary, KeyCode, Point, Selector, UiNode } from '@enkaku/protocol'
+import type {
+  FindOutcome,
+  JobStatus,
+  JobSummary,
+  KeyCode,
+  MediaScanMode,
+  NormGestureSample,
+  NormPoint,
+  Point,
+  PushResult,
+  RuntimeEnvelope,
+  Selector,
+  TimingSettings,
+  UiNode,
+} from '@enkaku/protocol'
 
 export interface WaitForOptions {
   /** Default 10_000 ms. */
@@ -12,9 +26,96 @@ export interface WaitForOptions {
  * flick), `easeInOutCubic` (the default) ends slow (a deliberate drag). */
 export type GestureEasing = 'linear' | 'easeOutQuad' | 'easeInOutCubic'
 
+/**
+ * `ctx.device.type()`'s return (plan 90 §3.3, §4.5, §5 step 90.5). `via` is the rung
+ * `resolveTextRoute` (`@enkaku/session`) actually chose — the three text-ladder rungs plus
+ * `'ui-server-set-text'`, a fourth mechanism outside the ladder: ui-server's element-scoped
+ * `set_text` is already unicode-clean (F26) and is tried first whenever a selector-based tap
+ * makes it applicable, before the ladder is ever consulted. Reporting it is what makes F26's class
+ * of confusion debuggable — a shipped plugin once silently fell back to `input text` (which
+ * appends instead of replacing) with no way to tell which path had actually run.
+ *
+ * The ladder originally had a fourth rung, `'clipboard'` — proven architecturally unreachable in
+ * this codebase and removed (docs/plans/96-m61-hotfixes.md §96.7, §96.8), so it is no longer a
+ * possible value of `via`.
+ */
+export interface ScriptTypeResult {
+  via: 'agent-ime' | 'scrcpy-text' | 'adb-ascii' | 'ui-server-set-text'
+  /** Code points actually committed, when the underlying rung reports a count (`agent-ime` only today). */
+  committed?: number
+  /**
+   * Always false today — the `'clipboard'` rung that would have set this true was removed
+   * (docs/plans/96-m61-hotfixes.md §96.7, §96.8). Kept as a boolean rather than deleted so no
+   * existing script that reads it needs a breaking change.
+   */
+  clobberedClipboard: boolean
+}
+
+/**
+ * **Coordinate-space rule for `DeviceApi`'s position-carrying verbs (plan 94
+ * §3.3, §4.4 — resolved in step 94.2; see `define-recording.ts`'s header
+ * comment for the finding that forced this decision).** `tap`, `swipe`,
+ * `scroll`, `fling` and `longPress` all take DEVICE-PIXEL coordinates — a
+ * `Selector`'s `point` case, or a plain `Point` — because an ordinary script
+ * author writes literal coordinates against a device whose size they already
+ * know. A RECORDING is the opposite case: it is captured on one device and
+ * replayed on a device of a DIFFERENT size (plan 94 acceptance criterion 1),
+ * so every position `RecordingDocSchema` stores is NORMALISED 0..1
+ * (`@enkaku/protocol`'s `NormPoint`), and that has to survive all the way to
+ * the driver call — the CORE maps it to that run's actual device pixels, not
+ * the script, exactly how manual input already works (F2). `tapNorm`,
+ * `swipeNorm` and `gesture` below exist for this reason ALONE: they are the
+ * replay interpreter's own verbs, not something an ordinary script should
+ * reach for. **`Point` and `NormPoint` are structurally identical `{x, y}`
+ * shapes — nothing type-checks the difference.** Hand a normalised fraction
+ * to `tap`/`swipe`, or a device pixel to `tapNorm`/`swipeNorm`/`gesture`, and
+ * nothing throws: the tap simply lands near the top-left corner, every time,
+ * on every device — the exact "confidently wrong" failure mode §3.3 warns a
+ * stale anchor produces, self-inflicted here by a schema/verb mismatch.
+ */
 export interface DeviceApi {
   /** Selector → find → tap its centre point; { point } → tap directly. */
   tap(target: Selector): Promise<void>
+  /**
+   * The replay interpreter's own verb (plan 94 §3.4, §4.4, F6, F7) — a
+   * literal RECORDED point, normalised 0..1 (see the coordinate-space rule
+   * above `DeviceApi` itself). `opts.holdMs`, when given, is the EXACT
+   * duration a recorded tap/long-press measured — not a range to sample
+   * from, unlike plain `tap()`'s device-configured `tapJitterMs`. Omitted
+   * `opts.holdMs` falls back to the device's own `tapJitterMs` range, the
+   * same as `tap()`.
+   */
+  tapNorm(pos: NormPoint, opts?: { holdMs?: number }): Promise<void>
+  /**
+   * The replay interpreter's own verb (plan 94 §3.4, §4.4, F6, F7) — the
+   * two-point drag fallback `LiveView` already emits for a swipe too fast to
+   * sample, normalised 0..1 (see the coordinate-space rule above `DeviceApi`
+   * itself). A straight line over `ms`, never curved — the recording had no
+   * intermediate samples to curve through.
+   */
+  swipeNorm(from: NormPoint, to: NormPoint, ms: number): Promise<void>
+  /**
+   * Play a recorded pointer trace SAMPLE-FOR-SAMPLE (plan 94 §3.4, §4.4, F3,
+   * F6, F7) — never collapsed to a start point, an end point and a
+   * synthesised interpolation: curvature and velocity are the human's who
+   * recorded it, not a synthesised Bézier. Normalised 0..1, same rule as
+   * `tapNorm`/`swipeNorm` above; the core maps to device pixels exactly as
+   * manual input already does. Rejects with `E_GESTURE_UNSUPPORTED` on an
+   * engine with no `gesture` method (`AdbInput` — the same engine `swipe()`
+   * already degrades to a plain line on, §4.4).
+   */
+  gesture(samples: NormGestureSample[]): Promise<void>
+  /**
+   * A tap held for `ms` (plan 94 §3.4, §4.4, F4). Device-pixel, like `tap()`
+   * — this is for a PROMOTED selector candidate (plan 94 §3.3), never a raw
+   * recorded point (`tapNorm` is that verb). `tap()` keeps its
+   * device-configured `tapJitterMs` range; this one NAMES the duration and
+   * jitters around it — the jitter's width is the SAME `tapJitterMs` range's
+   * own width, recentred on `ms` (so "Human-like touch" still means
+   * something for a long-press, not a bit-for-bit identical hold on every
+   * repetition of a scheduled recording).
+   */
+  longPress(target: Selector, ms: number): Promise<void>
   /**
    * A curved, eased swipe (plan 40 §4.4) — under the farm's `natural` timing
    * profile (the default) this rides the gesture engine, so a fast, short
@@ -42,8 +143,13 @@ export interface DeviceApi {
    * validation, and per-keystroke listeners actually run. `instant: true`
    * (or `profile: 'instant'`) restores the old one-shot delivery — for a
    * long token or a paste target, or when a suite depends on the old timing.
+   *
+   * Non-ASCII text (plan 90 §3.2, §3.3) routes through the text ladder automatically — the
+   * guest agent's keyboard, then scrcpy's unicode-clean `INJECT_TEXT`, then plain ASCII — and
+   * rejects (never silently drops a keystroke) when no rung can carry the string.
+   * `ScriptTypeResult.via` says which rung actually ran.
    */
-  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }): Promise<void>
+  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }): Promise<ScriptTypeResult>
   key(code: KeyCode): Promise<void>
   /**
    * `null` for both a genuine miss AND a selector refused as a viewport-sized
@@ -109,8 +215,15 @@ export interface DeviceApi {
     durationMs: number
     output: string
   }>
-  /** Push an artifact to a path on the device. `remotePath` must be absolute, with no `..` or shell metacharacters. */
-  push(opts: { artifactId: string; remotePath: string }): Promise<void>
+  /**
+   * Push an artifact to a path on the device. `remotePath` must be absolute, with no `..` or shell metacharacters.
+   *
+   * `mediaScan` (plan 90 §4.6) defaults to `'auto'`: MediaStore is told about the file — `content call
+   * --method scan_file`, falling back to `scan_volume` — only when `remotePath` sits under a known media
+   * root (`/sdcard/{DCIM,Pictures,Movies,Music,Download}` and their `/storage/emulated/0` spellings). A
+   * failed scan never fails the push; the result names which method, if any, actually ran.
+   */
+  push(opts: { artifactId: string; remotePath: string; mediaScan?: MediaScanMode }): Promise<PushResult>
   /** Pull a file from the device into a new artifact, capped by the farm's `transfer.maxPullBytes`. */
   pull(opts: { remotePath: string }): Promise<{ artifactId: string; bytes: number }>
 }
@@ -235,6 +348,18 @@ export interface JobsApi {
    */
   resultOf(jobId: string): Promise<unknown | null>
   /**
+   * Same door, validated (plan 97 §4.6, §5 step 97.5) — child-side, exactly
+   * as `ctx.kv.device.get`/`ctx.kv.global.get` validate against a caller-
+   * supplied schema: the server does not know what shape a READING script
+   * expects, and should not have to. `null` still covers every refusal
+   * (not-found, foreign-namespace, not-finished) alike — those three are
+   * unchanged from the unvalidated overload above. Throws, naming the job
+   * id and the mismatched path, when the stored result does not match
+   * `schema` — the same failure mode `kv.get` already gives a script for a
+   * stale shape written by an older version of a neighbouring script.
+   */
+  resultOf<T>(jobId: string, schema: z.ZodType<T>): Promise<T | null>
+  /**
    * Fire-and-forget (plan 81 §3.6): resolves with the new job's id the
    * instant it is QUEUED — never once it runs, never with its result.
    * Rejects (a real throw the script sees, never a null) when the chain is
@@ -272,14 +397,78 @@ export interface ScriptContext<P = unknown> {
   kv: { device: KvApi; global: KvApi }
   /** A running script's own view of the queue on its own device (plan 80). */
   jobs: JobsApi
+  /**
+   * Called when a human sent input to this job's device while it was running
+   * (plan 91 §3.6). NOT an abort — the job keeps running exactly as before,
+   * and `finish()` is not invoked because of this. A script that never
+   * registers a callback is affected in NO way. `actor` is the assisting
+   * operator's userId, or null when they were unauthenticated (local mode).
+   */
+  onAssist?(cb: (e: { at: number; actor: string | null }) => void): void
+  /**
+   * A live, unpersisted snapshot of how the run is going (plan 97 §3.7).
+   * Coalesced to at most one push per `job.progressIntervalMs`
+   * (default 1000ms, min 250, max 10000), last value wins — calling this in a
+   * tight loop costs one assignment, never one IPC message per call. Over
+   * `RESULT_LIMITS.maxProgressBytes` (4 KiB) the push is dropped with one
+   * `warn` log line per job, never truncated into malformed JSON.
+   *
+   * It is NOT the result: never stored, never validated against `result`'s
+   * schema, and never readable by `ctx.jobs.resultOf` or any other job. A
+   * result is a commitment; a progress is an observation.
+   */
+  progress(value: unknown): void
 }
 
-export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
+/**
+ * `unknown` when no result schema is declared — today's behaviour,
+ * unchanged (plan 97 §3.2, §4.2, fixes F1/F2). A script that never writes
+ * `result: someZodSchema` never sees this type change shape: `R` defaults to
+ * `undefined`, and `undefined extends z.ZodTypeAny` is false, so this
+ * resolves to the `unknown` branch — exactly what `run` returned before this
+ * plan. Declaring `result: someZodSchema` narrows it to `z.infer` of that
+ * schema, which is what makes a wrong `run` return value a compile error in
+ * the author's own editor (H1).
+ */
+export type ResultValue<R> = R extends z.ZodTypeAny ? z.infer<R> : unknown
+
+export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny, R extends z.ZodTypeAny | undefined = undefined> {
   id: string
   /** Semver. */
   version: string
   params: S
   /**
+   * What a successful run produces (plan 97 §3.2, §4.2, fixes F1/F5).
+   * OPTIONAL and always optional — a script that declares nothing keeps
+   * `run` returning `Promise<unknown>` and stores its return value exactly
+   * as before. There is no deprecation and no plan to make this required: a
+   * script that force-stops an app genuinely has nothing to return.
+   *
+   * Declaring it buys three things: `tsc` checks `run`'s return value
+   * against this schema in the author's own editor, before publish, before
+   * the farm ever sees it; the farm records whether the value kept the
+   * promise (`jobs.result_status`); and the job screen renders values
+   * instead of raw JSON. H1 tests that the inference behaves in both
+   * directions — declaring nothing costs nothing, declaring something buys
+   * the check.
+   */
+  result?: R
+  /**
+   * What this script declares about its own execution — memory ceiling,
+   * farm-wide concurrency, the SDK contract major (plan 98 §3.2, §4.1).
+   * EVERY field is a restriction the script places on ITSELF, never a
+   * permission it requests (§3.2 — permanent). `timeout`/`retries` below
+   * are folded into this by `defineScript`/`definePlugin`
+   * (`runtime.timeoutMs ?? timeout`) — declaring both with two different
+   * values throws at import time, on the author's own machine, rather than
+   * silently picking one (plan 98 §4.2).
+   */
+  runtime?: RuntimeEnvelope
+  /**
+   * @deprecated use `runtime.timeoutMs` instead — kept forever (§4.3 of the
+   * overview: an author-facing field a published script already used is
+   * folded, not broken), never removed.
+   *
    * ms per attempt. Wins over the farm's own default whenever it is set
    * (plan 74 §3.1, §3.2) — when it is not, the farm's `job.defaultTimeoutMs`
    * setting applies instead (Settings → Jobs; 60 minutes out of the box).
@@ -287,13 +476,30 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
    * — always logged when it does, never silently.
    */
   timeout?: number
-  /** Extra attempts after a failure; defaults to 0. */
+  /** @deprecated use `runtime.retries` instead — kept forever, same reasoning as `timeout` above. Extra attempts after a failure; defaults to 0. */
   retries?: number
   prepare?(ctx: ScriptContext<z.infer<S>>): Promise<void>
-  /** Return value → jobs.result. */
-  run(ctx: ScriptContext<z.infer<S>>): Promise<unknown>
-  /** ALWAYS runs — must be stateless and idempotent (see the README). */
-  finish?(ctx: ScriptContext<z.infer<S>>): Promise<void>
+  /**
+   * Return value → `jobs.result`. `Promise<unknown>` when `result` is not
+   * declared (today's behaviour, unchanged); checked against `result`'s
+   * schema, in the author's own editor, when it is (plan 97 §3.2, §4.2,
+   * `ResultValue<R>` above).
+   */
+  run(ctx: ScriptContext<z.infer<S>>): Promise<ResultValue<R>>
+  /**
+   * ALWAYS runs — must be stateless and idempotent (see the README): after a
+   * timeout kill the core runs it again in a fresh process.
+   *
+   * Its return value is used ONLY when `run()` did not produce one — i.e.
+   * only on the failure path (plan 97 §3.5, §4.2, fixes F7/F8). It is stored
+   * as the job's result with `resultStatus: 'partial'` and is NOT validated
+   * against `result`'s schema at all: there is no honest lenient schema to
+   * check it against, and a consumer that needs a guarantee reads `valid`
+   * instead. `Promise<unknown | void>` is additive — every existing `finish`
+   * returning nothing (or nothing at all) is unchanged, and `undefined`
+   * means what it means today.
+   */
+  finish?(ctx: ScriptContext<z.infer<S>>): Promise<unknown | void>
   /**
    * Packages this script touches, so a `declared` (or `aggressive`) pre-job
    * reset knows what to stop (plan 35 §4.3). The child reports this in its
@@ -304,4 +510,24 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
     /** `pm clear` as well as force-stop. Destructive — opt in per script. */
     clearData?: boolean
   }
+  /**
+   * Whether an operator may assist this script's job (plan 91 §3.6) — reach
+   * into a `busy` device this job holds, without taking it. Default `'allow'`.
+   * `'deny'` disables the Assist button in Studio, naming this script; the
+   * job is still cancellable — refusing help is not refusing control.
+   */
+  assist?: 'allow' | 'deny'
+  /**
+   * Overrides the DEVICE's input-realism settings for this script's OWN
+   * calls (plan 94 §3.6, §4.5, F10). Merged over `DeviceSettings.timing`
+   * (falling back to the farm default), field by field — never replacing it
+   * wholesale: a compiled recording sets `{ betweenActionMs: [0, 0] }`
+   * because it supplies its own recorded gaps (§3.6's composition table),
+   * and inherits tap jitter, coordinate jitter and typing cadence from
+   * whichever device happens to run it. Reported in the child's `ready`
+   * message beside `reset` above, and merged fresh per attempt — never
+   * captured once and reused, the same freshness discipline `reset` and
+   * `runtime` already get.
+   */
+  timing?: Partial<TimingSettings>
 }

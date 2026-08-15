@@ -41,7 +41,7 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
 }
 
 function healthyReport(overrides: Partial<VerifyReport> = {}): VerifyReport {
-  return { ok: true, pluginId: 'tiktok', version: '1.0.0', scripts: [{ id: 'login', paramsSchema: { type: 'object' } }], resetPackages: [], ...overrides }
+  return { ok: true, pluginId: 'tiktok', version: '1.0.0', scripts: [{ id: 'login', paramsSchema: { type: 'object' }, runtime: null }], resetPackages: [], ...overrides }
 }
 
 let dataDir: string

@@ -324,7 +324,10 @@ interface Ctx {
   device: {
     tap: (t: { point: { x: number; y: number } }) => Promise<void>
     key: (k: 'DEL' | 'ENTER' | 'BACK') => Promise<void>
-    type: (s: string, o?: { instant?: boolean }) => Promise<void>
+    // Plan 90 §3.3, §4.5 — the real `DeviceApi.type()` now resolves with a `ScriptTypeResult`
+    // (`via`, `clobberedClipboard`), not `void`. Neither call site here reads the return value,
+    // so this narrower local `Ctx` stays loose (`unknown`) rather than importing the SDK shape.
+    type: (s: string, o?: { instant?: boolean }) => Promise<unknown>
     app: { launch: (pkg: string, o?: { url?: string }) => Promise<void> }
     dump: () => Promise<UiNode>
     scroll: (o: { direction: 'up' }) => Promise<void>

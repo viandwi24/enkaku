@@ -6,6 +6,27 @@ import type { Logger } from '../util/logger'
 
 export type LeaseType = 'manual' | 'job'
 
+/**
+ * Why a manual lease ended without its holder asking (plan 88 §3.10, §4.8
+ * adds `'adb-server-restart'` to the pre-existing three — a restart drains
+ * every manual lease farm-wide, same as an idle timeout or a quarantine, and
+ * the holder deserves the same honest reason on the wire and in the log).
+ */
+export type ManualReleaseReason = 'idle_timeout' | 'disconnected' | 'quarantined' | 'adb-server-restart'
+
+/**
+ * What a hold is FOR (plan 93 §3.8, §4.3, §5 step 93.3) — legibility for the
+ * `lease.changed` broadcast a fan-out's per-member acquire/release traffic
+ * generates (H4): Studio's holder badge can read "running a command" for a
+ * sub-second `'command'` hold instead of "alice took control", the same
+ * distinction a takeover already gets its own wording for. Defaults to
+ * `'control'` EVERYWHERE ELSE in this file — every existing acquire path is
+ * unchanged, and only the command console's own `acquireManual(..., {
+ * purpose: 'command' })` call (`command-console/runner.ts`) ever passes the
+ * other value.
+ */
+export type LeasePurpose = 'control' | 'command'
+
 export interface Lease {
   deviceId: string
   type: LeaseType
@@ -15,7 +36,33 @@ export interface Lease {
   holderUserId?: string | null
   acquiredAt: number
   expiresAt: number
+  /**
+   * Plan 93 §3.8 — see `LeasePurpose`'s own doc comment. Optional, not
+   * required, so every hand-written `Lease`-shaped fake across this repo's
+   * test suite (`api/device-identity.test.ts`, `api/guest-agent.test.ts`,
+   * `capability/context.test.ts`, and this file's own) keeps compiling with
+   * NO edit — "nothing changes for existing callers" applies to test fakes
+   * too, not only to production call sites. Treated as `'control'` wherever
+   * it is read (`toHolder` below); a real lease this process constructs
+   * always sets it explicitly (`acquireManual`, `noteJobLease`).
+   */
+  purpose?: LeasePurpose
 }
+
+/**
+ * `toHolder`'s return type: `LeaseHolder` (plan 71, `@enkaku/protocol`)
+ * widened with `purpose` (plan 93 §3.8). Declared locally rather than in the
+ * wire schema itself because `packages/protocol/src/device.ts` — where
+ * `LeaseHolderSchema` lives — is out of this step's reach (held by a
+ * concurrent worker on plan 94 step 94.2 per this step's own brief); adding
+ * `purpose` to the WIRE schema is step 93.4's job. Every existing caller
+ * that treats a `toHolder`/`getHolder`/`lastManualHolder` result as a plain
+ * `LeaseHolder` keeps compiling unchanged (a wider object is assignable to
+ * the narrower type it structurally contains); once 93.4 lands the schema
+ * field, this local alias becomes redundant and can be dropped in favour of
+ * the real `LeaseHolder` type with no call-site change here.
+ */
+export type ResolvedLeaseHolder = LeaseHolder & { purpose: LeasePurpose }
 
 export interface LeaseConfig {
   jobTtlSec: number
@@ -38,8 +85,8 @@ export type ResolveLabel = (kind: 'user' | 'agent' | 'job', id: string) => strin
 /** Used only when no `resolveLabel` is supplied (tests, and hosts that predate this plan) — honest and generic, never the raw id. */
 const defaultResolveLabel: ResolveLabel = (kind) => (kind === 'user' ? 'a client' : kind === 'agent' ? 'an agent' : 'a job')
 
-/** Pure — exported for `toHolder.test.ts`. Converts an internal `Lease` into the wire `LeaseHolder` shape (plan 71 §3.2), or `null` for no lease. `takeable` is computed here, server-side, once — never left for a client to derive (plan 71 §3.2's own reasoning). */
-export function toHolder(lease: Lease | null, resolveLabel: ResolveLabel = defaultResolveLabel): LeaseHolder | null {
+/** Pure — exported for `toHolder.test.ts`. Converts an internal `Lease` into the wire `LeaseHolder` shape (plan 71 §3.2), widened with `purpose` (plan 93 §3.8, see `ResolvedLeaseHolder`'s own doc comment), or `null` for no lease. `takeable` is computed here, server-side, once — never left for a client to derive (plan 71 §3.2's own reasoning). */
+export function toHolder(lease: Lease | null, resolveLabel: ResolveLabel = defaultResolveLabel): ResolvedLeaseHolder | null {
   if (!lease) return null
   if (lease.type === 'job') {
     return {
@@ -50,6 +97,7 @@ export function toHolder(lease: Lease | null, resolveLabel: ResolveLabel = defau
       takeable: false,
       acquiredAt: lease.acquiredAt,
       expiresAt: lease.expiresAt,
+      purpose: lease.purpose ?? 'control',
     }
   }
   if (lease.holder.startsWith(AGENT_LEASE_PREFIX)) {
@@ -63,6 +111,7 @@ export function toHolder(lease: Lease | null, resolveLabel: ResolveLabel = defau
       takeable: true,
       acquiredAt: lease.acquiredAt,
       expiresAt: lease.expiresAt,
+      purpose: lease.purpose ?? 'control',
     }
   }
   // A person — `holderUserId` when authenticated, else the bare WS clientId
@@ -79,6 +128,7 @@ export function toHolder(lease: Lease | null, resolveLabel: ResolveLabel = defau
     takeable: true,
     acquiredAt: lease.acquiredAt,
     expiresAt: lease.expiresAt,
+    purpose: lease.purpose ?? 'control',
   }
 }
 
@@ -94,11 +144,45 @@ export interface LeaseManager {
    * passed). A successful takeover revokes and acquires atomically — no
    * `await` ever separates the read of the current holder from the write of
    * the new one, so no window exists for a third party to slip in.
+   *
+   * `opts.purpose` (plan 93 §3.8) — defaults to `'control'` when omitted, so
+   * every existing caller is unchanged. The command console's runner is the
+   * only caller that ever passes `'command'`.
    */
-  acquireManual(deviceId: string, clientId: string, userId?: string | null, opts?: { takeOverFrom?: string }): Lease
+  acquireManual(deviceId: string, clientId: string, userId?: string | null, opts?: { takeOverFrom?: string; purpose?: LeasePurpose }): Lease
   touchManual(deviceId: string, clientId: string): void
-  releaseManual(deviceId: string, clientId: string, reason?: 'idle_timeout' | 'disconnected' | 'quarantined'): boolean
+  releaseManual(deviceId: string, clientId: string, reason?: ManualReleaseReason): boolean
   releaseAllForClient(clientId: string): void
+  /**
+   * Every manual lease, farm-wide, released with one named reason (plan 88
+   * §3.10, §4.8) — the adb restart flow's own drain, alongside
+   * `SessionManager.closeAll`. Job leases are untouched here: a running job
+   * is the caller's own concern (the restart route's `E_ADB_BUSY_FARM`
+   * guard), not something this method silently clears. Returns the number of
+   * manual leases actually released, for `AdbCycleReport.leasesReleased`.
+   *
+   * Optional (unlike the rest of this interface) so the many existing
+   * hand-written `LeaseManager` fakes across the test suite — several in
+   * files this step deliberately avoids touching while `packages/core/src/api/devices.ts`
+   * is under concurrent edit elsewhere — do not all need a stub added for a
+   * method they never exercise. `createLeaseManager` below always provides
+   * it; only a fake may omit it.
+   */
+  releaseAll?(opts: { reason: ManualReleaseReason }): number
+  /**
+   * Force-releases ONE device's manual lease, regardless of who holds it
+   * (plan 88 §3.7, §4.6, §5 step 88.4: "a successful disconnect ... releases
+   * the manual lease first"). Unlike `releaseManual`, which only succeeds
+   * when `clientId` matches the current holder, an operator's explicit
+   * Disconnect action is not the holder asking to give it back — it is the
+   * same "someone else's concern overrides the hold" shape `releaseAll`
+   * already has, scoped to one device instead of the whole farm. A no-op
+   * (returns `false`) when the device carries no manual lease at all, so a
+   * caller does not need to check `getHolder` first. Optional for the same
+   * reason `releaseAll` is: several hand-written `LeaseManager` fakes across
+   * the test suite do not need a stub added for a method they never exercise.
+   */
+  releaseDevice?(deviceId: string, reason: ManualReleaseReason): boolean
   noteJobLease(deviceId: string, jobId: string, ttlSec: number): void
   clearJobLease(deviceId: string): void
   getLease(deviceId: string): Lease | null
@@ -126,7 +210,7 @@ export interface LeaseManagerDeps {
   log: Logger
   /** An expired job lease fails the job and force-releases the device (spec §10.2). */
   onJobLeaseExpired: (jobId: string, reason: string) => void
-  onManualRevoked?: (deviceId: string, reason: 'idle_timeout' | 'disconnected' | 'quarantined', holderUserId: string | null) => void
+  onManualRevoked?: (deviceId: string, reason: ManualReleaseReason, holderUserId: string | null) => void
   /**
    * A successful takeover (plan 71 §3.5) — the displaced holder (`from`,
    * already resolved to a `LeaseHolder`, or null defensively if the map and
@@ -135,6 +219,23 @@ export interface LeaseManagerDeps {
    */
   onManualTakenOver?: (info: { deviceId: string; from: LeaseHolder | null; toClientId: string; toUserId: string | null; takenByLabel: string }) => void
   onDeviceFreed?: () => void
+  /**
+   * The PRIMARY hold on a device just ended (plan 91 §3.2, §4.2: a
+   * co-control grant is "revoked the instant the primary hold ends"). Fired
+   * UNCONDITIONALLY from `release()` — a voluntary `releaseManual` with no
+   * `reason` included, not only the automatic paths — and from
+   * `clearJobLease()`. Deliberately a SEPARATE hook from `onManualRevoked`
+   * below: that one's job is telling the ex-holder "this was taken from you
+   * without your asking" (so it is silent on a plain voluntary release,
+   * which needs no such notice); this one's job is telling anything
+   * SUBORDINATE to the hold — today, only the co-control grant store,
+   * `daemon.ts`'s `coControl.onPrimaryEnded` — that whatever it was riding
+   * on top of is gone, however that happened. A takeover (`onManualTakenOver`
+   * below) does not flow through this hook either, because it never calls
+   * `release()`; `daemon.ts` calls `coControl.onPrimaryEnded` directly from
+   * its own `onManualTakenOver` handler for that path instead.
+   */
+  onPrimaryEnded?: (deviceId: string) => void
   /** Injected (plan 71 §3.3) — resolves a holder id to a display label. Defaults to a generic, honest, never-empty, never-raw-id fallback when omitted (existing hosts/tests that predate this plan). */
   resolveLabel?: ResolveLabel
 }
@@ -148,7 +249,7 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
   const lastManualRelease = new Map<string, { at: number; holder: LeaseHolder | null }>()
   let reaper: ReturnType<typeof setInterval> | null = null
 
-  function release(deviceId: string, reason?: 'idle_timeout' | 'disconnected' | 'quarantined'): boolean {
+  function release(deviceId: string, reason?: ManualReleaseReason): boolean {
     const lease = leases.get(deviceId)
     if (!lease || lease.type !== 'manual') return false
     leases.delete(deviceId)
@@ -156,6 +257,10 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
     states.apply(deviceId, 'MANUAL_RELEASED')
     if (reason) deps.onManualRevoked?.(deviceId, reason, lease.holderUserId ?? null)
     deps.onDeviceFreed?.()
+    // Unconditional — a plain voluntary release ends the primary hold just
+    // as much as an automatic one does (plan 91 §3.2). See this hook's own
+    // doc comment above for why it is not folded into `onManualRevoked`.
+    deps.onPrimaryEnded?.(deviceId)
     return true
   }
 
@@ -197,6 +302,7 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
           holderUserId: userId ?? null,
           acquiredAt: nowSec(),
           expiresAt: nowSec() + config.manualIdleTimeoutSec,
+          purpose: opts?.purpose ?? 'control',
         }
         leases.set(deviceId, lease)
         // The device stays in the SAME `manual` status — there is no
@@ -219,6 +325,7 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
         holderUserId: userId ?? null,
         acquiredAt: nowSec(),
         expiresAt: nowSec() + config.manualIdleTimeoutSec,
+        purpose: opts?.purpose ?? 'control',
       }
       leases.set(deviceId, lease)
       log.info(`manual lease acquired: device=${deviceId} client=${clientId}`)
@@ -245,6 +352,18 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
       }
     },
 
+    releaseAll(opts) {
+      let count = 0
+      for (const [deviceId, lease] of [...leases]) {
+        if (lease.type === 'manual' && release(deviceId, opts.reason)) count++
+      }
+      return count
+    },
+
+    releaseDevice(deviceId, reason) {
+      return release(deviceId, reason)
+    },
+
     noteJobLease(deviceId, jobId, ttlSec) {
       leases.set(deviceId, {
         deviceId,
@@ -252,12 +371,21 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
         holder: jobId,
         acquiredAt: nowSec(),
         expiresAt: nowSec() + ttlSec,
+        // A job lease has no console-command shape to speak of; 'control' is
+        // the only meaningful value and matches every other non-command hold.
+        purpose: 'control',
       })
     },
 
     clearJobLease(deviceId) {
       const lease = leases.get(deviceId)
-      if (lease?.type === 'job') leases.delete(deviceId)
+      if (lease?.type === 'job') {
+        leases.delete(deviceId)
+        // Plan 91 §3.2 — a job lease clearing ends the primary hold a
+        // co-control grant on this device was subordinate to, exactly like a
+        // manual release does above.
+        deps.onPrimaryEnded?.(deviceId)
+      }
     },
 
     getLease(deviceId) {

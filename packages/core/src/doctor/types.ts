@@ -92,6 +92,61 @@ export interface HostAdbCoreStats {
 }
 
 /**
+ * `GET /api/adb/stats`'s `adbHealth` block (plan 88 §3.9, §4.7, fixes
+ * F21/F23) — the SAME shape the live core computes and broadcasts on
+ * `adb.health`, re-declared here rather than imported from `@enkaku/protocol`
+ * only because every other probed shape in this file (`AdbServerStatus`,
+ * `StreamsStatus`, `HostAdbCoreStats`) is its own local type too, so an
+ * older/newer core answering with a subtly different shape is a schema
+ * mismatch this file's own `AdbStatsProbeSchema` catches, not a compile
+ * error here.
+ */
+export interface AdbStuckSymptomProbe {
+  symptom: 'server-unreachable' | 'server-unresponsive' | 'transports-wedged' | 'reconnect-ineffective' | 'timeout-storm'
+  detail: string
+  since: number
+}
+export interface AdbServerHealthProbe {
+  status: 'ok' | 'degraded' | 'stuck'
+  versionRttMs: number | null
+  lastCheckedAt: number
+  window: { seconds: number; execs: number; timeouts: number; timeoutRate: number }
+  wedged: Array<{ serial: string; consecutiveTimeouts: number; adbState: string }>
+  stuckOffline: Array<{ serial: string; state: string; sinceSec: number; nudges: number }>
+  symptoms: AdbStuckSymptomProbe[]
+  restartAdvised: boolean
+}
+
+/**
+ * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, §5 step 91.10, tests
+ * H2/H4) — `packages/core/src/server/ws-handlers.ts`'s `inputStats()`, as
+ * reported by a live core. Same "re-declared here rather than imported"
+ * reasoning `AdbServerHealthProbe` above already documents: an older/newer
+ * core answering with a subtly different shape is a schema mismatch this
+ * file's own probe schema (`context.ts`) catches, not a compile error here.
+ */
+export interface InputLaneStatsProbe {
+  depth: number
+  waitMsP50: number
+  waitMsP95: number
+  refusals: number
+}
+export interface InputStatsProbe {
+  lanes: Record<string, InputLaneStatsProbe>
+  assistsActive: number
+  mirrorGroups: number
+  mirrorMembers: number
+  mirrorFanoutMsP50: number
+  mirrorFanoutMsP95: number
+  /** The farm's currently-configured `coControl.queueWaitMs` — the budget the `co-control` check compares each lane's OBSERVED `waitMsP95` against. */
+  queueWaitMs: number
+  /** Leak detector: grants whose `expiresAt` is well past due despite the reaper's sweep. */
+  uncollectedGrants: number
+  /** Leak detector: mirror groups whose owner's WS connection is no longer open. */
+  orphanedMirrorGroups: number
+}
+
+/**
  * Everything a check may read. Each namespace maps to exactly one row in
  * §4.3's table; a check only touches the namespace(s) it needs, which is
  * what keeps every check testable with a small, focused fake rather than a
@@ -148,5 +203,15 @@ export interface DoctorContext {
     countAdbProcesses(): Promise<number | null>
     /** The live core's own `host-adb.ts` bookkeeping, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block. */
     probeCoreStats(): Promise<HostAdbCoreStats | null>
+  }
+  /** "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — read-only, same as everything else in this namespace list. */
+  adbHealth: {
+    /** The live core's own `adb-health.ts` verdict, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block (same degrade-gracefully rule as `streams.probe`/`hostAdb.probeCoreStats` above). */
+    probe(): Promise<AdbServerHealthProbe | null>
+  }
+  /** Co-control observability (plan 91 §4.10, §5 step 91.10) — read-only, same degrade-gracefully rule as `streams`/`hostAdb`/`adbHealth` above. */
+  coControl: {
+    /** The live core's own `ws-handlers.ts` `inputStats()`, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block. */
+    probe(): Promise<InputStatsProbe | null>
   }
 }

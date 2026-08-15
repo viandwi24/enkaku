@@ -8,18 +8,23 @@ import {
   Bot,
   Check,
   Copy,
+  EthernetPort,
   Eye,
   Hand,
   Info,
   MoreVertical,
   Play,
+  RefreshCw,
   Settings,
   Thermometer,
   Trash2,
   TriangleAlert,
+  Unplug,
 } from 'lucide-react'
-import type { BatteryState, DeviceInfo, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo, DeviceLabelState, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
 import { Button } from '@/components/ui/button'
+import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
+import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ViewerList } from '@/components/ViewerList'
@@ -66,6 +71,15 @@ import { cn } from '@/lib/utils'
 export interface DeviceDetailInfo extends DeviceInfo {
   transport: string
   display: string
+  /**
+   * Plan 100 §4.3, step 100.6 (closes G11/96.22) — the engine ACTUALLY
+   * running, sourced live from the open session; `null` when no session is
+   * open. Can legitimately disagree with `display` above (the CONFIGURED
+   * engine) — a device on the screencap-loop fallback reports
+   * `display: 'scrcpy'` (nothing rewrote the stored setting) while
+   * `liveDisplay: 'screencap-loop'` says what is actually being served.
+   */
+  liveDisplay: string | null
   input: string
   inspection: string
   settings: unknown
@@ -118,11 +132,16 @@ export function DeviceHeader({
   onTakeControl,
   onControlTaken,
   onReleaseControl,
+  onDisconnect,
+  onReconnect,
+  onOpenCutover,
   onRemove,
   takeOverOpen,
   onTakeOverOpenChange,
   askAgentOpen,
   onAskAgentOpenChange,
+  agentVersion,
+  labelState,
 }: {
   device: DeviceDetailInfo
   status: DeviceStatus
@@ -151,6 +170,12 @@ export function DeviceHeader({
   /** A takeover succeeded via the confirmation dialog — the new lease's expiry. */
   onControlTaken: (expiresAt: number) => void
   onReleaseControl: () => void
+  /** Opens the disconnect confirmation for this device (plan 88 §3.7, §3.8, §4.6, §5 step 88.4) — a `tcp` device only; the menu item itself disables on USB. */
+  onDisconnect: () => void
+  /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — fires directly, no confirmation (it is not destructive). */
+  onReconnect: () => void
+  /** Opens the USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — a `usb` device only; the menu item itself hides on a device already on the network. */
+  onOpenCutover: () => void
   onRemove: () => void
   /**
    * Whether the takeover confirmation dialog is open, and how to change that
@@ -166,17 +191,39 @@ export function DeviceHeader({
    * `takeOverOpen` above: this component keeps no hooks of its own. */
   askAgentOpen: boolean
   onAskAgentOpenChange: (open: boolean) => void
+  /**
+   * The on-device guest agent's `appVersion` (plan 90 §5 step 90.6, fixes
+   * F11) — a looked-up fact, so it lives in the `ⓘ` popover per this file's
+   * own placement rule (§3.3), never inline. `null` while unknown (loading,
+   * or the agent has never answered a handshake) — this component still has
+   * no hooks of its own, so the caller fetches it (`GET .../guest-agent`)
+   * and hands it down like every other prop here. Optional so a caller that
+   * predates this field (an existing test fixture) keeps compiling.
+   */
+  agentVersion?: string | null
+  /**
+   * Physical labelling's applied state (plan 89 §3.5, §5 step 89.8) — `null`
+   * until the caller's own `GET .../label` resolves, or on a host with
+   * nothing to report yet. Optional for the same reason `agentVersion` is:
+   * an existing test fixture predating this field keeps compiling.
+   */
+  labelState?: DeviceLabelState | null
 }) {
   const canTakeControl = status === 'idle'
   const charging = battery?.status === 'charging'
   const hot = battery !== null && battery.temperatureC >= HOT_C
   const lowBattery = battery !== null && battery.level < LOW_BATTERY_PCT
   const settingsHref = `/device?id=${encodeURIComponent(device.id)}&tab=settings`
+  // `?? null` guards a hand-built test fixture that omits the field
+  // entirely (undefined) — `DeviceInfoSchema.number` is `.default(null)` on
+  // a real parse, so `undefined` only ever happens off a fixture, never a
+  // real response.
+  const number = device.number ?? null
 
   return (
     <>
       <PageHeader
-      title={device.label}
+      title={number !== null ? `#${number} ${device.label}` : device.label}
       description={`${device.serial} · ${device.androidVersion ? `Android ${device.androidVersion}` : 'Android version unknown'}`}
       meta={
         <div className="flex flex-wrap items-center gap-2.5">
@@ -186,6 +233,31 @@ export function DeviceHeader({
               this renders it (person, agent, or job) instead of leaving a `manual`/`busy` status
               badge to speak for an actor nobody can identify. */}
           {heldBy && !iHoldControl && <HolderBadge holder={heldBy} />}
+
+          {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25) —
+              orthogonal to `heldBy` above: an assist grant never moves the
+              lease, so it is shown regardless of `iHoldControl`. `?? []`
+              covers a caller that predates the field (an existing test
+              fixture, the same guard `DeviceCard`/`WallTile` use). */}
+          {(device.assistedBy ?? []).map((a) => (
+            <HolderBadge key={a.id} holder={a} variant="assists" />
+          ))}
+
+          {/* Plan 90 §5 step 90.6 (fixes F10) — quiet for `ready`/`absent`/
+              `provisioning`/`unsupported`, the same restraint every other
+              chip in this row already practises (`inspectorFallback` below
+              is the identical shape: silent when nominal, promoted to a
+              visible chip only when it needs a look). The version itself
+              lives in the `ⓘ` popover below, per this file's placement
+              rule for looked-up facts. */}
+          <AgentAlertChip agent={device.agent ?? 'absent'} />
+
+          {/* Physical labelling (plan 89 §3.5, §5 step 89.8) — the one place
+              this page shows whether the phone's own screen actually says
+              what Studio thinks it says. Renders nothing for `off`/`unknown`
+              (nothing to claim either way); `partial`/`unavailable` never
+              share `applied`'s green (`LabelStateBadge`'s own rule). */}
+          <LabelStateBadge state={labelState ?? null} />
 
           {/* Deliberately NOT behind a popover (§3.3): a swelling battery or a
               phone cooking itself is only useful as a warning if it is seen
@@ -267,6 +339,10 @@ export function DeviceHeader({
                 <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />
                 <Row label="screen" value={device.screenW && device.screenH ? `${device.screenW}×${device.screenH}` : '—'} />
                 <Row label="density" value={device.density ? `${device.density} dpi` : '—'} />
+                {/* Plan 90 §5 step 90.6, fixes F11 — the agent's `appVersion` was already returned by
+                    `GET .../guest-agent` and rendered nowhere. A looked-up fact, so it sits here with
+                    the rest rather than inline in the always-visible row above. */}
+                <Row label="guest agent" value={agentVersion ?? '—'} />
               </dl>
 
               <h2 className="rack-label mb-2.5 mt-4">active engines</h2>
@@ -299,11 +375,29 @@ export function DeviceHeader({
       }
       actions={
         <>
-          {status === 'offline' || status === 'quarantined' ? (
-            <Button variant="outline" size="sm" disabled>
-              <Play className="size-4" aria-hidden />
-              Run a script
-            </Button>
+          {/* Only `quarantined` blocks a run. An offline device takes a job
+              perfectly well — `createJobStore.enqueue` rejects that one
+              status and no other, and `claimNext` holds the job until the
+              device reaches `idle`, which it does by itself on reconnect.
+              This button used to disable both, so a job the core would have
+              queued and run could not be started from the one page an
+              operator is most likely to start it from.
+
+              Unlike `Take control` below, the old disabled branch carried no
+              tooltip at all — the button simply went grey. Quarantined now
+              says why, in the same shape that control already uses. */}
+          {status === 'quarantined' ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Button variant="outline" size="sm" disabled>
+                    <Play className="size-4" aria-hidden />
+                    Run a script
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{UNAVAILABLE_REASON.quarantined}</TooltipContent>
+            </Tooltip>
           ) : (
             <Button variant="outline" size="sm" disabled={!canRunScript} onClick={onRunScript}>
               <Play className="size-4" aria-hidden />
@@ -409,6 +503,53 @@ export function DeviceHeader({
                 Ask an agent…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              {/* The Connection group (plan 88 §3.7, §3.8, §4.6, §5 steps
+                  88.4/88.5): Disconnect and Remove sound alike and mean very
+                  different things — Disconnect only drops the adb link and
+                  keeps the device's record, so it sits ABOVE its own
+                  separator, visually apart from the destructive Remove item
+                  below. */}
+              {/* `?? 'usb'` matches `DeviceInfoSchema.connection`'s own
+                  default (plan 88 §4.1) — a caller that predates this plan
+                  (an existing test fixture, a fallback with no live
+                  derivation to hand) leaves `connection` undefined, and the
+                  safe assumption for an unknown transport is the one that
+                  disables the menu item rather than the one that enables it. */}
+              {(device.connection?.kind ?? 'usb') === 'usb' ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuItem
+                      onSelect={(e) => e.preventDefault()}
+                      className="text-fg-subtle data-[highlighted]:bg-transparent data-[highlighted]:text-fg-subtle"
+                    >
+                      <Unplug className="size-3.5" aria-hidden />
+                      Disconnect from the network
+                    </DropdownMenuItem>
+                  </TooltipTrigger>
+                  <TooltipContent>adb has no way to release a single USB transport. Unplug the cable to disconnect it.</TooltipContent>
+                </Tooltip>
+              ) : (
+                <DropdownMenuItem onSelect={onDisconnect}>
+                  <Unplug className="size-3.5" aria-hidden />
+                  Disconnect from the network
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={onReconnect}>
+                <RefreshCw className="size-3.5" aria-hidden />
+                Reconnect
+              </DropdownMenuItem>
+              {/* §3.8's third Connection item, the cutover wizard (§5 step
+                  88.5) — USB only: a device already on the network has
+                  nowhere left to move TO with this flow (Disconnect/
+                  Reconnect, or the settings page's declared-medium
+                  correction, cover that case instead). */}
+              {(device.connection?.kind ?? 'usb') === 'usb' && (
+                <DropdownMenuItem onSelect={onOpenCutover}>
+                  <EthernetPort className="size-3.5" aria-hidden />
+                  Move to the network (Wi-Fi/OTG)…
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
               {/* The same words the fleet card's menu uses, opening the same
                   dialog — a verb keeps its name through the whole flow. */}
               <DropdownMenuItem onSelect={onRemove} className="text-led-danger focus:text-led-danger">
@@ -435,7 +576,12 @@ export function DeviceHeader({
   )
 }
 
-function Row({ label, value, copyable, warn }: { label: string; value: string; copyable?: boolean; warn?: boolean }) {
+// Exported for `DeviceHeader.test.tsx` (plan 90 §5 step 90.6): this file's
+// own testing convention never invokes a child component (its own doc
+// comment) — a value only `Row` itself renders (never inlined in
+// `DeviceHeader`'s own JSX) is otherwise invisible to `textOf`'s walk, the
+// same reason `engineName`/`mmss` are exported below.
+export function Row({ label, value, copyable, warn }: { label: string; value: string; copyable?: boolean; warn?: boolean }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="text-[12px] text-fg-muted">{label}</dt>

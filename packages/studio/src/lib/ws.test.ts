@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { WsClient, type WsClientScheduler } from './ws'
+import { WsAuthExpiredError, WsClient, type WsClientScheduler } from './ws'
+
+/** Flushes pending microtasks (a `fetchTicket()` promise and `connect()`'s own `.then()`/`.catch()`) without touching the fake scheduler, which is reserved for the watchdog/backoff timers under test. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 /**
  * A `WebSocket` stand-in good enough to drive `WsClient` without a real
@@ -193,5 +196,118 @@ describe('WsClient — the 45s silence watchdog (plan 85 §3.6, §4.6, §5 85.7a
     const last = seen[seen.length - 1]
     expect(last?.connected).toBe(false)
     expect(last?.watchdogReconnects).toBe(1)
+  })
+})
+
+describe('WsClient — server auth mode fetches a single-use ticket per connection (plan 09 §4.3)', () => {
+  test('local mode (the default — no setAuthMode call) still connects synchronously, with no ticket in the URL', () => {
+    let socket: FakeSocket | null = null
+    const fetchTicket = mock(async () => 'should-not-be-called')
+    const client = new WsClient({
+      createSocket: (url) => {
+        socket = new FakeSocket(url)
+        return socket as unknown as WebSocket
+      },
+      fetchTicket,
+    })
+
+    client.connect()
+
+    // Synchronous, exactly like before tickets existed — this is what every
+    // other test in this file (and every existing call site) relies on.
+    expect(socket).not.toBeNull()
+    expect(socket!.url).not.toContain('ticket=')
+    expect(fetchTicket).not.toHaveBeenCalled()
+  })
+
+  test('server mode: connect() fetches a ticket first and puts it on the WS URL', async () => {
+    let socket: FakeSocket | null = null
+    const client = new WsClient({
+      createSocket: (url) => {
+        socket = new FakeSocket(url)
+        return socket as unknown as WebSocket
+      },
+      fetchTicket: async () => 'tok-abc123',
+    })
+    client.setAuthMode('server')
+
+    client.connect()
+    expect(socket).toBeNull() // the ticket fetch has not resolved yet
+
+    await flush()
+
+    expect(socket).not.toBeNull()
+    expect(socket!.url).toContain('ticket=tok-abc123')
+  })
+
+  test('a WsAuthExpiredError from fetchTicket notifies onAuthExpired and does NOT schedule a reconnect', async () => {
+    const fake = createFakeScheduler()
+    const client = new WsClient({
+      createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      scheduler: fake.scheduler,
+      fetchTicket: async () => {
+        throw new WsAuthExpiredError()
+      },
+    })
+    client.setAuthMode('server')
+    const expired = mock(() => {})
+    client.onAuthExpired(expired)
+
+    client.connect()
+    await flush()
+
+    expect(expired).toHaveBeenCalledTimes(1)
+    // The ordinary backoff loop would just fail the exact same way forever —
+    // there must be no reconnect timer pending after an expired session.
+    expect(fake.hasPending()).toBe(false)
+  })
+
+  test('a transient fetchTicket failure (not an expired session) retries on the normal backoff, and does not fire onAuthExpired', async () => {
+    const fake = createFakeScheduler()
+    const client = new WsClient({
+      createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      scheduler: fake.scheduler,
+      fetchTicket: async () => {
+        throw new Error('network blip')
+      },
+    })
+    client.setAuthMode('server')
+    const expired = mock(() => {})
+    client.onAuthExpired(expired)
+
+    client.connect()
+    await flush()
+
+    expect(expired).not.toHaveBeenCalled()
+    expect(fake.hasPending()).toBe(true) // a reconnect attempt is scheduled
+  })
+
+  test('disconnect() closes the socket and suppresses the automatic reconnect; a fresh connect() afterwards reconnects normally', () => {
+    const fake = createFakeScheduler()
+    let socket: FakeSocket | null = null
+    const client = new WsClient({
+      createSocket: (url) => {
+        socket = new FakeSocket(url)
+        return socket as unknown as WebSocket
+      },
+      scheduler: fake.scheduler,
+    })
+
+    client.connect()
+    socket!.simulateOpen() // arms the watchdog — one setTimeout call
+    expect(fake.setTimeoutCalls()).toBe(1)
+
+    client.disconnect()
+    expect(socket!.readyState).toBe(FakeSocket.CLOSED)
+    // The watchdog's clearTimeout ran, but no NEW setTimeout was scheduled
+    // for a reconnect — a deliberate disconnect must not spin the backoff.
+    expect(fake.hasPending()).toBe(false)
+    expect(fake.setTimeoutCalls()).toBe(1)
+
+    // A fresh login calls connect() again — it must work exactly as before,
+    // not stay silently disabled because of the earlier disconnect().
+    client.connect()
+    expect(socket).not.toBeNull()
+    expect(socket!.readyState).toBe(FakeSocket.CONNECTING)
   })
 })

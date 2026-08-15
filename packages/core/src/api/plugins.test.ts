@@ -26,7 +26,7 @@ function healthyReport(overrides: Partial<VerifyReport> = {}): VerifyReport {
     ok: true,
     pluginId: 'tiktok',
     version: '1.0.0',
-    scripts: [{ id: 'login', paramsSchema: { type: 'object' } }],
+    scripts: [{ id: 'login', paramsSchema: { type: 'object' }, runtime: null }],
     resetPackages: [],
     ...overrides,
   }

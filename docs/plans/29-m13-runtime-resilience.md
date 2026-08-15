@@ -9,6 +9,7 @@
 >
 > Depends on: Plans 17–21 complete. Independent of the M12 series (Plans 22–28).
 > Spec references: §7.2 (app data paths), §10.3 (claim atomicity), §10.4 (adb serialisation), §16 (NFR).
+> Ships: none — blocked draft, not executed; nothing is built until the status line above says `ready`.
 
 ---
 

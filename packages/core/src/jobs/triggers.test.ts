@@ -29,8 +29,8 @@ function seedDevice(db: Db, id: string, status = 'idle') {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
-function seedScript(db: Db, id: string, name: string, version = '1.0.0') {
-  db.insert(scripts).values({ id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+function seedScript(db: Db, id: string, name: string, version = '1.0.0', runtime: unknown = null) {
+  db.insert(scripts).values({ id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date(), runtime }).run()
 }
 
 let seq = 0
@@ -368,7 +368,7 @@ describe('createJobTrigger — dev-slot resolution (plan 81 criterion 13)', () =
       pluginName: 'tiktok',
       declaredVersion: '1.0.0',
       bundlePath: '/tmp/dev-bundle.mjs',
-      scripts: [{ exportId: 'warmup', paramsSchema: null }],
+      scripts: [{ exportId: 'warmup', paramsSchema: null, runtime: null }],
       owner: { kind: 'cli', label: 'dev@laptop' },
     })
     const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-triggers-test', devSlots })
@@ -403,5 +403,107 @@ describe('createJobTrigger — a pre-existing (pre-plan-81) job row (criterion 1
     const row = db.select().from(jobs).where(eq(jobs.id, result.jobId)).get()
     expect(row?.rootJobId).toBe(legacy.id) // the legacy row becomes the chain's root
     expect(row?.depth).toBe(1)
+  })
+})
+
+/**
+ * Plan 98 §3.7, §4.6, step 98.5 — a triggered job is a THIRD write path onto
+ * `jobs` (alongside `services/job-service.ts`'s `enqueue`/`resume`), and must
+ * pin `max_concurrent` exactly the same way: a `maxConcurrent: 1` script that
+ * re-triggers itself must stay bounded by the claim gate, not escape it by
+ * using `ctx.jobs.trigger()` instead of an ordinary enqueue. Against the REAL
+ * `ScriptRegistry` (this file's own stated intent), not a mock — `entry.runtime`
+ * comes straight off the `scripts.runtime` column this test seeds.
+ */
+describe('createJobTrigger — maxConcurrent resolution (plan 98 §3.7, §4.6, step 98.5)', () => {
+  test('a triggered job of a script declaring runtime.maxConcurrent pins that value onto the row', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-capped', 'capped', '1.0.0', { maxConcurrent: 1 })
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const result = trigger.trigger(from, { script: 'capped@1.0.0', key: 'k1' })
+    const row = db.select().from(jobs).where(eq(jobs.id, result.jobId)).get()
+    expect(row?.maxConcurrent).toBe(1)
+  })
+
+  test('a triggered job of a script declaring no runtime resolves to 0 (unlimited), never null', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-warmup', 'warmup')
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const result = trigger.trigger(from, { script: 'warmup@1.0.0', key: 'k1' })
+    const row = db.select().from(jobs).where(eq(jobs.id, result.jobId)).get()
+    expect(row?.maxConcurrent).toBe(0)
+  })
+
+  test('omitting farmJobSettings entirely still resolves correctly — the field has no farm layer at all', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-capped', 'capped', '1.0.0', { maxConcurrent: 2 })
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    // No `farmJobSettings` key at all — the default constant inside
+    // `triggers.ts` must carry this correctly (same equivalence proof as
+    // `services/job-service.ts`'s own default).
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const result = trigger.trigger(from, { script: 'capped@1.0.0', key: 'k1' })
+    const row = db.select().from(jobs).where(eq(jobs.id, result.jobId)).get()
+    expect(row?.maxConcurrent).toBe(2)
+  })
+})
+
+/**
+ * Plan 98 §3.3 S1, §4.5, step 98.6 — the version gate on the THIRD write
+ * path onto `jobs`. Against the REAL `ScriptRegistry`, exactly like the
+ * `maxConcurrent` describe block above: `entry.runtime` comes straight off
+ * the `scripts.runtime` column this test seeds, never a mock.
+ */
+describe('createJobTrigger — the version gate (plan 98 §3.3 S1, step 98.6)', () => {
+  test('a script declaring an unsupported runtime.sdk is refused with E_RUNTIME_UNSUPPORTED, and no job row is created', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-future', 'future', '1.0.0', { sdk: 99 })
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const before = db.select().from(jobs).all().length
+    let caught: EnkakuError | undefined
+    try {
+      trigger.trigger(from, { script: 'future@1.0.0', key: 'k1' })
+    } catch (err) {
+      caught = err as EnkakuError
+    }
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect(caught?.code).toBe('E_RUNTIME_UNSUPPORTED')
+    expect(caught?.message).toContain('99')
+    // No row created for the refused trigger — the same "nothing written"
+    // bar this plan's other refusals (`E_TRIGGER_TOO_DEEP` and friends) meet.
+    expect(db.select().from(jobs).all().length).toBe(before)
+  })
+
+  test('a script declaring no runtime.sdk at all (every pre-plan-98 script) is unaffected', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-warmup', 'warmup')
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const result = trigger.trigger(from, { script: 'warmup@1.0.0', key: 'k1' })
+    expect(result.deduped).toBe(false)
+  })
+
+  test('a script declaring the current major (SCRIPT_RUNTIME_MAJOR) is unaffected', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedScript(db, 's-current', 'current', '1.0.0', { sdk: 1 })
+    const from = seedRootJob(db, { deviceId: 'd1' })
+    const trigger = createJobTrigger({ db, registry: makeRegistry(db), budgets: () => DEFAULT_BUDGETS })
+
+    const result = trigger.trigger(from, { script: 'current@1.0.0', key: 'k1' })
+    expect(result.deduped).toBe(false)
   })
 })

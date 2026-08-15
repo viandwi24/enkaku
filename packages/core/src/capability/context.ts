@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import type { AgentRunStatus, AgentStopReason, DeviceInfo } from '@enkaku/protocol'
+import type { AgentRunStatus, AgentStopReason, ConnectionMedium, DeviceInfo, LeaseHolder } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
@@ -15,7 +15,8 @@ import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
 import { getScriptDetail, listScriptGroups, publishScript, type PublishScriptInput, type ScriptDetail, type ScriptGroupInfo } from '../scripts/service'
 import type { JobService } from '../services/job-service'
-import { clusterRefFor, listDevicesWithTags, rowToDeviceInfo } from '../registry/device-registry'
+import { clusterRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { lookupDeviceNumber } from '../registry/device-number'
 import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
 import type { WorkspaceStore } from '../workspace/store'
@@ -236,6 +237,38 @@ export interface CapabilityContextDeps {
    * keeps compiling unedited, and falls back to the exact old behaviour.
    */
   registry?: ScriptRegistry
+  /**
+   * Farm networks (plan 88 §3.6, §4.1, §5 step 88.5) — `discovery.networks`,
+   * read fresh on every call, same discipline as every other settings-derived
+   * accessor here. Without this, `ctx.listDevices()`/`ctx.getDevice()` (an
+   * agent script's own device view, `capability/device-state.ts`) could never
+   * badge a device OTG/WI-FI — only `GET /api/devices` would have, which
+   * would have made a script's view of a device disagree with Studio's.
+   * Optional, like `registry` above: every existing caller that predates
+   * this plan keeps compiling unedited, with no network ever matched.
+   */
+  networks?: () => FarmNetwork[]
+  /**
+   * The address book's declared media (plan 88 §3.1, §3.2, §4.3, §5 step
+   * 88.5) — `loadDeclaredMedia`'s own return shape, resolved fresh on every
+   * call, same reasoning as `networks` just above. Optional the same way.
+   */
+  declaredMedia?: () => Map<string, ConnectionMedium | null> | undefined
+  /**
+   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4) — the
+   * same producer gap `networks`/`declaredMedia` above already document:
+   * step 91.4 wired this into `api/devices.ts` alone and named this file as
+   * a known gap (see docs/plans/96-m61-hotfixes.md's continuation of
+   * §96.5–96.9). Without this, an agent script's `ctx.listDevices()`/
+   * `ctx.getDevice()` would read `assistedBy: []` even while a human is
+   * genuinely assisting the device it is running on. Resolved from the
+   * co-control manager's `assistedBy` (`lease/co-control.ts`), the same
+   * `heldByOf`-shaped per-device accessor `deps.leases.getHolder` already
+   * is. Optional, defaulting to `[]` per device — an unknown assist state is
+   * "nobody is assisting", never a guess — so every pre-existing test that
+   * hand-builds a `CapabilityContextDeps` literal keeps compiling unedited.
+   */
+  assistedByOf?: (deviceId: string) => LeaseHolder[]
 }
 
 function buildScriptService(db: Db): ScriptCapabilityService {
@@ -317,26 +350,41 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       // `listDevicesWithTags` itself falls back to `staticReadinessFallback`
       // per row when `readinessOf` is omitted — same as `getDevice` below.
       // `heldBy` (plan 71 §4.4) is always available — `deps.leases` exists in
-      // every mode, unlike `readiness`.
+      // every mode, unlike `readiness`. `networks`/`declaredMedia` (plan 88
+      // §5 step 88.5) are resolved ONCE here, never per row — the same N+1
+      // rule `device-registry.ts:171-175` already states.
+      // `assistedBy` (plan 91 §3.4 item 4, §4.4) — `listDevicesWithTags` has
+      // no `assistedByOf` parameter of its own, so this maps over its
+      // result and overrides the `[]` default with the real, live answer,
+      // the same override-after-build shape `api/devices.ts` established.
       return listDevicesWithTags(
         deps.db,
         readiness ? (deviceId) => readiness.get(deviceId) : undefined,
         (deviceId) => deps.leases.getHolder(deviceId),
-      )
+        deps.networks?.() ?? [],
+        deps.declaredMedia?.(),
+      ).map((info) => ({ ...info, assistedBy: deps.assistedByOf?.(info.id) ?? [] }))
     },
 
     getDevice(deviceId) {
       const row = getDeviceRow(deviceId)
       if (!row) return null
       const cluster = row.clusterId ? clusterRefFor(deps.db, row.clusterId) : null
-      return rowToDeviceInfo(
-        row,
-        loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
-        cluster,
-        null,
-        deps.readiness()?.get(deviceId) ?? null,
-        deps.leases.getHolder(deviceId),
-      )
+      return {
+        ...rowToDeviceInfo(
+          row,
+          loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
+          cluster,
+          null,
+          deps.readiness()?.get(deviceId) ?? null,
+          deps.leases.getHolder(deviceId),
+          deps.networks?.() ?? [],
+          deps.declaredMedia?.(),
+          lookupDeviceNumber(deps.db, row.stableId),
+        ),
+        // Plan 91 §3.4 item 4, §4.4 — same override as `listDevices` above.
+        assistedBy: deps.assistedByOf?.(deviceId) ?? [],
+      }
     },
 
     jobService: deps.jobService,

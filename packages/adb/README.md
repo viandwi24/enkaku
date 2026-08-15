@@ -104,3 +104,19 @@ this package's smartsocket client. See `packages/core/README.md`.
   `host:reconnect-offline`) — added by plan 85 for
   `packages/core/src/registry/reconcile.ts`'s discovery reconciler; neither
   is `kill-server` and neither disturbs another tool's session on port 5037.
+- `listDevices()`'s parsing gained two fields it used to throw away (plan 88
+  §3.1, §5 step 88.1, fixes F6): `TrackedDevice.usb` and `.transportId`, read
+  from `host:devices-l`'s trailing `key:value` fields (`usb:3-1.4.3`,
+  `transport_id:10`). `usb:` is adb's own signal that a transport is USB
+  rather than TCP — the exact field the registry's `deriveConnection()` (see
+  `packages/core/README.md`) needs to tell `kind: 'usb'` from `kind: 'tcp'`
+  without guessing from the shape of the serial string alone.
+- `connectDevice(hostPort)` / `disconnectDevice(hostPort)` (`host:connect:<host:port>`
+  / `host:disconnect:<host:port>`) already existed for the `adb-tcp` transport
+  engine and the wireless pairing flow; plan 88 adds their first **operator-facing**
+  callers — the reconnect ladder and per-device Disconnect/Reconnect
+  (`packages/core/src/registry/reconnect.ts`) — and changes what
+  `disconnect()` means for a live session: `AdbTcpTransport.disconnect()` is
+  now a documented no-op, since a session closing must never drop the farm's
+  adb transport out from under it (plan 88 §3.7). Neither call is
+  `kill-server`; both operate on one transport, never the shared server.

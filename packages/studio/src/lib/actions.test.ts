@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { z } from 'zod'
-import { api, BadResponseError } from './actions'
+import { api, BadResponseError, describeApiError, issuesFromError } from './actions'
 
 /**
  * `api()`'s POST-default (plan 42 §3.3, §4.3, §6.6): `FilesPanel`'s
@@ -77,6 +77,31 @@ describe('api()', () => {
   })
 
   /**
+   * `invalid_job_params` (plan 95 §3.7, §4.3, §4.8, fixes F12) — `api()` used
+   * to throw only `{ code, message }`, so `RunScriptDialog`/
+   * `ScheduleEditorDialog` had no field-level data to attach to
+   * `SchemaForm`'s `serverErrors` even after the core started sending it.
+   */
+  test('an {error} body carrying `issues` throws them through, unchanged', async () => {
+    stubFetch({ error: { code: 'invalid_job_params', message: 'videos: must be at most 2000', issues: [{ path: 'videos', message: 'must be at most 2000' }] } }, false)
+    await expect(api('/api/jobs', z.unknown())).rejects.toMatchObject({
+      code: 'invalid_job_params',
+      issues: [{ path: 'videos', message: 'must be at most 2000' }],
+    })
+  })
+
+  test('an {error} body with no `issues` throws with `issues` simply absent', async () => {
+    stubFetch({ error: { code: 'device_not_found', message: 'no such device' } }, false)
+    let caught: unknown
+    try {
+      await api('/api/devices/nope', z.unknown())
+    } catch (err) {
+      caught = err
+    }
+    expect(caught && typeof caught === 'object' && 'issues' in caught).toBe(false)
+  })
+
+  /**
    * Plan 72 §3.3, §6.1, §6.2 — `api()` cannot be called without a schema
    * (`grep -rn "as T" packages/studio/src/lib/actions.ts` finds nothing: the
    * old `return body as T` is gone). A response matching its schema parses
@@ -113,5 +138,71 @@ describe('api()', () => {
     globalThis.fetch = mock(async () => new Response(null, { status: 204 })) as unknown as typeof fetch
     const result = await api('/api/devices/d1/tags', z.void(), { method: 'DELETE' })
     expect(result).toBeUndefined()
+  })
+})
+
+/**
+ * `useAction().run()`'s catch block routes every thrown error through this —
+ * `auth.forbidden` is the code `requirePermission` (`packages/core/src/auth/middleware.ts`)
+ * and the couple of hand-written admin-only checks (e.g. `PATCH
+ * /api/devices/:id`'s ownerId transition) both send, and it becomes a
+ * legible, actionable message here rather than the server's own
+ * `requires the tool.manage permission` — a permission NAME, not
+ * something a user chose. This is the "still legible if a 403 reaches
+ * the UI" fallback for a control this task disables (a race, a role
+ * changed in another tab) rather than the normal path (normally the
+ * button is already disabled and never fires the request at all).
+ */
+describe('describeApiError()', () => {
+  test('auth.forbidden gets a plain-English rewrite, not the permission name', () => {
+    const err = Object.assign(new Error('requires the tool.manage permission'), { code: 'auth.forbidden' })
+    expect(describeApiError(err)).toBe('Your role does not allow this — ask an admin.')
+  })
+
+  test('every other code keeps the server-provided message verbatim', () => {
+    const err = Object.assign(new Error('adb can no longer see this device'), { code: 'device_not_found' })
+    expect(describeApiError(err)).toBe('adb can no longer see this device')
+  })
+
+  test('a non-Error, non-coded throw still stringifies rather than throwing again', () => {
+    expect(describeApiError('network down')).toBe('network down')
+  })
+})
+
+/**
+ * `issuesFromError` (plan 95 §3.7, §5 step 95.6, fixes F12) — turns the
+ * `issues` array `api()` now throws through into the `Record<path,
+ * message>` shape `SchemaForm`'s `serverErrors` prop takes, so
+ * `RunScriptDialog`/`ScheduleEditorDialog` can spread it straight in.
+ */
+describe('issuesFromError()', () => {
+  test('an error with issues is keyed by path', () => {
+    const err = Object.assign(new Error('videos: must be at most 2000'), {
+      code: 'invalid_job_params',
+      issues: [{ path: 'videos', message: 'must be at most 2000' }],
+    })
+    expect(issuesFromError(err)).toEqual({ videos: 'must be at most 2000' })
+  })
+
+  test('several issues all appear', () => {
+    const err = Object.assign(new Error('bad'), {
+      code: 'invalid_job_params',
+      issues: [
+        { path: 'videos', message: 'must be at most 2000' },
+        { path: 'mode', message: 'required' },
+      ],
+    })
+    expect(issuesFromError(err)).toEqual({ videos: 'must be at most 2000', mode: 'required' })
+  })
+
+  test('an error with no issues returns undefined, not an empty object', () => {
+    const err = Object.assign(new Error('no such device'), { code: 'device_not_found' })
+    expect(issuesFromError(err)).toBeUndefined()
+  })
+
+  test('a non-object, non-Error throw returns undefined rather than throwing again', () => {
+    expect(issuesFromError('network down')).toBeUndefined()
+    expect(issuesFromError(null)).toBeUndefined()
+    expect(issuesFromError(undefined)).toBeUndefined()
   })
 })

@@ -31,6 +31,8 @@ const KIND_LABEL: Record<string, string> = {
   'control.acquired': 'Control taken',
   'control.released': 'Control released',
   'control.revoked': 'Control revoked',
+  'control.assist.started': 'Assist started',
+  'control.assist.ended': 'Assist ended',
   'session.opened': 'Session opened',
   'session.closed': 'Session closed',
   'session.degraded': 'Session degraded',
@@ -65,6 +67,12 @@ const KIND_TONE: Record<string, string> = {
   'control.acquired': 'text-led-active border-led-active/35 bg-led-active/10',
   'control.released': 'text-fg-subtle border-line bg-transparent',
   'control.revoked': 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  // Amber, matching §3.4's assisting chrome (`docs/design.md`: saturated
+  // colour is reserved for a live, unusual, self-expiring condition) — the
+  // same tone `control.revoked` already uses for "something happened without
+  // being asked".
+  'control.assist.started': 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  'control.assist.ended': 'text-fg-subtle border-line bg-transparent',
   'session.degraded': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'job.finished': 'text-led-ok border-led-ok/35 bg-led-ok/10',
   'job.retry': 'text-led-warn border-led-warn/35 bg-led-warn/10',
@@ -94,6 +102,12 @@ function summarize(ev: DeviceEvent): string {
       return 'Manual control was released'
     case 'control.revoked':
       return `Released automatically${meta.reason ? ` (${String(meta.reason)})` : ''}`
+    case 'control.assist.started':
+      return meta.jobId ? `While job ${String(meta.jobId).slice(0, 8)} kept control` : 'While another client kept control'
+    case 'control.assist.ended': {
+      const jobPart = meta.jobId ? ` (job ${String(meta.jobId).slice(0, 8)})` : ''
+      return `Reason: ${String(meta.reason ?? '?')}${jobPart}`
+    }
     case 'session.opened':
       return `${String(meta.display ?? '?')} / ${String(meta.input ?? '?')} / ${String(meta.inspection ?? '?')}`
     case 'session.closed':

@@ -25,6 +25,16 @@ const DEFAULT_HOT_THRESHOLD_C = 45
  * renders a dash IN PLACE of that one chip rather than collapsing the row —
  * a chip that disappears shifts every chip after it, and grid columns stop
  * lining up across tiles (§6.3).
+ *
+ * Under a narrow CONTAINER (plan 92 §4.8) — never a JS width measurement —
+ * temperature drops first at `< 200px`, then battery at `< 160px`; readiness
+ * and status never drop. Because `TileGrid`'s `auto-fill minmax` gives every
+ * tile in a grid the same width, this reads as the whole row dropping in
+ * lockstep across the grid, keeping §3.2's column alignment intact rather
+ * than one tile quietly disagreeing with its neighbours. This only fires for
+ * a caller whose ancestor establishes a query container (`WallTile`'s own
+ * `@container`) — `DeviceTile` (plan 48 §5 step 48.4) sets none, so its two
+ * chips are unaffected and stay exactly as before.
  */
 export function TileChips({
   device,
@@ -54,13 +64,27 @@ export function TileChips({
        something unreadable. */
     <div className={cn('flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px]', className)}>
       {show.has('battery') && (
-        <span className={cn('readout flex shrink-0 items-center gap-1', lowBattery ? 'text-led-warn' : 'text-fg-muted')}>
+        <span
+          className={cn(
+            // Drops second, at the narrower of the two thresholds (see the
+            // component doc comment) — battery survives longer than
+            // temperature because it is the one most operators check first.
+            'readout flex shrink-0 items-center gap-1 @max-[160px]:hidden',
+            lowBattery ? 'text-led-warn' : 'text-fg-muted',
+          )}
+        >
           <Battery className="size-2.5" aria-hidden />
           {device.battery ? `${device.battery.level}%` : '—'}
         </span>
       )}
       {show.has('temperature') && (
-        <span className={cn('readout flex shrink-0 items-center gap-1', hot ? 'text-led-danger' : 'text-fg-muted')}>
+        <span
+          className={cn(
+            // Drops first (plan 92 §4.8's own example threshold).
+            'readout flex shrink-0 items-center gap-1 @max-[200px]:hidden',
+            hot ? 'text-led-danger' : 'text-fg-muted',
+          )}
+        >
           <Thermometer className="size-2.5" aria-hidden />
           {device.battery ? `${device.battery.temperatureC.toFixed(1)}°C` : '—'}
         </span>

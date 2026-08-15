@@ -4,8 +4,9 @@ import type { NotificationContext, ScheduleFiredEvent } from '@enkaku/protocol'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
 import { batches, devices, jobs, schedules, scheduleAgentTargets, scheduleRuns, scripts, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
-import { createJobStore } from '../queue/job-store'
+import { createJobStore, rowToJobInfo, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
+import type { JobService } from '../services/job-service'
 import { createLogger } from '../util/logger'
 import { fireOnce, pickJitterMs, runStartupCatchUp, type ScheduleAgentDispatch, type ScheduleRunnerDeps } from './runner'
 
@@ -67,6 +68,10 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     catchUp: overrides.catchUp ?? 'skip',
     jitterSec: overrides.jitterSec ?? 0,
     priority: overrides.priority ?? 0,
+    repeatCount: overrides.repeatCount ?? 1,
+    intervalMinMs: overrides.intervalMinMs ?? 0,
+    intervalMaxMs: overrides.intervalMaxMs ?? 0,
+    deviceIntervalMs: overrides.deviceIntervalMs ?? 0,
     lastFiredAt: overrides.lastFiredAt ?? null,
     lastBatchId: overrides.lastBatchId ?? null,
     createdBy: overrides.createdBy ?? null,
@@ -80,16 +85,49 @@ function fakeScheduler(): Scheduler {
   return { kick: () => {}, start: () => {}, stop: () => {} }
 }
 
+/**
+ * Plan 94 §3.9, §4.9, step 94.8 — `onOverlap: 'cancel-previous'` now routes
+ * through `stopBatch` (`api/batches.ts`), whose ONLY abort path is
+ * `JobService.cancel()` (no second implementation, per that function's own
+ * doc). A real `createJobService` needs a live `ExecutorHost`, which this
+ * scheduler-focused test file has no interest in standing up — this fake
+ * covers exactly what `stopBatch` calls: cancel a `queued` job the ordinary
+ * way, or force a `running` one straight to `cancelled` (the outcome
+ * `JobService.cancel`'s own `host.abort`/`finishExternally` fallback would
+ * reach in production; this file is not the place that tests THAT logic —
+ * `services/job-service.test.ts` is).
+ */
+function fakeJobService(db: Db, jobStore: JobStore): Pick<JobService, 'cancel'> {
+  return {
+    cancel(jobId) {
+      const job = jobStore.get(jobId)
+      if (!job) throw new Error(`no such job: ${jobId}`)
+      if (job.status === 'queued') {
+        const cancelled = jobStore.cancelQueued(jobId)
+        if (!cancelled) throw new Error('job changed status first')
+      } else if (job.status === 'running') {
+        db.update(jobs).set({ status: 'cancelled', finishedAt: new Date() }).where(eq(jobs.id, jobId)).run()
+      } else {
+        throw new Error(`job is ${job.status}`)
+      }
+      const updated = jobStore.get(jobId)
+      return { job: rowToJobInfo(updated!), cancelledDescendants: 0 }
+    },
+  }
+}
+
 function baseDeps(db: Db, overrides: Partial<ScheduleRunnerDeps> = {}): ScheduleRunnerDeps {
+  const jobStore = createJobStore(db)
   return {
     db,
-    jobStore: createJobStore(db),
+    jobStore,
     scheduler: fakeScheduler(),
     audit: createAuditLogger(db),
     log: createLogger('test'),
     onJobStatus: () => {},
     broadcastBatchStatus: () => {},
     broadcastFired: () => {},
+    jobService: fakeJobService(db, jobStore),
     ...overrides,
   }
 }
@@ -171,10 +209,19 @@ describe('fireOnce — onOverlap modes (plan 21 §3.2)', () => {
 
     const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
     expect(runs[0]?.outcome).toBe('dispatched')
-    expect(runs[0]?.detail).toContain('cancelled')
+    // Plan 94 §3.9, §4.9, step 94.8 — routed through `stopBatch` now, so the
+    // detail states both buckets it reports, not just "cancelled".
+    expect(runs[0]?.detail).toContain('stopped the previous run')
+    expect(runs[0]?.detail).toContain('1 queued')
 
     const updated = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
     expect(updated?.lastBatchId).not.toBe('prev')
+
+    // Plan 94 §3.9, step 94.8 acceptance #12 — no repetition is left planned:
+    // the previous batch is marked `stopping`, not left `queued`/`running`.
+    const prevBatch = db.select().from(batches).where(eq(batches.id, 'prev')).get()
+    expect(prevBatch?.status).not.toBe('queued')
+    expect(prevBatch?.status).not.toBe('running')
   })
 
   test('a cluster/device list resolving to nothing usable is recorded as no-targets, not a thrown error', async () => {
@@ -207,6 +254,96 @@ describe('fireOnce — jitter shifts firedAt, never dueAt (plan 21 §3.6, accept
     const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
     expect(run?.dueAt.getTime()).toBe(dueAt.getTime())
     expect(run?.firedAt?.getTime()).toBe(dueAt.getTime() + 5000)
+  })
+})
+
+describe('fireOnce — the jitter draw is written down, not just implied (plan 94 §3.7, F28)', () => {
+  test('a jittered fire records the exact drawn value on schedule_runs.jitterMs', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', jitterSec: 10, deviceIds: ['d1'] })
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+
+    let clockMs = dueAt.getTime()
+    const clock = () => new Date(clockMs)
+    const sleep = async (ms: number) => {
+      clockMs += ms
+    }
+    // random() = 0.5 → jitterMs = floor(0.5 * (10*1000 + 1)) = 5000ms — the SAME seeded draw
+    // `pickJitterMs` produces, never re-derived: this test asserts the value that was actually
+    // used ended up on the row, not merely that a plausible one could be recomputed from the range.
+    await fireOnce(baseDeps(db, { clock, random: () => 0.5, sleep }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.jitterMs).toBe(5000)
+  })
+
+  test('a run with no jitter configured records jitterMs: 0, distinguishable from an unexplained delay', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', jitterSec: 0, deviceIds: ['d1'] })
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+
+    await fireOnce(baseDeps(db, { clock: () => dueAt }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.jitterMs).toBe(0)
+  })
+
+  test('a fire skipped for overlap never reaches the draw — jitterMs: 0, not the range', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', jitterSec: 30, onOverlap: 'skip', lastBatchId: 'b1', deviceIds: ['d1'] })
+    seedBatch(db, 'b1', 'running')
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+
+    await fireOnce(baseDeps(db, { clock: () => dueAt }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('skipped-overlap')
+    expect(run?.jitterMs).toBe(0)
+  })
+})
+
+describe('fireOnce — pacing travels from the schedule into the batch, through the same seam as concurrency/order/priority (plan 94 §3.7, §4.8, step 94.9, F34)', () => {
+  test('a schedule with repeatCount/interval/deviceInterval set produces a batch carrying that exact pacing', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, {
+      id: 's1',
+      deviceIds: ['d1'],
+      repeatCount: 5,
+      intervalMinMs: 1000,
+      intervalMaxMs: 2000,
+      deviceIntervalMs: 500,
+    })
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+
+    await fireOnce(baseDeps(db, { clock: () => dueAt }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+    const batch = db.select().from(batches).where(eq(batches.id, run!.batchId!)).get()
+    expect(batch?.repeatCount).toBe(5)
+    expect(batch?.intervalMinMs).toBe(1000)
+    expect(batch?.intervalMaxMs).toBe(2000)
+    expect(batch?.deviceIntervalMs).toBe(500)
+  })
+
+  test("a schedule with default pacing (repeatCount: 1, every interval 0) produces an unpaced batch — today's behaviour exactly", async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['d1'] })
+    const dueAt = new Date('2024-01-01T00:00:00Z')
+
+    await fireOnce(baseDeps(db, { clock: () => dueAt }), schedule, dueAt)
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    const batch = db.select().from(batches).where(eq(batches.id, run!.batchId!)).get()
+    expect(batch?.repeatCount).toBe(1)
+    expect(batch?.intervalMinMs).toBe(0)
+    expect(batch?.intervalMaxMs).toBe(0)
+    expect(batch?.deviceIntervalMs).toBe(0)
   })
 })
 
@@ -374,7 +511,7 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
       pluginName: 'tiktok',
       declaredVersion: '1.0.0',
       bundlePath: '/tmp/tiktok.mjs',
-      scripts: [{ exportId: 'login', paramsSchema: {} }],
+      scripts: [{ exportId: 'login', paramsSchema: {}, runtime: null }],
       owner: { kind: 'workspace', label: '/scripts/tiktok' },
     })
     const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-schedule-runner-test', devSlots })
@@ -418,6 +555,144 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
     const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
     expect(runs[0]?.outcome).toBe('error')
     expect(runs[0]?.detail).toContain('script_disabled')
+  })
+})
+
+/**
+ * The `maxConcurrent` half of the same gap the version-gate test in
+ * `jobs/scheduled-batch-version-gate.test.ts` pins for `checkRuntimeMajor`:
+ * both gates are only reachable once `fireOnce`'s own `batchDeps` forwards
+ * `scriptNameOf` (via `deps.registry`) into `createBatch`. Fixing only the
+ * version gate and leaving this half unproven is exactly how
+ * `docs/plans/96-m61-hotfixes.md` §96.14's "closed" claim looked complete
+ * while a schedule-fired batch still denormalised `scriptName: null` /
+ * `maxConcurrent: 0` (unlimited) on every member row — the same failure
+ * shape `clusters/dispatch-batch-max-concurrent.integration.test.ts` proves
+ * for the direct `createBatch` call sites, reproduced here through the
+ * REAL `fireOnce` and a REAL `ScriptRegistry`, matching production wiring
+ * (`daemon.ts` supplies `registry: scriptRegistry` to `createScheduleRunner`).
+ */
+describe('fireOnce — a scheduled batch member carries the SAME runtime.maxConcurrent cap and scriptName a standalone enqueue() applies', () => {
+  test('a maxConcurrent:1 script fired by a schedule across three idle devices pins maxConcurrent:1 and a non-null scriptName on every member row, and the claim gate honours it', async () => {
+    const db = setUp()
+    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
+    db.insert(scripts)
+      .values({
+        id: 'capped-1.0.0',
+        name: 'capped',
+        version: '1.0.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        runtime: { maxConcurrent: 1 },
+      })
+      .run()
+    const { createScriptRegistry } = await import('../scripts/registry')
+    const { createDevSlotStore } = await import('../plugins/dev-slots')
+    const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-schedule-runner-maxconcurrent-test', devSlots: createDevSlotStore() })
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'capped@1.0.0', deviceIds: ['d1', 'd2', 'd3'] })
+
+    const jobStore = createJobStore(db)
+    await fireOnce(baseDeps(db, { registry, jobStore }), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs.length).toBe(3)
+    for (const row of batchJobs) {
+      expect(row.maxConcurrent).toBe(1)
+      expect(row.scriptName).toBe('capped')
+      expect(row.scriptVersion).toBe('1.0.0')
+    }
+
+    // The claim gate (`queue/job-store.ts`'s `claimNext`) correlates running
+    // siblings via `r.script_name = j.script_name` — it can only see this
+    // batch's cap at all because `scriptName` is non-null. Sequential calls
+    // prove the cap actually holds, not just that the columns are populated.
+    expect(jobStore.claimNext(60)).not.toBeNull()
+    expect(jobStore.claimNext(60)).toBeNull()
+  })
+})
+
+/**
+ * Plan 95 §4.4, §5 step 95.7 — reconciliation at firing. Written so it would
+ * FAIL if `paramsCompatible` (tested separately in `api/schedules.test.ts`)
+ * only ever reflected the LAST firing's outcome rather than a fresh
+ * recomputation: here the schedule is published against `s@1.0.0`, then the
+ * schema changes underneath it, and the very NEXT firing (never fired before
+ * against the new schema) must already refuse — there is no "warm up" firing.
+ */
+describe('fireOnce — reconciliation against the resolved schema (plan 95 §4.4, §5 step 95.7)', () => {
+  test('publish s@1.0.0 with { videos }, create an s@latest schedule, publish s@1.1.0 adding a required region with no default: the next firing enqueues nothing and records params_incompatible naming region', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.update(scripts)
+      .set({ paramsSchema: { type: 'object', properties: { videos: { type: 'number' } } } })
+      .where(eq(scripts.id, 'test-script-1.0.0'))
+      .run()
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@latest', deviceIds: ['d1'], params: { videos: 30 } })
+
+    // 1.1.0 adds a REQUIRED `region` with no default — the exact scenario the plan names.
+    db.insert(scripts)
+      .values({
+        id: 'test-script-1.1.0',
+        name: 'test-script',
+        version: '1.1.0',
+        bundle: 'export {}',
+        enabled: true,
+        createdAt: new Date(),
+        paramsSchema: { type: 'object', properties: { videos: { type: 'number' }, region: { type: 'string' } }, required: ['videos', 'region'] },
+      })
+      .run()
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const runs = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).all()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.outcome).toBe('error')
+    expect(runs[0]?.batchId).toBeNull()
+    expect(runs[0]?.detail).toContain('params_incompatible')
+    expect(runs[0]?.detail).toContain('region')
+
+    // Nothing was enqueued.
+    expect(db.select().from(batches).all()).toHaveLength(0)
+    expect(db.select().from(jobs).all()).toHaveLength(0)
+
+    const audit = createAuditLogger(db)
+    const failure = audit.list(10).find((e) => e.action === 'schedule.failed')
+    expect(failure).toBeDefined()
+    expect(failure?.target).toBe('s1')
+    expect((failure?.meta as { code?: string } | null)?.code).toBe('params_incompatible')
+    expect((failure?.meta as { message?: string } | null)?.message).toContain('region')
+  })
+
+  test('a non-blocking finding (a tightened bound with a default) still dispatches, using the RECONCILED value, not the stale stored one', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    db.update(scripts)
+      .set({ paramsSchema: { type: 'object', properties: { chance: { type: 'number', minimum: 0, maximum: 1, default: 0.5 } } } })
+      .where(eq(scripts.id, 'test-script-1.0.0'))
+      .run()
+    // Stored under an older, wider bound — no longer valid, but the schema supplies a default.
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'], params: { chance: 5 } })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
+    const batchJobs = db.select().from(jobs).where(eq(jobs.batchId, run!.batchId!)).all()
+    expect(batchJobs[0]?.params).toEqual({ chance: 0.5 })
+  })
+
+  test('a schedule with no params schema at all (a script that takes none) is never incompatible', async () => {
+    const db = setUp() // test-script@1.0.0 has no paramsSchema set
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: 'test-script@1.0.0', deviceIds: ['d1'] })
+
+    await fireOnce(baseDeps(db), schedule, new Date('2024-01-01T00:00:00Z'))
+
+    const run = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, 's1')).get()
+    expect(run?.outcome).toBe('dispatched')
   })
 })
 

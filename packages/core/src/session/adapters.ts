@@ -19,6 +19,12 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
       const settings = DeviceSettingsSchema.safeParse(row.settings ?? {})
       const prep = settings.success ? settings.data.prep : defaultDeviceSettings().prep
       const identity = settings.success ? settings.data.identity : defaultDeviceSettings().identity
+      const instrumentation = settings.success ? settings.data.instrumentation : defaultDeviceSettings().instrumentation
+      // Plan 92 §3.5, §4.4 — same dead-config guard as identity/tagTraffic
+      // below: a device's own video override must be read here, at the one
+      // seam session creation actually consults, or `resolveVideoProfile`
+      // would only ever see the farm's numbers (F18).
+      const video = settings.success ? settings.data.video : defaultDeviceSettings().video
       return {
         id: row.id,
         stableId: row.stableId,
@@ -39,10 +45,22 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         keepAwake: prep.keepAwake,
         standbyScreenOff: prep.standbyScreenOff,
         rotation: prep.rotation,
+        // Plan 90 §3.2, §4.4, §5 step 90.5 — same dead-config guard as
+        // identity/tagTraffic below: read here, at the one seam session
+        // creation actually consults, or "auto" would be true only in the
+        // schema (plan 33 §5.9's lesson, cited by the two settings below it).
+        textInput: prep.textInput,
         // Plan 58 §4.2 — the dead-config guard (plan 33 §5.9's lesson) applies
         // here too: identity is projected at the SAME seam the settings blob is
         // read, so it cannot be saved-and-never-read like `timing` once was.
         identity,
+        // Plan 87 §4.12, §5 step 87.13 — same dead-config guard as identity
+        // above: the farm-tagging setting must be read here, not just saved,
+        // or "on by default" (spec §17) would be true only in the schema.
+        tagTraffic: instrumentation.tagTraffic,
+        // Plan 92 §3.5, §4.4 — this device's own video override, resolved
+        // against the farm's settings by `resolveVideoProfile`.
+        video,
       }
     },
   }
@@ -54,6 +72,8 @@ export function createDbArtifactSink(deps: {
   dataDir: string
   jobId: string
   onSaved: (info: ArtifactInfo) => void
+  /** Plan 99 §3.2, §4.6, §4.7 — forwarded straight to `createArtifactStore`; see its own doc comment. */
+  nodeId?: () => string | null
 }): ArtifactSink {
   const store = createArtifactStore(deps)
   return {

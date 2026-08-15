@@ -82,6 +82,9 @@ function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: bool
     transport: {} as unknown as Transport,
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
+    // Plan 91 §4.1 — `arbiter` is required on `DeviceSession` now; this fixture never sends
+    // input.* and never exercises it, so a bare stub keeps the type honest without wiring one up.
+    arbiter: {} as unknown as DeviceSession['arbiter'],
     displayEngineId: 'screencap-loop',
     quality: 'control',
     inputEngineId: 'adb-input',
@@ -100,6 +103,14 @@ function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: bool
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
     clipboard: null,
+    textInput: {
+      mode: 'device',
+      agentCapabilities: null,
+      imeCurrent: false,
+      commitViaAgent: async () => {
+        throw new Error('no guest agent client wired in this fixture')
+      },
+    },
     close: async () => {},
   }
   return { session, calls }
@@ -115,7 +126,9 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
 }
 
@@ -173,6 +186,13 @@ function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSess
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
+      assists: () => [],
+      // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these inspect
+      // tests; present only so this fixture keeps satisfying `JobService`.
+      nodes: () => ({ items: [], finalized: false }),
+      resume: () => {
+        throw new Error('not used')
+      },
     },
     broadcast: () => {},
     recorder: { record: (e) => void events.push(e), stop: async () => {} },

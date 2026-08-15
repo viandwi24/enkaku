@@ -10,8 +10,10 @@ import {
   ScriptResponseSchema,
   ScriptToggleResponseSchema,
   ScriptVersionsResponseSchema,
+  SettingsResponseSchema,
   type DeviceInfo,
   type JobInfo,
+  type JobSettings,
 } from '@enkaku/protocol'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
@@ -29,6 +31,8 @@ import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { duration, relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
+import { cn } from '@/lib/utils'
+import { computeRuntimeReadout } from '../runtime-readout'
 
 interface VersionOption {
   id: string
@@ -58,6 +62,13 @@ function ScriptDetail() {
   const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   // The runs table's durations tick while a run is still going (Plan 17 §4.6).
   const now = useNow()
+  // Plan 98 §3.9 item 3, §5 step 98.8 — the Runtime card's own farm layer.
+  // Fetched once (this page has nothing that changes the farm's job
+  // settings itself), not re-fetched on every version switch — a farm
+  // setting change reaching this card without a reload is a "nice to have",
+  // not a correctness requirement the way it is for the runner itself
+  // (F25's own guarantee lives server-side; this is a read-only display).
+  const [farmJobSettings, setFarmJobSettings] = useState<JobSettings | null>(null)
 
   const load = () => {
     if (!scriptId) return
@@ -71,6 +82,12 @@ function ScriptDetail() {
   }
 
   useEffect(load, [scriptId])
+
+  useEffect(() => {
+    void api('/api/settings', SettingsResponseSchema)
+      .then((b) => setFarmJobSettings(b.settings.job))
+      .catch(() => undefined)
+  }, [])
 
   // The version selector's options (plan 62 §4.6) — re-fetched whenever the
   // script's NAME changes (switching versions keeps the same name, so this
@@ -218,6 +235,14 @@ function ScriptDetail() {
             )}
           </div>
 
+          {/* Plan 98 §3.9 item 3, §5 step 98.8 — the Runtime card: effective
+              values plus WHERE each one came from. Rendered only once the
+              farm's own job settings have loaded — a card that guessed at
+              the farm layer before it arrived would be worse than a brief
+              loading state (the same "measured, not implied" standard the
+              video settings step already shipped). */}
+          {farmJobSettings && <RuntimeCard farm={farmJobSettings} scriptRuntime={script.runtime ?? null} />}
+
           <div className="rounded-lg border bg-surface p-4">
             <h2 className="rack-label mb-2.5">identity</h2>
             <dl className="space-y-1.5">
@@ -326,6 +351,50 @@ function ScriptDetail() {
         onLaunched={() => runsRef.current?.reload()}
       />
     </>
+  )
+}
+
+/**
+ * Plan 98 §3.9 item 3, §5 step 98.8 — read-only, and the answer to "where do
+ * the numbers come from" made visible instead of documented (this step's own
+ * brief). Purely presentational, the same split `VideoQualityReadout`
+ * already establishes: `computeRuntimeReadout` (`../runtime-readout.ts`)
+ * does every bit of resolving and labelling; this component only walks its
+ * `rows` output.
+ */
+function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptRow['runtime'] }) {
+  const { rows } = computeRuntimeReadout(farm, scriptRuntime ?? null)
+  return (
+    <div className="rounded-lg border bg-surface p-4">
+      <h2 className="text-[14px] font-semibold tracking-tight">Runtime</h2>
+      <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+        What this script actually runs under, and which of the script, the farm default, or a farm ceiling decided it
+        (Plan 98). A per-job override typed into the Run form's Runtime section can still change any of these for one
+        run — this card shows the script's own declaration only.
+      </p>
+      <dl className="mt-3 divide-y overflow-hidden rounded border">
+        {rows.map((r) => (
+          <div key={r.label} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-2">
+            <dt className="text-[12.5px] text-fg-muted">{r.label}</dt>
+            <dd className="flex items-baseline gap-1.5">
+              <span className="readout text-[12.5px] font-medium text-fg">{r.value}</span>
+              {r.enforcement === 'sampled' && (
+                <span
+                  className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] tracking-wide text-fg-subtle uppercase"
+                  title="Enforced by sampling: a breach is caught on the next check, not prevented instantly."
+                >
+                  sampled
+                </span>
+              )}
+              <span className={cn('text-[11px]', r.origin === 'clamped' ? 'text-led-warn' : 'text-fg-subtle')}>
+                {r.originLabel}
+              </span>
+            </dd>
+            {r.detail && <p className="w-full text-[11px] leading-relaxed text-led-warn">{r.detail}</p>}
+          </div>
+        ))}
+      </dl>
+    </div>
   )
 }
 

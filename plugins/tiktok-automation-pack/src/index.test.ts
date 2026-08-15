@@ -1,8 +1,78 @@
 import { describe, expect, test } from 'bun:test'
 import type { Selector } from '@enkaku/protocol'
-import { matches, scoreContent } from './index'
+import type { z } from 'zod'
+import plugin, { matches, scoreContent } from './index'
 import { makeRng, pickWatchMs, pngSize } from './human'
 import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
+
+/**
+ * Plan 97 §3.2, §5 step 97.8's own verifiable result — every member's
+ * declared `result` schema accepts the real shape its `run()` returns.
+ * `switch-account`/`search-follow` are unit-tested by parsing exactly what
+ * their own `run()` bodies construct (`switch-account.ts:427-433`,
+ * `search-follow.ts:345-357`/`378-392`); `auto-scroll`'s is the H3 worked
+ * example (`index.ts:597+`).
+ */
+describe('plan 97 — declared result schemas accept what each script actually returns', () => {
+  // `Plugin.scripts: ScriptDefinition[]` erases each member's own `R` (the
+  // array itself is deliberately homogeneous — see `plugin.ts`'s own
+  // `PluginMemberScripts<S>` doc comment on why a member's `result` type is
+  // proven at its own `const` declaration, not recovered from this array).
+  // This helper is the runtime-only bridge back to a concrete Zod schema for
+  // a TEST, which needs no static type from the array position at all.
+  function resultSchemaOf(id: string): z.ZodTypeAny {
+    const s = plugin.scripts.find((x) => x.id === id)
+    if (!s) throw new Error(`no such member: ${id}`)
+    if (!s.result) throw new Error(`member "${id}" declares no result schema`)
+    return s.result as z.ZodTypeAny
+  }
+
+  test('auto-scroll — thirteen fields, twelve scalars and one Record<string, number>', () => {
+    const sample = {
+      videos: 312,
+      watchSeconds: 2520,
+      meanWatchSeconds: 8,
+      byLabel: { skim: 100, full: 212 },
+      backScrolls: 5,
+      idlePauses: 2,
+      recoveries: 0,
+      matched: 40,
+      commentVisits: 12,
+      unreadable: 1,
+      endedOnStall: false,
+      dialogSweeps: 0,
+      seed: 123456,
+    }
+    const result = resultSchemaOf('auto-scroll')
+    expect(result.safeParse(sample).success).toBe(true)
+  })
+
+  test('switch-account — the shape `run()` actually constructs', () => {
+    const sample = { from: 'alice', to: 'bob', position: 2, accounts: ['alice', 'bob'], verified: true }
+    const result = resultSchemaOf('switch-account')
+    expect(result.safeParse(sample).success).toBe(true)
+  })
+
+  test('search-follow — both branches `run()` can return (already-following, and freshly followed)', () => {
+    const alreadyFollowing = {
+      query: 'trading',
+      target: 'alice',
+      matchDisplayName: false,
+      handle: 'alice',
+      displayName: 'Alice',
+      followers: 1200,
+      followersLabel: '1.2K',
+      alreadyFollowing: true,
+      verified: true,
+      seed: 1,
+      handlesSeen: ['alice', 'bob'],
+    }
+    const freshlyFollowed = { ...alreadyFollowing, alreadyFollowing: false, followButtonBefore: 'Follow', followButtonAfter: 'Following' }
+    const result = resultSchemaOf('search-follow')
+    expect(result.safeParse(alreadyFollowing).success).toBe(true)
+    expect(result.safeParse(freshlyFollowed).success).toBe(true)
+  })
+})
 
 describe('keyword matching', () => {
   const KEYWORDS = ['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict']

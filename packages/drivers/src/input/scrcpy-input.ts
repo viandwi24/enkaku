@@ -5,6 +5,29 @@ const UHID_POINTER_ID = 1
 /** How long the kernel and InputReader need before the pointer accepts reports. */
 const UHID_SETTLE_MS = 1500
 
+/**
+ * The tap-hold range used when a caller supplies no `holdMs` at all — the
+ * exact bounds of the literal this replaced (`40 + Math.random() * 80`), so
+ * an engine constructed without going through `createDeviceExecutor` (e.g. a
+ * direct unit test) keeps behaving exactly as before this range became
+ * configurable via `DeviceSettings.timing.tapJitterMs` (spec §9.3, §17).
+ */
+export const DEFAULT_HOLD_MS: [number, number] = [40, 120]
+
+/**
+ * Sample a tap's hold duration from a `[min, max]` range (spec §9.3, §17 —
+ * test realism, not evasion: a real finger never holds a tap for exactly the
+ * same duration twice). `rng` is injectable so callers get deterministic
+ * output under test instead of this reaching for `Math.random()` itself.
+ * Exported (like `buildGesturePath`'s own `rng`) so the sampling itself can
+ * be asserted directly, without paying for a real `Bun.sleep` in a test.
+ */
+export function sampleHoldMs(opts?: { holdMs?: [number, number]; rng?: () => number }): number {
+  const [lo, hi] = opts?.holdMs ?? DEFAULT_HOLD_MS
+  const rng = opts?.rng ?? Math.random
+  return lo + rng() * Math.max(0, hi - lo)
+}
+
 export interface ScrcpyInputDeps {
   session: ScrcpySession
   /** Current screen size — used for absolute coordinates and normalisation. */
@@ -23,10 +46,10 @@ export class ScrcpySdkInput implements InputSink {
 
   constructor(protected deps: ScrcpyInputDeps) {}
 
-  async tap(p: Point): Promise<void> {
+  async tap(p: Point, opts?: { holdMs?: [number, number]; rng?: () => number }): Promise<void> {
     const { width, height } = this.deps.screenSize()
     this.deps.session.control.injectTouch('down', p.x, p.y, width, height)
-    await Bun.sleep(40 + Math.random() * 80)
+    await Bun.sleep(sampleHoldMs(opts))
     this.deps.session.control.injectTouch('up', p.x, p.y, width, height)
   }
 
@@ -142,7 +165,7 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
     return { xNorm: width > 0 ? p.x / width : 0, yNorm: height > 0 ? p.y / height : 0 }
   }
 
-  override async tap(p: Point): Promise<void> {
+  override async tap(p: Point, opts?: { holdMs?: [number, number]; rng?: () => number }): Promise<void> {
     await this.init()
     const pos = this.norm(p)
     // Move to the target before touching down. An absolute pointer whose first
@@ -152,7 +175,7 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...pos }))
     await Bun.sleep(100)
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: true, ...pos }))
-    await Bun.sleep(40 + Math.random() * 80)
+    await Bun.sleep(sampleHoldMs(opts))
     this.deps.session.control.uhidInput(UHID_POINTER_ID, buildPointerReport({ touching: false, ...pos }))
   }
 

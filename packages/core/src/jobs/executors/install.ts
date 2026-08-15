@@ -16,6 +16,14 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  */
 export function createInstallExecutor(deps: { transfer: TransferService; broadcast: TransferBroadcast }): JobExecutor {
   return {
+    // Plan 93 §3.12, §4.6, step 93.8 — closes F10: a batch/schedule dispatch
+    // of `internal:install` used to require only `job.run`, no `device.files`
+    // and no `transfer.enabled`, unlike the REST `POST /:id/install` sibling
+    // (`api/transfer.ts`'s `authorize`), which requires both. Enforced by
+    // `jobs/validate-script.ts`'s `validateScriptForRun`, the one function
+    // every dispatch path already funnels through.
+    requires: { gate: 'files', setting: 'transfer.enabled' },
+
     validateParams(params) {
       const parsed = InstallJobParamsSchema.safeParse(params)
       if (!parsed.success) {

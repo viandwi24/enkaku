@@ -6,7 +6,6 @@ import {
   createSessionManager,
   PortAllocator,
   parsePortRange,
-  QUALITY_PROFILES,
   type ArtifactSink,
   type DeviceSnapshot,
   type DeviceSnapshotSource,
@@ -81,7 +80,7 @@ export function createNodeHosts(deps: {
         },
         { deviceId, transport, requested },
       ),
-    makeScrcpy: async (deviceId, transport, quality) => {
+    makeScrcpy: async (deviceId, transport, profile) => {
       const jarPath = await deps.toolchain.resolveToolPath('scrcpy-server').catch(() => null)
       if (!jarPath) return null
       const port = await ports.claim(`scrcpy:${deviceId}`)
@@ -89,7 +88,12 @@ export function createNodeHosts(deps: {
       // today over the tunnel (the control-plane side does not send a
       // `quality` yet), but the node's own SessionManager already honours
       // it, so this stays correct rather than silently ignoring the param.
-      const profile = QUALITY_PROFILES[quality]
+      // `profile` (plan 92 §3.5, §4.2) is already resolved by
+      // `createSession`'s own fallback — the node has no farm settings
+      // store to supply `SessionManagerDeps.resolveProfile` (00-overview.md
+      // §4.1's `node` boundary), so this is always the schema-default
+      // profile for whichever quality was requested: byte-identical to the
+      // pre-plan-92 `QUALITY_PROFILES` constants.
       return startScrcpySession(
         { serial: transport.serial, exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout), hostAdb },
         {
@@ -341,6 +345,9 @@ export function createNodeHosts(deps: {
                   ...(result.error
                     ? { error: { code: result.error.code, message: result.error.message, phase: result.error.phase } }
                     : {}),
+                  // Plan 97 §3.3, §4.3, F6 — the same verdict `JobRunner.execute()`
+                  // now carries locally, mirrored over the tunnel.
+                  ...(result.outcome !== undefined ? { outcome: result.outcome } : {}),
                 },
               },
             })

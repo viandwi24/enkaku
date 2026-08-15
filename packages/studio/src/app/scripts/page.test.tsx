@@ -16,12 +16,14 @@ const scriptGroup = {
   versionCount: 1,
   lastPublishedAt: 0,
   enabled: true,
+  kind: 'script',
 }
 
 const script = {
   id: 'script-1',
   name: 'checkout',
   version: '1.0.0',
+  kind: 'script',
   paramsSchema: null,
   enabled: true,
   createdBy: null,
@@ -72,6 +74,7 @@ const pluginScriptGroup = {
   versionCount: 1,
   lastPublishedAt: 0,
   enabled: true,
+  kind: 'script',
 }
 
 describe('ScriptsPage — Plugin column and origin filter (plan 82 §4.6, step 13)', () => {

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
-import { clusters, devices, jobs, type ClusterRow, type JobRow } from '../db/schema'
+import { batches, clusters, devices, jobs, type ClusterRow, type JobRow } from '../db/schema'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
 import { createBatch, pickRebindDevice } from './dispatch'
@@ -105,6 +105,42 @@ describe('createBatch — resolution and dispatch (plan 20 §4.4, §7)', () => {
     // among the jobs created; the batch itself still runs on the rest.
     expect(created.map((j) => j.deviceId).sort()).toEqual(['d1', 'd3'])
     expect(batch.clusterId).toBe('c1')
+  })
+
+  /**
+   * Plan 93 §3.12, §4.2, §4.6, step 93.8, closing F11 — `resolved.skipped`
+   * was already computed here (it decides `E_NO_TARGETS` above, and used to
+   * be thrown away into the audit `meta` field) and is now persisted onto
+   * the batch row itself, so an operator can see "17 of 20 — 3 were
+   * offline" without opening the audit log.
+   */
+  test('resolved.skipped is persisted onto the batch row, with reasons', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2', 'offline')
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+
+    const { batch } = createBatch(
+      { db, scheduler, audit, onJobStatus: () => {} },
+      { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2'] }, concurrency: 0, order: 'as-listed' },
+    )
+
+    expect(batch.skipped).toEqual([{ deviceId: 'd2', reason: 'offline' }])
+  })
+
+  test('a batch with no skips persists skipped: null', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const audit = createAuditLogger(db)
+    const { scheduler } = fakeScheduler()
+
+    const { batch } = createBatch(
+      { db, scheduler, audit, onJobStatus: () => {} },
+      { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] }, concurrency: 0, order: 'as-listed' },
+    )
+
+    expect(batch.skipped).toBeNull()
   })
 
   test('an unknown cluster id fails with cluster_not_found', () => {
@@ -226,7 +262,108 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       rootJobId: null,
       depth: 0,
       triggerKey: null,
+      peakRssBytes: null,
+      assistCount: 0,
+      maxConcurrent: null,
+      // Plan 98 §3.8, §4.4, step 98.7 — null here: a bare fixture row, no
+      // per-job override exercised by this test.
+      runtimeOverride: null,
+      // Plan 94 §3.8, §4.8, step 94.6 — null here: a bare fixture row, no
+      // pacer exercised by this test.
+      notBefore: null,
+      batchRepeat: null,
+      pacedDelayMs: null,
+      // Plan 97 §3.3, §4.4 — null here: a bare fixture row, this test does
+      // not exercise a settled result.
+      resultStatus: null,
+      resultBytes: null,
+      resultSummary: null,
+      resultIssues: null,
     }
     expect(pickRebindDevice(db, standalone)).toBeNull()
+  })
+})
+
+/**
+ * Plan 95 §5 step 95.6's verifiable result, batch half: F11 recorded that a
+ * batch validated its params blob once and fanned the SAME object into every
+ * child job row — so a bad blob became N failing jobs, each of which leased a
+ * device first. `deps.validateScript` (wired, in production, to
+ * `validateScriptForRun` → the real script executor's `validateParams`,
+ * `jobs/executors/script.ts`) is called as `createBatch`'s very first
+ * statement, before target resolution and before either the batch or any job
+ * row is written — this test proves that ordering directly, with a REAL
+ * device row whose status a lease would have changed, rather than only
+ * asserting the 400 a route would return.
+ */
+describe('createBatch — an invalid params object is refused before any device is leased (plan 95 §5 step 95.6)', () => {
+  test('a validateScript that throws runs BEFORE target resolution, BEFORE any job/batch row exists, and BEFORE the scheduler is ever kicked', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    const audit = createAuditLogger(db)
+    let kicked = false
+    const scheduler: Scheduler = { kick: () => void (kicked = true), start: () => {}, stop: () => {} }
+
+    expect(() =>
+      createBatch(
+        {
+          db,
+          scheduler,
+          audit,
+          onJobStatus: () => {},
+          // Mirrors what the real script executor now throws for a params
+          // object that fails the published schema (script.ts's
+          // `validateParams`) — same code, same `issues` shape.
+          validateScript: () => {
+            throw new EnkakuError('invalid_job_params', 'videos: must be at most 2000', undefined, [
+              { path: 'videos', message: 'must be at most 2000' },
+            ])
+          },
+        },
+        { scriptId: 'checkout', params: { videos: 9999 }, target: { deviceIds: ['d1', 'd2'] }, concurrency: 0, order: 'as-listed' },
+      ),
+    ).toThrow(EnkakuError)
+
+    // Nothing exists for a device to be leased against — the strongest form
+    // of "no device is leased" is "there is no job".
+    expect(db.select().from(jobs).all().length).toBe(0)
+    expect(db.select().from(batches).all().length).toBe(0)
+    // Both devices are completely untouched — still `idle`, never targeted.
+    expect(db.select().from(devices).all().every((d) => d.status === 'idle')).toBe(true)
+    // The scheduler — the thing that actually assigns a queued job to a
+    // device — was never even kicked.
+    expect(kicked).toBe(false)
+  })
+
+  test('the thrown error carries the field-level issue, unchanged, for the route to turn into { error: { issues } }', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const audit = createAuditLogger(db)
+    const scheduler: Scheduler = { kick: () => {}, start: () => {}, stop: () => {} }
+
+    let caught: EnkakuError | undefined
+    try {
+      createBatch(
+        {
+          db,
+          scheduler,
+          audit,
+          onJobStatus: () => {},
+          validateScript: () => {
+            throw new EnkakuError('invalid_job_params', 'videos: must be at most 2000', undefined, [
+              { path: 'videos', message: 'must be at most 2000' },
+            ])
+          },
+        },
+        { scriptId: 'checkout', params: { videos: 9999 }, target: { deviceIds: ['d1'] }, concurrency: 0, order: 'as-listed' },
+      )
+    } catch (err) {
+      caught = err as EnkakuError
+    }
+
+    expect(caught).toBeInstanceOf(EnkakuError)
+    expect(caught?.code).toBe('invalid_job_params')
+    expect(caught?.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
   })
 })

@@ -1,4 +1,5 @@
 export {
+  GUEST_AGENT_REPAIRABLE_ERROR_CODES,
   GuestAgentClientError,
   createGuestAgentClient,
   type GuestAgentClient,
@@ -22,4 +23,5 @@ export {
   createGuestAgentLauncher,
   type GuestAgentLauncher,
   type GuestAgentLauncherDeps,
+  type GuestAgentArtifactMismatch,
 } from './launcher'

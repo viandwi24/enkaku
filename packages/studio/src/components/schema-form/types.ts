@@ -1,4 +1,11 @@
+import type { ParamHints } from '@enkaku/protocol'
+
 export interface JsonSchemaNode {
+  // An index signature, matching @enkaku/protocol's own (looser) JsonSchemaNode
+  // (`api/json-schema.ts`) — required so this type stays structurally
+  // assignable to it, which is what lets `readHints()` (the ONE place that
+  // reads `x-enkaku`) take a node straight from this renderer with no cast.
+  [key: string]: unknown
   type?: string | string[]
   title?: string
   description?: string
@@ -15,8 +22,10 @@ export interface JsonSchemaNode {
   pattern?: string
   additionalProperties?: unknown
   anyOf?: JsonSchemaNode[]
-  /** From .meta({ enumSource }) in Zod — tells the UI where engine labels come from. */
-  enumSource?: string
+  /** From `.meta(ui({ ... }))` in `@enkaku/protocol` (plan 95 §3.2, §4.1) — read
+   *  it with `readHints()`, never this key directly, so a malformed or
+   *  newer-vocabulary value degrades to `{}` instead of reaching a control. */
+  'x-enkaku'?: ParamHints
   $ref?: string
   $defs?: Record<string, JsonSchemaNode>
 }

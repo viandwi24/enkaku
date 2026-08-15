@@ -49,8 +49,15 @@ cd apps/guest-agent
 ./gradlew "$GRADLE_TASK"
 
 APK="app/build/outputs/apk/$VARIANT/app-$VARIANT.apk"
+# A release build only carries the "-unsigned" suffix when no keystore was configured (plan 90
+# §4.8) — true for every local dev build, since ENKAKU_GUEST_AGENT_KEYSTORE_PATH is CI-only. Debug
+# is always auto-signed with the debug keystore, so app-debug.apk needs no such fallback.
+UNSIGNED_APK="app/build/outputs/apk/$VARIANT/app-$VARIANT-unsigned.apk"
+if [[ ! -f "$APK" && -f "$UNSIGNED_APK" ]]; then
+  APK="$UNSIGNED_APK"
+fi
 if [[ ! -f "$APK" ]]; then
-  echo "Build reported success but $APK is missing" >&2
+  echo "Build reported success but neither app-$VARIANT.apk nor app-$VARIANT-unsigned.apk exists" >&2
   exit 1
 fi
 

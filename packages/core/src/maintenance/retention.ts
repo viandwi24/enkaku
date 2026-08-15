@@ -3,14 +3,14 @@ import { join } from 'node:path'
 import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm'
 import { changedRows } from '../db'
 import type { Db } from '../db'
-import { artifacts, deviceEvents } from '../db/schema'
+import { artifacts, commandRunMembers, commandRuns, deviceEvents } from '../db/schema'
 import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { Logger } from '../util/logger'
 
 export interface RetentionGc {
   start(): void
   stop(): void
-  sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number }
+  sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number; commandRunsDeleted: number }
 }
 
 /**
@@ -93,10 +93,42 @@ export function createRetentionGc(deps: {
     return deleted
   }
 
-  function sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number } {
-    const eventsDeleted = sweepEvents()
+  /**
+   * Command console history GC (plan 93 §3.9, §4.1, §5 step 93.2): fleet
+   * command runs older than `retention.commandRunDays` (default 14 days),
+   * with every one of their `command_run_members` cascaded in the same
+   * sweep — a cascading delete has to actually cascade, never leave orphan
+   * member rows behind. Sits beside `sweepEvents` above and is, like it,
+   * deliberately NOT gated by `policy.enabled`: `command_runs` is the same
+   * shape of append-only, per-action table `device_events` is (plan 18 §3.3's
+   * reasoning, restated here rather than merely referenced) — an unbounded
+   * command history is a disk-filling bug, not an opt-in convenience an
+   * operator has to remember to switch on. The artifact policy below it IS
+   * opt-in because deleting someone's screenshots without asking is a
+   * product decision; deleting a command's own audit trail once it is
+   * fourteen days past its retention window is not.
+   */
+  function sweepCommandRuns(): number {
     const policy = deps.settings.get().retention
-    if (!policy.enabled) return { deleted: 0, freedBytes: 0, eventsDeleted }
+    const cutoff = new Date(Date.now() - policy.commandRunDays * 86_400_000)
+    const staleIds = deps.db
+      .select({ id: commandRuns.id })
+      .from(commandRuns)
+      .where(lt(commandRuns.startedAt, cutoff))
+      .all()
+      .map((r) => r.id)
+    if (staleIds.length === 0) return 0
+    deps.db.delete(commandRunMembers).where(inArray(commandRunMembers.runId, staleIds)).run()
+    const deleted = changedRows(deps.db.delete(commandRuns).where(inArray(commandRuns.id, staleIds)).run())
+    if (deleted > 0) deps.log.info(`command run retention: deleted ${deleted} command run(s)`)
+    return deleted
+  }
+
+  function sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number; commandRunsDeleted: number } {
+    const eventsDeleted = sweepEvents()
+    const commandRunsDeleted = sweepCommandRuns()
+    const policy = deps.settings.get().retention
+    if (!policy.enabled) return { deleted: 0, freedBytes: 0, eventsDeleted, commandRunsDeleted }
 
     const rows = deps.db.select().from(artifacts).orderBy(asc(artifacts.createdAt)).all()
     const cutoff = Date.now() - policy.maxAgeDays * 86_400_000
@@ -121,7 +153,7 @@ export function createRetentionGc(deps: {
       deps.log.info(`retention GC: deleted ${deleted} artifact(s) (${(freed / 1024 ** 2).toFixed(1)} MB)`)
       deps.onSwept?.({ deleted, freedBytes: freed })
     }
-    return { deleted, freedBytes: freed, eventsDeleted }
+    return { deleted, freedBytes: freed, eventsDeleted, commandRunsDeleted }
   }
 
   return {

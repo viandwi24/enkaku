@@ -12,7 +12,8 @@ export const dbCheck: Check = {
       return {
         status: 'fail',
         observed: `enkaku.db failed its integrity check: ${result.detail}`,
-        remedy: 'restore enkaku.db from a backup, or move it aside and let the core create a fresh one (local history is lost)',
+        remedy:
+          'restore from an `enkaku backup` archive (stop the core first — see docs/guide/install.md#backup-and-restore), or move enkaku.db aside and let the core create a fresh one (local history is lost)',
       }
     }
     if (result.pendingMigrations > 0) {

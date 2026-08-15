@@ -6,6 +6,15 @@ export type AdbDeviceState = 'device' | 'offline' | 'unauthorized' | 'authorizin
 export interface TrackedDevice {
   serial: string
   state: AdbDeviceState
+  /**
+   * The `usb:` field `host:devices-l` carries for a USB transport (plan 88
+   * §3.1, fixes F6) — e.g. `3-1.4.3`. Undefined for a TCP transport and for
+   * every `host:track-devices` snapshot (`parseSnapshot` below does not
+   * carry it — see that function's own comment).
+   */
+  usb?: string
+  /** The `transport_id:` field `host:devices-l` carries (plan 88 §3.1, fixes F6). Undefined from `host:track-devices` (see `parseSnapshot`). */
+  transportId?: number
 }
 
 export type TrackerEvent =
@@ -13,7 +22,15 @@ export type TrackerEvent =
   | { kind: 'remove'; serial: string }
   | { kind: 'change'; serial: string; state: AdbDeviceState }
 
-/** Parse a `host:track-devices` snapshot: lines of "<serial>\t<state>\n". */
+/**
+ * Parse a `host:track-devices` snapshot: lines of "<serial>\t<state>\n".
+ *
+ * Deliberately untouched by plan 88 §3.1/§5 step 88.1: unlike `host:devices-l`
+ * (`client.ts`'s `parseDevicesLongBlock`), this format carries no `usb:` or
+ * `transport_id:` field to keep — it is two tab-separated columns, full stop.
+ * `TrackedDevice.usb`/`.transportId` are always undefined on anything this
+ * function produces.
+ */
 export function parseSnapshot(raw: string): TrackedDevice[] {
   const out: TrackedDevice[] = []
   for (const line of raw.split('\n')) {

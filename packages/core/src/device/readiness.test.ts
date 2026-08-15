@@ -72,7 +72,9 @@ function fakeSessionManager() {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
   return { sessions, acquireCalls, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
 }

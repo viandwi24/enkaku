@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The only screen a human ever sees (see StatusActivity.kt). Deliberately a hand-written layout,
+  not Compose: three TextViews and a button do not need a UI framework, and Compose's Kotlin
+  runtime plus its material3/ui/tooling dependency graph was 21.3 MB of the 21.7 MB release APK
+  for exactly this screen (plan 90 §3.11, F1/F3). Padding and spacing are plain dp so this keeps
+  compiling with no theme library beyond the platform.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:text="@string/app_name" />
+
+    <TextView
+        android:id="@+id/state_line"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textSize="16sp"
+        tools:ignore="HardcodedText"
+        tools:text="Idle — no host has paired yet." />
+
+    <TextView
+        android:id="@+id/explanation"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textSize="13sp"
+        android:textColor="#666666"
+        android:gravity="center"
+        android:text="@string/status_explanation" />
+
+    <Button
+        android:id="@+id/switch_keyboard_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="@string/switch_keyboard" />
+
+</LinearLayout>

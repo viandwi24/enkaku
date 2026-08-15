@@ -22,6 +22,7 @@ function summary(overrides: Partial<Record<string, unknown>> = {}) {
     triggeredByJobId: null,
     rootJobId: null,
     depth: null,
+    resultStatus: null,
     ...overrides,
   }
 }
@@ -106,7 +107,7 @@ describe('createJobsApiFor — trigger() (plan 81 §3.3, §4.2, §4.3)', () => {
     expect(result).toEqual({ jobId: 'j-new', deduped: false })
   })
 
-  test('an omitted key derives `${jobId}:${attempt}:${callIndex}`, incrementing per call', async () => {
+  test('an omitted key derives `${jobId}:${nodeId ?? \'\'}:${attempt}:${callIndex}`, incrementing per call (plan 99 §4.8, no nodeId)', async () => {
     const calls: JobsCall[] = []
     const api = createJobsApiFor(async <T>(call: JobsCall) => {
       calls.push(call)
@@ -114,7 +115,10 @@ describe('createJobsApiFor — trigger() (plan 81 §3.3, §4.2, §4.3)', () => {
     }, JOB)
     await api.trigger({ script: 'checkout@1.0.0' })
     await api.trigger({ script: 'checkout@1.0.0' })
-    expect(calls.map((c) => (c as { key: string }).key)).toEqual(['job-1:1:0', 'job-1:1:1'])
+    // `JOB` carries no `nodeId` — the segment is present but empty, which is
+    // the exact same UNIQUENESS the pre-plan-99 shape had (§4.8: "a
+    // standalone job... keeps deriving the exact key shape it always has").
+    expect(calls.map((c) => (c as { key: string }).key)).toEqual(['job-1::1:0', 'job-1::1:1'])
   })
 
   test('a fresh client (a new attempt, or a re-run finish() in a fresh process) restarts the call index at 0', async () => {
@@ -130,9 +134,9 @@ describe('createJobsApiFor — trigger() (plan 81 §3.3, §4.2, §4.3)', () => {
     const attempt2 = createJobsApiFor(record, { id: 'job-1', attempt: 2 })
     await attempt2.trigger({ script: 'checkout@1.0.0' })
     expect(calls.map((c) => (c as { key: string }).key)).toEqual([
-      'job-1:1:0', // attempt 1, first call
-      'job-1:1:0', // re-run of attempt 1 (a fresh process) reproduces the SAME key
-      'job-1:2:0', // attempt 2 is a genuinely different attempt
+      'job-1::1:0', // attempt 1, first call
+      'job-1::1:0', // re-run of attempt 1 (a fresh process) reproduces the SAME key
+      'job-1::2:0', // attempt 2 is a genuinely different attempt
     ])
   })
 
@@ -143,17 +147,51 @@ describe('createJobsApiFor — trigger() (plan 81 §3.3, §4.2, §4.3)', () => {
       return { jobId: 'j-new', deduped: false } as T
     }, JOB)
     await api.trigger({ script: 'checkout@1.0.0' })
-    expect(calls[0]).toEqual({ method: 'trigger', script: 'checkout@1.0.0', key: 'job-1:1:0' })
+    expect(calls[0]).toEqual({ method: 'trigger', script: 'checkout@1.0.0', key: 'job-1::1:0' })
 
     await api.trigger({ script: 'checkout@1.0.0', params: { a: 1 }, deviceId: 'd2', priority: 3, expiresAt: 500 })
     expect(calls[1]).toEqual({
       method: 'trigger',
       script: 'checkout@1.0.0',
-      key: 'job-1:1:1',
+      key: 'job-1::1:1',
       params: { a: 1 },
       deviceId: 'd2',
       priority: 3,
       expiresAt: 500,
+    })
+  })
+
+  describe('trigger() — nodeId folded into the default key (plan 99 §3.2, §4.8, closes F20)', () => {
+    test('two nodes sharing one jobId and one attempt derive DIFFERENT default keys', async () => {
+      const calls: JobsCall[] = []
+      const record = async <T>(call: JobsCall) => {
+        calls.push(call)
+        return { jobId: 'j-new', deduped: false } as T
+      }
+      const node1 = createJobsApiFor(record, { id: 'job-1', attempt: 1, nodeId: 'scroll1' })
+      const node2 = createJobsApiFor(record, { id: 'job-1', attempt: 1, nodeId: 'search1' })
+      await node1.trigger({ script: 'checkout@1.0.0' })
+      await node2.trigger({ script: 'checkout@1.0.0' })
+      const keys = calls.map((c) => (c as { key: string }).key)
+      expect(keys).toEqual(['job-1:scroll1:1:0', 'job-1:search1:1:0'])
+      // This is the failure this test is written to catch: under the OLD key
+      // shape (`${jobId}:${attempt}:${idx}`), both of these collapse to the
+      // SAME string ('job-1:1:0') — node 2's trigger would silently dedupe
+      // into node 1's, a data-loss bug (plan 99 F20).
+      expect(new Set(keys).size).toBe(2)
+    })
+
+    test('the same node retried (a new attempt) still derives a fresh key', async () => {
+      const calls: JobsCall[] = []
+      const record = async <T>(call: JobsCall) => {
+        calls.push(call)
+        return { jobId: 'j-new', deduped: false } as T
+      }
+      const attempt1 = createJobsApiFor(record, { id: 'job-1', attempt: 1, nodeId: 'scroll1' })
+      await attempt1.trigger({ script: 'checkout@1.0.0' })
+      const attempt2 = createJobsApiFor(record, { id: 'job-1', attempt: 2, nodeId: 'scroll1' })
+      await attempt2.trigger({ script: 'checkout@1.0.0' })
+      expect(calls.map((c) => (c as { key: string }).key)).toEqual(['job-1:scroll1:1:0', 'job-1:scroll1:2:0'])
     })
   })
 

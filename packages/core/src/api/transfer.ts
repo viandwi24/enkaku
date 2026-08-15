@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { InstallResponseSchema, PullResponseSchema, type ShellMode } from '@enkaku/protocol'
+import { InstallResponseSchema, MediaScanModeSchema, PullResponseSchema, PushResponseSchema, type ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseFiles } from '../auth/acl'
@@ -45,7 +45,13 @@ const InstallBody = z.object({
   grantPermissions: z.boolean().optional(),
   allowDowngrade: z.boolean().optional(),
 })
-const PushBody = z.object({ artifactId: z.string().min(1), remotePath: z.string().min(1), clientId: z.string().min(1) })
+const PushBody = z.object({
+  artifactId: z.string().min(1),
+  remotePath: z.string().min(1),
+  clientId: z.string().min(1),
+  /** Plan 90 §4.6 — defaults to `'auto'`: scans only when the resolved remote path sits under a known media root. */
+  mediaScan: MediaScanModeSchema.default('auto'),
+})
 const PullBody = z.object({ remotePath: z.string().min(1), clientId: z.string().min(1) })
 
 export interface TransferRoutesDeps {
@@ -134,22 +140,27 @@ export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
     const userId = c.get('user')?.id ?? null
 
     try {
-      await runTransfer({
+      const result = await runTransfer({
         transfer: deps.transfer,
         broadcast: deps.broadcast,
         deviceId,
         kind: 'push',
         holdFor: deps.holdFor,
-        op: (transferId, onProgress) => deps.transfer.push(deviceId, body.data.artifactId, body.data.remotePath, { transferId, onProgress }),
+        op: (transferId, onProgress) =>
+          deps.transfer.push(deviceId, body.data.artifactId, body.data.remotePath, {
+            transferId,
+            onProgress,
+            mediaScan: body.data.mediaScan,
+          }),
       })
       deps.record({
         deviceId,
         stream: 'input',
         kind: 'device.push',
         actor: userId,
-        meta: { artifactId: body.data.artifactId, remotePath: body.data.remotePath, ok: true },
+        meta: { artifactId: body.data.artifactId, remotePath: body.data.remotePath, ok: true, mediaScan: result.mediaScan },
       })
-      return c.json({ ok: true })
+      return typedJson(c, PushResponseSchema, { result })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       deps.record({

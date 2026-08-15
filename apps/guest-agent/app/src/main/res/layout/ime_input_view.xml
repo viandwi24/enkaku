@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EnkakuIme's input view (plan 90 §3.2, §4.2) — deliberately not Compose, same reasoning as
+  activity_status.xml (plan 90 §3.11, F1/F3). A human physically holding the phone while a session
+  is open must never meet a keyboard with no keys and no explanation; this is that explanation,
+  plus the button back to their own keyboard.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="#1A1A1A"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/ime_notice"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:text="@string/ime_notice" />
+
+    <Button
+        android:id="@+id/ime_switch_keyboard_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/switch_keyboard" />
+
+</LinearLayout>

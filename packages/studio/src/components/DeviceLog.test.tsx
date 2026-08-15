@@ -114,6 +114,47 @@ describe('DeviceLog', () => {
     expect(getByText('job fromjobi queued job tojobid1 (depth 1)')).toBeTruthy()
   })
 
+  test('control.assist.started/control.assist.ended (plan 91 §3.5, §5 step 91.5) render a legible line naming the job', async () => {
+    const { getByText } = renderWithApi(<DeviceLog deviceId="dev-9" deviceOffline={false} />, {
+      '/api/devices/dev-9/events*': ({ path }) => {
+        const stream = new URL(`http://x${path}`).searchParams.get('stream')
+        if (stream === 'main') {
+          return {
+            body: {
+              items: [
+                {
+                  id: 'e1',
+                  deviceId: 'dev-9',
+                  stream: 'main',
+                  kind: 'control.assist.started',
+                  actor: 'user-1',
+                  meta: { jobId: 'job-checkout-1', primaryKind: 'job' },
+                  at: 1000,
+                },
+                {
+                  id: 'e2',
+                  deviceId: 'dev-9',
+                  stream: 'main',
+                  kind: 'control.assist.ended',
+                  actor: 'user-1',
+                  meta: { jobId: 'job-checkout-1', primaryKind: 'job', reason: 'released' },
+                  at: 1010,
+                },
+              ],
+              nextCursor: null,
+              total: 2,
+            },
+          }
+        }
+        return { body: { items: [], nextCursor: null, total: 0 } }
+      },
+    })
+    await waitFor(() => expect(getByText('Assist started')).toBeTruthy())
+    expect(getByText('Assist ended')).toBeTruthy()
+    expect(getByText('While job job-chec kept control')).toBeTruthy()
+    expect(getByText('Reason: released (job job-chec)')).toBeTruthy()
+  })
+
   test('an empty log shows the empty state, not a crash', async () => {
     const { getByText } = renderWithApi(<DeviceLog deviceId="dev-2" deviceOffline={true} />, {
       '/api/devices/dev-2/events*': { body: { items: [], nextCursor: null, total: 0 } },

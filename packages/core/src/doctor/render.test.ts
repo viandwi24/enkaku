@@ -1,15 +1,62 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { defaultDeviceSettings } from '@enkaku/protocol'
+import { openDb, runMigrations } from '../db'
+import { devices } from '../db/schema'
 import { CHECKS } from './checks/index'
 import { renderHuman, renderJson } from './render'
 import { runChecks } from './run'
 import { fakeDoctorContext } from './test-helpers'
 import type { DoctorContext } from './types'
 
-/** Trips every one of the ten registered checks into `warn` or `fail` — none stays `ok`/`skip`. */
+/**
+ * A real, on-disk data dir carrying one device with physical labelling
+ * enabled and `state: 'unavailable'` (plan 89 §4.7, §5 step 89.4/89.9) — the
+ * `labelling` check reads `enkaku.db` directly, the same way `devices` does,
+ * so `unhappyContext` needs a real file to trip it into `warn` rather than
+ * `skip` (skip is the CORRECT answer for a farm that never opted in, but
+ * this context's whole job is to trip every check that CAN warn/fail).
+ * `status: 'offline'` and a `stableId`/`serial` that never appear in
+ * `devices.list()` below, deliberately: this row must not also perturb the
+ * `devices` check's own adb-vs-registry disagreement logic, which is a
+ * different check reading the SAME file.
+ */
+let unhappyDataDirCache: string | null = null
+function unhappyDataDir(): string {
+  if (unhappyDataDirCache) return unhappyDataDirCache
+  const dir = mkdtempSync(join(tmpdir(), 'enkaku-doctor-unhappy-'))
+  const { db, sqlite } = openDb(join(dir, 'enkaku.db'))
+  runMigrations(db, sqlite)
+  db.insert(devices)
+    .values({
+      id: 'd-unhappy-label',
+      stableId: 'stable-unhappy-label',
+      serial: 'serial-unhappy-label',
+      label: 'Stuck Phone',
+      status: 'offline',
+      settings: { ...defaultDeviceSettings(), labelling: { mode: 'wallpaper', showName: true } },
+      labelState: {
+        mode: 'wallpaper',
+        state: 'unavailable',
+        reason: 'no guest agent',
+        fingerprint: null,
+        appliedAt: null,
+        originalCaptured: false,
+        capturedLockScreen: null,
+      },
+    })
+    .run()
+  sqlite.close()
+  unhappyDataDirCache = dir
+  return dir
+}
+
+/** Trips every one of the registered checks into `warn` or `fail` — none stays `ok`/`skip`. */
 function unhappyContext(): DoctorContext {
   return fakeDoctorContext({
+    dataDir: unhappyDataDir(),
     runtime: { bunVersion: '0.9.0', platform: 'linux', arch: 'x64' },
     fs: { exists: async () => false, writable: async () => false, freeBytes: async () => null },
     config: {
@@ -48,6 +95,37 @@ function unhappyContext(): DoctorContext {
     hostAdb: {
       countAdbProcesses: async () => 5,
       probeCoreStats: async () => ({ running: 0, maxConcurrent: 4, installsRunning: 0, longLived: 0 }),
+    },
+    adbHealth: {
+      probe: async () => ({
+        status: 'stuck',
+        versionRttMs: null,
+        lastCheckedAt: 1_000,
+        window: { seconds: 600, execs: 40, timeouts: 25, timeoutRate: 0.625 },
+        wedged: [],
+        stuckOffline: [],
+        symptoms: [
+          { symptom: 'server-unresponsive', detail: 'host:version has not answered within 2000ms across 2 consecutive probes', since: 900 },
+        ],
+        restartAdvised: true,
+      }),
+    },
+    coControl: {
+      probe: async () => ({
+        lanes: {
+          pointer: { depth: 5, waitMsP50: 2000, waitMsP95: 4500, refusals: 3 },
+          keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
+          text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
+        },
+        assistsActive: 2,
+        mirrorGroups: 1,
+        mirrorMembers: 3,
+        mirrorFanoutMsP50: 40,
+        mirrorFanoutMsP95: 120,
+        queueWaitMs: 5_000,
+        uncollectedGrants: 1,
+        orphanedMirrorGroups: 1,
+      }),
     },
   })
 }
@@ -145,6 +223,9 @@ describe('doctor package — never runs adb kill-server (repo rule, plan 41 §6.
     'checks/core.ts',
     'checks/streams.ts',
     'checks/host-adb.ts',
+    'checks/adb-health.ts',
+    'checks/co-control.ts',
+    'checks/labelling.ts',
   ]
 
   test('the literal string "kill-server" appears nowhere in the doctor package\'s implementation', () => {

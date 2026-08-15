@@ -12,7 +12,7 @@ describe('DevSlotStore', () => {
       pluginName: 'tiktok',
       declaredVersion: '1.0.0',
       bundlePath: '/tmp/tiktok.mjs',
-      scripts: [{ exportId: 'login', paramsSchema: {} }],
+      scripts: [{ exportId: 'login', paramsSchema: {}, runtime: null }],
       owner: owner(),
     })
     expect(slot.buildN).toBe(1)

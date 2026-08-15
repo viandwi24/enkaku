@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bounds, UiNode } from '@enkaku/protocol'
-import { detectCurrentIndex, ownProfileShowsHandle, parseTarget, readSheetSnapshot, resolveTargetRow } from './switch-account'
+import { DEFAULT_TARGET, detectCurrentIndex, ownProfileShowsHandle, parseTarget, readSheetSnapshot, resolveTargetRow } from './switch-account'
 
 /** Fills in every field `UiNode` requires so a test only has to spell out what it cares about. */
 function mkNode(partial: Partial<UiNode> & { bounds: Bounds }): UiNode {
@@ -164,15 +164,16 @@ describe('parseTarget — target parser (plan 86 §7.1)', () => {
     }
   })
 
-  test('an empty or blank target is rejected with E_INVALID_TARGET', () => {
+  /**
+   * The run form submits `""` for a field nobody touched, so this is the case a schema `.default()`
+   * cannot reach on its own — and it is exactly the case the default exists for. Pressing Run
+   * without typing anything must switch to position 2, not die on a validation error.
+   */
+  test('an empty or blank target falls back to the default position, it does not throw', () => {
     for (const raw of ['', '   ']) {
-      try {
-        parseTarget(raw)
-        throw new Error('expected parseTarget to throw')
-      } catch (err) {
-        expect((err as { code: string }).code).toBe('E_INVALID_TARGET')
-      }
+      expect(parseTarget(raw)).toEqual({ kind: 'position', position: 2 })
     }
+    expect(parseTarget(DEFAULT_TARGET)).toEqual({ kind: 'position', position: 2 })
   })
 })
 

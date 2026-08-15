@@ -72,14 +72,19 @@ const TIMEOUT_CODE = 'TIMEOUT'
 
 /**
  * Explicit script-class codes (plan 37 §4.4's `APP_CRASHED`, added here now
- * that it exists — plan 36 deliberately left it out). Every one of these
- * would already classify `script`/`blameDevice: false` by falling through to
- * the default below; the set exists so that fact is asserted directly rather
- * than left to an implicit default, per plan 37 acceptance #10: a crash is a
- * RESULT (the script's target app broke), never the farm's fault, so it must
- * never feed plan 23's health tracker or trigger a device-blaming retry.
+ * that it exists — plan 36 deliberately left it out; plan 98 §3.6 adds
+ * `MEMORY_LIMIT` alongside it). Every one of these would already classify
+ * `script`/`blameDevice: false` by falling through to the default below; the
+ * set exists so that fact is asserted directly rather than left to an
+ * implicit default:
+ *  - per plan 37 acceptance #10, a crash is a RESULT (the script's target app
+ *    broke), never the farm's fault;
+ *  - per plan 98 §3.6, a script that blew its own DECLARED memory budget is
+ *    likewise a result, not the farm's — `MEMORY_LIMIT` must never feed plan
+ *    23's health tracker or spend the infra retry budget, and is retried
+ *    only up to the script's own `retries` (default 0), never with backoff.
  */
-const SCRIPT_CODES = new Set<string>(['APP_CRASHED'])
+const SCRIPT_CODES = new Set<string>(['APP_CRASHED', 'MEMORY_LIMIT'])
 
 export function classifyFailure(err: unknown, opts: { timeoutIsInfra: boolean }): ClassifiedFailure {
   const { code, message } = toCodeAndMessage(err)

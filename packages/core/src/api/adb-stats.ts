@@ -7,6 +7,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { can } from '../auth/acl'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
+import type { CommandConsoleStats } from '../command-console/runner'
 import type { AdbMetricsStore } from '../device/adb-metrics'
 import type { DeviceHealth } from '../device/health'
 import { EnkakuError } from '../util/errors'
@@ -17,6 +18,9 @@ const ERROR_STATUS: Record<string, number> = { 'auth.forbidden': 403 }
 type AdbStatsResponse = z.infer<typeof AdbStatsResponseSchema>
 type TransportStats = AdbStatsResponse['transport']
 type HostAdbStats = AdbStatsResponse['hostAdb']
+type AdbHealthStats = AdbStatsResponse['adbHealth']
+type InputStats = AdbStatsResponse['input']
+type VideoStats = AdbStatsResponse['video']
 
 /** Zero-filled defaults (plan 85 §4.6) — reported before the WS router (`transport`) or `host-adb.ts` (`hostAdb`) exist, e.g. the brief window before `attachWsRouter` runs. */
 const ZERO_TRANSPORT: TransportStats = {
@@ -29,6 +33,55 @@ const ZERO_TRANSPORT: TransportStats = {
   watchdogReconnects: 0,
 }
 const ZERO_HOST_ADB: HostAdbStats = { running: 0, maxConcurrent: 0, installsRunning: 0, longLived: 0 }
+/** Same zero-fill contract (plan 88 §3.9, §4.7) — reported before the health monitor exists, e.g. the brief window before `daemon.ts` constructs it once adb is up. `status: 'ok'` is deliberate: a monitor that has never run is not KNOWN to be unhealthy. */
+const ZERO_ADB_HEALTH: AdbHealthStats = {
+  status: 'ok',
+  versionRttMs: null,
+  lastCheckedAt: 0,
+  window: { seconds: 0, execs: 0, timeouts: 0, timeoutRate: 0 },
+  wedged: [],
+  stuckOffline: [],
+  symptoms: [],
+  restartAdvised: false,
+}
+/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. `queueWaitMs` zero-fills to the arbiter's own shipped default rather than `0`, so a probe hitting this brief window never reports a nonsensical "budget is 0ms". */
+const ZERO_INPUT: InputStats = {
+  lanes: {
+    pointer: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
+    keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
+    text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
+  },
+  assistsActive: 0,
+  mirrorGroups: 0,
+  mirrorMembers: 0,
+  mirrorFanoutMsP50: 0,
+  mirrorFanoutMsP95: 0,
+  queueWaitMs: 5_000,
+  uncollectedGrants: 0,
+  orphanedMirrorGroups: 0,
+}
+/** Same zero-fill contract (plan 92 §3.3, §4.5, §5 step 92.3) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
+const ZERO_VIDEO: VideoStats = {
+  controlStreams: 0,
+  wallStreams: 0,
+  buildsRunning: 0,
+  buildQueueDepth: 0,
+  maxConcurrentBuilds: 0,
+  maxTiles: 0,
+  maxTilesAuto: false,
+  // Plan 100 §3.1, §4.1, step 100.3 — a harmless default for the same brief
+  // window every other zero-fill above covers; `daemon.ts` always supplies
+  // the real classification once `deps.video` is wired.
+  transport: 'loopback',
+}
+/** Same zero-fill contract (plan 93 §5 step 93.12) — reported before `deps.commandConsole` is wired (today: always, until `daemon.ts` passes `() => commandRunner?.stats() ?? null` through — see `adb-stats-command-console-wiring.test.ts`, the self-detecting gap this step could not close itself). `distinctOutputRatio: 0` is deliberate, not a claim that grouping never helps — it means "no member has settled yet", the same "0 is not NaN" reasoning `adbHealth.window.timeoutRate` already documents. */
+const ZERO_COMMAND_CONSOLE: NonNullable<AdbStatsResponse['commandConsole']> = {
+  runsInFlight: 0,
+  membersInFlight: 0,
+  coalescedFramesPerSec: 0,
+  distinctOutputRatio: 0,
+  leaseChangedPerMinute: 0,
+}
 
 /**
  * `GET /api/adb/stats` (plan 23 §4.6, permission `device.view`) — the global
@@ -55,6 +108,31 @@ export function createAdbStatsRoutes(deps: {
   transport?: () => TransportStats | null
   /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()` (plan 85 §3.4, §4.6) — same optional/zero-default contract as `transport` above. */
   hostAdb?: () => HostAdbStats | null
+  /** `packages/core/src/device/adb-health.ts`'s `AdbServerHealthMonitor.current()` (plan 88 §3.9, §4.7) — same optional/zero-default contract as `transport`/`hostAdb` above. */
+  adbHealth?: () => AdbHealthStats | null
+  /** `packages/core/src/server/ws-handlers.ts`'s `inputStats()` (plan 91 §4.10, §5 step 91.10) — same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth` above. */
+  input?: () => InputStats | null
+  /**
+   * The build lane's farm-wide settings (plan 92 §3.3, §3.7, §4.5, §5 step
+   * 92.3) — `session.maxConcurrentBuilds` plus `wall.maxTiles` AS ACTUALLY
+   * APPLIED (the derived number when the stored setting is `0`, never the
+   * raw `0` itself) and whether it is currently being derived. Read fresh
+   * from `settingsStore` at request time by `daemon.ts`'s wiring. The
+   * stream counts and build-lane occupancy come from `sessions()`'s own
+   * `videoStats()` instead — this accessor carries only the settings half,
+   * mirroring `auto` above (`adb.maxConcurrent`'s own settings/live split).
+   * Same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth`
+   * above.
+   */
+  video?: () => { maxConcurrentBuilds: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
+  /**
+   * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
+   * step 93.12) — `command-console/runner.ts`'s `CommandRunner.stats()`,
+   * wired through the same forward-ref pattern `transport`/`hostAdb`/
+   * `adbHealth`/`input`/`video` above already use. Same optional/zero-default
+   * contract as those.
+   */
+  commandConsole?: () => CommandConsoleStats | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -75,6 +153,24 @@ export function createAdbStatsRoutes(deps: {
     // with no subscriber, oldest first, so the setting's effect is
     // measurable rather than assumed.
     const idle = deps.sessions()?.idleSessions() ?? []
+    // The build lane's own occupancy (plan 92 §3.3, §4.3, §4.5, §5 step
+    // 92.3, tests H1) — `videoStats()` reads the SAME semaphore
+    // `createEntry` queues behind, so `buildsRunning`/`buildQueueDepth`
+    // reflect the lane's actual state, never an estimate.
+    const videoBuild = deps.sessions()?.videoStats?.()
+    const videoSettings = deps.video?.()
+    const video: VideoStats = videoBuild
+      ? {
+          controlStreams: videoBuild.streams.control,
+          wallStreams: videoBuild.streams.wall,
+          buildsRunning: videoBuild.buildsRunning,
+          buildQueueDepth: videoBuild.buildQueueDepth,
+          maxConcurrentBuilds: videoSettings?.maxConcurrentBuilds ?? 0,
+          maxTiles: videoSettings?.maxTiles ?? 0,
+          maxTilesAuto: videoSettings?.maxTilesAuto ?? false,
+          transport: videoSettings?.transport ?? 'loopback',
+        }
+      : ZERO_VIDEO
 
     return typedJson(c, AdbStatsResponseSchema, {
       global: {
@@ -104,6 +200,10 @@ export function createAdbStatsRoutes(deps: {
       }),
       transport: deps.transport?.() ?? ZERO_TRANSPORT,
       hostAdb: deps.hostAdb?.() ?? ZERO_HOST_ADB,
+      adbHealth: deps.adbHealth?.() ?? ZERO_ADB_HEALTH,
+      input: deps.input?.() ?? ZERO_INPUT,
+      video,
+      commandConsole: deps.commandConsole?.() ?? ZERO_COMMAND_CONSOLE,
     })
   })
 

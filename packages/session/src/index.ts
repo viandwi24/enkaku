@@ -1,8 +1,30 @@
-export { createSession, QUALITY_PROFILES, type DeviceSession, type CreateSessionOpts, type CreateSessionDeps } from './session'
+export { createSession, type DeviceSession, type CreateSessionOpts, type CreateSessionDeps } from './session'
+export {
+  CONTROL_PRESETS,
+  WALL_PRESETS,
+  WALL_VIDEO_BUDGET_BPS,
+  resolveVideoProfile,
+  sameVideoNumbers,
+  computeAutoTiles,
+  resolveWallTransport,
+  resolveWallBandwidthBps,
+  type VideoProfile,
+  type VideoSource,
+  type WallBudget,
+  type WallTransport,
+} from './video-profile'
 export { createSessionManager, type SessionManager, type SessionManagerDeps } from './manager'
 export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
 export { PortAllocator, parsePortRange } from './port-allocator'
 export { createDeviceExecutor, DEFAULT_TIMING, type TimingSettings } from './device-executor'
+export {
+  createInputArbiter,
+  type InputArbiter,
+  type InputLane,
+  type InputSource,
+  type LaneStats,
+  type CreateInputArbiterOpts,
+} from './input-arbiter'
 export {
   createJobRunner,
   type JobRunner,
@@ -43,3 +65,22 @@ export type { Logger } from './logger'
 export type { DeviceSnapshot, DeviceSnapshotSource, ArtifactSink, SavedArtifact, TransferPort } from './types'
 export { probeDeviceIdentity, parseWmSize, parseWmDensity, pickStableId, type DeviceProbeResult } from './probe'
 export { wakeDevice, STAYON } from './wake'
+// Plan 89 (M54 — device identity and physical labelling), step 89.6/89.7 —
+// tier 0's device-scoped, sessionless functions (`packages/core/src/device/labelling.ts`
+// is the caller; unlike `applyRotation`/`applyFarmTag` above, these are never
+// wired into `session.ts`'s own start/close — §3.6's deliberate departure).
+export {
+  readLockScreenLabel,
+  writeLockScreenLabel,
+  restoreLockScreenLabel,
+  clearLockScreenLabelToDefault,
+  type LockScreenLabel,
+} from './screen-label'
+export {
+  resolveTextRoute,
+  applyTextInput,
+  ENKAKU_IME_COMPONENT_ID,
+  type TextRung,
+  type TextRouteDecision,
+  type TextInputSetup,
+} from './text-input'

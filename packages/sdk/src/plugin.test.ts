@@ -63,6 +63,49 @@ describe('definePlugin', () => {
       definePlugin({ id: 'p', version: '1.0.0', scripts: [{ id: 'a', params: {} as never, run: async () => {} }] }),
     ).toThrow(/params/)
   })
+
+  describe('the timeout/retries ⇒ runtime fold per member (plan 98 §4.2)', () => {
+    test('a member declaring neither `timeout`/`retries` nor `runtime` gets no envelope at all', () => {
+      const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+      expect(plugin.scripts[0]?.runtime).toBeUndefined()
+    })
+
+    test('a member\'s deprecated `timeout` folds into `runtime.timeoutMs`', () => {
+      const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { timeout: 20_000 })] })
+      expect(plugin.scripts[0]?.runtime?.timeoutMs).toBe(20_000)
+    })
+
+    test('a member\'s `runtime` object is validated and kept', () => {
+      const plugin = definePlugin({
+        id: 'p',
+        version: '1.0.0',
+        scripts: [member('a', { runtime: { maxRssBytes: 128 * 1024 * 1024 } })],
+      })
+      expect(plugin.scripts[0]?.runtime?.maxRssBytes).toBe(128 * 1024 * 1024)
+    })
+
+    test('two members can declare DIFFERENT runtimes independently — the fold is per member, not per plugin', () => {
+      const plugin = definePlugin({
+        id: 'p',
+        version: '1.0.0',
+        scripts: [member('a', { timeout: 5_000 }), member('b', { timeout: 9_000 })],
+      })
+      expect(plugin.scripts[0]?.runtime?.timeoutMs).toBe(5_000)
+      expect(plugin.scripts[1]?.runtime?.timeoutMs).toBe(9_000)
+    })
+
+    test('a member\'s `timeout` and `runtime.timeoutMs` DISAGREEING throws, naming the script and both numbers, at import time', () => {
+      expect(() =>
+        definePlugin({ id: 'p', version: '1.0.0', scripts: [member('login', { timeout: 10_000, runtime: { timeoutMs: 20_000 } })] }),
+      ).toThrow(/"login".*10000.*20000|"login".*20000.*10000/)
+    })
+
+    test('a member\'s `retries` and `runtime.retries` DISAGREEING throws', () => {
+      expect(() =>
+        definePlugin({ id: 'p', version: '1.0.0', scripts: [member('login', { retries: 1, runtime: { retries: 4 } })] }),
+      ).toThrow(/"login"/)
+    })
+  })
 })
 
 describe('isPlugin', () => {

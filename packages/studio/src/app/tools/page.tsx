@@ -5,15 +5,20 @@ import { Lock, RefreshCw, Stethoscope } from 'lucide-react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { DoctorResponseSchema, ToolsResponseSchema } from '@enkaku/protocol'
+import { AdbServerCard } from '@/components/AdbServerCard'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { api, useAction } from '@/lib/actions'
+import { isAdmin, useAuth } from '@/lib/auth'
 import { fileSize } from '@/lib/format'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
+
+/** Shown on every control this page disables for a non-admin (`tool.manage`, admin-only in `packages/core/src/auth/acl.ts` — listing and diagnostics stay on `tool.view`, which every role has). */
+const ADMIN_ONLY = 'Only an admin can do this'
 
 /** Mirrors `@enkaku/core`'s `doctor/types.ts` — the exact same shape `enkaku doctor --json` prints (plan 41 §4.5, §6.8). */
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail' | 'skip'
@@ -74,6 +79,11 @@ export default function ToolsPage() {
   const [error, setError] = useState<string | null>(null)
   const [diagnostics, setDiagnostics] = useState<DoctorRun | null>(null)
   const { run, isPending } = useAction()
+  const { user } = useAuth()
+  // `tool.manage` (install/activate/delete/repair/refresh) is admin-only —
+  // `tool.view` (the list, diagnostics) is not, so those two stay enabled
+  // for an operator below (see `isAdmin`'s doc comment).
+  const canManage = isAdmin(user)
 
   const runDiagnostics = () =>
     run('diagnostics', () => api('/api/doctor', DoctorResponseSchema), { failure: 'Diagnostics failed', onSuccess: setDiagnostics })
@@ -145,7 +155,8 @@ export default function ToolsPage() {
             <Button
               size="sm"
               variant="outline"
-              disabled={isPending('refresh')}
+              disabled={!canManage || isPending('refresh')}
+              title={canManage ? undefined : ADMIN_ONLY}
               onClick={() => void act('refresh', '/api/tools/manifest/refresh', ToolManifestRefreshSchema, { method: 'POST' }, 'Manifest refreshed')}
             >
               <RefreshCw className={cn('size-4', isPending('refresh') && 'animate-spin')} aria-hidden />
@@ -156,6 +167,12 @@ export default function ToolsPage() {
       />
 
       <div className="space-y-3 px-5 py-4">
+        {/* Leads with what detection already knows (plan 88 §3.9) — the
+            restart button lives INSIDE this card, beside the verdict that
+            says whether restarting is even likely to help, not offered on
+            its own above or below it. */}
+        <AdbServerCard canManage={canManage} />
+
         {diagnostics && (
           <div className="rounded-lg border bg-surface p-4">
             <div className="flex items-center justify-between gap-3">
@@ -222,7 +239,8 @@ export default function ToolsPage() {
                       size="sm"
                       variant="outline"
                       className="h-7 text-[12px]"
-                      disabled={isPending('check-' + tool.id)}
+                      disabled={!canManage || isPending('check-' + tool.id)}
+                      title={canManage ? undefined : ADMIN_ONLY}
                       onClick={() =>
                         void act('check-' + tool.id, `/api/tools/${tool.id}/check`, ToolCheckSchema, { method: 'POST' }, 'Health check finished')
                       }
@@ -265,7 +283,8 @@ export default function ToolsPage() {
                                 size="sm"
                                 variant="secondary"
                                 className="h-7 text-[12px]"
-                                disabled={!v.installable || isPending('inst-' + v.version)}
+                                disabled={!canManage || !v.installable || isPending('inst-' + v.version)}
+                                title={!canManage ? ADMIN_ONLY : undefined}
                                 onClick={() =>
                                   void act(
                                     'inst-' + v.version,
@@ -285,7 +304,8 @@ export default function ToolsPage() {
                                   size="sm"
                                   variant="secondary"
                                   className="h-7 text-[12px]"
-                                  disabled={isPending('act-' + v.version)}
+                                  disabled={!canManage || isPending('act-' + v.version)}
+                                  title={!canManage ? ADMIN_ONLY : undefined}
                                   onClick={() =>
                                     void act(
                                       'act-' + v.version,
@@ -300,7 +320,7 @@ export default function ToolsPage() {
                                 </Button>
                                 <ConfirmDialog
                                   trigger={
-                                    <Button size="sm" variant="ghost" className="h-7 text-[12px]">
+                                    <Button size="sm" variant="ghost" className="h-7 text-[12px]" disabled={!canManage} title={!canManage ? ADMIN_ONLY : undefined}>
                                       Delete
                                     </Button>
                                   }
@@ -352,7 +372,8 @@ export default function ToolsPage() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={isPending('repair')}
+                  disabled={!canManage || isPending('repair')}
+                  title={canManage ? undefined : ADMIN_ONLY}
                   onClick={() => void repairPinned()}
                 >
                   <RefreshCw className={cn('size-4', isPending('repair') && 'animate-spin')} aria-hidden />

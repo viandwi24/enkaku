@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `assist_count` integer DEFAULT 0;

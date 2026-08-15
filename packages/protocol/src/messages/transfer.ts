@@ -59,3 +59,45 @@ export const InstallResultSchema = z.object({
   output: z.string(),
 })
 export type InstallResult = z.infer<typeof InstallResultSchema>
+
+/**
+ * `push`'s `mediaScan` request field (plan 90 §3.4, §4.6). `auto` — the
+ * default — scans only when the resolved remote path sits under a known
+ * media root; `always`/`never` override that detection. There is no gallery
+ * facet (plan 90 §3.4): telling MediaStore about a pushed file is the one
+ * genuinely missing step, and it is a host-side shell command, not an APK.
+ */
+export const MediaScanModeSchema = z.enum(['auto', 'always', 'never'])
+export type MediaScanMode = z.infer<typeof MediaScanModeSchema>
+
+/** `internal:push` (plan 93 §4.6, step 93.9) — a near-copy of `InstallJobParamsSchema` for `TransferService.push`. */
+export const PushJobParamsSchema = z.object({
+  artifactId: z.string().min(1),
+  remotePath: z.string().min(1),
+  mediaScan: MediaScanModeSchema.optional(),
+})
+export type PushJobParams = z.infer<typeof PushJobParamsSchema>
+
+/** `internal:pull` (plan 93 §4.6, §4.7, step 93.9) — the executor forwards `job.id` into `registerDeviceArtifact` so a bulk pull's artifacts carry the pulling job's id (F12). */
+export const PullJobParamsSchema = z.object({
+  remotePath: z.string().min(1),
+})
+export type PullJobParams = z.infer<typeof PullJobParamsSchema>
+
+/**
+ * `push`'s extended result (plan 90 §4.6, H3). `method` names which of
+ * `content call --method scan_file` / `scan_volume` actually answered —
+ * this is how H3 ("does `scan_file` work as the shell user on Android 10+")
+ * gets settled in the field instead of assumed. A failed scan is reported
+ * here and NEVER fails the push: the bytes already landed either way.
+ */
+export const MediaScanResultSchema = z.object({
+  ran: z.boolean(),
+  method: z.enum(['scan_file', 'scan_volume']).nullable(),
+  ms: z.number(),
+  error: z.string().optional(),
+})
+export type MediaScanResult = z.infer<typeof MediaScanResultSchema>
+
+export const PushResultSchema = z.object({ mediaScan: MediaScanResultSchema })
+export type PushResult = z.infer<typeof PushResultSchema>

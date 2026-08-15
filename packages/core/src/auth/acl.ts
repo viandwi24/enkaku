@@ -1,4 +1,4 @@
-import type { ShellMode } from '@enkaku/protocol'
+import type { CoControlMode, ShellMode } from '@enkaku/protocol'
 import type { Role } from './service'
 
 /**
@@ -11,6 +11,17 @@ export type Permission =
   | 'device.settings'
   | 'device.enroll'
   | 'device.quarantine'
+  /**
+   * Assign or clear a device's `ownerId` (plan 09 §4.4 named this
+   * `device.owner.set`; it was never carried into the matrix below until
+   * now). Ownership is what `canUseDevice` bases every other per-device
+   * gate on — lease acquisition, job enqueue, the adb endpoint — so letting
+   * any operator reassign it would let them grant themselves, or take away
+   * from someone else, exactly the access those gates exist to restrict.
+   * Admin-only, the same default as `device.shell`/`device.adb`/
+   * `device.files`/`kv.manage` here.
+   */
+  | 'device.owner.set'
   /**
    * Free-form shell commands on a device (plan 26 §3.2, §4.1) — genuine
    * remote code execution, so unlike everything else here it is admin-only
@@ -42,6 +53,18 @@ export type Permission =
    * below rather than behind a `shell.mode`-style widening switch.
    */
   | 'device.network'
+  /**
+   * Assist — reach into a device someone/something else already controls,
+   * without taking it (plan 91 §3.2, §3.6, §4.6). Unlike `device.shell`/
+   * `device.adb`/`device.files`, this sits directly in the OPERATOR set
+   * below rather than behind an admin-only static default widened by a
+   * mode: an assist grant is five narrow input verbs (tap/swipe/gesture/
+   * key/text), never shell-equivalent access, so it does not need the same
+   * admin-first posture those three do. `canAssist` still gates it together
+   * with the farm's `coControl.mode`, the same "mode PLUS permission" shape
+   * `canUseShell` established (F23).
+   */
+  | 'device.assist'
   /**
    * The database-backed workspace (plan 64 §4.2) — a caller with `fs.write`
    * still cannot write everywhere: the SCOPE (which path prefixes) is what
@@ -107,6 +130,7 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.settings',
   'device.enroll',
   'device.network',
+  'device.assist',
   'fs.read',
   'fs.write',
   'agent.view',
@@ -129,10 +153,12 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'device.settings',
   'device.enroll',
   'device.quarantine',
+  'device.owner.set',
   'device.shell',
   'device.adb',
   'device.files',
   'device.network',
+  'device.assist',
   'fs.read',
   'fs.write',
   'agent.view',
@@ -214,4 +240,49 @@ export function canUseFiles(role: Role, mode: ShellMode): boolean {
 export function canUseDevice(user: { id: string; role: Role }, device: { ownerId: string | null }): boolean {
   if (user.role === 'admin') return true
   return device.ownerId === null || device.ownerId === user.id
+}
+
+/**
+ * The gate for `job.cancel` on the two interactive paths (`POST
+ * /api/jobs/:id/cancel`, the WS `job.cancel` message) — the agent/MCP-facing
+ * capability (plan 63 §4.3, `capability/job.ts`) requires `job.cancel.any`
+ * outright, no exception. These two paths give an operator a narrower one:
+ * cancelling a job on a device they are themselves allowed to use
+ * (`canUseDevice`) is ordinary operator work — the SAME ownership boundary
+ * `job.run` already enforces at enqueue time (`services/job-service.ts`'s
+ * `enqueue`). Cancelling a job on a device someone else owns is the
+ * admin-shaped action the `.any` suffix names.
+ *
+ * There is no `job.cancel.own` permission in this ACL. Plan 09 §4.4 named
+ * one, but it was never carried into the matrix above, and a job has no
+ * per-user owner of its own — the `jobs` table has no `createdBy` column.
+ * So "own" here is defined exactly the way every other per-resource check in
+ * this file defines it: through the DEVICE's `ownerId`, not a separate grant.
+ * `device: null` (the device row could not be found — a deleted device, or a
+ * caller with no ownership data wired) is permissive, the same default
+ * `canUseDevice`'s other call sites use when a device lookup comes back empty.
+ */
+export function canCancelJob(actor: { id: string; role: Role }, device: { ownerId: string | null } | null): boolean {
+  if (can(actor.role, 'job.cancel.any')) return true
+  return device === null || canUseDevice(actor, device)
+}
+
+/**
+ * The gate for assisting a device someone/something else controls (plan 91
+ * §3.2, §3.6, §4.6) — exactly the shape of `canUseShell` (:186-190): a
+ * farm-wide mode PLUS a role permission, checked together,
+ * server-authoritative. Deliberately NOT a widening of `shell.mode`:
+ * assisting grants five input verbs (tap/swipe/gesture/key/text), never a
+ * shell, so it gets its OWN mode (`coControl.mode`) rather than riding the
+ * terminal's.
+ *
+ * `device.assist` is already in the OPERATOR set above (unlike
+ * `device.shell`), so `can(role, 'device.assist')` alone would admit both
+ * roles regardless of `mode` — the second check is what actually enforces
+ * `mode: 'admin'` restricting this to admins.
+ */
+export function canAssist(role: Role, mode: CoControlMode): boolean {
+  if (mode === 'off') return false
+  if (!can(role, 'device.assist')) return false
+  return mode === 'operator' || role === 'admin'
 }

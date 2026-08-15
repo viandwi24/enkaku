@@ -19,6 +19,9 @@ const LABEL: Record<GuestAgentState, string> = {
   ready: 'ready',
   unreachable: 'unreachable',
   unsupported: 'unsupported',
+  // Plan 90 §3.8, §3.9 rule 1 — the provisioner's own states (F10, F11).
+  outdated: 'update available',
+  failed: 'failed',
 }
 
 const TONE: Record<GuestAgentState, string> = {
@@ -27,6 +30,8 @@ const TONE: Record<GuestAgentState, string> = {
   ready: 'text-led-ok border-led-ok/35 bg-led-ok/10',
   unreachable: 'text-led-danger border-led-danger/40 bg-led-danger/10',
   unsupported: 'text-fg-subtle border-line bg-transparent',
+  outdated: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
 }
 
 const base =

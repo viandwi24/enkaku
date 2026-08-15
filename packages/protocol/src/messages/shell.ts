@@ -38,11 +38,16 @@ export const MonitorStopMessage = z.object({
   payload: z.object({ streamId: z.string() }),
 })
 
-/** A one-shot kind (`ps` | `meminfo` | `df`) — request/reply, no subscription. */
+/** A one-shot kind (`ps` | `meminfo` | `df`) — request/reply, no subscription.
+ * `options` (plan 90 §3.5, step 90.7) is validated against
+ * `optionsSchemaFor(kind)` server-side, same as `monitor.start`'s — until
+ * this field existed, `meminfo`'s `package` option (once added) had no way
+ * to reach the server at all: `runOneshotMonitor` built every one-shot
+ * command with `{}`, unconditionally. */
 export const MonitorOneshotMessage = z.object({
   type: z.literal('monitor.oneshot'),
   id: z.string(),
-  payload: z.object({ deviceId: z.string(), kind: MonitorKindSchema }),
+  payload: z.object({ deviceId: z.string(), kind: MonitorKindSchema, options: z.unknown().optional() }),
 })
 
 // ---- server -> client ----

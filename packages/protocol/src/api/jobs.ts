@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { JobDetailSchema, JobInfoSchema } from '../messages/job'
+import { JobDetailSchema, JobInfoSchema, JobNodeStatusSchema } from '../messages/job'
+import { DeviceEventSchema } from '../messages/device-event'
 import { pageSchema } from './pagination'
 
 /**
@@ -55,3 +56,117 @@ export const JobLogLineSchema = z.object({
   fields: z.record(z.string(), z.unknown()).optional(),
 })
 export const JobLogsResponseSchema = z.object({ lines: z.array(JobLogLineSchema), truncated: z.boolean() })
+
+/**
+ * `GET /api/jobs/:id/assists` (plan 91 §3.5, §4.9) — every non-job input
+ * action recorded against this job's device while it ran: an indexed range
+ * scan over `device_events` (`idx_device_events_tail(deviceId, stream, at)`),
+ * no JSON extraction (F18). `jobs.assistCount` on `JobInfo` is the headline
+ * number; this is the detail — who, when, and (in `meta`) exactly what.
+ */
+export const JobAssistsResponseSchema = z.object({ items: z.array(DeviceEventSchema) })
+
+/**
+ * One structured error on a `job_nodes` row (plan 99 §4.6, §4.9, step 99.8)
+ * — `job_nodes.error_code`/`job_nodes.error`, the two columns the row
+ * actually has, given a shape instead of two loose nullable strings so
+ * `JobNodeInfoSchema` below can reuse it in both `attempts.lastError` (what
+ * went wrong on the last attempt) and `output.error` (the error attached to
+ * the produced result) without restating the same two fields twice.
+ */
+export const JobNodeErrorSchema = z.object({
+  /** `job_nodes.error_code` — null on a row that failed before a code was assigned. */
+  code: z.string().nullable().default(null),
+  message: z.string(),
+})
+export type JobNodeError = z.infer<typeof JobNodeErrorSchema>
+
+/**
+ * One row of `job_nodes` — one node EXECUTION, not one document node (plan 99
+ * §4.9, acceptance #8: "every node execution is a row", including skipped
+ * ones).
+ *
+ * `seq` is what the timeline is ordered and keyed by — it is unique within a
+ * job (`idx_job_nodes_seq`), unlike `nodeId`: a loop re-executes the same
+ * document node and each pass is its own row, so a timeline keyed on `nodeId`
+ * alone would silently collapse every iteration into one entry.
+ *
+ * `duration`/`attempts`/`output` are nested rather than flat because they are
+ * genuinely three different questions a timeline row answers ("when",
+ * "how many tries", "what came out"), and grouping them is what lets a UI
+ * bind one sub-object to one cell without re-deriving it. `output.truncated`
+ * matters in particular: step 99.7 caps a node's output at
+ * `WORKFLOW_LIMITS.maxNodeOutputBytes`, so a consumer that cannot tell a
+ * capped value from a complete one would quietly mislead.
+ *
+ * The nullable fields are nullable because the COLUMN is: `scriptId`,
+ * `scriptName` and `scriptVersion` are all null for a `gate` node, which has
+ * no script at all.
+ */
+export const JobNodeInfoSchema = z.object({
+  /** 0-based execution order within the job. Exceeds the document's node count when a loop ran. */
+  seq: z.number().int(),
+  /** The document's node id. Repeats across rows when a loop re-executed it. */
+  nodeId: z.string(),
+  kind: z.enum(['script', 'gate']),
+  /** Resolved at execution, never `@latest` — what actually ran. Null for a gate. */
+  scriptId: z.string().nullable(),
+  scriptName: z.string().nullable(),
+  scriptVersion: z.string().nullable(),
+  status: JobNodeStatusSchema,
+  duration: z.object({
+    /** Unix seconds; null while the node has not started (or never did — a skipped row). */
+    startedAt: z.number().nullable().default(null),
+    finishedAt: z.number().nullable().default(null),
+    /** Server-computed convenience; null whenever either endpoint above is null. */
+    elapsedMs: z.number().int().nullable().default(null),
+  }),
+  attempts: z.object({
+    /** Attempts spent on THIS execution — straight from `job_nodes.attempts`. A completed count, not an in-flight index. */
+    current: z.number().int().min(0).default(0),
+    /**
+     * The node's retry BUDGET. Nullable because no column stores it: it
+     * comes from the workflow document the job ran, so a caller reading a
+     * row whose document is gone gets an honest null rather than a
+     * fabricated number.
+     */
+    total: z.number().int().min(0).nullable().default(null),
+    lastError: JobNodeErrorSchema.nullable().default(null),
+  }),
+  output: z.object({
+    /** Whatever the node returned. `unknown` for the same reason `JobDetail.result` is. */
+    value: z.unknown(),
+    /** Set when the value was too large to store: the cap, and what was dropped (`job_nodes.output_truncated`). */
+    truncated: z.string().nullable().default(null),
+    error: JobNodeErrorSchema.nullable().default(null),
+    /** A gate's resolved verdict (left/right values, operator, branch taken) — plan 99 §3.7, §4.4. Null for a script node. */
+    verdict: z.unknown(),
+  }),
+  /** Set on the first row of a job created by `POST /api/jobs/:id/resume` (plan 99 §3.5) — the job it continues from. Null otherwise. */
+  resumedFromJobId: z.string().nullable().default(null),
+  /** The node id resume started at — set alongside `resumedFromJobId`, null otherwise. */
+  resumedFromNode: z.string().nullable().default(null),
+})
+export type JobNodeInfo = z.infer<typeof JobNodeInfoSchema>
+
+/**
+ * `GET /api/jobs/:id/nodes` (plan 99 §3.5, §4.9, step 99.8) — a workflow
+ * job's node TIMELINE: one entry per `job_nodes` row, which is one entry per
+ * NODE EXECUTION, not one per node — a loop runs a node several times and
+ * each run is its own row, and every node the cursor never reached is still
+ * a row (`status: 'skipped'`), so `items` is never a blank gap (H4). `[]`
+ * for a job that is not a workflow, or one that has not executed a node yet
+ * — never a 404 for that reason, the same convention `/logs` and `/assists`
+ * above already use on this same route group; only a missing JOB 404s.
+ *
+ * No `jobId` field here — the caller already has it, from the URL. `finalized`
+ * is `true` once the PARENT job has settled (the same terminal-status check
+ * `POST /:id/resume` itself gates on) — what tells a polling client to stop,
+ * and a "Resume from here" control that it may render at all: resume is
+ * refused with `409` while the job is not terminal.
+ */
+export const JobNodesResponseSchema = z.object({
+  items: z.array(JobNodeInfoSchema),
+  finalized: z.boolean(),
+})
+export type JobNodesResponse = z.infer<typeof JobNodesResponseSchema>

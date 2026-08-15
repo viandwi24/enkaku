@@ -1,4 +1,4 @@
-import type { ArtifactInfo } from '@enkaku/protocol'
+import type { ArtifactInfo, ResultOutcome } from '@enkaku/protocol'
 import type { Db } from '../../db'
 import type { JobRow } from '../../db/schema'
 import { findShadowedPublished, type ScriptRegistry } from '../../scripts/registry'
@@ -17,6 +17,15 @@ export interface RemoteJobHooks {
 interface PendingJob {
   resolve: (value: unknown) => void
   reject: (err: Error) => void
+  /**
+   * Plan 97 §3.3, §3.4, §3.8, §4.5, F6 — captured from `ctx.onResultOutcome`
+   * when `run()` is called (below), the same closure indirection `resolve`/
+   * `reject` already use to bridge an async tunnel round-trip back into this
+   * executor's `Promise`. Undefined for a node too old to send `outcome` at
+   * all (plan 59's "an older bundle/node meeting a newer core is a normal
+   * condition" rule) — `handleProgress` below then simply never calls it.
+   */
+  onResultOutcome?: (outcome: ResultOutcome) => void
 }
 
 export interface RemoteJobBridge {
@@ -29,7 +38,7 @@ export interface RemoteJobBridge {
     attempt?: number
     log?: { level: string; source: string; msg: string; ts: number }
     artifact?: { label: string; kind: string; ext?: string; dataBase64: string }
-    result?: { ok: boolean; value?: unknown; error?: { code: string; message: string; phase?: string } }
+    result?: { ok: boolean; value?: unknown; error?: { code: string; message: string; phase?: string }; outcome?: ResultOutcome }
   }): void
 }
 
@@ -101,7 +110,7 @@ export function createRemoteJobBridge(deps: {
         })
 
         return new Promise<unknown>((resolve, reject) => {
-          pending.set(job.id, { resolve, reject })
+          pending.set(job.id, { resolve, reject, onResultOutcome: ctx.onResultOutcome })
         })
       },
     },
@@ -136,8 +145,19 @@ export function createRemoteJobBridge(deps: {
         pending.delete(jobId)
         if (!waiter) return
         if (payload.result.ok) {
+          // Plan 97 §3.3, §4.5, F6 — before resolving, so the executor's own
+          // `run()` (still returning a bare value, per `executor.ts`'s own
+          // doc comment on why `onResultOutcome` exists rather than widening
+          // that return type) has already reported the verdict by the time
+          // `executor-host.ts`'s `.then()` reads it.
+          if (payload.result.outcome !== undefined) waiter.onResultOutcome?.(payload.result.outcome)
           waiter.resolve(payload.result.value ?? null)
         } else {
+          // Plan 97 §3.5, step 97.4, F6 — same as the local path: a
+          // `partial` outcome/value from a node's own `finish()` salvage
+          // must still reach `ctx.onResultOutcome` before the rejection, or
+          // 97.4 would only ever fix local jobs.
+          if (payload.result.outcome !== undefined) waiter.onResultOutcome?.(payload.result.outcome)
           const err = payload.result.error ?? { code: 'SCRIPT_FAILED', message: 'the job failed on the node' }
           waiter.reject(
             Object.assign(new EnkakuError(err.code, err.message), {
@@ -145,6 +165,9 @@ export function createRemoteJobBridge(deps: {
               // Same as the local executor (plan 60 §3.4): a cloud job's
               // Summary must be able to say where it failed too.
               ...('phase' in err && err.phase ? { phase: err.phase } : {}),
+              // Same as the local executor (script.ts) — riding the thrown
+              // error, since this executor's `run()` also rejects on failure.
+              ...(payload.result.value !== undefined ? { partialResult: payload.result.value } : {}),
             }),
           )
         }

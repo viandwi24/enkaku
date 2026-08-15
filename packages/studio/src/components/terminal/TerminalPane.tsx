@@ -1,8 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { ServerMessage } from '@enkaku/protocol'
+import Link from 'next/link'
+import { CommandRunsPageResponseSchema, isHighConsequence, type ServerMessage } from '@enkaku/protocol'
 import { newId, ws } from '@/lib/ws'
+import { api } from '@/lib/actions'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -50,33 +52,6 @@ interface TranscriptEntry {
   actor: string | null
   at: number
   result: ShellResultPayload | null
-}
-
-/**
- * Patterns that raise a confirmation dialog before running (plan 26 §3.4,
- * §4.5). This is a USABILITY guard ONLY: the server does not know this list
- * exists, does not enforce it, and never will. §3.4 rejects an
- * allowlist/denylist over command strings as a security control outright —
- * `sh -c '…'`, a backtick, or a shell alias defeats any parser — so this
- * exists purely to make a human pause before a self-inflicted mistake, not
- * to stop anyone who actually intends to run the command.
- */
-const HIGH_CONSEQUENCE_PATTERNS: RegExp[] = [
-  /\breboot\b/i,
-  /\bsvc\s+power\b/i,
-  /\bsettings\s+put\s+global\s+adb_enabled\b/i,
-  // Android's own `start`/`stop` restart the entire framework, so they belong
-  // here — but ONLY as a command in their own right. Anchoring to a separator
-  // rather than to any whitespace is what stops `am start -a … -d <url>` from
-  // being flagged: opening a page is not a device-wide act, and a warning that
-  // cries wolf on an everyday command teaches people to dismiss every warning.
-  /(^|[;&|]\s*)(stop|start)([\s;&|]|$)/i,
-  /\brm\s+-rf\s+\//i,
-]
-
-/** Exported for `high-consequence.test.ts` — the patterns are easy to widen by accident. */
-export function isHighConsequence(cmd: string): boolean {
-  return HIGH_CONSEQUENCE_PATTERNS.some((re) => re.test(cmd))
 }
 
 export function TerminalPane({
@@ -143,6 +118,40 @@ export function TerminalPane({
     if (el) el.scrollTop = el.scrollHeight
   }, [entries])
 
+  // Plan 93 §3.5, §3.9 — arrow-up recall used to live only in this
+  // component's own `useState` (F3), so a remount (a page reload, or
+  // navigating away and back) wiped it. `shell.exec` now records through
+  // the same store the fan-out console uses (`ws-handlers.ts`), so the last
+  // 50 entries of the operator's OWN history — across every device, not
+  // just this one, per §3.9 — are fetched once on mount and seeded ahead of
+  // anything typed locally this session. History is a convenience, never
+  // load-bearing: a failed fetch (offline, `device.view` missing, an old
+  // core without this route) leaves arrow-up exactly as empty as it was
+  // before this step, never an error the operator has to dismiss.
+  useEffect(() => {
+    let cancelled = false
+    api('/api/command-runs?mine=1&limit=50', CommandRunsPageResponseSchema)
+      .then((page) => {
+        if (cancelled) return
+        // The API returns newest-first (`startedAt DESC`); `history` is
+        // oldest-to-newest, the same order `submit()` already appends in
+        // below, so ArrowUp keeps landing on the most recent command first.
+        const seeded = page.items.map((r) => r.cmd).reverse()
+        setHistory((h) => [...seeded, ...h])
+      })
+      .catch(() => {
+        // See the comment above the effect — silently leave history as-is.
+      })
+    return () => {
+      cancelled = true
+    }
+    // Seeded once per mount, not per device: plan 93 §3.9 is explicit that
+    // this is "the last 50 entries of your OWN history", not this device's,
+    // so switching `deviceId` on an already-mounted pane neither refetches
+    // nor clears it — matching how `history` already behaves today.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   function submit(cmd: string): void {
     const trimmed = cmd.trim()
     if (!trimmed || pending) return
@@ -167,7 +176,7 @@ export function TerminalPane({
   }
 
   function handleSubmit(): void {
-    if (isHighConsequence(draft)) {
+    if (isHighConsequence(draft).hit) {
       setConfirmCmd(draft)
       return
     }
@@ -224,7 +233,7 @@ export function TerminalPane({
           className="readout mb-3 max-h-[28rem] overflow-y-auto rounded-lg border bg-surface p-3 text-[11.5px] leading-relaxed"
         >
           {entries.map((e) => (
-            <TranscriptRow key={e.id} entry={e} onRunAsStream={onRunAsStream} />
+            <TranscriptRow key={e.id} entry={e} deviceId={deviceId} onRunAsStream={onRunAsStream} />
           ))}
         </div>
       )}
@@ -282,7 +291,15 @@ export function TerminalPane({
   )
 }
 
-function TranscriptRow({ entry, onRunAsStream }: { entry: TranscriptEntry; onRunAsStream: (cmd: string) => void }) {
+function TranscriptRow({
+  entry,
+  deviceId,
+  onRunAsStream,
+}: {
+  entry: TranscriptEntry
+  deviceId: string
+  onRunAsStream: (cmd: string) => void
+}) {
   const { cmd, actor, result } = entry
   return (
     <div className="border-b border-line/60 py-1.5 last:border-b-0">
@@ -324,6 +341,14 @@ function TranscriptRow({ entry, onRunAsStream }: { entry: TranscriptEntry; onRun
                 Run as a stream
               </button>
             )}
+            {/* Plan 93 §3.16, step 93.7 — opens the fleet console with this
+                exact command prefilled and this device preselected. The
+                console is a SEPARATE surface (§3.17): this link does not run
+                anything itself, it only hands the same text to the one place
+                that starts a fan-out run. */}
+            <Link href={`/console?cmd=${encodeURIComponent(cmd)}&deviceId=${encodeURIComponent(deviceId)}`} className="text-accent underline">
+              Run on more devices…
+            </Link>
           </div>
         </>
       )}

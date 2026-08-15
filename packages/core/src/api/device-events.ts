@@ -6,7 +6,8 @@ import { deviceEvents, type DeviceEventRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery, type Page } from './pagination'
 
-function toDeviceEvent(row: DeviceEventRow): DeviceEvent {
+/** Exported for `queue/job-store.ts`'s `assists()` (plan 91 §3.5, §4.9) — the same row→wire mapping, not duplicated. */
+export function toDeviceEvent(row: DeviceEventRow): DeviceEvent {
   return {
     id: row.id,
     deviceId: row.deviceId,

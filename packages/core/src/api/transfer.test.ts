@@ -25,7 +25,7 @@ function fakeLeases(result: { ok: true } | { ok: false; code: string; message: s
 function fakeTransfer(overrides: Partial<TransferService> = {}): TransferService {
   return {
     install: async () => ({ package: 'com.example', durationMs: 1, output: 'Success' }),
-    push: async () => {},
+    push: async () => ({ mediaScan: { ran: false, method: null, ms: 0 } }),
     pull: async () => ({ artifactId: 'art-1', bytes: 42 }),
     cancel: () => {},
     ...overrides,
@@ -132,6 +132,57 @@ describe('POST /api/devices/:id/push', () => {
     const app = makeApp({ role: 'admin' })
     const res = await app.request('/dev-1/push', jsonReq({ artifactId: 'art-1', clientId: 'c1' }))
     expect(res.status).toBe(400)
+  })
+
+  test('the response carries the extended result, including mediaScan (plan 90 §4.6)', async () => {
+    const app = makeApp({
+      role: 'admin',
+      transfer: fakeTransfer({
+        push: async () => ({ mediaScan: { ran: true, method: 'scan_file', ms: 12 } }),
+      }),
+    })
+    const res = await app.request(
+      '/dev-1/push',
+      jsonReq({ artifactId: 'art-1', remotePath: '/sdcard/Pictures/x.jpg', clientId: 'c1' }),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { result: { mediaScan: { ran: boolean; method: string | null; ms: number } } }
+    expect(body.result.mediaScan).toEqual({ ran: true, method: 'scan_file', ms: 12 })
+  })
+
+  test('mediaScan defaults to "auto" and is forwarded to TransferService.push', async () => {
+    let seenMediaScan: unknown
+    const app = makeApp({
+      role: 'admin',
+      transfer: fakeTransfer({
+        push: async (_deviceId, _artifactId, _remotePath, opts) => {
+          seenMediaScan = opts.mediaScan
+          return { mediaScan: { ran: false, method: null, ms: 0 } }
+        },
+      }),
+    })
+    const res = await app.request('/dev-1/push', jsonReq({ artifactId: 'art-1', remotePath: '/sdcard/x', clientId: 'c1' }))
+    expect(res.status).toBe(200)
+    expect(seenMediaScan).toBe('auto')
+  })
+
+  test('an explicit mediaScan value is forwarded unchanged', async () => {
+    let seenMediaScan: unknown
+    const app = makeApp({
+      role: 'admin',
+      transfer: fakeTransfer({
+        push: async (_deviceId, _artifactId, _remotePath, opts) => {
+          seenMediaScan = opts.mediaScan
+          return { mediaScan: { ran: false, method: null, ms: 0 } }
+        },
+      }),
+    })
+    const res = await app.request(
+      '/dev-1/push',
+      jsonReq({ artifactId: 'art-1', remotePath: '/sdcard/x', clientId: 'c1', mediaScan: 'never' }),
+    )
+    expect(res.status).toBe(200)
+    expect(seenMediaScan).toBe('never')
   })
 })
 

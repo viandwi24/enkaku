@@ -1,4 +1,4 @@
-import { definePlugin, type ScriptContext } from '@enkaku/sdk'
+import { definePlugin, ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
 import type { Selector } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
@@ -255,33 +255,28 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
   }
 }
 
-export default definePlugin({
-  id: 'tiktok',
-  version: '1.3.2',
-  title: 'TikTok automation pack',
-  description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
-  scripts: [
-    switchAccount,
-    searchFollow,
-    {
-      id: 'auto-scroll',
-      title: 'Auto-scroll the feed',
-      description:
-        'Opens TikTok and scrolls the feed with randomised watch times, gesture strength, occasional re-watches, back-scrolls and idle pauses. Never likes, follows, or comments.',
-      /**
-       * Three parameters, because three things are genuinely an operator's (or an agent's) call:
-       * how long to run, when to stop, and what the feed should be nudged towards. Everything else
-       * that used to sit here was either a constant dressed as a choice or a lever nobody could
-       * reason about from a form — `commentProbe`, `commentChance`, `matchedCommentChance`,
-       * `relaunch`, `stopOnFinish`, `screenshotEvery`, `seed`, `package`. They are set below, next
-       * to the behaviour they govern.
-       *
-       * `commentProbe` in particular had to go: it was an enum whose default the run form failed to
-       * apply, so pressing Run with nothing touched submitted an empty string and the job died on a
-       * validation error before it did anything. A parameter that can fail like that, for a decision
-       * nobody wanted to make, is worse than no parameter.
-       */
-      params: z.object({
+/**
+ * Five parameters — the original three, plus `commentChance` and `idlePauseSeconds`, pulled
+ * back OUT of the constants below now that plan 95's vocabulary gives them a control that can
+ * actually hold them: a `kind: 'chance'` slider (fixed to [0,1], so there is no 0–100 vs 0–1
+ * mixup to get wrong) and an ordered `kind: 'duration'` range (`ui()`'s own worked example).
+ * Everything else that used to sit here stays a constant dressed as nothing — `relaunch`,
+ * `stopOnFinish`, `screenshotEvery`, `seed`, `package` — because there is still no form control
+ * that would let an operator reason about them, which is the actual bar, not "is it a number".
+ *
+ * `commentProbe` (the sixth candidate) stays deleted: it was an enum whose default the OLD run
+ * form failed to apply, so pressing Run with nothing touched submitted an empty string and the
+ * job died on a validation error before it did anything. `commentChance` does not repeat that
+ * mistake — `applyDefaults` seeds a chance's default before first paint exactly like every
+ * other field, and the slider cannot express an out-of-domain value to begin with.
+ *
+ * Declared as a named `const` (plan 97 §3.2, §5 step 97.8), not inline inside `scripts: [...]`
+ * the way it read before this plan — `definePlugin`'s own array-position inference cannot carry a
+ * SECOND, independent generic per element for `result` below (`plugin.ts`'s own doc comment), so
+ * H1 (a wrong `run` return is a compile error) is proven at THIS declaration instead, exactly the
+ * pattern `switch-account.ts`/`search-follow.ts` already use for their own members.
+ */
+const paramsSchema = z.object({
         videos: z
           .number()
           .int()
@@ -289,26 +284,111 @@ export default definePlugin({
           .max(2_000)
           .default(30)
           .describe('How many videos to watch before stopping.')
-          .meta({ title: 'Videos' }),
+          .meta(ui({ title: 'Videos', kind: 'count', group: 'Core settings' })),
         maxMinutes: z
           .number()
           .positive()
           .max(600)
           .default(20)
           .describe('Wall-clock ceiling. Whichever limit is reached first ends the run.')
-          .meta({ title: 'Stop after (minutes)' }),
+          .meta(ui({ title: 'Stop after', kind: 'duration', unit: 'min', group: 'Core settings' })),
         keywords: z
           .array(z.string())
           .default(['trade', 'trading', 'xau', 'usd', 'scalping', 'swing', 'smc', 'ict'])
           .describe(
             'Words that mark a video as wanted, matched against the account name and effect tag. A match makes a long watch more likely — never certain.',
           )
-          .meta({ title: 'Interest keywords' }),
-      }),
-      // The wall-clock ceiling plus generous slack for launch, settling, and the long-idle bucket.
-      timeout: 60 * 60_000,
+          .meta(ui({ title: 'Interest keywords', group: 'Core settings' })),
+        commentChance: z
+          .number()
+          .min(0)
+          .max(1)
+          .default(0.85)
+          .describe('Chance of opening the comment sheet to read it on a video that matched your keywords. Skipped entirely on a video that did not.')
+          .meta(ui({ title: 'Open comments on a match', kind: 'chance', group: 'Interaction' })),
+        idlePauseSeconds: z
+          .tuple([z.number().int().min(0), z.number().int().min(0)])
+          .default([25, 75])
+          .describe('How long an occasional mid-feed pause lasts. Only triggers on a run long enough for a pause this size to still be a small part of it.')
+          .meta(ui({ title: 'Idle pause length', kind: 'duration', unit: 's', group: 'Interaction' })),
+})
 
-      async prepare(ctx) {
+// Plan 97 §3.2, §4.2, §5 step 97.8 (proves H3) — what `run()` actually
+// returns (`:514+` below). Twelve scalars and one `Record<string, number>`
+// — exactly H3's own claim about what a real result schema looks like: no
+// `planField`/`ResultView` row needed a fourth rule for this (97.6's own
+// worked-example test). `summary: true` on exactly two fields —
+// `videos`/`watchSeconds` — the same worked example `result.ts`'s own doc
+// comment names: `"312 videos · 42 min"`.
+const resultSchema = z.object({
+  videos: z
+    .number()
+    .int()
+    .describe('How many videos were watched before the run stopped.')
+    .meta(ui({ title: 'Videos watched', kind: 'count', summary: true })),
+  watchSeconds: z
+    .number()
+    .int()
+    .describe('Total time spent watching, summed across every video.')
+    .meta(ui({ title: 'Total watch time', kind: 'duration', unit: 's', summary: true })),
+  meanWatchSeconds: z
+    .number()
+    .int()
+    .describe('Average watch time per video (0 when none were watched).')
+    .meta(ui({ title: 'Average watch time', kind: 'duration', unit: 's' })),
+  byLabel: z
+    .record(z.string(), z.number().int())
+    .describe('How many videos fell into each watch-length bucket (e.g. "skim", "full").')
+    .meta(ui({ title: 'Watch-length buckets' })),
+  backScrolls: z
+    .number()
+    .int()
+    .describe('How many times the run scrolled back to re-watch the previous video.')
+    .meta(ui({ title: 'Back-scrolls', kind: 'count' })),
+  idlePauses: z.number().int().describe('How many mid-feed idle pauses were taken.').meta(ui({ title: 'Idle pauses', kind: 'count' })),
+  recoveries: z
+    .number()
+    .int()
+    .describe('How many times the feed stalled and the app had to be restarted.')
+    .meta(ui({ title: 'Recoveries', kind: 'count' })),
+  matched: z.number().int().describe('How many videos matched the interest keywords.').meta(ui({ title: 'Matched videos', kind: 'count' })),
+  commentVisits: z
+    .number()
+    .int()
+    .describe('How many times the comment sheet was opened.')
+    .meta(ui({ title: 'Comment visits', kind: 'count' })),
+  unreadable: z
+    .number()
+    .int()
+    .describe('How many screenshots the run could not read a signal from.')
+    .meta(ui({ title: 'Unreadable frames', kind: 'count' })),
+  endedOnStall: z
+    .boolean()
+    .describe('Whether the run gave up after three consecutive swipes changed nothing.')
+    .meta(ui({ title: 'Ended on stall' })),
+  dialogSweeps: z
+    .number()
+    .int()
+    .describe('How many times a blocking dialog was swept away mid-run.')
+    .meta(ui({ title: 'Dialog sweeps', kind: 'count' })),
+  seed: z.number().int().describe('Replaying with this seed reproduces the exact same sequence.').meta(ui({ title: 'Seed' })),
+})
+
+// Declared as a named `const`, not inline inside `scripts: [...]` (plan 97
+// §3.2, §5 step 97.8) — see `paramsSchema`'s own doc comment above for why:
+// `definePlugin`'s array-position inference cannot carry this member's own
+// `result` generic, so H1 is proven HERE instead, at the declaration.
+const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
+  id: 'auto-scroll',
+  title: 'Auto-scroll the feed',
+  description:
+    'Opens TikTok and scrolls the feed with randomised watch times, gesture strength, occasional re-watches, back-scrolls and idle pauses. Never likes, follows, or comments.',
+  result: resultSchema,
+  params: paramsSchema,
+  // The wall-clock ceiling plus generous slack for launch, settling, and the long-idle bucket.
+  timeout: 60 * 60_000,
+
+  async prepare(ctx) {
         await relaunch(ctx, TIKTOK_PACKAGE)
         // Poll for the feed rather than sleeping a guessed number of seconds: the splash screen
         // took ~10s on the device this was written against, and a fixed sleep is either wrong on a
@@ -321,10 +401,11 @@ export default definePlugin({
         // RETURNED in the result, so a run can still be reproduced exactly — by reading it back,
         // not by inventing one up front.
         const seed = Math.floor(Math.random() * 0xffffffff)
-        // Was `commentProbe` + two chances. Comments are opened mostly on videos that matched and
-        // occasionally on ones that did not: never opening them on an ordinary video draws a
-        // straight line between "matched" and "engaged", which is itself a pattern.
-        const MATCHED_COMMENT_CHANCE = 0.85
+        // Was `commentProbe` + two hardcoded chances; the matched half is now `ctx.params.commentChance`
+        // (plan 95's `kind: 'chance'`). The unmatched half stays fixed, deliberately much lower: comments
+        // are opened mostly on videos that matched and occasionally on ones that did not — never opening
+        // them on an ordinary video draws a straight line between "matched" and "engaged", which is
+        // itself a pattern, so a small constant chance stays even when the matched chance is turned down.
         const COMMENT_CHANCE = 0.15
         const rng = makeRng(seed)
         const deadline = Date.now() + ctx.params.maxMinutes * 60_000
@@ -403,9 +484,26 @@ export default definePlugin({
           await sleep(ms)
           watched.push({ label, ms })
 
+          // Plan 97 §3.7, §5 step 97.8 (proves H4) — the same numbers the old
+          // one-shot `ctx.log.info('finished scrolling', {...})` used to report
+          // only at the very end (now replaced below), pushed LIVE after every
+          // video instead. `ctx.progress` is coalesced and unpersisted — a
+          // script emitting it in a loop this tight costs nothing extra, and an
+          // operator watching the job detail screen sees the video count climb
+          // rather than scrolling a log to find one final line.
+          ctx.progress({
+            videos: watched.length,
+            watchSeconds: Math.round(watched.reduce((sum, w) => sum + w.ms, 0) / 1000),
+            matched,
+            commentVisits,
+            backScrolls,
+            idlePauses,
+            recoveries,
+          })
+
           // Randomised in BOTH directions — a match makes comments likely, not certain, and a
           // non-match makes them unlikely, not impossible.
-          const probe = rng() < (score > 0 ? MATCHED_COMMENT_CHANCE : COMMENT_CHANCE)
+          const probe = rng() < (score > 0 ? ctx.params.commentChance : COMMENT_CHANCE)
           if (probe && (await browseComments(ctx, frame, rng))) commentVisits += 1
 
           // A person often lets a short clip loop once before moving on — an extra dwell that is
@@ -418,7 +516,8 @@ export default definePlugin({
           // three-video run it is most of the job, which is a bad way to spend an operator's time.
           const remainingMs = deadline - Date.now()
           if (ctx.params.videos >= 10 && rng() < 0.03 && remainingMs > 180_000) {
-            const idle = Math.round(between(rng, 25_000, 75_000))
+            const [idleLoSeconds, idleHiSeconds] = ctx.params.idlePauseSeconds
+            const idle = Math.round(between(rng, idleLoSeconds * 1_000, idleHiSeconds * 1_000))
             idlePauses += 1
             ctx.log.info(`idling ${Math.round(idle / 1000)}s`, { after: i + 1 })
             await sleep(idle)
@@ -481,19 +580,12 @@ export default definePlugin({
         const byLabel: Record<string, number> = {}
         for (const w of watched) byLabel[w.label] = (byLabel[w.label] ?? 0) + 1
 
-        ctx.log.info('finished scrolling', {
-          videos: watched.length,
-          watchSeconds: Math.round(totalMs / 1000),
-          byLabel,
-          backScrolls,
-          idlePauses,
-          recoveries,
-          matched,
-          commentVisits,
-          unreadable,
-          dialogSweeps,
-          seed: seed,
-        })
+        // Plan 97 §3.7, §5 step 97.8 (proves H4) — the one-shot
+        // `ctx.log.info('finished scrolling', {...})` that used to sit here is
+        // gone: every number it reported was already pushed live, per video,
+        // by `ctx.progress` above, and the same numbers are now also the job's
+        // declared `result` (`resultSchema` below) — a human reads them off
+        // the job detail screen as formatted values, not by scrolling a log.
 
         return {
           videos: watched.length,
@@ -525,12 +617,18 @@ export default definePlugin({
        * The screenshot is taken BEFORE the app is stopped: capturing evidence of a failure and then
        * destroying the screen it happened on, in that order, is the only order that is any use.
        */
-      async finish(ctx) {
-        if (ctx.error) await ctx.artifact.screenshot('failed')
-        // `clearRecents` too: force-stop kills the process but leaves the card in Android's task
-        // switcher, so a device handed back still shows the app as if a session were open.
-        await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
-      },
-    },
-  ],
+  async finish(ctx) {
+    if (ctx.error) await ctx.artifact.screenshot('failed')
+    // `clearRecents` too: force-stop kills the process but leaves the card in Android's task
+    // switcher, so a device handed back still shows the app as if a session were open.
+    await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+  },
+}
+
+export default definePlugin({
+  id: 'tiktok',
+  version: '1.4.0',
+  title: 'TikTok automation pack',
+  description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
+  scripts: [switchAccount, searchFollow, autoScrollScript],
 })

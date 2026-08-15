@@ -71,6 +71,52 @@ jobs:
       # matched" rather than running the test.
       - run: bun test ./scripts/spec-check.test.ts
 
+  # Windows coverage. Plan 85 (M50) exists because of a Windows field failure,
+  # and until this job existed the only Windows execution anywhere in the
+  # pipeline was release.yml's boot-and-probe smoke test — not one unit test
+  # has ever run on Windows. Note that M50's own "green" claim (plan 85 §7.2)
+  # was measured on a macOS/Linux dev box, never on Windows CI — so this job
+  # is genuinely the first time this suite runs on the platform it was written
+  # to fix.
+  #
+  # Not on every push: windows-latest runners bill at roughly 2x a Linux
+  # minute, and with several people pushing to this repo concurrently that
+  # adds up fast for a signal that changes far less often than the code does.
+  # Instead: every push to `main` (so a regression is caught within one merge,
+  # not discovered later by a user on the actual deployment target), plus an
+  # opt-in `windows` PR label for pre-merge confidence on a change that looks
+  # Windows-risky (adb, process, or path handling, mostly).
+  #
+  # Deliberately not `continue-on-error` — a red Windows job is a real finding
+  # and must stay visible, not a checkbox to silence.
+  check-windows:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows'))
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      # Same split as `check` above, and for the same reason (plan 72 §4.4,
+      # criterion 10 — see CLAUDE.md's Commands section).
+      - run: bun run --cwd packages/studio test
+      - run: bun run --cwd plugins/networking test
+      - run: bun run --cwd plugins/tiktok-automation-pack test
+      - run: bun run --cwd examples test
+      # `scripts/spec-check.ts` parses filesystem paths into spec-divergence
+      # keys (see its `[\\/]`-aware regex) — real path-separator logic, unlike
+      # the two checks below, so it is worth the extra minute here.
+      - run: bun test ./scripts/spec-check.test.ts
+      # Deliberately NOT run here: `check-plan-status.sh`,
+      # `check-harness-provenance.sh`, and `bun run spec:check`. All three
+      # inspect committed text (a plan's status header, a vendored-file diff,
+      # spec/code name-presence) with no OS-dependent behaviour of their own —
+      # `check` already runs them once per push — and the provenance diff in
+      # particular is exactly the kind of check a Windows git checkout's
+      # CRLF/LF translation can fail *for the wrong reason*. Excluded on
+      # purpose, not silently dropped.
+
   changes:
     runs-on: ubuntu-latest
     outputs:

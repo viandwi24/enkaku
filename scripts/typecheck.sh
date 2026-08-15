@@ -21,7 +21,19 @@ for dir in packages/protocol packages/adb packages/toolchain packages/drivers pa
     echo "OK"
   else
     echo "FAILED"
-    sed 's/^/    /' "/tmp/tc-$p.log" | head -10
+    # Show every error, not just the first few — a truncated view here once
+    # cost this project hours (a 9-error package reported as 4, because this
+    # script silently cut the tail). If the log is genuinely enormous, keep
+    # it readable but SAY how many lines were hidden rather than cutting
+    # silently.
+    total=$(wc -l < "/tmp/tc-$p.log" | tr -d ' ')
+    limit=500
+    if [ "$total" -gt "$limit" ]; then
+      sed 's/^/    /' "/tmp/tc-$p.log" | head -"$limit"
+      echo "    ... ($((total - limit)) more lines hidden — see /tmp/tc-$p.log for the full output)"
+    else
+      sed 's/^/    /' "/tmp/tc-$p.log"
+    fi
     fail=1
   fi
 done

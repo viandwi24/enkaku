@@ -16,6 +16,11 @@ import { ws } from '@/lib/ws'
 const STATUS_TONE: Record<BatchInfo['status'], string> = {
   queued: 'text-fg-muted border-line bg-transparent',
   running: 'text-led-active border-led-active/35 bg-led-active/10',
+  // Plan 94 §3.9, §4.9, step 94.8 — a stop in progress: running members are
+  // still being aborted and queued ones cancelled. Same tone family as
+  // `running` (it is still "doing something"), one step toward the warn
+  // color `cancelled` already uses, since that is where it is headed.
+  stopping: 'text-led-warn border-led-warn/35 bg-led-warn/10',
   success: 'text-led-ok border-led-ok/35 bg-led-ok/10',
   failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
   cancelled: 'text-led-warn border-led-warn/35 bg-led-warn/10',
@@ -72,7 +77,7 @@ export default function BatchesPage() {
           rowKey={(b) => b.id}
           sort={(list) =>
             [...list].sort((a, b) => {
-              const rank = (x: BatchInfo) => (x.status === 'running' ? 0 : x.status === 'queued' ? 1 : 2)
+              const rank = (x: BatchInfo) => (x.status === 'running' || x.status === 'stopping' ? 0 : x.status === 'queued' ? 1 : 2)
               return rank(a) - rank(b) || b.createdAt - a.createdAt
             })
           }

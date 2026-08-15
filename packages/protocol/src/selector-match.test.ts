@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { centerOf, matchSelector, matches } from './selector-match'
+import { centerOf, hitTest, matchSelector, matches } from './selector-match'
 import type { UiNode } from './ui-node'
 
 /**
@@ -83,5 +83,68 @@ describe('matchSelector — depth-first, first match wins', () => {
     expect(found).not.toBeNull()
     expect(found?.className).toBe('synthetic-point')
     expect(found?.bounds).toEqual({ left: 12, top: 34, right: 13, bottom: 35 })
+  })
+})
+
+/**
+ * `hitTest` (plan 94 §4.6, step 94.1) — the primitive the recorder's anchor
+ * dump is hit-tested against, deepest-containing-node-preferring-clickable.
+ */
+describe('hitTest', () => {
+  test('a point outside every node returns null', () => {
+    const tree = leaf({ bounds: { left: 0, top: 0, right: 100, bottom: 100 } })
+    expect(hitTest(tree, { x: 500, y: 500 })).toBeNull()
+  })
+
+  test('the root itself, when it has no matching child', () => {
+    const tree = leaf({
+      resourceId: 'root',
+      bounds: { left: 0, top: 0, right: 100, bottom: 100 },
+      children: [leaf({ resourceId: 'elsewhere', bounds: { left: 50, top: 50, right: 60, bottom: 60 } })],
+    })
+    expect(hitTest(tree, { x: 5, y: 5 })?.resourceId).toBe('root')
+  })
+
+  test('the deepest node containing the point, several levels down', () => {
+    const tree = leaf({
+      resourceId: 'root',
+      bounds: { left: 0, top: 0, right: 100, bottom: 100 },
+      children: [
+        leaf({
+          resourceId: 'container',
+          bounds: { left: 0, top: 0, right: 50, bottom: 50 },
+          children: [leaf({ resourceId: 'leaf', bounds: { left: 10, top: 10, right: 20, bottom: 20 } })],
+        }),
+      ],
+    })
+    expect(hitTest(tree, { x: 15, y: 15 })?.resourceId).toBe('leaf')
+  })
+
+  test('prefers a clickable sibling over a non-clickable one that also contains the point', () => {
+    const tree = leaf({
+      resourceId: 'root',
+      bounds: { left: 0, top: 0, right: 100, bottom: 100 },
+      children: [
+        leaf({ resourceId: 'decoration', clickable: false, bounds: { left: 0, top: 0, right: 40, bottom: 40 } }),
+        leaf({ resourceId: 'button', clickable: true, bounds: { left: 0, top: 0, right: 40, bottom: 40 } }),
+      ],
+    })
+    expect(hitTest(tree, { x: 20, y: 20 })?.resourceId).toBe('button')
+  })
+
+  test('bounds are inclusive on every edge', () => {
+    const tree = leaf({ bounds: { left: 0, top: 0, right: 10, bottom: 10 } })
+    expect(hitTest(tree, { x: 0, y: 0 })).not.toBeNull()
+    expect(hitTest(tree, { x: 10, y: 10 })).not.toBeNull()
+    expect(hitTest(tree, { x: 11, y: 5 })).toBeNull()
+  })
+
+  test('with no ambiguity, a single non-clickable deepest match still wins (no false override)', () => {
+    const tree = leaf({
+      resourceId: 'root',
+      bounds: { left: 0, top: 0, right: 100, bottom: 100 },
+      children: [leaf({ resourceId: 'label', clickable: false, bounds: { left: 0, top: 0, right: 40, bottom: 40 } })],
+    })
+    expect(hitTest(tree, { x: 5, y: 5 })?.resourceId).toBe('label')
   })
 })

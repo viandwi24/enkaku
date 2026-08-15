@@ -22,10 +22,18 @@ import { cn } from '@/lib/utils'
 const MAX_VISIBLE_LINES = 5000
 const SAVE_OPTIONS = [100, 500, 1000, 2000, 5000] as const
 
+/**
+ * `crash` (plan 90 §3.5, step 90.7) — the crash watcher's own feed
+ * (`logcat -b crash,main`, plan 37) was always a valid `MonitorKind` and
+ * always streaming, but this list only ever listed six of the seven kinds,
+ * so an operator could never pick it here even though the always-on crash
+ * watcher already shares its stream with anyone who does.
+ */
 const MONITOR_KINDS: Array<{ value: MonitorKind; label: string; streaming: boolean }> = [
   { value: 'logcat', label: 'Logcat', streaming: true },
   { value: 'top', label: 'CPU (top)', streaming: true },
   { value: 'thermal', label: 'Thermal', streaming: true },
+  { value: 'crash', label: 'Crash', streaming: true },
   { value: 'ps', label: 'Processes (ps)', streaming: false },
   { value: 'meminfo', label: 'Memory', streaming: false },
   { value: 'df', label: 'Disk (df)', streaming: false },
@@ -60,8 +68,12 @@ function lineTone(line: string): string {
   }
 }
 
-function optionsFor(kind: MonitorKind, logcat: LogcatOptions): unknown {
-  return kind === 'logcat' ? logcat : {}
+/** `meminfo`'s optional package scope (plan 90 §3.5, step 90.7) — narrows
+ * `dumpsys meminfo` to one app; empty means the whole-device dump, unchanged. */
+function optionsFor(kind: MonitorKind, logcat: LogcatOptions, meminfoPackage: string): unknown {
+  if (kind === 'logcat') return logcat
+  if (kind === 'meminfo') return meminfoPackage ? { package: meminfoPackage } : {}
+  return {}
 }
 
 export function MonitorPane({ deviceId }: { deviceId: string }) {
@@ -69,6 +81,8 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
   const [logcatOptions, setLogcatOptions] = useState<LogcatOptions>({ priority: 'V', buffer: 'main' })
   const [filterDraft, setFilterDraft] = useState('')
   const [tagDraft, setTagDraft] = useState('')
+  const [meminfoDraft, setMeminfoDraft] = useState('')
+  const [meminfoPackage, setMeminfoPackage] = useState('')
 
   const [streamId, setStreamId] = useState<string | null>(null)
   const [lines, setLines] = useState<string[]>([])
@@ -89,13 +103,13 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
   const streamIdRef = useRef<string | null>(null)
 
   const isStreaming = MONITOR_KINDS.find((m) => m.value === kind)?.streaming ?? false
-  const options = optionsFor(kind, logcatOptions)
+  const options = optionsFor(kind, logcatOptions, meminfoPackage)
 
   const runOneshot = useCallback(() => {
     setOneshotLoading(true)
     setOneshotError(null)
     void ws
-      .request({ type: 'monitor.oneshot', id: newId(), payload: { deviceId, kind } })
+      .request({ type: 'monitor.oneshot', id: newId(), payload: { deviceId, kind, options } })
       .then((res) => {
         if (res.type !== 'monitor.result') return
         setOneshotText(res.payload.text)
@@ -103,7 +117,8 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
       })
       .catch((err) => setOneshotError(err instanceof Error ? err.message : String(err)))
       .finally(() => setOneshotLoading(false))
-  }, [deviceId, kind])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId, kind, JSON.stringify(options)])
 
   // Streaming kinds: start on mount / whenever kind or options change; stop
   // on cleanup. One-shot kinds: just run once (§4.7 "a refreshable text block").
@@ -185,6 +200,10 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
 
   function applyLogcatFilters() {
     setLogcatOptions((o) => ({ ...o, filter: filterDraft.trim() || undefined, tag: tagDraft.trim() || undefined }))
+  }
+
+  function applyMeminfoPackage() {
+    setMeminfoPackage(meminfoDraft.trim())
   }
 
   async function saveLastLines(n: number) {
@@ -277,6 +296,17 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
               className="h-8 w-48 text-[12.5px]"
             />
           </>
+        )}
+
+        {kind === 'meminfo' && (
+          <Input
+            value={meminfoDraft}
+            onChange={(e) => setMeminfoDraft(e.target.value)}
+            onBlur={applyMeminfoPackage}
+            onKeyDown={(e) => e.key === 'Enter' && applyMeminfoPackage()}
+            placeholder="Package (optional, e.g. com.example.app)"
+            className="h-8 w-64 text-[12.5px]"
+          />
         )}
 
         <div className="ml-auto flex items-center gap-2">

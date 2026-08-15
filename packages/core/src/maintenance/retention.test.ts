@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { openDb, runMigrations, type Db } from '../db'
-import { deviceEvents } from '../db/schema'
+import { commandRunMembers, commandRuns, deviceEvents } from '../db/schema'
 import { createFarmSettingsStore } from '../settings/farm-settings'
 import { createRetentionGc } from './retention'
 import { createLogger } from '../util/logger'
@@ -23,6 +23,26 @@ function seedEvent(db: Db, opts: { deviceId: string; stream: 'main' | 'input'; a
       at: new Date(Date.now() - opts.ageDays * 86_400_000),
     })
     .run()
+}
+
+function seedCommandRun(db: Db, opts: { createdBy?: string | null; ageDays: number; deviceIds: string[] }) {
+  const id = crypto.randomUUID()
+  const startedAt = new Date(Date.now() - opts.ageDays * 86_400_000)
+  db.insert(commandRuns)
+    .values({
+      id,
+      cmd: 'true',
+      target: { deviceIds: opts.deviceIds },
+      status: 'ok',
+      createdBy: opts.createdBy ?? 'user-1',
+      startedAt,
+      finishedAt: startedAt,
+    })
+    .run()
+  db.insert(commandRunMembers)
+    .values(opts.deviceIds.map((deviceId, i) => ({ runId: id, deviceId, seq: i, status: 'ok' as const })))
+    .run()
+  return id
 }
 
 function makeGc(db: Db) {
@@ -96,5 +116,54 @@ describe('device event retention (plan 18 §4.4)', () => {
 
     expect(result.eventsDeleted).toBe(1)
     expect(result.deleted).toBe(0) // the artifact GC itself stayed off
+  })
+})
+
+describe('command run retention (plan 93 §3.9, §4.1, §5 step 93.2) — beside sweepEvents, not device_events', () => {
+  test('a run older than commandRunDays is deleted, and its members cascade with it', () => {
+    const db = setUp()
+    const staleId = seedCommandRun(db, { ageDays: 20, deviceIds: ['a', 'b'] }) // past the 14-day default
+    const freshId = seedCommandRun(db, { ageDays: 1, deviceIds: ['a'] })
+
+    const gc = makeGc(db)
+    const result = gc.sweepOnce()
+
+    expect(result.commandRunsDeleted).toBe(1)
+    expect(db.select().from(commandRuns).all().map((r) => r.id)).toEqual([freshId])
+    // The cascade actually cascaded — no orphan member rows left pointing at the deleted run.
+    expect(db.select().from(commandRunMembers).all().every((m) => m.runId !== staleId)).toBe(true)
+    expect(db.select().from(commandRunMembers).all().filter((m) => m.runId === freshId)).toHaveLength(1)
+  })
+
+  test('NOT gated by retention.enabled — the default farm has it off, and the sweep still runs', () => {
+    const db = setUp()
+    // Default farm settings: retention.enabled === false (asserted by the existing event-retention test above).
+    seedCommandRun(db, { ageDays: 20, deviceIds: ['a'] })
+
+    const gc = makeGc(db)
+    const result = gc.sweepOnce()
+
+    expect(result.commandRunsDeleted).toBe(1)
+    expect(result.deleted).toBe(0) // the artifact GC itself stayed off
+  })
+
+  test('a run under the retention window is left untouched', () => {
+    const db = setUp()
+    const id = seedCommandRun(db, { ageDays: 1, deviceIds: ['a'] })
+    const gc = makeGc(db)
+    const result = gc.sweepOnce()
+    expect(result.commandRunsDeleted).toBe(0)
+    expect(db.select().from(commandRuns).all().map((r) => r.id)).toEqual([id])
+  })
+
+  test('the window is configurable via retention.commandRunDays', () => {
+    const db = setUp()
+    const settings = createFarmSettingsStore(db)
+    settings.update({ retention: { commandRunDays: 5 } })
+    seedCommandRun(db, { ageDays: 6, deviceIds: ['a'] }) // now past a 5-day window
+
+    const gc = createRetentionGc({ db, dataDir: '/tmp/enkaku-retention-test', settings, log: createLogger('test').child('retention'), intervalMinutes: 60 })
+    const result = gc.sweepOnce()
+    expect(result.commandRunsDeleted).toBe(1)
   })
 })

@@ -1,5 +1,5 @@
 import { and, count, eq } from 'drizzle-orm'
-import type { ScriptRef } from '@enkaku/protocol'
+import { checkRuntimeMajor, JobSettingsSchema, resolveRuntime, type JobSettings, type ScriptRef } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { devices, jobs, type JobRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
@@ -51,7 +51,22 @@ export interface JobTriggerDeps {
   log?: Logger
   /** Read fresh per call (the same freshness pattern `adb.maxConcurrent`/`resetPolicy` use) — a Settings change reaches the very next trigger, no restart. */
   budgets: () => TriggerBudgets
+  /**
+   * Plan 98 §3.7, §4.6, step 98.5 — live `job` farm settings, threaded into
+   * `resolveRuntime` exactly like `job-service.ts`'s own `farmJobSettings`
+   * (same doc comment's reasoning applies verbatim: `maxConcurrent` has no
+   * farm layer, so an omitted getter — a test, or a host built before this
+   * step — resolves identically to a live farm at its defaults). A triggered
+   * job is a THIRD write path onto `jobs` (alongside `job-service.ts`'s
+   * `enqueue`/`resume`) and must pin the same cap a fresh enqueue of the
+   * same script would — a `maxConcurrent: 1` script that re-triggers itself
+   * must stay bounded, not escape the gate by using this door instead.
+   */
+  farmJobSettings?: () => JobSettings
 }
+
+/** Mirrors `services/job-service.ts`'s own constant — see its doc comment for why a fabricated default is provably equivalent to live settings for `maxConcurrent` alone. */
+const DEFAULT_FARM_JOB_SETTINGS: JobSettings = JobSettingsSchema.parse({})
 
 export interface JobTrigger {
   /** `from` is the CALLING job's own row — its `deviceId`, `depth`, `rootJobId`, and `expiresAt` are what this derives everything from. Synchronous: one write transaction, like `JobStore.claimNext`. */
@@ -60,6 +75,7 @@ export interface JobTrigger {
 
 export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
   const { db, registry, budgets, log } = deps
+  const farmJobSettings = () => deps.farmJobSettings?.() ?? DEFAULT_FARM_JOB_SETTINGS
 
   return {
     trigger(from, input) {
@@ -96,6 +112,22 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
         // dev slot (the other being an ad-hoc run), because a schedule
         // outlives the session that owns the slot and a running job does not.
         const entry = registry.resolve(input.script as ScriptRef, { allowDev: true })
+
+        // Plan 98 §3.3 S1, §4.5, step 98.6 — the version gate, checked the
+        // instant the entry resolves (before the device check, before any
+        // budget, before the row is built) — the THIRD write path onto
+        // `jobs` gets the identical refusal a fresh `enqueue()`/`resume()`
+        // would give the same script, so a self-triggering script cannot
+        // route around the gate by using this door instead. `entry.runtime`
+        // is the SCRIPT's own declaration (never the caller's — a running
+        // script has no "override" layer here, §3.8's per-job layer is an
+        // operator's own action at enqueue time, not something `ctx.jobs
+        // .trigger()` exposes).
+        const versionCheck = checkRuntimeMajor(entry.runtime?.sdk)
+        if (versionCheck) {
+          log?.warn('trigger refused: unsupported runtime.sdk', { fromJobId: from.id, script: input.script, sdk: entry.runtime?.sdk })
+          throw new EnkakuError(versionCheck.code, versionCheck.message)
+        }
 
         const targetDeviceId = input.deviceId ?? from.deviceId
         const device = tx.select().from(devices).where(eq(devices.id, targetDeviceId)).get()
@@ -171,6 +203,34 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           rootJobId,
           depth,
           triggerKey: input.key,
+          peakRssBytes: null,
+          // Plan 91 §3.5, §4.9 — a freshly triggered job has not been
+          // assisted yet, same as an ordinary `enqueue()`.
+          assistCount: 0,
+          // Plan 98 §3.7, §4.6, step 98.5 — same resolution `job-service.ts`
+          // performs at enqueue, from the SAME registry entry this function
+          // already resolved above (`entry.runtime`) rather than a second
+          // lookup.
+          maxConcurrent: resolveRuntime({ farm: farmJobSettings(), script: entry.runtime, override: null }).resolved.maxConcurrent,
+          // Plan 98 §3.8, §4.4, step 98.7 — a triggered job has no per-job
+          // override layer: `ctx.jobs.trigger()` is a SCRIPT calling itself,
+          // never an operator typing a number at enqueue time, and §3.8's
+          // whole design is that layer belonging to a human at the moment
+          // they enqueue. Always `null` here, exactly like `override: null`
+          // immediately above on the SAME `resolveRuntime` call.
+          runtimeOverride: null,
+          // Plan 94 §3.8, §4.8, step 94.6 — a freshly triggered job is not
+          // paced: nothing writes a non-null value here until 94.7's pacer
+          // exists.
+          notBefore: null,
+          batchRepeat: null,
+          pacedDelayMs: null,
+          // Plan 97 §3.3, §4.4 — a freshly triggered job has not settled
+          // yet, same as an ordinary `enqueue()`.
+          resultStatus: null,
+          resultBytes: null,
+          resultSummary: null,
+          resultIssues: null,
         }
         tx.insert(jobs).values(row).run()
         return { jobId: row.id, deduped: false }

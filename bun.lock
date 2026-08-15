@@ -38,7 +38,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.5",
+      "version": "0.1.7",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -172,6 +172,7 @@
         "zod": "^4.0.0",
       },
       "devDependencies": {
+        "@enkaku/plugin-tiktok": "workspace:*",
         "@happy-dom/global-registrator": "^15",
         "@tailwindcss/postcss": "^4.3.3",
         "@testing-library/react": "^16",
@@ -203,7 +204,7 @@
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "0.7.0",
+      "version": "1.4.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",

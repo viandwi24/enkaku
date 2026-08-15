@@ -1,9 +1,21 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { compareSemver, isPrereleaseVersion, ListAgentsResponseSchema, parseScriptRef, ScheduleResponseSchema, ValidateResponseSchema } from '@enkaku/protocol'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  clampSchema,
+  compareSemver,
+  isPrereleaseVersion,
+  ListAgentsResponseSchema,
+  parseScriptRef,
+  reconcileParams,
+  ScheduleResponseSchema,
+  ScriptListItemSchema,
+  summarizeClamp,
+  ValidateResponseSchema,
+} from '@enkaku/protocol'
 import type { Agent, BatchOrder, CatchUp, ClusterInfo, DeviceInfo, OnApprovalRequired, OnOverlap, ScheduleInfo, ScheduleThreadMode } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
+import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button } from '@/components/ui/button'
@@ -14,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
+import { api, issuesFromError, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
 
 export interface ScheduleRow extends ScheduleInfo {}
@@ -128,7 +140,20 @@ export function ScheduleEditorDialog({
   const [catchUp, setCatchUp] = useState<CatchUp>('skip')
   const [jitterSec, setJitterSec] = useState(0)
   const [priority, setPriority] = useState(0)
+  // Plan 94 §3.6, §4.10, step 94.10 — the Repeat section (94.9's own
+  // schedule-level pacing fields, passed through unconditionally by
+  // `runner.ts`'s `fireOnce`, exactly like `concurrency`/`order`/`priority`
+  // already were). `1`/`0`/`0`/`0` reproduces today's behaviour exactly.
+  const [repeatCount, setRepeatCount] = useState(1)
+  const [intervalMinSec, setIntervalMinSec] = useState(0)
+  const [intervalMaxSec, setIntervalMaxSec] = useState(0)
+  const [deviceIntervalSec, setDeviceIntervalSec] = useState(0)
   const [preview, setPreview] = useState<ValidatePreview | null>(null)
+  // Plan 95 §3.7, §4.3, §5 step 95.6 (fixes F12, F14) — the same wiring
+  // `RunScriptDialog` uses: `serverErrors` maps onto `SchemaForm`,
+  // `formCanSubmit` is ANDed into the Save button below.
+  const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
+  const [formCanSubmit, setFormCanSubmit] = useState(true)
   const { run, isPending } = useAction()
 
   const isNew = schedule === 'new'
@@ -136,8 +161,10 @@ export function ScheduleEditorDialog({
 
   useEffect(() => {
     if (!open) return
-    void fetchAllPages<ScriptOption>('/api/scripts')
-      .then((scripts) => setScripts(scripts.filter((s) => s.enabled)))
+    // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8) — see
+    // `device/page.tsx`'s identical fix for the full reasoning.
+    void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
+      .then((scripts) => setScripts((scripts as ScriptOption[]).filter((s) => s.enabled)))
       .catch(() => setScripts([]))
     void fetchAllPages<ClusterInfo>('/api/clusters')
       .then(setClusters)
@@ -149,6 +176,10 @@ export function ScheduleEditorDialog({
   }, [open])
 
   useEffect(() => {
+    setServerIssues(undefined)
+    // A no-params script, or an agent target, never mounts `SchemaForm`,
+    // which would otherwise leave a PREVIOUS pick's `false` stuck (F14).
+    setFormCanSubmit(true)
     if (schedule === 'new') {
       setName('')
       setEnabled(true)
@@ -173,6 +204,10 @@ export function ScheduleEditorDialog({
       setCatchUp('skip')
       setJitterSec(0)
       setPriority(0)
+      setRepeatCount(1)
+      setIntervalMinSec(0)
+      setIntervalMaxSec(0)
+      setDeviceIntervalSec(0)
     } else if (schedule) {
       setName(schedule.name)
       setEnabled(schedule.enabled)
@@ -205,6 +240,14 @@ export function ScheduleEditorDialog({
       setCatchUp(schedule.catchUp)
       setJitterSec(schedule.jitterSec)
       setPriority(schedule.priority)
+      // `?? ` defaults (plan 94 §4.9's own additive/`.default()` fields) —
+      // a schedule fetched through an older fixture or a not-yet-refreshed
+      // cache predating step 94.9 has none of these keys at all; defaulting
+      // to "unpaced" is the same fallback the wire itself uses.
+      setRepeatCount(schedule.repeatCount ?? 1)
+      setIntervalMinSec(Math.round((schedule.intervalMinMs ?? 0) / 1000))
+      setIntervalMaxSec(Math.round((schedule.intervalMaxMs ?? 0) / 1000))
+      setDeviceIntervalSec(Math.round((schedule.deviceIntervalMs ?? 0) / 1000))
     }
   }, [schedule])
 
@@ -220,10 +263,11 @@ export function ScheduleEditorDialog({
     return () => clearTimeout(timer)
   }, [open, cron, timezone])
 
-  if (!open) return null
-
   // The names available to pick from, one entry each (plan 62 §4.6) — the
-  // version choice is a second, separate control below.
+  // version choice is a second, separate control below. Computed BEFORE the
+  // `!open` early return below, on purpose: `clampedSchema` is a hook and
+  // must be called on every render, so `effectiveVersion` (what it clamps)
+  // has to be available before any conditional return, not after.
   const scriptNames = [...new Set(scripts.map((s) => s.name))].sort((a, b) => a.localeCompare(b))
   const versionsForName = scripts.filter((s) => s.name === scriptName).sort((a, b) => compareSemver(b.version, a.version))
   const resolved = scriptName ? resolveLatest(scripts, scriptName) : null
@@ -231,12 +275,38 @@ export function ScheduleEditorDialog({
   // live resolution when floating on @latest, the exact pinned row otherwise.
   const effectiveVersion = useLatest ? resolved : (versionsForName.find((v) => v.version === pinnedVersion) ?? null)
 
+  // Plan 95 §3.8, §5 step 95.5 — "reject at publish, clamp at render", the
+  // same defence `RunScriptDialog` carries. `clampSchema` is total,
+  // so `effectiveVersion` being null (no script picked yet, or an agent
+  // target) just clamps an empty schema to an empty schema.
+  const { schema: clampedSchema, clamped } = useMemo(
+    () => clampSchema(effectiveVersion?.paramsSchema ?? null),
+    [effectiveVersion?.paramsSchema],
+  )
+
+  // Plan 95 §4.4, §5 step 95.7 — the schedule-evolution rule, run live in the
+  // editor: `params` may have been saved against an EARLIER version of this
+  // script's schema (loaded verbatim by the effect above, never silently
+  // reshaped). Recomputed whenever the schema or the value changes, never
+  // stored — same "read fresh, never cached" rule `paramsCompatible` follows
+  // server-side (`GET /api/schedules`).
+  const reconciliation = useMemo(() => reconcileParams(clampedSchema, params), [clampedSchema, params])
+  const blockingReconcileErrors = Object.fromEntries(
+    reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing').map((f) => [f.path, f.detail]),
+  )
+  const hasFillableDefaults = reconciliation.findings.some((f) => f.kind === 'reset')
+
+  if (!open) return null
+
   const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
   const canSubmit =
     name.trim().length > 0 &&
     (preview?.valid ?? false) &&
     (target === 'cluster' ? !!clusterId : deviceIds.length > 0) &&
-    (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName && (useLatest || !!pinnedVersion))
+    (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName && (useLatest || !!pinnedVersion)) &&
+    // Plan 94 §4.9, step 94.10 — mirrors the core's own `assertPacingValid`
+    // client-side, the same defence `RunScriptDialog`'s Repeat section has.
+    intervalMinSec <= intervalMaxSec
 
   const scriptRef = `${scriptName}@${useLatest ? 'latest' : pinnedVersion}`
 
@@ -261,19 +331,38 @@ export function ScheduleEditorDialog({
     catchUp,
     jitterSec,
     priority,
+    // Plan 94 §3.6, §4.9, §4.10, step 94.9/94.10 — the schedule's own repeat
+    // pacing, passed through to `createBatch` on every future firing
+    // exactly like `concurrency`/`order`/`priority` (F34). Seconds in the
+    // UI, milliseconds on the wire — the same unit split `RunScriptDialog`'s
+    // own Repeat section already made.
+    repeatCount,
+    intervalMinMs: intervalMinSec * 1000,
+    intervalMaxMs: intervalMaxSec * 1000,
+    deviceIntervalMs: deviceIntervalSec * 1000,
     // Plan 68 §3.2, §3.5 — meaningful only for an agent target; harmless to
     // include (and defaulted server-side) for a script one.
     threadMode,
     onApprovalRequired,
   })
 
-  const save = () =>
-    run(
+  const save = () => {
+    setServerIssues(undefined)
+    return run(
       'save',
-      () =>
-        schedule === 'new'
-          ? api('/api/schedules', ScheduleResponseSchema, { method: 'POST', json: body() })
-          : api(`/api/schedules/${schedule.id}`, ScheduleResponseSchema, { method: 'PATCH', json: body() }),
+      async () => {
+        try {
+          return await (schedule === 'new'
+            ? api('/api/schedules', ScheduleResponseSchema, { method: 'POST', json: body() })
+            : api(`/api/schedules/${schedule.id}`, ScheduleResponseSchema, { method: 'PATCH', json: body() }))
+        } catch (err) {
+          // `invalid_job_params` (plan 95 §3.7, §4.3, fixes F12) — same
+          // wiring as `RunScriptDialog`: attach the field-level issues to
+          // the form; `run()`'s own catch still shows the toast.
+          setServerIssues(issuesFromError(err))
+          throw err
+        }
+      },
       {
         success: isNew ? 'Schedule created' : 'Schedule saved',
         failure: 'Could not save the schedule',
@@ -283,6 +372,7 @@ export function ScheduleEditorDialog({
         },
       },
     )
+  }
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -331,7 +421,16 @@ export function ScheduleEditorDialog({
               script or an agent. */}
           <div className="space-y-1.5">
             <Label className="text-[13px] font-normal">Runs</Label>
-            <Tabs value={workKind} onValueChange={(v) => setWorkKind(v as WorkKind)}>
+            <Tabs
+              value={workKind}
+              onValueChange={(v) => {
+                setWorkKind(v as WorkKind)
+                // Switching to "An agent" unmounts `SchemaForm` entirely,
+                // which would otherwise leave a script pick's `false` stuck.
+                setServerIssues(undefined)
+                setFormCanSubmit(true)
+              }}
+            >
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="script">A script</TabsTrigger>
                 <TabsTrigger value="agent">An agent</TabsTrigger>
@@ -350,6 +449,8 @@ export function ScheduleEditorDialog({
                       setScriptName(v)
                       setPinnedVersion('')
                       setParams(undefined)
+                      setServerIssues(undefined)
+                      setFormCanSubmit(true)
                     }}
                   >
                     <SelectTrigger className="h-8 w-full text-[12.5px]">
@@ -370,7 +471,7 @@ export function ScheduleEditorDialog({
                 {!useLatest && versionsForName.length > 0 && (
                   <div className="space-y-1.5">
                     <Label className="text-[13px] font-normal">Version</Label>
-                    <Select value={pinnedVersion} onValueChange={(v) => { setPinnedVersion(v); setParams(undefined) }}>
+                    <Select value={pinnedVersion} onValueChange={(v) => { setPinnedVersion(v); setParams(undefined); setServerIssues(undefined); setFormCanSubmit(true) }}>
                       <SelectTrigger className="readout h-8 min-w-28 text-[12.5px]">
                         <SelectValue placeholder="Pick a version" />
                       </SelectTrigger>
@@ -413,7 +514,80 @@ export function ScheduleEditorDialog({
               )}
 
               {effectiveVersion?.paramsSchema ? (
-                <SchemaForm key={effectiveVersion.id} schema={effectiveVersion.paramsSchema} value={params} onChange={setParams} />
+                <>
+                  {/* Plan 95 §4.7, §4.8, §5 step 95.8 — the same picker
+                      `RunScriptDialog` has. Applying a preset here stores
+                      its RECONCILED value into `params` below, exactly like
+                      typing it in by hand — never a reference to the set:
+                      "a preset edited later must not silently change what a
+                      schedule runs" (the same reference-vs-resolution split
+                      plan 62 §3.3 draws between `schedules.scriptRef` and
+                      `jobs.scriptId`, applied here to a preset instead of a
+                      script version). */}
+                  <ParamSetPicker
+                    scriptName={scriptName}
+                    schema={clampedSchema}
+                    value={params}
+                    onApply={(next) => {
+                      setParams(next)
+                      setServerIssues(undefined)
+                    }}
+                  />
+                  {/* Plan 95 §3.8, §5 step 95.5 — same clamp-and-say-so
+                      backstop as `RunScriptDialog`, for a schema stored
+                      before `checkDeclaredSchema` existed. */}
+                  {clamped.length > 0 && (
+                    <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+                      {summarizeClamp(clamped)}
+                    </p>
+                  )}
+                  {/* Plan 95 §4.4, §5 step 95.7 — an attended caller does not
+                      stop (§4.4): the findings are shown and the fields they
+                      block are highlighted below (via `serverErrors`), but
+                      saving is never refused outright here the way an
+                      unattended firing is. "Fill from the new version's
+                      defaults" only ever touches the NON-blocking findings
+                      (`reset`) — a `missing`/`invalid` field has no default
+                      to fill from, which is exactly why it blocks; those
+                      stay for the operator to answer by hand. */}
+                  {reconciliation.findings.length > 0 && (
+                    <div className="space-y-1.5 rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-led-warn">
+                          {reconciliation.blocking
+                            ? "Some stored parameters no longer match this version's schema"
+                            : "This version changed how some stored parameters are read"}
+                        </p>
+                        {hasFillableDefaults && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 shrink-0 text-[11px]"
+                            onClick={() => setParams(reconciliation.value)}
+                          >
+                            Fill from the new version&apos;s defaults
+                          </Button>
+                        )}
+                      </div>
+                      <ul className="space-y-0.5 text-fg-muted">
+                        {reconciliation.findings.map((f) => (
+                          <li key={f.path} className={f.kind === 'invalid' || f.kind === 'missing' ? 'text-led-danger' : undefined}>
+                            <span className="readout">{f.path}</span> — {f.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <SchemaForm
+                    key={effectiveVersion.id}
+                    schema={clampedSchema as JsonSchemaNode}
+                    value={params}
+                    onChange={setParams}
+                    serverErrors={{ ...blockingReconcileErrors, ...serverIssues }}
+                    onCanSubmitChange={setFormCanSubmit}
+                  />
+                </>
               ) : effectiveVersion ? (
                 <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
               ) : null}
@@ -596,8 +770,92 @@ export function ScheduleEditorDialog({
                   onChange={(e) => setJitterSec(Number.parseInt(e.target.value, 10) || 0)}
                   className="readout h-8 text-[12.5px]"
                 />
-                <p className="text-[11px] leading-relaxed text-fg-muted">Spreads the dispatch by up to this many seconds, so many schedules do not all hit the farm at once.</p>
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  Spreads the dispatch by up to this many seconds, so many schedules do not all hit the farm at once.
+                  {/* Plan 94 §4.10, step 94.10 — the two-knob distinction this
+                      dialog is required to draw: this jitter shifts WHEN the
+                      whole firing starts, once, before anything runs. It is
+                      not the same knob as a repeating run's own interval
+                      below, which shifts the gap between each repetition
+                      inside that one firing. */}{' '}
+                  This shifts the WHOLE firing's own start time, once — it is not the interval between a repeating
+                  run's own repetitions (below), which is a different knob entirely.
+                </p>
               </div>
+            </div>
+
+            {/* Plan 94 §3.6, §4.10, §9 Q4, step 94.10 — the same Repeat
+                section `RunScriptDialog` has, for the batch each firing
+                creates. Now functional: step 94.9 landed the schedule-level
+                `repeatCount`/`intervalMinMs`/`intervalMaxMs`/
+                `deviceIntervalMs` columns and `runner.ts`'s `fireOnce`
+                passes them into `createBatch` unconditionally, exactly like
+                `concurrency`/`order`/`priority` already were (F34) — so
+                these fields now take real effect on every future firing. */}
+            <div className="space-y-2.5 rounded-lg border bg-surface-2/40 p-3">
+              <div>
+                <p className="text-[12.5px] font-medium">Repeat</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                  How many times EACH firing repeats, and how long to wait between whole repetitions — a different
+                  knob from Jitter above (which only shifts when the firing itself starts, once) and from the pause
+                  between actions inside one run (which lives on the device itself, Device → Settings → Human-like
+                  touch). Leaving this at 1 repetition behaves exactly as before.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="schedule-repeat-count" className="text-[12.5px] font-normal">
+                    Repetitions
+                  </Label>
+                  <Input
+                    id="schedule-repeat-count"
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={repeatCount}
+                    onChange={(e) => setRepeatCount(Math.max(1, Number.parseInt(e.target.value, 10) || 1))}
+                    className="readout h-8 text-[12.5px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[12.5px] font-normal">Interval (s, min–max)</Label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min={0}
+                      aria-label="Repeat interval minimum (seconds)"
+                      value={intervalMinSec}
+                      onChange={(e) => setIntervalMinSec(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                      className="readout h-8 text-[12.5px]"
+                    />
+                    <span className="text-fg-subtle">–</span>
+                    <Input
+                      type="number"
+                      min={0}
+                      aria-label="Repeat interval maximum (seconds)"
+                      value={intervalMaxSec}
+                      onChange={(e) => setIntervalMaxSec(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                      className="readout h-8 text-[12.5px]"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="schedule-repeat-stagger" className="text-[12.5px] font-normal">
+                    Stagger across devices (s)
+                  </Label>
+                  <Input
+                    id="schedule-repeat-stagger"
+                    type="number"
+                    min={0}
+                    value={deviceIntervalSec}
+                    onChange={(e) => setDeviceIntervalSec(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                    className="readout h-8 text-[12.5px]"
+                  />
+                </div>
+              </div>
+              {intervalMinSec > intervalMaxSec && (
+                <p className="text-[11.5px] text-led-danger">The interval's minimum is greater than its maximum.</p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -645,7 +903,7 @@ export function ScheduleEditorDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={() => void save()} disabled={!canSubmit || isPending('save')}>
+          <Button onClick={() => void save()} disabled={!canSubmit || !formCanSubmit || isPending('save')}>
             {isPending('save') ? 'Saving…' : isNew ? 'Create schedule' : 'Save changes'}
           </Button>
         </div>

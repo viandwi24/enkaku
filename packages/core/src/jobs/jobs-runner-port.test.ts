@@ -25,7 +25,7 @@ function fakeRegistry(entries: Record<string, { id: string; name: string; versio
     resolve: (ref) => {
       const entry = entries[ref]
       if (!entry) throw new Error(`fakeRegistry: no entry for "${ref}"`)
-      return { ...entry, origin: 'standalone', pluginName: null, exportId: null, enabled: true, paramsSchema: null, bundle: { kind: 'db', scriptId: entry.id }, ephemeral: false }
+      return { ...entry, kind: 'script', origin: 'standalone', pluginName: null, exportId: null, enabled: true, paramsSchema: null, runtime: null, bundle: { kind: 'db', scriptId: entry.id }, ephemeral: false }
     },
     bundlePath: () => {
       throw new Error('not used')

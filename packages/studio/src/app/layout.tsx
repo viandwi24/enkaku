@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { AppShell } from '@/components/layout/AppShell'
+import { AuthGate } from '@/components/layout/AuthGate'
 import { archivo, plexMono } from './fonts'
 import './globals.css'
 
@@ -15,7 +15,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" className={`${archivo.variable} ${plexMono.variable}`}>
       <body>
         <TooltipProvider delayDuration={200}>
-          <AppShell>{children}</AppShell>
+          {/* Every route is gated behind the core's own auth state (plan 09
+              §4.14) — `AuthGate` renders `/login` or `/setup` standalone when
+              unauthenticated, and only wraps `children` in `AppShell` once
+              there is a session (or local mode's implicit admin). */}
+          <AuthGate>{children}</AuthGate>
         </TooltipProvider>
         <Toaster position="bottom-right" richColors closeButton />
       </body>

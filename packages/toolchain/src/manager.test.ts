@@ -208,3 +208,58 @@ describe('ToolchainManager.deviceArtifactExpectation (plan 41 §3.2, §4.1)', ()
     }
   })
 })
+
+describe('guest-agent (plan 90 §90.1 — fixes F5, F6)', () => {
+  // `dataDir` is a bare OS tmpdir with no `apps/` directory anywhere near it — exactly the shape
+  // of a deployed server (README: "a compiled binary has no apps/ directory beside it"), which is
+  // the acceptance-criterion-3 condition: the manifest/entrypoint path must resolve with nothing
+  // beside it but what the Toolchain Manager itself provisioned.
+  test('resolveToolPath resolves the manifest entrypoint on a host with no apps/ directory', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
+    try {
+      // Before this plan step, entrypointRelPath('guest-agent', ...) had no case and threw
+      // E_TOOL_UNKNOWN_ENTRYPOINT (F5) — resolveToolPath would never have reached the point of
+      // even looking for an active pointer.
+      pinActivePointer(dataDir, 'guest-agent', 'TODO-first-release', 'guest-agent.apk')
+      const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
+      await manager.init()
+
+      const path = await manager.resolveToolPath('guest-agent')
+      expect(path).toBe(join(dataDir, 'tools', 'guest-agent', 'TODO-first-release', 'guest-agent.apk'))
+      expect(existsSync(path)).toBe(true)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('deviceArtifactExpectation returns the bundled manifest deviceArtifact, including versionCode and signatureSha256', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
+    try {
+      pinActivePointer(dataDir, 'guest-agent', 'TODO-first-release', 'guest-agent.apk')
+      const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
+      await manager.init()
+
+      const expectation = await manager.deviceArtifactExpectation('guest-agent')
+      expect(expectation).not.toBeNull()
+      expect(expectation?.packageName).toBe('dev.enkaku.guestagent')
+      expect(typeof expectation?.versionCode).toBe('number')
+      // Uppercase, colon-free, 64 hex chars — the shape verifyDeviceArtifact compares against
+      // `dumpsys package`'s signatures= line (packages/drivers/src/inspector/ui-server/verify.ts).
+      expect(expectation?.signatureSha256).toMatch(/^[0-9A-F]{64}$/)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('the manifest entry is version-locked (swappable: false), like scrcpy-server and ui-server', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
+    try {
+      const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
+      const tool = manager.manifests.getTool('guest-agent')
+      expect(tool?.swappable).toBe(false)
+      expect(tool?.format).toBe('raw')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+})

@@ -23,6 +23,7 @@ import {
   type GeoObservation,
   type DeviceIdentity,
   type ShellResult,
+  type AgentStatus,
 } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
@@ -44,6 +45,10 @@ import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
+// Single source of truth for "is this device eligible for the guest agent"
+// (plan 90 §3.8, 00-overview §4.3 "replace, never version") — this file used
+// to keep its own copy of this same constant.
+import { MIN_SUPPORTED_SDK } from '../device/agent-provisioner'
 import { createCredentialStore } from '../network/credential-store'
 
 /**
@@ -60,14 +65,19 @@ import { createCredentialStore } from '../network/credential-store'
  * needed (plan 44 §1, goal 2).
  */
 
-/** Android 10 (API 29) is the floor the design leans on — VpnService behaviour below it is not proven (plan 44 §4.1, docs/research/android-guest-agent.md). */
-const MIN_SUPPORTED_SDK = 29
-
 /** GET's own status probe does not need a fresh-install budget — a handful of retries is enough to tell "not answering" from "still slow". `installAndProbe` uses the full budget (plan 44 §5.1's proven retry count) since a cold start right after `adb install` is slower. */
 const STATUS_HANDSHAKE_RETRIES = 2
 const INSTALL_HANDSHAKE_RETRIES = 8
 
-export type GuestAgentState = 'not-installed' | 'installed' | 'ready' | 'unreachable' | 'unsupported'
+/**
+ * Plan 90 §4.7, docs/plans/96-m61-hotfixes.md's Gap 2 fix: widened
+ * ADDITIVELY (never narrowed — `GuestAgentStatusResponseSchema`,
+ * `packages/protocol/src/api/devices.ts`, is the wire contract this must
+ * stay a subset of) to carry `outdated`/`failed`, the two states
+ * `AgentProvisioner.status()` can report that the pre-plan-90 live
+ * presence+hello check never produced.
+ */
+export type GuestAgentState = 'not-installed' | 'installed' | 'ready' | 'unreachable' | 'unsupported' | 'outdated' | 'failed'
 
 export interface GuestAgentStatusResult {
   state: GuestAgentState
@@ -75,6 +85,17 @@ export interface GuestAgentStatusResult {
   androidSdkInt?: number
   capabilities?: string[]
   reason?: string
+  /**
+   * Plan 90 §4.7, Gap 2 fix — populated only when this result came from
+   * `AgentProvisioner.status()`; the legacy live-probe path (`statusOf`
+   * below, still used when no `agentProvisioner.status` is wired) never sets
+   * these, exactly as `GuestAgentStatusResponseSchema`'s own doc comment
+   * says today's handler does.
+   */
+  versionCode?: number | null
+  checkedAt?: number | null
+  attempts?: number
+  nextAttemptAt?: number | null
 }
 
 export interface NetworkStatusResult {
@@ -107,6 +128,28 @@ export interface NetworkStatusResult {
   lastError: { code: string; message: string } | null
   /** Plan 55 §4.3, §5.5 — the last `EXIT_HISTORY_LIMIT` geo observations, newest first, so a rotating pool is visible as a sequence rather than one current value. Always present (possibly empty) once a route exists. */
   exitHistory: GeoObservation[]
+  /**
+   * Plan 90 §3.7 rule 5, fixes F20: bounded automatic recovery's own live state, so an operator
+   * reads an attempt count and a countdown instead of only the static "not routed" sentence the
+   * route form showed before this. Null when no recovery has ever been needed for this device's
+   * current route — a route that has always come straight back up on its own has nothing to show
+   * here, same as `exitHistory` staying empty for a route that has never drifted.
+   */
+  recovery: NetworkRecoveryStatus | null
+}
+
+/** `NetworkStatusResult.recovery` — see that field's own doc comment. */
+export interface NetworkRecoveryStatus {
+  /** Automatic recovery attempts made since the last full reset (an explicit operator act, or a genuine reconnect past the exhausted bound). */
+  attempts: number
+  /** The configured bound (`recoveryBackoffS.length`) — 3 by default. */
+  maxAttempts: number
+  /** Unix seconds of the next automatic attempt — the re-arm point once `exhausted` is true, since a past-due `nextAttemptAt` from before exhaustion is stale. Null while no attempt is scheduled (nothing has ever gone wrong for this device). */
+  nextAttemptAt: number | null
+  /** The bound was reached and automatic attempts have stopped until the re-arm — or until a genuine reconnect (plan 90 §3.7 rule 1) or `POST .../network/retry` (rule 4) clears it sooner. */
+  exhausted: boolean
+  /** Genuine reconnect-triggered resets still inside the last hour (plan 90 §3.7 rule 2) — how close this device is to tripping the `maxRecoveryCyclesPerHour` breaker. */
+  reconnectCycles: number
 }
 
 /** How often the daemon-wide heartbeat pings every device with an enabled route (plan 44 step 5.4) — the core's half of the dead-man's-switch pair described in plan 44 §8b; the agent's own half tears the route down after 90s of silence. */
@@ -672,7 +715,13 @@ export interface GuestAgentRoutesDeps {
    * real wall-clock minutes.
    */
   recoveryBackoffS?: number[]
-  /** Seconds an exhausted recovery bound stays given-up before re-arming (see `RECOVERY_REARM_S`). Tests set 0; production leaves it derived. */
+  /**
+   * Raw override for the re-arm delay — takes priority over
+   * `guestAgentSettings().recoveryRearmSec` when set. Tests set 0 so a re-arm test need not sit
+   * out the real cool-off; production leaves this unset and reads the farm setting instead (plan
+   * 90 §3.7 rule 3, fixing F15 — the old value was `max(lastBackoff * 5, 60)`, a derivation nobody
+   * chose, not a decision).
+   */
   recoveryRearmS?: number
   /**
    * Plan 55 §3.2, §5.1 — the geo-lookup half of `FarmSettingsSchema.network`, read fresh on every
@@ -682,6 +731,63 @@ export interface GuestAgentRoutesDeps {
    * same "unset means the check stays skip" reading `probeUrl()` gives an absent env var.
    */
   networkSettings?: () => { geoProvider?: string; geoIntervalSec: number }
+  /**
+   * Plan 90 §3.7, §4.4 — `FarmSettingsSchema.guestAgent`'s recovery half, read fresh on every call
+   * (same contract as `networkSettings` above). Optional so every existing call site keeps
+   * compiling unchanged; the default matches the schema's own default exactly, so an unwired
+   * caller behaves exactly as if an operator never touched the setting. `recoveryRearmS` above
+   * still wins when set, for tests that need to skip the real cool-off entirely.
+   */
+  guestAgentSettings?: () => { maxRecoveryCyclesPerHour: number; recoveryRearmSec: number }
+  /**
+   * Plan 90 §3.8, §4.7 — the "on demand, single device" provisioning hook.
+   * Optional so every existing test/call site (which predates the
+   * provisioner) keeps constructing this router unchanged. When set, `POST
+   * /:id/guest-agent` ALSO runs a full pass through
+   * `AgentProvisioner.ensure({ force: true })` after its own existing
+   * install+probe — updating `devices.agent`/emitting `device.agent`
+   * alongside the response this endpoint has always returned.
+   *
+   * `POST`/`DELETE /:id/guest-agent` still return the pre-plan-90
+   * `GuestAgentStatusResult` shape built from their own install/uninstall
+   * path (`installAndProbe` / the uninstall block below) — `POST` fires
+   * `ensure` fire-and-forget alongside its own result rather than replacing
+   * it, so an operator's click keeps answering from the action it just took.
+   *
+   * `GET /:id/guest-agent` is different (docs/plans/96-m61-hotfixes.md's
+   * Gap 2 fix): when `status` below is wired, `GET` answers from
+   * `AgentProvisioner.status()` — the SAME persisted `devices.agent` row
+   * `DeviceInfoSchema.agent` now reads (Gap 1's fix) — instead of running its
+   * own live presence+hello probe, so `outdated`/`failed` and the
+   * `versionCode`/`checkedAt`/`attempts`/`nextAttemptAt` fields step 90.6
+   * already declared on `GuestAgentStatusResponseSchema` finally have a
+   * producer. `GuestAgentState` widened ADDITIVELY to carry `outdated`/
+   * `failed` for exactly this (see that type's own doc comment) — never a
+   * narrowing, so a caller that only ever saw the pre-plan-90 five keeps
+   * parsing unchanged. `status` is its own optional field, separate from
+   * `ensure`, so every existing test/call site that only exercises the
+   * install hook (this field predates `status`) keeps compiling with no
+   * change — `GET` falls back to the pre-plan-90 live probe (`statusOf`)
+   * whenever `status` is absent.
+   */
+  agentProvisioner?: {
+    ensure: (deviceId: string, opts?: { force?: boolean }) => Promise<unknown>
+    status?: (deviceId: string) => Promise<AgentStatus>
+    /**
+     * The Gap 2 fix's own necessary follow-on: once `GET` reads from
+     * `status` above, an operator's `DELETE` (uninstall) must clear the SAME
+     * persisted row, or a subsequent `GET` reports a stale `ready`/
+     * `outdated`/`failed` for a package that was just removed — the provisioner
+     * would silently stop being the one source of truth the moment it
+     * disagreed with reality. Optional, fire-and-forget, and tolerant (the
+     * same idiom `ensure` above already uses for `POST`): `DELETE`'s own
+     * uninstall (below) has already run by the time this fires, so a failure
+     * here must not turn a successful uninstall into an error response, and
+     * every existing test/call site that predates this field keeps compiling
+     * and behaving unchanged.
+     */
+    remove?: (deviceId: string, actor: string | null) => Promise<unknown>
+  }
 }
 
 export interface GuestAgentRoutesHandle {
@@ -744,6 +850,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   const credentials = createCredentialStore({ db, dataDir: deps.dataDir })
   /** See `GuestAgentRoutesDeps.networkSettings`'s doc comment for the default's meaning. */
   const networkSettings: () => { geoProvider?: string; geoIntervalSec: number } = deps.networkSettings ?? (() => ({ geoIntervalSec: 300 }))
+  /** See `GuestAgentRoutesDeps.guestAgentSettings`'s doc comment for the default's meaning. */
+  const guestAgentSettings: () => { maxRecoveryCyclesPerHour: number; recoveryRearmSec: number } =
+    deps.guestAgentSettings ?? (() => ({ maxRecoveryCyclesPerHour: 4, recoveryRearmSec: 120 }))
 
   const makeLauncher =
     deps.makeLauncher ??
@@ -951,6 +1060,34 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     }
   }
 
+  /**
+   * 96.25 fix 3 (docs/plans/96-m61-hotfixes.md §96.25): a route just proved
+   * live traffic THROUGH the guest agent — direct evidence the agent is
+   * alive, arriving over a completely different path than the provisioner's
+   * own bounded retry schedule. Without this, a `failed` status that has
+   * already exhausted its automatic attempts never gets re-examined by
+   * anything (the exact "written once, never reviewed" defect §96.25 names
+   * as the same disease as §96.22), even while the device keeps working.
+   *
+   * Deliberately gated on the cached state actually being `failed`: a real
+   * re-provisioning pass costs real adb calls, and every other state
+   * (including `ready`) has nothing to gain from one, so this must not fire
+   * on every ordinary recovery tick. Fire-and-forget and tolerated, exactly
+   * like `POST /:id/guest-agent`'s own `ensure(..., { force: true })`
+   * call — a stale badge is a cosmetic bug, never worth risking route
+   * recovery over.
+   */
+  function clearStaleAgentFailure(deviceId: string): void {
+    if (!deps.agentProvisioner?.status) return
+    void deps.agentProvisioner
+      .status(deviceId)
+      .then((status) => {
+        if (status.state !== 'failed') return
+        return deps.agentProvisioner?.ensure(deviceId, { force: true })
+      })
+      .catch((err) => deps.log.warn(`clearStaleAgentFailure(${deviceId}) failed, tolerated: ${String(err)}`))
+  }
+
   // ---- guest-agent status / install / uninstall ----
 
   function unsupportedResult(apiLevel: number): GuestAgentStatusResult {
@@ -1001,8 +1138,50 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     return probeReachability(row, STATUS_HANDSHAKE_RETRIES)
   }
 
+  /**
+   * Maps `AgentProvisioner.status()`'s persisted `AgentStatus`
+   * (`packages/protocol/src/device.ts`'s six-value `AgentState`) onto this
+   * endpoint's own response shape (plan 90 §4.7, docs/plans/
+   * 96-m61-hotfixes.md's Gap 2 fix) — additive per `GuestAgentStatusResponseSchema`'s
+   * own doc comment: the pre-plan-90 five states plus `outdated`/`failed`,
+   * never a narrowing. `provisioning` has no analogue in the pre-plan-90
+   * enum and is never actually produced by `agent-provisioner.ts`'s
+   * `ensureImpl` today (there is no in-flight marker written to
+   * `devices.agent` mid-pass — every write is a settled result) — mapped to
+   * `installed` ("something is happening here, not yet confirmed ready")
+   * rather than `not-installed`, so a future producer of that state degrades
+   * to the least-wrong existing label instead of silently regressing to
+   * "nothing is here".
+   */
+  function agentStatusToResult(status: AgentStatus): GuestAgentStatusResult {
+    // `?? undefined` (a presence check via nullish-coalescing, never a
+    // comparison operator) is deliberate here, not a style choice: R2 (plan
+    // 90 §3.9, guarded workspace-wide by
+    // `packages/drivers/src/network/guest-agent/version-skew-guard.test.ts`)
+    // forbids `appVersion` next to ANY comparison operator, including a bare
+    // null check — "not at all" is the rule's own wording, and that guard's
+    // own doc comment says a presence check trips it exactly the same as a
+    // real version comparison. This never gates behaviour on the version
+    // string either way — it only decides whether to relay a value the
+    // provisioner already computed.
+    return {
+      state: status.state === 'absent' ? 'not-installed' : status.state === 'provisioning' ? 'installed' : status.state,
+      appVersion: status.appVersion ?? undefined,
+      androidSdkInt: status.androidSdkInt ?? undefined,
+      capabilities: status.capabilities,
+      reason: status.reason ?? undefined,
+      versionCode: status.versionCode,
+      checkedAt: status.checkedAt,
+      attempts: status.attempts,
+      nextAttemptAt: status.nextAttemptAt,
+    }
+  }
+
   app.get('/:id/guest-agent', async (c) => {
     const row = mustGet(c.req.param('id'))
+    if (deps.agentProvisioner?.status) {
+      return c.json(agentStatusToResult(await deps.agentProvisioner.status(row.id)))
+    }
     return c.json(await statusOf(row))
   })
 
@@ -1017,6 +1196,16 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       actor: c.get('user')?.id ?? null,
       meta: { state: result.state },
     })
+    // Plan 90 §3.8, §4.7 — keeps `devices.agent`/the fleet summary in sync
+    // with an operator's explicit Install/Repair click, not only with the
+    // automatic hooks. Fire-and-forget and tolerant: a failure here must
+    // never turn an otherwise-successful install+probe into a 500 for the
+    // operator who just watched it work, and it must never delay this
+    // response (this endpoint's own shape is unchanged — see
+    // `agentProvisioner`'s doc comment above for why).
+    void deps.agentProvisioner
+      ?.ensure(row.id, { force: true })
+      .catch((err) => deps.log.warn(`agent-provisioner ensure() after POST /:id/guest-agent failed, tolerated: ${String(err)}`))
     return c.json(result)
   })
 
@@ -1038,6 +1227,12 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     await launcher.stop().catch(() => undefined)
     await deps.hostAdb(['-s', row.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
     deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.uninstalled', actor, meta: {} })
+    // Gap 2 fix's own follow-on (see `agentProvisioner.remove`'s own doc
+    // comment above): clears `devices.agent` so a GET right after this does
+    // not keep reporting a stale ready/outdated/failed state.
+    void deps.agentProvisioner
+      ?.remove?.(row.id, actor)
+      .catch((err) => deps.log.warn(`agent-provisioner remove() after DELETE /:id/guest-agent failed, tolerated: ${String(err)}`))
     return c.json({ ok: true })
   })
 
@@ -1154,14 +1349,36 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     exhausted: boolean
     /** Set alongside `exhausted` — re-applied to the entry on every subsequent tick (see below), since a cold probe would otherwise overwrite it with its own `lastError: null` before the next `maybeRecoverRoute` call ever runs. */
     exhaustedMessage: string | null
-    /** Unix seconds the bound was reached, so it can be re-armed after `RECOVERY_REARM_S` — see there for why permanent exhaustion was wrong. */
+    /** Unix seconds the bound was reached, so it can be re-armed after `recoveryRearmS()` — see there for why permanent exhaustion was wrong. */
     exhaustedAt: number
     /** True while an attempt is actually in flight — guards against `restoreDeviceRoute` and `heartbeatTick` racing onto two concurrent applies for the same device. */
     pending: boolean
+    /**
+     * Unix seconds of the last time `handleDeviceOffline` saw this device go offline — 0 until the
+     * first one (plan 90 §3.7 rule 1, fixes F16). This is the "new information" `resetRecoveryOnReconnect`
+     * needs to tell a genuine reconnect from a heartbeat tick that merely finds the route still down:
+     * only a device that went offline AFTER the bound was last reached (`offlineAt > exhaustedAt`)
+     * gets a fresh attempt budget. Never cleared by a reset — the next offline transition is what
+     * moves it forward, not this state coming back to life.
+     */
+    offlineAt: number
+    /**
+     * Unix-second timestamps of resets `resetRecoveryOnReconnect` has granted, still inside the
+     * rolling one-hour window (plan 90 §3.7 rule 2) — the circuit breaker's own memory, the same
+     * shape `packages/drivers/.../ui-server/watchdog.ts`'s `cycleTimestamps` already uses for
+     * restart cycles. Deliberately lives INSIDE `RecoveryState`, not a separate map: a fully
+     * successful recovery deletes the whole entry (both success paths in `maybeRecoverRoute`
+     * below), which is exactly when this SHOULD reset too — the breaker exists to catch a device
+     * that keeps failing to recover, not one that keeps reconnecting and immediately healing.
+     */
+    reconnectCycles: number[]
+    /** True once the breaker has already logged its one `warn` for the current run of engagement — cleared the moment a reset is granted again, so a later, separate bout of flapping earns its own warning rather than staying silent forever. */
+    breakerWarned: boolean
   }
   /**
    * How long an exhausted bound stays exhausted before the schedule re-arms and recovery is tried
-   * again from scratch (plan 54 §9 open question 2, answered by hardware).
+   * again from scratch (plan 54 §9 open question 2 — answered here, see that plan's §9 for the
+   * full answer).
    *
    * `exhausted` used to be permanent for as long as the process lived. A device hit the bound
    * against a transient failure, gave up, and was still sitting there **six hours later** — route
@@ -1170,14 +1387,73 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    * is to avoid hammering a dead proxy every 20 s, and a slow re-arm keeps that property while
    * still healing a device whose upstream came back.
    *
-   * `deps.recoveryBackoffS` is what tests shrink to keep this quick; the re-arm scales off the last
-   * backoff step so an accelerated test schedule does not sit here for five real minutes.
+   * Reads `guestAgent.recoveryRearmSec` fresh on every call (plan 90 §3.7 rule 3, fixes F15): the
+   * old `max(lastBackoff * 5, 60)` derivation is gone — nobody chose five minutes, it fell out of
+   * multiplying the last backoff step by five. `deps.recoveryRearmS` still wins when a test sets
+   * it, so an accelerated test schedule does not sit here for two real minutes.
    */
-  const RECOVERY_REARM_S = deps.recoveryRearmS ?? Math.max(backoffAt(RECOVERY_MAX_ATTEMPTS - 1) * 5, 60)
+  function recoveryRearmS(): number {
+    return deps.recoveryRearmS ?? guestAgentSettings().recoveryRearmSec
+  }
+  /** `guestAgent.maxRecoveryCyclesPerHour`, read fresh on every call — see `RecoveryState.reconnectCycles`'s doc comment for what it bounds. */
+  function maxRecoveryCyclesPerHour(): number {
+    return guestAgentSettings().maxRecoveryCyclesPerHour
+  }
+  /** The breaker's own rolling window (plan 90 §3.7 rule 2) — fixed at one hour; only the threshold (`maxRecoveryCyclesPerHour`) is a setting. */
+  const RECONNECT_CYCLE_WINDOW_S = 3600
   const recoveryByDevice = new Map<string, RecoveryState>()
 
   function resetRecovery(deviceId: string): boolean {
     return recoveryByDevice.delete(deviceId)
+  }
+
+  /**
+   * The fix for F16 (plan 90 §3.7 rules 1–2): called ONLY from `restoreDeviceRoute`'s enabled
+   * branch, i.e. only on an actual reconnect, never from `heartbeatTick`'s routine polling — a
+   * heartbeat tick that merely finds the route still down must never look like new information.
+   *
+   * Unlike `resetRecovery` above (an explicit operator act — disable, DELETE, uninstall, or the
+   * `/retry` endpoint below — which always gives a clean slate and forgets any past flapping),
+   * this only clears `attempts`/`exhausted` when the device genuinely went offline AFTER the bound
+   * was last reached (`offlineAt > exhaustedAt`). A no-op when there is no recovery state to reset
+   * (nothing pending — the common case), or when the last offline transition predates the last
+   * exhaustion (already accounted for by an earlier call).
+   *
+   * Plan 54 §9 Q2's own stated fear — a device flapping against a genuinely dead proxy resetting
+   * forever — is what `reconnectCycles` exists to catch: past `maxRecoveryCyclesPerHour` resets
+   * granted in the last rolling hour, this becomes a no-op too, and the plain re-arm clock is what
+   * retries next. Logged with exactly one `warn` per bout of engagement, via `breakerWarned`, not
+   * one per reconnect.
+   */
+  function resetRecoveryOnReconnect(deviceId: string): void {
+    const r = recoveryByDevice.get(deviceId)
+    if (!r) return
+    if (!(r.offlineAt > r.exhaustedAt)) return
+
+    const now = nowSeconds()
+    const cutoff = now - RECONNECT_CYCLE_WINDOW_S
+    r.reconnectCycles = r.reconnectCycles.filter((t) => t > cutoff)
+
+    const max = maxRecoveryCyclesPerHour()
+    if (r.reconnectCycles.length >= max) {
+      if (!r.breakerWarned) {
+        r.breakerWarned = true
+        deps.log.warn(
+          `network restore: device ${deviceId} reconnected ${r.reconnectCycles.length} time(s) in the last hour — the reconnect-cycle breaker is engaged, no more automatic resets until it decays; the ${recoveryRearmS()}s re-arm clock is what retries next`,
+        )
+      }
+      return
+    }
+
+    r.reconnectCycles.push(now)
+    r.breakerWarned = false
+    r.attempts = 0
+    r.exhausted = false
+    r.exhaustedMessage = null
+    r.nextAttemptAt = now + backoffAt(0)
+    deps.log.info(
+      `network restore: device ${deviceId} reconnected after the recovery bound was reached — resetting for a fresh attempt (reconnect cycle ${r.reconnectCycles.length}/${max} this hour)`,
+    )
   }
 
   /**
@@ -1191,8 +1467,30 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     const deviceId = row.id
     if (entry.observed?.up === true) {
       // Already carrying its route — never re-applied (plan 52 §3.2, plan 54 acceptance #6).
-      if (resetRecovery(deviceId)) deps.log.info(`network restore: device ${deviceId} recovered`)
-      else deps.log.info(`network restore: device ${deviceId} already carries its route — probed and left alone`)
+      const hadState = recoveryByDevice.get(deviceId)
+      if (resetRecovery(deviceId)) {
+        deps.log.info(`network restore: device ${deviceId} recovered`)
+        clearStaleAgentFailure(deviceId)
+        // Plan 90 §3.7 rule 5, fixes F20 — only worth an event when this device genuinely needed
+        // recovery: at least one attempt made, OR the bound was reached at some point in this
+        // entry's life. `exhaustedAt > 0`, not `hadState.exhausted`: `resetRecoveryOnReconnect`
+        // (called by `restoreDeviceRoute` just before this) clears `attempts`/`exhausted` the
+        // moment a genuine reconnect resets the bound — which can land RIGHT before this very
+        // check runs, on a device that turns out to already be up with no fresh attempt needed.
+        // `exhaustedAt` is deliberately never cleared by that reset (see its own doc comment), so
+        // it is what still remembers this device needed recovery a moment ago.
+        if (hadState && (hadState.attempts > 0 || hadState.exhausted || hadState.exhaustedAt > 0)) {
+          deps.record?.({
+            deviceId,
+            stream: 'main',
+            kind: 'network.recovery.recovered',
+            actor: null,
+            meta: { attempts: hadState.attempts, wasExhausted: hadState.exhausted || hadState.exhaustedAt > 0 },
+          })
+        }
+      } else {
+        deps.log.info(`network restore: device ${deviceId} already carries its route — probed and left alone`)
+      }
       return
     }
 
@@ -1203,17 +1501,27 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       // device that just reconnected may still be settling (the same reasoning `applySettleTimeoutMs`
       // already applies to a fresh apply), and hammering it the instant it is noticed down serves
       // nobody.
-      r = { attempts: 0, nextAttemptAt: now + backoffAt(0), exhausted: false, exhaustedMessage: null, exhaustedAt: 0, pending: false }
+      r = {
+        attempts: 0,
+        nextAttemptAt: now + backoffAt(0),
+        exhausted: false,
+        exhaustedMessage: null,
+        exhaustedAt: 0,
+        pending: false,
+        offlineAt: 0,
+        reconnectCycles: [],
+        breakerWarned: false,
+      }
       recoveryByDevice.set(deviceId, r)
     }
-    if (r.exhausted && now - r.exhaustedAt >= RECOVERY_REARM_S) {
-      // Re-arm rather than stay given-up forever (see RECOVERY_REARM_S). The message is left in
+    if (r.exhausted && now - r.exhaustedAt >= recoveryRearmS()) {
+      // Re-arm rather than stay given-up forever (see `recoveryRearmS()`). The message is left in
       // place until an attempt actually succeeds, so the UI keeps saying why it is not routed
       // instead of flickering back to a bare "not up" the moment the schedule resets.
       r.attempts = 0
       r.exhausted = false
       r.nextAttemptAt = now + backoffAt(0)
-      deps.log.info(`network restore: device ${deviceId} — retry window re-armed after ${RECOVERY_REARM_S}s`)
+      deps.log.info(`network restore: device ${deviceId} — retry window re-armed after ${recoveryRearmS()}s`)
     }
     if (r.exhausted) {
       // `entry` reflects THIS tick's own fresh probe/observe (a cold probe's own successful read
@@ -1252,12 +1560,29 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       }
       recoveryByDevice.delete(deviceId)
       deps.log.info(`network restore: device ${deviceId} recovered on attempt ${attempt}`)
+      clearStaleAgentFailure(deviceId)
+      // Plan 90 §3.7 rule 5, fixes F20 — reaching here always means at least one genuine recovery
+      // attempt succeeded, so unlike the "already up" fast path above this is unconditional.
+      deps.record?.({
+        deviceId,
+        stream: 'main',
+        kind: 'network.recovery.recovered',
+        actor: null,
+        meta: { attempts: attempt },
+      })
     } catch (err) {
       if (attempt >= RECOVERY_MAX_ATTEMPTS) {
         r.exhausted = true
         r.exhaustedAt = nowSeconds()
-        r.exhaustedMessage = `automatic recovery gave up after ${RECOVERY_MAX_ATTEMPTS} attempts; the route stays enabled and will be retried in ${RECOVERY_REARM_S}s — apply manually to try sooner`
+        r.exhaustedMessage = `automatic recovery gave up after ${RECOVERY_MAX_ATTEMPTS} attempts; the route stays enabled and will be retried in ${recoveryRearmS()}s — apply manually to try sooner`
         deps.log.warn(`network restore: device ${deviceId}: ${r.exhaustedMessage} (${err instanceof Error ? err.message : String(err)})`)
+        deps.record?.({
+          deviceId,
+          stream: 'main',
+          kind: 'network.recovery.exhausted',
+          actor: null,
+          meta: { attempts: RECOVERY_MAX_ATTEMPTS, message: r.exhaustedMessage },
+        })
         // `applyRoute` already set its own entry's `lastError` to the raw apply failure — this
         // OVERWRITES it with the "gave up" message, since that is now the more honest answer to
         // "why isn't this routed": not just that the last attempt failed, but that no more will be
@@ -1692,6 +2017,12 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       deps.log.info(`network restore: device ${deviceId} is offline, leaving its route enabled and unprobed`)
       return
     }
+    // Plan 90 §3.7 rules 1–2, fixes F16: THIS is the reconnect path — the fix sits here, not on
+    // the `!persisted?.enabled` branch above (that early return's own `resetRecovery` call
+    // predates this plan and is F16's "wrong branch", left exactly as it was — it fires when a
+    // route is switched OFF, never on a reconnect). Runs before the probe below so a genuine
+    // reconnect gets a fresh attempt budget in time for THIS tick's own recovery attempt.
+    resetRecoveryOnReconnect(deviceId)
     await coldProbe(row, persisted.config)
     ensureHeartbeat()
     // Plan 54 §3.2, §4.2: probe first (just did, above) — only apply when the device reports no
@@ -1716,6 +2047,16 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    * the device reconnects.
    */
   async function handleDeviceOffline(deviceId: string): Promise<void> {
+    // Plan 90 §3.7 rule 1, fixes F16: stamps the "genuine offline transition"
+    // `resetRecoveryOnReconnect` needs — deliberately independent of whether this process still
+    // holds a live network entry for the device (below), and deliberately NEVER deletes the
+    // recovery state itself: `attempts`/`exhausted` must survive an offline blip on their own (a
+    // flapper against a genuinely dead proxy must still hit the bound), and it is
+    // `resetRecoveryOnReconnect`'s job on the way back online to decide whether this transition is
+    // enough to clear them.
+    const recovery = recoveryByDevice.get(deviceId)
+    if (recovery) recovery.offlineAt = nowSeconds()
+
     const entry = networkStateByDevice.get(deviceId)
     if (!entry) return
     if (entry.session) {
@@ -1847,6 +2188,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         checks: [],
         lastError: null,
         exitHistory: [],
+        recovery: null,
       }
     }
 
@@ -1891,6 +2233,20 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       checks: entry?.checks ?? [],
       lastError: entry?.lastError ?? null,
       exitHistory: persisted.exitHistory ?? [],
+      // Plan 90 §3.7 rule 5, fixes F20 — `recovery` was already re-fetched above for the
+      // `lastError` override; reused here rather than a second `recoveryByDevice.get()`.
+      // `nextAttemptAt` is recomputed rather than trusting the raw field once exhausted: the raw
+      // value freezes at whatever it was when the LAST attempt ran, which is stale the moment the
+      // bound is reached — the re-arm point is the honest answer to "when next" from then on.
+      recovery: recovery
+        ? {
+            attempts: recovery.attempts,
+            maxAttempts: RECOVERY_MAX_ATTEMPTS,
+            nextAttemptAt: recovery.exhausted ? recovery.exhaustedAt + recoveryRearmS() : recovery.nextAttemptAt,
+            exhausted: recovery.exhausted,
+            reconnectCycles: recovery.reconnectCycles.length,
+          }
+        : null,
     }
   }
 
@@ -2202,6 +2558,28 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
       })
       maybeStopHeartbeat()
     }
+    return c.json(await currentNetworkStatus(mustGet(row.id)))
+  })
+
+  /**
+   * Plan 90 §3.7 rule 4 — the honest version of the disable-then-enable workaround (F17): clears
+   * the recovery bound unconditionally (an operator asking to retry now IS the "new information"
+   * `resetRecoveryOnReconnect` otherwise waits for a genuine offline transition to supply) and
+   * applies once, immediately — without the teardown round trip, and without the misleading
+   * "route is off" UI state disable-then-enable causes along the way. Lease-gated like every other
+   * network write; refuses when there is no enabled route to retry, same as `/enable`.
+   */
+  app.post('/:id/network/retry', requirePermission('device.network'), async (c) => {
+    const row = mustGet(c.req.param('id'))
+    requireHeldLease(row.id)
+    const persisted = readPersistedRoute(row)
+    if (!persisted?.enabled) {
+      throw new EnkakuError('E_NO_ROUTE_CONFIG', 'no enabled route for this device — enable one first')
+    }
+    const actor = c.get('user')?.id ?? null
+    resetRecovery(row.id)
+    ensureHeartbeat()
+    await applyRoute(row, persisted.config, actor)
     return c.json(await currentNetworkStatus(mustGet(row.id)))
   })
 

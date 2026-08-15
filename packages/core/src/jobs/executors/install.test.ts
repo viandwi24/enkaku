@@ -21,7 +21,7 @@ describe('createInstallExecutor', () => {
       transfer: {} as TransferService,
       broadcast: { progress() {}, done() {} },
     })
-    expect(() => executor.validateParams({})).toThrow()
+    expect(() => executor.validateParams({}, 'internal:install')).toThrow()
   })
 
   test('validateParams accepts { artifactId }', () => {
@@ -29,7 +29,7 @@ describe('createInstallExecutor', () => {
       transfer: {} as TransferService,
       broadcast: { progress() {}, done() {} },
     })
-    expect(executor.validateParams({ artifactId: 'a1' })).toEqual({ artifactId: 'a1' })
+    expect(executor.validateParams({ artifactId: 'a1' }, 'internal:install')).toEqual({ artifactId: 'a1' })
   })
 
   test('run() delegates to TransferService.install with the job device and broadcasts progress/done', async () => {
@@ -42,7 +42,9 @@ describe('createInstallExecutor', () => {
         opts.onProgress?.(10, 10)
         return { package: 'com.example', durationMs: 5, output: 'Success' }
       },
-      async push() {},
+      async push() {
+        return { mediaScan: { ran: false, method: null, ms: 0 } }
+      },
       async pull() {
         return { artifactId: 'x', bytes: 0 }
       },
@@ -72,7 +74,9 @@ describe('createInstallExecutor', () => {
         await Bun.sleep(1)
         throw Object.assign(new Error('cancelled'), { code: 'E_TRANSFER_CANCELLED' })
       },
-      async push() {},
+      async push() {
+        return { mediaScan: { ran: false, method: null, ms: 0 } }
+      },
       async pull() {
         return { artifactId: 'x', bytes: 0 }
       },

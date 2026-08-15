@@ -28,7 +28,7 @@ export function withAdbKeyFallback(primary: InputSink, transport: Transport): In
   return {
     id: primary.id,
     mode: primary.mode,
-    tap: (p: Point) => primary.tap(p),
+    tap: (p: Point, opts?: { holdMs?: [number, number]; rng?: () => number }) => primary.tap(p, opts),
     swipe: (from: Point, to: Point, ms: number) => primary.swipe(from, to, ms),
     text: (s: string) => primary.text(s),
     key: (code: number) => (VOLUME_KEYS.has(code) ? adb.key(code) : primary.key(code)),

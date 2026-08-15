@@ -51,6 +51,86 @@ jobs:
           path: release/*.tar.gz
           if-no-files-found: error
 
+  # Plan 90 §3.11/§4.8: F4 was that this workflow never built the APK at all, so a pinned
+  # `deviceArtifact` in the toolchain manifest had nothing real behind it. Independent of
+  # build-nix/build-darwin — a completely separate toolchain (Gradle/JDK/NDK, not Bun) — so it runs
+  # in parallel with them rather than gating on their output.
+  build-guest-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: yes | sdkmanager --licenses > /dev/null || true
+      - run: sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      # versionCode is release-driven (R4): the same `v*` tag that names the core binaries below
+      # also names this APK, so `deviceArtifact.versionCode` in the toolchain manifest and the
+      # value baked into the signed APK are always the same release. Android requires a plain
+      # monotonic integer, not a semver string — major*1e6 + minor*1e3 + patch leaves three decimal
+      # digits of headroom per component before two releases could ever collide.
+      - name: Derive versionCode/versionName from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"; MINOR="${BASH_REMATCH[2]}"; PATCH="${BASH_REMATCH[3]}"
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
+          else
+            # workflow_dispatch off a branch, not a `v*` tag: build-only, per this workflow's own
+            # header ("manual dispatch runs build + smoke only") — publish never runs, so there is
+            # no real release to version this APK against.
+            VERSION="$TAG"
+            VERSION_CODE=0
+          fi
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+      # Unset (or an empty secret) leaves ENKAKU_GUEST_AGENT_KEYSTORE_PATH pointing at a file that
+      # does not exist, so app/build.gradle.kts's own `releaseKeystorePath != null` check still
+      # sees a non-null path — write the file unconditionally so a missing secret fails loudly at
+      # the Gradle signing step instead of silently falling back to an unsigned artifact that this
+      # job would then publish as if it were signed.
+      - name: Decode the release-signing keystore
+        run: |
+          echo "${{ secrets.GUEST_AGENT_KEYSTORE_BASE64 }}" | base64 -d > apps/guest-agent/release.jks
+      - name: Build the signed release APK
+        env:
+          ENKAKU_GUEST_AGENT_VERSION_CODE: ${{ steps.version.outputs.code }}
+          ENKAKU_GUEST_AGENT_VERSION_NAME: ${{ steps.version.outputs.name }}
+          ENKAKU_GUEST_AGENT_KEYSTORE_PATH: ${{ github.workspace }}/apps/guest-agent/release.jks
+          ENKAKU_GUEST_AGENT_KEYSTORE_PASSWORD: ${{ secrets.GUEST_AGENT_KEYSTORE_PASSWORD }}
+          ENKAKU_GUEST_AGENT_KEY_ALIAS: ${{ secrets.GUEST_AGENT_KEY_ALIAS }}
+          ENKAKU_GUEST_AGENT_KEY_PASSWORD: ${{ secrets.GUEST_AGENT_KEY_PASSWORD }}
+        run: bash scripts/build-guest-agent.sh
+      # Plan 90 §3.11 acceptance criterion 1: the release APK's measured size is a gate, not a
+      # comment. H1 predicted under 3 MB once Compose came out; 90.1's own local measurement (with
+      # Compose gone, R8 on) landed at ~1.1 MB. 4 MiB leaves real headroom for the label/IME facets
+      # 90.2-90.5 still add, while still failing hard if a UI framework Compose's size ever returns.
+      - name: Report size and sha256; enforce the size budget
+        run: |
+          set -euo pipefail
+          APK=apps/guest-agent/app/build/outputs/apk/release/app-release.apk
+          test -f "$APK" || { echo "::error::$APK was not produced — check the signing step above"; exit 1; }
+          SIZE=$(stat -c%s "$APK")
+          SHA256=$(sha256sum "$APK" | cut -d' ' -f1)
+          echo "guest-agent.apk: $SIZE bytes ($(( SIZE / 1024 )) KiB), sha256=$SHA256"
+          BUDGET=$((4 * 1024 * 1024))
+          if [ "$SIZE" -gt "$BUDGET" ]; then
+            echo "::error::guest-agent.apk is $SIZE bytes, over the $BUDGET-byte budget (plan 90 §3.11/§4.8)"
+            exit 1
+          fi
+          cp "$APK" guest-agent.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-agent-apk
+          path: guest-agent.apk
+          if-no-files-found: error
+
   smoke:
     needs: [build-nix, build-darwin]
     strategy:
@@ -82,13 +162,38 @@ jobs:
           export ENKAKU_DATA_DIR="$PWD/smoke-data" ENKAKU_PORT=7700
           ./enkaku > boot.log 2>&1 &
           pid=$!
-          ok=""
-          for i in $(seq 1 30); do
-            if curl -fs http://127.0.0.1:7700/api/health > health.json; then ok=1; break; fi
+
+          # `ok` in the health response is a liveness ping only — it goes true
+          # the instant the HTTP server starts listening, which happens BEFORE
+          # provisionRequiredTools() runs (daemon.ts, deliberately, so a client
+          # can watch progress: see packages/core/src/server/http.ts). A 200
+          # here proves nothing about whether the first-run adb download/verify
+          # actually succeeded, which is exactly the failure this gate exists
+          # to catch. Poll `adb.state` to a TERMINAL value instead of sampling
+          # once, bounded so a genuinely stuck provisioning step fails the
+          # release rather than hanging the job forever. 150s is generous for a
+          # cold download over a CI network (docs/guide/install.md says under a
+          # minute on a normal connection).
+          up=""
+          state="unknown"
+          for i in $(seq 1 150); do
+            if curl -fs http://127.0.0.1:7700/api/health > health.json 2>/dev/null; then
+              up=1
+              state=$(jq -r '.adb.state // "unknown"' health.json)
+              if [ "$state" = "ready" ] || [ "$state" = "orchestrator" ] || [ "$state" = "error" ]; then
+                break
+              fi
+            fi
             sleep 1
           done
-          [ -n "$ok" ] || { echo "core never became healthy"; cat boot.log; exit 1; }
+          [ -n "$up" ] || { echo "core never became reachable on /api/health"; cat boot.log; exit 1; }
           cat health.json
+          if [ "$state" != "ready" ] && [ "$state" != "orchestrator" ]; then
+            echo "adb provisioning never reached a working state — last observed adb.state: '$state'"
+            cat boot.log
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
           curl -fs http://127.0.0.1:7700/ | grep -qi '<html' || { echo "Studio index not served"; exit 1; }
           kill "$pid"
       - name: Boot and probe (windows)
@@ -100,25 +205,43 @@ jobs:
           $env:ENKAKU_DATA_DIR = "$PWD\smoke-data"
           $env:ENKAKU_PORT = "7700"
           $proc = Start-Process -FilePath "$PWD\extracted\enkaku.exe" -PassThru -RedirectStandardOutput boot.log -RedirectStandardError boot.err
-          $ok = $false
-          foreach ($i in 1..30) {
+
+          # Same reasoning as the unix step: `ok` is a liveness ping (true the
+          # instant the HTTP server starts listening, which happens BEFORE
+          # provisionRequiredTools() runs — packages/core/src/server/http.ts /
+          # daemon.ts). A 200 here proves nothing about whether the first-run
+          # adb download/verify actually succeeded. Poll `adb.state` to a
+          # TERMINAL value instead of sampling once, bounded to 150s.
+          $up = $false
+          $state = "unknown"
+          $health = $null
+          foreach ($i in 1..150) {
             try {
               $health = Invoke-RestMethod -Uri http://127.0.0.1:7700/api/health -TimeoutSec 2
-              $ok = $true; break
-            } catch { Start-Sleep -Seconds 1 }
+              $up = $true
+              $state = $health.adb.state
+              if ($state -eq "ready" -or $state -eq "orchestrator" -or $state -eq "error") { break }
+            } catch { }
+            Start-Sleep -Seconds 1
           }
-          if (-not $ok) {
-            Write-Host "core never became healthy"
+          if (-not $up) {
+            Write-Host "core never became reachable on /api/health"
             Get-Content boot.log, boot.err -ErrorAction SilentlyContinue
             exit 1
           }
           $health | ConvertTo-Json
+          if ($state -ne "ready" -and $state -ne "orchestrator") {
+            Write-Host "adb provisioning never reached a working state — last observed adb.state: '$state'"
+            Get-Content boot.log, boot.err -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            exit 1
+          }
           $index = Invoke-WebRequest -Uri http://127.0.0.1:7700/ -UseBasicParsing
           if ($index.Content -notmatch '<html') { Write-Host "Studio index not served"; exit 1 }
           Stop-Process -Id $proc.Id
 
   publish:
-    needs: smoke
+    needs: [smoke, build-guest-agent]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -127,13 +250,18 @@ jobs:
           pattern: archives-*
           merge-multiple: true
           path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-agent-apk
+          path: release
       - name: Checksums over the full artifact set
-        run: cd release && sha256sum *.tar.gz *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
+        run: cd release && sha256sum *.tar.gz *.zip *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             release/*.tar.gz
             release/*.zip
+            release/*.apk
             release/SHA256SUMS.txt
           generate_release_notes: true
           body: |

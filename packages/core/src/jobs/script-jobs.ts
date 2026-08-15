@@ -1,4 +1,4 @@
-import type { JobStatus, JobSummary } from '@enkaku/protocol'
+import type { JobStatus, JobSummary, ResultStatus } from '@enkaku/protocol'
 import { and, asc, desc, eq, isNotNull, lt, ne } from 'drizzle-orm'
 import type { Db } from '../db'
 import { jobs, type JobRow } from '../db/schema'
@@ -73,6 +73,10 @@ function toSummary(row: JobRow, names: Map<string, { name: string; version: stri
     triggeredByJobId: row.triggeredByJobId ?? null,
     rootJobId: row.rootJobId ?? null,
     depth: row.depth ?? null,
+    // Plan 97 §4.6 — the verdict ONLY (never the value, never the summary
+    // text): plan 80 §3.3's rule that a neighbouring script reads a result
+    // through `resultOf()` and nowhere else stands.
+    resultStatus: (row.resultStatus ?? null) as ResultStatus | null,
   }
 }
 

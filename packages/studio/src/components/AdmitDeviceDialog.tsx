@@ -3,7 +3,14 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { toast } from 'sonner'
-import { normaliseTag, DeviceResponseSchema, DeviceTagsResponseSchema, type ClusterInfo } from '@enkaku/protocol'
+import {
+  normaliseTag,
+  DeviceDetailResponseSchema,
+  DeviceResponseSchema,
+  DeviceTagsResponseSchema,
+  type ClusterInfo,
+  type DeviceLabelMode,
+} from '@enkaku/protocol'
 import { z } from 'zod'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -11,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/actions'
 import { relativeTime } from '@/lib/format'
 import type { DiscoveredDevice } from '@/lib/api'
@@ -28,12 +36,15 @@ import type { DiscoveredDevice } from '@/lib/api'
 export function AdmitDeviceDialog({
   entry,
   clusters,
+  farmLabellingMode,
   open,
   onOpenChange,
   onDone,
 }: {
   entry: DiscoveredDevice | null
   clusters: ClusterInfo[]
+  /** The farm's default `labelling.mode` (plan 89 §3.8) — what the checkbox below reflects, and what a device gets if the box is left alone. */
+  farmLabellingMode: DeviceLabelMode
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Called after a successful Add to farm OR Dismiss — either way the row just left the tray. */
@@ -44,6 +55,16 @@ export function AdmitDeviceDialog({
   const [tags, setTags] = useState<string[]>([])
   const [tagDraft, setTagDraft] = useState('')
   const [busy, setBusy] = useState<'admit' | 'dismiss' | null>(null)
+  // Physical labelling (plan 89 §3.8, §5 step 89.8) — reflects the farm
+  // default (`admitDevice()` copies `FarmSettings.defaults.labelling` onto
+  // every new device automatically, F26), and is genuinely EDITABLE for
+  // this one phone: unchecking it here, or checking it against an `off`
+  // farm default, issues one follow-up `PATCH` after admission overrides
+  // `labelling.mode` for this device alone — there is no admission-time
+  // body field for it (§4.3's own admit body is `{ label?, clusterId? }`),
+  // so a two-step "admit, then override" is the only way Studio can honour
+  // an operator's per-device choice without touching the admission route.
+  const [wallpaper, setWallpaper] = useState(farmLabellingMode === 'wallpaper')
 
   // Reseed the draft from the probed values every time a fresh row opens —
   // otherwise the previous row's edits would bleed into this one.
@@ -53,7 +74,8 @@ export function AdmitDeviceDialog({
     setClusterId('none')
     setTags([])
     setTagDraft('')
-  }, [open, entry])
+    setWallpaper(farmLabellingMode === 'wallpaper')
+  }, [open, entry, farmLabellingMode])
 
   if (!entry) return null
 
@@ -92,7 +114,38 @@ export function AdmitDeviceDialog({
           () => toast.warning(`${res.device.label} was added, but its tags could not be saved`),
         )
       }
-      toast.success(`${res.device.label} added to the farm`)
+      // Physical labelling (plan 89 §3.8, §5 step 89.8): `admitDevice()`
+      // already copied the farm default (F26), so a follow-up PATCH is only
+      // needed when the checkbox disagrees with that default — the common
+      // case (leaving it alone) costs nothing extra. `PATCH .../:id`
+      // replaces the WHOLE `settings` blob (`DeviceVideoFields`'s own
+      // comment states this), so the just-admitted device's real settings
+      // are re-fetched first rather than guessed at — this is a labelling
+      // override, not a reset of everything else `admitDevice()` copied.
+      const wantsWallpaper = wallpaper
+      if (wantsWallpaper !== (farmLabellingMode === 'wallpaper')) {
+        try {
+          const detail = await api(`/api/devices/${res.device.id}`, DeviceDetailResponseSchema)
+          const settings = (detail.device.settings ?? {}) as Record<string, unknown>
+          const labelling = (settings.labelling ?? {}) as Record<string, unknown>
+          await api(`/api/devices/${res.device.id}`, DeviceResponseSchema, {
+            method: 'PATCH',
+            json: { settings: { ...settings, labelling: { ...labelling, mode: wantsWallpaper ? 'wallpaper' : 'off' } } },
+          })
+        } catch {
+          toast.warning(`${res.device.label} was added, but its labelling could not be set — check its Settings tab`)
+        }
+      }
+      // The dialog itself shows NO number beforehand (plan 89 §3.1): a
+      // discovered device has none, and predicting one is a promise a
+      // concurrent admit could break. The toast names the number it was
+      // actually given, allocated server-side inside `admitDevice()`'s own
+      // transaction.
+      toast.success(
+        res.device.number !== null
+          ? `Added as #${res.device.number} ${res.device.label}`
+          : `${res.device.label} added to the farm`,
+      )
       onOpenChange(false)
       onDone()
     } catch (err) {
@@ -179,6 +232,25 @@ export function AdmitDeviceDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Physical labelling opt-in (plan 89 §3.8, §5 step 89.8) — the
+              admit dialog is where a device's state STARTS changing, so this
+              is where the choice is made, not only in a doc. Reflects the
+              farm default rather than a blank checkbox nobody has decided
+              on yet — an operator running a real farm has already set the
+              farm default once and every subsequent admission should need
+              no further thought (§3.8's own words). The copy is verbatim. */}
+          <label className="flex items-start gap-3 rounded-md border p-3 text-[12.5px]">
+            <Switch checked={wallpaper} onCheckedChange={setWallpaper} aria-label="Label this phone's screen" className="mt-0.5" />
+            <span>
+              <span className="block font-medium">Label this phone&rsquo;s screen</span>
+              <span className="text-fg-muted">
+                Replaces this phone&rsquo;s wallpaper with a black label. Enkaku will try to save the current one
+                first, but on many Android versions it cannot read it back — if that fails, turning labelling off
+                restores the system default wallpaper, not the original.
+              </span>
+            </span>
+          </label>
 
           <div className="space-y-1.5">
             <Label className="text-[13px] font-normal">Tags</Label>

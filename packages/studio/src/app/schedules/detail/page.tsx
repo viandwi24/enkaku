@@ -4,17 +4,22 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
+import { toast } from 'sonner'
 import { z } from 'zod'
 import {
   BatchInfoSchema,
+  BatchResponseSchema,
+  BatchStopResponseSchema,
   ScheduleResponseSchema,
   ScheduleRunsPageResponseSchema,
   ValidateResponseSchema,
+  type BatchInfo,
   type ClusterPreview,
   type DeviceInfo,
   type ScheduleInfo,
   type ScheduleRunInfo,
 } from '@enkaku/protocol'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -26,6 +31,9 @@ import { api, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
 import { ws } from '@/lib/ws'
+
+/** Same "still active" test the core's own `isBatchActive` (`schedules/runner.ts`) uses, for the Overview tab's Stop control (plan 94 §3.9, §4.9, step 94.8). */
+const ACTIVE_BATCH_STATUS = new Set<BatchInfo['status']>(['queued', 'running'])
 
 const ONOVERLAP_SENTENCE: Record<string, string> = {
   skip: 'If the previous run is still going, this one is skipped.',
@@ -83,6 +91,10 @@ function ScheduleDetail() {
   const [nextFires, setNextFires] = useState<number[]>([])
   const [editing, setEditing] = useState<ScheduleRow | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Plan 94 §3.9, §4.9, step 94.8 — the schedule's last run, fetched only for
+  // its OWN Stop control on the Overview tab; the Runs tab's table below has
+  // its own "View" link into the full batch detail page.
+  const [lastBatch, setLastBatch] = useState<BatchInfo | null>(null)
   const { run, isPending } = useAction()
   const runsRef = useRef<PaginatedTableHandle<ScheduleRunInfo>>(null)
 
@@ -104,6 +116,27 @@ function ScheduleDetail() {
       .then(setDevices)
       .catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (!schedule?.lastBatchId) {
+      setLastBatch(null)
+      return
+    }
+    void api(`/api/batches/${schedule.lastBatchId}`, BatchResponseSchema)
+      .then((b) => setLastBatch(b.batch))
+      .catch(() => setLastBatch(null))
+  }, [schedule?.lastBatchId])
+
+  useEffect(() => {
+    const lastBatchId = schedule?.lastBatchId
+    if (!lastBatchId) return
+    const off = ws.on((m) => {
+      if (m.type === 'batch.status' && m.payload.batchId === lastBatchId) {
+        setLastBatch((prev) => (prev ? { ...prev, status: m.payload.status, counts: m.payload.counts } : prev))
+      }
+    })
+    return off
+  }, [schedule?.lastBatchId])
 
   useEffect(() => {
     if (!schedule) return
@@ -162,6 +195,27 @@ function ScheduleDetail() {
       failure: 'Could not run the schedule now',
       onSuccess: load,
     })
+
+  // Plan 94 §3.9, §4.9, step 94.8 — the SAME stop `/batches/detail` uses,
+  // reached from the schedule's own last run instead. Uses the shared core
+  // route rather than a schedule-specific one — a schedule's last run is
+  // still, underneath, an ordinary batch.
+  const stopLastRun = () =>
+    run('stop-last-run', () => api(`/api/batches/${schedule.lastBatchId}/stop`, BatchStopResponseSchema, { method: 'POST' }), {
+      failure: 'Could not stop the last run',
+      onSuccess: (b) => {
+        const parts = [`${b.cancelled} queued job${b.cancelled === 1 ? '' : 's'} cancelled`, `${b.aborted} running job${b.aborted === 1 ? '' : 's'} aborted`]
+        if (b.refused > 0) parts.push(`${b.refused} refused (you do not own ${b.refused === 1 ? 'that device' : 'those devices'})`)
+        toast.success(parts.join(' · '))
+        if (schedule.lastBatchId) {
+          void api(`/api/batches/${schedule.lastBatchId}`, BatchResponseSchema)
+            .then((r) => setLastBatch(r.batch))
+            .catch(() => undefined)
+        }
+      },
+    })
+
+  const lastRunActive = !!lastBatch && ACTIVE_BATCH_STATUS.has(lastBatch.status)
 
   return (
     <>
@@ -264,6 +318,44 @@ function ScheduleDetail() {
               <li>Priority: {schedule.priority > 0 ? 'High' : schedule.priority < 0 ? 'Low' : 'Normal'}.</li>
             </ul>
           </div>
+
+          {lastBatch && (
+            <div className="rounded-lg border bg-surface p-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-[14px] font-semibold tracking-tight">Last run</h2>
+                <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
+                  <Link href={`/batches/detail?id=${lastBatch.id}`}>View</Link>
+                </Button>
+              </div>
+              <p className="mt-1 text-[12.5px] text-fg-muted">
+                {lastBatch.counts.success + lastBatch.counts.failed + lastBatch.counts.cancelled}/{lastBatch.counts.total} finished
+                {' · '}
+                {lastBatch.status}
+              </p>
+              {lastRunActive && (
+                <ConfirmDialog
+                  trigger={
+                    <Button variant="outline" size="sm" className="mt-2" disabled={isPending('stop-last-run')}>
+                      Stop last run
+                    </Button>
+                  }
+                  title="Stop this schedule's last run?"
+                  confirmLabel="Stop run"
+                  description={
+                    <div className="space-y-1.5">
+                      <p>
+                        Every queued job is cancelled and every running job is aborted — its script&apos;s cleanup runs, force-stopping the
+                        recording&apos;s declared packages on that device.
+                      </p>
+                      {lastBatch.pacing !== null && <p>No further repetition is planned after this — the run&apos;s pacing stops too, not just its current jobs.</p>}
+                      <p className="text-fg-subtle">A device you do not have rights to is refused, counted, and reported — not silently skipped.</p>
+                    </div>
+                  }
+                  onConfirm={stopLastRun}
+                />
+              )}
+            </div>
+          )}
 
           <div className="rounded-lg border bg-surface p-4">
             <h2 className="text-[14px] font-semibold tracking-tight">Next five fires</h2>

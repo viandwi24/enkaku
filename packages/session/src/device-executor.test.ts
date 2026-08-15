@@ -1,8 +1,17 @@
 import { describe, expect, test } from 'bun:test'
-import type { GestureSample, Point, TimingSettings } from '@enkaku/protocol'
+import type { GestureSample, InputSink, Point, TimingSettings } from '@enkaku/protocol'
 import { createDeviceExecutor, DEFAULT_TIMING } from './device-executor'
+import { createInputArbiter } from './input-arbiter'
+import type { Logger } from './logger'
 import type { DeviceCall } from './runner/ipc'
 import type { DeviceSession } from './session'
+import type { TransferPort } from './types'
+
+/** Same `silentLog` pattern `orientation.test.ts`/`text-input.test.ts` already use in this package. */
+function silentLog(): Logger {
+  const l: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
+  return l
+}
 
 /**
  * `app.launch`/`app.forceStop` shell-injection safety (plan 34 §3.4, §4.3):
@@ -81,6 +90,7 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
  * taken, without a real scrcpy socket or adb transport.
  */
 interface RecordedCalls {
+  tap: { p: Point; opts: { holdMs?: [number, number]; rng?: () => number } | undefined }[]
   swipe: { from: Point; to: Point; ms: number }[]
   gesture: GestureSample[][]
   text: string[]
@@ -92,9 +102,11 @@ function fakeGestureSession(opts: {
   withGesture?: boolean
   withTypeText?: boolean
 }): { session: DeviceSession; calls: RecordedCalls } {
-  const calls: RecordedCalls = { swipe: [], gesture: [], text: [], typeText: [] }
+  const calls: RecordedCalls = { tap: [], swipe: [], gesture: [], text: [], typeText: [] }
   const input: Record<string, unknown> = {
-    tap: async () => {},
+    tap: async (p: Point, tapOpts?: { holdMs?: [number, number]; rng?: () => number }) => {
+      calls.tap.push({ p, opts: tapOpts })
+    },
     swipe: async (from: Point, to: Point, ms: number) => {
       calls.swipe.push({ from, to, ms })
     },
@@ -113,12 +125,35 @@ function fakeGestureSession(opts: {
       calls.typeText.push({ text, perCharMs: o.perCharMs })
     }
   }
+  // Plan 91 §3.1, §3.3, §4.1 — `device-executor.ts` now calls `deps.session.arbiter.for(source)`
+  // rather than `deps.session.input` directly (fixes F6/H1). Wrapping the SAME `input` object
+  // here keeps every `calls.*` spy above recording exactly what it did before this plan, while
+  // proving the arbiter is actually on the call path, not bypassed.
+  const arbiter = createInputArbiter(input as unknown as InputSink, {
+    queueWaitMs: () => 5_000,
+    maxQueueDepth: () => 32,
+    log: silentLog(),
+  })
   const session = {
     deviceId: 'dev-1',
     inspector: null,
     transport: { exec: async () => '', execOut: async () => new Uint8Array() },
     frameSize: opts.frameSize ?? { width: 1080, height: 1920 },
     input,
+    arbiter,
+    // A scrcpy-family engine — `withTypeText: false` only removes the `typeText` METHOD (Plan
+    // 40's own degrade path), it does not simulate the `adb-input` engine, which has neither
+    // `typeText` NOR a scrcpy control socket at all (plan 90 §3.3, §4.5, §5 step 90.5).
+    inputEngineId: 'scrcpy-uhid',
+    clipboard: { get: async () => '', set: async () => {} },
+    textInput: {
+      mode: 'auto',
+      agentCapabilities: null,
+      imeCurrent: false,
+      commitViaAgent: async () => {
+        throw new Error('no guest agent client wired in this fixture')
+      },
+    },
   } as unknown as DeviceSession
   return { session, calls }
 }
@@ -128,6 +163,49 @@ function fakeGestureSession(opts: {
 // perCharMs, asserted below) stays at the schema's real default.
 const NATURAL_TIMING: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0] }
 const INSTANT_TIMING: TimingSettings = { ...DEFAULT_TIMING, profile: 'instant', betweenActionMs: [0, 0] }
+
+/**
+ * The regression test for the original defect: `DeviceSettings.timing.tapJitterMs`
+ * was declared in the schema and rendered in Studio's Settings panel, but no
+ * production code read it — the real tap-hold duration was a hardcoded
+ * literal inside the scrcpy input drivers (`40 + Math.random() * 80`) that
+ * happened to coincide with the schema's own default range, which is exactly
+ * why nobody noticed. This asserts `timing.tapJitterMs` actually reaches
+ * `session.input.tap`'s second argument — the one place downstream of
+ * `createDeviceExecutor` where a silently-ignored setting would go unnoticed.
+ */
+describe('createDeviceExecutor — tap honours tapJitterMs (the setting reaches the driver, not just the schema)', () => {
+  test('a configured tapJitterMs range is handed to session.input.tap as opts.holdMs', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [500, 900] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tap', { target: { point: { x: 10, y: 20 } } }))
+    expect(calls.tap).toHaveLength(1)
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([500, 900])
+  })
+
+  test('a different tapJitterMs range produces a different opts.holdMs — proof it is read fresh, not a stale default', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timingA: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [10, 20] }
+    await createDeviceExecutor({ session, timing: timingA })(call('tap', { target: { point: { x: 0, y: 0 } } }))
+
+    const timingB: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [3000, 4000] }
+    await createDeviceExecutor({ session, timing: timingB })(call('tap', { target: { point: { x: 0, y: 0 } } }))
+
+    expect(calls.tap).toHaveLength(2)
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([10, 20])
+    expect(calls.tap[1]!.opts?.holdMs).toEqual([3000, 4000])
+    expect(calls.tap[0]!.opts?.holdMs).not.toEqual(calls.tap[1]!.opts?.holdMs)
+  })
+
+  test('with no timing supplied at all, DEFAULT_TIMING.tapJitterMs ([40, 120] — the old hardcoded literal\'s exact bounds) still reaches opts.holdMs', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session })
+    await execute(call('tap', { target: { point: { x: 10, y: 20 } } }))
+    expect(DEFAULT_TIMING.tapJitterMs).toEqual([40, 120])
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([40, 120])
+  })
+})
 
 describe('createDeviceExecutor — swipe under profile natural vs instant (plan 40 §4.4, acceptance #7)', () => {
   test('natural: an engine with gesture() gets a curved path whose endpoints match the call exactly', async () => {
@@ -412,5 +490,206 @@ describe('createDeviceExecutor — waitFor carries the last outcome into its tim
     const execute = createDeviceExecutor({ session })
     const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 2_000, intervalMs: 5 }))
     expect((result as { resourceId: string }).resourceId).toBe('x')
+  })
+})
+
+/**
+ * `push` (plan 90 §4.6, step 90.7) — a script's `ctx.device.push(...)` must
+ * reach the same extended result the API response gets (`mediaScan`), not
+ * `undefined`: the codebase's own repeated defect is a value computed
+ * correctly whose last connection to a caller was never made.
+ */
+describe('createDeviceExecutor — push (plan 90 §4.6): the mediaScan result reaches the script', () => {
+  function fakeTransfer(impl?: Partial<TransferPort>): { transfer: TransferPort; calls: Array<{ deviceId: string; opts: unknown }> } {
+    const calls: Array<{ deviceId: string; opts: unknown }> = []
+    const transfer: TransferPort = {
+      install: async () => ({ package: null, durationMs: 0, output: '' }),
+      push: async (deviceId, opts) => {
+        calls.push({ deviceId, opts })
+        return { mediaScan: { ran: true, method: 'scan_file', ms: 5 } }
+      },
+      pull: async () => ({ artifactId: 'a', bytes: 0 }),
+      ...impl,
+    }
+    return { transfer, calls }
+  }
+
+  test('the full result — including mediaScan — is returned, not undefined', async () => {
+    const { transfer } = fakeTransfer()
+    const execute = createDeviceExecutor({ session: fakeSession(async () => ''), transfer })
+    const result = await execute(call('push', { artifactId: 'art1', remotePath: '/sdcard/Pictures/x.jpg', mediaScan: 'auto' }))
+    expect(result).toEqual({ mediaScan: { ran: true, method: 'scan_file', ms: 5 } })
+  })
+
+  test('mediaScan is forwarded to the TransferPort exactly as the script set it', async () => {
+    const { transfer, calls } = fakeTransfer()
+    const execute = createDeviceExecutor({ session: fakeSession(async () => ''), transfer })
+    await execute(call('push', { artifactId: 'art1', remotePath: '/data/local/tmp/x.bin', mediaScan: 'never' }))
+    expect(calls).toEqual([
+      { deviceId: 'dev-1', opts: { artifactId: 'art1', remotePath: '/data/local/tmp/x.bin', mediaScan: 'never' } },
+    ])
+  })
+
+  test('with no file transfer wired, push refuses with E_TRANSFER_UNAVAILABLE rather than silently no-op', async () => {
+    const execute = createDeviceExecutor({ session: fakeSession(async () => '') })
+    let caught: unknown
+    try {
+      await execute(call('push', { artifactId: 'a', remotePath: '/sdcard/x', mediaScan: 'auto' }))
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe('E_TRANSFER_UNAVAILABLE')
+  })
+})
+
+/**
+ * The replay's own verbs (plan 94 §4.4, F6, F7, step 94.2): `tapNorm`,
+ * `longPress`, `gesture`, `swipeNorm`. `NormPointSchema`/`NormGestureSampleSchema`
+ * bound their inputs 0..1 (`@enkaku/protocol`), so `fakeGestureSession`'s real
+ * 1080×1920 `frameSize` is what proves the mapping actually happened — a bug
+ * that forgot to map would show up as a point outside 0..1080 or a fraction
+ * left untouched, not a crash.
+ */
+describe('createDeviceExecutor — tapNorm (plan 94 §3.3, §4.4): normalised in, device pixels out', () => {
+  test('maps a normalised point to device pixels using the session frameSize', async () => {
+    const { session, calls } = fakeGestureSession({ frameSize: { width: 1000, height: 2000 } })
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0 }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tapNorm', { pos: { x: 0.5, y: 0.25 } }))
+    expect(calls.tap).toHaveLength(1)
+    expect(calls.tap[0]!.p).toEqual({ x: 500, y: 500 })
+  })
+
+  test('an explicit holdMs becomes an EXACT [holdMs, holdMs] range — not sampled from tapJitterMs', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0, tapJitterMs: [10, 20] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tapNorm', { pos: { x: 0.1, y: 0.1 }, holdMs: 777 }))
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([777, 777])
+  })
+
+  test('with no holdMs, falls back to the device tapJitterMs range — identical to plain tap', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0, tapJitterMs: [50, 60] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tapNorm', { pos: { x: 0.1, y: 0.1 } }))
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([50, 60])
+  })
+})
+
+describe('createDeviceExecutor — longPress (plan 94 §3.4, §4.4, F4): a named duration, jittered around', () => {
+  test('a Selector point target resolves without a dump, and holdMs is centred on ms', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0, tapJitterMs: [40, 120] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('longPress', { target: { point: { x: 10, y: 20 } }, ms: 800 }))
+    expect(calls.tap).toHaveLength(1)
+    expect(calls.tap[0]!.p).toEqual({ x: 10, y: 20 })
+    // tapJitterMs width is 80 (120-40); centred on 800 → [760, 840].
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([760, 840])
+  })
+
+  test('a zero-width tapJitterMs range produces an exact [ms, ms] hold', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0, tapJitterMs: [40, 40] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('longPress', { target: { point: { x: 0, y: 0 } }, ms: 500 }))
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([500, 500])
+  })
+})
+
+describe('createDeviceExecutor — gesture (plan 94 §3.4, §4.4, F3, F6, F7): the sampled trace, verbatim', () => {
+  test('maps every sample to device pixels and carries atMs through untouched', async () => {
+    const { session, calls } = fakeGestureSession({ frameSize: { width: 1000, height: 2000 } })
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    const samples = [
+      { x: 0.1, y: 0.1, atMs: 0 },
+      { x: 0.5, y: 0.5, atMs: 16 },
+      { x: 0.9, y: 0.9, atMs: 32 },
+    ]
+    await execute(call('gesture', { samples }))
+    expect(calls.gesture).toHaveLength(1)
+    expect(calls.gesture[0]).toEqual([
+      { x: 100, y: 200, atMs: 0 },
+      { x: 500, y: 1000, atMs: 16 },
+      { x: 900, y: 1800, atMs: 32 },
+    ])
+  })
+
+  test('an engine with no gesture() rejects with E_GESTURE_UNSUPPORTED — never silently degrades to a two-point swipe', async () => {
+    const { session, calls } = fakeGestureSession({ withGesture: false })
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    let caught: unknown
+    try {
+      await execute(call('gesture', { samples: [{ x: 0, y: 0, atMs: 0 }, { x: 1, y: 1, atMs: 10 }] }))
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe('E_GESTURE_UNSUPPORTED')
+    expect(calls.swipe).toHaveLength(0)
+  })
+})
+
+describe('createDeviceExecutor — swipeNorm (plan 94 §3.4, §4.4, F6, F7): the two-point drag fallback, normalised', () => {
+  test('maps both endpoints to device pixels and plays a straight line over ms — never curved', async () => {
+    const { session, calls } = fakeGestureSession({ frameSize: { width: 1000, height: 2000 } })
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0 }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('swipeNorm', { from: { x: 0.2, y: 0.8 }, to: { x: 0.2, y: 0.2 }, ms: 300 }))
+    expect(calls.gesture).toHaveLength(0)
+    expect(calls.swipe).toEqual([{ from: { x: 200, y: 1600 }, to: { x: 200, y: 400 }, ms: 300 }])
+  })
+})
+
+/**
+ * The freshness fix itself (plan 94 §4.5, F10, step 94.2): "why a getter
+ * read per call matters" — a farm/device setting changed WHILE a script is
+ * still running must reach its very next device call, on the SAME executor
+ * instance, not merely a future one. This is the exact class of defect the
+ * brief calls out by name: a co-control queue budget read once at
+ * construction and never again.
+ */
+describe('createDeviceExecutor — timing is a getter, read fresh on every call (plan 94 §4.5, F10)', () => {
+  test('a plain (non-function) TimingSettings value still works — every pre-plan-94 caller is unaffected', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const timing: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [123, 456] }
+    const execute = createDeviceExecutor({ session, timing })
+    await execute(call('tap', { target: { point: { x: 0, y: 0 } } }))
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([123, 456])
+  })
+
+  test('a getter is called fresh on every device call — a mid-run change reaches the very next call on the SAME executor', async () => {
+    const { session, calls } = fakeGestureSession({})
+    let current: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], tapJitterMs: [10, 20] }
+    // ONE executor, built ONCE — exactly like `job-runner.ts` builds one per
+    // attempt and then issues every device.call of that attempt through it.
+    const execute = createDeviceExecutor({ session, timing: () => current })
+
+    await execute(call('tap', { target: { point: { x: 0, y: 0 } } }))
+    expect(calls.tap[0]!.opts?.holdMs).toEqual([10, 20])
+
+    // The setting changes WHILE this same executor is still in use — the
+    // shape of an operator editing Settings mid-script.
+    current = { ...current, tapJitterMs: [900, 900] }
+
+    await execute(call('tap', { target: { point: { x: 0, y: 0 } } }))
+    expect(calls.tap[1]!.opts?.holdMs).toEqual([900, 900])
+    // Proof it is not a coincidence of construction order: the two calls
+    // genuinely disagree, on the one executor instance.
+    expect(calls.tap[0]!.opts?.holdMs).not.toEqual(calls.tap[1]!.opts?.holdMs)
+  })
+
+  test('a getter\'s value change also reaches coordJitterPx mid-run (not just tapJitterMs)', async () => {
+    const { session, calls } = fakeGestureSession({})
+    let current: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0 }
+    const execute = createDeviceExecutor({ session, timing: () => current })
+
+    await execute(call('tap', { target: { point: { x: 500, y: 500 } } }))
+    expect(calls.tap[0]!.p).toEqual({ x: 500, y: 500 }) // zero jitter — exact
+
+    current = { ...current, coordJitterPx: 1_000_000 }
+    await execute(call('tap', { target: { point: { x: 500, y: 500 } } }))
+    // A jitter this large cannot land back on the exact same pixel.
+    expect(calls.tap[1]!.p).not.toEqual({ x: 500, y: 500 })
   })
 })

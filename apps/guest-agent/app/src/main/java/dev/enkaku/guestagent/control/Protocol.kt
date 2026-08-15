@@ -25,7 +25,9 @@ object Protocol {
    *
    * `egress-probe` (plan 51 §5.4): added now that [dev.enkaku.guestagent.route.EgressProbe]
    * actually runs — never claim a capability before it works, or the whole point of this list
-   * (the host gates on it rather than assuming) is defeated.
+   * (the host gates on it rather than assuming) is defeated. Advertised by every build since plan
+   * 51 shipped; the host-side mirror of this file used to carry a comment claiming otherwise —
+   * fixed in plan 90 §0.1 (F41), because this file is the one that was always right.
    *
    * `route-hold` (plan 55 §3.5, §4.1, §5.6): added now that [METHOD_ROUTE_HOLD] is handled below.
    *
@@ -34,9 +36,21 @@ object Protocol {
    * [dev.enkaku.guestagent.identity.MockLocation]. An installed build that predates this still
    * answers `E_UNKNOWN_METHOD` for both, which the host treats as "identity GPS cannot be
    * applied" — never a spoofed value the device never actually received.
+   *
+   * `screen-label` (plan 89 §4.5; plan 90 §3.6, §4.1, step 90.5's Task B): gates
+   * [METHOD_LABEL_APPLY] / [METHOD_LABEL_STATUS] / [METHOD_LABEL_CLEAR], backed by
+   * `label/LabelRenderer.kt` and `label/WallpaperFacet.kt`, dispatched from
+   * `ControlService.handle()`. Plan 90's own §5 step list never assigned this facet to a numbered
+   * step — plan 89 §4.5 stated the contract, plan 90 §3.6 promised to honour it, and neither
+   * plan's checklist actually built it until step 90.5 closed the gap alongside its own IME work
+   * (the one worker touching `ControlService.kt` at the time).
+   *
+   * `text-input` (plan 90 §3.2, §3.3, §4.1, step 90.5): gates [METHOD_TEXT_COMMIT] /
+   * [METHOD_TEXT_STATUS], backed by `input/EnkakuIme.kt` / `input/TextFacet.kt` and the matching
+   * `ControlService.handle()` branches.
    */
   val CAPABILITIES: List<String> =
-    listOf("socks5-route", "vpn-status", "egress-probe", "route-hold", "mock-location")
+    listOf("socks5-route", "vpn-status", "egress-probe", "route-hold", "mock-location", "screen-label", "text-input")
 
   // Requests
   const val METHOD_HELLO = "hello"
@@ -48,6 +62,20 @@ object Protocol {
   const val METHOD_ROUTE_HOLD = "route.hold"
   const val METHOD_LOCATION_SET = "location.set"
   const val METHOD_LOCATION_CLEAR = "location.clear"
+
+  /**
+   * Plan 89 §4.5; plan 90 §3.6, §4.1. Method-name constants only — `ControlService.handle()`
+   * gaining the matching `when` branches, and the facets that back them, is a later step. Kept
+   * here (not invented ad hoc there) because the method name is part of the wire contract both
+   * sides read, same as every other `METHOD_*` constant in this object.
+   */
+  const val METHOD_LABEL_APPLY = "label.apply"
+  const val METHOD_LABEL_STATUS = "label.status"
+  const val METHOD_LABEL_CLEAR = "label.clear"
+
+  /** Plan 90 §3.2, §3.3, §4.1. Same note as the `METHOD_LABEL_*` constants above. */
+  const val METHOD_TEXT_COMMIT = "text.commit"
+  const val METHOD_TEXT_STATUS = "text.status"
 
   // Error codes. Mirrored on the host so failures are matched on a code, never on message text.
   const val ERR_UNAUTHORISED = "E_UNAUTHORISED"

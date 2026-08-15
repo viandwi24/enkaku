@@ -32,17 +32,37 @@ export const GUEST_AGENT_PROTOCOL = 1
 /**
  * What a build of the agent can actually do, advertised rather than assumed
  * — the same pattern the driver registry uses for engine capabilities.
- * `egress-probe` is part of the enum because the wire format must already be
- * able to carry it, but no build advertises it today: it arrives once the
- * probe runs on a socket protected out of the agent's own tunnel, since a
- * probe measured from inside the tunnel would only ever answer its own
- * question (Protocol.kt's `CAPABILITIES` comment, plan 44 §2).
+ * `egress-probe` has been advertised by every build since plan 51 §5.4, once
+ * the probe actually ran on a socket protected out of the agent's own
+ * tunnel (a probe measured from inside the tunnel would only ever answer its
+ * own question — Protocol.kt's `CAPABILITIES` comment, plan 44 §2). This
+ * comment previously claimed no build advertised it, which was already false
+ * the moment plan 51 shipped Protocol.kt's own entry — corrected here (F41,
+ * plan 90 §0.1): `Protocol.kt` is the file that was always right.
  *
  * `route-hold` (plan 55 §3.5, §4.1, §5.6) — an older build has no `route.hold` handler and
  * answers `E_UNKNOWN_METHOD`; the host gates on this the same way it gates `egress.probe` on
  * `egress-probe`, rather than finding out from a failed call.
+ *
+ * `screen-label` (plan 89 §4.5; plan 90 §3.6, §4.1) — gates `label.apply` / `label.status` /
+ * `label.clear`. An older build (or one whose on-device label facet is not yet built — see
+ * `Protocol.kt`'s doc comment on this same list) answers `E_UNKNOWN_METHOD` for all three, which
+ * plan 89 §3.5 reports as its `unavailable` tier rather than an error.
+ *
+ * `text-input` (plan 90 §3.2, §3.3, §4.1) — gates `text.commit` / `text.status`. An older build
+ * answers `E_UNKNOWN_METHOD` for both, which the text-routing resolver (`resolveTextRoute`, §4.5)
+ * reads as "rung 1 (`agent-ime`) is unavailable" and falls down the ladder rather than failing
+ * the call outright.
  */
-export const GuestAgentCapabilitySchema = z.enum(['socks5-route', 'vpn-status', 'egress-probe', 'route-hold', 'mock-location'])
+export const GuestAgentCapabilitySchema = z.enum([
+  'socks5-route',
+  'vpn-status',
+  'egress-probe',
+  'route-hold',
+  'mock-location',
+  'screen-label',
+  'text-input',
+])
 export type GuestAgentCapability = z.infer<typeof GuestAgentCapabilitySchema>
 
 /** Mirrors Protocol.kt's `ERR_*` constants. Failures are matched on `code`, never on message text. */
@@ -144,6 +164,65 @@ export const LocationClearRequestSchema = GuestAgentRequestBaseSchema.extend({
 })
 export type LocationClearRequest = z.infer<typeof LocationClearRequestSchema>
 
+/**
+ * Plan 89 §4.5, reproduced field for field; plan 90 §3.6, §4.1. Only meaningful once the agent
+ * advertises `screen-label`; an older build (or one whose label facet is not yet built — see
+ * `Protocol.kt`) answers `E_UNKNOWN_METHOD`, which plan 89 §3.5 reports as its `unavailable` tier.
+ * `fingerprint` is opaque to the agent — it echoes it back verbatim rather than deriving it, so
+ * the core's own hashing scheme (plan 89 §4.4) is never duplicated on the Kotlin side.
+ */
+export const LabelApplyRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('label.apply'),
+  fingerprint: z.string(),
+  /** Already formatted, e.g. `'7'` — the agent draws it, it does not compute it. */
+  number: z.string(),
+  /** `null` means number-only. */
+  name: z.string().nullable(),
+  surfaces: z.array(z.enum(['home', 'lock'])),
+})
+export type LabelApplyRequest = z.infer<typeof LabelApplyRequestSchema>
+
+/** Plan 89 §4.5; plan 90 §3.6, §4.1. Same capability gate as `label.apply`. */
+export const LabelStatusRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('label.status'),
+})
+export type LabelStatusRequest = z.infer<typeof LabelStatusRequestSchema>
+
+/**
+ * Plan 89 §4.5; plan 90 §3.6, §4.1. `restoreOriginal` chooses between the two things `label.clear`
+ * is allowed to do (behavioural requirement 4: idempotent, no "already cleared" flag) — restore the
+ * wallpaper captured on first apply, or fall back to the system default when nothing was ever
+ * captured (`originalCaptured: false` on every prior `label.status`).
+ */
+export const LabelClearRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('label.clear'),
+  restoreOriginal: z.boolean(),
+})
+export type LabelClearRequest = z.infer<typeof LabelClearRequestSchema>
+
+/**
+ * Plan 90 §3.2, §3.3, §4.1 — commits text through the agent's `InputMethodService`, the only rung
+ * of the text ladder (§3.3) with no side effect on the device clipboard and per-code-point timing.
+ * `text` is never re-escaped on the wire — it is committed exactly as sent, one code point at a
+ * time when `perCharMs` is present (so plan 40's realism survives an IME the same way it already
+ * survives `scrcpy INJECT_TEXT`), the whole string at once otherwise. Only meaningful once the
+ * agent advertises `text-input`; an older build answers `E_UNKNOWN_METHOD`, which the text-routing
+ * resolver (`resolveTextRoute`, §4.5) reads as "rung 1 unavailable" and falls down the ladder.
+ */
+export const TextCommitRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('text.commit'),
+  text: z.string(),
+  /** Absent = commit the whole string at once. `[minMs, maxMs]`, mirroring `typeText`'s `perCharMs` range (`device-args.ts`). */
+  perCharMs: z.tuple([z.number().nonnegative(), z.number().nonnegative()]).optional(),
+})
+export type TextCommitRequest = z.infer<typeof TextCommitRequestSchema>
+
+/** Plan 90 §3.2, §3.3, §4.1. Same capability gate as `text.commit` — reports whether the agent's IME is actually the live one, so the resolver can decide whether rung 1 is usable before committing anything. */
+export const TextStatusRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('text.status'),
+})
+export type TextStatusRequest = z.infer<typeof TextStatusRequestSchema>
+
 /** The full request union, discriminated on `method` — mirrors `Protocol.METHOD_*`. */
 export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   HelloRequestSchema,
@@ -155,6 +234,11 @@ export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   RouteHoldRequestSchema,
   LocationSetRequestSchema,
   LocationClearRequestSchema,
+  LabelApplyRequestSchema,
+  LabelStatusRequestSchema,
+  LabelClearRequestSchema,
+  TextCommitRequestSchema,
+  TextStatusRequestSchema,
 ])
 export type GuestAgentRequest = z.infer<typeof GuestAgentRequestSchema>
 
@@ -200,6 +284,75 @@ export const LocationClearResultSchema = z.object({
   cleared: z.literal(true),
 })
 export type LocationClearResult = z.infer<typeof LocationClearResultSchema>
+
+/**
+ * Plan 89 §4.5, reproduced field for field; plan 90 §3.6, §4.1. `applied` is behavioural
+ * requirement 1 — it reports what the agent actually managed to draw, not what was requested, so
+ * an OEM skin that swallows the lock-screen half produces `['home']` and the core reports
+ * `partial` rather than `applied`. `rendererVersion` is behavioural requirement 5: an integer the
+ * agent owns, bumped whenever the drawing changes, so a stale render is detectable without
+ * re-fetching the bitmap.
+ */
+export const LabelApplyResultSchema = z.object({
+  applied: z.array(z.enum(['home', 'lock'])),
+  fingerprint: z.string(),
+  rendererVersion: z.number().int(),
+  widthPx: z.number().int(),
+  heightPx: z.number().int(),
+  /** `WallpaperManager.getWallpaperId(FLAG_SYSTEM)` — `null` only if the platform call itself failed. */
+  wallpaperIdHome: z.number().int().nullable(),
+  wallpaperIdLock: z.number().int().nullable(),
+})
+export type LabelApplyResult = z.infer<typeof LabelApplyResultSchema>
+
+/**
+ * Plan 89 §4.5; plan 90 §3.6, §4.1. `originalCaptured` is behavioural requirement 3 — reported
+ * honestly (never an optimistic `true`) when the agent could not read back the pre-label
+ * wallpaper on its first apply (a live wallpaper, an API-level restriction, or a thrown
+ * `getWallpaperFile`). `matchesOurs` lets a reconnect probe be a cheap read: the core compares it
+ * against the fingerprint it expects before deciding whether `label.apply` needs to run at all.
+ */
+export const LabelStatusResultSchema = z.object({
+  fingerprint: z.string().nullable(),
+  matchesOurs: z.boolean(),
+  wallpaperIdHome: z.number().int().nullable(),
+  wallpaperIdLock: z.number().int().nullable(),
+  originalCaptured: z.boolean(),
+  rendererVersion: z.number().int(),
+})
+export type LabelStatusResult = z.infer<typeof LabelStatusResultSchema>
+
+/**
+ * Plan 89 §4.5; plan 90 §3.6, §4.1. `restored` is behavioural requirement 4 — `label.clear` is
+ * idempotent and consults no "already cleared" flag, so this reports which of the two possible
+ * writes actually ran on THIS call, not a cached memory of an earlier one. `fingerprint` is
+ * always `null` on a successful clear — there is no label to match against any more.
+ */
+export const LabelClearResultSchema = z.object({
+  restored: z.enum(['original', 'system-default']),
+  fingerprint: z.null(),
+})
+export type LabelClearResult = z.infer<typeof LabelClearResultSchema>
+
+/**
+ * Plan 90 §3.2, §3.3, §4.1. `ime: 'not-current'` is deliberate, not an error — it is a
+ * precondition the host can fix (`ime set`), and `resolveTextRoute` (§4.5) reads it to fall down
+ * the text ladder rather than fail the call. `committed` counts code points actually committed,
+ * which can be fewer than `text.length` in UTF-16 code units for anything outside the BMP.
+ */
+export const TextCommitResultSchema = z.object({
+  committed: z.number().int(),
+  ime: z.enum(['current', 'not-current']),
+})
+export type TextCommitResult = z.infer<typeof TextCommitResultSchema>
+
+/** Plan 90 §3.2, §3.3, §4.1. `id` is the IME component name, e.g. `'dev.enkaku.guestagent/.input.EnkakuIme'` — a plain string, not a code, because it is shown to an operator verbatim (§3.9's "what the operator sees") rather than matched on. */
+export const TextStatusResultSchema = z.object({
+  ime: z.enum(['current', 'enabled', 'disabled']),
+  id: z.string(),
+  connected: z.boolean(),
+})
+export type TextStatusResult = z.infer<typeof TextStatusResultSchema>
 
 /**
  * `upstream`, `stats`, and `lastError` are ABSENT from the frame when there
@@ -291,6 +444,11 @@ export const GuestAgentOkResponseSchema = z.object({
     RouteHoldResultSchema,
     LocationSetResultSchema,
     LocationClearResultSchema,
+    LabelApplyResultSchema,
+    LabelStatusResultSchema,
+    LabelClearResultSchema,
+    TextCommitResultSchema,
+    TextStatusResultSchema,
   ]),
 })
 export type GuestAgentOkResponse = z.infer<typeof GuestAgentOkResponseSchema>

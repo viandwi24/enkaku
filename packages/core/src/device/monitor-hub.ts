@@ -23,12 +23,16 @@ export async function runOneshotMonitor(
   deps: { shellPort: (deviceId: string) => ShellPort },
   deviceId: string,
   kind: MonitorKind,
+  /** Validated against `optionsSchemaFor(kind)` inside `buildMonitorCommand`
+   * (plan 90 §3.5, step 90.7) — omitted (or `{}`) for every kind but
+   * `meminfo`, which is the only one-shot kind with a real option today. */
+  options?: unknown,
 ): Promise<{ text: string; truncated: boolean }> {
   if (STREAMING_MONITOR_KINDS.includes(kind)) {
     throw new EnkakuError('E_BAD_REQUEST', `monitor "${kind}" is a stream — use monitor.start, not monitor.oneshot`)
   }
   const port = deps.shellPort(deviceId)
-  const cmd = buildMonitorCommand(kind, {})
+  const cmd = buildMonitorCommand(kind, options ?? {})
   const result = await port.exec(cmd, { profile: 'appLifecycle', maxOutputBytes: ONESHOT_MAX_OUTPUT_BYTES })
   const charTruncated = result.stdout.length > ONESHOT_MAX_CHARS
   return {

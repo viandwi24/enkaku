@@ -114,24 +114,7 @@ export function createTunnelRouter(deps: {
             payload: { nodeId, serverTime: Date.now(), pinnedScrcpyVersion: '3.3.1' },
           }),
         )
-      } else if (msg.type === 'agent.hello') {
-        // Plan 61 §3.3 compatibility window: a pre-rename node build still
-        // sends `agent.hello`. Accepted for one release with a warn-level log
-        // naming the node, so an operator can see which nodes still need
-        // upgrading — removed per the dated follow-up in `00-overview.md`.
-        deps.log.warn(`node ${nodeId} sent the deprecated 'agent.hello' — it needs upgrading past plan 61`)
-        const conn = deps.registry.byNode(nodeId)
-        if (conn) {
-          conn.version = msg.payload.agentVersion
-          conn.platform = msg.payload.platform
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'node.hello.ack',
-            payload: { nodeId, serverTime: Date.now(), pinnedScrcpyVersion: '3.3.1' },
-          }),
-        )
-      } else if (msg.type === 'node.devices' || msg.type === 'agent.devices') {
+      } else if (msg.type === 'node.devices') {
         deps.registry.syncDevices(nodeId, msg.payload.devices)
       } else if (msg.type === 'session.started') {
         deps.onSessionStarted?.(msg.payload.deviceId, {

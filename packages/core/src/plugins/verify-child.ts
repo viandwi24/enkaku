@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import type { RuntimeEnvelope } from '@enkaku/protocol'
 import type { VerifyChildMessage } from './verify-child-entry'
 
 /**
@@ -17,6 +18,18 @@ import type { VerifyChildMessage } from './verify-child-entry'
 export interface VerifiedScript {
   id: string
   paramsSchema: unknown
+  /**
+   * Plan 97 §4.4, §4.7, §5 step 97.2 — already `checkDeclaredSchema`-gated by
+   * the child (`verify-child-entry.ts`), mirroring `paramsSchema` above
+   * exactly. `null` for a member that declares no `result`. OPTIONAL here
+   * (unlike `paramsSchema`) purely so a hand-built `VerifiedScript` fixture
+   * written before this field existed — several live outside this file's
+   * own ownership list — keeps compiling with no edit of its own; every
+   * REAL verify-child report always sets it, never omits it.
+   */
+  resultSchema?: unknown
+  /** Plan 98 §3.1, §5 step 98.4 — already validated by the child (`verify-child-entry.ts`'s own `RuntimeEnvelopeSchema.safeParse`), so this is trusted as typed rather than re-checked here, matching how `paramsSchema` above is trusted once the child's own `checkDeclaredSchema` gate passes. */
+  runtime: RuntimeEnvelope | null
 }
 
 export interface VerifyReport {

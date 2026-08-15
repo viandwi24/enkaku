@@ -35,7 +35,28 @@ export interface ShellStreamHandle {
  * (`deps.remote?.nodeIdFor(deviceId)`), not inside the hub itself.
  */
 export interface ShellPort {
-  exec(cmd: string, opts?: { profile?: AdbTimeoutProfile; timeoutMs?: number; maxOutputBytes?: number }): Promise<ShellExecResult>
+  exec(
+    cmd: string,
+    opts?: {
+      profile?: AdbTimeoutProfile
+      timeoutMs?: number
+      maxOutputBytes?: number
+      /**
+       * Best-effort cancellation (plan 93 §3.7, §4.5) — added for the command
+       * console's fan-out runner, which aborts in-flight members on cancel.
+       * Optional so every pre-existing caller (the terminal's `shell.exec`)
+       * keeps compiling unchanged; omitted, behaviour is identical to before
+       * this field existed. Local devices forward it straight to
+       * `AdbClient.exec`, which already honours `AbortSignal` (plan 22.1).
+       * Node-owned (remote) devices have no RPC-level cancel today — an
+       * abort there only makes THIS PROMISE settle early; the node may still
+       * finish running the command, exactly the honesty plan 93 §3.7's
+       * cancel report already states ("the command may have completed on
+       * the device").
+       */
+      signal?: AbortSignal
+    },
+  ): Promise<ShellExecResult>
   stream(cmd: string, opts: ShellStreamOptions): Promise<ShellStreamHandle>
 }
 
@@ -47,6 +68,7 @@ export function createLocalShellPort(deps: { client: AdbClient; serial: string }
         ...(opts?.profile ? { profile: opts.profile } : {}),
         ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(opts?.maxOutputBytes !== undefined ? { maxOutputBytes: opts.maxOutputBytes } : {}),
+        ...(opts?.signal ? { signal: opts.signal } : {}),
       })
       // `AdbClient.exec` either returns full output or throws
       // E_ADB_OUTPUT_LIMIT — there is no partial-truncation outcome to
@@ -83,7 +105,7 @@ export function createLocalShellPort(deps: { client: AdbClient; serial: string }
 export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRouter; deviceId: string }): ShellPort {
   return {
     async exec(cmd, opts) {
-      const reply = await deps.rpc.request<{
+      const request = deps.rpc.request<{
         ok: boolean
         stdout?: string
         /** Absent on an older node build that predates plan 53 — defaults to `''`, never crashes the core. */
@@ -98,6 +120,23 @@ export function createRemoteShellPort(deps: { rpc: TunnelRpc; router: TunnelRout
         ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(opts?.maxOutputBytes !== undefined ? { maxOutputBytes: opts.maxOutputBytes } : {}),
       })
+      // The tunnel RPC has no remote-cancel of its own (`TunnelRpc.request`
+      // takes no signal) — a node-owned device cannot truly be interrupted
+      // mid-command from here. `opts.signal` therefore only makes THIS
+      // PROMISE settle early, exactly the honesty plan 93 §3.7 already
+      // states for cancellation ("the command may have completed on the
+      // device"); the real reply, when it eventually arrives, is simply
+      // discarded by whichever caller stopped awaiting it.
+      const reply = opts?.signal
+        ? await Promise.race([
+            request,
+            new Promise<never>((_resolve, reject) => {
+              const onAbort = (): void => reject(new EnkakuError('E_ADB_ABORTED', 'aborted by caller signal'))
+              if (opts.signal!.aborted) onAbort()
+              else opts.signal!.addEventListener('abort', onAbort, { once: true })
+            }),
+          ])
+        : await request
       if (!reply.ok) {
         throw new EnkakuError(reply.error?.code ?? 'E_ADB_FAIL', reply.error?.message ?? 'the node failed to run the command')
       }

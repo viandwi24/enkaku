@@ -1,4 +1,5 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
+import { ui } from '@enkaku/sdk'
 import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, sleep } from './human'
@@ -311,9 +312,35 @@ const paramsSchema = z.object({
     .meta({ title: 'Also match display name' }),
 })
 
-const searchFollowScript: PluginMemberScript<typeof paramsSchema> = {
+// Plan 97 §3.2, §4.2, §5 step 97.8 — `run()` returns two shapes (`:345-357`
+// already-following vs. `:378-392` freshly followed), which differ only in
+// whether `followButtonBefore`/`followButtonAfter` are present — both stay
+// OPTIONAL here rather than forking into a discriminated union, since the
+// two shapes share every other field and `alreadyFollowing` already names
+// which case a reader is looking at.
+const resultSchema = z.object({
+  query: z.string().describe('The search query typed in.').meta(ui({ title: 'Query' })),
+  target: z.string().describe('The exact handle that was matched for.').meta(ui({ title: 'Target handle' })),
+  matchDisplayName: z.boolean().describe('Whether the display name was matched too, not only the handle.'),
+  handle: z.string().describe('The matched account handle.').meta(ui({ title: 'Handle', summary: true })),
+  displayName: z.string().describe('The matched account display name.').meta(ui({ title: 'Display name' })),
+  followers: z.number().int().nullable().describe('The follower count read off the profile, when parseable.').meta(ui({ title: 'Followers', kind: 'count' })),
+  followersLabel: z.string().describe('The follower count exactly as TikTok displayed it (e.g. "1.2M").').meta(ui({ title: 'Followers (as shown)' })),
+  alreadyFollowing: z
+    .boolean()
+    .describe('Whether the account was already followed before this run — no tap was performed when true.')
+    .meta(ui({ title: 'Already following', summary: true })),
+  followButtonBefore: z.string().optional().describe('The follow button label before tapping it. Absent when `alreadyFollowing`.'),
+  followButtonAfter: z.string().optional().describe('The follow button label after tapping it. Absent when `alreadyFollowing`.'),
+  verified: z.boolean().describe('Whether the follow (or the already-followed state) was confirmed by re-reading the row.'),
+  seed: z.number().int().describe('Replaying with this seed reproduces the exact same sequence.'),
+  handlesSeen: z.array(z.string()).describe('Every handle seen in the results list while searching for the target.'),
+})
+
+const searchFollowScript: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'search-follow',
   title: 'Search and follow',
+  result: resultSchema,
   description:
     'Finds one specific account through search by its exact handle and follows it, with human-shaped browsing first. Does nothing when the account is already followed. Follows at most one account per run.',
   params: paramsSchema,

@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "updatedAt": "2026-08-01T00:00:00Z",
+  "updatedAt": "2026-08-13T00:00:00Z",
   "tools": [
     {
       "id": "adb",
@@ -122,6 +122,31 @@
               "url": "https://github.com/openatx/android-uiautomator-server/releases/download/2.3.3/app-uiautomator-test.apk",
               "sha256": "9d4659c01c59f1929ad0f079b432cf18a88d1bd270ba5c2c7874c3d78dd3ae54",
               "sizeBytes": 1061950
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "guest-agent",
+      "displayName": "Enkaku guest agent (dev.enkaku.guestagent)",
+      "swappable": false,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "TODO-first-release",
+          "releasedAt": "unknown",
+          "compatibleCoreRange": "TODO-M55",
+          "deviceArtifact": {
+            "packageName": "dev.enkaku.guestagent",
+            "versionCode": 0,
+            "signatureSha256": "BAA2B36DD52BE50EAE2036404E130065EBF3836D904A6137D740FBE378EDB32F"
+          },
+          "platforms": {
+            "*": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/TODO-first-release/guest-agent.apk",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
             }
           }
         }

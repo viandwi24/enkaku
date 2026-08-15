@@ -6,6 +6,7 @@ import {
   CatchUpSchema,
   OnApprovalRequiredSchema,
   OnOverlapSchema,
+  reconcileParams,
   ScheduleResponseSchema,
   ScheduleRunsPageResponseSchema,
   ScheduleThreadModeSchema,
@@ -15,6 +16,7 @@ import {
   type BatchOrder,
   type CatchUp,
   type JobInfo,
+  type JsonSchemaNode,
   type OnApprovalRequired,
   type OnOverlap,
   type ScheduleFiredEvent,
@@ -23,13 +25,14 @@ import {
   type ScheduleThreadMode,
   type ScheduleWorkTarget,
   type ScriptRef,
+  type ShellMode,
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
+import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import type { JobStore } from '../queue/job-store'
@@ -37,7 +40,7 @@ import type { Scheduler } from '../queue/scheduler'
 import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
 import { resolveScriptRef } from '../scripts/resolve'
-import type { ScriptRegistry } from '../scripts/registry'
+import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -67,6 +70,18 @@ const ScheduleBody = z.object({
   catchUp: CatchUpSchema.default('skip'),
   jitterSec: z.number().int().min(0).default(0),
   priority: z.number().int().default(0),
+  /**
+   * Plan 94 §3.7, §4.8, step 94.9, F34 — passed straight through to
+   * `createBatch`'s own `pacing` shape, exactly like `concurrency`/`order`/
+   * `priority` above. Distinct from `jitterSec` above: `jitterSec` shifts
+   * the WHOLE firing before a batch exists; these four shift EACH
+   * repetition once it does (§3.7's own hazard note). `repeatCount: 1`
+   * with every interval `0` (the defaults) is today's behaviour exactly.
+   */
+  repeatCount: z.number().int().min(1).max(1000).default(1),
+  intervalMinMs: z.number().int().min(0).default(0),
+  intervalMaxMs: z.number().int().min(0).default(0),
+  deviceIntervalMs: z.number().int().min(0).max(3_600_000).default(0),
   /** Plan 68 §3.2 — agent targets only. */
   threadMode: ScheduleThreadModeSchema.default('new'),
   /** Plan 68 §3.5 — agent targets only. */
@@ -94,6 +109,12 @@ const ERROR_STATUS: Record<string, number> = {
   agent_not_found: 404,
   E_AGENT_DISABLED: 409,
   E_DB: 500,
+  // Plan 93 §3.12, §4.6, step 93.8 — `JobExecutor.requires`'s gate
+  // (`validateScriptForRun`, via `validateScriptFor`) throws this by name at
+  // schedule create/edit time now that it can, the same code every other
+  // permission refusal in this codebase uses. Missing until now: nothing
+  // this route called threw it before this step.
+  'auth.forbidden': 403,
 }
 
 /** What a reference resolves to right now (plan 62 §4.4) — echoed alongside the schedule so the UI can show "→ 2.0.0" without a second call. */
@@ -103,16 +124,49 @@ interface ResolvesTo {
   version: string
 }
 
-/** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). */
-function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): ResolvesTo | null {
+/** Never throws: an already-saved schedule may legitimately point at a reference that no longer resolves (a version disabled, or deleted, after the schedule was saved). Returns the FULL row/entry (paramsSchema included) so `paramsCompatibility` below can reuse the same resolution `tryResolve` already does, rather than resolving twice. */
+function tryResolveEntry(db: Db, scriptRef: string, registry?: ScriptRegistry): (ScriptRow | ScriptEntry) | null {
   const parsed = ScriptRefSchema.safeParse(scriptRef)
   if (!parsed.success) return null
   try {
-    const row = registry ? registry.resolve(parsed.data) : resolveScriptRef(db, parsed.data)
-    return { scriptId: row.id, name: row.name, version: row.version }
+    return registry ? registry.resolve(parsed.data) : resolveScriptRef(db, parsed.data)
   } catch {
     return null
   }
+}
+
+function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): ResolvesTo | null {
+  const row = tryResolveEntry(db, scriptRef, registry)
+  return row ? { scriptId: row.id, name: row.name, version: row.version } : null
+}
+
+/**
+ * Plan 95 §4.4, §4.8, §5 step 95.7 — `paramsCompatible`/`paramsFindingCount`
+ * on every `ScheduleInfo`, computed against what `scriptRef` resolves to
+ * RIGHT NOW (never cached from the last firing): a schedule that WILL fail
+ * is visible the moment the new script version is published, not the
+ * morning after it silently enqueued nothing (see `ScheduleInfoSchema`'s own
+ * doc comment for why this cannot be a stored column).
+ *
+ * Always compatible for an agent target (nothing to reconcile) and for a
+ * reference that cannot resolve right now — an unresolvable `scriptRef` is
+ * its OWN failure mode, surfaced through `resolvesTo: null` and, at the next
+ * firing, a `schedule.failed` audit entry naming ITS code
+ * (`script_not_found`, `script_disabled`, ...). Folding that into the params
+ * badge would answer a different question than the one it asks ("are the
+ * stored PARAMETERS still valid") with a misleading yes/no.
+ */
+function paramsCompatibility(
+  db: Db,
+  row: ScheduleRow,
+  agentTarget: ScheduleAgentTargetRow | null,
+  registry?: ScriptRegistry,
+): { paramsCompatible: boolean; paramsFindingCount: number } {
+  if (agentTarget) return { paramsCompatible: true, paramsFindingCount: 0 }
+  const entry = tryResolveEntry(db, row.scriptRef, registry)
+  if (!entry) return { paramsCompatible: true, paramsFindingCount: 0 }
+  const { findings, blocking } = reconcileParams(entry.paramsSchema as JsonSchemaNode | null, row.params)
+  return { paramsCompatible: !blocking, paramsFindingCount: findings.length }
 }
 
 function toSec(d: Date | null): number | null {
@@ -196,6 +250,19 @@ export interface ScheduleRoutesDeps {
   notifySystem?: ScheduleRunnerDeps['notifySystem']
   /** Plan 82 §3.3, §3.5 — resolves through the registry so a schedule can target a plugin script and is refused (`script_is_dev`) for a dev-only one (criterion 18). `registry` above is the unrelated job EXECUTOR registry (`jobs/executor.ts`) — named `scriptRegistry` here to avoid colliding with it. Optional so every pre-plan-82 test keeps compiling unedited. */
   scriptRegistry?: ScriptRegistry
+  /**
+   * Plan 93 §3.12, §4.6, step 93.8 — live farm settings, threaded into
+   * `validateScriptForRun` at both the CREATE/PATCH-time validation calls
+   * below (an interactive request, actor role from `c.get('user')`) and into
+   * `runnerDeps.validateScript` (no actor — cron/`run-now` firing, the same
+   * "no interactive caller" reasoning `schedules/runner.ts` already states
+   * for `assertDeviceAllowed`) so `JobExecutor.requires` binds for a
+   * schedule exactly as it now does for a batch (`BatchRoutesDeps`'s own
+   * identical pair). Optional so every pre-93.8 test keeps compiling
+   * unedited.
+   */
+  shellMode?: () => ShellMode
+  transferEnabled?: () => boolean
 }
 
 /** One `scheduleAgentTargets` row, or null for a script-kind schedule (plan 68 §4.1's companion-table discriminator). */
@@ -216,6 +283,7 @@ function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | n
 }
 
 function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleInfo {
+  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget, deps.scriptRegistry)
   return {
     id: row.id,
     name: row.name,
@@ -235,6 +303,10 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     catchUp: row.catchUp as CatchUp,
     jitterSec: row.jitterSec,
     priority: row.priority,
+    repeatCount: row.repeatCount,
+    intervalMinMs: row.intervalMinMs,
+    intervalMaxMs: row.intervalMaxMs,
+    deviceIntervalMs: row.deviceIntervalMs,
     threadMode: (agentTarget?.threadMode as ScheduleThreadMode | undefined) ?? 'new',
     threadId: agentTarget?.threadId ?? null,
     onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
@@ -244,6 +316,8 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     createdBy: row.createdBy,
     createdAt: toSec(row.createdAt) ?? 0,
     nextFireAt: row.enabled ? (deps.runner.nextFires().get(row.id) ?? null) : null,
+    paramsCompatible,
+    paramsFindingCount,
   }
 }
 
@@ -257,6 +331,7 @@ function rowToScheduleRunInfo(row: typeof scheduleRuns.$inferSelect): ScheduleRu
     batchId: row.batchId,
     detail: row.detail,
     missedCount: row.missedCount,
+    jitterMs: row.jitterMs,
   }
 }
 
@@ -287,6 +362,13 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     onJobStatus: deps.onJobStatus,
     broadcastBatchStatus: deps.broadcastBatchStatus,
     broadcastFired: deps.broadcastFired,
+    // Plan 93 §3.12, §4.6, step 93.8 — no `actorRole`: `run-now` (below) AND
+    // the real cron-fired path both funnel through this same closure, and
+    // neither has a stable per-request actor the way `POST /`/`PATCH /:id`
+    // below do — `run-now`'s own interactive user is available at ITS call
+    // site but not here, where `runnerDeps` is built once. `shellMode`/
+    // `transferEnabled` still bind, so a farm-wide switch is still honoured
+    // either way.
     validateScript: (scriptId, params) => validateScriptForRun(deps, scriptId, params),
     ...(deps.agentDispatch ? { agentDispatch: deps.agentDispatch } : {}),
     ...(deps.scheduledAgentCeilings ? { scheduledAgentCeilings: deps.scheduledAgentCeilings } : {}),
@@ -304,6 +386,17 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     findScript: deps.findScript,
   }
 
+  /**
+   * Plan 93 §3.12, §4.6, step 93.8 — the interactive counterpart of
+   * `runnerDeps.validateScript` above: these three call sites (`POST /`,
+   * `PATCH /:id` x2) all have a real per-request user, so `JobExecutor.
+   * requires`'s role half is actually enforced at schedule create/edit time
+   * — the same "actor merged in per call" split `api/batches.ts`'s own
+   * `validateScriptFor` uses.
+   */
+  const validateScriptFor = (user: { role: 'admin' | 'operator' } | undefined) => (scriptId: string, params: unknown) =>
+    validateScriptForRun({ ...deps, actorRole: () => user?.role ?? null }, scriptId, params)
+
   const assertClusterExists = (target: z.infer<typeof ScheduleTargetSchema>): void => {
     if (!('clusterId' in target)) return
     const row = db.select().from(clusters).where(eq(clusters.id, target.clusterId)).get()
@@ -313,6 +406,11 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   const assertCronValid = (cron: string, timezone: string): void => {
     const result = nextFires(cron, timezone, 1)
     if (!result.ok) throw new EnkakuError('E_BAD_REQUEST', `invalid cron expression: ${result.error}`)
+  }
+
+  /** Mirrors `POST /api/batches`'s own `pacing` refine (F34: the same shape, the same check). */
+  const assertPacingValid = (intervalMinMs: number, intervalMaxMs: number): void => {
+    if (intervalMinMs > intervalMaxMs) throw new EnkakuError('E_BAD_REQUEST', 'the interval range is inverted')
   }
 
   app.post('/validate', async (c) => {
@@ -356,6 +454,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     }
     assertCronValid(body.data.cron, body.data.timezone)
     assertClusterExists(body.data.target)
+    assertPacingValid(body.data.intervalMinMs, body.data.intervalMaxMs)
     const workTarget = resolveWorkTargetInput(body.data)
     assertAgentTargetValid(workTarget)
 
@@ -367,7 +466,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     // before this column is ever read (plan 68 §4.2, `db/schema.ts`'s
     // `scheduleAgentTargets` doc comment).
     const resolved = workTarget.kind === 'script' ? (deps.scriptRegistry ? deps.scriptRegistry.resolve(workTarget.ref) : resolveScriptRef(db, workTarget.ref)) : null
-    const validatedParams = workTarget.kind === 'script' ? validateScriptForRun(deps, resolved!.id, workTarget.params) : null
+    const validatedParams = workTarget.kind === 'script' ? validateScriptFor(c.get('user'))(resolved!.id, workTarget.params) : null
 
     const row: ScheduleRow = {
       id: crypto.randomUUID(),
@@ -388,6 +487,10 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       catchUp: body.data.catchUp,
       jitterSec: body.data.jitterSec,
       priority: body.data.priority,
+      repeatCount: body.data.repeatCount,
+      intervalMinMs: body.data.intervalMinMs,
+      intervalMaxMs: body.data.intervalMaxMs,
+      deviceIntervalMs: body.data.deviceIntervalMs,
       lastFiredAt: null,
       lastBatchId: null,
       createdBy: c.get('user')?.id ?? null,
@@ -434,6 +537,9 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const nextTimezone = body.data.timezone ?? row.timezone
     if (body.data.cron !== undefined || body.data.timezone !== undefined) assertCronValid(nextCron, nextTimezone)
     if (body.data.target !== undefined) assertClusterExists(body.data.target)
+    if (body.data.intervalMinMs !== undefined || body.data.intervalMaxMs !== undefined) {
+      assertPacingValid(body.data.intervalMinMs ?? row.intervalMinMs, body.data.intervalMaxMs ?? row.intervalMaxMs)
+    }
 
     const patch: Partial<ScheduleRow> = {}
     if (body.data.name !== undefined) patch.name = body.data.name
@@ -455,7 +561,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       if (wt.kind === 'script') {
         const resolved = deps.scriptRegistry ? deps.scriptRegistry.resolve(wt.ref) : resolveScriptRef(db, wt.ref)
         patch.scriptRef = wt.ref
-        patch.params = validateScriptForRun(deps, resolved.id, wt.params) ?? null
+        patch.params = validateScriptFor(c.get('user'))(resolved.id, wt.params) ?? null
         if (existingAgentTarget) {
           db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
           existingAgentTarget = null
@@ -488,7 +594,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       // Resolved BEFORE the row is written, same reasoning as POST above.
       const resolved = deps.scriptRegistry ? deps.scriptRegistry.resolve(scriptRef as ScriptRef) : resolveScriptRef(db, scriptRef as ScriptRef)
       patch.scriptRef = scriptRef
-      patch.params = validateScriptForRun(deps, resolved.id, body.data.params ?? row.params) ?? null
+      patch.params = validateScriptFor(c.get('user'))(resolved.id, body.data.params ?? row.params) ?? null
     }
 
     if (existingAgentTarget && (body.data.threadMode !== undefined || body.data.onApprovalRequired !== undefined)) {
@@ -505,6 +611,10 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.catchUp !== undefined) patch.catchUp = body.data.catchUp
     if (body.data.jitterSec !== undefined) patch.jitterSec = body.data.jitterSec
     if (body.data.priority !== undefined) patch.priority = body.data.priority
+    if (body.data.repeatCount !== undefined) patch.repeatCount = body.data.repeatCount
+    if (body.data.intervalMinMs !== undefined) patch.intervalMinMs = body.data.intervalMinMs
+    if (body.data.intervalMaxMs !== undefined) patch.intervalMaxMs = body.data.intervalMaxMs
+    if (body.data.deviceIntervalMs !== undefined) patch.deviceIntervalMs = body.data.deviceIntervalMs
 
     if (Object.keys(patch).length > 0) db.update(schedules).set(patch).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()

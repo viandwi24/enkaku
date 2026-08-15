@@ -2,6 +2,168 @@ import { describe, expect, test } from 'bun:test'
 import { ChildToParentSchema, DeviceCallSchema, JobsCallSchema, ParentToChildSchema } from './ipc'
 
 /**
+ * `ready.runtime` (plan 98 §3.1, §4.7, §5 step 98.4) — the bundle's own
+ * folded envelope, carried alongside the pre-existing bare `timeoutMs`/
+ * `retries` fields (untouched — a pre-plan-98 child keeps parsing exactly as
+ * it always has).
+ */
+describe('ChildToParentSchema — ready.runtime (plan 98 §3.1, §4.7, §5 step 98.4)', () => {
+  test('a ready message with a runtime envelope parses, the whole shape intact', () => {
+    const parsed = ChildToParentSchema.safeParse({
+      t: 'ready',
+      scriptId: 'checkout',
+      version: '1.0.0',
+      runtime: { timeoutMs: 30_000, retries: 2, maxRssBytes: 128 * 1024 * 1024, maxConcurrent: 1, sdk: 1 },
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'ready') {
+      expect(parsed.data.runtime).toEqual({ timeoutMs: 30_000, retries: 2, maxRssBytes: 128 * 1024 * 1024, maxConcurrent: 1, sdk: 1 })
+    }
+  })
+
+  test('a ready message with no runtime at all still parses — a pre-plan-98 bundle', () => {
+    const parsed = ChildToParentSchema.safeParse({ t: 'ready', scriptId: 'checkout', version: '1.0.0' })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'ready') expect(parsed.data.runtime).toBeUndefined()
+  })
+
+  test('an unknown field inside runtime is stripped, never fatal (§3.3 S3)', () => {
+    const parsed = ChildToParentSchema.safeParse({
+      t: 'ready',
+      scriptId: 'checkout',
+      version: '1.0.0',
+      runtime: { timeoutMs: 5_000, someFutureField: 'x' },
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'ready') {
+      expect(parsed.data.runtime).toEqual({ timeoutMs: 5_000 })
+    }
+  })
+
+  test('a shape violation inside runtime rejects the whole ready message', () => {
+    const parsed = ChildToParentSchema.safeParse({
+      t: 'ready',
+      scriptId: 'checkout',
+      version: '1.0.0',
+      runtime: { timeoutMs: 1 }, // below the 1s floor
+    })
+    expect(parsed.success).toBe(false)
+  })
+})
+
+describe('ParentToChildSchema — init.job.nodeId (plan 99 §3.2, §4.8)', () => {
+  test('a standalone init (no nodeId) parses exactly as before this field existed', () => {
+    const parsed = ParentToChildSchema.parse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 10_000,
+      maxResultBytes: 65_536,
+    })
+    expect(parsed).toMatchObject({ job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' } })
+    if (parsed.t === 'init') expect('nodeId' in parsed.job).toBe(false)
+  })
+
+  test('a workflow node init carries its nodeId through', () => {
+    const parsed = ParentToChildSchema.parse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1', nodeId: 'scroll1' },
+      params: {},
+      rssSampleMs: 10_000,
+      maxResultBytes: 65_536,
+    })
+    if (parsed.t === 'init') expect(parsed.job.nodeId).toBe('scroll1')
+  })
+})
+
+/**
+ * The `rss` self-report and `init.rssSampleMs` (plan 98 §3.5, §4.7, H1) —
+ * step 98.2, "measure before limiting": no limit field appears anywhere on
+ * this wire shape, only a measurement.
+ */
+describe('rss self-report and init.rssSampleMs (plan 98 §4.7)', () => {
+  test('a rss message with a non-negative byte count parses', () => {
+    const parsed = ChildToParentSchema.safeParse({ t: 'rss', bytes: 123_456_789 })
+    expect(parsed.success).toBe(true)
+    if (parsed.success && parsed.data.t === 'rss') expect(parsed.data.bytes).toBe(123_456_789)
+  })
+
+  test('a rss message with zero bytes is a valid (if implausible) reading', () => {
+    expect(ChildToParentSchema.safeParse({ t: 'rss', bytes: 0 }).success).toBe(true)
+  })
+
+  test('a negative byte count is rejected', () => {
+    expect(ChildToParentSchema.safeParse({ t: 'rss', bytes: -1 }).success).toBe(false)
+  })
+
+  test('a non-integer byte count is rejected', () => {
+    expect(ChildToParentSchema.safeParse({ t: 'rss', bytes: 1.5 }).success).toBe(false)
+  })
+
+  test('init requires rssSampleMs — a positive integer', () => {
+    const missing = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+    })
+    expect(missing.success).toBe(false)
+
+    const zero = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 0,
+    })
+    expect(zero.success).toBe(false)
+
+    const ok = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 2_000,
+      maxResultBytes: 65_536,
+    })
+    expect(ok.success).toBe(true)
+  })
+
+  test('init requires maxResultBytes — a positive integer (plan 97 §3.4, §4.9)', () => {
+    const missing = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 2_000,
+    })
+    expect(missing.success).toBe(false)
+
+    const zero = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 2_000,
+      maxResultBytes: 0,
+    })
+    expect(zero.success).toBe(false)
+
+    const ok = ParentToChildSchema.safeParse({
+      t: 'init',
+      mode: 'full',
+      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
+      params: {},
+      rssSampleMs: 2_000,
+      maxResultBytes: 65_536,
+    })
+    expect(ok.success).toBe(true)
+  })
+})
+
+/**
  * `app.launch`/`app.forceStop` package and activity validation (plan 34 §3.4,
  * §4.3): a package name is not a free string. The regex is belt — it rejects
  * nonsense early with a clear error — the actual injection-safety guarantee
@@ -180,6 +342,52 @@ describe('DeviceCallSchema — scroll, fling, and swipe/type options (plan 40 §
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: { direction: 'up', strength: 'hard' } }).success).toBe(true)
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: { direction: 'up', strength: 'extreme' } }).success).toBe(false)
     expect(DeviceCallSchema.safeParse({ method: 'fling', args: {} }).success).toBe(false)
+  })
+})
+
+/**
+ * The replay's own four verbs (plan 94 §4.4, F6, F7, step 94.2) — `gesture`,
+ * `longPress`, `tapNorm`, `swipeNorm`. `tapNorm`/`swipeNorm`/`gesture` are
+ * normalised 0..1 (the recorder's coordinate-space rule, `device-args.ts`'s
+ * own doc comment on `TapNormArgsSchema`); `longPress` is device-pixel, like
+ * `tap`, because it targets a PROMOTED selector, not a raw recorded point.
+ */
+describe('DeviceCallSchema — gesture, longPress, tapNorm, swipeNorm (plan 94 §4.4)', () => {
+  test('gesture accepts a normalised trace with at least 2 samples', () => {
+    const result = DeviceCallSchema.safeParse({
+      method: 'gesture',
+      args: { samples: [{ x: 0.1, y: 0.2, atMs: 0 }, { x: 0.5, y: 0.6, atMs: 120 }] },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  test('gesture rejects a sample outside 0..1 — device pixels do not belong here', () => {
+    const result = DeviceCallSchema.safeParse({
+      method: 'gesture',
+      args: { samples: [{ x: 500, y: 900, atMs: 0 }, { x: 0.5, y: 0.6, atMs: 120 }] },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('longPress takes a device-pixel Selector and a bounded ms', () => {
+    expect(DeviceCallSchema.safeParse({ method: 'longPress', args: { target: { point: { x: 10, y: 20 } }, ms: 800 } }).success).toBe(true)
+    expect(DeviceCallSchema.safeParse({ method: 'longPress', args: { target: { id: 'menu' }, ms: 800 } }).success).toBe(true)
+    expect(DeviceCallSchema.safeParse({ method: 'longPress', args: { target: { point: { x: 10, y: 20 } }, ms: -1 } }).success).toBe(false)
+  })
+
+  test('tapNorm takes a normalised point and an optional exact holdMs', () => {
+    expect(DeviceCallSchema.safeParse({ method: 'tapNorm', args: { pos: { x: 0.5, y: 0.5 } } }).success).toBe(true)
+    expect(DeviceCallSchema.safeParse({ method: 'tapNorm', args: { pos: { x: 0.5, y: 0.5 }, holdMs: 400 } }).success).toBe(true)
+    expect(DeviceCallSchema.safeParse({ method: 'tapNorm', args: { pos: { x: 1.5, y: 0.5 } } }).success).toBe(false)
+  })
+
+  test('swipeNorm takes two normalised points and a bounded ms', () => {
+    const result = DeviceCallSchema.safeParse({
+      method: 'swipeNorm',
+      args: { from: { x: 0.2, y: 0.8 }, to: { x: 0.2, y: 0.2 }, ms: 300 },
+    })
+    expect(result.success).toBe(true)
+    expect(DeviceCallSchema.safeParse({ method: 'swipeNorm', args: { from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, ms: 10 } }).success).toBe(false)
   })
 })
 

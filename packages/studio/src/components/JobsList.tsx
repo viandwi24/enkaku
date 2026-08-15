@@ -46,6 +46,30 @@ export interface JobsListColumns {
   time?: 'created' | 'started'
   /** Cancel, for a view where acting on a job makes sense. */
   actions?: boolean
+  /**
+   * Plan 94 §3.7, §4.8, §4.10, step 94.10 — repetition number and the delay
+   * actually drawn, read straight off `JobInfo.batchRepeat`/`pacedDelayMs`/
+   * `notBefore` (94.7's own wire additions, unrendered until this step —
+   * "reaches the wire and nothing renders it"). Only meaningful for a paced
+   * batch's own jobs list, so callers of an unpaced batch, the plain Jobs
+   * page, or a device's Jobs tab leave it off.
+   */
+  pacing?: boolean
+}
+
+/**
+ * Plan 94 §3.7, §4.10 — a plain millisecond duration, spelled out
+ * ("4 min 12 s"), never an elapsed-since-now figure (that is `duration`'s
+ * job, over `startedAt`/`finishedAt`). This is what makes `pacedDelayMs`
+ * readable "without doing arithmetic against another column" (§3.7's own
+ * phrase for why the column exists on the row at all).
+ */
+function formatDelayMs(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  if (totalSec < 60) return `${totalSec} s`
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return sec === 0 ? `${min} min` : `${min} min ${sec} s`
 }
 
 export interface JobsListProps {
@@ -75,9 +99,46 @@ export interface JobsListProps {
   fetchPage?: (cursor: string | null) => Promise<{ items: JobInfo[]; nextCursor: string | null; total: number | null }>
   /** The server's total on the FIRST page — a tab badge, a count in a heading. Null when the endpoint does not count. */
   onTotal?: (total: number | null) => void
+  /**
+   * Plan 94 §4.9, §4.10, step 94.10 — the live `job.waiting` push (94.6's
+   * own wire addition), keyed by jobId. `reason: 'paced'` is a job the
+   * pacer is holding back for its next repetition (F25 — this plan's whole
+   * complaint was that a paced farm sits idle with no explanation);
+   * `'quiet'` is the pre-existing quiet-period hold. Absent (or missing a
+   * key) renders a queued row's plain `notBefore`-derived fallback instead
+   * of nothing — a caller that never wires the live push still gets an
+   * honest, if less immediate, answer to "why is this not running yet".
+   */
+  waiting?: Record<string, { reason: 'quiet' | 'paced'; remainingSec: number }>
 }
 
 const DEFAULT_COLUMNS: JobsListColumns = { script: true, device: true, time: 'created', actions: true }
+
+/**
+ * `job.status`'s live `node` block (plan 99 §4.9, §4.11, step 99.10) —
+ * present only on a row a live WS `job.status` push has touched, and only
+ * for a `kind: 'workflow'` job. `GET /api/jobs`'s own REST response (what
+ * every OTHER row here comes from) has no such field — `JobInfoSchema`
+ * carries none — so this is read defensively off whatever `j` actually IS
+ * at runtime rather than declared as a wider row TYPE for this whole file:
+ * `app/jobs/page.tsx`'s `job.status` WS handler passes the message payload
+ * straight to `pushLive` with no re-parse (`m.payload as Job`), so the
+ * field really is there on a row that has received a live push, even
+ * though `JobInfo` (the type every prop in this file is still declared
+ * against) does not know it.
+ */
+interface JobNodeLive {
+  id: string
+  seq: number
+  total: number
+  kind: 'script' | 'gate'
+  script: string | null
+  status: string
+}
+
+function liveNode(j: JobInfo): JobNodeLive | null {
+  return (j as JobInfo & { node?: JobNodeLive | null }).node ?? null
+}
 
 export function JobsList({
   filter,
@@ -90,6 +151,7 @@ export function JobsList({
   onChanged,
   onTotal,
   fetchPage,
+  waiting,
 }: JobsListProps) {
   const now = useNow()
   const { run, isPending } = useAction()
@@ -135,6 +197,7 @@ export function JobsList({
           {columns.device && <TableHead>Device</TableHead>}
           <TableHead>Status</TableHead>
           <TableHead>Duration</TableHead>
+          {columns.pacing && <TableHead>Pacing</TableHead>}
           {columns.time && <TableHead>{columns.time === 'created' ? 'Created' : 'Started'}</TableHead>}
           {columns.actions && <TableHead className="text-right">Actions</TableHead>}
           {!columns.actions && !columns.script && <TableHead className="text-right">Job</TableHead>}
@@ -149,9 +212,27 @@ export function JobsList({
 
             {columns.script && (
               <TableCell>
-                <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                  {scriptLabel(j)}
-                </Link>
+                <span className="inline-flex items-center gap-1.5">
+                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                    {scriptLabel(j)}
+                  </Link>
+                  {j.assistCount > 0 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex shrink-0 items-center rounded-full border border-led-warn/35 bg-led-warn/10 px-1.5 py-0.5 text-[10.5px] font-medium leading-none whitespace-nowrap text-led-warn">
+                          assisted
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {j.assistCount === 1 ? 'An operator assisted this job once' : `An operator assisted this job ${j.assistCount} times`}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </span>
+                {/* Plan 97 §4.8 — the one operator-legible line `buildResultSummary`
+                    computed at settle. Absent whenever the script declared no
+                    `summary` fields or the job has not settled `valid`. */}
+                {j.resultSummary && <div className="truncate text-[11.5px] text-fg-muted">{j.resultSummary}</div>}
               </TableCell>
             )}
 
@@ -170,18 +251,57 @@ export function JobsList({
             )}
 
             <TableCell>
-              {/* Every view shows WHY a job failed — but on the badge, not as a
-                  line in the row. Inline it dominated the list for the one row
-                  in a hundred that failed, and an error quoting a URL with no
-                  spaces in it pushed every column off the right edge. The badge
-                  is where the eye already is when a row reads "failed", and the
-                  full text is a click away on the job itself. */}
-              <JobStatusBadge status={j.status} error={j.error} />
+              <div className="flex flex-wrap items-center gap-1.5">
+                {/* Every view shows WHY a job failed — but on the badge, not as
+                    a line in the row. Inline it dominated the list for the one
+                    row in a hundred that failed, and an error quoting a URL
+                    with no spaces in it pushed every column off the right
+                    edge. The badge is where the eye already is when a row
+                    reads "failed", and the full text is a click away on the
+                    job itself. */}
+                <JobStatusBadge status={j.status} error={j.error} />
+                {/* "node 2/4" (plan 99 §4.11) — a running workflow job only;
+                    absent for every other row (an ordinary script, or a
+                    workflow row that has not yet received a live push). */}
+                {liveNode(j) && (
+                  <span className="readout text-[10.5px] text-fg-subtle">
+                    node {liveNode(j)!.seq + 1}/{liveNode(j)!.total}
+                  </span>
+                )}
+              </div>
             </TableCell>
 
             <TableCell className="readout text-[11.5px] text-fg-muted">
               {j.startedAt ? duration(j.startedAt, j.finishedAt, now) : '—'}
             </TableCell>
+
+            {/* Plan 94 §3.7, §4.9, §4.10, step 94.10 — the repetition
+                number and either the live "waiting" reason (F25), the
+                planned start, or the delay actually waited, in that order
+                of preference: a live push beats a static read, and a
+                settled repetition's own drawn delay beats a stale
+                `notBefore` that no longer means anything once the job has
+                already run. */}
+            {columns.pacing && (
+              <TableCell className="readout text-[11.5px] text-fg-muted">
+                {j.batchRepeat !== null && <span className="text-fg-subtle">rep {j.batchRepeat + 1}</span>}
+                {j.batchRepeat !== null && <span> · </span>}
+                {(() => {
+                  const w = waiting?.[j.jobId]
+                  if (j.status === 'queued' && w) {
+                    return w.reason === 'paced'
+                      ? `waiting — next repetition in ${w.remainingSec}s`
+                      : `waiting — quiet period, ${w.remainingSec}s`
+                  }
+                  if (j.status === 'queued' && j.notBefore !== null) {
+                    const remaining = j.notBefore - Math.floor(now / 1000)
+                    return remaining > 0 ? `starts in ~${remaining}s` : 'starting…'
+                  }
+                  if (j.pacedDelayMs !== null) return `waited ${formatDelayMs(j.pacedDelayMs)}`
+                  return j.batchRepeat !== null ? 'no delay' : '—'
+                })()}
+              </TableCell>
+            )}
 
             {columns.time && (
               <TableCell>

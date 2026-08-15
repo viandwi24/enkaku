@@ -1,15 +1,16 @@
 import { mkdirSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
-import { and, asc, eq } from 'drizzle-orm'
-import type { ArtifactInfo, ShellMode } from '@enkaku/protocol'
+import { and, asc, eq, isNull, type SQL } from 'drizzle-orm'
+import { ArtifactsPageResponseSchema, type ArtifactInfo, type ShellMode } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseFiles } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { Db } from '../db'
-import { artifacts } from '../db/schema'
+import { artifacts, type ArtifactRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
+import { typedJson } from './typed-json'
 
 const CONTENT_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -50,15 +51,40 @@ export function createArtifactRoutes(deps: {
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
+  const rowToItem = (r: ArtifactRow): ArtifactInfo => ({
+    id: r.id,
+    jobId: r.jobId,
+    deviceId: r.deviceId,
+    kind: r.kind as ArtifactInfo['kind'],
+    label: r.label,
+    path: r.path,
+    sizeBytes: r.sizeBytes,
+    createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+  })
+
   app.get('/', (c) => {
     const jobId = c.req.query('jobId')
     const deviceId = c.req.query('deviceId')
-    if (!jobId && !deviceId) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    const kind = c.req.query('kind')
+    // Plan 93 §3.13, §4.4, §4.7, step 93.10, closing F14 — an UPLOADED
+    // artifact has jobId AND deviceId both null (the "exactly one of" rule
+    // just above is for a JOB or DEVICE artifact; an upload is neither), so
+    // it can never be reached by `?jobId=`/`?deviceId=` and needed its own
+    // query mode: `?kind=upload` lists exactly the ownerless rows, the
+    // prerequisite for an artifact picker to ever browse a previously
+    // uploaded file again.
+    const where: SQL | undefined =
+      kind === 'upload' ? and(isNull(artifacts.jobId), isNull(artifacts.deviceId)) : undefined
+    if (!where && !jobId && !deviceId) {
+      throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId=, ?deviceId=, or ?kind=upload is required')
+    }
     // The owner column (plan 24 §4.6 — exactly one of jobId/deviceId is set
-    // on any row, so this is never ambiguous).
+    // on any row, so this is never ambiguous) — only reached when `where`
+    // above was not already built from `?kind=upload`.
     const ownerColumn = jobId ? artifacts.jobId : artifacts.deviceId
     const ownerValue = jobId ?? deviceId
-    if (!ownerValue) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    if (!where && !ownerValue) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    const baseWhere = where ?? eq(ownerColumn, ownerValue as string)
     const { cursor: cursorParam, limit } = parsePageQuery(c)
     const cursor = decodeCursor(cursorParam)
     // Kept ascending (oldest first) — an artifact list reads as a timeline,
@@ -70,11 +96,11 @@ export function createArtifactRoutes(deps: {
       artifacts.id,
       'asc',
     )
-    const where = keyset ? and(eq(ownerColumn, ownerValue), keyset) : eq(ownerColumn, ownerValue)
+    const pageWhere = keyset ? and(baseWhere, keyset) : baseWhere
     const page = deps.db
       .select()
       .from(artifacts)
-      .where(where)
+      .where(pageWhere)
       .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
       .limit(limit + 1)
       .all()
@@ -83,19 +109,10 @@ export function createArtifactRoutes(deps: {
     const last = rows[rows.length - 1]
     const nextCursor =
       hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
-    const total = deps.db.select().from(artifacts).where(eq(ownerColumn, ownerValue)).all().length
+    const total = deps.db.select().from(artifacts).where(baseWhere).all().length
 
-    const items = rows.map((r) => ({
-      id: r.id,
-      jobId: r.jobId,
-      deviceId: r.deviceId,
-      kind: r.kind,
-      label: r.label,
-      path: r.path,
-      sizeBytes: r.sizeBytes,
-      createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
-    }))
-    return c.json({ items, nextCursor, total, artifacts: items })
+    const items = rows.map(rowToItem)
+    return typedJson(c, ArtifactsPageResponseSchema, { items, nextCursor, total, artifacts: items })
   })
 
   /**

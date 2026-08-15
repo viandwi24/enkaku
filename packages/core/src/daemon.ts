@@ -4,10 +4,12 @@ import { AdbClient, createAdbdShim } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
 import {
+  DEFAULT_AGENT_STATUS,
   DeviceSettingsSchema,
   type ArtifactInfo,
   type DeviceEvent,
   type DeviceStatus,
+  type ServerMessage,
   type ShellResult,
   type Viewer,
 } from '@enkaku/protocol'
@@ -26,6 +28,7 @@ import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
 import { createRetentionGc, type RetentionGc } from './maintenance/retention'
+import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes } from './api/artifacts'
 import { createDeviceRoutes } from './api/devices'
@@ -44,11 +47,17 @@ import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
+import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
+import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisioner } from './device/agent-provisioner'
+import { createLabellingService, type LabellingService } from './device/labelling'
 import { createAdbStatsRoutes } from './api/adb-stats'
+import { createVideoRoutes } from './api/video'
 import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
+import { createWorkflowRoutes } from './api/workflows'
+import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
@@ -77,6 +86,7 @@ import { createTreeStore } from './agent/tree/store'
 import { createAgentRunner } from './agent/runner'
 import { createBlobStore } from './agent/blob/store'
 import { createBlobRoutes } from './api/blobs'
+import { createRecordingService } from './recording/service'
 import { createAgentWsHandler } from './server/ws-handlers-agent'
 import { createNotificationStore, type CreateNotificationInput } from './notify/store'
 import { createWebhookStore } from './notify/webhook-store'
@@ -90,11 +100,15 @@ import {
   createInspectorForSession,
   PortAllocator,
   parsePortRange,
-  QUALITY_PROFILES,
+  resolveVideoProfile,
+  computeAutoTiles,
+  resolveWallTransport,
+  resolveWallBandwidthBps,
   type SessionManager,
   type TransferPort,
 } from '@enkaku/session'
 import { createScriptExecutor } from './jobs/executors/script'
+import { createWorkflowExecutor } from './jobs/executors/workflow'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
 import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/cluster-materialise'
@@ -105,6 +119,7 @@ import { devices } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
 import { redactShellCommand } from './device/redact'
+import { createLocalShellPort, createRemoteShellPort, type ShellPort } from './device/shell-port'
 import { createTransferService, type TransferService } from './device/transfer'
 import { runTransfer, type TransferBroadcast } from './device/transfer-dispatch'
 import { createReadinessManager, staticReadinessFallback, type ReadinessManager } from './device/readiness'
@@ -115,26 +130,39 @@ import { ExecutorRegistry } from './jobs/executor'
 import { createExecutorHost } from './jobs/executor-host'
 import { classifyFailure } from './jobs/failure-class'
 import { pickRebindDevice } from './clusters/dispatch'
+import { createBatchPacer, replanAfterRestart, type BatchPacer } from './clusters/pacer'
 import { sleepExecutor } from './jobs/executors/sleep'
 import { createInstallExecutor } from './jobs/executors/install'
+import { createPushExecutor } from './jobs/executors/push'
+import { createPullExecutor } from './jobs/executors/pull'
 import { createLeaseManager } from './lease/lease-manager'
+import { createCoControlManager, type CoControlManager } from './lease/co-control'
+import { createCommandRunStore } from './command-console/store'
+import { createCommandRunner, resolveCommandTarget, type CommandRunner, type CommandRunnerEvent } from './command-console/runner'
+import { createCommandRunRoutes } from './api/command-runs'
+import { createSavedCommandRoutes } from './api/saved-commands'
 import { createJobStore } from './queue/job-store'
 import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
-import { createDeviceRegistry, listDevicesWithTags, type DeviceRegistry } from './registry/device-registry'
+import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
+import { createEndpointStore, type EndpointStore } from './registry/endpoints'
+import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
+import { createCutoverManager, type CutoverManager } from './registry/cutover'
+import { formatDeviceLabel, loadDeviceNumbers } from './registry/device-number'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
-import { createWsMessageHandler } from './server/ws-handlers'
+import { createWsMessageHandler, type InputStatsBlock } from './server/ws-handlers'
 import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
-import { startScrcpySession } from '@enkaku/scrcpy'
+import { startScrcpySession, sweepStrayScrcpyServers } from '@enkaku/scrcpy'
 import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
-import { saveForDevice } from './runner/artifact-store'
+import { saveForDevice, createJobNodeTracker } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
+import { createAdbServerControl, type AdbServerControl } from './tools/adb-server-control'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { CRITICAL_TOOLS, REQUIRED_TOOLS } from './tools/required'
 import { createToolInstallStore } from './tools/store'
@@ -146,7 +174,6 @@ import { findPortHolder } from './doctor/context'
 import pkg from '../package.json'
 
 export const CORE_VERSION = pkg.version
-
 
 export interface Daemon {
   start(): Promise<void>
@@ -162,26 +189,61 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let registry: DeviceRegistry | null = null
   /** The discovery reconciler (plan 85 §3.3, §4.4, fixes F8/F9/F10) — null until the adb subsystem comes up (or in orchestrator mode, where it never does), and stopped/cleared in `stop()`. */
   let reconciler: DeviceReconciler | null = null
+  /** The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) — null until the adb subsystem comes up (mirrors `reconciler` above), cleared in `stop()`. Used by the restart flow's reattach step and (once step 88.4 lands) per-device connect/reconnect routes. */
+  let reconnector: DeviceReconnector | null = null
+  /** The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — null until `reconnector` exists (it reuses that SAME ladder to watch), mirrors `reconnector` above, cleared in `stop()`. */
+  let cutoverManager: CutoverManager | null = null
   let sessions: SessionManager | null = null
   let battery: BatteryMonitor | null = null
   let health: DeviceHealth | null = null
+  /** "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — null until the adb subsystem comes up (mirrors `health` above), stopped/cleared in `stop()`. Read-only: it never touches the adb server itself. */
+  let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
   let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
   let retention: RetentionGc | null = null
+let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
   let adbEndpointManager: AdbEndpointManager | null = null
   /** The one bounded adb CLI helper (plan 85 §3.4, §4.5) — `null` only before `start()` builds it and after `stop()` tears it down; `killAll()` is called from `stop()` below. */
   let hostAdb: HostAdb | null = null
+  /**
+   * The agent provisioner (plan 90 §3.8, §4.3) — `null` until it is built, just after `guestAgent`
+   * (it needs `guestAgent.withGuestAgentClient`, the shared-session seam plan 44 §8b's "Bug 1" fix
+   * established). Read through the forward-ref closure `createGuestAgentRoutes` is given above, the
+   * same pattern `onAdmitted`/`rescan` already use for a dep assigned later in this same function.
+   */
+  let agentProvisionerRef: AgentProvisioner | null = null
+  /**
+   * The labelling service (plan 89 §4.6, §5 step 89.6) — `null` until it is
+   * built, right after `guestAgent` (same reason `agentProvisionerRef`
+   * above is: it needs `guestAgent.withGuestAgentClient`, never a second,
+   * independent session bootstrap). Read through the SAME forward-ref
+   * closure shape `onDeviceReady` already uses for `agentProvisionerRef`.
+   */
+  let labellingRef: LabellingService | null = null
   /** Device readiness (plan 43) — constructed once `leases` exists (below), used by every module below that reconciles or holds on it. */
   let readiness: ReadinessManager | null = null
+  /** The command console's runner (plan 93 §4.5, §5 step 93.3) — constructed right after `leases`, since `admitMember`'s lease policy needs it. `stop()` drains it before `recorder` (its own `record` dep) is torn down. */
+  let commandRunner: CommandRunner | null = null
   let stopScheduler: (() => void) | null = null
+  /** The batch pacer's dynamic timer (plan 94 §3.8, §4.8, step 94.7) — cleared in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
+  let stopPacer: (() => void) | null = null
   let stopReaper: (() => void) | null = null
+  /** The co-control grant TTL reaper (plan 91 §4.2, §5 step 91.2) — stopped in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
+  let stopCoControlReaper: (() => void) | null = null
   let stopExpiryReaper: (() => void) | null = null
   let stopScheduleRunner: (() => void) | null = null
   let dataDirLock: DataDirLock | null = null
   /** The 15s application-level `heartbeat` broadcast (plan 85 §3.6, §4.6, §5 85.7a) — cleared in `stop()` like every other periodic timer here. */
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  /**
+   * The debounced `reprofile` pass (plan 92 §3.8 rule 2, §5 step 92.2) —
+   * cleared in `stop()` like every other timer here, so a settings save made
+   * just before shutdown never fires a restart against a torn-down
+   * `sessions`.
+   */
+  let reprofileDebounceTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
   let adbState = 'provisioning'
 
@@ -266,6 +328,98 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         log: log.child('notify'),
       })
 
+      // The shared adb server control (plan 88 §3.10, §4.8, fixes F19) — the
+      // ONE function in the workspace that runs `kill-server` (spec §10.4).
+      // Both the Toolchain Manager's version swap (wired into `toolchain`
+      // immediately below) and the operator's Restart adb server button
+      // (`tools/routes.ts`, mounted much further down) call THIS SAME
+      // instance's `cycle()`, so the two share one mutex and can never
+      // interleave.
+      //
+      // Every dependency below is a forward reference — the same pattern
+      // `stopTracker`/`startTracker` already used for `registry` two lines
+      // down. `sessions`, `leases`, `jobStore`, `host`, `reconnector`,
+      // `reconciler` and `endpoints` do not exist yet at this point in
+      // `start()`; `cycle()` itself is never CALLED until long after every
+      // one of them does, because a version swap or a restart can only ever
+      // be triggered by an HTTP request arriving after `start()` finishes.
+      const adbServerControl: AdbServerControl = createAdbServerControl({
+        getClient: () => adb,
+        stopTracker: async () => {
+          await registry?.stop()
+        },
+        startTracker: async () => {
+          await registry?.start()
+        },
+        // F19: `drainSessions` was an unwired optional dep since M1 ("a
+        // no-op in M1 — filled in by Plan 04"). Plan 04 shipped long ago;
+        // the hook was never filled until now. Sessions and manual leases
+        // are always drained; a running JOB is force-failed only when the
+        // caller already decided to proceed despite it (`force` — see the
+        // route's own `E_ADB_BUSY_FARM` guard, which runs BEFORE `cycle()`
+        // is ever called).
+        drainSessions: async ({ force }) => {
+          const sessionsClosed = (await sessions?.closeAll('adb-server-restart')) ?? 0
+          const leasesReleased = leases.releaseAll?.({ reason: 'adb-server-restart' }) ?? 0
+          const jobsFailed: string[] = []
+          if (force) {
+            const running = jobStore.list({ status: 'running', limit: 1000 })
+            for (const job of running.rows) {
+              host.finishExternally(job.id, 'failed', 'the adb server restarted', 'ADB_SERVER_RESTARTED')
+              jobsFailed.push(job.id)
+            }
+          }
+          return { sessionsClosed, leasesReleased, jobsFailed }
+        },
+        // Reattach every remembered network address (plan 88 §3.2, §3.10) —
+        // after a stop, adb's transport table is empty and it will not go
+        // looking (F10); without this a 20-device OTG chassis would come
+        // back as 20 offline rows. Bounded concurrency: dialling twenty
+        // phones one at a time would blow well past "usually takes 5-15
+        // seconds" (§3.10); dialling all twenty at once would hammer the
+        // adb server the instant it comes back up.
+        reattachEndpoints: async () => {
+          if (!reconnector) return { attempted: 0, succeeded: 0, failed: [] }
+          const reconnectorRef = reconnector
+          const targets = endpoints.allWithEndpoints()
+          const labelFor = (stableId: string): string =>
+            db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()?.label ?? stableId
+          let succeeded = 0
+          const failed: Array<{ stableId: string; label: string }> = []
+          const REATTACH_CONCURRENCY = 6
+          const queue = [...targets]
+          async function worker(): Promise<void> {
+            for (;;) {
+              const next = queue.shift()
+              if (!next) return
+              const outcome = await reconnectorRef
+                .reconnect(next.stableId)
+                .catch((err): { result: 'not-found' } => {
+                  log.child('adb-server-control').warn(`reattach: ${next.stableId} threw, treating as not-found: ${String(err)}`)
+                  return { result: 'not-found' }
+                })
+              if (outcome.result === 'connected' || outcome.result === 'already-connected') succeeded += 1
+              else failed.push({ stableId: next.stableId, label: labelFor(next.stableId) })
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(REATTACH_CONCURRENCY, targets.length) }, () => worker()))
+          return { attempted: targets.length, succeeded, failed }
+        },
+        reconcileOnce: async () => {
+          await reconciler?.runOnce()
+        },
+        onPhase: (phase, reason, detail) => hub.broadcast({ type: 'adb.server.phase', payload: { phase, reason, detail } }),
+        log: log.child('adb-server-control'),
+        // `adbControl.drainTimeoutMs` (plan 88 §4.2, promoted to a real
+        // setting in step 88.9) — a forward reference to `settingsStore`,
+        // declared a few lines below this object literal but only ever READ
+        // once a request actually calls `cycle()`, long after `start()` has
+        // finished building it. Same pattern as `registry`/`sessions`/etc.
+        // elsewhere in this function, just against a `const` rather than a
+        // nullable `let` — read fresh on every call, never captured.
+        drainTimeoutMs: () => settingsStore.get().adbControl.drainTimeoutMs,
+      })
+
       const toolchain = new ToolchainManager({
         dataDir: cfg.dataDir,
         coreVersion: CORE_VERSION,
@@ -273,17 +427,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         emit: (ev) => hub.broadcast(toolchainEventToMessage(ev)),
         onLog: (level, msg) => log.child('toolchain')[level](msg),
         remoteManifestUrl: process.env.ENKAKU_TOOLS_MANIFEST_URL,
-        adbSwapHook: createAdbSwapCoordinator({
-          getClient: () => adb,
-          stopTracker: async () => {
-            await registry?.stop()
-          },
-          startTracker: async () => {
-            await registry?.start()
-          },
-          // drainSessions: a no-op in M1 — filled in by Plan 04 (draining live leases and sessions)
-          log: log.child('adb-swap'),
-        }),
+        adbSwapHook: createAdbSwapCoordinator(adbServerControl),
       })
       await toolchain.init() // layout + manifest cache + reconcile (adopt pre-baked)
 
@@ -294,6 +438,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // move that logic, just the one function call it was already making.
       const authMode = resolveAuthMode(cfg)
       const settingsStore = createFarmSettingsStore(db, { authMode })
+
+      // The address book (plan 88 §3.2, §4.3, fixes F10) — read-only about
+      // adb itself, so it can be built here, well before the adb subsystem
+      // exists: `observe`/`declare`/`candidates` only ever touch `db` and
+      // `settingsStore`. Passed into `createDeviceRegistry` below (its
+      // successful-probe path calls `endpoints.observe`) and into
+      // `adbServerControl`'s `reattachEndpoints` above (via forward ref).
+      const endpoints: EndpointStore = createEndpointStore({
+        db,
+        settings: () => settingsStore.get().discovery,
+      })
 
       // The ONE bounded adb CLI helper (plan 85 §3.4, §4.5, fixes F11/F12) —
       // built here, unconditionally, before `adb` exists, mirroring every
@@ -377,6 +532,43 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       }
       settingsStore.onChange(() => recomputeAdbConcurrency())
 
+      /**
+       * plan 92 §3.8 rule 2, §5 step 92.2 — "changing a video setting must
+       * change the picture, or it is a lie" (F5, F6, F17). `settingsStore.onChange`
+       * fires on EVERY farm settings PATCH, not only a video one, and can fire
+       * several times in a row as an operator edits a form field by field
+       * (`resolve.ts`'s per-field PATCH pattern, `SchemaForm`). Restarting a
+       * farm's video on every one of those would be worse than not honouring
+       * the setting at all (§3.8's own words) — so this waits 500ms after the
+       * LAST change before running one pass, the same order of magnitude as
+       * every other "settle, then act" debounce in this codebase (plan 42's
+       * `enforceIdleCap` is deliberately immediate instead, because closing an
+       * idle session has no user-visible interruption risk; a video restart
+       * does, which is exactly why THIS one debounces and that one does not).
+       * `reprofile` itself is a no-op for a device that turns out not to need
+       * restarting (rule 1) or is `busy` (rule 4), so debouncing only changes
+       * how OFTEN the farm re-checks, never what it does once it checks.
+       */
+      const VIDEO_REPROFILE_DEBOUNCE_MS = 500
+      const scheduleReprofile = (reason: string) => {
+        if (reprofileDebounceTimer) clearTimeout(reprofileDebounceTimer)
+        reprofileDebounceTimer = setTimeout(() => {
+          reprofileDebounceTimer = null
+          const pending = sessions?.reprofile?.(reason)
+          if (!pending) return
+          void pending
+            .then((result) => {
+              log
+                .child('session')
+                .info(
+                  `reprofile (${reason}): ${result.restarted.length} restarted, ${result.skippedBusy.length} skipped busy (running a job), ${result.unchanged} unchanged`,
+                )
+            })
+            .catch((err) => log.child('session').warn(`reprofile (${reason}) failed: ${String(err)}`))
+        }, VIDEO_REPROFILE_DEBOUNCE_MS)
+      }
+      settingsStore.onChange(() => scheduleReprofile('farm video settings changed'))
+
       // The device event log (plan 18 §4.3). `publish` is wired to the WS
       // router once it exists — the two reference each other, same forward-ref
       // pattern used below for the tunnel hooks.
@@ -411,6 +603,16 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // in `ws-handlers.ts`; this covers the automatic paths (idle timeout,
       // quarantine) handled below in `onManualRevoked`.
       let releaseLeaseReadinessHold: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: an open recording (plan 94 §4.6) must not
+      // outlive the manual lease it was made under either — an explicit
+      // `lease.release`/WS disconnect already call `deps.recording?.stopForLeaseLost`
+      // inline in `ws-handlers.ts`; this covers the automatic paths (idle
+      // timeout, quarantine, a takeover) handled below in `onManualRevoked`/
+      // `onManualTakenOver`, which fire before the WS router exists. Without
+      // this, a recording started under one holder keeps capturing whatever
+      // the NEXT holder does after an automatic revoke, with no record of
+      // where the handover happened.
+      let stopRecordingForLeaseLost: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a device going offline must mark its
       // `vpn-helper` network route's checks unknown (never tear the route
       // down — plan 52 §4.1 reverses plan 44 §5.7's lease-scoped teardown),
@@ -426,11 +628,39 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // before the WS router (which owns the actual `CrashWatcher`) exists.
       let watchCrashesForDevice: ((deviceId: string) => void) | null = null
       let unwatchCrashesForDevice: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: a job finishing must re-resolve any mirror
+      // group the job's device was skipped from (plan 91 §3.9, §4.7, §5 step
+      // 91.7) — F27's re-admit, most notably: an `internal:install` job
+      // ending is what lets that device rejoin a mirror it was `skipped:
+      // installing` from. `host`'s `onJobFinished` (below) fires long before
+      // `attachWsRouter` — the mirror manager it needs to re-resolve against
+      // lives inside the WS router — ever runs.
+      let reconcileMirrorForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: `/api/adb/stats`'s `transport` block (plan
       // 85 §3.6, §4.6) lives on the WS router's own connection bookkeeping,
       // but `createAdbStatsRoutes` is built (below, in step 4) before
       // `attachWsRouter` ever runs.
       let transportStats: (() => TransportSnapshot) | null = null
+      // Same forward-ref pattern: `/api/adb/stats`'s `input` block (plan 91
+      // §4.10, §5 step 91.10) lives on the WS router's own arbiter/mirror/
+      // co-control bookkeeping, but `createAdbStatsRoutes` is built (below,
+      // in step 4) before `attachWsRouter` ever runs.
+      let inputStats: (() => InputStatsBlock) | null = null
+      // Same forward-ref pattern: the command runner (plan 93 §3.17, §4.5,
+      // §5 step 93.4) is constructed right after `leases`, well before
+      // `attachWsRouter` runs — but its `broadcast` dep needs
+      // `commandTargets(runId)`'s subscriber bookkeeping, which lives on the
+      // WS router's own connection state. Resolved once `attachWsRouter`
+      // runs, same as `transportStats`/`inputStats` immediately above.
+      let broadcastCommandEvent: ((runId: string, msg: CommandRunnerEvent) => void) | null = null
+      // Same forward-ref pattern (plan 93 §4.6, §5 step 93.9 — closes F27):
+      // `transferBroadcast` (below, in step 3) is constructed well before
+      // `attachWsRouter` runs, but scoping `transfer.progress`/`transfer.done`
+      // to viewers of the device (matching `shell.result`) needs
+      // `deviceTargets(deviceId)`'s connection bookkeeping, which lives on
+      // the WS router. Resolved once `attachWsRouter` runs, same as
+      // `broadcastCommandEvent` immediately above.
+      let broadcastTransferEvent: ((deviceId: string, msg: ServerMessage) => void) | null = null
       // Same forward-ref pattern: the shared reaper (`expiryReaper`, built well before the agent
       // runner exists) sweeps overdue agent approvals on its own cadence (plan 66 §4.3) instead of
       // a second scheduler.
@@ -659,14 +889,22 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // fresh on every call, so a request that arrives before the adb
       // subsystem is up simply gets a correctly-coded `E_ADB_UNAVAILABLE`
       // refusal rather than the route/executor not existing at all.
+      // Subscriber-scoped (plan 93 §4.6, §5 step 93.9 — closes F27) — the
+      // forward-ref into `ws-handlers.ts`'s `deviceTargets(deviceId)`/
+      // `broadcastTransfer`, resolved once `attachWsRouter` runs (the SAME
+      // pattern `broadcastCommandEvent` above uses). Never `hub.broadcast`:
+      // a farm-wide broadcast put every open tab on every device's progress
+      // ticks, both a wire-cost bug and a privacy one at 100 devices. Falls
+      // back to a debug log before `attachWsRouter` has run.
       const transferBroadcast: TransferBroadcast = {
         progress: (deviceId, transferId, kind, sent, total) =>
-          hub.broadcast({ type: 'transfer.progress', payload: { deviceId, transferId, kind, sent, total } }),
+          broadcastTransferEvent?.(deviceId, { type: 'transfer.progress', payload: { deviceId, transferId, kind, sent, total } }) ??
+          log.child('transfer').debug(`transfer.progress dropped for ${deviceId} — attachWsRouter has not run yet`),
         done: (deviceId, transferId, kind, ok, error, result) =>
-          hub.broadcast({
+          broadcastTransferEvent?.(deviceId, {
             type: 'transfer.done',
             payload: { deviceId, transferId, kind, ok, ...(error !== undefined ? { error } : {}), ...(result !== undefined ? { result } : {}) },
-          }),
+          }) ?? log.child('transfer').debug(`transfer.done dropped for ${deviceId} — attachWsRouter has not run yet`),
       }
       const transferService = createTransferService({
         db,
@@ -711,7 +949,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             deviceId,
             kind: 'push',
             holdFor: readinessHoldForTransfer,
-            op: (transferId, onProgress) => transferService.push(deviceId, opts.artifactId, opts.remotePath, { transferId, onProgress }),
+            op: (transferId, onProgress) =>
+              transferService.push(deviceId, opts.artifactId, opts.remotePath, { transferId, onProgress, mediaScan: opts.mediaScan }),
           }),
         pull: (deviceId, opts) =>
           runTransfer({
@@ -727,6 +966,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       const executors = new ExecutorRegistry()
       executors.register('internal:sleep', sleepExecutor)
       executors.register('internal:install', createInstallExecutor({ transfer: transferService, broadcast: transferBroadcast }))
+      // Plan 93 §4.6, §5 step 93.9 — near-copies of `internal:install`,
+      // registered beside it so a batch push/pull reuses the SAME
+      // concurrency/ordering/reporting/cancel machinery with no new
+      // orchestration.
+      executors.register('internal:push', createPushExecutor({ transfer: transferService, broadcast: transferBroadcast }))
+      executors.register('internal:pull', createPullExecutor({ transfer: transferService, broadcast: transferBroadcast }))
 
       // The script registry (plan 82 §3.3) — the merge point between persisted `scripts` rows
       // (standalone AND published plugin members, both ordinary rows) and in-memory dev slots.
@@ -749,12 +994,28 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       let scheduler: ReturnType<typeof createScheduler> | null = null
       let leaseManager: ReturnType<typeof createLeaseManager> | null = null
       let scheduleRunner: ReturnType<typeof createScheduleRunner> | null = null
+      // Plan 91 §4.2, §5 step 91.2 — same forward-ref pattern as `leaseManager`
+      // just above: `createLeaseManager`'s own `onPrimaryEnded` hook (below)
+      // needs to call into the co-control grant store, but that store is not
+      // constructed until right after `leases` itself is (it reads `leases`
+      // back via `leases.getLease`), which is a few hundred lines further
+      // down this same function. Read fresh, so the wiring is correct the
+      // instant both sides exist, in either construction order.
+      let coControlRef: CoControlManager | null = null
+      // Plan 94 §3.8, §4.8, step 94.7 — same forward-ref pattern as
+      // `leaseManager`/`coControlRef` above: `onBatchChanged` (below) needs
+      // to call into the pacer, which is not constructed until right after
+      // `scheduler` itself is, a few hundred lines further down this same
+      // function (it needs `scheduler.kick`).
+      let pacerRef: BatchPacer | null = null
       // A batch member job reached a terminal state (or was cancelled while
       // queued) → recompute the batch's cached status and broadcast it
-      // (plan 20 §3.5, §4.5). One function, called from both places a job
-      // can leave the queue.
-      const onBatchChanged = (batchId: string) =>
-        recomputeBatchStatus({ db, jobStore, broadcast: (msg) => hub.broadcast(msg) }, batchId)
+      // (plan 20 §3.5, §4.5). One function, called from every place a job
+      // can leave the queue. `deviceId` (plan 94 §3.8, §4.8, step 94.7) is
+      // the ONE hook into the pacer (F32) — see `onBatchChanged`'s own
+      // `ExecutorHostDeps` comment for exactly which callers pass it.
+      const onBatchChanged = (batchId: string, deviceId?: string) =>
+        recomputeBatchStatus({ db, jobStore, broadcast: (msg) => hub.broadcast(msg), pacer: pacerRef ?? undefined }, batchId, deviceId)
       const host = createExecutorHost({
         registry: executors,
         jobStore,
@@ -780,6 +1041,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // `readinessHold` below was never wired (a host built without it,
           // e.g. some tests).
           void readiness?.reconcile(deviceId)
+          // F27's re-admit (plan 91 §3.9, §4.7, §5 step 91.7): a device
+          // running `internal:install` is `skipped: installing` in every
+          // mirror group that requested it — this is what lets it rejoin on
+          // its own the instant that job (or any other) settles, with no
+          // client asking. A harmless no-op for a device that belongs to no
+          // group, or before `attachWsRouter` has run.
+          reconcileMirrorForDevice?.(deviceId)
         },
         // Readiness hold (plan 43 §3.6, §5 step 43.7) — a job on a sleeping
         // device wakes it, then proceeds; never blocks a claim (§4.3
@@ -801,6 +1069,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             actor: `job:${jobId}`,
             meta: { jobId, class: 'infra', code, delayMs: 0, rebound: true, newDeviceId },
           }),
+        // Plan 97 §3.4, §4.5, §5 step 97.4 — `job.maxResultBytes`, read fresh
+        // per settle, the same "read fresh" pattern `timeoutIsInfra`/
+        // `rebindOnInfra` just above already use. Without this the default
+        // (65_536, `RESULT_LIMITS.defaultMaxResultBytes`) is still correct
+        // out of the box (97.3's own note) but not live-tunable from Studio.
+        maxResultBytes: () => settingsStore.get().job.maxResultBytes,
+        // `scripts.result_schema` has no producer yet — publish-time storage
+        // and serving are plan 97 step 97.2's own remaining items, out of
+        // this file's `packages/core/src/scripts/**` reach — so this always
+        // answers `[]` today, the exact fallback `ExecutorHostDeps.resultSummaryFields`
+        // already uses when left unwired. Wired anyway rather than left
+        // absent, so the seam is explicit and goes live the moment that
+        // producer lands, with no second daemon.ts edit required.
+        resultSummaryFields: () => [],
+        // Plan 97 §3.7, §4.6, §5 step 97.7 — the ONLY thing this does is
+        // broadcast; `ExecutorHost.progress` already did the size check and
+        // the one-warn-per-job rule before ever calling this. No DB write
+        // anywhere on this path (§3.7 — progress is live state, not
+        // history).
+        onProgress: (jobId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, deviceId, value } }),
       })
 
       // Resolves a lease holder's id to a display label (plan 71 §3.3) — the
@@ -859,6 +1147,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // automatic revocation must let the device drift back toward its
           // `desired` readiness exactly like an explicit release does.
           releaseLeaseReadinessHold?.(deviceId)
+          // Nor does an open recording (plan 94 §4.6) — an automatic
+          // revocation (idle timeout, quarantine) must end it exactly like
+          // `lease.release`/WS-close already do inline in `ws-handlers.ts`;
+          // otherwise it keeps capturing whatever the NEXT holder does,
+          // with no record of where the handover happened.
+          stopRecordingForLeaseLost?.(deviceId)
           // Nor does an open adb endpoint (plan 27 §4.2, acceptance #5): the
           // endpoint is created by the lease holder and dies with the
           // lease, however the lease ends — idle timeout, disconnect, or
@@ -893,6 +1187,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           })
           releaseShellSession?.(deviceId)
           releaseLeaseReadinessHold?.(deviceId)
+          // Nor does an open recording (plan 94 §4.6) survive a takeover —
+          // the displaced holder's in-progress recording must not go on
+          // capturing the NEW holder's actions (see `onManualRevoked` above
+          // for why this matters).
+          stopRecordingForLeaseLost?.(deviceId)
           adbEndpointManager?.close(deviceId, 'taken-over')
           // An agent whose lease was taken over does NOT get pushed a
           // notification here (plan 71 §3.5, §3.6): its next attempt to use
@@ -901,10 +1200,140 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // reports it as an error `tool_result` — the same "the loop
           // discovers it, nothing pushes it" shape plan 63's `invoke()` uses
           // for every other refusal.
+          //
+          // Plan 91 §3.2, §4.2 — a takeover never calls `release()` (it is
+          // an atomic revoke-then-acquire, `lease-manager.ts`'s own comment
+          // on this branch explains why), so it is the one way a manual
+          // hold can end that the `onPrimaryEnded` hook below never sees.
+          // Called directly here instead: any grant that was subordinate to
+          // the DISPLACED holder must not survive them being displaced.
+          coControlRef?.onPrimaryEnded(deviceId)
         },
         onDeviceFreed: () => scheduler?.kick(),
+        // Plan 91 §3.2, §4.2, §5 step 91.2 — a co-control grant "may only
+        // exist while somebody else holds the device"; this is the single
+        // wiring point that keeps that true for every OTHER way a manual or
+        // job hold can end (voluntary release, idle timeout, disconnect,
+        // quarantine, adb-server-restart, and `clearJobLease`) — fired
+        // unconditionally from inside `lease-manager.ts`'s own `release()`
+        // and `clearJobLease()`, regardless of whether a `reason` was given
+        // (unlike `onManualRevoked` above, which stays silent on a plain
+        // voluntary release because that hook's job is different: telling
+        // the ex-holder something was taken from them, not asking).
+        onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
       })
       leaseManager = leases
+
+      // The command console's runner (plan 93 §3.5-§3.8, §4.5, §5 step 93.3)
+      // — built right here, immediately after `leases`, because `admitMember`'s
+      // lease policy needs a live `LeaseManager` and nothing else below this
+      // point does. `sweepOrphans()` is called right away, one line down:
+      // the same boot-recovery phase ("3. Queue / lease / scheduler", above)
+      // `jobStore.failOrphanRunning()` already opened for jobs — a command
+      // run left `running`/`awaiting-continue` by a previous process's crash
+      // is exactly the same kind of orphan (plan 93 §3.7, mirroring F29), it
+      // is just discovered one step later in this file because it needs a
+      // lease manager to exist first and `jobStore`'s own sweep does not.
+      const commandRunStore = createCommandRunStore(db)
+      // The SAME local-vs-remote decision `ws-handlers.ts`'s own (module-
+      // private, unexported) `shellPortFor` makes (plan 25 §3.4, §4.3),
+      // duplicated here rather than imported because that closure cannot be
+      // imported and `ws-handlers.ts` is held by a concurrent worker this
+      // step must not touch (plan 93 step 93.3's own brief). Reads
+      // `adb`/`remoteSessions`/`tunnelRpc`/`tunnelRouter` fresh on every
+      // call — the same forward-ref pattern `adbEndpointManager` above
+      // already relies on (none of the four is assigned yet at the point
+      // this closure is BUILT; only at the point it is CALLED, well after
+      // `start()` finishes booting).
+      const commandShellPortFor = (deviceId: string): ShellPort => {
+        const remoteNode = remoteSessions?.nodeIdFor(deviceId) ?? null
+        if (remoteNode) {
+          if (!tunnelRpc || !tunnelRouter) {
+            throw new EnkakuError('node_offline', 'the node that owns this device is currently disconnected')
+          }
+          return createRemoteShellPort({ rpc: tunnelRpc, router: tunnelRouter, deviceId })
+        }
+        if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'the adb subsystem is not ready')
+        const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
+        if (!row) throw new EnkakuError('device_not_found', 'no such device')
+        return createLocalShellPort({ client: adb, serial: row.serial })
+      }
+      commandRunner = createCommandRunner({
+        db,
+        store: commandRunStore,
+        leases,
+        shellPortFor: commandShellPortFor,
+        resolve: (target) => resolveCommandTarget(db, target),
+        settings: () => settingsStore.get().shell,
+        recorder: (e) => recorder?.record(e),
+        audit,
+        // Subscriber-scoped (plan 93 §3.17, §4.3, F27, step 93.4) — the
+        // forward-ref into `ws-handlers.ts`'s `commandTargets(runId)`/
+        // `broadcastCommand`, resolved once `attachWsRouter` runs (same
+        // pattern `transportStats`/`inputStats` above use). Never
+        // `hub.broadcast`: a fleet command's output must not reach every
+        // open tab — `transfer.progress`/`transfer.done` (F27) got the same
+        // fix, below, in step 93.9. Falls back to a debug log before
+        // `attachWsRouter` has run (boot's own `sweepOrphans()` call below
+        // never broadcasts, so this only matters if something else calls
+        // `start()` implausibly early).
+        broadcast: (runId, msg) =>
+          broadcastCommandEvent?.(runId, msg) ?? log.child('command-console').debug(`command run event (WS router not attached yet): ${runId} ${msg.type}`),
+        // Same role-resolution expression the WS router below builds for its
+        // own `roleOf` dep (plan 26 §4.1, §4.3) — local mode's one implicit
+        // admin ignores the userId entirely.
+        roleOf: authMode === 'local' ? () => 'admin' : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
+        // `canUseDevice` (plan 34 §3.5, §4.4) — the SAME device-ownership
+        // lookup every other ownership gate in this file already shares.
+        getDevice: getDeviceOwner,
+        log: log.child('command-console'),
+      })
+      const orphanedCommandRuns = commandRunner.sweepOrphans()
+      if (orphanedCommandRuns > 0) {
+        log.warn(`recovery boot: ${orphanedCommandRuns} command run(s) orphaned by the previous process, marked cancelled`)
+      }
+
+      // The co-control grant store (plan 91 §3.2, §4.2, §5 step 91.2) — the
+      // subordinate, short-lived authorisation that lets a second party
+      // touch a device someone/something else already holds, without ever
+      // moving the hold itself. Built right after `leases`, which it only
+      // ever READS (`leases.getLease`, to snapshot the primary holder a new
+      // grant is subordinate to) — it never acquires, releases, or otherwise
+      // mutates a lease. `resolveLeaseLabel` is the SAME resolver `leases`
+      // itself uses (built above, before `leases`), so an assisting
+      // operator's label and a lease holder's label are worded identically
+      // for the same id, never two different phrases for one person.
+      const coControl = createCoControlManager({
+        leases,
+        config: {
+          grantTtlSec: () => settingsStore.get().coControl.grantTtlSec,
+          maxConcurrentPerDevice: () => settingsStore.get().coControl.maxConcurrentPerDevice,
+          mode: () => settingsStore.get().coControl.mode,
+        },
+        log: log.child('co-control'),
+        resolveLabel: resolveLeaseLabel,
+        // Plan 91 §3.4 item 4, §4.2, §5 step 91.4 — "everyone else sees it":
+        // every viewer of a device needs to know who is assisting it, live,
+        // with no polling (F25), the exact broadcast shape `lease.changed`
+        // already gets from `onManualRevoked`/`onManualTakenOver` above.
+        // Wired HERE, at construction (through `hub.broadcast`, already in
+        // scope at this point in boot), rather than only inside
+        // `assist.start`/`assist.stop` in `ws-handlers.ts`, so EVERY
+        // termination path broadcasts — TTL expiry, a WS disconnect
+        // (`releaseAllForClient`), the primary hold ending
+        // (`onPrimaryEnded`) — not only the two explicit WS messages.
+        // `coControlRef` (not `coControl`) is used inside the closures
+        // because `onGranted`/`onReleased` are never invoked synchronously
+        // during this very construction call — only later, once `grant()`/
+        // `release()` run — by which time `coControlRef` below has already
+        // been assigned, the same forward-ref safety `onManualTakenOver`
+        // above already relies on for the same variable.
+        onGranted: (grant) =>
+          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
+        onReleased: (grant) =>
+          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
+      })
+      coControlRef = coControl
 
       // Device lifecycle — Forget and Block (plan 47 §4.3). Constructed
       // unconditionally, right beside `leaseManager` itself: it depends only
@@ -967,6 +1396,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         revertNetwork: (deviceId, actor) => revertNetworkForRemoval?.(deviceId, actor) ?? Promise.resolve(),
         // Forget deletes the device's kv values, in the same transaction (plan 79 §3.3, §4.6).
         kv: kvStore,
+        // Best-effort clear of a device's physical label before its row is
+        // deleted (plan 89 §3.7 point 4, §5 step 89.9) — same forward-ref
+        // pattern as `revertNetwork` just above: `labellingRef` is not
+        // assigned until the labelling service is built, later in this same
+        // boot path, so this closure reads it lazily rather than capturing
+        // `null`. `restoreOriginal: false` — forget/block are not "turn
+        // labelling off", they are the device leaving the farm entirely, so
+        // there is no operator decision here to restore vs. leave the
+        // system default; the label is simply gone with the device.
+        clearLabel: (deviceId, actor) =>
+          labellingRef?.clear(deviceId, { restoreOriginal: false, actor }).then(() => undefined) ?? Promise.resolve(),
       })
 
       // Device readiness (plan 43): a second, orthogonal axis to
@@ -1025,6 +1465,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         onJobWaiting: (info) => hub.broadcast({ type: 'job.waiting', payload: info }),
       })
 
+      // Plan 94 §3.8, §4.8, step 94.7 — needs `scheduler.kick`, so built
+      // right after it, same as `host` above needs it. Populates the
+      // forward-ref `pacerRef` `onBatchChanged` (above) already closes over.
+      const pacer = createBatchPacer({ db, scheduler, log: log.child('pacer') })
+      pacerRef = pacer
+
       const jobService = createJobService({
         jobStore,
         registry: executors,
@@ -1038,6 +1484,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         getDeviceOwner,
         // Plan 82 §3.4 — denormalises `jobs.scriptName`/`.scriptVersion` at enqueue.
         scriptNameOf: (scriptId) => scriptRegistry.get(scriptId),
+        // Plan 98 §3.7, §3.8, §4.1, §4.6, §4.7, steps 98.5/98.7 — the same
+        // accessor `createBatchRoutes`'s own `farmJobSettings` below reads,
+        // so a single job's `runtimeOverride` ceiling check binds against
+        // the farm's REAL `job` settings, not the built-in "no ceiling"
+        // default `resolveJobRuntime` falls back to when this is absent.
+        farmJobSettings: () => settingsStore.get().job,
+        // Plan 93 §3.12, §4.6, step 93.8 — closes F10's "POST /api/jobs
+        // checks no permission at all": `internal:install`'s declared
+        // `requires` gate is now evaluated against the farm's REAL
+        // `shell.mode`/`transfer.enabled`, the same live accessors
+        // `api/transfer.ts`'s own REST install/push/pull already read.
+        shellMode: () => settingsStore.get().shell.mode,
+        transferEnabled: () => settingsStore.get().transfer.enabled,
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its
@@ -1083,7 +1542,20 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         broadcastBatchStatus: (msg) => hub.broadcast(msg),
         broadcastFired: (msg) => hub.broadcast(msg),
-        validateScript: (scriptId, params) => validateScriptForRun({ registry: executors, findScript }, scriptId, params),
+        // Plan 93 §3.12, §4.6, step 93.8 — no `actorRole`: a schedule firing
+        // at cron time has no interactive actor (the same reasoning
+        // `schedules/runner.ts`'s own `assertDeviceAllowed`/`canCancelJob`
+        // omissions already state at this exact call site — "farm-wide
+        // authority to fire a schedule at all"), so the ROLE half of
+        // `JobExecutor.requires` is not evaluated here. `shellMode`/
+        // `transferEnabled` still are: a farm switch binds regardless of who
+        // (or what clock) triggered the dispatch.
+        validateScript: (scriptId, params) =>
+          validateScriptForRun(
+            { registry: executors, findScript, shellMode: () => settingsStore.get().shell.mode, transferEnabled: () => settingsStore.get().transfer.enabled },
+            scriptId,
+            params,
+          ),
         agentDispatch: scheduleAgentDispatch,
         scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
         notifySystem: (input) => {
@@ -1092,6 +1564,10 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // Plan 82 §3.3, §3.5 — a schedule refuses a dev-only target (criterion 18) and resolves
         // a plugin's `@latest` to its ACTIVE version, not merely the highest published semver.
         registry: scriptRegistry,
+        // Plan 94 §3.9, §4.9, step 94.8 — `onOverlap: 'cancel-previous'`'s
+        // abort path for a running member, the SAME instance `batchRoutes`
+        // gets (no second one — `stopBatch`'s own "no second abort path").
+        jobService,
       })
 
       // Remote jobs: a device owned by a node runs on that node (plan 12 §4.5).
@@ -1208,6 +1684,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // Plan 55 §3.2, §5.1 — read fresh on every call, same as every other `settingsStore.get()`
         // getter dep in this file.
         networkSettings: () => settingsStore.get().network,
+        // Plan 90 §3.7, §4.4 — the residual gap 90.4's own status note flagged: `maxRecoveryCyclesPerHour`/
+        // `recoveryRearmSec` are fully wired inside `guest-agent.ts` (proven by that step's own tests),
+        // but until THIS line existed an operator changing them in Studio had no effect on a running
+        // core — the getter fell back to the schema's own defaults regardless of what was saved.
+        guestAgentSettings: () => settingsStore.get().guestAgent,
+        // Plan 90 §3.8, §4.7 — the "on demand, single device" provisioning hook: forward-ref, same
+        // pattern as `onAdmitted`/`rescan` elsewhere in this function, because `agentProvisioner`
+        // (built just below, since IT needs `guestAgent.withGuestAgentClient`) does not exist yet at
+        // this point in boot.
+        agentProvisioner: {
+          ensure: (deviceId, opts) => agentProvisionerRef?.ensure(deviceId, opts) ?? Promise.resolve(undefined),
+          // docs/plans/96-m61-hotfixes.md's Gap 2 fix — GET /:id/guest-agent's producer. Falls back
+          // to the schema's own "never provisioned" default in the same vanishingly short window
+          // `ensure` above already tolerates (between `guestAgent` and `agentProvisionerRef` being set).
+          status: (deviceId) => agentProvisionerRef?.status(deviceId) ?? Promise.resolve(DEFAULT_AGENT_STATUS),
+          // The same fix's own necessary follow-on — DELETE clears the persisted row too.
+          remove: (deviceId, actor) => agentProvisionerRef?.remove(deviceId, actor) ?? Promise.resolve(undefined),
+        },
       })
       handleNetworkDeviceOffline = guestAgent.handleDeviceOffline
       restoreNetworkRoute = guestAgent.restoreDeviceRoute
@@ -1216,6 +1710,37 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // quiet still leaves the tunnel held closed by the device's own
       // dead-man's switch, which nothing here touches.
       revertNetworkForRemoval = guestAgent.revertNetwork
+
+      // The agent provisioner (plan 90 §3.8, §4.3) — built right after
+      // `guestAgent`, since `hello` reuses the EXACT same per-device session
+      // a network route already owns (`guestAgent.withGuestAgentClient`,
+      // plan 44 §8b's "Bug 1" fix), never a second, independent bootstrap
+      // that would rotate a live route's token out from under it.
+      const agentProvisioner = createAgentProvisioner({
+        db,
+        exec: guestAgentExec,
+        hostAdb: hostAdbHandle.run,
+        apkPath: () =>
+          resolveGuestAgentApkPath({
+            toolchain,
+            onLog: (level, msg) => log.child('agent-provisioner')[level](msg),
+          }),
+        expectedArtifact: () => toolchain.deviceArtifactExpectation('guest-agent'),
+        hello: (deviceId) => guestAgent.withGuestAgentClient(deviceId, (client) => client.hello()),
+        provision: () => settingsStore.get().guestAgent.provision,
+        record: recorder!.record,
+        log: log.child('agent-provisioner'),
+      })
+      agentProvisionerRef = agentProvisioner
+      // 96.25 fix 1 (docs/plans/96-m61-hotfixes.md §96.25): the boot-time
+      // `ensureAll()` sweep used to fire right here — but `agentProvisioner`
+      // is built well BEFORE `adb` (below, inside the try-block that ends
+      // with "adb subsystem ready") is ever assigned, so every device this
+      // sweep touched got `E_ADB_UNAVAILABLE` from `guestAgentExec`/
+      // `hostAdbHandle`'s own null-check — a core-side race, not a device
+      // fault, that used to burn a slot of the device's bounded retry
+      // budget before the adb subsystem had even come up. The sweep itself
+      // now runs later, right after `adbState = 'ready'` is logged, below.
 
       // Plan 58 §4.3, §5.3 — timezone/locale/GPS identity, a device-settings extension living
       // beside the network route rather than inside it (plan 58 §3.1). Reuses `guestAgentExec`
@@ -1229,6 +1754,23 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         log: log.child('identity'),
         withGuestAgentClient: guestAgent.withGuestAgentClient,
       })
+
+      // The labelling service (plan 89 §4.6, §5 step 89.6) — built right
+      // after `deviceIdentity`, for the identical reason: it reuses the SAME
+      // per-device guest-agent session a network route already owns
+      // (`guestAgent.withGuestAgentClient`) rather than a second,
+      // independent bootstrap. `client: () => adb` mirrors every other
+      // adb-not-ready-yet-safe accessor in this function (readiness.ts's
+      // `transportFor` uses the identical shape for the same reason).
+      const labelling = createLabellingService({
+        db,
+        client: () => adb,
+        withGuestAgentClient: guestAgent.withGuestAgentClient,
+        maxConcurrent: () => settingsStore.get().labelling.maxConcurrent,
+        record: recorder!.record,
+        log: log.child('labelling'),
+      })
+      labellingRef = labelling
 
       // The capability registry (plan 63 §4.2) — built once, at boot; a
       // duplicate id or an unconvertible schema throws here and the
@@ -1269,6 +1811,19 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         // Plan 82 §3.3 — `ctx.resolveScriptRef` (used by `job.enqueue`'s `scriptRef` form,
         // `capability/job.ts`) resolves a plugin member the same as a standalone script.
         registry: scriptRegistry,
+        // Plan 88 §3.6, §4.1, §5 step 88.5 — the SAME two accessors
+        // `deviceRoutes`/`topologyRoutes` get below, so an agent script's
+        // `ctx.listDevices()`/`ctx.getDevice()` badges a device identically
+        // to `GET /api/devices` and the fleet map, never disagreeing about
+        // whether a phone reads OTG/WI-FI/TCP.
+        networks: () => settingsStore.get().discovery.networks,
+        declaredMedia: () => loadDeclaredMedia(endpoints),
+        // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
+        // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
+        // accessor `deviceRoutes`/`clusterRoutes`/`topologyRoutes` already get,
+        // so an agent script's `ctx.listDevices()`/`ctx.getDevice()` reports an
+        // assisting holder the same as every other surface.
+        assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
@@ -1287,6 +1842,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // instance for the whole boot: the loop (`executeRun`'s `blobs` dep) and the blob API
       // (`POST`/`GET /api/v1/blobs`) both read and write through this SAME store, never two.
       const agentBlobStore = createBlobStore(db)
+      // The action recorder (plan 94 §4.6, §5 step 94.3) — one instance for the whole
+      // boot, alongside the other per-farm services built here. Screenshots/anchors go
+      // through the SAME content-addressed blob store `agentBlobStore` above already is
+      // (F16: never a second store), and `recording` settings are read fresh on every
+      // start/anchor/bound check, the same freshness discipline every other farm-settings
+      // accessor in this function already uses.
+      const recordingService = createRecordingService({
+        settings: () => settingsStore.get().recording,
+        blobs: agentBlobStore,
+        log: log.child('recording'),
+      })
       const agentWsHandler = createAgentWsHandler({ runner: { cancelRun: (runId, by) => agentRunnerRef?.cancelRun(runId, by) } })
       const agentRunner = createAgentRunner({
         threads: agentThreadStore,
@@ -1338,9 +1904,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
 
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
-        listDevices: () => listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId)),
+        // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
+        listDevices: () =>
+          listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId), settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
         deviceCount: () => db.select().from(devices).all().length,
         log: log.child('http'),
+        audit,
         version: CORE_VERSION,
         adbServerVersion: async () => {
           if (!adb) return null
@@ -1348,12 +1917,66 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         },
         adbState: () => adbState,
         toolchain,
+        // The "Restart adb server" button's deps (plan 88 §3.10, §4.8, §5
+        // step 88.8) — every closure below is a forward reference exactly
+        // like `adbServerControl`'s own deps above; none of it is invoked
+        // until an operator's click arrives, long after boot finishes.
+        adbControl: {
+          control: adbServerControl,
+          binaryPath: () => adb?.binaryPath ?? null,
+          preview: () => ({
+            devicesTotal: db.select().from(devices).all().length,
+            sessionsActive: sessions?.activeDeviceIds?.().length ?? 0,
+            networkDevicesWithEndpoint: endpoints.allWithEndpoints().length,
+          }),
+          busyFarm: () => {
+            const running = jobStore.list({ status: 'running', limit: 1000 })
+            const numbers = loadDeviceNumbers(db)
+            const deviceRows = new Map(
+              db
+                .select({ id: devices.id, label: devices.label, stableId: devices.stableId })
+                .from(devices)
+                .all()
+                .map((d) => [d.id, d] as const),
+            )
+            // The number (plan 89 §1, §5 step 89.4) — this preview is exactly
+            // "match a browser row to a phone in their hand" (a job about to
+            // be interrupted by a server restart), so it reads by the SAME
+            // `#7 Pixel 5` composition every other operator-facing surface
+            // uses, not the bare label.
+            const deviceLabels = new Map(
+              [...deviceRows.entries()].map(([id, d]) => [id, formatDeviceLabel(numbers.get(d.stableId) ?? null, d.label)] as const),
+            )
+            const runningJobs = running.rows.map((j) => ({
+              id: j.id,
+              label: `${j.scriptName ?? 'a script'} on ${deviceLabels.get(j.deviceId) ?? j.deviceId}`,
+            }))
+            const heldDevices = db
+              .select({ id: devices.id, label: devices.label, stableId: devices.stableId })
+              .from(devices)
+              .where(eq(devices.status, 'manual'))
+              .all()
+              .map((d) => ({ deviceId: d.id, label: formatDeviceLabel(numbers.get(d.stableId) ?? null, d.label) }))
+            return { runningJobs, heldDevices }
+          },
+          // `adbControl.restartCooldownSec` (plan 88 §4.2, promoted to a real
+          // setting in step 88.9) — read fresh on every call, same as every
+          // other "settings, read live" dep in this codebase.
+          restartCooldownSec: () => settingsStore.get().adbControl.restartCooldownSec,
+        },
         // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
         // is written, so `jobs.scriptId` is always concrete.
         jobRoutes: createJobRoutes(jobService, {
           log: log.child('jobs'),
           resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
           logBuffer: jobLogBuffer,
+          // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
+          // `getDeviceOwner` closure `jobService`'s own `enqueue` check,
+          // `lease.acquire`, batch dispatch, and the adb endpoint already
+          // share, so `POST /:id/cancel` gets the identical ownership answer
+          // the WS `job.cancel` path (wired below) gets.
+          getDeviceOwner,
+          audit,
         }),
         deviceRoutes: createDeviceRoutes({
           db,
@@ -1386,6 +2009,35 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // Who holds a device's manual lease (plan 71 §4.4) — `leases` is
           // constructed synchronously above too.
           heldByOf: (deviceId) => leases.getHolder(deviceId),
+          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4,
+          // §5 step 91.4) — `coControl` is constructed synchronously above
+          // too, right after `leases`.
+          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // Per-device disconnect/reconnect (plan 88 §3.7, §4.6, §5 step
+          // 88.4) — `leases`/`endpoints`/`jobStore` are constructed
+          // synchronously above, the same reasoning as `heldByOf` just above.
+          // `reconnector`/`sessions` are forward-refs: both are assigned
+          // later in boot (or never, in orchestrator mode / if the adb
+          // subsystem failed to start), same pattern as `rescan`/`onAdmitted`.
+          leases,
+          jobStore,
+          connection: {
+            reconnector: () => reconnector,
+            sessions: () => sessions,
+          },
+          // The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step
+          // 88.5) — same forward-ref pattern as `connection` just above:
+          // `cutoverManager` is assigned later in boot (or never, in
+          // orchestrator mode / if the adb subsystem failed to start).
+          cutover: () => cutoverManager,
+          endpoints,
+          // Farm networks (plan 88 §3.6, §4.1, §5 step 88.5) — read fresh
+          // from the settings store on every call, same as every other
+          // settings-derived accessor in this function. Without this,
+          // `deriveConnection` never sees a network to match a `tcp`
+          // device's address against, and `mediumSource` could only ever
+          // read `'declared'` or `'unknown'`.
+          networks: () => settingsStore.get().discovery.networks,
           // The lease-scoped adb endpoint (plan 27 §4.3) — `manager` is
           // constructed unconditionally above, before this point is reached.
           adbEndpoint: { manager: adbEndpointManager!, leases, shellSettings: () => settingsStore.get().shell },
@@ -1405,17 +2057,51 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // is constructed unconditionally above, beside `leaseManager`.
           lifecycle: deviceLifecycle,
           broadcast: (msg) => hub.broadcast(msg),
+          // Physical labelling (plan 89 §4.3, §4.6, §5 step 89.6's own noted
+          // gap, closed here) — `labelling` is constructed unconditionally
+          // above (within this same code path), well before this point.
+          labelling,
         }),
         // Plan 44 §5.8 — built just above, before adb was ready.
         guestAgentRoutes: guestAgent.routes,
+        // Plan 90 §3.8, §4.7 — the fleet-wide "on demand" hook, mounted at
+        // its own `/api/guest-agent` prefix (`server/http.ts`), NOT
+        // `/api/devices` like every other guest-agent route above.
+        agentProvisionerRoutes: createAgentProvisionerRoutes({ provisioner: agentProvisioner, db }).routes,
         // Plan 58 §5.3 — built just above, alongside `guestAgent`.
         deviceIdentityRoutes: deviceIdentity,
         tagRoutes: createTagRoutes({ db }),
-        clusterRoutes: createClusterRoutes({ db, audit, heldByOf: (deviceId) => leases.getHolder(deviceId) }),
+        clusterRoutes: createClusterRoutes({
+          db,
+          audit,
+          heldByOf: (deviceId) => leases.getHolder(deviceId),
+          // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also recorded at
+          // docs/plans/96-m61-hotfixes.md §96.5): `createClusterRoutes` itself has carried
+          // `networks`/`declaredMedia` since that entry's fix — only THIS call site never
+          // threaded them through, so a device's connection badge on its own device page
+          // could read `OTG` while the identical row, viewed through its cluster's device
+          // list, read the honest-but-incomplete `TCP`. Same accessors `deviceRoutes`/
+          // `topologyRoutes` already get, a few lines away in this same function.
+          networks: () => settingsStore.get().discovery.networks,
+          declaredMedia: () => loadDeclaredMedia(endpoints),
+          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
+          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
+          // accessor `deviceRoutes` above already gets; `coControl` is constructed
+          // synchronously above, well before this object literal.
+          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+        }),
         topologyRoutes: createTopologyRoutes({
           db,
           readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row),
           heldByOf: (deviceId) => leases.getHolder(deviceId),
+          // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors `deviceRoutes` above gets, so the
+          // fleet map's badges never disagree with the device list's.
+          networks: () => settingsStore.get().discovery.networks,
+          declaredMedia: () => loadDeclaredMedia(endpoints),
+          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
+          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
+          // accessor `deviceRoutes` above already gets.
+          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
         }),
         batchRoutes: createBatchRoutes({
           db,
@@ -1426,6 +2112,68 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           scriptNames: (ids) => jobStore.scriptNames(ids),
           registry: executors,
           findScript,
+          // Plan 95 §5 step 95.7 — rerun-failed's params-schema lookup; see
+          // `scheduleRoutes`'s own `scriptRegistry` wiring below for why.
+          scriptRegistry,
+          // docs/plans/96-m61-hotfixes.md §96.18 — the same accessor
+          // `resetPolicy` below reads from, so a batch's `runtimeOverride`
+          // ceiling check binds against the farm's REAL `job` settings
+          // instead of always resolving to "no ceiling".
+          farmJobSettings: () => settingsStore.get().job,
+          // Plan 94 §3.7, §3.8, §4.8, §4.9, step 94.7 — a batch created
+          // through this route can now carry a `pacing` block.
+          pacer,
+          // Plan 94 §3.9, §4.9, step 94.8 — `POST /:id/stop`'s ONLY abort
+          // path for a running member: the SAME `jobService` instance built
+          // above for `createJobRoutes`, never a second one (§3.9 rule 3,
+          // "no second abort path").
+          jobService,
+          // Plan 93 §3.12, §4.6, step 93.8 — closes F10: `internal:install`
+          // dispatched through a batch used to require only `job.run`,
+          // no `device.files`, no `transfer.enabled`. The SAME live
+          // accessors `createJobService` above and `scheduleRoutes` below
+          // both read.
+          shellMode: () => settingsStore.get().shell.mode,
+          transferEnabled: () => settingsStore.get().transfer.enabled,
+          // Plan 93 §3.13, §4.4, §4.7, step 93.10 — `GET /:id/artifacts.zip`
+          // resolves each collected file's stored relative path against
+          // app-data, the same root `artifactRoutes` below is given.
+          dataDir: cfg.dataDir,
+          // Same live `transfer` settings `transferEnabled` above reads,
+          // just the one extra field the archive route's pre-flight cap
+          // needs.
+          archiveSettings: () => settingsStore.get().transfer,
+        }),
+        // The fleet command console's REST surface (plan 93 §4.4, step
+        // 93.4) — `commandRunStore`/`commandRunner` are both constructed
+        // unconditionally above, right after `leases`.
+        commandRunRoutes: createCommandRunRoutes({
+          db,
+          store: commandRunStore,
+          runner: commandRunner!,
+          settings: () => settingsStore.get().shell,
+          // The SAME role-resolution expression `commandRunner`'s own
+          // construction above uses — an operator's fleet-command
+          // permission must agree between the REST gate and the runner's
+          // defense-in-depth re-check of it.
+          roleOf:
+            authMode === 'local'
+              ? () => 'admin'
+              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
+          getDeviceOwner,
+        }),
+        // Saved commands (plan 93 §3.10, §4.4, step 93.6) — the SAME
+        // role-resolution expression `commandRunRoutes` above uses, so a
+        // saved command's owner-or-admin edit/delete gate agrees with the
+        // fleet command console's own permission model.
+        savedCommandRoutes: createSavedCommandRoutes({
+          db,
+          settings: () => settingsStore.get().shell,
+          roleOf:
+            authMode === 'local'
+              ? () => 'admin'
+              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
+          audit,
         }),
         scheduleRoutes: createScheduleRoutes({
           db,
@@ -1454,6 +2202,12 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           },
           // Plan 82 §3.3, §3.5 — see `scheduleRunner`'s own construction above for why.
           scriptRegistry,
+          // Plan 93 §3.12, §4.6, step 93.8 — the same pair `batchRoutes`
+          // above and `scheduleRunner`'s own construction get, so a
+          // schedule's `internal:install` is gated identically whether it
+          // fires at create/edit time, `run-now`, or on its own cron.
+          shellMode: () => settingsStore.get().shell.mode,
+          transferEnabled: () => settingsStore.get().transfer.enabled,
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
         artifactRoutes: createArtifactRoutes({
@@ -1476,7 +2230,65 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // resolved once `attachWsRouter` runs.
           transport: () => transportStats?.() ?? null,
           hostAdb: () => hostAdbHandle.stats(),
+          adbHealth: () => adbHealthMonitor?.current() ?? null,
+          // `inputStats` is the forward-ref resolved once `attachWsRouter`
+          // runs (plan 91 §4.10, §5 step 91.10), same pattern as `transport`.
+          input: () => inputStats?.() ?? null,
+          // Plan 93 §5 step 93.12 — `commandRunner` is constructed
+          // unconditionally above (right after `leases`, same as
+          // `batchRoutes`'s own `commandRunRoutes` wiring reads), well
+          // before this call. Without this line `GET /api/adb/stats`
+          // reports the whole `commandConsole` block zero-filled forever,
+          // even while command runs are genuinely in flight
+          // (`adb-stats-command-console-wiring.test.ts`, the self-detecting
+          // gap step 93.12 could not close on its own file list).
+          commandConsole: () => commandRunner?.stats() ?? null,
+          // plan 92 §3.3, §3.7, §4.5, §5 step 92.3 — the build lane's
+          // farm-wide settings. `maxTiles` reports `wall.maxTiles` AS
+          // ACTUALLY APPLIED: the derived count (`computeAutoTiles`) when
+          // the stored setting is `0` (auto), the stored value otherwise —
+          // never the raw `0` — so this agrees with what the Wall itself
+          // will compute (§4.6). The resolved wall bitrate is the FARM's
+          // own (no per-device override — `maxTiles` is a farm-wide
+          // budget, not a per-device one), via `resolveVideoProfile` with
+          // no device override.
+          //
+          // Plan 100 §3.1/§4.1/§4.1, step 100.3 — `computeAutoTiles` combines
+          // a decode bound (`wall.decodeTileCeiling`) with a bandwidth bound
+          // that is now transport-aware: `resolveWallTransport` classifies
+          // the deployment the same way auth mode already is (CLAUDE.md:
+          // "auth mode derives from the bind address") — orchestrator/cloud
+          // reads as `wan`, everything else as `loopback`, unless
+          // `wall.transportOverride` names one explicitly — and
+          // `resolveWallBandwidthBps` hard-pins the WAN branch to
+          // `WALL_VIDEO_BUDGET_BPS` (byte-identical to pre-plan-100 cloud
+          // behaviour, §3.6) while loopback/LAN use the farm's own generous
+          // `wall.bandwidthBps` instead, so the decode bound is what actually
+          // governs a local wall rather than a WAN-shaped constant it never
+          // needed.
+          video: () => {
+            const wallMaxTiles = settingsStore.get().wall.maxTiles
+            const maxTilesAuto = wallMaxTiles === 0
+            const wallSettings = settingsStore.get().wall
+            const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', wallSettings.transportOverride)
+            return {
+              maxConcurrentBuilds: settingsStore.get().session.maxConcurrentBuilds,
+              maxTiles: maxTilesAuto
+                ? computeAutoTiles(resolveVideoProfile(settingsStore.get().video, null, 'wall').bitRate, {
+                    decodeTileCeiling: wallSettings.decodeTileCeiling,
+                    bandwidthBps: resolveWallBandwidthBps(transport, wallSettings.bandwidthBps),
+                  })
+                : wallMaxTiles,
+              maxTilesAuto,
+              transport,
+            }
+          },
         }),
+        // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2) —
+        // the manual "apply now" the settings section's own button (and
+        // anyone with `settings.manage` from curl) calls; the automatic
+        // debounced path above calls the exact same `sessions.reprofile()`.
+        videoRoutes: createVideoRoutes({ sessions: () => sessions }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
           coreProbe: async () => ({
@@ -1506,7 +2318,17 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         nodeRoutes: createNodeRoutes({ nodeAuth, db }),
         auth,
         authMode,
-        scriptRoutes: createScriptRoutes({ db, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
+        scriptRoutes: createScriptRoutes({ db, audit, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),
+        // Plan 99 §4.5, §4.9, §5 step 99.6 — `daemon.ts` was held by a concurrent worker
+        // for that step's whole duration, so `HttpDeps.workflowRoutes` stayed optional
+        // and `/api/workflows/*` 404'd through `server/http.ts`'s catch-all in every real
+        // build (docs/plans/96-m61-hotfixes.md §96.11). `scriptRegistry` is the SAME
+        // instance every other resolver in this file already shares (F17: one door).
+        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, audit }),
+        // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
+        // SAME instances every other route/service in this file already shares (one
+        // workspace, one recorder — F16/F11's own "never a second store/bundler").
+        recordingRoutes: createRecordingRoutes({ db, workspace: workspaceStore, recording: recordingService, audit }),
         pluginRoutes: createPluginRoutes({
           runtime: pluginRuntime,
           audit,
@@ -1558,15 +2380,28 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           async fetch(req, srv) {
             const url = new URL(req.url)
             // The node tunnel authenticates with the credential from enrollment.
-            // `/agent/ws` is the pre-plan-61 path — accepted alongside `/node/ws`
-            // for the same compatibility window as `agent.hello` (§3.3): a node
-            // binary already deployed in the field has this URL hardcoded and
-            // cannot be told to dial somewhere else.
-            if (url.pathname === '/node/ws' || url.pathname === '/agent/ws') {
+            if (url.pathname === '/node/ws') {
               const nodeId = await nodeAuth.verify(req.headers.get('authorization'))
               if (!nodeId) return new Response('unauthorized', { status: 401 })
               if (srv.upgrade(req, { data: { nodeId } })) return undefined
               return new Response('upgrade failed', { status: 400 })
+            }
+            // `/agent/ws` was the pre-plan-61 path, accepted alongside `/node/ws`
+            // for one release (§3.3) so a node binary already deployed in the
+            // field — which has this URL hardcoded and cannot be told to dial
+            // somewhere else — could survive the upgrade. That window closed at
+            // v0.1.7 (00-overview.md §9, now past). Answered explicitly here,
+            // rather than left to fall through to the Studio SPA's 200
+            // catch-all: an old node's WS handshake would otherwise see a plain
+            // HTTP 200 with an HTML body, which is a confusing non-upgrade, not
+            // a legible refusal. `410 Gone` plus a warn naming the path gives
+            // an operator watching the core's logs the actual reason.
+            if (url.pathname === '/agent/ws') {
+              log.warn(`rejected a pre-rename node dialing the removed /agent/ws path — it must be upgraded past plan 61 (see docs/plans/00-overview.md §9)`)
+              return new Response(
+                'this control plane no longer accepts the pre-plan-61 /agent/ws tunnel path (removed at v0.1.7) — upgrade this node binary and re-enroll if needed',
+                { status: 410 },
+              )
             }
             if (url.pathname === '/ws') {
               // A WS handshake does not always carry cookies → support single-use tickets.
@@ -1682,13 +2517,39 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       })
       retention.start()
 
+      // Orphaned agent screenshot blobs (plan 87). These live INSIDE enkaku.db
+      // as full-resolution bytes, so an unswept farm grows the database file
+      // itself — the fastest-growing unbounded thing the MVP audit found. The
+      // sweep only ever deletes blobs no `agent_messages` row still references,
+      // so it can share `retention`'s interval without sharing its opt-in.
+      blobGc = createBlobGc({
+        db,
+        settings: settingsStore,
+        log: log.child('blob-gc'),
+        intervalMinutes: cfg.retention.sweepIntervalMinutes,
+      })
+      blobGc.start()
+
       leases.startReaper()
       stopReaper = () => leases.stopReaper()
+      coControl.startReaper()
+      stopCoControlReaper = () => coControl.stopReaper()
       expiryReaper.start()
       stopExpiryReaper = () => expiryReaper.stop()
       scheduler.start()
       const sched = scheduler
       stopScheduler = () => sched.stop()
+      // Plan 94 §3.8, §4.8, step 94.7 — "Restart safety": re-plans anything
+      // a crash interrupted mid-repetition and arms the pacer's own timer.
+      // No in-memory plan to lose (the decision is derived entirely from
+      // `jobs` rows) — this is idempotent for every batch that lost nothing.
+      // `jobStore`/`broadcast`/`log` wired (step 94.11) so the same sweep
+      // also closes a paced batch left `queued`/`running` with zero live
+      // jobs after a crash — see `clusters/pacer.ts`'s own doc comment on
+      // `replanAfterRestart` for why this is a real gap and not merely
+      // belt-and-braces.
+      replanAfterRestart({ db, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })
+      stopPacer = () => pacer.stop()
       scheduleRunner.start()
       const runner = scheduleRunner
       stopScheduleRunner = () => runner.stop()
@@ -1704,6 +2565,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           pairing: pairingService,
           leases,
           jobs: jobService,
+          // Co-control — Assist (plan 91 §3.2, §4.6, §5 step 91.4): the
+          // `input.*` fallback and the `assist.start`/`assist.stop` handlers
+          // both live in `ws-handlers.ts`; `coControl` itself was constructed
+          // right after `leases`, above, and its reaper is already started/
+          // stopped alongside `leases.startReaper()`/`stopReaper()`.
+          coControl,
+          coControlMode: () => settingsStore.get().coControl.mode,
+          // `/api/adb/stats`'s `input.queueWaitMs` (plan 91 §4.10, §5 step
+          // 91.10) — the co-control doctor check's budget, read fresh like
+          // every other farm setting accessor here.
+          coControlQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
+          // Mirror groups (plan 91 §3.9, §4.7, §5 step 91.7) — `states` is
+          // the SAME `DeviceStateMachine` `leases`/`host` above already
+          // read; `mirrorSettings` is read fresh, the same freshness
+          // discipline `shellSettings`/`crashPolicy` already give their own
+          // farm settings blocks.
+          states,
+          mirrorSettings: () => settingsStore.get().mirror,
           // The Monitor tab (plan 24) works on node-owned devices too now
           // (plan 25): `adb` still serves local devices; `rpc`/`router` are
           // what let `shellPortFor` build the remote `ShellPort` for the rest.
@@ -1733,6 +2612,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // `canUseDevice` (plan 34 §3.5, §4.4) — `lease.acquire`'s ownership check.
           getDeviceOwner,
           shellSettings: () => settingsStore.get().shell,
+          // Plan 93 §3.3, §3.17, §5 step 93.5 — `shell.exec` records through
+          // the SAME store the fan-out runner writes to (`commandRunStore`,
+          // built right after `leases`, above), so `/console`'s History has
+          // one mechanism for both, not two. This is the store only; the
+          // runner itself (`commandRunner`) is unrelated to `shell.exec` and
+          // stays wired only into `commandRunRoutes` below.
+          commandRunStore,
           // The lease-scoped adb endpoint (plan 27 §4.2) — explicit
           // `lease.release` and WS-disconnect teardown both live in
           // `ws-handlers.ts` already (that is where the WS-level lease and
@@ -1762,9 +2648,21 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
+          // Plan 91 §3.6, §4.8, §5 step 91.5/91.10 — the last line of the
+          // assist→child notification chain (`WsHandlerDeps.onAssist` →
+          // `ExecutorHost.notifyAssist` → the runner's IPC → `ctx.onAssist`).
+          // Shaped identically to `onJobCrash` right above: a running
+          // script's `ctx.onAssist` was fully built and unit-tested in
+          // isolation by step 91.5 but structurally unreachable in a real
+          // boot until this line existed.
+          onAssist: (jobId, e) => host.notifyAssist(jobId, e),
           // The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §4.4) — built
           // once, above, before `attachWsRouter` is even defined (it does not depend on `sessions`).
           agent: agentWsHandler,
+          // The action recorder (plan 94 §4.6, §5 step 94.3) — built once, above, alongside
+          // the other agent-loop services. Without this, `recording.*` refuses E_NOT_SUPPORTED
+          // and the `input.*` tee is a harmless no-op in every real boot.
+          recording: recordingService,
           log: log.child('ws-handler'),
         })
         hub.setRouter(handler)
@@ -1777,9 +2675,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         releaseShellSession = handler.releaseShellSession
         resetInspectForDevice = handler.resetInspectForDevice
         releaseLeaseReadinessHold = handler.releaseLeaseHold
+        stopRecordingForLeaseLost = handler.stopRecordingForLeaseLost
         watchCrashesForDevice = handler.watchDevice
         unwatchCrashesForDevice = handler.unwatchDevice
+        reconcileMirrorForDevice = handler.reconcileMirror
         transportStats = handler.transportStats
+        inputStats = handler.inputStats
+        broadcastCommandEvent = handler.broadcastCommand
+        broadcastTransferEvent = handler.broadcastTransfer
       }
 
       if (isOrchestrator) {
@@ -1864,11 +2767,62 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         const adbClient = adb
         const inspectorLog = log.child('inspector')
         const scrcpyLog = log.child('scrcpy')
+        // Named so `resolveProfile` below can read a device's own video
+        // override at the same seam `devices:` already reads everything
+        // else (plan 92 §3.5, §4.4) — one instance, not a second read path.
+        const deviceSource = createDbDeviceSource(db)
+
+        // Boot-time stray scrcpy sweep (96.23's own prerequisite for plan
+        // 100's two-session design, §3.5, step 100.1) — run BEFORE `sessions`
+        // is built, so nothing in this process has opened a session yet:
+        // `knownScids` is correctly empty, and every device-side scrcpy
+        // process `ps` still finds on an attached phone at this point is, by
+        // definition, an orphan left by a prior crash or an ungraceful
+        // shutdown (the exact accumulation 96.23 recorded — "every failed
+        // session leaves another. Nothing sweeps them"). Mirrors the
+        // boot-time `adb forward` cleanup just above: best-effort, one
+        // device's failure logged and skipped rather than failing boot.
+        for (const tracked of await adbClient.listDevices().catch((err) => {
+          log.warn(`boot-time scrcpy sweep: could not list devices, skipping: ${String(err)}`)
+          return []
+        })) {
+          if (tracked.state !== 'device') continue
+          try {
+            const { killedScids } = await sweepStrayScrcpyServers(
+              (cmd) => adbClient.exec(tracked.serial, cmd, { profile: 'default' }).then((r) => r.stdout),
+              new Set(),
+            )
+            if (killedScids.length > 0) {
+              scrcpyLog.info(
+                `boot-time sweep: killed ${killedScids.length} orphaned scrcpy process(es) on ${tracked.serial} (scid ${killedScids.join(', ')})`,
+              )
+            }
+          } catch (err) {
+            scrcpyLog.warn(`boot-time scrcpy sweep: ${tracked.serial}: ${String(err)}`)
+          }
+        }
 
         sessions = createSessionManager({
           client: adb,
-          devices: createDbDeviceSource(db),
+          devices: deviceSource,
           log: log.child('session'),
+          // Plan 90 §3.2, §4.5, §5 step 90.5 (docs/plans/96-m61-hotfixes.md): rung 1 of the text
+          // ladder (`resolveTextRoute`'s `agent-ime`) needs `SessionManagerDeps.withGuestAgentClient`
+          // to be wired, or `applyTextInput` always sees `agentCapabilities: null` and the ladder
+          // can never pick anything but rung 2 or below — the entire on-device IME goes dark. This
+          // was the one production call site that never passed it (the exact defect class named in
+          // this repo's own hotfix log). `guestAgent` is a plain top-level `const` built well above
+          // (`createGuestAgentRoutes(...)`, around line 1308) and is fully constructed — including
+          // `withGuestAgentClient` — long before this `try` block runs; the only forward-ref hazard
+          // near its own construction is `agentProvisionerRef` (built AFTER `guestAgent`, so
+          // `guestAgent`'s OWN deps object reads it through a closure), which does not apply here.
+          // `guestAgent.withGuestAgentClient` is the SAME per-device session seam the agent
+          // provisioner's `hello` and `deviceIdentity` already share (plan 44 §8b's "Bug 1": two
+          // independent bootstraps mint two tokens and invalidate each other) — `SessionManagerDeps`
+          // wants a curried `(deviceId) => GuestAgentClientRunner`, so this is the adapter; `opts`
+          // (`handshakeRetries`) is dropped because the public seam does not accept it either (only
+          // `guest-agent.ts`'s own internal `probeReachability` gets that knob).
+          withGuestAgentClient: (deviceId) => (fn) => guestAgent.withGuestAgentClient(deviceId, fn),
           onSessionEnded: (deviceId, reason) =>
             hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } }),
           // The wake-up progress panel (Plan 17 §3.3, §4.7): one broadcast per
@@ -1895,7 +2849,24 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           // same pattern `resetPolicy`/`adb.maxConcurrent` already use.
           idleTtlSec: () => settingsStore.get().session.idleTtlSec,
           maxIdleSessions: () => settingsStore.get().session.maxIdleSessions,
-          makeScrcpy: async (deviceId, transport, quality) => {
+          // plan 92 §3.5, §4.2, §4.3 — farm video settings plus this
+          // device's own override, read fresh on every session build (the
+          // same freshness discipline as the two accessors right above).
+          resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().video, deviceSource.get(deviceId)?.video ?? null, quality),
+          // plan 92 §3.3, §4.3, §5 step 92.3 (fixes F9, tests H1) — the
+          // farm-wide build lane's cap, read fresh on every acquire like
+          // every other accessor above.
+          maxConcurrentBuilds: () => settingsStore.get().session.maxConcurrentBuilds,
+          // Plan 91 §4.1, §4.5 — the input arbiter's bounded-queue budget, read fresh on every
+          // submission (docs/plans/96-m61-hotfixes.md §96.13: before this fix `SessionManagerDeps`
+          // had no field to receive these at all, so every session ran the plan's own hardcoded
+          // stand-in defaults regardless of what an operator configured in Studio).
+          arbiterQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
+          arbiterMaxQueueDepth: () => settingsStore.get().coControl.maxQueueDepth,
+          // Plan 100 §4.3, step 100.6 — the screencap-loop fallback's background
+          // retry budget, read fresh like every other settings accessor above.
+          fallbackRetryCount: () => settingsStore.get().display.fallbackRetryCount,
+          makeScrcpy: async (deviceId, transport, profile) => {
             // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
             const jarPath = await toolchain.resolveToolPath('scrcpy-server').catch(() => null)
             if (!jarPath) {
@@ -1906,7 +2877,11 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // scrcpy session verifies the binding belongs to this serial. The
             // old path claimed a port from the shared allocator and leaked it,
             // which is how a port could end up bound to the other device.
-            const profile = QUALITY_PROFILES[quality]
+            //
+            // `profile` (plan 92 §3.5, §4.2) is already resolved — farm video
+            // settings plus this device's own override — by `resolveProfile`
+            // above, threaded through `createSession`'s `opts.videoProfile`.
+            // There is no `QUALITY_PROFILES[quality]` lookup left here.
             return startScrcpySession(
               {
                 serial: transport.serial,
@@ -1963,6 +2938,20 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             ),
         })
 
+        // Plan 99 §3.2, §4.6, §4.7 — which workflow node is CURRENTLY
+        // executing, per jobId. Read by the `artifacts` factory below (so a
+        // node script's `ctx.artifact.save()` — untouched at the child
+        // boundary — lands with `artifacts.node_id` stamped) and by the
+        // `onPhase` hook just below it (so `job_nodes.attempts` has an
+        // honest number). The workflow executor (`jobs/executors/workflow.ts`,
+        // constructed further down once `runner`/`sessions` both exist)
+        // calls `begin`/`end` around each node's `runner.execute()` call —
+        // see `runner/artifact-store.ts`'s own doc comment for the full
+        // mechanism. A standalone (non-workflow) job never touches this
+        // tracker, so its artifacts and attempts read back exactly as they
+        // did before this plan.
+        const jobNodeTracker = createJobNodeTracker()
+
         // The script executor (M4) needs SessionManager → registered once adb is ready.
         const runner = createJobRunner({
           logDir: cfg.dataDir,
@@ -1973,6 +2962,7 @@ export function createDaemon(cfg: CoreConfig): Daemon {
               dataDir: cfg.dataDir,
               jobId,
               onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
+              nodeId: () => jobNodeTracker.current(jobId),
             }),
           log: log.child('runner'),
           onLog: (entry) => {
@@ -1997,6 +2987,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             // The sink already broadcast this when it wrote the DB row.
           },
           onPhase: (jobId, attempt, phase) => {
+            // Plan 99 §4.6, §4.7 — `job_nodes.attempts`'s only source: this
+            // fires on every attempt of every execution, and `attempt` resets
+            // to 1 at the top of every `runner.execute()` call, so the
+            // highest value seen between a workflow node's own `begin`/`end`
+            // pair is exactly how many attempts THAT node execution spent.
+            // A no-op for every non-workflow job (no `begin` was ever called
+            // for its jobId).
+            jobNodeTracker.noteAttempt(jobId, attempt)
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
           },
@@ -2054,16 +3052,71 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           kv: kvRunnerPort,
           // `ctx.jobs` (plan 80 §4.2) — a running script's own view of the queue.
           jobs: jobsRunnerPort,
+          // Plan 97 §3.7, §4.3, §5 step 97.7 — forwarded VERBATIM to the
+          // host, which owns the size check and the one-warn-per-job rule
+          // (`ExecutorHost.progress`'s own doc comment); this runner does
+          // not measure, drop, or write anything itself.
+          onProgress: (jobId, value) => host.progress(jobId, value),
         })
         const localExecutor = createScriptExecutor({ registry: scriptRegistry, runner })
         executors.setFallback({
-          validateParams: (params) => localExecutor.validateParams(params),
+          // `scriptId` forwarded through (plan 95 §5 step 95.6) — the local
+          // script executor is the SAME instance for every non-built-in
+          // scriptId and needs it to look up which script's `paramsSchema`
+          // to validate against; validity does not depend on which device
+          // (local or node-owned) ends up running the job.
+          validateParams: (params, scriptId) => localExecutor.validateParams(params, scriptId),
           run: (job, ctx) => {
             // Node-owned device → run it on the node; otherwise run locally.
             const owner = remoteSessions?.nodeIdFor(job.deviceId) ?? null
             return owner ? remoteBridge.executor.run(job, ctx) : localExecutor.run(job, ctx)
           },
         })
+
+        // The workflow executor (plan 99 §3.1, §4.7, step 99.7) — registered
+        // as the `kind: 'workflow'` fallback, beside the script executor's
+        // `kind: 'script'` fallback immediately above. It reuses the SAME
+        // `runner`/`sessions`/`scriptRegistry` every standalone job already
+        // shares — a node is a script child, not a job (§3.4) — and drives
+        // `jobNodeTracker` (built above, alongside `runner`) so a node's
+        // artifacts and attempts are attributed correctly with zero changes
+        // to `@enkaku/session` or the child boundary.
+        //
+        // KNOWN GAP, reported rather than silently unbuilt: unlike the
+        // script fallback immediately above, this does NOT branch on
+        // `remoteSessions?.nodeIdFor(job.deviceId)` — a workflow job on a
+        // node-owned (cloud) device would try to run through the LOCAL
+        // `runner` regardless and fail. Nothing in plan 99 §3–§5 asks for
+        // cloud-device workflow support in this step, and building the
+        // remote-bridge equivalent of this executor is its own undertaking
+        // (`jobs/executors/remote.ts` is a comparably sized subsystem) — left
+        // for a follow-up rather than half-built here silently.
+        //
+        // `settings: () => settingsStore.get().workflow` reads the live farm
+        // setting (`packages/protocol/src/settings.ts`'s `workflow` group),
+        // read fresh on every check — never captured — matching every other
+        // farm-wide knob in this file. `WorkflowSettings` is structurally
+        // `{ maxTotalMs: number }`, exactly what `settingsStore.get().workflow`
+        // already is once `settings.ts` carries the field. `checkWorkflow`'s
+        // publish-time arithmetic reads the same setting through
+        // `api/workflows.ts`'s own `deps.settings`; this is the runtime
+        // clock's matching wire (`jobs/executors/workflow.ts`'s own module
+        // doc has the history).
+        const workflowExecutor = createWorkflowExecutor({
+          db,
+          registry: scriptRegistry,
+          runner,
+          sessions,
+          nodeTracker: jobNodeTracker,
+          settings: () => settingsStore.get().workflow,
+          log: log.child('workflow'),
+          onNode: (jobId, node) => {
+            const info = jobService.get(jobId)
+            if (info) hub.broadcast({ type: 'job.status', payload: { ...info, node } })
+          },
+        })
+        executors.setFallback(workflowExecutor, 'workflow')
+
         pairingService = createPairingService({ client: adb, log: log.child('pairing') })
         attachWsRouter(sessions)
 
@@ -2099,10 +3152,26 @@ export function createDaemon(cfg: CoreConfig): Daemon {
           hub,
           log: log.child('registry'),
           states,
+          // The address book's write path (plan 88 §3.2, §4.3, fixes F10) —
+          // a successful probe calls `endpoints.observe`, free and
+          // automatic, on a path that already ran.
+          endpoints,
           // A newly enrolled device inherits the farm defaults (spec §12).
           deviceDefaults: () => settingsStore.get().defaults,
           defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
           record: recorder!.record,
+          // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also
+          // recorded at docs/plans/96-m61-hotfixes.md §96.5): without this,
+          // THIS registry's own `device.added` broadcast (the "new device
+          // registered" branch of `onOnline`) and its `listDevices()` could
+          // only ever read `mediumSource: 'unknown'`/`'declared'`, never
+          // `'network'` — a device admitted on a configured wired network
+          // badged the honest-but-incomplete `TCP` on the very broadcast
+          // every connected Studio tab renders immediately, then silently
+          // flipped to `OTG`/`WI-FI` the next ordinary `GET /api/devices`.
+          // Same accessor `deviceRoutes`/`topologyRoutes`/`clusterRoutes`
+          // already get, a few lines away in this same function.
+          networks: () => settingsStore.get().discovery.networks,
           onDeviceGone: (deviceId) => {
             void sessions?.closeDevice(deviceId)
             // Any job running on that device → failed (spec §10.1).
@@ -2142,9 +3211,70 @@ export function createDaemon(cfg: CoreConfig): Daemon {
             void restoreNetworkRoute?.(deviceId).catch((err) =>
               log.warn(`restoreNetworkRoute failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
             )
+            // Plan 90 §3.8's second hook — "device online" — the SAME hook
+            // `restoreNetworkRoute` above already uses for exactly this
+            // purpose ("otomatis deteksi pas reconnect"). This also covers
+            // the "admission" hook's connected-right-now case: `onAdmitted`
+            // → `registry.admitted()` → this SAME `onOnline` → this SAME
+            // `onDeviceReady`, so a freshly admitted, currently-plugged-in
+            // phone reaches the provisioner on its very first callback, with
+            // no second, redundant call needed here.
+            void agentProvisionerRef?.ensure(deviceId).catch((err) =>
+              log.warn(`agent-provisioner ensure() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+            )
+            // Plan 89 §3.7 point 1 — the SAME hook `restoreNetworkRoute` and
+            // the agent provisioner above already use. Probe-first
+            // (`reconcile`, never `apply`): a device already showing the
+            // right label costs one cheap round trip and no render.
+            // `labelling.mode: 'off'` (the default) costs nothing at all
+            // (§3.8) — `reconcile` itself is the thing that enforces that,
+            // not this call site.
+            void labellingRef?.reconcile(deviceId).catch((err) =>
+              log.warn(`labelling reconcile() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+            )
           },
         })
         await registry.start()
+
+        // The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) —
+        // built right after `registry` exists, since it needs `onOnline` to
+        // adopt a device it successfully reconnects exactly like a live
+        // tracker `add` event would. Only the ladder through remembered
+        // addresses (step 88.2's own deliverable): no sweep branch yet
+        // (step 88.3's), so an exhausted ladder always reports `not-found`
+        // rather than ever scanning a subnet.
+        reconnector = createDeviceReconnector({
+          client: adb,
+          db,
+          endpoints,
+          registry,
+          settings: () => ({
+            connectSettleMs: settingsStore.get().discovery.connectSettleMs,
+            probeTimeoutMs: settingsStore.get().discovery.scan.probeTimeoutMs,
+          }),
+          log: log.child('reconnect'),
+        })
+
+        // The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step
+        // 88.5) — built right after `reconnector`, since "watch" is that
+        // SAME ladder polled on a timer, not a second implementation of it.
+        // `hostAdbHandle.run` is H1's own documented fallback for
+        // `AdbClient.tcpip` (the device-service path) — bounded, drained,
+        // deadline-enforced, exactly like every other CLI spawn in this
+        // function.
+        cutoverManager = createCutoverManager({
+          client: adb,
+          hostAdb: hostAdbHandle,
+          endpoints,
+          reconnector,
+          settings: () => ({
+            tcpPort: settingsStore.get().discovery.tcpPort,
+            armWindowSec: settingsStore.get().discovery.cutover.armWindowSec,
+            armPollSec: settingsStore.get().discovery.cutover.armPollSec,
+          }),
+          broadcast: (msg) => hub.broadcast(msg),
+          log: log.child('cutover'),
+        })
 
         // The discovery reconciler (plan 85 §3.3, §4.4, §5 step 85.2, fixes
         // F8/F9/F10) — `host:track-devices` speaks on change only, so this
@@ -2174,9 +3304,38 @@ export function createDaemon(cfg: CoreConfig): Daemon {
         }
         reconciler.start()
 
+        // "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — built once
+        // `reconciler` exists, since it reads that same object's
+        // `nudgeCounts()`/`offlineSerials()` bookkeeping rather than keeping
+        // a second copy of either. Read-only: this never touches the adb
+        // server itself (F21's rule) — the restart action lives in plan 88
+        // §5 step 88.8's `tools/adb-server-control.ts`, an entirely
+        // different file.
+        const reconcilerRef = reconciler
+        adbHealthMonitor = createAdbServerHealth({
+          client: () => adb,
+          metrics: adbMetrics,
+          nudgeCounts: () => reconcilerRef.nudgeCounts(),
+          offlineSerials: () => reconcilerRef.offlineSerials(),
+          settings: () => settingsStore.get().adbControl,
+          onTransition: (h) => hub.broadcast({ type: 'adb.health', payload: h }),
+          log: log.child('adb-health'),
+        })
+        adbHealthMonitor.start()
+
         recomputeAdbConcurrency()
         adbState = 'ready'
         log.info(`adb subsystem ready (devices registered: ${db.select().from(devices).all().length})`)
+
+        // 96.25 fix 1's own relocation (see `agentProvisionerRef = agentProvisioner`
+        // above for why this moved here): only now is `adb` actually assigned and
+        // the device registry has finished its initial admission pass, so
+        // `guestAgentExec`/`hostAdbHandle` will not see `adb === null`. Still
+        // fire-and-forget and tolerated (plan 90 §3.8's third hook) — a boot-time
+        // provisioning sweep must never delay, or be delayed by, the core coming up.
+        void agentProvisioner
+          .ensureAll()
+          .catch((err) => log.warn(`agent-provisioner boot sweep failed, tolerated: ${String(err)}`))
       } catch (err) {
         adbState = 'error'
         // The core stays up: the tools API can still be used to retry the install.
@@ -2192,18 +3351,32 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       log.info('stopping...')
       if (heartbeatInterval) clearInterval(heartbeatInterval)
       heartbeatInterval = null
+      if (reprofileDebounceTimer) clearTimeout(reprofileDebounceTimer)
+      reprofileDebounceTimer = null
       server?.stop(true)
       server = null
       stopScheduler?.()
+      stopPacer?.()
       stopReaper?.()
+      stopCoControlReaper?.()
       stopExpiryReaper?.()
       stopScheduleRunner?.()
+      // Plan 93 §5 step 93.3, `00-overview.md` §7 — every active fan-out run's
+      // pending members are cancelled, in-flight execs aborted, and every
+      // timer cleared, BEFORE `recorder` (its own `record` dep) is torn down
+      // a few lines below.
+      commandRunner?.stop()
+      commandRunner = null
       battery?.stop()
       battery = null
       health?.stop()
       health = null
+      adbHealthMonitor?.stop()
+      adbHealthMonitor = null
       retention?.stop()
       retention = null
+      blobGc?.stop()
+      blobGc = null
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
@@ -2222,6 +3395,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
       // exists to catch.
       reconciler?.stop()
       reconciler = null
+      // No `.stop()` of its own — the ladder holds only an in-memory
+      // per-`stableId` mutex map, nothing that outlives the process.
+      reconnector = null
+      // Unlike the ladder above, an armed cutover DOES hold a live poll
+      // timer (plan 88 §3.4, §5 step 88.5) — `stopAll()` clears every one
+      // before the hub it would otherwise broadcast into is torn down.
+      cutoverManager?.stopAll()
+      cutoverManager = null
       await registry?.stop()
       registry = null
       // Plan 85 §3.4, §4.5, §5 step 85.3 (fixes F12) — the backstop. Every

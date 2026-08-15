@@ -29,7 +29,7 @@ export class ScrcpyAoaInput implements InputSink {
     )
   }
 
-  tap(_p: Point): Promise<void> {
+  tap(_p: Point, _opts?: { holdMs?: [number, number]; rng?: () => number }): Promise<void> {
     this.unavailable()
   }
   swipe(_from: Point, _to: Point, _ms: number): Promise<void> {

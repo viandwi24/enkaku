@@ -35,8 +35,21 @@ export interface SchedulerDeps {
     lastManualReleaseAt: (deviceId: string) => number | null
     lastManualHolder: (deviceId: string) => LeaseHolder | null
   }
-  /** The wait is visible (plan 71 §3.7, criterion 11) — broadcast while it is in progress, and once more with `waiting: false` the moment it ends (claimed, or nothing left to wait for). */
-  onJobWaiting?: (info: { jobId: string; deviceId: string; waiting: boolean; heldBy: LeaseHolder | null; remainingSec: number }) => void
+  /**
+   * The wait is visible (plan 71 §3.7, criterion 11; plan 94 §3.8, §4.8,
+   * step 94.6 adds the `reason: 'paced'` case alongside it) — broadcast
+   * while it is in progress, and once more with `waiting: false` the
+   * moment it ends (claimed, or nothing left to wait for). `heldBy` is
+   * only ever non-null for `reason: 'quiet'`.
+   */
+  onJobWaiting?: (info: {
+    jobId: string
+    deviceId: string
+    waiting: boolean
+    reason: 'quiet' | 'paced'
+    heldBy: LeaseHolder | null
+    remainingSec: number
+  }) => void
 }
 
 /**
@@ -58,11 +71,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // In-memory only: a core restart starts the cap over, the same accepted
   // simplification `agent/loop/run.ts`'s per-run lease bookkeeping makes.
   const waitStartedAt = new Map<string, number>()
-  // The device ids reported as "waiting" on the PREVIOUS tick — used only to
-  // send one final `waiting: false` the moment a device stops waiting,
-  // rather than only the (silent) fact that no more `job.waiting` events
-  // arrive.
-  let previouslyWaiting = new Set<string>()
+  // The device ids reported as "waiting" on the PREVIOUS tick, with which
+  // reason — used only to send one final `waiting: false` (carrying that
+  // same reason; the schema requires one) the moment a device stops
+  // waiting, rather than only the (silent) fact that no more `job.waiting`
+  // events arrive.
+  let previouslyWaiting = new Map<string, 'quiet' | 'paced'>()
 
   /** Every device with a queued job that the quiet gate currently blocks, plus how long is left — never longer than `maxWaitSec` (plan 71 §3.7, criterion 12). Devices past their cap are NOT returned (they may proceed) and their wait bookkeeping is cleared. */
   function computeQuietBlocked(): Map<string, number> {
@@ -100,19 +114,63 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return blocked
   }
 
-  function broadcastWaiting(blocked: Map<string, number>): void {
-    if (!deps.onJobWaiting || !deps.quiet) return
-    const stillWaiting = new Set<string>()
-    for (const [deviceId, remainingSec] of blocked) {
+  /**
+   * Plan 94 §3.8, §4.8, step 94.6 — every device whose next-up queued job
+   * (same `nextQueuedJobId` ordering `broadcastWaiting` already uses for
+   * the quiet gate) is not yet due: `jobs.not_before` in the future. Purely
+   * informational — unlike the quiet gate, a paced job does NOT get
+   * excluded from `claimNext` device-wide (its own SQL predicate skips only
+   * that row; a different, already-due job on the same device stays
+   * claimable), so this never feeds `excludeDeviceIds`. Devices whose
+   * `notBefore` has already passed are not returned, matching
+   * `computeQuietBlocked`'s own "past its cap" convention.
+   */
+  function computePacedBlocked(): Map<string, { jobId: string; remainingSec: number }> {
+    const blocked = new Map<string, { jobId: string; remainingSec: number }>()
+    if (!deps.onJobWaiting) return blocked
+    const now = nowSec()
+    for (const deviceId of deps.jobStore.queuedDeviceIds()) {
       const jobId = deps.jobStore.nextQueuedJobId(deviceId)
       if (!jobId) continue
-      stillWaiting.add(deviceId)
-      deps.onJobWaiting({ jobId, deviceId, waiting: true, heldBy: deps.quiet.lastManualHolder(deviceId), remainingSec })
+      const job = deps.jobStore.get(jobId)
+      if (!job || job.notBefore == null) continue
+      const remainingSec = job.notBefore - now
+      if (remainingSec <= 0) continue
+      blocked.set(deviceId, { jobId, remainingSec })
     }
-    for (const deviceId of previouslyWaiting) {
+    return blocked
+  }
+
+  function broadcastWaiting(quietBlocked: Map<string, number>, pacedBlocked: Map<string, { jobId: string; remainingSec: number }>): void {
+    if (!deps.onJobWaiting) return
+    const stillWaiting = new Map<string, 'quiet' | 'paced'>()
+    for (const [deviceId, remainingSec] of quietBlocked) {
+      const jobId = deps.jobStore.nextQueuedJobId(deviceId)
+      if (!jobId) continue
+      stillWaiting.set(deviceId, 'quiet')
+      deps.onJobWaiting({
+        jobId,
+        deviceId,
+        waiting: true,
+        reason: 'quiet',
+        heldBy: deps.quiet ? deps.quiet.lastManualHolder(deviceId) : null,
+        remainingSec,
+      })
+    }
+    for (const [deviceId, paced] of pacedBlocked) {
+      // The quiet gate already reported this device this tick — a device
+      // manually held AND paced is rare, but the quiet gate is what is
+      // actually excluding it from claimNext right now (see
+      // `computePacedBlocked`'s own comment: pacing is per-row, never
+      // device-wide), so it, not pacing, is the reason worth surfacing.
+      if (stillWaiting.has(deviceId)) continue
+      stillWaiting.set(deviceId, 'paced')
+      deps.onJobWaiting({ jobId: paced.jobId, deviceId, waiting: true, reason: 'paced', heldBy: null, remainingSec: paced.remainingSec })
+    }
+    for (const [deviceId, reason] of previouslyWaiting) {
       if (stillWaiting.has(deviceId)) continue
       const jobId = deps.jobStore.nextQueuedJobId(deviceId)
-      if (jobId) deps.onJobWaiting({ jobId, deviceId, waiting: false, heldBy: null, remainingSec: 0 })
+      if (jobId) deps.onJobWaiting({ jobId, deviceId, waiting: false, reason, heldBy: null, remainingSec: 0 })
     }
     previouslyWaiting = stillWaiting
   }
@@ -126,12 +184,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     try {
       do {
         dirty = false
-        const blocked = computeQuietBlocked()
-        broadcastWaiting(blocked)
+        const quietBlocked = computeQuietBlocked()
+        const pacedBlocked = computePacedBlocked()
+        broadcastWaiting(quietBlocked, pacedBlocked)
         for (;;) {
           let claimed
           try {
-            claimed = deps.jobStore.claimNext(deps.jobTtlSec, [...blocked.keys()])
+            // Only the quiet gate excludes a device wholesale — pacing is
+            // per-row and already enforced inside claimNext's own SQL
+            // predicate (`computePacedBlocked`'s own comment).
+            claimed = deps.jobStore.claimNext(deps.jobTtlSec, [...quietBlocked.keys()])
           } catch (err) {
             deps.log.warn(`job claim failed: ${String(err)}`)
             break

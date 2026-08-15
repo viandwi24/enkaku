@@ -14,6 +14,8 @@ export function entrypointRelPath(toolId: string, platform: string): string {
       return 'ui-server.apk'
     case 'ui-server-test':
       return 'ui-server-test.apk'
+    case 'guest-agent':
+      return 'guest-agent.apk'
     default:
       throw new ToolchainError('E_TOOL_UNKNOWN_ENTRYPOINT', `unknown entrypoint for tool: ${toolId}`)
   }

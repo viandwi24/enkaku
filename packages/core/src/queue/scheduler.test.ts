@@ -43,7 +43,13 @@ function fakeJobRow(id: string, deviceId: string): JobRow {
   } as unknown as JobRow
 }
 
-function fakeJobStore(opts: { queuedDeviceIds: string[]; deviceId?: string; jobId?: string }): JobStore {
+function fakeJobStore(opts: {
+  queuedDeviceIds: string[]
+  deviceId?: string
+  jobId?: string
+  /** Plan 94 §3.8, §4.8, step 94.6 — wired onto the fake row `get()` returns, so a test can exercise `computePacedBlocked` the same way `quiet` exercises `computeQuietBlocked`. `undefined` (the default) matches every fixture row elsewhere in this tree that predates this column. */
+  notBefore?: number | null
+}): JobStore {
   const deviceId = opts.deviceId ?? 'd1'
   const jobId = opts.jobId ?? 'job-1'
   const claimed: string[][] = [] // records the `excludeDeviceIds` argument of every claimNext call
@@ -52,6 +58,9 @@ function fakeJobStore(opts: { queuedDeviceIds: string[]; deviceId?: string; jobI
     claimedCalls: claimed,
     queuedDeviceIds: () => opts.queuedDeviceIds,
     nextQueuedJobId: (id) => (id === deviceId && !alreadyClaimed ? jobId : null),
+    // Plan 94 §3.8, §4.8, step 94.6 — `computePacedBlocked` reads this back
+    // for whatever `nextQueuedJobId` names.
+    get: (id) => (id === jobId ? { ...fakeJobRow(jobId, deviceId), notBefore: opts.notBefore ?? null } : null),
     claimNext: (_jobTtlSec, excludeDeviceIds = []) => {
       claimed.push(excludeDeviceIds)
       if (alreadyClaimed) return null
@@ -85,7 +94,7 @@ describe('createScheduler — quiet period (plan 71 §3.7, criteria 11, 12)', ()
   test('a device released 2s ago (quietPeriodSec: 10) blocks the job — not claimed, and the wait is broadcast visibly', () => {
     const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const now = Math.floor(Date.now() / 1000)
-    const waitingEvents: Array<{ jobId: string; deviceId: string; waiting: boolean; heldBy: LeaseHolder | null; remainingSec: number }> = []
+    const waitingEvents: Array<{ jobId: string; deviceId: string; waiting: boolean; reason: 'quiet' | 'paced'; heldBy: LeaseHolder | null; remainingSec: number }> = []
     const holder: LeaseHolder = { kind: 'user', id: 'u1', label: 'Rina', runId: null, takeable: true, acquiredAt: now - 100, expiresAt: null }
     const scheduler = createScheduler(
       baseDeps({
@@ -105,7 +114,7 @@ describe('createScheduler — quiet period (plan 71 §3.7, criteria 11, 12)', ()
     // The device was excluded from the claim — the job was never actually claimed.
     expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.some((ex) => ex.includes('d1'))).toBe(true)
     expect(waitingEvents).toHaveLength(1)
-    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', deviceId: 'd1', waiting: true, heldBy: holder })
+    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', deviceId: 'd1', waiting: true, reason: 'quiet', heldBy: holder })
     // ~8s left of the 10s quiet gap (released 2s ago).
     expect(waitingEvents[0]!.remainingSec).toBeGreaterThan(0)
     expect(waitingEvents[0]!.remainingSec).toBeLessThanOrEqual(10)
@@ -210,5 +219,78 @@ describe('createScheduler — quiet period (plan 71 §3.7, criteria 11, 12)', ()
     scheduler.kick()
     const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
     expect(calls.some((ex) => ex.length === 0)).toBe(true)
+  })
+})
+
+/**
+ * Plan 94 §3.8, §4.8, step 94.6 — the scheduler's own half of the pacer's
+ * visibility: `job.waiting` gains `reason: 'quiet' | 'paced'`, and a paced
+ * job reports its remaining seconds. This only proves the reason and
+ * remaining seconds reach `onJobWaiting` (the wire, via `daemon.ts`'s
+ * passthrough broadcast) — rendering it (Studio's "waiting — next
+ * repetition in 4s" line) is step 94.10's own surface, not this one's.
+ */
+describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () => {
+  test('a job whose notBefore is in the future is reported waiting with reason: "paced" and a positive remainingSec — and is NOT excluded from claimNext (pacing is per-row, never device-wide)', () => {
+    const now = Math.floor(Date.now() / 1000)
+    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
+    const waitingEvents: Array<{ jobId: string; deviceId: string; waiting: boolean; reason: 'quiet' | 'paced'; heldBy: LeaseHolder | null; remainingSec: number }> = []
+    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+
+    scheduler.kick()
+
+    expect(waitingEvents).toHaveLength(1)
+    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', deviceId: 'd1', waiting: true, reason: 'paced', heldBy: null })
+    expect(waitingEvents[0]!.remainingSec).toBeGreaterThan(0)
+    expect(waitingEvents[0]!.remainingSec).toBeLessThanOrEqual(5)
+    // The quiet gate's own exclusion list is empty — a paced job's own SQL
+    // predicate (job-store.ts) is what keeps it from claiming, not the
+    // scheduler excluding its device wholesale.
+    const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
+    expect(calls.some((ex) => ex.length === 0)).toBe(true)
+  })
+
+  test('notBefore null (the overwhelming majority of jobs, and every job before this column existed) never reports a paced wait', () => {
+    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: null })
+    const waitingEvents: unknown[] = []
+    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+
+    scheduler.kick()
+
+    expect(waitingEvents).toHaveLength(0)
+  })
+
+  test('notBefore already in the past does not report a paced wait', () => {
+    const now = Math.floor(Date.now() / 1000)
+    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now - 5 })
+    const waitingEvents: unknown[] = []
+    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+
+    scheduler.kick()
+
+    expect(waitingEvents).toHaveLength(0)
+  })
+
+  test('a device that is both quiet-blocked AND paced reports "quiet" — the quiet gate is what is actually excluding it from claimNext right now', () => {
+    const now = Math.floor(Date.now() / 1000)
+    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
+    const waitingEvents: Array<{ reason: 'quiet' | 'paced' }> = []
+    const scheduler = createScheduler(
+      baseDeps({
+        jobStore,
+        quiet: {
+          quietPeriodSec: () => 10,
+          maxWaitSec: () => 120,
+          lastManualReleaseAt: () => now - 2,
+          lastManualHolder: () => null,
+        },
+        onJobWaiting: (info) => waitingEvents.push(info),
+      }),
+    )
+
+    scheduler.kick()
+
+    expect(waitingEvents).toHaveLength(1)
+    expect(waitingEvents[0]!.reason).toBe('quiet')
   })
 })

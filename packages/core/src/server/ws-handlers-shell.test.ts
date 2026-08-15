@@ -10,6 +10,7 @@ import { createJobStore } from '../queue/job-store'
 import { createLeaseManager } from '../lease/lease-manager'
 import { createLogger } from '../util/logger'
 import type { Role } from '../auth/service'
+import { createCommandRunStore, type CommandRunStore } from '../command-console/store'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
@@ -38,6 +39,9 @@ function fakeSession(deviceId: string): DeviceSession {
     transport: {} as unknown as Transport,
     display: {} as unknown as DisplaySource,
     input: {} as unknown as InputSink,
+    // Plan 91 §4.1 — `arbiter` is required on `DeviceSession` now; this fixture never sends
+    // input.* and never exercises it, so a bare stub keeps the type honest without wiring one up.
+    arbiter: {} as unknown as DeviceSession['arbiter'],
     displayEngineId: 'screencap-loop',
     quality: 'control',
     inputEngineId: 'adb-input',
@@ -50,6 +54,14 @@ function fakeSession(deviceId: string): DeviceSession {
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
     clipboard: null,
+    textInput: {
+      mode: 'device',
+      agentCapabilities: null,
+      imeCurrent: false,
+      commitViaAgent: async () => {
+        throw new Error('no guest agent client wired in this fixture')
+      },
+    },
     close: async () => {},
   }
 }
@@ -70,7 +82,9 @@ function fakeSessionManager(): SessionManager {
     async closeDevice() {},
     async closeIfIdle() {},
     idleSessions: () => [],
-    async closeAll() {},
+    async closeAll() {
+      return 0
+    },
   }
 }
 
@@ -101,8 +115,20 @@ function fakeAdbClient(execImpl: (serial: string, cmd: string, opts?: AdbExecOpt
 function setUpHandler(
   db: Db,
   client: AdbClient,
-  opts?: { role?: Role; shellMode?: ShellMode },
-): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[] } {
+  opts?: {
+    role?: Role
+    shellMode?: ShellMode
+    /**
+     * Step 93.5 — `commandRunStore` is optional on `WsHandlerDeps` so every
+     * OTHER test in this file (built before this dep existed) keeps
+     * compiling and behaving unchanged with it wired in silently. One
+     * dedicated test below passes `withoutCommandRunStore: true` to prove
+     * `shell.exec` still completes normally when a host has not wired it up
+     * at all — never a refusal, never a crash, just no history row.
+     */
+    withoutCommandRunStore?: boolean
+  },
+): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[]; commandRunStore: CommandRunStore } {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
@@ -114,6 +140,7 @@ function setUpHandler(
     onJobLeaseExpired: () => {},
   })
   const events: RecordedEvent[] = []
+  const commandRunStore = createCommandRunStore(db)
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(),
     pairing: {
@@ -134,6 +161,13 @@ function setUpHandler(
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
+      assists: () => [],
+      // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these shell tests;
+      // present only so this fixture keeps satisfying `JobService`.
+      nodes: () => ({ items: [], finalized: false }),
+      resume: () => {
+        throw new Error('not used')
+      },
     },
     broadcast: () => {},
     recorder: { record: (e) => void events.push(e), stop: async () => {} },
@@ -141,6 +175,7 @@ function setUpHandler(
     isLogInputTextEnabled: () => false,
     roleOf: () => opts?.role ?? 'admin',
     shellSettings: () => ({ mode: opts?.shellMode ?? 'admin', execTimeoutMs: 15_000, maxOutputBytes: 262_144 }),
+    ...(opts?.withoutCommandRunStore ? {} : { commandRunStore }),
     // This suite is about the terminal (plan 26), not the adb endpoint
     // (plan 27) — a fake that never actually opens anything is enough here.
     adbEndpoint: { open: async () => ({ host: '127.0.0.1', port: 0, expiresAt: 0 }), close: () => {}, get: () => null, closeAllForClient: () => {} },
@@ -153,7 +188,7 @@ function setUpHandler(
     db,
     log,
   }
-  return { handler: createWsMessageHandler(deps), events }
+  return { handler: createWsMessageHandler(deps), events, commandRunStore }
 }
 
 async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
@@ -602,5 +637,137 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const err = viewer.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
     expect(events).toHaveLength(0)
+  })
+})
+
+describe('shell.exec records through the command console history store (plan 93 §3.3, §3.17, step 93.5)', () => {
+  test('an accepted, successful command becomes a one-member run with its exit code — one history, not two', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
+
+    const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(page.items).toHaveLength(1)
+    const summary = page.items[0]
+    if (!summary) throw new Error('no command run recorded')
+    expect(summary.cmd).toBe('echo hi')
+    expect(summary.status).toBe('ok')
+    expect(summary.counts).toEqual({ total: 1, pending: 0, running: 0, ok: 1, failed: 0, skipped: 0, cancelled: 0 })
+
+    const run = commandRunStore.get(summary.id)
+    expect(run?.members).toHaveLength(1)
+    const member = run?.members[0]
+    expect(member?.deviceId).toBe('dev-1')
+    expect(member?.status).toBe('ok')
+    expect(member?.exitCode).toBe(0)
+    expect(member?.stdout).toBe('hi')
+  })
+
+  test('a non-zero exit still records — a history that only remembers successes hides the command an operator is looking for', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('', 1, 'boom'))
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'false' } }))
+
+    const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(page.items).toHaveLength(1)
+    expect(page.items[0]?.status).toBe('failed')
+    const run = commandRunStore.get(page.items[0]?.id ?? '')
+    expect(run?.members[0]?.status).toBe('failed')
+    expect(run?.members[0]?.exitCode).toBe(1)
+    expect(run?.members[0]?.stderr).toBe('boom')
+  })
+
+  test('a device-side failure (a thrown error, e.g. a deadline) records exitCode null with the real error text — property 1', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => {
+      throw new AdbError('E_ADB_TIMEOUT', 'adb shell:sleep 99 exceeded 15000ms')
+    })
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'sleep 99' } }))
+
+    const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(page.items).toHaveLength(1)
+    expect(page.items[0]?.status).toBe('failed')
+    const run = commandRunStore.get(page.items[0]?.id ?? '')
+    expect(run?.members[0]?.exitCode).toBeNull()
+    expect(run?.members[0]?.error).toBe('adb shell:sleep 99 exceeded 15000ms')
+    expect(run?.members[0]?.status).toBe('failed')
+  })
+
+  test('a refused command (no lease) writes NO history row, matching device_events (acceptance #5\'s own rule)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
+
+    const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(page.items).toHaveLength(0)
+  })
+
+  test('createdBy is the acting user — "?mine=1" history is per-user', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+    a.ws.data = { userId: 'user-alice' } as never
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
+
+    const mine = commandRunStore.listPage({ createdBy: 'user-alice', deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(mine.items).toHaveLength(1)
+    const someoneElse = commandRunStore.listPage({ createdBy: 'user-bob', deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    expect(someoneElse.items).toHaveLength(0)
+  })
+
+  test('recording adds a row, not a delay: durationMs on the wire matches the member row (no synchronous write on the hot path changes timing)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
+    const { handler, commandRunStore } = setUpHandler(db, client)
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
+
+    const result = a.sent.find((m) => m.type === 'shell.result')
+    const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
+    const run = commandRunStore.get(page.items[0]?.id ?? '')
+    if (result?.type === 'shell.result') expect(run?.members[0]?.durationMs).toBe(result.payload.durationMs)
+    else throw new Error('no shell.result received')
+  })
+
+  test('when `commandRunStore` is not wired at all (an older host), shell.exec still runs and broadcasts normally', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'idle')
+    const client = fakeAdbClient(async () => shellResult('hi', 0))
+    const { handler } = setUpHandler(db, client, { withoutCommandRunStore: true })
+    const a = fakeConn()
+
+    await acquireLease(handler, a.ws, 'dev-1')
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
+
+    expect(a.sent.some((m) => m.type === 'error')).toBe(false)
+    const result = a.sent.find((m) => m.type === 'shell.result')
+    if (result?.type === 'shell.result') expect(result.payload.exitCode).toBe(0)
+    else throw new Error('no shell.result received')
   })
 })

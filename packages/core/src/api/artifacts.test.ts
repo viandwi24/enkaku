@@ -161,3 +161,63 @@ describe('POST /api/artifacts — multipart upload (plan 39 §4.4)', () => {
     expect(res.status).toBe(400)
   })
 })
+
+/**
+ * `GET /api/artifacts?kind=upload` (plan 93 §3.13, §4.4, §4.7, step 93.10,
+ * closing F14) — before this, an uploaded artifact (`jobId: null,
+ * deviceId: null`) could never be listed at all: `?jobId=`/`?deviceId=`
+ * both require a non-null value to match against, so the row was invisible
+ * to every existing query mode.
+ */
+describe('GET /api/artifacts?kind=upload (plan 93 §3.13, §4.4, §4.7, step 93.10, closing F14)', () => {
+  test('lists exactly the rows with BOTH jobId and deviceId null — an upload — never a job or device artifact', async () => {
+    const db = setUp()
+    db.insert(artifacts).values({ id: 'upload-1', jobId: null, deviceId: null, kind: 'file', label: 'build.apk', path: 'artifacts/uploads/1-build.apk', sizeBytes: 100, createdAt: new Date(1_700_000_000 * 1000) }).run()
+    db.insert(artifacts).values({ id: 'upload-2', jobId: null, deviceId: null, kind: 'file', label: 'other.apk', path: 'artifacts/uploads/2-other.apk', sizeBytes: 200, createdAt: new Date(1_700_000_001 * 1000) }).run()
+    seed(db, 'job-1', 2) // job-scoped artifacts — must NOT appear
+    db.insert(artifacts).values({ id: 'device-1', jobId: null, deviceId: 'dev-1', kind: 'log', label: 'saved.log', path: 'artifacts/device-dev-1/x.log', sizeBytes: 5, createdAt: new Date() }).run()
+
+    const app = createArtifactRoutes({ db, dataDir: '/tmp' })
+    const res = await app.request('/?kind=upload')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ id: string; jobId: string | null; deviceId: string | null }> }
+    const ids = body.items.map((a) => a.id).sort()
+    expect(ids).toEqual(['upload-1', 'upload-2'])
+    for (const item of body.items) {
+      expect(item.jobId).toBeNull()
+      expect(item.deviceId).toBeNull()
+    }
+  })
+
+  test('paginates like every other list mode (oldest first, keyset cursor)', async () => {
+    const db = setUp()
+    for (let i = 0; i < 5; i++) {
+      db.insert(artifacts)
+        .values({ id: `up-${i}`, jobId: null, deviceId: null, kind: 'file', label: `f${i}`, path: `artifacts/uploads/${i}.bin`, sizeBytes: 1, createdAt: new Date((1_700_000_000 + i) * 1000) })
+        .run()
+    }
+    const app = createArtifactRoutes({ db, dataDir: '/tmp' })
+    const seen: string[] = []
+    let cursor: string | null = null
+    for (;;) {
+      const url = cursor ? `/?kind=upload&limit=2&cursor=${encodeURIComponent(cursor)}` : '/?kind=upload&limit=2'
+      const res = await app.request(url)
+      const body = (await res.json()) as { items: Array<{ id: string }>; nextCursor: string | null }
+      seen.push(...body.items.map((a) => a.id))
+      if (body.nextCursor === null) break
+      cursor = body.nextCursor
+      expect(seen.length).toBeLessThan(20)
+    }
+    expect(seen).toEqual(['up-0', 'up-1', 'up-2', 'up-3', 'up-4'])
+  })
+
+  test('an empty store returns an empty page, not an error', async () => {
+    const db = setUp()
+    const app = createArtifactRoutes({ db, dataDir: '/tmp' })
+    const res = await app.request('/?kind=upload')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: unknown[]; total: number | null }
+    expect(body.items).toEqual([])
+    expect(body.total).toBe(0)
+  })
+})

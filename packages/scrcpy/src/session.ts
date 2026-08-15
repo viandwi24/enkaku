@@ -111,11 +111,35 @@ export interface ScrcpySession {
  * is control (this ordering is part of the internal protocol — TODO-verify on
  * a real device).
  */
+/**
+ * Reserved top byte of every `scid` this codebase mints. Cuts the random
+ * part from 31 to 24 bits — still ~16.7M values, far more entropy than this
+ * farm's handful of concurrent sessions ever needs — so that
+ * `sweepStrayScrcpyServers`'s boot-time pass (which runs with an empty
+ * `knownScids`, i.e. "kill anything unrecognised") can tell "an orphan of
+ * OUR OWN prior session" apart from any other process that merely happens
+ * to carry a `scid=<hex>` token on its command line, and never kill the
+ * latter. Without this, an empty `knownScids` made the sweep indistinguishable
+ * from "kill every process matching this pattern, ours or not."
+ *
+ * MUST stay `<= 0x7f`: scrcpy's server parses `scid` with Java's
+ * `Integer.parseInt(scid, 16)` — SIGNED 32-bit, not `parseUnsignedInt`. A top
+ * byte with its high bit set (anything `>= 0x80`, e.g. the `0xec` this was
+ * shipped with) makes every `scid` this process mints exceed
+ * `Integer.MAX_VALUE` (0x7fffffff), and the server throws
+ * `NumberFormatException` before it ever starts — 100% of sessions falling
+ * back to screencap-loop, not an occasional one. `0x7f` keeps the marker
+ * distinctive while staying inside the signed range.
+ */
+const SCID_MARKER_BYTE = 0x7f
+export const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
+
 export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOptions): Promise<ScrcpySession> {
   const log = opts.onLog ?? (() => {})
-  const scid = Math.floor(Math.random() * 0x7fffffff)
-    .toString(16)
-    .padStart(8, '0')
+  const scidRandomBytes = new Uint8Array(3)
+  crypto.getRandomValues(scidRandomBytes)
+  const scid =
+    SCID_MARKER_PREFIX + Array.from(scidRandomBytes, (b) => b.toString(16).padStart(2, '0')).join('')
 
   // 1. Push the jar (its version is pinned to the core).
   await adb.hostAdb(['-s', adb.serial, 'push', opts.jarPath, DEVICE_JAR_PATH])
@@ -259,9 +283,132 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       }
       closedDeliberately = true
       serverChild?.kill()
+      await stopDeviceSide(adb, scid)
       await adb.hostAdb(['-s', adb.serial, 'forward', '--remove', `tcp:${port}`]).catch(() => undefined)
     },
   }
+}
+
+/**
+ * Best-effort, scid-scoped device-side stop (96.23 —
+ * `docs/plans/96-m61-hotfixes.md`, promoted to a hard prerequisite by plan
+ * 100 §3.5/§3.2). `serverChild?.kill()` above only terminates the HOST-side
+ * `adb` CLI child; it never signals the `app_process` scrcpy actually
+ * started on the device. Usually invisible — the server notices its sockets
+ * close and exits on its own — but a session whose sockets never
+ * successfully connected (the exact failure class behind the
+ * screencap-loop fallback, §96.22) leaves nothing telling that process to
+ * stop, and it keeps encoding video into a socket nobody is reading.
+ * Observed directly on real hardware: a core-spawned server still alive
+ * 7m42s after the core had given up on it (§96.23).
+ *
+ * `pkill -f 'scid=<scid>'` is not a guess: it is the literal command plan
+ * 100's own G12 hardware probe used by hand to kill ONE of three concurrent
+ * servers on the owner's phone (moto g06 power) and confirmed the other two
+ * kept running undisturbed — exactly the "target this session's own
+ * process, never every scrcpy process on the device" property a
+ * two-concurrent-session design (plan 100 §3.2) depends on. `scid` is an 8
+ * hex-digit token minted fresh per session above (`crypto.getRandomValues`-
+ * derived — never `Math.random()`, per this codebase's own convention for
+ * anything security- or identity-adjacent — never user input, never
+ * re-used), so the substring is unique to this one process's command line —
+ * and every device-side process this session could
+ * have started (the `Server` itself, and its `CleanUp` companion, which is
+ * only spawned once the server has accepted a connection) is launched with
+ * that same token on its own command line, so one `pkill -f` reaches both.
+ *
+ * Best-effort and MUST NEVER fail (or meaningfully delay) `close()`: a
+ * phone that has already vanished (USB unplugged, adb offline) cannot
+ * usefully surface a second error here — the same reasoning
+ * `packages/core/src/device/transfer.ts`'s `install()` documents in its own
+ * `finally` block for a staged APK it could not delete.
+ */
+async function stopDeviceSide(adb: AdbExecutor, scid: string): Promise<void> {
+  await adb.exec(`pkill -f 'scid=${scid}'`).catch(() => undefined)
+}
+
+/** One device-side scrcpy process, as read off `ps -A -o pid,args` (see `parseScrcpyServerList`). */
+export interface DeviceScrcpyProcess {
+  pid: number
+  /** The `scid=<hex>` token carried on this process's own command line — every launch above sets it first. */
+  scid: string
+}
+
+/**
+ * Parses `ps -A -o pid,args` output into every process this package's own
+ * sessions could have started, keyed by the `scid` each one's launch
+ * arguments carry. A line that has no PID, or whose command line carries no
+ * recognisable `scid=<hex>` token, is silently skipped rather than guessed
+ * at — this deliberately does NOT filter on a process name (`app_process`,
+ * `com.genymobile.scrcpy.Server`/`CleanUp`) because Android's own `ps`
+ * truncates or renames comm strings inconsistently across OEMs and API
+ * levels; the `scid=` token in the full argument list is the one thing
+ * every process this codebase spawns is guaranteed to carry, and it is
+ * this codebase's own random token, not something another app could
+ * plausibly collide with.
+ */
+export function parseScrcpyServerList(psOutput: string): DeviceScrcpyProcess[] {
+  const out: DeviceScrcpyProcess[] = []
+  for (const line of psOutput.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const match = /^(\d+)\s+(.*)$/.exec(trimmed)
+    if (!match) continue
+    const [, pidStr, args] = match
+    const scidMatch = /scid=([0-9a-f]+)/.exec(args ?? '')
+    if (!scidMatch) continue
+    const pid = Number.parseInt(pidStr ?? '', 10)
+    if (!Number.isInteger(pid)) continue
+    out.push({ pid, scid: scidMatch[1]! })
+  }
+  return out
+}
+
+/**
+ * Kills every device-side scrcpy process whose `scid` is NOT in
+ * `knownScids` — orphans left by a crash, an ungraceful shutdown, or any
+ * session that never reached `close()` at all (96.23; plan 100 §3.5's
+ * "startup sweep"). Never touches a process whose scid IS recognised —
+ * the same "never touch a sibling session" property `stopDeviceSide`
+ * guarantees for one session's own close().
+ *
+ * Meant to be called once per attached device at boot, before any session
+ * is built, with `knownScids` empty — nothing is open yet in a fresh
+ * process, so every scrcpy process `ps` still finds at that point is, by
+ * definition, an orphan from whatever ran before this boot (a prior crash,
+ * or an ungraceful shutdown that skipped every `close()`). The signature
+ * also supports a narrower sweep later (a non-empty `knownScids`), but
+ * nothing in step 100.1 calls it that way yet.
+ *
+ * Best-effort throughout, matching `stopDeviceSide`: a device that cannot
+ * answer `ps` (offline, no permission, USB unplugged) is not this
+ * function's problem to surface — it returns an empty result rather than
+ * throwing, and boot must never fail because one attached phone could not
+ * be swept.
+ *
+ * Also filters on `SCID_MARKER_PREFIX`: a process whose `scid=` token does
+ * not carry our reserved top byte is never a candidate for `strays`, no
+ * matter what `knownScids` says. This matters specifically for the
+ * boot-time call shape (`knownScids` empty) — without it, "unrecognised"
+ * would mean "everything," and a coincidental `scid=<hex>` token on some
+ * unrelated process's command line would get killed on sight.
+ */
+export async function sweepStrayScrcpyServers(
+  exec: (cmd: string) => Promise<string>,
+  knownScids: ReadonlySet<string>,
+): Promise<{ killedScids: string[] }> {
+  let psOutput: string
+  try {
+    psOutput = await exec('ps -A -o pid,args')
+  } catch {
+    return { killedScids: [] }
+  }
+  const strays = parseScrcpyServerList(psOutput).filter(
+    (p) => p.scid.startsWith(SCID_MARKER_PREFIX) && !knownScids.has(p.scid),
+  )
+  if (strays.length === 0) return { killedScids: [] }
+  await exec(`kill -9 ${strays.map((p) => p.pid).join(' ')}`).catch(() => undefined)
+  return { killedScids: [...new Set(strays.map((p) => p.scid))] }
 }
 
 /**

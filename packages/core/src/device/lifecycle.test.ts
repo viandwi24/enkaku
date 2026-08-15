@@ -196,6 +196,66 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     expect(calls).toEqual([{ deviceId: 'd1', rowStillThere: true }])
   })
 
+  test('removing a device clears its physical label first, while the row still exists (plan 89 §3.7 point 4)', async () => {
+    const calls: Array<{ deviceId: string; rowStillThere: boolean }> = []
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const lifecycle = createDeviceLifecycle({
+      db,
+      leases,
+      log,
+      clearLabel: async (deviceId) => {
+        calls.push({ deviceId, rowStillThere: db.select().from(devices).where(eq(devices.id, deviceId)).get() !== undefined })
+      },
+    })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+
+    expect(calls).toEqual([{ deviceId: 'd1', rowStillThere: true }])
+  })
+
+  test('a label clear that fails still removes the device, and is recorded rather than silently swallowed', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const events: Recorded[] = []
+    const lifecycle = createDeviceLifecycle({
+      db,
+      leases,
+      log,
+      record: (e) => events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta }),
+      clearLabel: async () => {
+        throw new Error('agent unreachable')
+      },
+    })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()).toBeUndefined()
+    expect(events).toContainEqual(expect.objectContaining({ deviceId: 'd1', kind: 'device.label' }))
+  })
+
   test('block takes the route down too — a blocked phone never comes back to be cleaned up later', async () => {
     const calls: string[] = []
     const opened = openDb(':memory:')
@@ -211,6 +271,28 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
       onJobLeaseExpired: () => {},
     })
     const lifecycle = createDeviceLifecycle({ db, leases, log, revertNetwork: async (id) => void calls.push(id) })
+    seedDevice(db, 'd1', 'idle')
+
+    await lifecycle.block('d1', { actor: { userId: 'u1' } })
+
+    expect(calls).toEqual(['d1'])
+  })
+
+  test('block clears the physical label too, same as forget', async () => {
+    const calls: string[] = []
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const lifecycle = createDeviceLifecycle({ db, leases, log, clearLabel: async (id) => void calls.push(id) })
     seedDevice(db, 'd1', 'idle')
 
     await lifecycle.block('d1', { actor: { userId: 'u1' } })

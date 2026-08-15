@@ -1,13 +1,35 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { FarmSettingsSchema } from '@enkaku/protocol'
 import '@/lib/test/nav'
-import { setSearchParams } from '@/lib/test/nav'
+import { mockRouter, setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import JobDetailPage from './page'
 
+/**
+ * A real, schema-defaulted `settings` body for `GET /api/settings` (plan 98
+ * §3.9 item 4, §5 step 98.8) — every field `FarmSettingsSchema` does not
+ * mention here keeps its own default, exactly like `runtime-envelope.test.ts`'s
+ * own `farmWith` helper, rather than a hand-typed partial object that would
+ * fail `SettingsResponseSchema.safeParse` on the first field this schema
+ * adds that the fixture forgot.
+ */
+function settingsResponse(memory: { defaultMaxRssBytes: number | null; maxRssBytes?: number | null }) {
+  return {
+    body: {
+      settings: FarmSettingsSchema.parse({ job: { memory: { defaultMaxRssBytes: memory.defaultMaxRssBytes, maxRssBytes: memory.maxRssBytes ?? null } } }),
+      schema: {},
+      deviceSchema: {},
+    },
+  }
+}
+
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  mockRouter.push.mockClear()
+})
 
 const job = {
   jobId: 'job-1',
@@ -199,7 +221,10 @@ describe('JobDetailPage — hierarchy', () => {
     expect(details?.hasAttribute('open')).toBe(false)
   })
 
-  test('a findings-shaped result renders as a list with its severities, not a JSON blob', async () => {
+  test('an undeclared result (no resultSchema) renders raw, byte-identically, whatever its shape (plan 97 §5 step 97.6)', async () => {
+    // F20's opportunistic `findings[]` guess is gone (plan 97 §3.6) — a
+    // schema-less result of ANY shape, including one that used to trigger
+    // the special-cased list, falls straight to the raw `<pre>`.
     setSearchParams({ id: 'job-1' })
     renderWithApi(
       <JobDetailPage />,
@@ -215,8 +240,8 @@ describe('JobDetailPage — hierarchy', () => {
       }),
     )
     await waitFor(() => expect(document.body.textContent).toContain('checkout button missing'))
-    expect(document.body.textContent).toContain('high')
-    expect(document.body.textContent).toContain('view raw JSON')
+    expect(document.body.textContent).toContain('"severity": "high"')
+    expect(document.body.textContent).not.toContain('view raw JSON')
   })
 
   test('a result that is not findings-shaped still renders raw, unchanged', async () => {
@@ -231,5 +256,344 @@ describe('JobDetailPage — hierarchy', () => {
     renderWithApi(<JobDetailPage />, baseResponses({ body: { job } }))
     await waitFor(() => expect(document.body.textContent).toContain('queued'))
     expect(document.body.textContent).toContain('started')
+  })
+})
+
+/**
+ * Plan 98 §3.9 item 4, §4.4, H1 — step 98.2, "measure before limiting": the
+ * job row's `peakRssBytes` reaching Studio's Summary tab. No memory LIMIT
+ * renders anywhere yet (that is a later step) — only the measurement.
+ */
+describe('JobDetailPage — peak memory (plan 98 §4.4, H1)', () => {
+  test('a job with a recorded peak shows it, formatted', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, peakRssBytes: 209_715_200 } } }),
+    )
+    await waitFor(() => expect(screen.getByText('Peak memory')).toBeTruthy())
+    expect(screen.getByText('200.0 MB')).toBeTruthy()
+  })
+
+  test('a job with no recorded peak shows a dash and says why, rather than a blank or a zero', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job } }))
+    await waitFor(() => expect(screen.getByText('Peak memory')).toBeTruthy())
+    expect(screen.getByText('not measured for this job')).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 98 §3.9 item 4, §5 step 98.8 — "Peak memory 812 MB / 512 MB limit."
+ * `resolveRuntime` is the ONLY place precedence is computed (§3.8 rule 1);
+ * this page just renders the number it resolves to, off the farm's own
+ * `job.memory.*` and the script's own declared `runtime.maxRssBytes`.
+ */
+describe('JobDetailPage — peak memory shows the resolved limit (plan 98 §3.9 item 4, §5 step 98.8)', () => {
+  test('a limit resolves (farm default, no script declaration): the row reads "peak / limit"', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      {
+        ...baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, peakRssBytes: 209_715_200 } } }),
+        '/api/settings': settingsResponse({ defaultMaxRssBytes: 536_870_912 }),
+      },
+    )
+    await waitFor(() => expect(screen.getByText('200.0 MB / 512.0 MB limit')).toBeTruthy())
+  })
+
+  test("the SCRIPT's own declaration wins over the farm default, exactly like the runner (F5 closed by step 98.4)", async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      {
+        ...baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, peakRssBytes: 100_000_000 } } }),
+        '/api/scripts/script-1': { body: { script: { source: null, runtime: { maxRssBytes: 268_435_456 } } } },
+        '/api/settings': settingsResponse({ defaultMaxRssBytes: 536_870_912 }),
+      },
+    )
+    await waitFor(() => expect(screen.getByText(/95\.4 MB \/ 256\.0 MB limit/)).toBeTruthy())
+  })
+
+  test('no limit configured anywhere: the row shows only the peak, no "/ limit" tacked onto nothing', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      {
+        ...baseResponses({ body: { job: { ...job, status: 'success', finishedAt: 1_700_000_100, peakRssBytes: 209_715_200 } } }),
+        '/api/settings': settingsResponse({ defaultMaxRssBytes: null }),
+      },
+    )
+    await waitFor(() => expect(screen.getByText('Peak memory')).toBeTruthy())
+    expect(screen.getByText('200.0 MB')).toBeTruthy()
+    expect(screen.queryByText(/limit/)).toBeNull()
+  })
+})
+
+/**
+ * Plan 91 §1, §3.5, §5 step 91.5 — "a job that mysteriously succeeded
+ * because someone tapped a modal is a lie in the history." `GET
+ * /api/jobs/:id/assists` is the detail behind `jobs.assistCount`.
+ */
+describe('JobDetailPage — Assisted by (plan 91 §3.5, §5 step 91.5)', () => {
+  test('an assisted job shows who and when, once the assists fetch resolves', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, {
+      ...baseResponses({ body: { job: { ...job, assistCount: 2 } } }),
+      '/api/jobs/job-1/assists': {
+        body: {
+          items: [
+            { id: 'ev-1', deviceId: 'device-1', stream: 'input', kind: 'input.tap', actor: 'operator-1', meta: { assist: true, jobId: 'job-1' }, at: 500 },
+            { id: 'ev-2', deviceId: 'device-1', stream: 'input', kind: 'input.key', actor: 'operator-1', meta: { assist: true, jobId: 'job-1' }, at: 600 },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('assisted by 2 actions')).toBeTruthy())
+    expect(screen.getAllByText(/operator-1/).length).toBeGreaterThan(0)
+  })
+
+  test('an un-assisted job (the common case) shows no "Assisted by" card at all', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, {
+      ...baseResponses({ body: { job } }),
+      '/api/jobs/job-1/assists': { body: { items: [] } },
+    })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'checkout@1.0.0' })).toBeTruthy())
+    expect(screen.queryByText(/assisted by/)).toBeNull()
+  })
+})
+
+/**
+ * The node timeline (plan 99 §3.5, §3.7, §4.9, §4.11, step 99.10) — the
+ * step's own verifiable result: which node failed and why, without opening
+ * the log. `workflowJob` reuses `script-1` as the (workflow) scriptId so
+ * `baseResponses`' existing `/api/scripts/script-1` mock only needs
+ * widening, not a second script id threaded through every test above.
+ */
+const workflowJob = { ...job, scriptId: 'script-1', scriptName: 'my-pipeline', status: 'failed', error: 'search1 failed', errorPhase: 'run', finishedAt: 50 }
+
+const workflowDoc = {
+  schema: 1,
+  name: 'my-pipeline',
+  version: '1.0.0',
+  title: '',
+  description: '',
+  params: [],
+  nodes: [
+    { kind: 'script', id: 'scroll1', title: '', script: 'tiktok/auto-scroll@1.0.0', params: {}, onFailure: { go: 'fail' } },
+    {
+      kind: 'gate',
+      id: 'enough-videos',
+      title: '',
+      when: { left: { from: 'scroll1', path: 'videos' }, op: 'gte', right: { const: 10 } },
+      then: { go: 'continue' },
+      else: { go: 'stop' },
+      message: '',
+    },
+    { kind: 'script', id: 'search1', title: '', script: 'tiktok/search@1.0.0', params: {}, onFailure: { go: 'fail' } },
+  ],
+  maxSteps: 50,
+}
+
+function nodesResponses(extra: Record<string, unknown> = {}) {
+  return {
+    ...baseResponses({ body: { job: workflowJob } }),
+    '/api/scripts/script-1': { body: { script: { source: null, workflow: workflowDoc } } },
+    ...extra,
+  }
+}
+
+describe('JobDetailPage — the node timeline (plan 99 §3.5, §3.7, §4.9, §4.11, step 99.10)', () => {
+  test('renders one row per node execution: a gate verdict sentence, and which node failed and why', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      nodesResponses({
+        '/api/jobs/job-1/nodes': {
+          body: {
+            items: [
+              {
+                seq: 0,
+                nodeId: 'scroll1',
+                kind: 'script',
+                scriptId: 's1',
+                scriptName: 'tiktok/auto-scroll',
+                scriptVersion: '1.0.0',
+                status: 'success',
+                duration: { startedAt: 0, finishedAt: 10, elapsedMs: 10_000 },
+                attempts: { current: 1, total: 3, lastError: null },
+                output: { value: { videos: 12 }, truncated: null, error: null, verdict: null },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+              {
+                seq: 1,
+                nodeId: 'enough-videos',
+                kind: 'gate',
+                scriptId: null,
+                scriptName: null,
+                scriptVersion: null,
+                status: 'success',
+                duration: { startedAt: 10, finishedAt: 10, elapsedMs: 0 },
+                attempts: { current: 0, total: null, lastError: null },
+                output: { value: null, truncated: null, error: null, verdict: { op: 'gte', left: 12, right: 10, value: true } },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+              {
+                seq: 2,
+                nodeId: 'search1',
+                kind: 'script',
+                scriptId: 's2',
+                scriptName: 'tiktok/search',
+                scriptVersion: '1.0.0',
+                status: 'failed',
+                duration: { startedAt: 11, finishedAt: 12, elapsedMs: 1000 },
+                attempts: { current: 3, total: 3, lastError: { code: 'E_TIMEOUT', message: 'no results within 30s' } },
+                output: { value: null, truncated: null, error: { code: 'E_TIMEOUT', message: 'no results within 30s' }, verdict: null },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+            ],
+            finalized: true,
+          },
+        },
+      }),
+    )
+    // The gate verdict, rendered as a sentence — plan 99 §3.7's own example shape.
+    await waitFor(() => expect(screen.getByText('enough-videos — scroll1.videos (12) >= 10 → continue')).toBeTruthy())
+    // Which node failed (by name) and why — WITHOUT opening the log.
+    expect(screen.getByText('search1')).toBeTruthy()
+    expect(screen.getByText('no results within 30s')).toBeTruthy()
+  })
+
+  test('skipped and skipped-on-resume render distinguishably — different words, not the same badge', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      nodesResponses({
+        '/api/jobs/job-1/nodes': {
+          body: {
+            items: [
+              {
+                seq: 0,
+                nodeId: 'scroll1',
+                kind: 'script',
+                scriptId: 's1',
+                scriptName: 'tiktok/auto-scroll',
+                scriptVersion: '1.0.0',
+                status: 'skipped-on-resume',
+                duration: { startedAt: null, finishedAt: null, elapsedMs: null },
+                attempts: { current: 0, total: null, lastError: null },
+                output: { value: { videos: 12 }, truncated: null, error: null, verdict: null },
+                resumedFromJobId: 'original-job',
+                resumedFromNode: 'search1',
+              },
+              {
+                seq: 1,
+                nodeId: 'enough-videos',
+                kind: 'gate',
+                scriptId: null,
+                scriptName: null,
+                scriptVersion: null,
+                status: 'skipped',
+                duration: { startedAt: null, finishedAt: null, elapsedMs: null },
+                attempts: { current: 0, total: null, lastError: null },
+                output: { value: null, truncated: null, error: null, verdict: null },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+            ],
+            finalized: false,
+          },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('carried over')).toBeTruthy())
+    expect(screen.getByText('skipped')).toBeTruthy()
+    expect(document.body.textContent).toContain('Carried over from an earlier run — not re-executed this time.')
+    expect(document.body.textContent).toContain('Never reached — a gate branched around it.')
+    // A link back to the job it was carried over FROM.
+    const original = screen.getByText('See the original job').closest('a')
+    expect(original?.getAttribute('href')).toBe('/jobs/detail?id=original-job')
+  })
+
+  test('an ordinary (non-workflow) job shows no pipeline card at all', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, {
+      ...baseResponses({ body: { job } }),
+      '/api/jobs/job-1/nodes': { body: { items: [], finalized: false } },
+    })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'checkout@1.0.0' })).toBeTruthy())
+    expect(screen.queryByText('pipeline')).toBeNull()
+  })
+
+  test('Resume from here opens a confirmation naming every node that will not run again, and resuming navigates to the new job', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(
+      <JobDetailPage />,
+      nodesResponses({
+        '/api/jobs/job-1/nodes': {
+          body: {
+            items: [
+              {
+                seq: 0,
+                nodeId: 'scroll1',
+                kind: 'script',
+                scriptId: 's1',
+                scriptName: 'tiktok/auto-scroll',
+                scriptVersion: '1.0.0',
+                status: 'success',
+                duration: { startedAt: 0, finishedAt: 10, elapsedMs: 10_000 },
+                attempts: { current: 1, total: 3, lastError: null },
+                output: { value: { videos: 12 }, truncated: null, error: null, verdict: null },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+              {
+                seq: 2,
+                nodeId: 'search1',
+                kind: 'script',
+                scriptId: 's2',
+                scriptName: 'tiktok/search',
+                scriptVersion: '1.0.0',
+                status: 'failed',
+                duration: { startedAt: 11, finishedAt: 12, elapsedMs: 1000 },
+                attempts: { current: 3, total: 3, lastError: { code: 'E_TIMEOUT', message: 'no results within 30s' } },
+                output: { value: null, truncated: null, error: { code: 'E_TIMEOUT', message: 'no results within 30s' }, verdict: null },
+                resumedFromJobId: null,
+                resumedFromNode: null,
+              },
+            ],
+            finalized: true,
+          },
+        },
+        '/api/jobs/job-1/resume': {
+          body: {
+            job: { ...job, jobId: 'job-2', scriptId: 'script-1', scriptName: 'my-pipeline', status: 'queued' },
+          },
+        },
+      }),
+    )
+    await waitFor(() => expect(screen.getAllByText('Resume from here').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByRole('button', { name: /Resume from here/ })[1]!) // the failed node's own button
+    // Names the node it resumes from, and the ones that will not run again —
+    // never worded as restarting the original job.
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('Resume from')
+    // The DOCUMENT (not just this job's own rows) says what precedes
+    // "search1" — `scroll1` AND the `enough-videos` gate between them, even
+    // though this fixture's own `/nodes` response never wrote a row for the
+    // gate (a realistic case too: a resumed-from-a-resume chain, or a job
+    // still finalizing). Reading the document rather than only the rows is
+    // what makes this accurate instead of an undercount.
+    expect(dialog.textContent).toContain('2 nodes will not run again')
+    expect(dialog.textContent).toContain('scroll1')
+    expect(dialog.textContent).toContain('enough-videos')
+    expect(dialog.textContent).toContain('is untouched and stays in its history exactly as it ran')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/jobs/detail?id=job-2'))
   })
 })

@@ -1,25 +1,57 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Inbox, LayoutGrid, List, Plus, Search, Smartphone, Trash2, Upload } from 'lucide-react'
+import { Download, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, Search, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { DeviceResponseSchema, JobInfoSchema, type ClusterInfo, type DeviceInfo, type DeviceStatus, type JobInfo, type Readiness } from '@enkaku/protocol'
+import {
+  connectionBadge,
+  DeviceLabelsApplyResponseSchema,
+  DeviceNumberCompactResponseSchema,
+  DeviceResponseSchema,
+  JobInfoSchema,
+  ReconnectOutcomeSchema,
+  SettingsResponseSchema,
+  type ClusterInfo,
+  type DeviceInfo,
+  type DeviceLabelMode,
+  type DeviceStatus,
+  type JobInfo,
+  type Readiness,
+} from '@enkaku/protocol'
 import { z } from 'zod'
 import { DeviceCard } from '@/components/DeviceCard'
 import { DiscoveredTray } from '@/components/DiscoveredTray'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
+import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
+import { BulkTransferDialog } from '@/components/BulkTransferDialog'
+import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
+import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Wall } from '@/components/wall/Wall'
+import { FocusOverlay } from '@/components/wall/FocusOverlay'
+import { SelectionCursorBadge } from '@/components/wall/SelectionCursorBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, useAction } from '@/lib/actions'
+import { useBulkSelection } from '@/hooks/use-bulk-selection'
+import { api, describeApiError, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
+import { isAdmin, useAuth } from '@/lib/auth'
+import { readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -29,6 +61,25 @@ type Filter = 'all' | 'ready' | 'inUse' | 'attention'
 type ClusterFilter = 'all' | 'none' | (string & {})
 /** A readiness filter, by `actual` (plan 43 §4.6) — 'all' = no filter. */
 type ReadinessFilter = 'all' | 'hot' | 'awake' | 'asleep'
+/**
+ * A connection filter (plan 88 §3.1, §4.1, F5). Six values, not four — the
+ * badge only has USB / OTG / WI-FI / TCP, but an operator chasing a
+ * wired-farm problem usually wants "everything not on USB" more than three
+ * separate checkboxes, so `network` sits alongside the three fine-grained
+ * ones rather than replacing them. `network` filters on the OBSERVED `kind`
+ * field directly (the question adb can actually answer); `otg`/`wifi`/`tcp`
+ * filter on the derived badge (kind + medium together) for when the precise
+ * value matters, e.g. isolating exactly the wired-OTG rack during a cutover.
+ */
+type ConnectionFilter = 'all' | 'usb' | 'network' | 'otg' | 'wifi' | 'tcp'
+const CONNECTION_FILTER_LABEL: Record<ConnectionFilter, string> = {
+  all: 'Any connection',
+  usb: 'USB',
+  network: 'On the network',
+  otg: 'OTG',
+  wifi: 'Wi-Fi',
+  tcp: 'TCP (unknown)',
+}
 /** The View and Group controls (plan 47 §3.6, §4.5) — both linkable in the query string. */
 type View = 'list' | 'wall'
 type GroupBy = 'none' | 'cluster' | 'status' | 'tag'
@@ -52,6 +103,10 @@ function isGroupBy(v: string | null): v is GroupBy {
 function DashboardView() {
   const params = useSearchParams()
   const router = useRouter()
+  const { user } = useAuth()
+  // `device.quarantine` (admin-only, `packages/core/src/auth/acl.ts`) gates
+  // `POST /:id/unquarantine` — the fleet card's "Return to queue" button.
+  const canReleaseQuarantine = isAdmin(user)
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null)
   const [jobs, setJobs] = useState<JobInfo[]>([])
   const [clusters, setClusters] = useState<ClusterInfo[]>([])
@@ -61,39 +116,153 @@ function DashboardView() {
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [clusterFilter, setClusterFilter] = useState<ClusterFilter>('all')
   const [readinessFilter, setReadinessFilter] = useState<ReadinessFilter>('all')
+  const [connectionFilter, setConnectionFilter] = useState<ConnectionFilter>('all')
   // View (List | Wall) and Group (None | Cluster | Status | Tag) are two
   // orthogonal controls, both in the query string so a view is linkable
   // (plan 47 §3.6, §4.5) — this is what replaces the separate `/topology`
   // route: it becomes `view=wall&group=cluster`.
+  //
+  // Precedence, most specific first (plan 92 §3.10, §4.9, §9 Q1, decided
+  // 2026-08-12): URL query param -> this tab's session preference -> 'wall'.
+  // There is no farm setting in this chain — `wall.defaultView` does not
+  // exist. A shared `?view=` link still always wins (plan 47's own reason
+  // for putting the view in the query string), and a brand-new tab/window/
+  // session has no session preference to read, so it always falls through
+  // to the Wall — the unconditional landing view.
   const [view, setViewState] = useState<View>(() => {
     const v = params.get('view')
-    return isView(v) ? v : 'list'
+    if (isView(v)) return v
+    const p = readSessionPrefs().view
+    if (p) return p
+    return 'wall'
   })
   const [group, setGroupState] = useState<GroupBy>(() => {
     const g = params.get('group')
     return isGroupBy(g) ? g : 'none'
   })
+  // Tile size (plan 92 §3.11) — a property of the screen someone is sitting
+  // in front of, not a landing-view choice, so it lives in `localStorage`
+  // (via `readLocalPrefs`/`writeLocalPrefs`) and survives a new tab on
+  // purpose, unlike `view` above.
+  const [tileSize, setTileSizeState] = useState<TileSize>(() => readLocalPrefs().tileSize)
   const [error, setError] = useState<string | null>(null)
   const [enrollOpen, setEnrollOpen] = useState(false)
   // Multi-select for a batch action (plan 39 §4.5, §4.7) — "Install on
   // selected" is the only action today; the shape leaves room for others later.
+  // Plan 91 §5 step 91.8 (F11, F12): migrated off a hand-rolled `Set` onto
+  // `useBulkSelection` below, which needs a plain array to hand back a
+  // single `setSelected` call — and, unlike before, selection now works in
+  // BOTH List and Wall view off this one piece of state (F11: the wall
+  // tile used to hard-code no selection surface at all).
   const [selectMode, setSelectMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [installBatchOpen, setInstallBatchOpen] = useState(false)
+  // Push/Pull file (plan 93 §3.11, §3.16, §4.8, F15, step 93.11) — one
+  // dialog, two modes, beside the existing Install: `BulkTransferDialog`
+  // posts a batch (`internal:push`/`internal:pull`) exactly like
+  // `InstallBatchDialog` does, and stays open showing the same report.
+  const [bulkTransferOpen, setBulkTransferOpen] = useState<'push' | 'pull' | null>(null)
+  // "Wake selected" / "Sleep selected" (plan 93 §3.15, §4.8, F15, H3, step
+  // 93.11): `wakeOrSleepSelected` used to emit one anonymous summary toast
+  // that could never name a failing device (F15's third named defect). It
+  // now reports through the same `OutcomeSummary`/`SkippedGroups` shape
+  // every other bulk surface in this plan uses, held here rather than in a
+  // toast so the names stay on screen until dismissed.
+  const [wakeSleepReport, setWakeSleepReport] = useState<{ verb: string; okCount: number; total: number; refused: NamedOutcome[] } | null>(null)
   // Removal (plan 47 §4.5): a single-device dialog (row menu, offers Block
   // instead on refusal) and a bulk one for the multi-select toolbar.
   const [forgetTarget, setForgetTarget] = useState<DeviceInfo | null>(null)
   const [forgetOpen, setForgetOpen] = useState(false)
   const [bulkForgetOpen, setBulkForgetOpen] = useState(false)
+  // Per-device disconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4) — same
+  // target/open pair as `forgetTarget`/`forgetOpen` above. Reconnect fires
+  // directly (§3.8: it is not destructive), no dialog of its own.
+  const [disconnectTarget, setDisconnectTarget] = useState<DeviceInfo | null>(null)
+  const [disconnectOpen, setDisconnectOpen] = useState(false)
   // Discovered tray (plan 56 §4.5): phones adb has seen that nobody has
   // admitted yet. Its own entry point, not a third List/Wall view — it is
   // rendered only once `discovered.length > 0` so an empty tray costs
   // nothing visually.
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([])
   const [trayOpen, setTrayOpen] = useState(false)
-  const { run } = useAction()
+  // Plan 89 §3.2 point 5, §5 step 89.3 — the fleet-wide renumber compaction.
+  // There is no dry-run endpoint (`POST /api/devices/numbers/compact` just
+  // does it), so the confirm dialog cannot honestly preview a count before
+  // the click — it says what the action DOES, and the actual count is
+  // reported afterward in the success toast, never promised up front.
+  const [renumberOpen, setRenumberOpen] = useState(false)
+  // The farm's default labelling mode (plan 89 §3.8, §5 step 89.8) — read
+  // once from `/api/settings`, the same fetch the device page's own
+  // `farmVideo` uses. Only consulted by `AdmitDeviceDialog`'s checkbox,
+  // which reflects it rather than editing the farm default itself (that
+  // stays on the farm Settings page) — `'off'` until the fetch resolves,
+  // the feature's own safe default, so a slow fetch never shows a
+  // pre-checked box for a farm that has not opted in.
+  const [farmLabellingMode, setFarmLabellingMode] = useState<DeviceLabelMode>('off')
+  // "Apply labels" (plan 89 §3.7 point 3, §5 step 89.8) — the fleet-wide
+  // switch-on: `POST /api/devices/labels/apply` returns a per-device report
+  // synchronously (no batch job, no WS updates to wait for), so the report
+  // is held here and rendered the moment the call resolves, the same
+  // "stays open, shows what happened" shape `InstallBatchDialog` uses via
+  // `OutcomeSummary`/`SkippedGroups` (docs/design.md's "Multi-device
+  // reports" rule: outcome first, grouped by exact reason, always named).
+  const [labelsApplyReport, setLabelsApplyReport] = useState<{ counts: OutcomeCounts; failed: NamedOutcome[]; skipped: NamedOutcome[] } | null>(null)
+  const { run, isPending } = useAction()
 
   const loadDiscovered = () => void fetchDiscoveredDevices().then(setDiscovered).catch(() => undefined)
+
+  const applyLabelsToSelected = () =>
+    run(
+      'apply-labels',
+      () => api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: selectedIds } }),
+      {
+        failure: 'Could not apply labels',
+        onSuccess: (res) => {
+          const deviceLabel = (id: string) => devices?.find((d) => d.id === id)?.label ?? id
+          const ok = res.results.filter((r) => r.state !== null && (r.state.state === 'applied' || r.state.state === 'off')).length
+          const failed: NamedOutcome[] = res.results
+            .filter((r) => r.state === null)
+            .map((r) => ({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: r.error ?? 'unknown error' }))
+          // `partial`/`unavailable`/`stale`/`unknown` are real, reported
+          // outcomes from the labelling service — not thrown errors — so
+          // they group under `skipped`, each carrying the service's OWN
+          // reason text verbatim (never invented here, plan 93 §3.15's rule).
+          const skipped: NamedOutcome[] = res.results
+            .filter((r) => r.state !== null && r.state.state !== 'applied' && r.state.state !== 'off')
+            .map((r) => ({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: r.state?.reason ?? (r.state?.state ?? 'not applied') }))
+          setLabelsApplyReport({ counts: { ok, failed: failed.length, skipped: skipped.length, total: res.total }, failed, skipped })
+        },
+      },
+    )
+
+  const renumberFleet = () =>
+    run(
+      'renumber',
+      () => api('/api/devices/numbers/compact', DeviceNumberCompactResponseSchema, { method: 'POST', json: {} }),
+      {
+        failure: 'Could not renumber the fleet',
+        onSuccess: (result) => {
+          if (result.changed.length === 0) {
+            toast.success('Every number was already compact — nothing changed')
+          } else if (result.failed.length === 0) {
+            toast.success(
+              `Renumbered ${result.changed.length} device${result.changed.length === 1 ? '' : 's'}` +
+                (result.relabelled > 0 ? ` · ${result.relabelled} label${result.relabelled === 1 ? '' : 's'} re-applied` : ''),
+            )
+          } else {
+            // Outcome first, grouped by reason, always named (docs/design.md
+            // "Multi-device reports") — a bulk toast is small, so the names
+            // ride the description rather than a full report panel.
+            toast.warning(`Renumbered ${result.changed.length} device${result.changed.length === 1 ? '' : 's'}`, {
+              description: `${result.failed.length} label${result.failed.length === 1 ? '' : 's'} could not be re-applied: ${result.failed
+                .map((f) => `${f.stableId} (${f.reason})`)
+                .join(', ')}`,
+            })
+          }
+          void load()
+        },
+      },
+    )
 
   const load = async () => {
     setError(null)
@@ -120,6 +289,13 @@ function DashboardView() {
     void fetchAllPages<ClusterInfo>('/api/clusters')
       .then(setClusters)
       .catch(() => undefined)
+    // The farm's default labelling mode (plan 89 §3.8) — `AdmitDeviceDialog`
+    // reads it to reflect what a freshly admitted device will get, without
+    // this page needing the whole farm Settings form. A fetch failure
+    // leaves the safe `'off'` default in place.
+    void api('/api/settings', SettingsResponseSchema)
+      .then((b) => setFarmLabellingMode(b.settings.defaults.labelling.mode))
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -131,8 +307,31 @@ function DashboardView() {
         // Admitted here or by another operator — either way it just left the tray.
         loadDiscovered()
       } else if (m.type === 'device.removed' || m.type === 'device.status') void load()
-      else if (m.type === 'job.status') void load()
-      else if (m.type === 'device.discovered') {
+      else if (m.type === 'job.status') {
+        // Merge the live push in place instead of re-fetching (plan 99 §4.9,
+        // §4.11, step 99.10's own reported gap — closed here). `job.status`
+        // already carries a workflow's `node` block (`{id,seq,total,kind,
+        // script,status}`); `load()`'s `GET /api/jobs?status=running` call
+        // validates the response against `JobInfoSchema`, which has NO
+        // `node` field, so a re-fetch here silently stripped the exact
+        // counter the Wall's `node 2/4` badge (`WallTile.tsx`) needs — and
+        // even fixed, a poll-shaped refetch would always lag the live
+        // counter it exists to display. `m.payload` is already the whole
+        // row (plan 30 §3.5) — the SAME shape `app/jobs/page.tsx`'s own
+        // `pushLive(m.payload as Job)` already trusts with no re-parse, so
+        // this reuses that precedent rather than inventing a second one.
+        setJobs((prev) => {
+          const i = prev.findIndex((j) => j.jobId === m.payload.jobId)
+          // This list is `status=running` only (see `load()` above) — a job
+          // that just left that status (succeeded/failed/cancelled) belongs
+          // OUT of it, not merged in.
+          if (m.payload.status !== 'running') return prev.filter((j) => j.jobId !== m.payload.jobId)
+          if (i === -1) return [...prev, m.payload]
+          const next = [...prev]
+          next[i] = m.payload
+          return next
+        })
+      } else if (m.type === 'device.discovered') {
         // The REST snapshot is the source of truth for the tray: this payload
         // carries no `firstSeen`/`lastSeen` (plan 56 §4.4), and the count has
         // to move live the same way the fleet list already does from `device.added`.
@@ -170,9 +369,34 @@ function DashboardView() {
             ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, heldBy: m.payload.heldBy } : d))
             : prev,
         )
+      } else if (m.type === 'assist.changed') {
+        // Who is ASSISTING a device (plan 91 §3.4 item 4, F25) — the same
+        // live-patch treatment `lease.changed` gets above, just for
+        // `assistedBy` instead of `heldBy`. Without this branch the devices
+        // list and the Wall (this page feeds both) only picked up a NEW
+        // assist grant on the next `/api/devices` fetch or an unrelated
+        // `device.added`/`device.status` refresh — not the instant a grant
+        // starts, is released, expires (`ttl`), or ends with the primary
+        // hold (`primary_ended`).
+        setDevices((prev) =>
+          prev
+            ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, assistedBy: m.payload.assistedBy } : d))
+            : prev,
+        )
       }
     })
-    return off
+    // The live merge above has no way to know about a `job.status` message
+    // that was broadcast while this tab's socket was disconnected — there is
+    // no snapshot replay (CLAUDE.md's own rule: "a client must GET
+    // /api/devices first, then subscribe"), so a job that finished mid-drop
+    // could otherwise stay in `jobs` forever. Resync once per reconnect, the
+    // same pattern `LiveView.tsx`/`DeviceLog.tsx`/`MonitorPane.tsx` already
+    // use for the same reason.
+    const offReconnect = ws.onReconnected(() => void load())
+    return () => {
+      off()
+      offReconnect()
+    }
   }, [])
 
   const needsAttention = (d: DeviceInfo) =>
@@ -206,7 +430,16 @@ function DashboardView() {
     else if (filter === 'inUse') list = list.filter((d) => d.status === 'busy' || d.status === 'manual')
     else if (filter === 'attention') list = list.filter(needsAttention)
     const q = query.trim().toLowerCase()
-    if (q) list = list.filter((d) => d.label.toLowerCase().includes(q) || d.serial.toLowerCase().includes(q))
+    // The address joins the search (plan 92 §4.8): an operator chasing a
+    // connection problem usually has the IP in hand, not the label or the
+    // raw adb serial, and 15 monospace characters read once during that hunt
+    // is exactly the "permanent tile space is the wrong place for it, search
+    // is" trade the tile layout makes. `null` (USB, or a TCP device with no
+    // known address yet) never matches, same as every other optional field here.
+    if (q)
+      list = list.filter(
+        (d) => d.label.toLowerCase().includes(q) || d.serial.toLowerCase().includes(q) || d.connection.address?.toLowerCase().includes(q),
+      )
     // AND semantics (plan 19 §4.3, §9.3) — the same rule GET /api/devices?tag=
     // applies server-side, so filtering here and filtering there never disagree.
     if (selectedTags.length > 0) list = list.filter((d) => selectedTags.every((t) => d.tags.includes(t)))
@@ -217,8 +450,17 @@ function DashboardView() {
     // Readiness filter, by `actual` (plan 43 §4.6) — what the device really
     // is right now, not merely what was asked for.
     if (readinessFilter !== 'all') list = list.filter((d) => d.readiness.actual === readinessFilter)
+    // Connection filter (plan 88 §3.1, §4.1, F5) — `network` reads the
+    // observed `kind` directly; the other three read the same derived badge
+    // string the operator sees on the card, so "filter to OTG" can never
+    // disagree with what the badge itself says.
+    if (connectionFilter === 'usb') list = list.filter((d) => d.connection.kind === 'usb')
+    else if (connectionFilter === 'network') list = list.filter((d) => d.connection.kind === 'tcp')
+    else if (connectionFilter === 'otg') list = list.filter((d) => connectionBadge(d.connection) === 'OTG')
+    else if (connectionFilter === 'wifi') list = list.filter((d) => connectionBadge(d.connection) === 'WI-FI')
+    else if (connectionFilter === 'tcp') list = list.filter((d) => connectionBadge(d.connection) === 'TCP')
     return list
-  }, [devices, filter, query, selectedTags, clusterFilter, readinessFilter])
+  }, [devices, filter, query, selectedTags, clusterFilter, readinessFilter, connectionFilter])
 
   // View (List | Wall) and Group (None | Cluster | Status | Tag) update the
   // query string too, so the exact page anyone is looking at is linkable —
@@ -238,10 +480,36 @@ function DashboardView() {
   const setView = (v: View) => {
     setViewState(v)
     pushParams({ view: v })
+    // This tab's own choice, remembered for a reload of THIS tab only
+    // (plan 92 §3.10) — never a farm setting, never cross-session.
+    writeSessionPrefs({ view: v })
   }
   const setGroup = (g: GroupBy) => {
     setGroupState(g)
     pushParams({ group: g })
+  }
+  const setTileSize = (t: TileSize) => {
+    setTileSizeState(t)
+    writeLocalPrefs({ tileSize: t })
+  }
+
+  // The focused device on the Wall (plan 91 §3.11, §5 step 91.8/91.9, F13):
+  // `?focus=<id>` — URL-driven rather than mirrored into local state (unlike
+  // `view`/`group` above), matching §3.11's own reasoning ("URL-driven, so
+  // it survives a reload and is linkable"). Double-click on a wall tile sets
+  // it; `clearFocus` below (91.9) is the thing that closes it — 91.8's own
+  // gap note named this exact absence.
+  const focusId = params.get('focus')
+  const setFocus = (id: string) => {
+    const qs = new URLSearchParams(params.toString())
+    qs.set('focus', id)
+    router.replace(`/?${qs.toString()}`)
+  }
+  const clearFocus = () => {
+    const qs = new URLSearchParams(params.toString())
+    qs.delete('focus')
+    const qsStr = qs.toString()
+    router.replace(qsStr ? `/?${qsStr}` : '/')
   }
 
   // Grouping is a view concern only (plan 19 §4.5, plan 47 §3.6) — applied to
@@ -299,17 +567,19 @@ function DashboardView() {
   }, [filtered, group])
 
   const toggleSelected = (id: string) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
 
   const exitSelectMode = () => {
     setSelectMode(false)
-    setSelectedIds(new Set())
+    setSelectedIds([])
   }
+
+  // Select-all / tri-state (plan 91 §5 step 91.8, F12) — over the currently
+  // FILTERED set, same rule `ToolsSection`/`AccessSection`
+  // (`app/agents/detail/page.tsx`) already use: "select all" means all of
+  // what is actually on screen, not the whole unfiltered fleet.
+  const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
+  const bulk = useBulkSelection(filteredIds, selectedIds, setSelectedIds)
 
   const releaseQuarantine = (d: DeviceInfo) =>
     // Not one of the call sites the plan named for this file — found while
@@ -323,22 +593,44 @@ function DashboardView() {
       onSuccess: () => void load(),
     })
 
+  /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
+  const reconnectDevice = (d: DeviceInfo) =>
+    run('reconnect-' + d.id, () => api(`/api/devices/${d.id}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }), {
+      failure: `Could not reconnect ${d.label}`,
+      onSuccess: (outcome) => {
+        if (outcome.result === 'already-connected') toast.success(`${d.label} is already connected`)
+        else if (outcome.result === 'connected') toast.success(`${d.label} reconnected from ${outcome.address}`)
+        else if (outcome.result === 'not-found') toast.error(`Could not find ${d.label} on the network`, { description: 'It did not answer at any remembered address.' })
+        else toast.error(`Could not reconnect ${d.label}`, { description: outcome.detail })
+        void load()
+      },
+    })
+
   /**
-   * "Wake selected" / "Sleep selected" (plan 43 §4.6, §5 step 43.5) — one
-   * `PUT .../readiness` per device, each independently refused or accepted
-   * server-side (§3.4); one device's refusal (a running job, another
-   * viewer) never blocks the rest. The result is reported as a single
-   * summary toast rather than one per device, since a farm-wide action on
-   * ten devices should not produce ten toasts.
+   * "Wake selected" / "Sleep selected" (plan 43 §4.6, §5 step 43.5; plan 93
+   * §3.15, §4.8, F15, H3, step 93.11) — one `PUT .../readiness` per device,
+   * each independently refused or accepted server-side (§3.4); one device's
+   * refusal (a running job, another viewer) never blocks the rest. F15
+   * named this function by name as the third of three inconsistent bulk
+   * patterns: "`wakeOrSleepSelected` uses `Promise.allSettled` and emits
+   * one anonymous summary toast that never names a failing device." It
+   * still uses `Promise.allSettled` — that part was never the defect — but
+   * the report is now the shared `OutcomeSummary`/`SkippedGroups` pair
+   * (`wakeSleepReport`, rendered below), which DOES name every device that
+   * refused, with the server's own reason (`describeApiError`), never
+   * invented or paraphrased.
    */
   const wakeOrSleepSelected = async (desired: Readiness) => {
-    const ids = [...selectedIds]
+    const ids = selectedIds
     const results = await Promise.allSettled(ids.map((id) => setDeviceReadiness(id, desired)))
-    const failed = results.filter((r) => r.status === 'rejected').length
-    const verb = desired === 'asleep' ? 'Sleep' : 'Wake'
-    if (failed === 0) toast.success(`${verb} sent to ${ids.length} device${ids.length === 1 ? '' : 's'}`)
-    else if (failed === ids.length) toast.error(`${verb} failed for all ${ids.length} selected devices`)
-    else toast.warning(`${verb}: ${ids.length - failed} succeeded, ${failed} refused`)
+    const okCount = results.filter((r) => r.status === 'fulfilled').length
+    const refused: NamedOutcome[] = results.flatMap((r, i) => {
+      if (r.status === 'fulfilled') return []
+      const id = ids[i]
+      if (!id) return []
+      return [{ deviceId: id, label: devices?.find((d) => d.id === id)?.label ?? id, reason: describeApiError(r.reason) }]
+    })
+    setWakeSleepReport({ verb: desired === 'asleep' ? 'Sleep' : 'Wake', okCount, total: ids.length, refused })
   }
 
   return (
@@ -376,16 +668,56 @@ function DashboardView() {
                 Wall
               </button>
             </div>
-            {view === 'list' &&
-              (selectMode ? (
+            {/* Tile size — S / M / L (plan 92 §3.11): a wall control, not a
+                setting. It is a property of the screen someone is sitting in
+                front of, so it persists in `localStorage` (`writeLocalPrefs`,
+                unlike `view`'s own per-tab `sessionStorage` above) and only
+                appears once the Wall is actually on screen, since it has no
+                effect on the List. */}
+            {view === 'wall' && (
+              <div className="inline-flex items-center rounded-lg border p-0.5" role="group" aria-label="Tile size">
+                {(
+                  [
+                    ['s', 'Small tiles'],
+                    ['m', 'Medium tiles'],
+                    ['l', 'Large tiles'],
+                  ] as const
+                ).map(([size, label]) => (
+                  <button
+                    key={size}
+                    type="button"
+                    aria-pressed={tileSize === size}
+                    aria-label={label}
+                    title={label}
+                    onClick={() => setTileSize(size)}
+                    className={cn(
+                      'rounded-md px-2 py-1 text-[11px] font-semibold uppercase leading-none transition-colors',
+                      tileSize === size ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
+                    )}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Selection now works in EITHER view (plan 91 §5 step 91.8,
+                F11) — no longer gated to `view === 'list'`, since it is one
+                shared `useBulkSelection` instance behind both the table and
+                the Wall. */}
+            {selectMode ? (
+              <>
+                <Button size="sm" variant="ghost" onClick={bulk.toggleAll}>
+                  {bulk.allChecked ? 'Clear all' : 'Select all'}
+                </Button>
                 <Button size="sm" variant="outline" onClick={exitSelectMode}>
                   Cancel
                 </Button>
-              ) : (
-                <Button size="sm" variant="outline" onClick={() => setSelectMode(true)}>
-                  Select devices
-                </Button>
-              ))}
+              </>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setSelectMode(true)}>
+                Select devices
+              </Button>
+            )}
             {/* Discovered tray entry point (plan 56 §4.5) — deliberately
                 absent, not disabled, when the tray is empty: a queue with
                 nothing in it should cost nothing visually. */}
@@ -399,6 +731,33 @@ function DashboardView() {
               <Plus className="size-4" aria-hidden />
               Add device
             </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-8" aria-label="More fleet actions">
+                  <MoreVertical className="size-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* Plan 89 §3.2 point 5, §5 step 89.3 — reassigns 1..n in
+                    list order and re-pushes every moved device's label in
+                    the same request, so a compaction can never leave a
+                    phone displaying a number that has already moved. */}
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setRenumberOpen(true) }}>
+                  <Hash className="size-3.5" aria-hidden />
+                  Renumber fleet…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <ConfirmDialog
+              open={renumberOpen}
+              onOpenChange={setRenumberOpen}
+              trigger={<span className="hidden" />}
+              title="Renumber the fleet?"
+              description="Reassigns every device's number to close any gaps left by released or forgotten devices, in the same list order shown here, and re-applies the physical label of every device whose number changes. Devices whose number stays the same are untouched."
+              confirmLabel="Renumber"
+              destructive={false}
+              onConfirm={renumberFleet}
+            />
           </div>
         }
       />
@@ -477,6 +836,23 @@ function DashboardView() {
             </SelectContent>
           </Select>
 
+          {/* Connection filter (plan 88 §3.1, §4.1, §4.9, F5) — narrows by
+              the same badge value the card and the wall render, plus a
+              coarser "On the network" bucket for the more common question
+              (see the type's own comment for why both exist). */}
+          <Select value={connectionFilter} onValueChange={(v) => setConnectionFilter(v as ConnectionFilter)}>
+            <SelectTrigger className="h-8 w-[10rem] text-[12.5px]" aria-label="Filter by connection">
+              <SelectValue placeholder="Any connection" />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(CONNECTION_FILTER_LABEL) as ConnectionFilter[]).map((key) => (
+                <SelectItem key={key} value={key}>
+                  {CONNECTION_FILTER_LABEL[key]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           {/* Group by: None | Cluster | Status | Tag (plan 47 §3.6, §4.5) —
               applies to the table AND the Wall, from the same `groups`
               value. This is what replaced the separate `/topology` route. */}
@@ -524,10 +900,13 @@ function DashboardView() {
           </div>
         )}
 
-        {view === 'list' && selectMode && selectedIds.size > 0 && (
+        {/* The toolbar itself is view-agnostic too (plan 91 §5 step 91.8,
+            F11) — Wake/Sleep/Install/Forget apply to whatever is selected
+            regardless of which view picked it. */}
+        {selectMode && selectedIds.length > 0 && (
           <div className="flex items-center justify-between rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-2.5">
             <span className="text-[12.5px]">
-              {selectedIds.size} device{selectedIds.size === 1 ? '' : 's'} selected
+              {selectedIds.length} device{selectedIds.length === 1 ? '' : 's'} selected
             </span>
             <div className="flex items-center gap-2">
               {/* Warming or sleeping a whole cluster is the actual use case
@@ -544,6 +923,37 @@ function DashboardView() {
               <Button size="sm" onClick={() => setInstallBatchOpen(true)}>
                 <Upload className="size-3.5" aria-hidden />
                 Install on selected
+              </Button>
+              {/* Fleet-wide switch-on (plan 89 §3.7 point 3, §5 step 89.8) —
+                  applies each selected device's OWN current `labelling.mode`
+                  (off/lock-screen/wallpaper), it does not change what mode any
+                  device is set to. Turning labelling on for a device that has
+                  never had it applied is what makes this useful on an
+                  existing farm after the farm default changes. */}
+              <Button size="sm" variant="outline" disabled={isPending('apply-labels')} onClick={() => void applyLabelsToSelected()}>
+                <Hash className="size-3.5" aria-hidden />
+                {isPending('apply-labels') ? 'Applying…' : 'Apply labels'}
+              </Button>
+              {/* Run command / Push file / Pull file (plan 93 §3.16, §4.8,
+                  F15, step 93.11) — beside the existing Install, attaching
+                  to whatever selection the page already exposes. Wall-view
+                  selection is plan 91's, not this plan's (§3.16) — this
+                  toolbar reads `selectedIds` regardless of which view
+                  populated it, exactly as Wake/Sleep/Install/Forget
+                  already do. */}
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/console?deviceIds=${selectedIds.map(encodeURIComponent).join(',')}`}>
+                  <Terminal className="size-3.5" aria-hidden />
+                  Run command…
+                </Link>
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setBulkTransferOpen('push')}>
+                <Upload className="size-3.5" aria-hidden />
+                Push file…
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setBulkTransferOpen('pull')}>
+                <Download className="size-3.5" aria-hidden />
+                Pull file…
               </Button>
               {/* Bulk Forget (plan 47 §4.5, acceptance #9) — the operation
                   this farm needs today for its permanently-offline rows. */}
@@ -599,7 +1009,17 @@ function DashboardView() {
             }
           />
         ) : view === 'wall' ? (
-          <Wall devices={filtered} jobs={jobs} groups={groups} />
+          <Wall
+            devices={filtered}
+            jobs={jobs}
+            groups={groups}
+            selectable={selectMode}
+            selectedIds={selectedIds}
+            onToggleSelect={toggleSelected}
+            focusId={focusId}
+            onFocus={setFocus}
+            minTileWidthPx={TILE_SIZE_PX[tileSize]}
+          />
         ) : groups ? (
           <div className="space-y-5">
             {groups.map(([tag, list]) => (
@@ -614,12 +1034,18 @@ function DashboardView() {
                       device={d}
                       runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
                       onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                      canReleaseQuarantine={canReleaseQuarantine}
                       onRequestForget={() => {
                         setForgetTarget(d)
                         setForgetOpen(true)
                       }}
+                      onRequestDisconnect={() => {
+                        setDisconnectTarget(d)
+                        setDisconnectOpen(true)
+                      }}
+                      onReconnect={() => void reconnectDevice(d)}
                       selectable={selectMode}
-                      selected={selectedIds.has(d.id)}
+                      selected={selectedIds.includes(d.id)}
                       onToggleSelect={() => toggleSelected(d.id)}
                     />
                   ))}
@@ -635,12 +1061,18 @@ function DashboardView() {
                 device={d}
                 runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
                 onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                canReleaseQuarantine={canReleaseQuarantine}
                 onRequestForget={() => {
                   setForgetTarget(d)
                   setForgetOpen(true)
                 }}
+                onRequestDisconnect={() => {
+                  setDisconnectTarget(d)
+                  setDisconnectOpen(true)
+                }}
+                onReconnect={() => void reconnectDevice(d)}
                 selectable={selectMode}
-                selected={selectedIds.has(d.id)}
+                selected={selectedIds.includes(d.id)}
                 onToggleSelect={() => toggleSelected(d.id)}
               />
             ))}
@@ -648,9 +1080,25 @@ function DashboardView() {
         )}
       </div>
 
+      {/* "mouse akan ada indikator device yang terseleksi berapa" (plan 91
+          §0.3, §5 step 91.8, F11/F12) — a live count that follows the
+          cursor while selecting, in either view. `position: fixed`, so
+          where it mounts in the tree does not matter. */}
+      <SelectionCursorBadge active={selectMode} count={selectedIds.length} />
+
+      {/* The focus overlay (plan 91 §3.11, §5 step 91.9) — only on the Wall,
+          only once a tile has actually been double-clicked. `devices` is the
+          FULL, unfiltered list (not `filtered`): a selected device that has
+          scrolled out of the current filter must still be a valid Mirror
+          candidate. */}
+      {view === 'wall' && focusId && (
+        <FocusOverlay deviceId={focusId} devices={devices ?? []} selectedIds={selectedIds} onClose={clearFocus} />
+      )}
+
       <DiscoveredTray
         discovered={discovered}
         clusters={clusters}
+        farmLabellingMode={farmLabellingMode}
         open={trayOpen}
         onOpenChange={setTrayOpen}
         onChanged={() => {
@@ -665,16 +1113,87 @@ function DashboardView() {
           setInstallBatchOpen(o)
           if (!o) exitSelectMode()
         }}
-        deviceIds={[...selectedIds]}
+        devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
       />
+      <BulkTransferDialog
+        mode={bulkTransferOpen ?? 'push'}
+        open={bulkTransferOpen !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setBulkTransferOpen(null)
+            exitSelectMode()
+          }
+        }}
+        devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+      />
+      {/* Plan 93 §3.15, §4.8, F15, H3, step 93.11 — `wakeOrSleepSelected`'s
+          own report: the same `OutcomeSummary`/`SkippedGroups` pair every
+          other bulk surface uses, so a wake/sleep that refuses on some
+          devices names every one of them instead of an anonymous toast. */}
+      <Dialog open={wakeSleepReport !== null} onOpenChange={(o) => !o && setWakeSleepReport(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{wakeSleepReport?.verb} — result</DialogTitle>
+          </DialogHeader>
+          {wakeSleepReport && (
+            <div className="space-y-3">
+              <OutcomeSummary
+                counts={{
+                  ok: wakeSleepReport.okCount,
+                  failed: wakeSleepReport.refused.length,
+                  skipped: 0,
+                  total: wakeSleepReport.total,
+                }}
+                label={`${wakeSleepReport.verb} progress`}
+              />
+              <SkippedGroups failed={wakeSleepReport.refused} skipped={[]} />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWakeSleepReport(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* "Apply labels"' own report (plan 89 §5 step 89.8) — the same
+          `OutcomeSummary`/`SkippedGroups` pair `InstallBatchDialog` uses,
+          stays open so nothing is lost the instant the call resolves.
+          `partial`/`unavailable`/`stale`/`unknown` group under `skipped`
+          with the labelling service's own reason text, never rounded up
+          into `ok`. */}
+      <Dialog open={labelsApplyReport !== null} onOpenChange={(o) => !o && setLabelsApplyReport(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Apply labels — result</DialogTitle>
+          </DialogHeader>
+          {labelsApplyReport && (
+            <div className="space-y-3">
+              <OutcomeSummary counts={labelsApplyReport.counts} label="Apply labels progress" />
+              <SkippedGroups failed={labelsApplyReport.failed} skipped={labelsApplyReport.skipped} />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLabelsApplyReport(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ForgetDeviceDialog
         device={forgetTarget}
         open={forgetOpen}
         onOpenChange={setForgetOpen}
         onDone={() => void load()}
       />
+      <DisconnectDeviceDialog
+        device={disconnectTarget}
+        open={disconnectOpen}
+        onOpenChange={setDisconnectOpen}
+        onDone={() => void load()}
+      />
       <BulkForgetDialog
-        devices={(devices ?? []).filter((d) => selectedIds.has(d.id))}
+        devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         open={bulkForgetOpen}
         onOpenChange={(o) => {
           setBulkForgetOpen(o)

@@ -4,6 +4,7 @@ import type { Db } from '../db'
 import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import type { LeaseManager } from '../lease/lease-manager'
+import { formatDeviceLabel, lookupDeviceNumber } from '../registry/device-number'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 
@@ -78,6 +79,19 @@ export interface DeviceLifecycleDeps {
    * reaches this call.
    */
   revertNetwork?: (deviceId: string, actor?: string | null) => Promise<void>
+  /**
+   * Best-effort clear of a device's physical label before its row is
+   * deleted (plan 89 §3.7 point 4, §5 step 89.9) — the SAME ordering and
+   * failure discipline as `releaseRoute` immediately below: it runs BEFORE
+   * the transaction (the row still has to exist for `LabellingService` to
+   * look it up), a failure is logged and recorded, and it NEVER aborts
+   * forget/block. Optional so a test harness that predates this plan, or a
+   * host with no labelling service wired, keeps compiling — a device with
+   * `labelling.mode: 'off'` (or one that was never labelled at all) costs
+   * this call nothing beyond a cheap cache read either way
+   * (`LabellingService.clear`'s own "nothing was ever applied" branch).
+   */
+  clearLabel?: (deviceId: string, actor: Actor) => Promise<void>
   log: Logger
   /**
    * The kv store's own device teardown (plan 79 §3.3, §4.6) — joins `forget`'s existing
@@ -197,6 +211,34 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
     }
   }
 
+  /**
+   * Clears a device's physical label before it stops being a device (plan 89
+   * §3.7 point 4, §5 step 89.9) — same ordering argument as `releaseRoute`
+   * just above: the row still exists, so `LabellingService` can still look
+   * it up, resolve its guest-agent session or adb transport, and write the
+   * clear. A failure here does NOT abort the removal, for the identical
+   * reason `releaseRoute` does not: refusing to forget/block a device just
+   * because its wallpaper could not be cleared would rebuild the very trap
+   * plan 56 removed. Unlike an orphaned network route, a stale label left on
+   * a forgotten phone's screen is cosmetic, not a safety hazard — but it is
+   * still recorded, so the state is answerable later instead of invisible.
+   */
+  async function releaseLabel(row: DeviceRow, actor: Actor): Promise<void> {
+    if (!deps.clearLabel) return
+    try {
+      await deps.clearLabel(row.id, actor)
+    } catch (err) {
+      log.warn(`could not clear the physical label on ${row.label} (${row.stableId}) before removing it: ${String(err)}`)
+      deps.record?.({
+        deviceId: row.id,
+        stream: 'main',
+        kind: 'device.label',
+        actor: actor.userId,
+        meta: { state: 'unavailable', reason: `clear failed during removal: ${String(err)}` },
+      })
+    }
+  }
+
   const mustGet = (deviceId: string): DeviceRow => {
     const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
     if (!row) throw new EnkakuError('device_not_found', `no such device: ${deviceId}`)
@@ -216,8 +258,10 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
       const check = checkRemovable('forget', row, leases)
       if (!check.ok) throw new EnkakuError(check.code, check.message)
 
-      // Before the row goes: hand the phone back its own network.
+      // Before the row goes: hand the phone back its own network, and clear
+      // whatever physical label it was showing (plan 89 §3.7 point 4).
       await releaseRoute(row, opts.actor)
+      await releaseLabel(row, opts.actor)
 
       let counts: HistoryCounts | null = null
       let kvDeleted = 0
@@ -276,13 +320,20 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         }
       })
 
-      log.info(`device forgotten: ${row.label} (${row.stableId})${opts.deleteHistory ? ' with history' : ''}${kvDeleted > 0 ? `, ${kvDeleted} kv value(s)` : ''}`)
+      // The number (plan 89 §1, §5 step 89.4) — read AFTER the transaction,
+      // not before: `deviceNumbers` is untouched by forget (§3.2's whole
+      // point — the reservation survives), so this is simply the same
+      // answer either way, but reading it post-commit means a thrown
+      // transaction never leaves this line describing a removal that did
+      // not happen.
+      const number = lookupDeviceNumber(db, row.stableId)
+      log.info(`device forgotten: ${formatDeviceLabel(number, row.label)} (${row.stableId})${opts.deleteHistory ? ' with history' : ''}${kvDeleted > 0 ? `, ${kvDeleted} kv value(s)` : ''}`)
       deps.record?.({
         deviceId: row.id,
         stream: 'main',
         kind: 'device.forgotten',
         actor: opts.actor.userId,
-        meta: { stableId: row.stableId, deleteHistory: opts.deleteHistory, kvDeleted, ...(counts ? { counts } : {}) },
+        meta: { stableId: row.stableId, deleteHistory: opts.deleteHistory, kvDeleted, number, ...(counts ? { counts } : {}) },
       })
 
       return { deviceId: row.id, stableId: row.stableId, historyDeleted: opts.deleteHistory, counts, kvDeleted }
@@ -297,6 +348,7 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
       // way forget does — and a blocked phone is never coming back to be
       // cleaned up later, which makes this the more important of the two.
       await releaseRoute(row, opts.actor)
+      await releaseLabel(row, opts.actor)
 
       const blockedAt = new Date()
       const reason = opts.reason ?? null
@@ -318,13 +370,16 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         tx.delete(devices).where(eq(devices.id, row.id)).run()
       })
 
-      log.info(`device blocked: ${row.label} (${row.stableId})${reason ? ` — ${reason}` : ''}`)
+      // Same reasoning as `forget` above — read post-commit; block also
+      // leaves the number reservation untouched (§3.2).
+      const number = lookupDeviceNumber(db, row.stableId)
+      log.info(`device blocked: ${formatDeviceLabel(number, row.label)} (${row.stableId})${reason ? ` — ${reason}` : ''}`)
       deps.record?.({
         deviceId: row.id,
         stream: 'main',
         kind: 'device.blocked',
         actor: opts.actor.userId,
-        meta: { stableId: row.stableId, reason },
+        meta: { stableId: row.stableId, reason, number },
       })
 
       return { stableId: row.stableId, label: row.label, reason, blockedAt: Math.floor(blockedAt.getTime() / 1000), blockedBy: opts.actor.userId }

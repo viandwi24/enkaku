@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { ClusterMoveResponseSchema, ClusterResponseSchema, type ClusterInfo, type DeviceInfo, type LeaseHolder } from '@enkaku/protocol'
+import { ClusterMoveResponseSchema, ClusterResponseSchema, type ClusterInfo, type ConnectionMedium, type DeviceInfo, type LeaseHolder } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -9,7 +9,8 @@ import type { Db } from '../db'
 import { clusters, type ClusterRow } from '../db/schema'
 import { assignDevices, clusterMembers, deleteClusterAndUnassign, unassignDevices } from '../clusters/membership'
 import { resolveCluster, resolveTarget } from '../clusters/resolve'
-import { loadClusterNames, rowToDeviceInfo } from '../registry/device-registry'
+import { loadClusterNames, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { loadDeviceNumbers } from '../registry/device-number'
 import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, decodeStringCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -59,6 +60,38 @@ export function createClusterRoutes(deps: {
   audit: AuditLogger
   /** Lease holder (plan 71 §4.4) — omitted (as in tests that predate this plan) falls back to `null`. */
   heldByOf?: (deviceId: string) => LeaseHolder | null
+  /**
+   * Farm networks (plan 88 §3.6, §4.1) — `discovery.networks`, read fresh
+   * per request, same "read settings live" discipline `api/devices.ts`'s own
+   * `farmNetworks()` already follows. Residual gap: 88.5's own pass wired
+   * `daemon.ts`, `capability/context.ts`, `api/topology.ts` and
+   * `api/devices.ts`'s GET routes, but missed this router entirely — a
+   * device's connection badge on its OWN device page could read `OTG` while
+   * the exact same device, viewed through its cluster's device list, read
+   * `TCP`. Optional, defaulting to no network match, so every existing
+   * caller (tests, and any caller that predates this plan) keeps compiling
+   * and behaving exactly as before.
+   */
+  networks?: () => FarmNetwork[]
+  /**
+   * The address book's declared media (plan 88 §3.1, §3.2, §4.3) —
+   * `loadDeclaredMedia`'s own return shape, resolved fresh per request, same
+   * discipline as `networks` above. Optional, same reasoning.
+   */
+  declaredMedia?: () => Map<string, ConnectionMedium | null> | undefined
+  /**
+   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4) — the
+   * same producer gap `networks`/`declaredMedia` above already document:
+   * step 91.4 wired this into `api/devices.ts` alone and flagged this router
+   * as a known gap (see docs/plans/96-m61-hotfixes.md's continuation of
+   * §96.5–96.9). Resolved from the co-control manager's `assistedBy`
+   * (`lease/co-control.ts`), the same `heldByOf`-shaped per-device accessor.
+   * Optional, defaulting to `[]` per device — an unknown assist state is
+   * "nobody is assisting", never a guess — so every existing caller
+   * (`clusters.test.ts`, and any caller that predates this field) keeps
+   * compiling and behaving exactly as before.
+   */
+  assistedByOf?: (deviceId: string) => LeaseHolder[]
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { db } = deps
@@ -177,8 +210,24 @@ export function createClusterRoutes(deps: {
       rows.map((r) => r.id),
     )
     const cluster = { id: row.id, name: row.name }
+    // Resolved ONCE for the whole list, never per row — the same N+1 rule
+    // `device-registry.ts:171-175` already states for `loadClusterNames`/
+    // `loadRecentCrashes`, extended here to `connection.medium` (plan 88
+    // §3.6, §4.1).
+    const networks = deps.networks?.() ?? []
+    const media = deps.declaredMedia?.() ?? new Map<string, ConnectionMedium | null>()
+    // The number (plan 89 §4.3) — one query for this list, same N+1
+    // discipline as `tagMap`/`networks`/`media` above.
+    const numbers = loadDeviceNumbers(db)
     const infos: DeviceInfo[] = rows
-      .map((r) => rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster, null, null, deps.heldByOf?.(r.id) ?? null))
+      .map((r) => ({
+        ...rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster, null, null, deps.heldByOf?.(r.id) ?? null, networks, media, numbers.get(r.stableId) ?? null),
+        // Plan 91 §3.4 item 4, §4.4 — `assistedBy` alongside `heldBy`, the
+        // same override-after-build shape `api/devices.ts` established:
+        // `rowToDeviceInfo` has no `assistedByOf` parameter of its own, so
+        // this overrides its `[]` default with the real, live answer.
+        assistedBy: deps.assistedByOf?.(r.id) ?? [],
+      }))
       .sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.label < b.label ? -1 : 1))
 
     const { cursor: cursorParam, limit } = parsePageQuery(c)

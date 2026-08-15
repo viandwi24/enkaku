@@ -14,10 +14,13 @@ export {
 } from './demuxer'
 export {
   startScrcpySession,
+  parseScrcpyServerList,
+  sweepStrayScrcpyServers,
   type ScrcpySession,
   type ScrcpySessionOptions,
   type ScrcpyControl,
   type AdbExecutor,
+  type DeviceScrcpyProcess,
 } from './session'
 export {
   encodeInjectKeycode,
