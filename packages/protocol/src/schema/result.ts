@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { JsonSchemaNode } from '../api/json-schema'
 import { formatValue, type NumberKind } from './format'
 import { ParamIssueSchema } from './validate'
-import { type DurationUnit, type ParamKind, readHints } from './vocabulary'
+import { STRING_PARAM_KINDS, type DurationUnit, type ParamKind, readHints } from './vocabulary'
 
 /**
  * Plan 97 §3.3 — five states, because two are not enough. Written exactly
@@ -89,11 +89,14 @@ export function summaryFields(schema: JsonSchemaNode | null): SummaryField[] {
 }
 
 /** `kind`s `formatValue` can already render a bare number for (everything
- *  `NumberKind` covers minus the "no kind declared" fallback). Any other
- *  `ParamKind` (`text`, `packageName`, or `undefined`) is not a number
- *  formatter's job. */
+ *  `NumberKind` covers minus the "no kind declared" fallback). Any STRING
+ *  kind (`text`, `packageName`, `workspaceFolder`, `workspaceFile`) or no
+ *  kind at all is not a number formatter's job — read off
+ *  `STRING_PARAM_KINDS` rather than listed again here, so a string kind
+ *  added to the vocabulary can never be left behind in this one predicate. */
 function asNumberKind(kind: ParamKind | undefined): NumberKind {
-  return kind !== undefined && kind !== 'text' && kind !== 'packageName' ? kind : 'plain'
+  if (kind === undefined || (STRING_PARAM_KINDS as readonly string[]).includes(kind)) return 'plain'
+  return kind as NumberKind
 }
 
 /** The first word of a title, lowercased — `"Videos watched"` → `"videos"`.

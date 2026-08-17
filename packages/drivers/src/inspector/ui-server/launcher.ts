@@ -55,10 +55,25 @@ export interface UiServerLauncherDeps {
   /** APK path from the Toolchain Manager. */
   apkPaths: () => Promise<{ app: string; test: string }>
   /**
+   * Plan 106 §5 step 106.8 — when supplied, `installBoth()` routes each
+   * APK's install through THIS instead of a raw `hostAdb install` call
+   * (the core's own `TransferService.installFromLocalApk`, wrapped in
+   * `runTransfer` by the caller for a real transferId and byte progress).
+   * Optional: falls back to `hostAdb` when absent, so this launcher's own
+   * unit tests (which only fake `hostAdb`) and the guest agent's separate
+   * launcher (`network/guest-agent/launcher.ts`, deliberately NOT given
+   * this seam — see plan 106 §9 Q5) are both unaffected.
+   */
+  installApk?: (localPath: string, label: 'app' | 'test') => Promise<void>
+  /**
    * The manifest's on-device expectation for the app APK (plan 41 §3.2) —
    * `undefined`/empty when the manifest carries none, in which case
    * `ensureInstalled()` only verifies that SOMETHING named `UI_SERVER_PACKAGE`
    * is installed and never blocks the inspector on missing metadata of our own.
+   *
+   * This expectation covers the APP package only. The instrumentation package
+   * (`UI_SERVER_TEST_PACKAGE`) is verified for PRESENCE regardless — see
+   * `ensureTestPackage()`; no version/signature is recorded for it.
    */
   expectedArtifact?: UiServerExpectedArtifact
   /**
@@ -122,12 +137,98 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
   const installBoth = async (): Promise<void> => {
     const { app, test } = await deps.apkPaths()
     deps.onLog?.('info', `installing the ui-server APKs on ${deps.serial}`)
+    // Plan 106 §5 step 106.8: `deps.installApk`, when supplied, replaces
+    // BOTH raw `hostAdb install` calls below with the transfer machinery
+    // (real progress, a transferId, staged-file cleanup) — `-r`/`-g` are
+    // applied there by `TransferService.installFromLocalApk`'s own defaults
+    // (both default `true`), the same flags this call always passed.
+    if (deps.installApk) {
+      await deps.installApk(app, 'app')
+      await deps.installApk(test, 'test')
+      return
+    }
     // -g auto-grants runtime permissions; -r replaces a different version.
     // `lane: 'install'` (plan 85 §3.4, §5 step 85.3, tests H5): these two
     // installs for the SAME device never run concurrently with each other,
     // nor with more than `adb.maxInstallConcurrent` installs farm-wide.
     await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', app], { lane: 'install', serial: deps.serial })
     await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', test], { lane: 'install', serial: deps.serial })
+  }
+
+  /**
+   * Both openatx packages in ONE round trip — the same probe an operator runs
+   * by hand (`pm list packages | grep uiautomator`). `pm list packages <name>`
+   * matches by substring, so a healthy device answers with both
+   * `package:com.github.uiautomator` and `package:com.github.uiautomator.test`.
+   */
+  const listUiServerPackages = async (): Promise<Set<string>> => {
+    const out = await deps.exec(`pm list packages ${UI_SERVER_PACKAGE}`, { profile: 'probe' })
+    const names = new Set<string>()
+    for (const line of out.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('package:')) continue
+      const rest = trimmed.slice('package:'.length)
+      // `-f` is never passed here, but its `path=name` shape costs one line to survive.
+      names.add(rest.includes('=') ? rest.slice(rest.lastIndexOf('=') + 1) : rest)
+    }
+    return names
+  }
+
+  /**
+   * uiautomator2 is TWO packages, and `am instrument` targets the TEST one
+   * (`UI_SERVER_INSTRUMENTATION`) — so a device carrying only
+   * `UI_SERVER_PACKAGE` passes every `dumpsys package com.github.uiautomator`
+   * check above (versionCode and signature included) and the instrumentation
+   * then dies on the spot. Measured on ZP2222RMBS (moto g06): `ended
+   * unexpectedly: closed`, three restart cycles, and every job failing on a
+   * socket timeout that named the port instead of the absent package — while
+   * the preparation panel reported the APP package's versionCode as "ready".
+   *
+   * Deliberately conservative: this acts only on POSITIVE evidence — the
+   * listing shows the app and does NOT show the test package. A listing that
+   * does not even mention the app `dumpsys` just confirmed contradicts itself,
+   * so it reads as "could not check" and is skipped (verify.ts's `unreadable`
+   * rule, plan 41 §8), never as grounds for an install cycle.
+   *
+   * `repair: false` is for callers that have JUST run `installBoth()` — the
+   * one-repair-then-degrade budget (§3.3) is already spent, so a still-absent
+   * test package is reported, not reinstalled a second time.
+   */
+  const ensureTestPackage = async (opts: { repair: boolean }): Promise<void> => {
+    let names = await listUiServerPackages()
+    if (!names.has(UI_SERVER_PACKAGE)) {
+      deps.onLog?.(
+        'debug',
+        `could not read the installed package list on ${deps.serial} — skipping the ${UI_SERVER_TEST_PACKAGE} presence check`,
+      )
+      return
+    }
+    if (names.has(UI_SERVER_TEST_PACKAGE)) return
+
+    if (opts.repair) {
+      deps.onLog?.(
+        'warn',
+        `${UI_SERVER_TEST_PACKAGE} is missing on ${deps.serial} while ${UI_SERVER_PACKAGE} is installed — the ui-server instrumentation cannot start without it; installing both APKs`,
+      )
+      await installBoth()
+      names = await listUiServerPackages()
+      if (names.has(UI_SERVER_TEST_PACKAGE)) {
+        deps.onLog?.('info', `${UI_SERVER_TEST_PACKAGE} installed and verified on ${deps.serial}`)
+        return
+      }
+      if (!names.has(UI_SERVER_PACKAGE)) {
+        deps.onLog?.(
+          'warn',
+          `could not re-read the installed package list on ${deps.serial} after installing both APKs — skipping the ${UI_SERVER_TEST_PACKAGE} presence check`,
+        )
+        return
+      }
+    }
+
+    deps.onMismatch?.({ reason: 'not_installed' })
+    throw new Error(
+      `${UI_SERVER_TEST_PACKAGE} is not installed on ${deps.serial} after ${opts.repair ? 'one repair attempt' : 'reinstalling both APKs'} — ${UI_SERVER_PACKAGE} alone cannot run the ui-server instrumentation (${UI_SERVER_INSTRUMENTATION})`,
+    )
   }
 
   /**
@@ -158,9 +259,18 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
   }
 
   return {
+    /**
+     * "Can this device run the ui-server?" — which takes BOTH packages, not
+     * just the app one, for the reason `ensureTestPackage()` documents. An
+     * unreadable package listing keeps the answer to the app's verification
+     * alone rather than inventing a `false`.
+     */
     async isInstalled() {
       const result = await verifyDeviceArtifact(deps.exec, { packageName: UI_SERVER_PACKAGE })
-      return result.ok
+      if (!result.ok) return false
+      const names = await listUiServerPackages()
+      if (!names.has(UI_SERVER_PACKAGE)) return true
+      return names.has(UI_SERVER_TEST_PACKAGE)
     },
 
     /**
@@ -170,6 +280,12 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
      * package would burn farm time forever, so this makes exactly one repair
      * attempt and then degrades visibly (throws, so the session falls back
      * to `uiautomator-dump`).
+     *
+     * BOTH packages are verified. Every path that concludes "the app package
+     * is fine" then runs `ensureTestPackage()` through the SAME
+     * one-repair-then-degrade budget — an app-only device is a real,
+     * observed state (see `ensureTestPackage()`), and before this check it
+     * was reported as ready and then failed every job.
      */
     async ensureInstalled() {
       const expected = expectation()
@@ -181,9 +297,17 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
       }
 
       let result = await verifyDeviceArtifact(deps.exec, expected)
-      if (result.ok) return
+      if (result.ok) {
+        await ensureTestPackage({ repair: true })
+        return
+      }
 
       if (result.reason === 'not_installed') {
+        // Nothing to be selective about: `installBoth()` puts both APKs on
+        // the device, which is exactly what a missing test package needs, so
+        // this path is left exactly as it was. An install that reports success
+        // and does not stick is caught by the `result.ok` branch above on the
+        // very next pass (preparation re-runs; so does every session start).
         await installBoth()
         return
       }
@@ -192,6 +316,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
           'warn',
           `could not read ${UI_SERVER_PACKAGE}'s installed version/signature on ${deps.serial} — skipping artifact verification for this session`,
         )
+        await ensureTestPackage({ repair: true })
         return
       }
 
@@ -205,6 +330,9 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
       result = await verifyDeviceArtifact(deps.exec, expected)
       if (result.ok) {
         deps.onLog?.('info', `${UI_SERVER_PACKAGE} reinstalled and reverified on ${deps.serial}`)
+        // `installBoth()` above already spent the repair budget, so this only
+        // reports an install that did not stick — it never installs again.
+        await ensureTestPackage({ repair: false })
         return
       }
       if (result.reason === 'unreadable') {
@@ -212,6 +340,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
           'warn',
           `could not re-verify ${UI_SERVER_PACKAGE} on ${deps.serial} after reinstalling — skipping artifact verification for this session`,
         )
+        await ensureTestPackage({ repair: false })
         return
       }
 

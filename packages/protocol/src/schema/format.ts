@@ -1,7 +1,7 @@
-import type { DurationUnit, ParamKind } from './vocabulary'
+import type { DurationUnit, ParamKind, StringParamKind } from './vocabulary'
 
 /**
- * The numeric kinds, minus the two string-only ones, plus `'plain'` — the
+ * The numeric kinds, minus the string-only ones, plus `'plain'` — the
  * "no semantic kind" case a bare `z.number()` (or an invalid/unrecognised
  * kind) lands on at row 9 of the resolver's precedence table
  * (`packages/studio/src/components/schema-form/plan.ts`). `kind` is never
@@ -11,7 +11,7 @@ import type { DurationUnit, ParamKind } from './vocabulary'
  * (plan 97 §4.1) alongside `formatValue`, since a `NumberKind` is meaning,
  * not a control — the same boundary that let `formatValue` itself move.
  */
-export type NumberKind = Exclude<ParamKind, 'text' | 'packageName'> | 'plain'
+export type NumberKind = Exclude<ParamKind, StringParamKind> | 'plain'
 
 /** `12` → `"12"`, `12.5` → `"12.5"`, `12.50000001` → `"12.5"` — the readout
  *  never shows more precision than the value actually carries, and never
@@ -51,6 +51,29 @@ function formatDuration(value: number, unit: DurationUnit): string {
   if (m !== 0) parts.push(`${m} min`)
   if (s !== 0 || parts.length === 0) parts.push(`${trimNumber(s)} s`)
   return parts.slice(0, 2).join(' ')
+}
+
+/**
+ * `kind: 'timestamp'` — unix SECONDS (the vocabulary's own fixed unit; see
+ * `./vocabulary.ts`) as an absolute, locale-free UTC readout:
+ * `1755417120` → `"2025-08-17 08:32 UTC"`.
+ *
+ * **Absolute, not relative, and that is deliberate.** This function is pure
+ * and is also called SERVER-side, by `buildResultSummary`, whose output is
+ * written into `jobs.result_summary` once and read forever afterward — a
+ * `"2m ago"` frozen into that column would be a lie the moment anyone read
+ * it. A live, ticking relative readout is a rendering choice that needs a
+ * clock, so it belongs where a clock is available: Studio's own
+ * `formatFieldValue` (`packages/studio/src/lib/format.ts`) layers
+ * `relativeTime` over this for anything an operator is looking at right now.
+ *
+ * A value too large for `Date` (or otherwise unrepresentable) reads `"—"`,
+ * matching this module's own totality rule — never `"Invalid Date"`.
+ */
+function formatTimestamp(value: number): string {
+  const date = new Date(value * 1000)
+  if (Number.isNaN(date.getTime())) return '—'
+  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`
 }
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
@@ -97,6 +120,8 @@ function formatScalar(kind: NumberKind, unit: DurationUnit | undefined, value: n
       return `${Math.round(value * 100)}%`
     case 'duration':
       return formatDuration(value, unit ?? 'ms')
+    case 'timestamp':
+      return formatTimestamp(value)
     case 'bytes':
       return formatBytes(value)
     case 'bitrate':

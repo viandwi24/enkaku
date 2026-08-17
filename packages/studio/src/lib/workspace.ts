@@ -65,7 +65,61 @@ export function moveWorkspaceFile(from: string, to: string, ifMatch: string): Pr
   return invokeCap('fs.move', { from, to, ifMatch }, WorkspaceFileMetaSchema)
 }
 
-/** `script.publish`'s `{ path }` input form (plan 64 §3.5, §4.4, §4.7) — the core bundles the workspace source itself. */
+/**
+ * The two halves of a published script's name (plan 110 §3.2): a script is
+ * always `<plugin>/<script>`, because a script cannot exist outside a plugin.
+ *
+ * These are `script.publish`'s OWN regex (`MEMBER_NAME_SHAPE` in
+ * `packages/core/src/capability/script.ts`) split at the slash — kept split so
+ * a form can tell the operator WHICH half is wrong in a field hint, instead of
+ * round-tripping to a schema refusal that names neither. The capability still
+ * enforces the whole shape; this only moves the same answer earlier.
+ */
+export const PLUGIN_NAME_SHAPE = /^[a-z0-9][a-z0-9-]*$/
+export const SCRIPT_MEMBER_NAME_SHAPE = /^[a-z0-9][a-z0-9._-]*$/
+/** `script.publish`'s `version` field, copied for the same reason. */
+export const SCRIPT_VERSION_SHAPE = /^\d+\.\d+\.\d+(?:[-+].+)?$/
+
+export interface PublishName {
+  plugin: string
+  script: string
+}
+
+/** Anything a file name can hold, reduced to the characters both halves allow. */
+function slug(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+/**
+ * The name to offer for a workspace file, so the common case is one click
+ * (plan 110 §3.5):
+ *
+ * - `/scripts/checkout.ts` → `checkout/main` — one plugin per script name with
+ *   a member called `main`, which is what `enkaku init` scaffolds.
+ * - `/scripts/tiktok/search.ts` → `tiktok/search` — a folder already says which
+ *   plugin its files belong to, so it is taken at its word.
+ *
+ * Always a suggestion: the operator can overwrite either half.
+ */
+export function defaultPublishName(path: string): PublishName {
+  const segments = path.split('/').filter(Boolean)
+  const file = segments.pop() ?? ''
+  const script = slug(file.replace(/\.[^.]+$/, ''))
+  const dir = segments[segments.length - 1]
+  const plugin = dir && dir !== 'scripts' ? slug(dir) : ''
+  return plugin ? { plugin, script } : { plugin: script, script: 'main' }
+}
+
+/**
+ * `script.publish`'s `{ path }` input form (plan 64 §3.5, §4.4, §4.7) — the
+ * core bundles the workspace source itself. `name` is the qualified
+ * `<plugin>/<script>` (plan 110 §3.2); the owning plugin is created on first
+ * publish and is never asserted by the caller — `PublishScriptCapabilityInput`
+ * deliberately has no `pluginId`/`exportId`/`kind` to send.
+ */
 export function publishScriptFromWorkspace(path: string, name: string, version: string): Promise<PublishFromPathResult> {
   return invokeCap('script.publish', { path, name, version }, PublishFromPathResultSchema)
 }

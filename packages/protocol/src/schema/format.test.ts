@@ -52,6 +52,19 @@ describe('formatValue — other kinds', () => {
     expect(formatValue('bytes', undefined, 512)).toBe('512 B')
     expect(formatValue('bitrate', undefined, 500)).toBe('500 bps')
   })
+
+  test('timestamp reads unix SECONDS as an absolute, locale-free UTC instant (plan 108 §4.3)', () => {
+    expect(formatValue('timestamp', undefined, 0)).toBe('1970-01-01 00:00 UTC')
+    expect(formatValue('timestamp', undefined, 1_755_417_120)).toBe('2025-08-17 07:52 UTC')
+  })
+
+  test('timestamp is never relative here — the same input always formats the same way', () => {
+    expect(formatValue('timestamp', undefined, 1_755_417_120)).toBe(formatValue('timestamp', undefined, 1_755_417_120))
+  })
+
+  test('a timestamp too large for Date reads as an em dash, never "Invalid Date"', () => {
+    expect(formatValue('timestamp', undefined, 1e17)).toBe('—')
+  })
 })
 
 describe('formatValue — totality (never NaN, never blank)', () => {

@@ -311,6 +311,7 @@ function Field({
     help: field.help,
     error: errors[path],
     value,
+    required: field.required,
     onChange,
   })
 }

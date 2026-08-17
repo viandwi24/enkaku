@@ -91,29 +91,60 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
     expect(plan).toEqual({ control: 'json', reason: 'too deeply nested to render' })
   })
 
-  test('row 3 — a declared kind valid for its structural type wins, for every one of the nine kinds', () => {
+  test('row 3 — a declared kind valid for its structural type wins, one case per kind', () => {
     expect(planOne(z.number().int().min(0).default(0).meta(ui({ title: 'Videos', kind: 'count' })))).toEqual({
       control: 'number',
       kind: 'count',
       min: 0,
+      step: 1,
+      increment: 1,
     })
     expect(planOne(z.number().min(0).max(1).default(0).meta(ui({ title: 'Save chance', kind: 'chance' })))).toEqual({
       control: 'number',
       kind: 'chance',
       min: 0,
       max: 1,
+      step: 'any',
+      increment: 0.01,
     })
     expect(planOne(z.number().int().meta(ui({ title: 'Timeout', kind: 'duration', unit: 'ms' })))).toEqual({
       control: 'number',
       kind: 'duration',
       unit: 'ms',
+      step: 1,
+      increment: 1,
     })
-    expect(planOne(z.number().int().meta(ui({ title: 'Max push', kind: 'bytes' })))).toEqual({ control: 'number', kind: 'bytes' })
-    expect(planOne(z.number().int().meta(ui({ title: 'Bitrate', kind: 'bitrate' })))).toEqual({ control: 'number', kind: 'bitrate' })
-    expect(planOne(z.number().int().meta(ui({ title: 'Max size', kind: 'pixels' })))).toEqual({ control: 'number', kind: 'pixels' })
-    expect(planOne(z.number().meta(ui({ title: 'Threshold', kind: 'temperature' })))).toEqual({ control: 'number', kind: 'temperature' })
+    expect(planOne(z.number().int().meta(ui({ title: 'Max push', kind: 'bytes' })))).toEqual({
+      control: 'number',
+      kind: 'bytes',
+      step: 1,
+      increment: 1,
+    })
+    expect(planOne(z.number().int().meta(ui({ title: 'Bitrate', kind: 'bitrate' })))).toEqual({
+      control: 'number',
+      kind: 'bitrate',
+      step: 1,
+      increment: 1,
+    })
+    expect(planOne(z.number().int().meta(ui({ title: 'Max size', kind: 'pixels' })))).toEqual({
+      control: 'number',
+      kind: 'pixels',
+      step: 1,
+      increment: 1,
+    })
+    // NOT `.int()` — `tempThresholdC` in the real schema is a plain float
+    // field (96.31's own blast radius), so this row deliberately does not
+    // add `.int()` the way the others above do.
+    expect(planOne(z.number().meta(ui({ title: 'Threshold', kind: 'temperature' })))).toEqual({
+      control: 'number',
+      kind: 'temperature',
+      step: 'any',
+      increment: 0.01,
+    })
     expect(planOne(z.string().meta(ui({ title: 'Note', kind: 'text' })))).toEqual({ control: 'text', multiline: false })
     expect(planOne(z.string().meta(ui({ title: 'Package', kind: 'packageName' })))).toEqual({ control: 'text', multiline: false })
+    expect(planOne(z.string().meta(ui({ title: 'Output folder', kind: 'workspaceFolder' })))).toEqual({ control: 'workspacePath', target: 'folder' })
+    expect(planOne(z.string().meta(ui({ title: 'Captions', kind: 'workspaceFile' })))).toEqual({ control: 'workspacePath', target: 'file' })
   })
 
   test('row 4 — enum or const becomes a choice, decorated by labels', () => {
@@ -141,7 +172,7 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
     expect(planOne(z.tuple([z.number(), z.number()]))).toEqual({
       control: 'pair',
       ordered: true,
-      item: { control: 'number', kind: 'plain' },
+      item: { control: 'number', kind: 'plain', step: 'any', increment: 0.01 },
     })
     expect(planOne(z.tuple([z.number(), z.number()]).meta(ui({ title: 'Pair', ordered: false })))).toMatchObject({
       control: 'pair',
@@ -151,7 +182,7 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
 
   test('row 6 — a pair\'s kind/unit hint lives on the TUPLE and is applied to the half via rows 3/9', () => {
     const plan = planOne(z.tuple([z.number().int(), z.number().int()]).meta(ui({ title: 'Interval', kind: 'duration', unit: 'ms' })))
-    expect(plan).toEqual({ control: 'pair', ordered: true, item: { control: 'number', kind: 'duration', unit: 'ms' } })
+    expect(plan).toEqual({ control: 'pair', ordered: true, item: { control: 'number', kind: 'duration', unit: 'ms', step: 1, increment: 1 } })
   })
 
   test('row 7 — a known string format becomes the matching control, not a guess', () => {
@@ -173,18 +204,89 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
   })
 
   test('row 9 — a plain number/integer takes bounds from the schema and kind "plain"', () => {
-    expect(planOne(z.number())).toEqual({ control: 'number', kind: 'plain' })
-    expect(planOne(z.number().min(1).max(2000).default(30))).toEqual({ control: 'number', kind: 'plain', min: 1, max: 2000 })
-    expect(planOne(z.number().multipleOf(5))).toEqual({ control: 'number', kind: 'plain', step: 5 })
+    expect(planOne(z.number())).toEqual({ control: 'number', kind: 'plain', step: 'any', increment: 0.01 })
+    expect(planOne(z.number().min(1).max(2000).default(30))).toEqual({ control: 'number', kind: 'plain', min: 1, max: 2000, step: 'any', increment: 0.01 })
+    // `multipleOf` wins over the type-derived default on BOTH `step` and
+    // `increment` — a declared multiple is a stronger statement than either
+    // fallback.
+    expect(planOne(z.number().multipleOf(5))).toEqual({ control: 'number', kind: 'plain', step: 5, increment: 5 })
   })
 
   test('row 9 (F5) — the ±MAX_SAFE_INTEGER sentinels z.number().int() emits with no explicit bounds are treated as unbounded', () => {
     const json = JSON.parse(JSON.stringify(z.toJSONSchema(z.number().int()))) as JsonSchemaNode
     expect(json.minimum).toBe(-Number.MAX_SAFE_INTEGER)
     expect(json.maximum).toBe(Number.MAX_SAFE_INTEGER)
-    expect(planOne(z.number().int())).toEqual({ control: 'number', kind: 'plain' })
+    expect(planOne(z.number().int())).toEqual({ control: 'number', kind: 'plain', step: 1, increment: 1 })
     // A REAL bound close to, but not equal to, the sentinel is kept.
-    expect(planOne(z.number().int().max(9007199254740990))).toEqual({ control: 'number', kind: 'plain', max: 9007199254740990 })
+    expect(planOne(z.number().int().max(9007199254740990))).toEqual({
+      control: 'number',
+      kind: 'plain',
+      max: 9007199254740990,
+      step: 1,
+      increment: 1,
+    })
+  })
+
+  /**
+   * 96.31 — the exact reported failure. The owner opened Settings, changed
+   * nothing, clicked Save, and the browser refused the form's OWN
+   * server-loaded value: `gestureCurvature` (`min(0).max(0.5).default(0.08)`,
+   * no `.multipleOf()`) used to plan `step: undefined`, `NumberField` then
+   * omitted the HTML `step` attribute, and HTML's own default for
+   * `type="number"` is `step="1"` — so with `min=0`, only 0, 1, 2… were
+   * valid and the stored `0.08` failed native validation with "The nearest
+   * valid value is 0." This is the shape that must plan a `step` under which
+   * `0.08` is a valid value: `'any'` imposes no multiple-of constraint at
+   * all, which is the only correct reading of a float with no declared
+   * `multipleOf`.
+   */
+  test('row 9 (96.31) — a gestureCurvature-shaped field plans a step that accepts its own stored 0.08', () => {
+    const plan = planOne(z.number().min(0).max(0.5).default(0.08).meta({ title: 'Gesture curvature' }))
+    expect(plan).toEqual({ control: 'number', kind: 'plain', min: 0, max: 0.5, step: 'any', increment: 0.01 })
+    expect(plan.control).toBe('number')
+    if (plan.control !== 'number') throw new Error('unreachable')
+    // The actual native-validation question: is 0.08 a multiple of `step`
+    // starting at `min`? `step: 'any'` means "yes, unconditionally" — no
+    // finite step value could ever pass this same assertion for an
+    // arbitrary float default, which is exactly why 'any' (not a smaller
+    // number) is the correct plan for an undeclared float constraint.
+    expect(plan.step).toBe('any')
+  })
+
+  /**
+   * 96.31's second named instance — `lat`/`lng` (decimal degrees,
+   * `packages/protocol/src/settings.ts:198-199`) can never hold a real
+   * coordinate under the old behaviour, because almost every real latitude
+   * or longitude is fractional and the implicit `step="1"` would reject it
+   * exactly like `gestureCurvature` did.
+   */
+  test('row 9 (96.31) — a lat/lng-shaped field plans a step that accepts a real decimal coordinate', () => {
+    const lat = planOne(z.number().min(-90).max(90).describe('Latitude, in decimal degrees').meta({ title: 'Latitude' }))
+    expect(lat).toEqual({ control: 'number', kind: 'plain', min: -90, max: 90, step: 'any', increment: 0.01 })
+    const lng = planOne(z.number().min(-180).max(180).describe('Longitude, in decimal degrees').meta({ title: 'Longitude' }))
+    expect(lng).toEqual({ control: 'number', kind: 'plain', min: -180, max: 180, step: 'any', increment: 0.01 })
+    // -6.2088, 106.8456 — Jakarta, a real coordinate, not a round number.
+    // `step: 'any'` is what makes a browser accept it; nothing in `planOne`'s
+    // output claims to validate the VALUE itself (that is `validate.ts`'s
+    // job, unaffected by this fix), only that the HTML attribute this plan
+    // produces does not reject it on its own.
+  })
+
+  /**
+   * 96.31 — do not fix floats by breaking integers. An integer field must
+   * keep planning `step: 1` (both as the HTML attribute and the button
+   * delta) exactly as it always has — the fix only changes what an
+   * UNCONSTRAINED float plans, never an integer.
+   */
+  test('row 9 (96.31) — an integer field still plans step 1, not "any"', () => {
+    expect(planOne(z.number().int().min(0).max(2_000))).toEqual({
+      control: 'number',
+      kind: 'plain',
+      min: 0,
+      max: 2_000,
+      step: 1,
+      increment: 1,
+    })
   })
 
   test('row 10 — an array of objects becomes a table, one planned column per property', () => {
@@ -193,13 +295,16 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
     if (plan.control !== 'table') throw new Error('unreachable')
     expect(plan.columns).toEqual([
       { key: 'name', label: 'Name', plan: { control: 'text', multiline: false, maxLength: undefined } },
-      { key: 'count', label: 'Count', plan: { control: 'number', kind: 'plain' } },
+      { key: 'count', label: 'Count', plan: { control: 'number', kind: 'plain', step: 1, increment: 1 } },
     ])
   })
 
   test('row 11 — an array of scalars becomes a list of the planned item', () => {
     expect(planOne(z.array(z.string()))).toEqual({ control: 'list', item: { control: 'text', multiline: false, maxLength: undefined } })
-    expect(planOne(z.array(z.number().int().min(0)))).toEqual({ control: 'list', item: { control: 'number', kind: 'plain', min: 0 } })
+    expect(planOne(z.array(z.number().int().min(0)))).toEqual({
+      control: 'list',
+      item: { control: 'number', kind: 'plain', min: 0, step: 1, increment: 1 },
+    })
   })
 
   test('row 12 — a nested object with non-empty properties is a group, children in declaration order', () => {
@@ -215,7 +320,7 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
   })
 
   test('row 14 — anyOf/oneOf with exactly one non-null branch unwraps it (nullable, as today)', () => {
-    expect(planOne(z.number().nullable())).toEqual({ control: 'number', kind: 'plain' })
+    expect(planOne(z.number().nullable())).toEqual({ control: 'number', kind: 'plain', step: 'any', increment: 0.01 })
     expect(planOne(z.string().nullable())).toEqual({ control: 'text', multiline: false, maxLength: undefined })
   })
 
@@ -228,7 +333,7 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
     // `spendCapOutputTokensPer24h` now use for real.
     expect(
       planOne(z.number().int().min(30_000).max(86_400_000).nullable().default(null).meta(ui({ title: 'Timeout', kind: 'duration', unit: 'ms' }))),
-    ).toEqual({ control: 'number', kind: 'duration', unit: 'ms', min: 30_000, max: 86_400_000 })
+    ).toEqual({ control: 'number', kind: 'duration', unit: 'ms', min: 30_000, max: 86_400_000, step: 1, increment: 1 })
   })
 
   test('row 14 (96.3) — the fix is general, not kind-specific: a non-kind hint (multiline) on the wrapper reaches the plan too', () => {
@@ -249,7 +354,7 @@ describe('planField — the precedence table (plan 95 §3.3), one case per row',
     // `kind`: the inner branch's own 'bytes' wins over the wrapper's
     // 'duration' — neither is silently dropped; 'duration' is overridden,
     // deliberately, by the more specific annotation on the value itself.
-    expect(planOne(zodField)).toEqual({ control: 'number', kind: 'bytes' })
+    expect(planOne(zodField)).toEqual({ control: 'number', kind: 'bytes', step: 1, increment: 1 })
   })
 
   test('row 14 (96.3) — the merge is shallow, per ParamHints KEY, not a deep merge of nested values like `labels`', () => {
@@ -305,7 +410,26 @@ describe('every kind on the wrong structural type falls through to its structura
   })
 
   test('a string kind (text/packageName) on a number falls through to row 9, never becomes a text control', () => {
-    expect(planOne(z.number().meta(ui({ title: 'Weird', kind: 'text' as never })))).toEqual({ control: 'number', kind: 'plain' })
+    expect(planOne(z.number().meta(ui({ title: 'Weird', kind: 'text' as never })))).toEqual({
+      control: 'number',
+      kind: 'plain',
+      step: 'any',
+      increment: 0.01,
+    })
+  })
+
+  test('a workspace path kind on a non-string falls through to that node\'s own structural row', () => {
+    expect(planOne(z.number().meta(ui({ title: 'Weird', kind: 'workspaceFolder' as never })))).toEqual({
+      control: 'number',
+      kind: 'plain',
+      step: 'any',
+      increment: 0.01,
+    })
+    expect(planOne(z.boolean().meta(ui({ title: 'Weird', kind: 'workspaceFile' as never })))).toEqual({ control: 'toggle' })
+    expect(planOne(z.array(z.string()).meta(ui({ title: 'Weird', kind: 'workspaceFile' as never })))).toMatchObject({ control: 'list' })
+    // The same rule row 3 already applies to every kind: a closed choice is
+    // never displaced by a free-value control (§3.2).
+    expect(planOne(z.enum(['/a', '/b']).meta(ui({ title: 'Weird', kind: 'workspaceFile' as never })))).toMatchObject({ control: 'choice' })
   })
 
   test('a numeric kind on a boolean falls through to row 5', () => {
@@ -326,6 +450,8 @@ describe('every kind on the wrong structural type falls through to its structura
       kind: 'plain',
       min: 0,
       max: 0.5,
+      step: 'any',
+      increment: 0.01,
     })
     // The brief's own example: [0, 100] is not a percentage either.
     expect(planOne(z.number().min(0).max(100).meta(ui({ title: 'Weird', kind: 'chance' })))).toEqual({
@@ -333,6 +459,8 @@ describe('every kind on the wrong structural type falls through to its structura
       kind: 'plain',
       min: 0,
       max: 100,
+      step: 'any',
+      increment: 0.01,
     })
   })
 
@@ -346,15 +474,73 @@ describe('every kind on the wrong structural type falls through to its structura
   })
 })
 
+describe('the workspace path kinds — row 3, through the same lookup every other kind uses', () => {
+  test('an extension filter rides through onto the file browser, unchanged', () => {
+    expect(planOne(z.string().meta(ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })))).toEqual({
+      control: 'workspacePath',
+      target: 'file',
+      extensions: ['.txt'],
+    })
+  })
+
+  test('extensions on a folder is a malformed hint object, so the WHOLE hint degrades to {} — the same discipline as a unitless duration', () => {
+    const schema = {
+      type: 'object',
+      properties: { out: { type: 'string', 'x-enkaku': { kind: 'workspaceFolder', extensions: ['.txt'] } } },
+    } as unknown as JsonSchemaNode
+    expect(planField(schema.properties!.out!, rootCtx(schema))).toEqual({ control: 'text', multiline: false, maxLength: undefined })
+  })
+
+  test('a folder never carries extensions, even through row 14\'s per-key merge — the one path that can combine two independently valid hints into an invalid one', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        out: {
+          'x-enkaku': { kind: 'workspaceFile', extensions: ['.txt'] },
+          anyOf: [{ type: 'string', 'x-enkaku': { kind: 'workspaceFolder' } }, { type: 'null' }],
+        },
+      },
+    } as unknown as JsonSchemaNode
+    expect(planField(schema.properties!.out!, rootCtx(schema))).toEqual({ control: 'workspacePath', target: 'folder' })
+  })
+
+  test('a nullable/optional workspace path still resolves — row 14 threads the wrapper hints down (96.3)', () => {
+    expect(planOne(z.string().nullable().meta(ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })))).toEqual({
+      control: 'workspacePath',
+      target: 'file',
+      extensions: ['.txt'],
+    })
+    expect(planOne(z.string().nullable().optional().meta(ui({ title: 'Folder', kind: 'workspaceFolder' })))).toEqual({
+      control: 'workspacePath',
+      target: 'folder',
+    })
+  })
+
+  test('a kind this build does not know falls through to its structural row, never to a browser', () => {
+    const schema = {
+      type: 'object',
+      properties: { out: { type: 'string', 'x-enkaku': { kind: 'workspaceDevice' } } },
+    } as unknown as JsonSchemaNode
+    expect(planField(schema.properties!.out!, rootCtx(schema))).toEqual({ control: 'text', multiline: false, maxLength: undefined })
+  })
+})
+
 describe('a bare z.number() plans identically before and after this plan (the no-regression floor, §5 step 95.2)', () => {
   test('no bounds, no hints: a plain number box, nothing fancier', () => {
     // "Before this plan" a bare z.number() rendered as one bare number
-    // input with no bounds, no step, no semantic kind (F17). `kind: 'plain'`
-    // is the same "nothing more specific was said" outcome, spelled out
-    // rather than left implicit — every other field on this plan is
+    // input with no bounds, no explicit step attribute, no semantic kind
+    // (F17). `kind: 'plain'` is the same "nothing more specific was said"
+    // outcome, spelled out rather than left implicit — `min`/`max` stay
     // `undefined`, matching what an old renderer had nothing to show either.
+    // `step`/`increment` are NOT `undefined` even here, though (96.31): a
+    // bare `z.number()` is a `type: 'number'` node with no `multipleOf`, so
+    // it plans `step: 'any'` (no HTML constraint, matching the pre-`step`-
+    // attribute-era behaviour that omitting the attribute was SUPPOSED to
+    // mean) and a `0.01` button increment — never `step: undefined`, which
+    // is exactly the value that made the browser fall back to its own
+    // implicit `step="1"` and reject a real stored float.
     const plan = planOne(z.number())
-    expect(plan).toEqual({ control: 'number', kind: 'plain' })
+    expect(plan).toEqual({ control: 'number', kind: 'plain', step: 'any', increment: 0.01 })
   })
 })
 

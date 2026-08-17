@@ -47,7 +47,7 @@ function seedDevice(db: Db, id: string) {
 }
 
 function seedScript(db: Db, id: string, name: string, version = '1.0.0') {
-  db.insert(scripts).values({ id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+  db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
 }
 
 function seedCallerJob(db: Db, id: string, deviceId: string) {

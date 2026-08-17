@@ -16,19 +16,51 @@ import type { JsonSchemaNode } from '../api/json-schema'
  * Every control name (`slider`, `stepper`, `dropdown`, ...) is likewise
  * absent on purpose: this package names what a value MEANS, never how it is
  * drawn (plan 95 §3.1) — choosing a control is Studio's job, in a later step.
+ *
+ * `workspaceFolder` and `workspaceFile` are the two PATH meanings: "this
+ * value names a place in the workspace" (`/videos`) and "this value names a
+ * file in the workspace" (`/captions.txt`). Always a workspace path —
+ * absolute within the workspace, the same string `fs.list`/`fs.read` take —
+ * and NEVER a host filesystem path: nothing outside the workspace is
+ * nameable this way, which is the whole reason these are two kinds and not
+ * one `kind: 'path'`. Both are valid only on `type: 'string'`.
+ *
+ * `timestamp` (plan 108 §4.3, added by step 108.7 after 108.11 hit the gap)
+ * is an INSTANT, always in unix **seconds** — the repo-wide storage
+ * convention for every time value (`docs/plans/00-overview.md` §4.2, and
+ * Drizzle's own `mode: 'timestamp'` columns). It is the counterpart to
+ * `duration`, which is a SPAN and carries a `unit`; an instant needs no unit
+ * because the vocabulary fixes one, exactly as `chance` fixes the domain
+ * `[0,1]` rather than letting an author declare percent-or-fraction. A field
+ * holding milliseconds is therefore NOT a `timestamp` — it is a number, and
+ * declaring it one would render it as a date in 1970.
  */
 export const PARAM_KINDS = [
   'count',
   'chance',
   'duration',
+  'timestamp',
   'bytes',
   'bitrate',
   'pixels',
   'temperature',
   'text',
   'packageName',
+  'workspaceFolder',
+  'workspaceFile',
 ] as const
 export type ParamKind = (typeof PARAM_KINDS)[number]
+
+/**
+ * The kinds whose value is a STRING. Everything else in `PARAM_KINDS` is a
+ * number, which is what `NumberKind` (`./format.ts`) derives itself from —
+ * so adding a string kind above without adding it here is a compile error at
+ * `formatScalar`'s exhaustive switch, not a value silently formatted as
+ * `"NaN"`. Meaning, not presentation: "is this value a string" is a fact
+ * about the value, the same category as `kind` itself.
+ */
+export const STRING_PARAM_KINDS = ['text', 'packageName', 'workspaceFolder', 'workspaceFile'] as const
+export type StringParamKind = (typeof STRING_PARAM_KINDS)[number]
 
 /** Required by, and valid only for, `kind: 'duration'` (plan 95 §3.2). */
 export const DURATION_UNITS = ['ms', 's', 'min', 'h'] as const
@@ -80,6 +112,19 @@ export interface ParamHints {
   kind?: ParamKind
   /** Required by, and valid only for, `kind: 'duration'`. */
   unit?: DurationUnit
+  /**
+   * Valid only for `kind: 'workspaceFile'` — the file suffixes this field is
+   * ABOUT (`['.txt']` for a captions file). A companion key scoped to one
+   * kind, exactly like `unit` above, rather than a second parallel way of
+   * saying what a value means.
+   *
+   * It narrows what is OFFERED, never what is accepted: a value already
+   * stored — by an older version of the script, by an agent, by hand — is
+   * still read back and still shown, because a hint that silently dropped a
+   * real value would be worse than an unfiltered list. Lowercase, dotted,
+   * matched case-insensitively against the end of the path.
+   */
+  extensions?: string[]
   /** 2-number tuples only: the pair is an interval, low end first. Default `true`. */
   ordered?: boolean
   /** Strings only: the value is prose, not a token. */
@@ -132,6 +177,7 @@ export const ParamHintsSchema: z.ZodType<ParamHints> = z
   .object({
     kind: z.enum(PARAM_KINDS).optional(),
     unit: z.enum(DURATION_UNITS).optional(),
+    extensions: z.array(z.string().regex(/^\.[a-z0-9]+(?:\.[a-z0-9]+)*$/, 'each extension must be a lowercase dotted suffix, e.g. ".txt"')).min(1).max(10).optional(),
     ordered: z.boolean().optional(),
     multiline: z.boolean().optional(),
     group: z.string().optional(),
@@ -148,6 +194,9 @@ export const ParamHintsSchema: z.ZodType<ParamHints> = z
     }
     if (val.kind !== 'duration' && val.unit !== undefined) {
       ctx.addIssue({ code: 'custom', message: "unit is only valid for kind: 'duration'", path: ['unit'] })
+    }
+    if (val.kind !== 'workspaceFile' && val.extensions !== undefined) {
+      ctx.addIssue({ code: 'custom', message: "extensions is only valid for kind: 'workspaceFile'", path: ['extensions'] })
     }
   })
 
@@ -177,19 +226,31 @@ export type UiSpec = { title: string; description?: string } & ParamHints
  *   - `kind: 'duration'` REQUIRES `unit`.
  *   - every other kind FORBIDS `unit` (`unit?: never`).
  *
- * A misspelled `kind`, a `unit` on a non-duration, or `{ kind: 'duration' }`
- * with no unit are all compile errors in the author's own editor — not a
- * runtime surprise at publish or render time.
+ *   - `extensions` belongs to `kind: 'workspaceFile'` alone.
+ *
+ * A misspelled `kind`, a `unit` on a non-duration, an `extensions` on
+ * anything but a workspace file, or `{ kind: 'duration' }` with no unit are
+ * all compile errors in the author's own editor — not a runtime surprise at
+ * publish or render time.
  *
  * Declared here and re-exported from `@enkaku/sdk` so a script's import
  * allowlist (F9 — a script may import only `@enkaku/sdk` and `zod`) is
  * satisfied without widening it.
  */
 export function ui(
-  spec: { title: string; description?: string; kind: 'duration'; unit: DurationUnit } & Omit<ParamHints, 'kind' | 'unit'>,
+  spec: { title: string; description?: string; kind: 'duration'; unit: DurationUnit; extensions?: never } & Omit<ParamHints, 'kind' | 'unit' | 'extensions'>,
 ): Record<string, unknown>
 export function ui(
-  spec: { title: string; description?: string; kind?: Exclude<ParamKind, 'duration'>; unit?: never } & Omit<ParamHints, 'kind' | 'unit'>,
+  spec: { title: string; description?: string; kind: 'workspaceFile'; unit?: never; extensions?: string[] } & Omit<
+    ParamHints,
+    'kind' | 'unit' | 'extensions'
+  >,
+): Record<string, unknown>
+export function ui(
+  spec: { title: string; description?: string; kind?: Exclude<ParamKind, 'duration' | 'workspaceFile'>; unit?: never; extensions?: never } & Omit<
+    ParamHints,
+    'kind' | 'unit' | 'extensions'
+  >,
 ): Record<string, unknown>
 export function ui(spec: UiSpec): Record<string, unknown> {
   const { title, description, ...hints } = spec

@@ -8,7 +8,7 @@ import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
 import { admitDevice } from './admission'
-import { createDeviceRegistry, deriveConnection, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from './device-registry'
+import { createDeviceRegistry, deriveAgentState, deriveConnection, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from './device-registry'
 import { allocateDeviceNumber, lookupDeviceNumber } from './device-number'
 import type { EndpointStore } from './endpoints'
 
@@ -111,6 +111,26 @@ describe('device enrollment', () => {
     const settings = row!.settings as DeviceSettings
     expect(settings).toEqual(defaultDeviceSettings())
     expect(row!.display).toBe(defaultDeviceSettings().engines.display)
+  })
+
+  /**
+   * docs/settings-audit.md #1 (highest-severity finding, docs/plans/
+   * 96-m61-hotfixes.md): a farm-wide default GPS/timezone/locale used to be
+   * spread onto every device enrolled through THIS live-tracker path too —
+   * `createDeviceRegistry`'s own inline `defaultsForNewDevice`, not just
+   * `admission.ts`'s `admitDevice` path `admission.test.ts` covers. A new
+   * device gets a valid, EMPTY identity, never `undefined` and never
+   * whatever a farm operator set centrally.
+   */
+  test('a new device enrolled through the live tracker gets a fresh, empty identity — never a farm-wide one, even if the accessor carries one', async () => {
+    const farmDefaultsWithIdentity: DeviceSettings = {
+      ...defaultDeviceSettings(),
+      identity: { timezone: 'Asia/Jakarta', locale: 'id-ID', gps: { lat: -6.2, lng: 106.8, accuracy: 50 } },
+    }
+    const row = await enrollOnce(() => farmDefaultsWithIdentity)
+    const settings = row!.settings as DeviceSettings
+    expect(settings.identity).toEqual({})
+    expect(settings.identity).not.toBeUndefined()
   })
 })
 
@@ -457,6 +477,58 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     const info = rowToDeviceInfo(row)
     expect(info.connection.kind).toBe('usb')
+  })
+})
+
+describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => {
+  test('reads devices.preparation[guest-agent] — the authoritative store since 106.5 — not devices.agent', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices)
+      .values({
+        id: 'd1',
+        stableId: 's1',
+        serial: 'ZP2222RMBS',
+        label: 'Phone',
+        status: 'idle',
+        preparation: { 'guest-agent': { state: 'outdated', version: '1.2.0', reason: 'update available', checkedAt: 1, attempts: 0, nextAttemptAt: null } },
+        // A stale/absent devices.agent must not win — preparation is authoritative.
+        agent: { appVersion: '1.2.0', versionCode: 3, androidSdkInt: 30, capabilities: [] },
+      })
+      .run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    expect(deriveAgentState(row)).toBe('outdated')
+    expect(rowToDeviceInfo(row).agent).toBe('outdated')
+  })
+
+  test('a pre-106.5 row (legacy devices.agent, no preparation entry) still reports its real state — a known-failed phone never reads as healthy', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices)
+      .values({
+        id: 'd1',
+        stableId: 's1',
+        serial: 'ZP2222RMBS',
+        label: 'Phone',
+        status: 'idle',
+        agent: { state: 'failed', appVersion: null, versionCode: null, androidSdkInt: 30, capabilities: [], reason: 'device offline mid-install', checkedAt: 1, attempts: 3, nextAttemptAt: null },
+        // No `preparation` column at all — exactly a row written before this migration.
+      })
+      .run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    expect(deriveAgentState(row)).toBe('failed')
+    expect(rowToDeviceInfo(row).agent).toBe('failed')
+  })
+
+  test('a device that has never been provisioned reads absent, not a crash', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    expect(deriveAgentState(row)).toBe('absent')
   })
 })
 

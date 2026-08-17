@@ -240,6 +240,7 @@ export { UiServerClient, UiServerClientError } from './client'
 export {
   createUiServerLauncher,
   UI_SERVER_PACKAGE,
+  UI_SERVER_TEST_PACKAGE,
   UI_SERVER_DEVICE_PORT,
   UI_SERVER_STUB_CLASS,
   type UiServerLauncher,

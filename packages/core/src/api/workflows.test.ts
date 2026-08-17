@@ -34,7 +34,7 @@ function setUp(): { db: Db; registry: ScriptRegistry } {
 function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean } = {}) {
   const id = `${name.replace(/\//g, '-')}-${version}`
   db.insert(scripts)
-    .values({ id, name, version, kind: 'script', bundle: 'export {}', enabled: opts.enabled ?? true, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, kind: 'script', bundle: 'export {}', enabled: opts.enabled ?? true, createdAt: new Date() })
     .run()
   return id
 }
@@ -128,6 +128,12 @@ describe('POST /api/workflows — the owner\'s example (step 99.6 verifiable res
     // document pretty-printed (plan 99 §4.5).
     expect(() => JSON.parse(row!.bundle)).not.toThrow()
     expect(row?.source).toContain('"name": "tiktok-search-pipeline"')
+    // Plan 110 §3.3, criterion 2 — a workflow publishes with NO owning plugin,
+    // and that is not an exemption from "a script cannot exist outside a
+    // plugin": the rule is written about a `kind: 'script'` row, and this is
+    // not one. The writer that refuses a plugin-less script wrote this row.
+    expect(row?.pluginId).toBeNull()
+    expect(row?.exportId).toBeNull()
   })
 
   test('a duplicate name@version is refused with script_version_exists — the EXISTING writer\'s own conflict check, not a second one', async () => {

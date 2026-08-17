@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
+import type { PluginSurfaceInput } from '@enkaku/protocol'
 import { definePlugin, isPlugin, type PluginMemberScript } from './plugin'
 
 function member(id: string, extra?: Partial<PluginMemberScript>): PluginMemberScript {
@@ -64,6 +65,22 @@ describe('definePlugin', () => {
     ).toThrow(/params/)
   })
 
+  // Plan 110 §4.2 removed `defineScript`, and `define-script.test.ts` with
+  // it. These two carried over from that file: the checks they cover are
+  // `definePlugin`'s own and always were (a member never went through
+  // `defineScript`), but they were only ever ASSERTED there — so without them
+  // the removal would have quietly cost the SDK two tests.
+  test('rejects a member whose `result`, when present, is not a Zod schema', () => {
+    expect(() =>
+      definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { result: {} as never })] }),
+    ).toThrow(/result/)
+  })
+
+  test('accepts a member declaring no `result` at all — an output schema is optional and always optional', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+    expect(plugin.scripts[0]?.result).toBeUndefined()
+  })
+
   describe('the timeout/retries ⇒ runtime fold per member (plan 98 §4.2)', () => {
     test('a member declaring neither `timeout`/`retries` nor `runtime` gets no envelope at all', () => {
       const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
@@ -105,6 +122,144 @@ describe('definePlugin', () => {
         definePlugin({ id: 'p', version: '1.0.0', scripts: [member('login', { retries: 1, runtime: { retries: 4 } })] }),
       ).toThrow(/"login"/)
     })
+
+    // Also carried over from the deleted `define-script.test.ts`: a bound
+    // violation fails loudly on the author's machine, not as a confusing 400
+    // from the farm weeks later.
+    test('a member\'s `runtime` below a declared floor throws at import time', () => {
+      expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { runtime: { timeoutMs: 500 } })] })).toThrow()
+      expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { runtime: { maxRssBytes: 1024 } })] })).toThrow()
+    })
+  })
+})
+
+// Plan 108 (M73 — plugin surface), step 108.1, §4.1: `definePlugin` runs the
+// SAME `validatePluginSurface` the farm runs at verify, at import time on the
+// author's own machine, so a surface that would be refused there is refused
+// here first — before any network call.
+describe('definePlugin — the surface (plan 108 §4.1)', () => {
+  function surface(): PluginSurfaceInput {
+    return {
+      nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+      views: {
+        accounts: {
+          title: 'TikTok accounts',
+          data: { kind: 'kv.scan', key: 'accounts', rows: 'items', itemsAt: 'accounts' },
+          table: {
+            rowKey: 'username',
+            columns: [
+              { field: '$device.label', header: 'Device' },
+              { field: 'username', header: 'Account' },
+            ],
+          },
+          toolbar: ['sync'],
+          rowActions: ['switchTo'],
+        },
+      },
+      actions: {
+        sync: { kind: 'batch', label: 'Sync accounts', script: 'tiktok/list-accounts@latest' },
+        switchTo: { kind: 'job', label: 'Switch', script: 'tiktok/switch-account@latest', params: { target: { $row: 'username' } } },
+      },
+    }
+  }
+
+  test('a plugin with no surface carries no `surface` key at all', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+    expect(plugin.surface).toBeUndefined()
+    expect(Object.hasOwn(plugin, 'surface')).toBe(false)
+  })
+
+  test('a valid surface passes and is stored PARSED, with every default applied', () => {
+    const plugin = definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('list-accounts')], surface: surface() })
+    expect(plugin.surface?.nav[0]?.view).toBe('accounts')
+    expect(plugin.surface?.views.accounts?.table?.columns[0]?.width).toBe('auto')
+    expect(plugin.surface?.views.accounts?.table?.selectable).toBe(false)
+    expect(plugin.surface?.views.accounts?.data).toEqual({
+      kind: 'kv.scan',
+      key: 'accounts',
+      rows: 'items',
+      itemsAt: 'accounts',
+      includeMissing: true,
+    })
+    expect(plugin.surface?.actions.sync).toEqual({
+      kind: 'batch',
+      label: 'Sync accounts',
+      script: 'tiktok/list-accounts@latest',
+      target: 'picker',
+    })
+  })
+
+  test('a nav entry naming a missing view throws, naming both', () => {
+    const bad = surface()
+    bad.nav = [{ id: 'accounts', label: 'Accounts', icon: 'users', view: 'ghost' }]
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(
+      /definePlugin: surface — nav entry "accounts" names view "ghost"/,
+    )
+  })
+
+  test('an action reference naming a missing action throws, naming the slot', () => {
+    const bad = surface()
+    const view = bad.views.accounts
+    if (view === undefined) throw new Error('fixture lost its view')
+    view.rowActions = ['ghost']
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(
+      /`rowActions\[0\]` names action "ghost"/,
+    )
+  })
+
+  test('a duplicate nav id throws', () => {
+    const bad = surface()
+    bad.nav = [
+      { id: 'accounts', label: 'Accounts', icon: 'users', view: 'accounts' },
+      { id: 'accounts', label: 'Accounts again', icon: 'list', view: 'accounts' },
+    ]
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(
+      /duplicate nav id "accounts"/,
+    )
+  })
+
+  test('an unknown icon throws, quoting it', () => {
+    const bad = surface()
+    bad.nav = [{ id: 'accounts', label: 'Accounts', icon: 'tiktok', view: 'accounts' } as unknown as PluginSurfaceInput['nav'][number]]
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(/unknown icon "tiktok"/)
+  })
+
+  test('a cap exceeded throws, naming the limit', () => {
+    const bad = surface()
+    const view = bad.views.accounts
+    if (view?.table === undefined) throw new Error('fixture lost its table')
+    view.table.columns = Array.from({ length: 13 }, (_unused, index) => ({ field: `f${index}`, header: `H${index}` }))
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(/maxColumns/)
+  })
+
+  test('a view declaring neither a table nor a frame throws', () => {
+    const bad = surface()
+    bad.views.accounts = { title: 'Accounts' }
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(
+      /view "accounts" declares neither `table` nor `frame`/,
+    )
+  })
+
+  test('every defect is reported in ONE throw, not one import cycle each', () => {
+    const bad = surface()
+    bad.nav = [
+      { id: 'accounts', label: 'Accounts', icon: 'users', view: 'ghost' },
+      { id: 'accounts', label: 'Accounts', icon: 'users', view: 'accounts' },
+    ]
+    let message = ''
+    try {
+      definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('names view "ghost"')
+    expect(message).toContain('duplicate nav id "accounts"')
+  })
+
+  test('the surface is checked AFTER the member checks, so a broken member is still reported first', () => {
+    expect(() =>
+      definePlugin({ id: 'tiktok', version: 'v1', scripts: [member('a')], surface: { nav: [], views: {}, actions: {} } }),
+    ).toThrow(/semver/)
   })
 })
 
@@ -114,7 +269,7 @@ describe('isPlugin', () => {
     expect(isPlugin(plugin)).toBe(true)
   })
 
-  test('false for a standalone ScriptDefinition (has `run`, no `scripts` array)', () => {
+  test('false for a lone script object (has `run`, no `scripts` array)', () => {
     expect(isPlugin({ id: 'x', version: '1.0.0', params: z.object({}), run: async () => {} })).toBe(false)
   })
 

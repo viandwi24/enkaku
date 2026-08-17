@@ -1,6 +1,17 @@
 # Plan 102 — M67 : The workflow canvas
 
-> Status: not started
+> Status: partial — 102.1 through 102.6 are implemented and unit-tested.
+> 102.4 now ships the real side panel §4.1 specifies (the SAME `NodeCard`
+> the list editor uses, mounted beside the canvas — no second form
+> component, no scroll-to-list interim). 102.5 (editing through the canvas)
+> is implemented: dragging a connection, reconnecting an edge, or deleting
+> one writes straight to `next`/`onFailure`/`then`/`else` through
+> `canvas-edit.ts`, the exact inverse of `derive-graph.ts` — there is still
+> no `edges` array anywhere. 102.7 is owner-run and unfilled (§7 table
+> below, empty Outcome column as required); H-3's *mechanized* round-trip
+> property is additionally proven by an automated test
+> (`canvas-edit.test.ts`), which is evidence for the owner's own manual
+> H-3 check, not a substitute for it — the Outcome column stays empty.
 > Depends on: Plan 99 (M64) — the workflow document, executor, resolver and list editor all ship there; this plan adds a second view onto the same document and changes neither the format nor the executor. Plan 101 (M66) for visual tokens only, and not for correctness: this plan may land before or after it, but §3.6 explains why landing after is cheaper.
 > Spec references: §11.7 (the workflow editor), §19 (Studio screen spec — including the schema-driven rendering principle this plan takes a deliberate, scoped exception to)
 > Ships: packages/studio/src/components/workflow/WorkflowCanvas.tsx
@@ -184,46 +195,160 @@ reachability.
 
 ## 5. Implementation steps
 
-### 102.1 — `deriveGraph` and `computeLayout`, with no UI at all
+### 102.1 — `deriveGraph` and `computeLayout`, with no UI at all — DONE.
 
 Pure functions plus tests: edges from `next`/`onFailure` (G4), backward-`goto`
 tolerance (G5), unreachable-node detection (§4.3), a layout that terminates on
 a cyclic graph. Verifiable result: the longest workflow in `examples/` and a
 hand-built cyclic one both produce a finite, non-overlapping layout.
 
-### 102.2 — H1: prove the library builds
+**Shipped.** `packages/studio/src/components/workflow/derive-graph.ts` and
+`compute-layout.ts`, no React, no library. `deriveGraph` walks the node array
+building edges from `script.next` (defaulting to array-order fallthrough),
+`gate.then`/`gate.else` (`GateOutcomeSchema`'s `continue`/`goto`/`stop`/`fail`
+union), and marks each edge `backward` when its target's index is `<=` its
+source's. `computeLayout` is a rank-based layered layout via **bounded
+relaxation over forward edges only** (backward `goto` edges are excluded from
+rank computation, so a cycle cannot loop the algorithm — proof is inline as a
+code comment) — deliberately not `dagre`/`elkjs`: at ≤50 nodes and a
+mostly-linear shape, a real graph library adds a dependency and its own
+cycle-detection subtlety for a problem this size does not need; flagged here
+as the evidence an H2 failure (102.7) would use to justify one.
+**Deviation from the test-plan text above**: no workflow fixtures exist under
+`examples/` at all (grep confirms zero `*.workflow.*` files there), so "the
+longest workflow in `examples/`" is not a real input — a hand-authored
+in-test fixture stood in instead in `derive-graph.test.ts`/
+`compute-layout.test.ts`. This is a stale claim in this plan's own §7, not
+a new gap; flagging it rather than quietly rewriting the test-plan prose.
+Tests: `derive-graph.test.ts` (12 pass), `compute-layout.test.ts` (8 pass).
+
+### 102.2 — H1: prove the library builds — DONE.
 
 Install `@xyflow/react` (+ the layout dependency), render three static nodes,
 run `bun run --cwd packages/studio build`. Verifiable result: the static export
 succeeds. **If it does not, stop and report** (§3.4) rather than substituting a
 hand-rolled canvas.
 
-### 102.3 — The canvas, read-only
+**Shipped.** `@xyflow/react@^12.11.3` installed via `bun add` (no separate
+layout dependency needed — `computeLayout` above is hand-rolled, so React
+Flow supplies pan/zoom/minimap/hit-testing only). `bun run --cwd packages/studio
+build` succeeds under React 19 and `output: 'export'`. Bundle-size delta,
+recorded per §8's risk: `/workflows/editor` page bundle 16 kB → 57.8 kB,
+First Load JS 246 kB → 306 kB (measured 2026-08-15, full build log in the
+verification section of this pass).
+
+### 102.3 — The canvas, read-only — DONE.
 
 Render a real workflow: nodes, derived edges, backward-`goto` styling,
 unreachable markers, pan/zoom/minimap. No editing. Verifiable result: every
 workflow in `examples/` renders, and its edge set matches `deriveGraph`'s
 output exactly.
 
-### 102.4 — Selection and the side panel
+**Shipped.** `packages/studio/src/components/workflow/WorkflowCanvas.tsx` —
+`nodesDraggable={false}`/`nodesConnectable={false}` (editing was 102.5's
+scope, not started at the time this step shipped — see 102.5 below for what
+it became; `nodesDraggable` stays `false` unconditionally even after 102.5,
+since only edges became editable, never node position/§3.2), custom
+`workflowNode` type showing kind icon, title, and
+an `unreachable` badge, backward edges drawn dashed/animated in
+`--color-led-warn`. `WorkflowCanvas.test.tsx` (4 pass) asserts node labels
+render, the unreachable badge appears, and click wiring fires
+`onSelectNode` — but **not** an exact DOM edge count: happy-dom has no real
+layout engine, so `@xyflow/react`'s per-edge SVG paths never mount (they
+depend on measured node dimensions via `ResizeObserver`, which happy-dom
+does not provide even when stubbed). Edge-set correctness against
+`deriveGraph` is `derive-graph.test.ts`'s job instead — a pure-function test
+needs no renderer, consistent with §4.1's "no component test ever has to
+assert on graph maths." Same `examples/` caveat as 102.1 applies.
+
+### 102.4 — Selection and the side panel — DONE.
 
 Selecting a node opens the **existing** node editor components from the list
 editor (§3.5). Verifiable result: no new form component is added in this step —
 asserted by review of the diff's file list, and stated as such here so the
 reviewer knows to check.
 
-### 102.5 — Editing through the canvas
+**Shipped, replacing the prior interim.** `WorkflowBuilder.tsx` now renders a
+real side panel beside the canvas (`view === 'canvas'`, `selectedNodeId`
+state): clicking a node calls `setSelectedNodeId` (passed straight through
+as `WorkflowCanvas`'s `onSelectNode`), and the panel mounts `<NodeCard>` —
+the literal import already used by the list view below it, same component
+instance, not a copy — passing it the selected node's own index, its
+`precedingOptions`/`allOptions`, and the same `onChange`/`onRemove`/
+`onMove`/`onPromote` callbacks the list wires, all going through the same
+`patchNode`/`updateNode` (`model.ts`) the list already used. The one
+difference from the list's own card: no drag-reorder handlers are passed,
+because there is never more than one card in the panel to drop onto — Move
+up/down (already present on every `NodeCard`) is the non-drag way to do the
+same thing, unaffected. A stale selection (the node was removed) is cleared
+by a `useEffect` watching `draft.nodes`, and switching to List clears it
+too. **Verifiable result, checkably**: `grep -rn "NodeCard" packages/studio/
+src/components/workflow/WorkflowBuilder.tsx` shows exactly one import and
+two call sites (list, panel) of the SAME component — no second
+implementation exists anywhere in the diff.
+
+### 102.5 — Editing through the canvas — DONE.
 
 Reconnecting an edge writes `next`/`onFailure` (§3.3). Verifiable result: H3's
 round-trip — canvas edit and list edit produce the same document.
 
-### 102.6 — The view toggle, and `docs/spec.md` §19
+**Shipped.** `packages/studio/src/components/workflow/canvas-edit.ts` is the
+exact inverse of `derive-graph.ts` — pure, no React, no `@xyflow/react`
+*value* import (only its `Connection` shape, structurally, as a parameter
+type) — exporting `retargetEdge`/`clearEdge`/`applyEdgeChange` (dispatches
+by `targetId === null`) and `connectionToEdgeChange` (translates a library
+`Connection` into `{nodeId, kind, targetId}` by reading `sourceHandle`,
+which is always one of the four `EdgeKind` strings, never a separate
+lookup table). `WorkflowCanvas.tsx` gives every node a `target` handle plus
+one or two named SOURCE handles — `next`/`onFailure` for a script node,
+`then`/`else` for a gate — wires `onConnect`/`onReconnect`/`onEdgesDelete`
+to that translator, and passes `data.editable` down to each `<Handle>`'s
+own `isConnectable` prop (a handle-level prop, confirmed NOT inherited
+automatically from the node's own `connectable` flag — an early draft of
+this step set only the node-level flag and shipped a canvas whose handles
+all still classed `connectable` in the DOM even with no `onEdgeChange`
+handed in; caught by the `WorkflowCanvas.test.tsx` assertion added for
+exactly this, before it ever reached a commit, not by hand-inspection). `WorkflowBuilder.tsx` wires `onEdgeChange` to
+`setDraft((d) => applyEdgeChange(d, change))` — the one and only place a
+canvas edge edit becomes a document write, through `updateNode`, same as
+every other edit in this file. Node **position** stays uneditable
+(`draggable: false` unconditionally) — §3.2's "layout is computed, never
+stored" is untouched by this step; only edges became editable, never
+coordinates. A backward retarget (an earlier node) is written through the
+identical code path as a forward one — `retargetEdge` does not special-case
+direction, matching `WorkflowNodeIdSchema` itself.
+
+**Tests.** `canvas-edit.test.ts` (15 pass, no renderer) covers
+`retargetEdge`/`clearEdge` for all four `EdgeKind`s including a backward
+target, the defensive no-ops (wrong kind for the node, unknown source/target
+id), `connectionToEdgeChange`'s translation and its null cases, and three
+H3 round-trip tests proving a canvas edit and a list edit commute — on
+different nodes, on the SAME node's different fields, and through a
+delete — because both paths reduce to the same `updateNode` object-spread.
+`WorkflowCanvas.test.tsx` gained three tests proving the WIRING (handle ids
+per node kind; a read-only canvas marks no handle `connectable`; an
+editable one marks all of them) rather than simulating an actual drag —
+happy-dom has no real pointer/geometry engine to simulate one with, the
+same reasoning already documented for why this file never asserts on edge
+PATH geometry (102.3's own note, above).
+
+### 102.6 — The view toggle, and `docs/spec.md` §19 — DONE.
 
 List ↔ canvas on the editor page, remembering the operator's choice. §19 gains
 the sentence recording the scoped exception (§3.5). Verifiable result:
 `bun run spec:check` stays at GAP 0; the toggle persists.
 
-### 102.7 — H2, and the layout decision it settles
+**Shipped.** `prefs.ts` gained `workflowEditorView: z.enum(['list',
+'canvas']).default('list')` in `LocalPrefsSchema` (localStorage — a property
+of the screen, not a per-tab landing rule, same reasoning as
+`sidebarCollapsed`). `WorkflowBuilder.tsx` renders a List/Canvas
+button-group toggle in the nodes-section header; list stays the default and
+the editor of record, per §2/§3.5. `docs/spec.md` §19's Workflows row now
+records the scoped exception ("a second **view** of the one schema-driven
+form, not a second **implementation** of it"). `bun run spec:check` reports
+GAP 0 (tables 0, screens 0, routes 0) after the change.
+
+### 102.7 — H2, and the layout decision it settles — OWNER-RUN, unfilled.
 
 Owner-run (§7). Its outcome decides whether §3.2's computed layout stands or
 the out-of-document `layout` map is needed — recorded in §3.2, not left as
@@ -233,15 +358,16 @@ folklore.
 
 ## 6. Acceptance criteria
 
-- [ ] `packages/protocol/src/workflow.ts` is **unchanged** — no coordinates, no `edges` array (§3.2, §3.3, G2's promise kept).
-- [ ] `deriveGraph`/`computeLayout` are pure, tested without a renderer, and terminate on a graph containing a backward `goto` (G5).
-- [ ] Every canvas edge corresponds to a `next`/`onFailure` value; no edge exists that the executor would not follow (§3.3).
-- [ ] The node editor on the canvas is the **same component** the list editor uses — no second implementation (§3.5).
-- [ ] The list editor still works and is still the default view (§2, §3.5).
-- [ ] An unreachable node is marked, and `Validate` uses the same reachability function (§4.3).
-- [ ] `docs/spec.md` §19 records the scoped exception to schema-driven rendering (§3.5); `spec:check` at GAP 0.
-- [ ] `bun run --cwd packages/studio build` succeeds — static export intact (G8).
-- [ ] `bun run typecheck`, `bun test`, `bun run --cwd packages/studio test` all green.
+- [x] `packages/protocol/src/workflow.ts` is **unchanged** — no coordinates, no `edges` array (§3.2, §3.3, G2's promise kept). *(Verified by direct read, not assumed — confirmed zero edits to this file across the whole pass.)*
+- [x] `deriveGraph`/`computeLayout` are pure, tested without a renderer, and terminate on a graph containing a backward `goto` (G5). *(`derive-graph.test.ts`, `compute-layout.test.ts` — 20 tests, no renderer.)*
+- [x] Every canvas edge corresponds to a `next`/`onFailure` value; no edge exists that the executor would not follow (§3.3). *(`deriveGraph` is the sole edge source for `WorkflowCanvas.tsx`; no edge is synthesized in the component.)*
+- [x] The node editor on the canvas is the **same component** the list editor uses — no second implementation (§3.5). *(Met as designed now — `WorkflowBuilder.tsx` imports `NodeCard` once and calls it from two places, the list and the canvas side panel; see 102.4's note above and `grep -c "^import { NodeCard }" packages/studio/src/components/workflow/WorkflowBuilder.tsx` = 1.)*
+- [x] The list editor still works and is still the default view (§2, §3.5). *(`workflowEditorView` defaults to `'list'`; full studio suite green.)*
+- [x] An unreachable node is marked, and `Validate` uses the same reachability function (§4.3). *(`WorkflowCanvas`'s badge and the existing Validate path both read `deriveGraph(draft).unreachable` — same function, cannot disagree.)*
+- [x] Reconnecting, creating, or deleting an edge on the canvas writes `next`/`onFailure`/`then`/`else` and nothing else — no `edges` array was introduced (§3.3, §5 step 102.5). *(`canvas-edit.ts` is the sole write path; `packages/protocol/src/workflow.ts` remains unedited — confirmed by direct read, same as the first row above.)*
+- [x] `docs/spec.md` §19 records the scoped exception to schema-driven rendering (§3.5); `spec:check` at GAP 0.
+- [ ] `bun run --cwd packages/studio build` succeeds — static export intact (G8). *(NOT re-run in this pass — the Studio dev server was live on :3001 for the whole session (two phones attached, owner working), and `scripts/build-studio.sh` refuses to build while it is running because `next build` corrupts a live `next dev` process. `bunx tsc --noEmit` is clean and the full Studio test suite is green (1235/0) as the closest available substitute, but neither is the same check as a real static-export build. Left unchecked deliberately rather than claimed on a proxy — run `bun run build:studio` once the dev server is stopped, and update this row and the bundle-size note in §8/102.2 with the real number.)*
+- [x] `bun run typecheck`, `bun test`, `bun run --cwd packages/studio test` all green. *(One pre-existing, unrelated failure: `packages/core/src/api/jobs.ts(229,49)` TS2739 — present before this pass, owner-arbitrated, untouched here.)*
 
 ## 7. Test plan
 
@@ -249,10 +375,11 @@ folklore.
 
 - `derive-graph.test.ts`: edges from `next`; gate `goto` forward and backward; `stop`/`fail` as terminals not edges; unreachable detection; a node whose `next` names a missing id.
 - `compute-layout.test.ts`: terminates on a cycle (G5); no overlapping nodes; deterministic for the same input — a layout that reshuffles on every open is unusable regardless of how it scores on H2.
+- `canvas-edit.test.ts` (step 102.5) — the write-back half, symmetric with `derive-graph.test.ts`'s read half: `retargetEdge`/`clearEdge` for all four `EdgeKind`s (including a backward target, and the defensive no-ops for a kind the node does not own or an unknown node id); `connectionToEdgeChange`'s translation of a library `Connection`, including its `null` cases; three H3 round-trip tests (canvas-then-list vs. list-then-canvas, on different nodes, on the same node's different fields, and through a delete) proving the property mechanically rather than only by owner inspection.
 
 ### Component
 
-- `WorkflowCanvas.test.tsx`: renders a fixture workflow; edge count matches `deriveGraph`; selecting a node mounts the existing editor component (asserted by that component's own test id, so a second implementation fails the test).
+- `WorkflowCanvas.test.tsx`: renders a fixture workflow; edge count matches `deriveGraph`; selecting a node fires `onSelectNode` with the node's id and renders nothing of its own (`WorkflowBuilder.test.tsx` is what proves the SAME `NodeCard` mounts, since that mounting happens one level up, in the panel `WorkflowBuilder.tsx` owns). Step 102.5 additions: every node exposes the correct named handles for its kind (`next`/`onFailure` for a script, `then`/`else` for a gate, `target` on both); a read-only canvas (no `onEdgeChange`) marks no handle `connectable`, an editable one marks all of them — the wiring proven directly rather than by simulating a drag happy-dom has no geometry engine to make real.
 
 ### Owner-run
 
@@ -268,7 +395,7 @@ folklore.
 - **Auto-layout is unreadable for real workflows**, making the canvas prettier than the list but no more useful. Mitigated by H2 being a gate with a named fallback (§3.2), not a hope.
 - **The canvas grows its own forms and quietly becomes a second editor**, at which point §3.5's scoped exception to spec §19 is no longer scoped. Mitigated by 102.4's acceptance being "no new form component in this step", stated where a reviewer will read it.
 - **Two views drift.** Mitigated by both rendering from one document with no view-private state (§3.2, §3.3) — the canvas owns no field the list does not.
-- **Bundle size**, on a static export served from the core to a browser that may be on a farm LAN. Mitigated by measuring it in 102.2 and recording the number here, so a later "why is Studio bigger" has an answer.
+- **Bundle size**, on a static export served from the core to a browser that may be on a farm LAN. Mitigated by measuring it in 102.2 and recording the number here, so a later "why is Studio bigger" has an answer. **Not re-measured after 102.4/102.5** in this pass — the Studio dev server was live for the whole session and `scripts/build-studio.sh` refuses to build while it runs (§6's build checkbox notes the same gap). 102.4/102.5 added one new source file (`canvas-edit.ts`, no new dependency) and a handful of `<Handle>` elements from the ALREADY-installed `@xyflow/react`, so the delta should be small, but "should be small" is a guess, not the measured number 102.2 set the precedent of recording here — re-measure with `bun run build:studio` once the dev server is free and update this line and 102.2's own figure.
 
 ## 9. Open questions
 

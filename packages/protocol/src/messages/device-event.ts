@@ -50,6 +50,8 @@ export const MAIN_EVENT_KINDS = [
   'network.recovery.recovered',
   /** The guest agent's provisioning state changed (plan 90 §3.8, §4.3) — carries { state, reason? }. Fired once per state transition, never per verification pass (a clean reconnect that changes nothing emits no event, acceptance criterion 5). */
   'device.agent',
+  /** A registered device-preparation component's state changed (plan 106 §3.1, §3.3) — carries { componentId, state, reason?, from }. Fired once per state transition, same rule as `device.agent` above (a clean pass that changes nothing emits no event). */
+  'device.preparation',
   /** A co-control (Assist) grant started on this device (plan 91 §3.5, §3.4 item 4) — mirrors `control.acquired`/`control.released` for the SUBORDINATE grant rather than the lease. Carries { jobId, primaryKind }. */
   'control.assist.started',
   /** The bookend to `control.assist.started` — carries { jobId, primaryKind, reason }, `reason` one of `AssistEndReason` ('released' | 'ttl' | 'disconnected' | 'primary_ended' | 'mode_off'). */

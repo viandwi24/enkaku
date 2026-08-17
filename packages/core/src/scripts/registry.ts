@@ -4,27 +4,37 @@ import type { Db } from '../db'
 import { plugins, scripts, type ScriptKind, type ScriptRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { DevSlot, DevSlotStore } from '../plugins/dev-slots'
+import { isSyntheticPluginName } from '../plugins/owner'
+import { createLogger, type Logger } from '../util/logger'
 import { resolveScriptRef } from './resolve'
 import { materializeBundle } from './bundle-cache'
-import { parseScriptRuntime } from './service'
+import { isUnownedScriptRow, ownedScriptsWhere, parseScriptRuntime } from './service'
 
 /**
  * The single source of truth for "what scripts exist" and "resolve this
  * reference" (plan 82 §3.3) — the merge point between the two places a
- * script can come from: a persisted `scripts` row (standalone or a
- * published plugin member) and an unpublished plugin dev slot
+ * script can come from: a persisted `scripts` row (a published plugin
+ * member, or a workflow document) and an unpublished plugin dev slot
  * (`plugins/dev-slots.ts`). Every consumer that used to read the `scripts`
  * table or call `resolveScriptRef` directly reads through here instead, so
  * a dev script is visible everywhere or nowhere — never "everywhere except
  * the one call site nobody updated" (§3.3's stated failure mode).
  */
 
-export type ScriptOrigin = 'standalone' | 'plugin' | 'dev'
+/**
+ * Where an entry comes from: a persisted `scripts` row, or an unpublished
+ * dev slot held in memory. There is no third value — a script is a member
+ * of a plugin and nothing else (plan 110 §3.2), so a persisted row is
+ * always `'plugin'`. A `kind: 'workflow'` row is persisted the same way and
+ * reads the same value; what says it owns no plugin is `pluginName: null`,
+ * not a separate origin.
+ */
+export type ScriptOrigin = 'plugin' | 'dev'
 
 export interface ScriptEntry {
   /** `scripts.id` for a persisted script; `dev:<plugin>/<script>` for a dev one. */
   id: string
-  /** `login` for a standalone script, `tiktok/login` for a plugin member (published or dev). */
+  /** `tiktok/login` for a plugin member (published or dev); a workflow's own name, which carries no plugin prefix. */
   name: string
   version: string
   /**
@@ -36,7 +46,7 @@ export interface ScriptEntry {
   kind: ScriptKind
   origin: ScriptOrigin
   pluginName: string | null
-  /** The script's id INSIDE its plugin bundle; null for a standalone script. */
+  /** The script's id INSIDE its plugin bundle; null for a workflow row, which has no bundle to select a member of. */
   exportId: string | null
   enabled: boolean
   paramsSchema: unknown
@@ -146,7 +156,11 @@ function rowToEntry(row: ScriptRow): ScriptEntry {
     // three sanctioned files — this is not one of them, and resolve()/get()
     // below do nothing different for either value).
     kind: row.kind,
-    origin: row.pluginId ? 'plugin' : 'standalone',
+    // Every persisted row this function is ever handed is one the registry
+    // serves: a plugin member, or a workflow (see `ScriptOrigin`). A row with
+    // no owning plugin never reaches here — `isUnownedScriptRow` filters it
+    // out first.
+    origin: 'plugin',
     pluginName: row.pluginId ? row.name.split('/')[0] ?? null : null,
     exportId: row.exportId ?? null,
     enabled: row.enabled ?? true,
@@ -164,8 +178,34 @@ function splitPluginName(name: string): { pluginName: string; exportId: string }
   return { pluginName: name.slice(0, i), exportId: name.slice(i + 1) }
 }
 
-export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: DevSlotStore }): ScriptRegistry {
+/**
+ * ONE line, once, for N rows (never one per row, never one per request): a
+ * farm that upgraded past plan 110 §3.2 with scripts published outside a
+ * plugin stops running them, and the operator has to be told why and what to
+ * do about it. Silence here is the worst outcome this change can have.
+ *
+ * The names are in the message because the rows are no longer in any list —
+ * without them the operator cannot find what stopped, and `GET
+ * /api/scripts/:name/versions` (a lookup by exact name, never a listing) is
+ * what turns a name back into the ids `DELETE /api/scripts/:id` takes.
+ */
+function warnUnownedRows(db: Db, log: Logger): void {
+  const rows = db.select({ name: scripts.name, kind: scripts.kind, pluginId: scripts.pluginId }).from(scripts).all().filter(isUnownedScriptRow)
+  if (rows.length === 0) return
+  const names = [...new Set(rows.map((r) => r.name))].sort()
+  const shown = names.slice(0, 10).join(', ')
+  const rest = names.length > 10 ? `, +${names.length - 10} more` : ''
+  log.warn(
+    `${rows.length} script row(s) across ${names.length} name(s) have no owning plugin and are no longer resolvable: ${shown}${rest}. ` +
+      'A script is published as a member of a plugin and nothing else, so these are ignored everywhere — they do not appear in any script list, ' +
+      'and a job, schedule or batch that names one is refused. Nothing was deleted and existing job history still reads back correctly. ' +
+      'Republish them inside a plugin, or delete them: GET /api/scripts/<name>/versions for the ids, then DELETE /api/scripts/<id>.',
+  )
+}
+
+export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: DevSlotStore; log?: Logger }): ScriptRegistry {
   const { db, dataDir, devSlots } = deps
+  warnUnownedRows(db, deps.log ?? createLogger('scripts.registry'))
 
   function findDevEntry(name: string, version: string): ScriptEntry | null {
     const split = splitPluginName(name)
@@ -179,8 +219,9 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
     return null
   }
 
+  /** Only rows the farm still serves — see `isUnownedScriptRow` for the one class this leaves out and why. */
   function allPersistedRows(): ScriptRow[] {
-    return db.select().from(scripts).all()
+    return db.select().from(scripts).where(ownedScriptsWhere()).all()
   }
 
   /**
@@ -197,6 +238,22 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
    */
   function activePluginVersion(pluginName: string): string | null {
     return db.select().from(plugins).where(and(eq(plugins.name, pluginName), eq(plugins.status, 'active'))).get()?.version ?? null
+  }
+
+  /**
+   * The one thing the SYNTHETIC owner (plan 110 §3.4) changes about
+   * resolution: `recordings` is not one bundle published as a unit, it is a
+   * name the farm holds over members that were each compiled, bundled and
+   * published on their own. Its own row's version therefore says nothing about
+   * any member's, so `recordings/<slug>@latest` falls back to the ordinary
+   * "highest enabled non-prerelease semver of this NAME" — the only reading
+   * under which two recordings can hold different versions at once.
+   *
+   * Every real plugin, including a one-member plugin created by a direct
+   * publish (`plugins/owner.ts`), keeps the version-lockstep rule above.
+   */
+  function pluginScopedLatest(pluginName: string): boolean {
+    return !isSyntheticPluginName(pluginName)
   }
 
   return {
@@ -238,9 +295,10 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
         const pluginName = sorted[0]?.pluginName ?? null
         // A plugin-owned name's "latest" is the ACTIVE plugin version, not merely the
         // highest enabled semver among its rows — see `activePluginVersion`'s doc comment.
-        const latestVersion = pluginName
-          ? activePluginVersion(pluginName)
-          : (sorted.find((e) => e.origin !== 'dev' && e.enabled && !isPrereleaseVersion(e.version))?.version ?? null)
+        const latestVersion =
+          pluginName && pluginScopedLatest(pluginName)
+            ? activePluginVersion(pluginName)
+            : (sorted.find((e) => e.origin !== 'dev' && e.enabled && !isPrereleaseVersion(e.version))?.version ?? null)
         groupsOut.push({
           name,
           pluginName,
@@ -262,10 +320,28 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
         return devEntryFromSlot(slot, split.exportId) ?? null
       }
       const row = db.select().from(scripts).where(eq(scripts.id, id)).get()
-      return row ? rowToEntry(row) : null
+      if (!row || isUnownedScriptRow(row)) return null
+      return rowToEntry(row)
     },
 
     resolve(ref, opts) {
+      /**
+       * `resolveScriptRef` reads the `scripts` table directly (deliberately
+       * unmodified — §3.3), so the one class of row the registry does not
+       * serve is refused HERE rather than by teaching that function about it.
+       * `script_not_found` and not a code of its own: to every caller this is
+       * a reference that names nothing runnable, and the boot warning
+       * (`warnUnownedRows`) is where the explanation lives.
+       */
+      const served = (row: ScriptRow): ScriptEntry => {
+        if (isUnownedScriptRow(row)) {
+          throw new EnkakuError(
+            'script_not_found',
+            `"${ref}" names a script with no owning plugin — it was published before a script had to be a member of a plugin, and the farm no longer resolves it`,
+          )
+        }
+        return rowToEntry(row)
+      }
       const { name, version } = parseScriptRef(ref)
       const dev = findDevEntry(name, version)
       if (dev && opts?.allowDev) return dev
@@ -275,16 +351,16 @@ export function createScriptRegistry(deps: { db: Db; dataDir: string; devSlots: 
         // whose own `@latest` logic knows nothing about `active`/`superseded` (see
         // `activePluginVersion`'s doc comment). An exact pinned ref is untouched.
         const split = splitPluginName(name)
-        if (split && version === 'latest') {
+        if (split && version === 'latest' && pluginScopedLatest(split.pluginName)) {
           const activeVersion = activePluginVersion(split.pluginName)
           if (!activeVersion) {
             throw new EnkakuError('script_ref_unresolved', `"${ref}" has no active version — the plugin "${split.pluginName}" is not currently active`)
           }
           const row = resolveScriptRef(db, `${name}@${activeVersion}` as ScriptRef)
-          return rowToEntry(row)
+          return served(row)
         }
         const row = resolveScriptRef(db, ref)
-        return rowToEntry(row)
+        return served(row)
       } catch (err) {
         if (dev && !opts?.allowDev) {
           throw new EnkakuError(

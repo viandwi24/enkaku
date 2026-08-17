@@ -24,7 +24,20 @@ recognise as its own before any session is built in that process. See
 §96.23 for the full account, the two new exported functions
 (`parseScrcpyServerList`/`sweepStrayScrcpyServers`), and this pass's test
 coverage; real-hardware confirmation is deferred to the owner (plan 100 §7,
-rows H-2 and H-5).
+rows H-2 and H-5). **96.31 was fixed 2026-08-17** — Settings was unsavable:
+`plan.ts`'s row 9 planned `step: undefined` for any numeric field with no
+`.multipleOf()`, `NumberField` then omitted the HTML `step` attribute, and
+`type="number"`'s own implicit default is `step="1"` — so `gestureCurvature`
+(stored `0.08`, `min(0).max(0.5)`, no `.multipleOf()`) failed the browser's
+own native validation on a form the operator had not even touched. The fix is
+in the planner (plan 95's `numberBounds`), not the schema: `type: 'integer'`
+now plans `step: 1`; `type: 'number'` plans `step: 'any'` unless
+`multipleOf` says otherwise — and a NEW, separate `increment` field carries
+the +/- stepper's button delta, because `step: 'any'` is a valid HTML
+attribute but not a number `NumberField` could keep doing arithmetic with.
+See §96.31 for the full blast radius (`lat`/`lng`, `accuracy`, and every
+script author's own float parameters, since script forms share this same
+planner) and the exact fix.
 >
 
 > Two of the four widened once someone looked properly, which is the argument for writing them down rather than fixing them in passing. **96.3** was reported as "a `kind` hint is inert on a nullable field"; the real defect is that a nullable's `anyOf` wrapper carries no `type`/`enum`/`prefixItems`/`format`, so precedence rows 3–13 could never match it on **any** hint — `labels`, `source`, `ordered` and `multiline` were dead there too. **96.4** was reported as seven unreachable `FarmSettingsSchema` blocks; the guard test written to stop a recurrence found an **eighth** (`readiness`) the moment it ran.
@@ -2316,7 +2329,35 @@ The choice belongs with the owner, because it decides whether cloud and local
 device numbering share one seam or two. Recorded in code at both sites and in
 `docs/spec.md` §12.4 so it cannot be rediscovered as a surprise.
 
-### 96.22 — The screencap-loop fallback is chosen once, never re-tried, and never shown. NOT FIXED.
+### 96.22 — The screencap-loop fallback is chosen once, never re-tried, and never shown. FIXED by plan 100 step 100.6.
+
+**Header corrected 2026-08-17.** This entry read `NOT FIXED` long after the work
+landed — the register said a device could still be pinned to the fallback,
+invisibly, when both halves had been closed. A stale `NOT FIXED` is worse than
+a stale `FIXED`: it sends the next reader to re-solve a solved problem, and it
+was found only because someone audited the register against the tree.
+
+What actually closed it, both verifiable in the code:
+
+- **The retry.** `packages/session/src/session.ts` now re-attempts `makeScrcpy`
+  on a bounded schedule (10s/30s/60s, then 300s), capped by
+  `FarmSettings.display.fallbackRetryCount` (default 6) and read fresh on every
+  attempt. A successful retry swaps the display source in place, without
+  rebuilding the session, so frame subscribers keep flowing. Scope was
+  deliberately limited to *display* — not input or clipboard — and that limit
+  is stated at the code.
+- **The honesty.** `DeviceDetailSchema` gained `liveDisplay` (`api/devices.ts:29`),
+  sourced live from the open session and free to disagree with the stored
+  `display` column: a device on the fallback now reports `display: 'scrcpy'`
+  (nothing rewrote the setting) alongside `liveDisplay: 'screencap-loop'`.
+  `LiveView` renders a "Degraded — screencap fallback" badge from that
+  disagreement, distinguishing a deliberate configuration from a real degrade.
+
+That pass also found and fixed a real bug this entry never predicted: the H.264
+renderer was built once, at `stream.started`, so a fallback that recovered
+*mid-stream* would have had its `h264` frames silently discarded forever. It is
+built lazily on the first `h264` frame now. Without that, the retry would have
+passed its own tests and still shown nothing on the owner's screen.
 
 Found on real hardware (moto g06 power, Android 15, mt6768) while the owner
 was asking why one device streamed at 0.7 fps and another was fine.
@@ -2836,8 +2877,29 @@ was a deep link that appears *after* you have already done something else:
 - `/recordings` — reachable only through `RecordPanel`'s
   `/recordings/detail?slug=…` link, shown right after a capture. You could
   review the recording you had just made and never find an older one.
-- `/topology` — no nav entry **and no link from anywhere in Studio**. Only a
-  typed URL reached it.
+- ~~`/topology` — no nav entry **and no link from anywhere in Studio**. Only a
+  typed URL reached it.~~ **WRONG, corrected 2026-08-16.** `/topology` is not
+  a page. It is a 22-line `router.replace('/?view=wall&group=cluster')` — a
+  compatibility redirect kept so an old bookmark still resolves (plan 47
+  §3.6). Its former content is now a *view of the device grid*, and that view
+  already has a front door: the grid's own `GroupBy` control
+  (`app/page.tsx`'s `'none' | 'cluster' | 'status' | 'tag'`).
+  `components/topology/DeviceTile.tsx` and `ClusterSection.tsx` are dead code
+  left behind by the same move, referenced now only in other files' comments.
+
+  So the nav entry this entry added was wrong twice: it pointed at a
+  redirect, and it created a second front door onto a screen the operator is
+  usually already looking at — the exact thing plan 101 §2 declined to build
+  for the reference design's separate Dashboard. **The same reasoning was
+  applied to the Dashboard and violated here, in the same session.** The
+  entry has been removed and `/topology` added to `AppShell.test.tsx`'s
+  `NOT_IN_NAV_BY_DESIGN` set with the reasoning inline, so the guard stops
+  treating a redirect as a page needing a door.
+
+  Found by the agent implementing plan 101 step 101.5 and reported as an
+  incidental out-of-scope observation rather than acted on — which is why it
+  surfaced at all. **Workflows and Recordings are unaffected**: both are real
+  pages with real content, and their list views genuinely had no route in.
 
 Every other page without a nav entry is legitimately excluded: detail pages
 (`/jobs/detail`, `/batches/detail`, `/scripts/detail`, `/schedules/detail`,
@@ -2862,6 +2924,281 @@ operator. It was verified to actually detect the condition — temporarily
 breaking one `href` made it fail — rather than being assumed to work because
 it passed once, which is how the three orphans survived their own plans'
 green test runs in the first place.
+
+### 96.30 — A batch with zero jobs could never leave `stopping` — the owner's own operation tray, stuck forever. FIXED.
+
+The owner's report: the tray showed one entry, permanently — `chrome-open-url`,
+`no device · stopping · 16s`, a full-width progress bar reading `(0/0)`, the
+duration ticking every second with nothing ever changing. Their own words:
+*"harusnya kan ga muncul kaya gini, minimal yang lagi progress gitu yang
+muncul, ini kan ga progress, atau pas sukses/fail tapi beberapa detik
+setelahnya otomatis hilang"* — only what is actually progressing should show;
+a success/failure may appear, but should auto-dismiss a few seconds later.
+
+**The core bug.** `clusters/status.ts`'s `computeBatchStatus` reads
+`if (counts.total === 0) return 'queued'` — a fallback meant for a batch
+before it has any jobs. `api/batches.ts`'s `statusOf` then holds `row.status`
+at `'stopping'` for as long as the computed status is not terminal, and
+`'queued'` never is, so a zero-job `stopping` batch was held there forever.
+
+**The ambiguity, resolved rather than guessed at.** `counts.total === 0`
+looks like it could mean either "created, not dispatched yet" or "dispatched,
+matched no device" — but investigation found `clusters/dispatch.ts`'s
+`createBatch` is the ONLY writer of a `batches` row, and it always inserts
+that row together with at least one job row, in the SAME transaction
+(`E_NO_TARGETS` refuses before anything is persisted when no device
+matches). So the first reading is impossible for any row that actually
+exists in the database — a batch is never persisted "before" its jobs. The
+ONLY way an existing row reads `counts.total === 0` is that every one of its
+job rows was deleted AFTER creation. The one path found: `device/
+lifecycle.ts`'s `forget({ deleteHistory: true })` deletes `jobs` rows by
+`deviceId` but never touches `batches` — forgetting a batch's only device
+(with history) leaves an orphaned batch row behind, whatever status it was
+in. This is reachable in production, not just in theory: `stopBatch`
+(`api/batches.ts`) calls `recomputeBatchStatus` unconditionally as its own
+last step, including when the batch's only device was already forgotten
+before the operator hit Stop — before this fix, that call was a silent
+no-op (the function's own pre-existing `if (rows.length === 0) return null`),
+leaving the row `stopping` forever. That is almost certainly how the owner's
+own farm reached this state.
+
+**Fixed, on both the write side and the read side — a fix that only landed
+on one leaves the other still broken:**
+
+- `clusters/status.ts`'s `recomputeBatchStatus` (write time): a batch with
+  zero job rows now resolves straight to `cancelled` — terminal, `finishedAt`
+  set, broadcast — unless it is ALREADY terminal (never re-broadcasts or
+  disturbs `finishedAt` for a batch that finished normally long before its
+  history was deleted).
+- `api/batches.ts`'s `statusOf` (read time): `counts.total === 0` is handled
+  FIRST, before the `stopping` hold ever applies, resolving to `cancelled`
+  for the identical reason. **This is what actually heals the owner's
+  farm**: `statusOf` runs on every `GET /api/batches` and `GET /api/batches/
+  :id`, so the already-stuck row in `.dev-data/` reads `cancelled` on the
+  very next request — no migration, no backfill script, no DB write at all
+  from this function.
+
+**Studio (`packages/studio/src/lib/operations.ts`, `components/bulk/
+OutcomeSummary.tsx`) — the tray's own visibility rule was wrong at both
+ends, fixed separately from the core bug so hiding it in one UI would never
+have left it live everywhere else:**
+
+- **Auto-dismiss, built for the first time.** `buildOperations` no longer
+  drops every terminal operation instantly — a batch/job/command-run/
+  transfer that just reached a terminal state (`success`/`ok`/`state: 'done'`
+  and true, vs. anything else) is shown for `SUCCESS_GRACE_MS` (5s) or
+  `SETTLED_GRACE_MS` (15s, three times longer — a failure needs more time to
+  actually be read than a success needs to be noticed), then filtered out.
+  No new timer: `withinGrace` recomputes from `finishedAt` and `nowMs` every
+  time `buildOperations` runs (the store's own bounded poll and WS-triggered
+  refresh), so there is nothing per-entry to leak or forget to clear on
+  unmount.
+- **`queued` batches no longer appear at all** (`batchBelongsInTray`) — the
+  owner's own "minimal yang lagi progress" taken as the default. Scoped to
+  batches, not standalone jobs (plan 107 step 107.4's own deliberate choice,
+  still pinned by its own test) — a queued batch is the one shape proven
+  above to be able to get stuck non-terminal forever; a standalone job's
+  whole row is deleted by `forget`, never orphaned, so it carries no
+  equivalent risk.
+- **A batch operation with zero device ids never renders**, whatever its
+  status — belt-and-suspenders for the exact defect above, and the direct
+  fix for the screenshot's `"no device"` label.
+- **`OutcomeSummary` renders no `<Progress>` at all when `counts.total ===
+  0`** — `value={0}` already rendered its indicator fully hidden, but the
+  track underneath (`bg-primary/20`, a full-width, always-visible pill) still
+  read as a bar with something to show. Zero total now renders no bar,
+  matching the screenshot's own complaint.
+- **The other operation kinds were checked for the same "immortal
+  non-terminal" shape and found clean**: transfers already carry a bounded
+  30s server-side retention sweep (`transfer-registry.ts`); standalone jobs
+  are deleted WHOLE by `forget`, never left as an orphaned parent; command
+  runs have no deletion path that removes a member out from under a still-
+  live run. Batches are the one kind with both a parent/child split AND a
+  deletion path that touches only the child.
+
+**Proven, not just described**: `clusters/status.test.ts` (4 new tests) —
+a `stopping`/zero-jobs batch reaches `cancelled` (the owner's own state,
+reproduced directly); a stale `running`/zero-jobs batch does too (the bug is
+not `stopping`-specific); an already-terminal/zero-jobs batch is left alone;
+an unknown batch id is unaffected. `api/batches.test.ts` (3 new tests) —
+`GET /:id` and `GET /` both heal an already-stuck `stopping` row with no DB
+write; `POST /:id/stop` on a batch whose only device was already forgotten
+reaches `cancelled` rather than getting stuck, through the real HTTP route
+with a real job store. `packages/studio/src/lib/operations.test.ts` (9 new
+tests) and `components/operations/OperationTray.test.tsx` (3 new tests) —
+the exact stuck shape renders nothing; the grace window for each terminal
+kind, both within and past it; a `queued` batch with real jobs still never
+appears; a still-progressing operation is immune to an arbitrarily large
+clock. `components/bulk/OutcomeSummary.test.tsx` (new file, 2 tests) — zero
+total renders no `[role="progressbar"]`; a real total still does.
+
+`bash scripts/typecheck.sh`, `bun test` (5205 tests), and
+`bun run --cwd packages/studio test` (1590 tests) all green. `bun run
+build:studio` was refused by its own dev-server guard (`:3001` was live at
+verification time) — the guard's own job, not a defect; not run.
+
+Recorded as `docs/plans/107-m72-long-running-operations.md` §5 step 107.7,
+where the tray's own behaviour is owned.
+
+### 96.31 — Settings was unsavable: every non-integer numeric field failed the browser's own native validation on its OWN stored value. FIXED.
+
+The owner opened `http://127.0.0.1:3001/settings`, changed nothing, clicked
+Save, and the browser refused with focus jumping to the Gesture curvature
+input: *"Please enter a valid value. The nearest valid value is 0."* That is
+the browser's **native** `type="number"` validation, not a server rejection —
+the form was refusing the value it had just loaded.
+
+**What broke.** `packages/studio/src/components/schema-form/plan.ts`'s row 9
+(`numberBounds`) derived the planned `step` **only** from JSON Schema's own
+`multipleOf`: `step: numOrUndefined((node as Record<string,
+unknown>).multipleOf)`. Zod only emits `multipleOf` for an explicit
+`.multipleOf()` call — never for a plain `.number()` — so every field without
+one planned `step: undefined`. `NumberField` (`controls/NumberField.tsx`) then
+omitted the HTML `step` attribute entirely when it was `undefined`. HTML's own
+default for an `<input type="number">` with no `step` attribute is
+`step="1"`, so with `min="0"` the only values that pass native validation are
+0, 1, 2, … — and `gestureCurvature`
+(`packages/protocol/src/settings.ts:91-97`, `min(0).max(0.5).default(0.08)`,
+deliberately left with no `.multipleOf()` per that field's own inline
+comment) had its own stored `0.08` rejected the instant Save was clicked, with
+no edit required to trigger it.
+
+**The blast radius, confirmed wider than the one field the owner hit:**
+
+- `gestureCurvature` — the field that blocked Save, confirmed as the exact
+  reported symptom.
+- `lat`/`lng` (`settings.ts:198-199`, `DeviceGpsSchema`) — decimal degrees.
+  Every real-world coordinate is fractional, so before this fix these fields
+  could never hold a real GPS fix at all, not just an edited one.
+- `accuracy` (`settings.ts:200-206`, same schema) — `positive().max(10_000)`,
+  no `.int()`, no `.multipleOf()`. Found during this pass's own sweep, not
+  named in the original report: its `default(100)` happens to be a whole
+  number, which is why nobody had hit this one yet, but `55.5` metres would
+  have failed the identical way.
+- `tempThresholdC`, `maxTotalGb` (`settings.ts:950,968`) — checked and
+  confirmed NOT broken today only because both defaults happen to be whole
+  numbers (`45`, `20`); neither carries `.int()`, so a user typing `45.5`
+  would already have hit this bug before today's fix, and after it both
+  correctly plan `step: 'any'`.
+- **Every script author's own float parameter, farm-wide.** Script parameter
+  forms (`RunScriptDialog`, `ScheduleEditorDialog`) are planned through this
+  exact same `plan.ts` (plan 95's whole point: one resolver, four call
+  sites — settings, farm settings, and both script-parameter dialogs). Any
+  published script declaring `z.number().min(0).max(1)` for anything other
+  than `kind: 'chance'` (which routes to `ChanceControl`'s own hardcoded
+  percent-slider, unaffected — see below), or any other bare float, hit the
+  identical defect. This was never curvature-specific.
+- **Not affected:** `ChanceControl.tsx` (`kind: 'chance'`) never reads
+  `plan.step` at all — it drives its own `Slider` in whole percentage points
+  (0-100, step 1) and divides by 100 on submit, so it was never in this bug's
+  path. Confirmed by reading the component, not assumed.
+
+**The fix — the planner, not the schema.** Adding `.multipleOf()` to
+`gestureCurvature` alone was rejected on purpose (per the task brief this was
+worked from): it would have silenced only that one field and left the
+resolver broken for `lat`/`lng`, `accuracy`, and every future script
+parameter. `numberBounds` (`plan.ts`) now derives `step` from the node's own
+`type`, JSON-Schema-correctly: `type: 'integer'` → `step: 1`; `type: 'number'`
+→ `step: 'any'` — **unless** `multipleOf` is present, in which case it always
+wins, on either type. `plan.ts`'s own header table (row 9) — the doc comment
+this file calls "the spec for the planner" — is updated to match; leaving it
+describing the old, broken behaviour would have let a future reader
+re-introduce this exact bug by trusting the comment over the code.
+
+**The trap, closed rather than walked into.** `NumberField.tsx` used ONE
+`step` prop for two different jobs: the HTML validation attribute
+(`step={step}` on the `<input>`) and the +/- stepper button delta
+(`const delta = step ?? 1`). Once `step` can legitimately be the string
+`'any'`, deriving the button delta from it the old way makes
+`Number('any')` — `NaN` — silently disabling both buttons. Fixed by
+splitting them into two genuinely different, separately-typed `FieldPlan`
+fields: `step?: number | 'any'` (the HTML attribute, forwarded verbatim) and
+`increment?: number` (always a real number, always safe to add). `numberBounds`
+computes both: `multipleOf` (when present) drives both `step` and
+`increment` identically, since a declared multiple IS the natural click
+size; an `integer` with no `multipleOf` gets `1`/`1`, unchanged from before;
+a `number` with no `multipleOf` gets `step: 'any'` and a fixed
+`increment: 0.01` — a constant, not derived from `min`/`max`, so that one
+field's click size never depends on where its author happened to set `max`
+(full reasoning in `numberBounds`'s own doc comment). `NumberControl.tsx` and
+`PairControl.tsx` — the only two call sites reading `plan.step` — were both
+updated to also thread `plan.increment`/`item.increment` through to
+`NumberField`; `PairControl`'s two halves (a duration/pixel/etc. RANGE, e.g.
+`perCharMs`) get the identical treatment since they share the same planned
+`item`.
+
+`NumberField.tsx`'s own `adjust` (`Number(((value ?? min ?? 0) +
+by).toFixed(6))`) was checked against the new small increment: `0.08 + 0.01`
+and similar sums are exact after `.toFixed(6)` rounding, and the existing
+min/max clamp (`Math.max`/`Math.min`) is unchanged and still applies after
+the increment is added, so a click at either end still clamps correctly
+rather than overshooting.
+
+**Verified, not assumed — the exact reported failure is now a test.**
+`plan.test.ts` gained three new cases: a `gestureCurvature`-shaped field
+(`min(0).max(0.5).default(0.08)`) plans `step: 'any'`, under which `0.08` is
+a valid value by construction; a `lat`/`lng`-shaped field plans the same way;
+and an `integer` field still plans `step: 1`, proving the float fix did not
+blur the two apart. Every pre-existing exact-equality test in `plan.test.ts`
+asserting a `control: 'number'` shape was re-checked against the new
+behaviour and updated where the plan legitimately changed (an integer now
+explicitly carries `step: 1, increment: 1`; an unconstrained float now
+explicitly carries `step: 'any', increment: 0.01` — neither was `undefined`
+before by coincidence, they were undefined by the bug). `SchemaForm.test.tsx`
+gained a DOM-level `describe` rendering the real `SchemaForm` end to end: the
+curvature-shaped input's actual `<input step>` attribute is asserted to be
+`'any'` (not merely the plan-level value); the integer field's is asserted to
+be `'1'`; and a dedicated test clicks the real Increase/Decrease buttons
+through `fireEvent` and asserts the value moves by `0.09` → `0.08` → `0.07`
+rather than producing `NaN` or freezing — the DOM-level proof for the trap
+above, not just a unit test on `numberBounds` in isolation.
+`packages/studio/src/components/result-view/plan-result.test.ts` — a
+sibling planner (plan 97's `planResult`) that explicitly documents itself as
+delegating to this same `planField`, unchanged — had one pre-existing
+exact-equality case that needed the identical `step`/`increment` update; left
+unfixed it would have been this same defect class re-surfacing the moment
+someone looked, exactly the pattern this register already names repeatedly.
+
+**Verified:** `bash scripts/typecheck.sh` — every package OK. `bun test` —
+5226 pass / 0 fail (18949 `expect()` calls, 349 files); one run mid-pass
+showed 914 failures concentrated in `packages/core/src/jobs/executors/
+workflow.test.ts` (`script_not_found` where a workflow-budget/cancellation
+error code was expected) — re-run clean seconds later with no change from
+this entry's files, consistent with a concurrent worker's in-flight edit
+elsewhere in this shared tree (plan 108/109's plugin work, out of scope and
+untouched by this entry), not a regression here. `bun run --cwd packages/studio
+test` — 1609 pass / 0 fail (3999 `expect()` calls, 169 files); one run
+mid-pass showed 14 failures (a `MonitorPane` timing test that passed clean on
+re-run in isolation, plus this entry's own `plan-result.test.ts` case before
+it was updated) — both resolved, re-run clean. `bun run spec:check` and
+`bash scripts/check-plan-status.sh` — both clean, no gaps introduced.
+
+**`bun run build:studio` — run, not refused, and worth recording exactly
+why.** The task this entry was worked from expected the dev-server guard
+(`scripts/build-studio.sh`'s `lsof -ti:3001 -sTCP:LISTEN` check) to refuse,
+since the owner's `:3001` was reported live. It did not refuse: `lsof`
+confirmed a process WAS listening on `:3001` both before and after the build
+ran, yet the guard did not trigger and `bun run --cwd packages/studio build`
+completed normally (30 static pages). Rather than treat that silently as
+"fine" or dig further with something riskier, the dev server was checked
+afterward the safe way — `curl` against `/`, `/device`, and `/settings` on
+`:3001` — and all three returned `200` with distinct, real per-route content
+(different response bodies, correct `<title>`, no error page). This is
+evidence the dev server was NOT visibly corrupted by the build, but it is
+`curl` evidence, not a browser-driven check, and the guard's own comment
+warns the failure mode is `next dev` serving `HTTP 500` on ITS NEXT REQUEST
+after `.next` is touched externally — a mode this pass did not attempt to
+provoke further. Recorded here rather than glossed over: if the owner sees
+anything odd on `:3001` after this session, restarting `dev:studio` is the
+known fix (`scripts/build-studio.sh`'s own comment), and the guard's `lsof`
+check itself may be worth a second look — it did not do its one job here.
+
+**Blast radius statement, for whoever reads this entry next.** This was never
+a curvature-only bug. It was the schema-driven-forms planner (plan 95)
+getting the JSON-Schema-to-HTML `step` mapping wrong for EVERY numeric field
+without an explicit `.multipleOf()` — which, by that plan's own design,
+means every Settings float, every farm-settings float, and every script
+author's own float parameter, indefinitely into the future, until this fix.
 
 ## Verify
 

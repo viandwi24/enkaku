@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { GitBranch, Plus, Workflow as WorkflowIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { GitBranch, LayoutGrid, Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
 import { toast } from 'sonner'
 import type { ValueExpr, WorkflowFinding } from '@enkaku/protocol'
 import { publishWorkflow, validateWorkflow, WorkflowPublishError } from '@/lib/api'
@@ -11,6 +11,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
+import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
+import { applyEdgeChange, type EdgeChange } from './canvas-edit'
 import {
   addGateNode,
   addScriptNode,
@@ -23,6 +26,7 @@ import {
   type WorkflowNodeDraft,
 } from './model'
 import { NodeCard } from './NodeCard'
+import { WorkflowCanvas } from './WorkflowCanvas'
 import { ParamsEditor } from './ParamsEditor'
 import { paramProperties, resolveScriptOption } from './scriptBindings'
 import { ScriptPicker, type ScriptOption } from './ScriptPicker'
@@ -67,9 +71,47 @@ export function WorkflowBuilder({
   const [findings, setFindings] = useState<WorkflowFinding[]>([])
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
+  // Plan 102 (M67) §3.5, §5 step 102.6 — List stays the editor of record and
+  // the default view (§2's own non-goal: "not replacing the list editor").
+  // Lazy initial state so this reads `localStorage` at most once, the same
+  // "default, then correct after mount" shape every `localStorage`-backed
+  // value in a statically-exported app needs — but unlike `AppShell`'s
+  // sidebar collapse, there is no SSR/prerender concern here (this
+  // component only ever renders client-side, inside a page already gated
+  // behind `'use client'`), so a lazy `useState` initializer is sufficient
+  // and needs no separate mount-time correction effect.
+  const [view, setView] = useState<'list' | 'canvas'>(() => readLocalPrefs().workflowEditorView)
+  // Plan 102 §3.5, step 102.4 — which node's editor the canvas's side panel
+  // shows, `null` when nothing is selected (panel hidden, canvas full
+  // width). Cleared on a view switch and whenever the selected node no
+  // longer exists (removed via the panel's own Remove button, or by any
+  // other draft edit) — see the `useEffect` below.
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const { run, isPending } = useAction()
 
+  const changeView = (next: 'list' | 'canvas') => {
+    setView(next)
+    writeLocalPrefs({ workflowEditorView: next })
+    if (next === 'list') setSelectedNodeId(null)
+  }
+
+  // A selection pointing at a node that no longer exists (removed through
+  // the panel itself, or any other path) is never left dangling.
+  useEffect(() => {
+    if (selectedNodeId && !draft.nodes.some((n) => n.id === selectedNodeId)) setSelectedNodeId(null)
+  }, [draft.nodes, selectedNodeId])
+
   const patchNode = (index: number, patch: Partial<WorkflowNodeDraft>) => setDraft((d) => updateNode(d, index, patch))
+
+  /**
+   * Step 102.5 — one edge interaction on the canvas (a connection dragged,
+   * an edge reconnected, or an edge deleted) writes straight to
+   * `next`/`onFailure`/`then`/`else` through `canvas-edit.ts`'s
+   * `applyEdgeChange` — the exact inverse of `deriveGraph`, and the SAME
+   * `updateNode` call `patchNode` above already uses. There is still no
+   * `edges` array anywhere in `draft` (§3.3) — this never creates one.
+   */
+  const handleEdgeChange = (change: EdgeChange) => setDraft((d) => applyEdgeChange(d, change))
 
   const handleValidate = () =>
     run(
@@ -127,6 +169,12 @@ export function WorkflowBuilder({
   const nodeOptions = draft.nodes.map(toNodeOption)
   const errorCount = findings.filter((f) => f.severity === 'error').length
   const warningCount = findings.length - errorCount
+
+  // Plan 102 §3.5, step 102.4 — the canvas side panel's target: `-1`/`undefined`
+  // whenever nothing is selected, or the selection was just invalidated (the
+  // `useEffect` above catches up on the next render).
+  const selectedNodeIndex = selectedNodeId ? draft.nodes.findIndex((n) => n.id === selectedNodeId) : -1
+  const selectedNode = selectedNodeIndex === -1 ? undefined : draft.nodes[selectedNodeIndex]
 
   const onFailBindings = draft.onFail ? paramProperties(resolveScriptOption(draft.onFail.script, scripts)?.paramsSchema) : []
 
@@ -218,8 +266,33 @@ export function WorkflowBuilder({
       )}
 
       <section className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <h2 className="rack-label">nodes</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <h2 className="rack-label">nodes</h2>
+            {/* Plan 102 (M67) §3.5, §5 step 102.6 — List stays the editor of
+                record and the default (§2's own non-goal: "not replacing the
+                list editor"); Canvas is a second VIEW onto the same
+                document, not a fork of it — both read straight off `draft`. */}
+            <div className="inline-flex rounded-md border p-0.5" role="group" aria-label="Editor view">
+              <button
+                type="button"
+                onClick={() => changeView('list')}
+                aria-pressed={view === 'list'}
+                className={cn('rounded px-2 py-1 text-[11.5px]', view === 'list' ? 'bg-surface-2 font-medium text-fg' : 'text-fg-muted hover:text-fg')}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                onClick={() => changeView('canvas')}
+                aria-pressed={view === 'canvas'}
+                className={cn('flex items-center gap-1 rounded px-2 py-1 text-[11.5px]', view === 'canvas' ? 'bg-surface-2 font-medium text-fg' : 'text-fg-muted hover:text-fg')}
+              >
+                <LayoutGrid className="size-3" aria-hidden />
+                Canvas
+              </button>
+            </div>
+          </div>
           <div className="flex gap-1.5">
             <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => addScriptNode(d))}>
               <Plus className="size-3.5" aria-hidden />
@@ -236,6 +309,45 @@ export function WorkflowBuilder({
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-10 text-center">
             <WorkflowIcon className="size-6 text-fg-subtle" aria-hidden />
             <p className="text-[13px] text-fg-muted">Add your first node to get started.</p>
+          </div>
+        ) : view === 'canvas' ? (
+          <div className="flex flex-col gap-3 lg:flex-row">
+            <div className="min-w-0 flex-1">
+              <WorkflowCanvas draft={draft} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} onEdgeChange={handleEdgeChange} />
+            </div>
+            {selectedNodeIndex !== -1 && selectedNode && (
+              // Plan 102 §3.5, step 102.4 — the SAME `NodeCard` the list
+              // below renders, not a second implementation: this panel
+              // exists purely to place it beside the canvas instead of in
+              // the list's own column. Drag-reorder is omitted (there is
+              // only ever one card here, nothing to drop it onto); Move
+              // up/down and Remove stay wired, since those are ordinary
+              // node edits with nothing canvas-specific about them.
+              <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-96">
+                <div className="flex items-center justify-between px-0.5">
+                  <h3 className="rack-label">editing · {selectedNode.title.trim() || selectedNode.id}</h3>
+                  <Button type="button" variant="ghost" size="icon-sm" aria-label="Close node editor" onClick={() => setSelectedNodeId(null)}>
+                    <X className="size-3.5" aria-hidden />
+                  </Button>
+                </div>
+                <div className="max-h-[560px] overflow-y-auto pr-0.5">
+                  <NodeCard
+                    node={selectedNode}
+                    index={selectedNodeIndex}
+                    total={draft.nodes.length}
+                    workflowParams={draft.params}
+                    scripts={scripts}
+                    precedingOptions={nodeOptions.slice(0, selectedNodeIndex)}
+                    allOptions={nodeOptions.filter((_, i) => i !== selectedNodeIndex)}
+                    findings={findings}
+                    onChange={(patch) => patchNode(selectedNodeIndex, patch)}
+                    onRemove={() => setDraft((d) => removeNode(d, selectedNodeIndex))}
+                    onMove={(direction) => reorder(selectedNodeIndex, selectedNodeIndex + direction)}
+                    onPromote={(param) => setDraft((d) => ({ ...d, params: [...d.params, param] }))}
+                  />
+                </div>
+              </aside>
+            )}
           </div>
         ) : (
           <div className="space-y-2.5">

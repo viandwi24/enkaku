@@ -110,10 +110,10 @@ export default function JobsPage() {
           empty={{
             icon: <ListChecks className="size-4" aria-hidden />,
             title: 'No jobs yet',
-            description: 'Run a script from the Scripts page, or with the Run button on a device card.',
+            description: 'Run a script from the Plugins & scripts page, or with the Run button on a device card.',
             action: (
               <Button asChild>
-                <Link href="/scripts">Browse scripts</Link>
+                <Link href="/plugins">Browse scripts</Link>
               </Button>
             ),
           }}

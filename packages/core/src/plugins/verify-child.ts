@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import type { RuntimeEnvelope } from '@enkaku/protocol'
+import { checkDeclaredSchema, validatePluginSurface, type ActionSpec, type PluginSurface, type RuntimeEnvelope } from '@enkaku/protocol'
 import type { VerifyChildMessage } from './verify-child-entry'
 
 /**
@@ -30,6 +30,14 @@ export interface VerifiedScript {
   resultSchema?: unknown
   /** Plan 98 §3.1, §5 step 98.4 — already validated by the child (`verify-child-entry.ts`'s own `RuntimeEnvelopeSchema.safeParse`), so this is trusted as typed rather than re-checked here, matching how `paramsSchema` above is trusted once the child's own `checkDeclaredSchema` gate passes. */
   runtime: RuntimeEnvelope | null
+  /**
+   * Plan 108 §0.2 P8, §5 step 108.3 — the member's own human name and blurb,
+   * as the bundle declares them. Optional because most members declare
+   * neither, and because a `VerifiedScript` fixture written before this field
+   * existed must keep compiling, exactly as `resultSchema` above states.
+   */
+  title?: string
+  description?: string
 }
 
 export interface VerifyReport {
@@ -39,6 +47,14 @@ export interface VerifyReport {
   title?: string
   description?: string
   scripts: VerifiedScript[]
+  /**
+   * Plan 108 §3.9, §5 step 108.3 — the PARSED surface (every default
+   * applied), present only when the bundle declared one and it passed the
+   * independent re-validation in `finalizeReport`. A bundle declaring no
+   * surface leaves this `undefined`, and every consumer of a `VerifyReport`
+   * behaves exactly as it did before this plan (acceptance criterion 1).
+   */
+  surface?: PluginSurface
   resetPackages: string[]
   error?: string
   errorCode?: string
@@ -46,6 +62,17 @@ export interface VerifyReport {
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
+
+/**
+ * How deep a chain of `form` actions may nest through `then`. The vocabulary
+ * itself is recursive with no bound of its own (`ActionSpecSchema`'s
+ * `z.lazy`), and `maxSurfaceBytes` alone leaves room for a chain deep enough
+ * to overflow the stack of the walk below — so the WALK carries its own cap,
+ * the same shape `checkDeclaredSchema`'s `MAX_WALK_VISITS` uses for the same
+ * reason. Eight is far past any honest form: two ("fill this in, then confirm")
+ * is the realistic maximum.
+ */
+const MAX_ACTION_DEPTH = 8
 
 /** True inside a `bun build --compile` executable — mirrors `@enkaku/session`'s `isolation.ts#isCompiledBinary` (kept as a local copy rather than a cross-package import: that helper is not part of `@enkaku/session`'s public export list, and duplicating two lines is cheaper and safer than widening that package's surface for one caller). */
 function isCompiledBinary(): boolean {
@@ -56,9 +83,57 @@ function failure(error: string, errorCode: string): VerifyReport {
   return { ok: false, error, errorCode, scripts: [], resetPackages: [] }
 }
 
+/**
+ * Every JSON Schema a surface embeds, through the SAME `checkDeclaredSchema`
+ * gate a params schema passes (plan 108 §3.9) — a form action's `schema` (at
+ * every depth of a `form → then → form` chain) and every table column's
+ * `schema`. A `'group'` finding is the non-consecutive-group WARNING (plan 95
+ * §3.5) and is not on its own a refusal, exactly as `verify-child-entry.ts`
+ * treats it for a params schema, so the two gates cannot disagree about what
+ * a finding means.
+ *
+ * Returns human-readable strings rather than findings: the caller's only job
+ * is to name what is wrong, and the location (`action "sync"`, `view
+ * "accounts" column "username"`) is the half a bare finding cannot supply.
+ */
+function checkSurfaceSchemas(surface: PluginSurface): string[] {
+  const errors: string[] = []
+
+  const check = (schema: unknown, where: string): void => {
+    if (schema === undefined) return
+    for (const finding of checkDeclaredSchema(schema).filter((f) => f.limit !== 'group')) {
+      errors.push(`${where}: ${finding.path ? `${finding.path}: ` : ''}${finding.message}`)
+    }
+  }
+
+  const checkAction = (action: ActionSpec, where: string, depth: number): void => {
+    if (action.kind !== 'form') return
+    if (depth > MAX_ACTION_DEPTH) {
+      errors.push(`${where} nests \`form\` actions more than ${MAX_ACTION_DEPTH} deep`)
+      return
+    }
+    check(action.schema, `${where} form schema`)
+    checkAction(action.then, `${where} \`then\``, depth + 1)
+  }
+
+  for (const [actionId, action] of Object.entries(surface.actions)) {
+    checkAction(action, `action "${actionId}"`, 0)
+  }
+  for (const [viewId, view] of Object.entries(surface.views)) {
+    for (const column of view.table?.columns ?? []) {
+      check(column.schema, `view "${viewId}" column "${column.field}"`)
+    }
+  }
+  return errors
+}
+
 /** Independent re-validation of what the child reported (§3.7 step 2) — never trusts the SDK's own `definePlugin()` checks alone, since a hand-crafted bundle could bypass them. */
 function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): VerifyReport {
-  if (!msg.ok) return failure(msg.error, 'E_PLUGIN_VERIFY_FAILED')
+  // A code the CHILD named is carried through rather than flattened: the one
+  // surface defect the child can see for itself (a surface that will not
+  // serialise, so the parent never receives it) must still reach the operator
+  // as `E_PLUGIN_SURFACE_INVALID`, wherever the refusal happened.
+  if (!msg.ok) return failure(msg.error, msg.errorCode ?? 'E_PLUGIN_VERIFY_FAILED')
 
   const seen = new Set<string>()
   for (const s of msg.scripts) {
@@ -76,6 +151,24 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
       'E_PLUGIN_VERSION_MISMATCH',
     )
   }
+
+  // Plan 108 §3.9, §5 step 108.3 — the surface, re-validated HERE and not
+  // merely reported by the child, for the same reason the two checks above
+  // exist: `definePlugin`'s author-time `validatePluginSurface` runs on the
+  // author's own machine, and a hand-crafted bundle need never have called it.
+  // A bundle that declares no surface skips all of this and produces exactly
+  // the report it produced before this plan (acceptance criterion 1).
+  let surface: PluginSurface | undefined
+  if (msg.surface !== undefined) {
+    const checked = validatePluginSurface(msg.surface)
+    if (!checked.ok) return failure(`the plugin's surface is invalid — ${checked.errors.join('; ')}`, 'E_PLUGIN_SURFACE_INVALID')
+    const schemaErrors = checkSurfaceSchemas(checked.value)
+    if (schemaErrors.length > 0) {
+      return failure(`the plugin's surface embeds an unusable JSON Schema — ${schemaErrors.join('; ')}`, 'E_PLUGIN_SURFACE_INVALID')
+    }
+    surface = checked.value
+  }
+
   return {
     ok: true,
     pluginId: msg.pluginId,
@@ -83,6 +176,7 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     title: msg.title,
     description: msg.description,
     scripts: msg.scripts,
+    ...(surface !== undefined ? { surface } : {}),
     resetPackages: msg.resetPackages,
   }
 }

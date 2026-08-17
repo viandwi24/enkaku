@@ -292,6 +292,46 @@ export interface CreateSessionOpts {
    * and therefore byte-identical to the pre-plan-92 constants.
    */
   videoProfile?: VideoProfile
+  /**
+   * Plan 100 §3.2, §4.2, §5 step 100.4 — set only by `SessionManager`'s
+   * fast-path `control` build (a second, concurrent scrcpy session beside
+   * an already-open `wall` entry for the SAME device). The open `wall`
+   * entry is live proof the device is already awake, rotated, tagged, and
+   * has its text-input keyboard set — so `wakeDevice`/`applyRotation`/
+   * `applyTextInput`/`applyFarmTag` are skipped entirely (not merely
+   * called with a no-op argument), and their revert thunks become no-ops
+   * too: nothing was applied by THIS session, so nothing is this session's
+   * to revert on `close()` — the entry that actually applied these
+   * device-scoped settings (the still-open `wall` entry) remains the one
+   * that reverts them, when IT closes. `onPhase('waking')` is also skipped
+   * (§4.3/§4.5, §5 step 100.5's "no wake-phase breadcrumb"), so the fast
+   * path's phase sequence is `connecting → starting-video → waiting-frame
+   * → ready`, one step shorter than the ordinary four-step sequence.
+   */
+  skipDevicePrep?: boolean
+  /**
+   * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.4 — set only alongside
+   * `skipDevicePrep` above. A fast-path `control` build must produce a
+   * REAL scrcpy session or fail outright: silently falling back to
+   * screencap-loop + adb-input here would be exactly the silent downgrade
+   * §3.7 forbids (a third, even worse quality than the wall's own, shown
+   * under the Control label). `makeScrcpy` returning null/rejecting throws
+   * `SessionError('E_CONTROL_SESSION_UNAVAILABLE', ...)` instead of
+   * degrading — `packages/scrcpy/src/session.ts`'s own bounded
+   * `connectWithRetry` is what already turns a platform's rejection (a
+   * non-zero server exit, or a handshake that never completes) into that
+   * rejected promise, so this is H2's "detect the platform's own
+   * rejection" signal, not a new timeout invented here.
+   *
+   * Ignored (never throws) when `opts.display === 'screencap-loop'` is the
+   * device's OWN deliberate configuration — that device was never going to
+   * run scrcpy regardless of the wall entry, and treating its ordinary
+   * fallback as "control unavailable" would be a false degrade for an
+   * operator who chose PNG-only on purpose. That early-out belongs here,
+   * not in the manager, because only this function knows which branch
+   * `scrcpy` ended up null from.
+   */
+  requireScrcpy?: boolean
 }
 
 
@@ -366,7 +406,11 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     await handle?.release()
   }
 
-  onPhase('waking')
+  // Plan 100 §4.2, §5 step 100.4: the fast-path control build skips this
+  // whole block (and its own phase breadcrumb) — the still-open wall entry
+  // for this device is live proof it already ran, successfully, moments ago.
+  const skipDevicePrep = opts.skipDevicePrep ?? false
+  if (!skipDevicePrep) onPhase('waking')
   /**
    * Wake the screen and hold it awake for the session's lifetime.
    *
@@ -381,7 +425,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * a session at all — behaviour here is unchanged from before the extraction.
    */
   const keepAwake: KeepAwakeMode = opts.keepAwake ?? 'while-charging'
-  await wakeDevice(transport, { keepAwake, log })
+  if (!skipDevicePrep) await wakeDevice(transport, { keepAwake, log })
 
   /**
    * Rotation lock (Plan 85 §3.7, §4.1, step 85.8): the identical shape to
@@ -392,7 +436,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * `'device'` (the default) touches nothing and the thunk is a no-op.
    */
   const rotation: RotationMode = opts.rotation ?? 'device'
-  const revertRotation = await applyRotation(transport, { rotation, log })
+  const revertRotation = skipDevicePrep ? async () => {} : await applyRotation(transport, { rotation, log })
 
   /**
    * Text-input keyboard (plan 90 §3.2, §3.3, §4.5, §5 step 90.5): the identical shape to
@@ -404,11 +448,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * ladder never needs a live round trip per keystroke.
    */
   const textInputMode: TextInputMode = opts.textInput ?? 'auto'
-  const textInputSetup = await applyTextInput(transport, {
-    mode: textInputMode,
-    ...(deps.withGuestAgentClient ? { withGuestAgentClient: deps.withGuestAgentClient } : {}),
-    log,
-  })
+  const textInputSetup = skipDevicePrep
+    ? { revert: async () => {}, agentCapabilities: null, imeCurrent: false }
+    : await applyTextInput(transport, {
+        mode: textInputMode,
+        ...(deps.withGuestAgentClient ? { withGuestAgentClient: deps.withGuestAgentClient } : {}),
+        log,
+      })
 
   /**
    * Farm-traffic marker (spec §9.4/§17, plan 87 §4.12, §5 step 87.13): the
@@ -418,7 +464,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * device is tagged when it is not" when the underlying `setprop` fails.
    */
   const tagTraffic = opts.tagTraffic ?? true
-  const revertFarmTag = await applyFarmTag(transport, { tagTraffic, log })
+  const revertFarmTag = skipDevicePrep ? async () => {} : await applyFarmTag(transport, { tagTraffic, log })
 
   onPhase('starting-video')
   // Display and input: scrcpy when the session comes up, otherwise the fallback
@@ -430,12 +476,40 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   // (the transient-failure case 96.22 recorded, which the retry below exists
   // to heal). Only the latter arms the background retry.
   let displayAttemptFailed = false
+  let scrcpyFailureReason: string | null = null
   if (opts.display !== 'screencap-loop' && deps.makeScrcpy) {
     scrcpy = await deps.makeScrcpy(opts.deviceId, transport, videoProfile).catch((err) => {
       displayAttemptFailed = true
-      log.warn(`scrcpy cannot be used (${String(err)}) — falling back to screencap-loop + adb-input`)
+      scrcpyFailureReason = err instanceof Error ? err.message : String(err)
+      log.warn(`scrcpy cannot be used (${scrcpyFailureReason}) — falling back to screencap-loop + adb-input`)
       return null
     })
+  }
+
+  // Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.4: a fast-path `control`
+  // build must produce a real second scrcpy session or fail outright — see
+  // `CreateSessionOpts.requireScrcpy`'s own doc comment for why silently
+  // falling to screencap-loop here would be exactly the silent downgrade
+  // §3.7 forbids. Excluded when the device's OWN configuration is
+  // `screencap-loop` (never even attempted scrcpy above): that device was
+  // never going to run scrcpy regardless of the wall entry, and reporting
+  // "control unavailable" for it would be a false degrade.
+  if (opts.requireScrcpy && opts.display !== 'screencap-loop' && !scrcpy) {
+    // Defensive, not load-bearing in production (the one real caller,
+    // `SessionManager`'s fast path, always pairs `requireScrcpy` with
+    // `skipDevicePrep`, so these three are already no-ops) — but a caller
+    // that ever set `requireScrcpy` WITHOUT `skipDevicePrep` must not leak
+    // an applied rotation/IME/farm-tag/stayon on a session that is about to
+    // vanish with no `close()` ever called on it.
+    if (keepAwake !== 'off') await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+    await revertRotation()
+    await textInputSetup.revert()
+    await revertFarmTag()
+    await transport.disconnect().catch(() => undefined)
+    throw new SessionError(
+      'E_CONTROL_SESSION_UNAVAILABLE',
+      scrcpyFailureReason ?? 'no scrcpy server is available for a second concurrent session on this device',
+    )
   }
 
   // Standby (Plan 17 §3.5): the panel goes dark, the encoder keeps producing
@@ -596,8 +670,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // screencap-loop fallback is now backed by a DIFFERENT scrcpy session.
       if (liveScrcpy && opts.standbyScreenOff) liveScrcpy.control.setDisplayPower(true)
       await session.display.stop()
-      // Hand the screen back to the device's own timeout.
-      if (keepAwake !== 'off')
+      // Hand the screen back to the device's own timeout. Skipped for a
+      // fast-path control entry (§4.2): this session never claimed
+      // stayon in the first place (skipDevicePrep skipped wakeDevice
+      // entirely) — releasing it here would hand the screen back to its
+      // own timeout out from under the still-open wall entry that DID
+      // claim it and is relying on it staying awake.
+      if (keepAwake !== 'off' && !skipDevicePrep)
         await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
       // Hand rotation back the same way — stateless and idempotent (see
       // `orientation.ts`): `close()` can run more than once (a timeout kill

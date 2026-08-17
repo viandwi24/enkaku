@@ -77,6 +77,21 @@ export interface TransferService {
   push(deviceId: string, artifactId: string, remotePath: string, opts: PushOpts): Promise<PushResult>
   pull(deviceId: string, remotePath: string, opts: TransferOpts): Promise<{ artifactId: string; bytes: number }>
   install(deviceId: string, artifactId: string, opts: InstallOpts & TransferOpts): Promise<InstallResult>
+  /**
+   * Plan 106 §5 step 106.8 (§9 Q5's recommendation, now built) — installs an
+   * APK already resolved to an absolute LOCAL path, never a row in the
+   * `artifacts` table. Device-preparation components (`ui-server-component.ts`)
+   * resolve their own APK from the Toolchain Manager / `ENKAKU_GUEST_AGENT_PATH`
+   * (G7's three-tier rule) — routing that path through `resolveArtifact`
+   * would mean fabricating a hidden `artifacts` row for a file the operator
+   * never uploaded and would never expect to see in the artifact browser.
+   * Otherwise IDENTICAL machinery to `install()` below — the SAME
+   * push-with-onProgress, `pm install -r -g`, parsed-failure-text, and
+   * cleanup-on-every-exit-path (`performInstall`, shared by both) — so a
+   * preparation install gets the exact same real byte progress and staged-file
+   * cleanup guarantee an operator's own install already has.
+   */
+  installFromLocalApk(deviceId: string, absPath: string, opts: InstallOpts & TransferOpts): Promise<InstallResult>
   /** Idempotent — cancelling an unknown or already-finished transferId is a no-op. */
   cancel(transferId: string): void
 }
@@ -230,6 +245,75 @@ async function runMediaScan(backend: Backend, remotePath: string): Promise<Media
   return { ran: false, method: null, ms: Date.now() - startedAt, error: parts.join('; ') }
 }
 
+interface LocalApk {
+  abs: string
+  sizeBytes: number
+}
+
+/**
+ * Shared by `install()` (artifact-table-resolved) and `installFromLocalApk()`
+ * (a caller-resolved absolute path, plan 106 §5 step 106.8) — push the bytes
+ * with real progress, run `pm install`, parse its output for a `Failure
+ * [REASON]` line REGARDLESS of `pm`'s own exit code (`runOnLane` resolves on
+ * stream close, never branches on an exit status — `pm install` can exit 0
+ * while printing `Failure [...]`, and this function would otherwise record a
+ * success that never installed), and delete the staged file in a `finally`
+ * on every exit path: success, a parsed `pm install` failure, a cancel, or
+ * `pushFile` itself throwing.
+ */
+async function performInstall(
+  deps: TransferServiceDeps,
+  backend: Backend,
+  controller: AbortController,
+  local: LocalApk,
+  opts: InstallOpts & TransferOpts,
+): Promise<InstallResult> {
+  const remotePath = `/data/local/tmp/enkaku-${crypto.randomUUID()}.apk`
+  const startedAt = Date.now()
+  try {
+    const stream = await backend.adb.openRaw(backend.serial, 'sync:')
+    try {
+      await pushFile(stream, {
+        localPath: local.abs,
+        remotePath,
+        onProgress: opts.onProgress ? (sent, total) => opts.onProgress?.(sent, total) : undefined,
+        signal: controller.signal,
+      })
+      stream.close()
+    } catch (err) {
+      stream.close(true)
+      throw err
+    }
+
+    // `-r` (reinstall) and `-g` (auto-grant runtime permissions) both default
+    // true — the flags `hostAdb(['install', '-r', '-g', ...])` always passed
+    // before this move. Dropping `-r` would fail a reinstall of an existing
+    // version; dropping `-g` would leave runtime permissions ungranted,
+    // which breaks a consumer (e.g. the UI server) at USE time, not install
+    // time (plan 106 §5 step 106.8) — asserted directly in `transfer.test.ts`.
+    const flags = [
+      (opts.reinstall ?? true) ? '-r' : '',
+      (opts.grantPermissions ?? true) ? '-g' : '',
+      opts.allowDowngrade ? '-d' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    const cmd = `pm install ${flags} ${shellQuote(remotePath)}`.replace(/\s+/g, ' ').trim()
+    const output = await runOnLane(backend, cmd, deps.settings().installTimeoutMs, controller.signal)
+    const parsed = parseInstallOutput(output)
+    if (!parsed.success) {
+      throw new EnkakuError('E_INSTALL_FAILED', parsed.reason)
+    }
+    return { package: parsed.pkg, durationMs: Date.now() - startedAt, output: output.trim() }
+  } finally {
+    // The staged APK is deleted in this `finally` on every exit path —
+    // success, failure, AND cancel (plan 39 §4.2 step 4, acceptance #4).
+    // Best-effort: a device that already lost its connection cannot
+    // usefully surface a second error here.
+    await backend.adb.exec(backend.serial, `rm -f ${shellQuote(remotePath)}`, { profile: 'appLifecycle' }).catch(() => {})
+  }
+}
+
 export function createTransferService(deps: TransferServiceDeps): TransferService {
   const controllers = new Map<string, AbortController>()
 
@@ -332,46 +416,32 @@ export function createTransferService(deps: TransferServiceDeps): TransferServic
       if (artifact.sizeBytes > maxPushBytes) {
         throw new EnkakuError('E_TRANSFER_TOO_LARGE', `the artifact is ${artifact.sizeBytes} bytes, exceeding the ${maxPushBytes}-byte push limit`)
       }
-      const remotePath = `/data/local/tmp/enkaku-${crypto.randomUUID()}.apk`
       const backend = resolveBackend(deps, deviceId)
       const controller = begin(opts.transferId)
-      const startedAt = Date.now()
       try {
-        const stream = await backend.adb.openRaw(backend.serial, 'sync:')
-        try {
-          await pushFile(stream, {
-            localPath: artifact.abs,
-            remotePath,
-            onProgress: opts.onProgress ? (sent, total) => opts.onProgress?.(sent, total) : undefined,
-            signal: controller.signal,
-          })
-          stream.close()
-        } catch (err) {
-          stream.close(true)
-          throw err
-        }
-
-        const flags = [
-          (opts.reinstall ?? true) ? '-r' : '',
-          (opts.grantPermissions ?? true) ? '-g' : '',
-          opts.allowDowngrade ? '-d' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')
-        const cmd = `pm install ${flags} ${shellQuote(remotePath)}`.replace(/\s+/g, ' ').trim()
-        const output = await runOnLane(backend, cmd, deps.settings().installTimeoutMs, controller.signal)
-        const parsed = parseInstallOutput(output)
-        if (!parsed.success) {
-          throw new EnkakuError('E_INSTALL_FAILED', parsed.reason)
-        }
-        return { package: parsed.pkg, durationMs: Date.now() - startedAt, output: output.trim() }
+        return await performInstall(deps, backend, controller, { abs: artifact.abs, sizeBytes: artifact.sizeBytes }, opts)
       } finally {
         end(opts.transferId)
-        // The staged APK is deleted in this `finally` on every exit path —
-        // success, failure, AND cancel (plan 39 §4.2 step 4, acceptance #4).
-        // Best-effort: a device that already lost its connection cannot
-        // usefully surface a second error here.
-        await backend.adb.exec(backend.serial, `rm -f ${shellQuote(remotePath)}`, { profile: 'appLifecycle' }).catch(() => {})
+      }
+    },
+
+    async installFromLocalApk(deviceId, absPath, opts) {
+      let sizeBytes: number
+      try {
+        sizeBytes = statSync(absPath).size
+      } catch {
+        throw new EnkakuError('E_NOT_FOUND', `the apk is no longer on disk: ${absPath}`)
+      }
+      const maxPushBytes = deps.settings().maxPushBytes
+      if (sizeBytes > maxPushBytes) {
+        throw new EnkakuError('E_TRANSFER_TOO_LARGE', `the apk is ${sizeBytes} bytes, exceeding the ${maxPushBytes}-byte push limit`)
+      }
+      const backend = resolveBackend(deps, deviceId)
+      const controller = begin(opts.transferId)
+      try {
+        return await performInstall(deps, backend, controller, { abs: absPath, sizeBytes }, opts)
+      } finally {
+        end(opts.transferId)
       }
     },
   }

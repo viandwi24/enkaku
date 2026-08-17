@@ -590,7 +590,7 @@ describe('createCapabilityContext — resolveScriptRef through the registry (pla
     expect(ctx.resolveScriptRef('checkout@1.0.0').id).toBe('s1')
   })
 
-  test('with a registry wired, resolves a PLUGIN member the same way a standalone script resolves — one of the 8 call sites plan 82 §3.3 names', () => {
+  test('with a registry wired, resolves a PLUGIN member through the one registry path — one of the 8 call sites plan 82 §3.3 names', () => {
     const db = setUp()
     db.insert(scripts)
       .values({ id: 's1', name: 'tiktok/login', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date(), pluginId: 'p1', exportId: 'login' })

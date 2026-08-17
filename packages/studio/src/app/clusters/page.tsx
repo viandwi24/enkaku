@@ -95,7 +95,10 @@ export default function ClustersPage() {
               <TableCell className="text-right">
                 <div className="flex justify-end gap-1">
                   <Button asChild size="sm" variant="secondary" className="h-7 text-[12px]">
-                    <Link href={`/scripts?cluster=${cl.id}`}>Run</Link>
+                    {/* The script list moved into `/plugins` (the merged
+                        Plugins & scripts screen, 2026-08-17) — `?cluster=`
+                        still opens the run dialog on arrival. */}
+                    <Link href={`/plugins?cluster=${cl.id}`}>Run</Link>
                   </Button>
                   <Button
                     size="sm"

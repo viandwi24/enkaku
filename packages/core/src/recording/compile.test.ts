@@ -65,15 +65,25 @@ describe('emitRecordingEntry (plan 94 §4.7)', () => {
     const src = emitRecordingEntry(baseDoc())
     expect(src).toContain('/recordings/checkout-flow.recording.json')
     expect(src).toContain('use "Detach" to take ownership')
-    expect(src).toContain("import { defineRecording } from '@enkaku/sdk'")
-    expect(src).toContain('export default defineRecording(')
+    expect(src).toContain("import { definePlugin, defineRecording } from '@enkaku/sdk'")
+    expect(src).toContain('export default definePlugin(')
+  })
+
+  /** Plan 110 §3.4 — the entry is a one-member plugin whose id is the reserved `recordings` owner, whose version is the recording's own, and whose single member is the recording. */
+  test('wraps the recording as the only member of the synthetic `recordings` plugin (plan 110 §3.4)', () => {
+    const src = emitRecordingEntry(baseDoc({ version: '2.3.4' }))
+    expect(src).toContain("id: 'recordings',")
+    expect(src).toContain("version: '2.3.4',")
+    expect(src).toContain('scripts: [')
+    expect(src).toContain('defineRecording(')
   })
 
   test('embeds the document verbatim — defineRecording accepts the emitted call\'s argument unchanged', () => {
     const doc = baseDoc()
     const src = emitRecordingEntry(doc)
-    // Extract the JSON blob between the one `defineRecording(` call and its closing paren+newline.
-    const jsonText = src.slice(src.indexOf('defineRecording(') + 'defineRecording('.length, src.lastIndexOf(')'))
+    // Extract the JSON blob between the one `defineRecording(` call and the `),` that closes it.
+    const start = src.indexOf('defineRecording(') + 'defineRecording('.length
+    const jsonText = src.slice(start, src.lastIndexOf('),\n  ],'))
     const embedded = JSON.parse(jsonText)
     expect(embedded).toEqual(doc)
     // And it is a real, runnable ScriptDefinition — the whole point of F18.
@@ -85,7 +95,7 @@ describe('emitRecordingEntry (plan 94 §4.7)', () => {
   test('never bundles or imports anything outside @enkaku/sdk (F11 — no new bundling surface)', () => {
     const src = emitRecordingEntry(baseDoc())
     const importLines = src.split('\n').filter((l) => l.trim().startsWith('import '))
-    expect(importLines).toEqual(["import { defineRecording } from '@enkaku/sdk'"])
+    expect(importLines).toEqual(["import { definePlugin, defineRecording } from '@enkaku/sdk'"])
   })
 })
 
@@ -126,11 +136,22 @@ describe('collectParamNames / paramsSchemaFor / paramsJsonSchemaFor (plan 94 §4
 })
 
 describe('emitDetachedScript (plan 94 §4.7, criterion 4)', () => {
-  test('emits a plain defineScript — no defineRecording, no interpreter loop', () => {
+  test('emits a one-member plugin — no defineRecording, no interpreter loop (plan 110 §4.2)', () => {
     const src = emitDetachedScript(baseDoc())
-    expect(src).toContain("import { defineScript } from '@enkaku/sdk'")
+    expect(src).toContain("import { definePlugin } from '@enkaku/sdk'")
     expect(src).not.toContain('defineRecording')
-    expect(src).toContain('export default defineScript({')
+    expect(src).not.toContain('defineScript')
+    expect(src).toContain('export default definePlugin({')
+    // The `enkaku init` shape: the recording's name as the plugin id, one member `main`.
+    expect(src).toContain("id: 'checkout-flow',")
+    expect(src).toContain("id: 'main',")
+  })
+
+  /** A recording name may hold `.`/`_`; a plugin id may not — detach is where the two shapes meet. */
+  test('turns a dotted or underscored recording name into a usable plugin id', () => {
+    const src = emitDetachedScript(baseDoc({ name: 'checkout.v2_final' }))
+    expect(src).toContain("id: 'checkout-v2-final',")
+    expect(src).toContain("title: 'checkout.v2_final',")
   })
 
   test('expands every step as its own literal, ordered await — one line per action, readable top to bottom (F12)', () => {
@@ -189,7 +210,7 @@ describe('emitDetachedScript (plan 94 §4.7, criterion 4)', () => {
 
   test('declares the same params object shape as the recording (params round-trips)', () => {
     const src = emitDetachedScript(baseDoc())
-    expect(src).toContain("params: z.object({ caption: z.string() }),")
+    expect(src).toContain('params: z.object({ caption: z.string() }),')
     expect(src).toContain("import { z } from 'zod'")
   })
 

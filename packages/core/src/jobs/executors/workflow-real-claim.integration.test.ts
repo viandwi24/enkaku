@@ -80,7 +80,7 @@ const FILLER_BUNDLE = `export default { id: 'filler', version: '1.0.0', params: 
 
 function publishScript(db: Db, name: string, bundle: string) {
   const id = `${name}-1.0.0`
-  db.insert(scripts).values({ id, name, version: '1.0.0', kind: 'script', bundle, enabled: true, createdAt: new Date() }).run()
+  db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id, name, version: '1.0.0', kind: 'script', bundle, enabled: true, createdAt: new Date() }).run()
   return id
 }
 

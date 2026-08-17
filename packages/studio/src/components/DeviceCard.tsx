@@ -21,6 +21,17 @@ import { cn } from '@/lib/utils'
  *
  * The rail is this Studio's signature — scanning a column of colour is far
  * faster than reading status text one card at a time across a dozen devices.
+ *
+ * Plan 101 §5 step 101.7 (folded in mid-step, 2026-08-16): no more
+ * per-device checkbox — `refs/ui`'s own rule, "selection is the card's own
+ * background tint and accent border, never a badge." This component no
+ * longer owns the click that selects it: that now lives on the wrapper
+ * `app/page.tsx` already puts around every card (the same `data-device-id`
+ * div `useDragSelect`/the context menu already key off), which bails on a
+ * click landing on one of THIS card's own interactive descendants (the
+ * label link, Control/Run, the "More actions" menu, …) so those keep working
+ * exactly as before. `DeviceCard` only renders the `selected` state now —
+ * the accent border below — not the toggle itself.
  */
 export function DeviceCard({
   device,
@@ -30,9 +41,7 @@ export function DeviceCard({
   onRequestForget,
   onRequestDisconnect,
   onReconnect,
-  selectable,
   selected,
-  onToggleSelect,
 }: {
   device: DeviceInfo
   runningJob?: JobInfo | null
@@ -61,10 +70,8 @@ export function DeviceCard({
   onRequestDisconnect?: () => void
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — fires directly, no confirmation. */
   onReconnect?: () => void
-  /** Multi-select for a batch action (plan 39 §4.7 — "Install on selected"). */
-  selectable?: boolean
+  /** A tint + accent border (plan 91 §5 step 91.8; the checkbox that used to sit beside this left in plan 101 §5 step 101.7 — see the file header). */
   selected?: boolean
-  onToggleSelect?: () => void
 }) {
   const offline = device.status === 'offline'
   const hot = device.battery && device.battery.temperatureC >= 45
@@ -77,8 +84,20 @@ export function DeviceCard({
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-lg border bg-surface transition-colors',
+        // `select-none` for the same reason `WallTile` carries it (see that
+        // file's own note): this card is click-to-toggle, and a click with a
+        // few pixels of travel drag-selects whatever text it started on.
+        //
+        // One difference worth stating: unlike a wall tile, this card DOES
+        // show the stable id — a genuinely copyable string. It is left
+        // unselectable anyway, because the device page's header shows the
+        // same value with an explicit Copy button beside it; a dedicated
+        // control beats dragging across 11 characters of monospace, and
+        // keeping selection alive here would reintroduce the interference
+        // for the one field least likely to be read aloud.
+        'relative select-none overflow-hidden rounded-lg border bg-surface transition-colors',
         offline ? 'opacity-60' : 'hover:border-line-strong',
+        selected && 'border-accent ring-1 ring-accent',
       )}
     >
       <span
@@ -87,18 +106,6 @@ export function DeviceCard({
         data-live={device.status === 'busy' ? 'true' : 'false'}
         aria-hidden
       />
-
-      {selectable && (
-        <label className="absolute right-3 top-3 z-10 flex size-5 cursor-pointer items-center justify-center rounded border bg-surface">
-          <input
-            type="checkbox"
-            checked={Boolean(selected)}
-            onChange={onToggleSelect}
-            aria-label={`Select ${device.label} for a batch action`}
-            className="size-3.5"
-          />
-        </label>
-      )}
 
       <div className="space-y-3 p-4 pl-5">
         <div className="flex items-start justify-between gap-3">
@@ -232,7 +239,15 @@ export function DeviceCard({
             unaffected by it. `?? []` covers a caller that predates the
             field (`assistedBy` defaults server-side, but a fixture built as
             a plain object rather than parsed by `DeviceInfoSchema` has no
-            such default to fall back on). */}
+            such default to fall back on). Plan 105 §3.2's "assisting" vs
+            "may assist" activity split is computed inside `HolderBadge`
+            itself (`deriveAssistActivity`, `device-popup/ControlState.tsx`)
+            — this card never derives it locally, and does not call the full
+            `useControlState` hook: a device card has no per-client "do I
+            hold this" signal of its own to build a `ControlState` from (it
+            only ever renders OTHER people's/jobs' holder facts), so there is
+            nothing that state would add here beyond what `heldBy`/
+            `assistedBy` already say. */}
         {(device.assistedBy ?? []).length > 0 && (
           <div onClick={(e) => e.stopPropagation()} className="flex flex-wrap gap-1">
             {(device.assistedBy ?? []).map((a) => (
@@ -371,7 +386,10 @@ export function DeviceCard({
                 </Link>
               </Button>
               <Button asChild size="sm" variant="ghost" className="h-8 text-[12px]">
-                <Link href={`/scripts?device=${encodeURIComponent(device.id)}`}>
+                {/* `/plugins`, not `/scripts` — the script list lives on the
+                    merged Plugins & scripts screen now (owner's own ask,
+                    2026-08-17); the `?device=` it reads is unchanged. */}
+                <Link href={`/plugins?device=${encodeURIComponent(device.id)}`}>
                   <Play className="size-3.5" aria-hidden />
                   Run
                 </Link>

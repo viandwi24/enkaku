@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { z } from 'zod'
-import { checkDeclaredSchema, type SchemaCheckFinding } from '@enkaku/protocol'
+import { checkDeclaredSchema } from '@enkaku/protocol'
 import { isPlugin } from '../plugin'
 
 export interface PublishOptions {
@@ -10,10 +10,9 @@ export interface PublishOptions {
   farmUrl: string
   token?: string
   /**
-   * Plugin only (plan 82 §5 step 12): stage the bundle without verifying it
-   * in the same call. Mainly for scripting a publish pipeline that wants to
-   * kick off verification separately (`POST /api/plugins/:id/verify`) —
-   * ignored for a standalone script, which has no separate verify step.
+   * Stage the bundle without verifying it in the same call (plan 82 §5 step
+   * 12). Mainly for scripting a publish pipeline that wants to kick off
+   * verification separately (`POST /api/plugins/:id/verify`).
    */
   stageOnly?: boolean
 }
@@ -24,16 +23,37 @@ export interface BuiltEntry {
   default: unknown
 }
 
-/** Bundles EVERY dependency (`@enkaku/sdk` and `zod` included), nothing external — shared by a standalone script and a plugin, which publish through different endpoints but bundle identically. Exported for `dev.ts`, which does the identical local build on every change. */
+/** Bundles EVERY dependency (`@enkaku/sdk` and `zod` included), nothing external — the farm only ever accepts a finished bundle, so the runner installs nothing. Exported for `dev.ts`, which does the identical local build on every change. */
+function describeBuildFailure(err: unknown): string {
+  const errors = (err as { errors?: unknown }).errors
+  if (Array.isArray(errors) && errors.length > 0) {
+    return errors.map((e) => (e instanceof Error ? e.message : String(e))).join('\n')
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
 export async function buildEntry(entry: string, tmp: string): Promise<BuiltEntry> {
   const outfile = join(tmp, 'bundle.mjs')
-  const build = await Bun.build({
-    entrypoints: [entry],
-    target: 'bun',
-    format: 'esm',
-    outdir: tmp,
-    naming: 'bundle.mjs',
-  })
+  let build: Awaited<ReturnType<typeof Bun.build>>
+  try {
+    build = await Bun.build({
+      entrypoints: [entry],
+      target: 'bun',
+      format: 'esm',
+      outdir: tmp,
+      naming: 'bundle.mjs',
+    })
+  } catch (err) {
+    // *(measured, Bun 1.3.14)* a resolution/export failure REJECTS with an
+    // `AggregateError` rather than resolving `{ success: false }`, and that
+    // error's own `message` is the useless "Bundle failed" — the real one
+    // ("No matching export in ... for import ...") is on `.errors`. Worth
+    // unwrapping rather than passing through: since plan 110 removed
+    // `defineScript`, `import { defineScript } from '@enkaku/sdk'` is the
+    // single most likely reason an author lands here, and "Bundle failed"
+    // tells them nothing about it.
+    throw new Error(`bundling failed:\n${describeBuildFailure(err)}`)
+  }
   if (!build.success) {
     throw new Error(`bundling failed:\n${build.logs.map((l) => String(l)).join('\n')}`)
   }
@@ -105,34 +125,39 @@ function findRefinementPaths(schema: unknown, path = '', depth = 0, out: string[
  * who satisfies every field the FORM checks can still watch the job die on
  * one it could not. No-op when there is nothing to warn about.
  */
-function warnAboutRefinements(params: unknown): void {
-  const paths = findRefinementPaths(params)
+function warnAboutRefinements(schema: unknown, what: 'params' | 'result', scriptId: string): void {
+  const paths = findRefinementPaths(schema)
   if (paths.length === 0) return
   console.log(
-    `warning: params carries ${paths.length} refinement${paths.length === 1 ? '' : 's'} that the run form cannot evaluate (${paths.join(', ')}). Operators will see it as a job failure, not a form error. Consider an ordered range, showWhen, or a per-field bound.`,
+    `warning: script "${scriptId}": ${what} carries ${paths.length} refinement${paths.length === 1 ? '' : 's'} that the run form cannot evaluate (${paths.join(', ')}). Operators will see it as a job failure, not a form error. Consider an ordered range, showWhen, or a per-field bound.`,
   )
 }
 
 /**
  * Publish path 3 of 3 (plan 95 §4.9, §5 step 95.5) — the SAME
- * `checkDeclaredSchema` gate `POST /api/scripts` and the plugin verify child
- * run, but LOCALLY: the author sees a refused publish in their own
- * terminal, before any network call, rather than only a 400 weeks later. A
- * `'group'` finding is the non-consecutive-group WARNING (plan 95 §3.5,
- * "warns... so the author can reorder or accept it") — printed, publish
- * continues; every other finding refuses the publish outright (no request
- * is ever sent).
+ * `checkDeclaredSchema` gate the plugin verify child runs
+ * (`plugins/verify-child-entry.ts`), but LOCALLY: the author sees a refused
+ * publish in their own terminal, before any network call, rather than only a
+ * failed verification a round trip later. A `'group'` finding is the
+ * non-consecutive-group WARNING (plan 95 §3.5, "warns... so the author can
+ * reorder or accept it") — printed, publish continues; every other finding
+ * refuses the publish outright (no request is ever sent).
+ *
+ * Plan 110 §4.2 moved this from the deleted single-script publish path onto
+ * EVERY member of the plugin, which is the only thing there is left to publish. It runs
+ * over all members before the first byte is sent, so an author fixing two
+ * scripts is not made to publish twice to find the second one.
  */
-function checkAndReportParamsSchema(paramsSchema: unknown): void {
+function checkAndReportParamsSchema(paramsSchema: unknown, scriptId: string): void {
   const findings = checkDeclaredSchema(paramsSchema)
   const warnings = findings.filter((f) => f.limit === 'group')
   const blocking = findings.filter((f) => f.limit !== 'group')
   for (const w of warnings) {
-    console.log(`warning: ${w.path || '(root)'}: ${w.message}`)
+    console.log(`warning: script "${scriptId}": ${w.path || '(root)'}: ${w.message}`)
   }
   if (blocking.length > 0) {
     const lines = blocking.map((f) => `  ${f.path || '(root)'}: ${f.message}`).join('\n')
-    throw new Error(`params schema violates the published limits (plan 95 §3.8) — nothing was published:\n${lines}`)
+    throw new Error(`script "${scriptId}": params schema violates the published limits (plan 95 §3.8) — nothing was published:\n${lines}`)
   }
 }
 
@@ -142,124 +167,111 @@ function checkAndReportParamsSchema(paramsSchema: unknown): void {
  * (a params schema and a result schema are never the same declaration, and
  * the two messages below name which one failed).
  */
-function checkAndReportResultSchema(resultSchema: unknown): void {
+function checkAndReportResultSchema(resultSchema: unknown, scriptId: string): void {
   const findings = checkDeclaredSchema(resultSchema)
   const warnings = findings.filter((f) => f.limit === 'group')
   const blocking = findings.filter((f) => f.limit !== 'group')
   for (const w of warnings) {
-    console.log(`warning: (result) ${w.path || '(root)'}: ${w.message}`)
+    console.log(`warning: script "${scriptId}": (result) ${w.path || '(root)'}: ${w.message}`)
   }
   if (blocking.length > 0) {
     const lines = blocking.map((f) => `  ${f.path || '(root)'}: ${f.message}`).join('\n')
-    throw new Error(`result schema violates the published limits (plan 97 §3.8) — nothing was published:\n${lines}`)
+    throw new Error(`script "${scriptId}": result schema violates the published limits (plan 97 §3.8) — nothing was published:\n${lines}`)
   }
 }
+
+/**
+ * The refusal plan 110 §4.2 / criterion 6 specifies, and the whole of the
+ * "Hard" reading of decision A on the CLI side: a script cannot be published
+ * outside a plugin, so an entry whose default export is not a `definePlugin()`
+ * result is refused rather than silently wrapped (the rejected option, §3.1).
+ *
+ * The message carries the wrapper itself, not a pointer to it. An author who
+ * hits this is one paste away from a working entry without opening a single
+ * doc — which is the only thing that makes a hard removal cheap enough to be
+ * the right call.
+ */
+export const NOT_A_PLUGIN_MESSAGE = `the entry's default export is not a plugin — and a script cannot be published on its own (plan 110 §3.1).
+
+Wrap what you have in a plugin — four lines:
+
+  import { definePlugin } from '@enkaku/sdk'
+
+  export default definePlugin({
+    id: 'my-plugin',
+    version: '1.0.0',
+    scripts: [{ id: 'my-script', title: 'My script', description: 'What it does', params, run }],
+  })
+
+Or scaffold a project that already publishes: enkaku init my-plugin`
 
 /**
  * `enkaku publish <entry.ts>` (spec §11.4): bundles the entry and its deps
  * into one file. The farm only accepts finished bundles, which makes
  * dependencies deterministic and means the runner installs nothing.
  *
- * Plan 82 §5 step 12: the entry's default export decides the endpoint — a
- * `definePlugin()` result (a `scripts` array) publishes through
- * `POST /api/plugins` (stage, then verify in the same call unless
- * `--stage-only`); a `defineScript()` result (a `run` function) keeps
- * publishing through `POST /api/scripts`, unchanged. Detected with
- * `isPlugin()`, the SAME structural check `child-entry.ts`'s loader makes —
- * one definition of "is this a plugin," not two.
+ * Plan 110 §4.2, criterion 6 — there is no branch left. The entry's default
+ * export is a `definePlugin()` result or the publish is refused: a script
+ * cannot be published outside a plugin, so `POST /api/plugins` (stage, then
+ * verify in the same call unless `--stage-only`) is the only endpoint this
+ * command has. Detected with `isPlugin()`, the SAME structural check
+ * `child-entry.ts`'s loader makes — one definition of "is this a plugin," not
+ * two.
  */
 export async function publish(opts: PublishOptions): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), 'enkaku-publish-'))
   try {
     const built = await buildEntry(opts.entry, tmp)
-    if (isPlugin(built.default)) {
-      await publishPlugin(built, opts)
-    } else {
-      await publishScript(built, opts)
-    }
+    if (!isPlugin(built.default)) throw new Error(NOT_A_PLUGIN_MESSAGE)
+    await publishPlugin(built, opts)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
 }
 
-async function publishScript(built: BuiltEntry, opts: PublishOptions): Promise<void> {
-  const def = built.default as
-    | { id: string; version: string; params: unknown; result?: unknown; run: unknown; runtime?: unknown }
-    | undefined
-  if (!def || typeof def.run !== 'function') {
-    throw new Error('the entry has no default export produced by defineScript() or definePlugin()')
+/**
+ * Every member's declared schemas, checked LOCALLY before the first byte is
+ * sent (plan 95 §4.9, plan 97 §4.4 — see `checkAndReportParamsSchema`). This
+ * is the deleted single-script path's old publish-time gate, now applied
+ * where the scripts actually live.
+ *
+ * A plugin publish sends only the bundle: the farm derives `paramsSchema`/
+ * `resultSchema` in its verify child, and gates them there too. So this is
+ * not the enforcement — it is the author seeing the same refusal in their own
+ * terminal instead of in a verify report.
+ */
+function checkMemberSchemas(scripts: readonly { id: string; params?: unknown; result?: unknown }[]): void {
+  for (const script of scripts) {
+    const params = script.params as z.ZodTypeAny | undefined
+    if (params && typeof params.safeParse === 'function') {
+      warnAboutRefinements(params, 'params', script.id)
+      // `io: 'input'` (plan 95 §3.2, §4.9, fixes F2): a params schema
+      // describes what a person TYPES. The default `io: 'output'` puts every
+      // `.default()` field into `required`, which is why every defaulted
+      // parameter used to be published as mandatory — the root of F16's
+      // shipped bug.
+      checkAndReportParamsSchema(z.toJSONSchema(params, { io: 'input' }), script.id)
+    }
+    if (script.result !== undefined) {
+      const result = script.result as z.ZodTypeAny
+      warnAboutRefinements(result, 'result', script.id)
+      // A result schema always publishes with `io: 'output'`, never
+      // `'input'` — a defaulted result FIELD is already applied by the time
+      // `run()` resolves, so it belongs in `required` (F24, the mirror image
+      // of why a params schema needs `'input'`).
+      checkAndReportResultSchema(z.toJSONSchema(result, { io: 'output' }), script.id)
+    }
   }
-  if (!/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(def.version)) {
-    throw new Error(`version "${def.version}" is not semver`)
-  }
-  const params = def.params as z.ZodTypeAny
-  if (!params || typeof params.safeParse !== 'function') {
-    throw new Error('`params` must be a Zod schema')
-  }
-  // Checked LOCALLY, before the network call (plan 95 §4.9), so the author
-  // sees it in their own terminal rather than only in a run dialog weeks
-  // later.
-  warnAboutRefinements(params)
-  // Zod → JSON Schema (Studio uses it to generate the parameter form).
-  // `io: 'input'` (plan 95 §3.2, §4.9, fixes F2): a params schema describes
-  // what a person TYPES. The default `io: 'output'` puts every `.default()`
-  // field into `required`, which is why every defaulted parameter used to be
-  // published as mandatory — the root of F16's shipped bug.
-  const paramsSchema = z.toJSONSchema(params, { io: 'input' })
-  // Checked LOCALLY too, before the network call (plan 95 §4.9) — see
-  // `checkAndReportParamsSchema`'s own doc comment.
-  checkAndReportParamsSchema(paramsSchema)
-
-  // Plan 97 §4.4, §4.7, §5 step 97.2 (fixes F1, F5) — OPTIONAL, and checked
-  // at its own call site (never sharing the params call above, F24): a
-  // result schema always publishes with `io: 'output'`, never `'input'` —
-  // a defaulted result FIELD is already applied by the time `run()`
-  // resolves, so it belongs in `required` (F24's own reasoning, the mirror
-  // image of why a params schema needs `'input'`).
-  let resultSchema: unknown = null
-  if (def.result !== undefined) {
-    const result = def.result as z.ZodTypeAny
-    warnAboutRefinements(result)
-    resultSchema = z.toJSONSchema(result, { io: 'output' })
-    checkAndReportResultSchema(resultSchema)
-  }
-
-  const res = await fetch(`${opts.farmUrl.replace(/\/$/, '')}/api/scripts`, {
-    method: 'POST',
-    headers: authHeaders(opts.token),
-    // `def.runtime` (plan 98 §4.2, §4.5) is already folded and shape-validated by `defineScript`
-    // on THIS machine — sent as-is; the farm independently re-validates it too (§3.7's "never
-    // trust the SDK's own checks alone" reasoning, applied here the same way it already is for
-    // `paramsSchema`).
-    body: JSON.stringify({
-      name: def.id,
-      version: def.version,
-      bundle: built.bundle,
-      source: built.source,
-      paramsSchema,
-      resultSchema,
-      runtime: def.runtime ?? null,
-    }),
-  })
-  const body = (await res.json()) as { script?: { id: string }; error?: { code: string; message: string } }
-  if (res.status === 409) {
-    throw new Error(`${def.id}@${def.version} already exists on the farm — bump the version`)
-  }
-  if (!res.ok) {
-    throw new Error(body.error ? `${body.error.code}: ${body.error.message}` : `HTTP ${res.status}`)
-  }
-
-  console.log(`✓ published ${def.id}@${def.version}`)
-  console.log(`  id     : ${body.script?.id}`)
-  console.log(`  bundle : ${(built.bundle.length / 1024).toFixed(1)} KB`)
-  console.log(`  farm   : ${opts.farmUrl}`)
 }
 
 async function publishPlugin(built: BuiltEntry, opts: PublishOptions): Promise<void> {
   // `isPlugin()` already narrowed the shape enough to know this has `id`/`version`/`scripts` —
   // `definePlugin()` itself validated everything else (id shape, semver, unique member ids, a
   // matching member version) on the author's own machine, at import time, before this ever ran.
-  const def = built.default as { id: string; version: string; scripts: { id: string }[] }
+  const def = built.default as { id: string; version: string; scripts: { id: string; params?: unknown; result?: unknown }[] }
+
+  // Before any network call — a refusal here sends nothing at all.
+  checkMemberSchemas(def.scripts)
 
   const res = await fetch(`${opts.farmUrl.replace(/\/$/, '')}/api/plugins`, {
     method: 'POST',

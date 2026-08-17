@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { JobNodeInfoSchema, type DeviceInfo, type JobNodeInfo, type WorkflowDoc, type WorkflowFinding } from '@enkaku/protocol'
+import type { DeviceInfo, JobNodeInfo, WorkflowDoc, WorkflowFinding } from '@enkaku/protocol'
 import { BadResponseError } from './actions'
 import { coreBase } from './ws'
 
@@ -556,43 +556,6 @@ export async function fetchWorkflowVersions(name: string): Promise<WorkflowVersi
   const body = (await res.json()) as { items: WorkflowVersionOption[] }
   return body.items
 }
-
-// ---- Job node timeline (plan 99 §3.5, §4.9, step 99.10) ----
-
-/**
- * `GET /api/jobs/:id/nodes`'s REAL response envelope — `{ items, finalized }`,
- * exactly what `packages/core/src/services/job-service.ts`'s `nodes()`
- * returns and `packages/core/src/api/jobs.ts`'s route hands back unchanged
- * (`typedJson`, `packages/core/src/api/typed-json.ts`, is a compile-time
- * constraint only — it never calls `.parse()`, so the route's real runtime
- * output is whatever `service.nodes()` built).
- *
- * Declared HERE rather than imported as `JobNodesResponseSchema` from
- * `@enkaku/protocol`, on purpose: as of this step, that name is SHADOWED at
- * the package boundary. `packages/protocol/src/index.ts` has an explicit
- * `export { JobNodesResponseSchema, ... } from './messages/job'` which wins
- * over its own earlier `export * from './api'` — and `./messages/job`'s
- * version is a SECOND, differently-shaped schema (`{ jobId, nodes, finalized }`)
- * left by a concurrent session working the same step 99.8, per this plan's
- * own `> Status:` block. That paragraph frames the collision as a
- * `bash scripts/typecheck.sh` failure at `packages/core/src/api/jobs.ts(204,49)`
- * (confirmed still present as of this step) — it is worse than a type error
- * for a Studio caller: `api()` (`lib/actions.ts`) runs `schema.safeParse(body)`
- * on every response, so importing the shadowed `JobNodesResponseSchema` here
- * would make EVERY real `GET /api/jobs/:id/nodes` response fail
- * `BadResponseError` at runtime (the real body has no `jobId`/`nodes` keys),
- * silently emptying the node timeline this whole step exists to render.
- * Confirmed by hand: `import * as P from '@enkaku/protocol'` resolves
- * `P.JobNodesResponseSchema` to a schema whose `.shape` keys are
- * `['jobId', 'nodes', 'finalized']`, not `['items', 'finalized']`.
- *
- * `JobNodeInfoSchema` (the ROW shape, imported above) has no such collision —
- * only the ENVELOPE name does — so only the envelope is redeclared here,
- * against the same `JobNodeInfoSchema` the real route's own row type is
- * built from (`packages/protocol/src/api/jobs.ts`).
- */
-export const JobNodesEnvelopeSchema = z.object({ items: z.array(JobNodeInfoSchema), finalized: z.boolean() })
-export type JobNodesEnvelope = z.infer<typeof JobNodesEnvelopeSchema>
 
 // ---- Workflow duration estimate (plan 99 §3.11, §4.11, step 99.10) ----
 

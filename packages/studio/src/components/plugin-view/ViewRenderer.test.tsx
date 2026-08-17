@@ -1,0 +1,305 @@
+import { afterEach, describe, expect, test } from 'bun:test'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { ActionSpecSchema, ViewSpecSchema, type ActionSpec, type ViewSpec } from '@enkaku/protocol'
+import { cleanup, renderWithApi } from '@/lib/test/render'
+import { ViewRenderer } from './ViewRenderer'
+
+process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
+
+afterEach(cleanup)
+
+/**
+ * Plan 108 §4.3, §5 step 108.7, criterion 8 — the tier-A renderer against the
+ * plan's OWN worked example (the TikTok Accounts view), so the vocabulary is
+ * exercised the way a real plugin writes it rather than through a fixture
+ * shaped to whatever the renderer happens to do.
+ *
+ * Fixtures go through `ViewSpecSchema.parse` on purpose: a `ViewSpec` reaches
+ * this component with every default already applied (`width`, `rows`,
+ * `includeMissing`, `selectable`, ...), so a test that hand-built the object
+ * would be testing a shape the component can never actually receive.
+ */
+
+function view(spec: unknown): ViewSpec {
+  return ViewSpecSchema.parse(spec)
+}
+
+function action(spec: unknown): ActionSpec {
+  return ActionSpecSchema.parse(spec)
+}
+
+const ACCOUNTS_VIEW = view({
+  title: 'TikTok accounts',
+  description: 'Which accounts are signed in on each device.',
+  data: { kind: 'kv.scan', key: 'accounts', rows: 'items', itemsAt: 'accounts', includeMissing: true },
+  table: {
+    rowKey: 'username',
+    selectable: true,
+    columns: [
+      { field: '$device.label', header: 'Device' },
+      { field: 'username', header: 'Account' },
+      { field: 'position', header: 'Slot', width: 'narrow' },
+      { field: 'current', header: 'Signed in', schema: { type: 'boolean' }, width: 'narrow' },
+      { field: '$entry.updatedAt', header: 'Last synced', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+    ],
+  },
+  toolbar: ['sync'],
+  rowActions: ['switchTo'],
+  empty: { title: 'No accounts read yet', hint: 'Run “Sync accounts” to read the switch-account sheet on each device.' },
+})
+
+const ACTIONS: Record<string, ActionSpec> = {
+  sync: action({ kind: 'batch', label: 'Sync accounts', script: 'tiktok/list-accounts@latest', target: 'picker' }),
+  switchTo: action({
+    kind: 'job',
+    label: 'Switch to this account',
+    script: 'tiktok/switch-account@latest',
+    device: 'row',
+    params: { target: { $row: 'username' } },
+    confirm: 'Switch this device to the selected account?',
+  }),
+}
+
+function entry(value: unknown, updatedAt = 1_700_000_000) {
+  return { key: 'accounts', value, secret: false, hint: null, version: 3, expiresAt: null, updatedAt }
+}
+
+const SCAN_PATH = '/api/plugins/tiktok/data/scan*'
+
+const TWO_DEVICES = {
+  items: [
+    {
+      deviceId: 'dev-1',
+      stableId: 'SER1',
+      label: 'Pixel 7',
+      status: 'online',
+      clusterId: null,
+      number: 12,
+      entry: entry({ accounts: [{ username: 'alice', position: 1, current: true }, { username: 'bob', position: 2, current: false }] }),
+    },
+    { deviceId: 'dev-2', stableId: 'SER2', label: 'Pixel 4a', status: 'offline', clusterId: null, number: null, entry: null },
+  ],
+  nextCursor: null,
+}
+
+describe('ViewRenderer — the four states every fetching screen owes', () => {
+  test('loaded: Studio’s own table, one row per element of itemsAt', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+    expect(screen.getByText('bob')).toBeTruthy()
+    // Header cells come from the declared columns, in declaration order.
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['', 'Device', 'Account', 'Slot', 'Signed in', 'Last synced', 'Actions'])
+  })
+
+  test('loading: a busy skeleton before the rows arrive', () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, {}, { unmatched: 'pending' })
+    expect(document.querySelector('[aria-busy="true"]')).toBeTruthy()
+  })
+
+  test('empty: the VIEW’s own copy, not a generic sentence', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: { items: [], nextCursor: null } } })
+    await waitFor(() => expect(screen.getByText('No accounts read yet')).toBeTruthy())
+    expect(screen.getByText(/Run “Sync accounts”/)).toBeTruthy()
+  })
+
+  test('error: the failure is named, with a retry', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, {
+      [SCAN_PATH]: { status: 500, body: { error: { code: 'E_INTERNAL', message: 'scan boom' } } },
+    })
+    await waitFor(() => expect(screen.getByText('scan boom')).toBeTruthy())
+    expect(screen.getByText('Try again')).toBeTruthy()
+  })
+})
+
+describe('ViewRenderer — rows: "items" flattening', () => {
+  test('a device with two elements becomes two rows; a device with none still shows, because includeMissing is on', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+    // 1 header row + 2 rows for Pixel 7 + 1 "never synced" row for Pixel 4a.
+    expect(screen.getAllByRole('row')).toHaveLength(4)
+    expect(screen.getByText('Pixel 4a')).toBeTruthy()
+  })
+
+  test('includeMissing: false drops the device that has never stored the key', async () => {
+    const noMissing = view({ ...ACCOUNTS_VIEW, data: { kind: 'kv.scan', key: 'accounts', rows: 'items', itemsAt: 'accounts', includeMissing: false } })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={noMissing} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+    expect(screen.queryByText('Pixel 4a')).toBeNull()
+  })
+
+  test('rows: "entry" is one row per device, whatever the entry holds', async () => {
+    const perEntry = view({
+      title: 'Sync state',
+      data: { kind: 'kv.scan', key: 'accounts' },
+      table: { rowKey: '$device.stableId', columns: [{ field: '$device.label', header: 'Device' }, { field: 'readAt', header: 'Read at' }] },
+    })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={perEntry} actions={{}} />, {
+      [SCAN_PATH]: {
+        body: {
+          items: [
+            { deviceId: 'dev-1', stableId: 'SER1', label: 'Pixel 7', status: 'online', clusterId: null, number: 12, entry: entry({ readAt: 'yesterday' }) },
+            { deviceId: 'dev-2', stableId: 'SER2', label: 'Pixel 4a', status: 'offline', clusterId: null, number: null, entry: null },
+          ],
+          nextCursor: null,
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('yesterday')).toBeTruthy())
+    expect(screen.getAllByRole('row')).toHaveLength(3)
+  })
+})
+
+describe('ViewRenderer — $device and $entry columns read the row’s CONTEXT, not its value', () => {
+  test('$device.label shows the device even though the stored value never mentions it', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getAllByText('Pixel 7')).toHaveLength(2))
+  })
+
+  test('$entry.updatedAt renders through the timestamp kind, and a device with no entry reads as an em dash', async () => {
+    const fresh = Math.floor(Date.now() / 1000) - 120
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, {
+      [SCAN_PATH]: {
+        body: {
+          items: [
+            { ...TWO_DEVICES.items[0], entry: entry({ accounts: [{ username: 'alice', position: 1, current: true }] }, fresh) },
+            TWO_DEVICES.items[1],
+          ],
+          nextCursor: null,
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('2m ago')).toBeTruthy())
+    // Pixel 4a has no entry at all — every column but `$device.*` is empty.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
+  })
+
+  /**
+   * The three-column device identity an operator reads a row by (plan 108 §3.6, extended): the id
+   * they can match to a phone, the number printed on it, and the name. The number is the one that
+   * is legitimately absent — a device with no reservation must render the SAME em dash every other
+   * empty cell renders, never the string `undefined`, which is what an operator would otherwise be
+   * asked to interpret.
+   */
+  test('$device.number renders the number, and an em dash — never “undefined” — for a device with none', async () => {
+    const identity = view({
+      title: 'Devices',
+      data: { kind: 'kv.scan', key: 'accounts' },
+      table: {
+        rowKey: '$device.stableId',
+        columns: [
+          { field: '$device.stableId', header: 'Device ID' },
+          { field: '$device.number', header: 'Device #', width: 'narrow' },
+          { field: '$device.label', header: 'Device' },
+        ],
+      },
+    })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={identity} actions={{}} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+
+    await waitFor(() => expect(screen.getByText('SER1')).toBeTruthy())
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Device ID', 'Device #', 'Device'])
+    expect(screen.getByText('12')).toBeTruthy()
+    // SER2 has no allocated number: the cell is the em dash, and the word `undefined` appears nowhere.
+    expect(screen.getByText('SER2')).toBeTruthy()
+    expect(screen.getAllByText('—')).toHaveLength(1)
+    expect(document.body.textContent).not.toContain('undefined')
+  })
+
+  test('a $-prefixed field naming neither context is empty, never a silent read of the value', async () => {
+    const typo = view({
+      title: 'Typo',
+      data: { kind: 'kv.scan', key: 'accounts' },
+      table: { rowKey: '$device.stableId', columns: [{ field: '$devcie.label', header: 'Device' }] },
+    })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={typo} actions={{}} />, {
+      [SCAN_PATH]: { body: { items: [{ deviceId: 'dev-1', stableId: 'SER1', label: 'Pixel 7', status: 'online', clusterId: null, number: 12, entry: null }], nextCursor: null } },
+    })
+    await waitFor(() => expect(screen.getByText('—')).toBeTruthy())
+    expect(screen.queryByText('Pixel 7')).toBeNull()
+  })
+})
+
+describe('ViewRenderer — selection', () => {
+  test('selectable draws a checkbox per row plus a select-all, and reports rows AND devices', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+
+    const boxes = document.querySelectorAll('input[type="checkbox"]')
+    // 1 select-all + 3 rows.
+    expect(boxes).toHaveLength(4)
+
+    fireEvent.click(screen.getByLabelText('Select alice'))
+    await waitFor(() => expect(screen.getByText(/1 row selected/)).toBeTruthy())
+    expect(screen.getByText(/1 device/)).toBeTruthy()
+
+    // Two rows on ONE device is still one device — the count an action runs on.
+    fireEvent.click(screen.getByLabelText('Select bob'))
+    await waitFor(() => expect(screen.getByText(/2 rows selected/)).toBeTruthy())
+    expect(screen.getByText(/· 1 device$/)).toBeTruthy()
+  })
+
+  test('select-all covers every row, and clicking it again clears', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+
+    fireEvent.click(screen.getByLabelText('Select every row'))
+    await waitFor(() => expect(screen.getByText(/3 rows selected/)).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Select every row'))
+    await waitFor(() => expect(screen.queryByText(/rows selected/)).toBeNull())
+  })
+
+  test('a non-selectable table draws no checkbox at all', async () => {
+    const plain = view({ ...ACCOUNTS_VIEW, table: { ...ACCOUNTS_VIEW.table, selectable: false }, toolbar: [], rowActions: [] })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={plain} actions={{}} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+  })
+})
+
+describe('ViewRenderer — the toolbar and the row actions', () => {
+  test('a toolbar button carries the action’s own label', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('Sync accounts')).toBeTruthy())
+  })
+
+  test('a row action is drawn once per row', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getAllByText('Switch to this account')).toHaveLength(3))
+  })
+
+  test('a selection-targeted batch is genuinely disabled with nothing selected, and says why', async () => {
+    const selectionView = view({ ...ACCOUNTS_VIEW, toolbar: ['bulk'], rowActions: [] })
+    const bulk = action({ kind: 'batch', label: 'Refresh selected', script: 'tiktok/list-accounts@latest', target: 'selection' })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={selectionView} actions={{ bulk }} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+
+    const button = screen.getByText('Refresh selected').closest('button') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('title')).toContain('Select at least one row first')
+
+    fireEvent.click(screen.getByLabelText('Select alice'))
+    await waitFor(() => expect((screen.getByText('Refresh selected').closest('button') as HTMLButtonElement).disabled).toBe(false))
+  })
+})
+
+describe('ViewRenderer — kv.list', () => {
+  test('a global list is one row per entry, with $entry.key available as a column', async () => {
+    const catalogue = view({
+      title: 'Catalogue',
+      data: { kind: 'kv.list', scope: 'global', prefix: 'sound:' },
+      table: { rowKey: '$entry.key', columns: [{ field: '$entry.key', header: 'Key' }, { field: 'title', header: 'Title' }] },
+    })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={catalogue} actions={{}} />, {
+      '/api/plugins/tiktok/data*': { body: { items: [{ ...entry({ title: 'Anthem' }), key: 'sound:1' }], nextCursor: null } },
+    })
+    await waitFor(() => expect(screen.getByText('sound:1')).toBeTruthy())
+    expect(screen.getByText('Anthem')).toBeTruthy()
+  })
+})
+
+describe('ViewRenderer — a view it cannot draw says so, rather than showing an empty table', () => {
+  test('a tier-B frame view is named as an embedded interface', async () => {
+    const frame = view({ title: 'Custom', frame: { entry: 'index.html' } })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={frame} actions={{}} />, {})
+    await waitFor(() => expect(screen.getByText('This screen is not a table')).toBeTruthy())
+  })
+})

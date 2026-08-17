@@ -162,8 +162,8 @@ describe('RunScriptDialog — groups by plugin and marks dev entries (plan 82 §
     expect(screen.getByText('tiktok/warmup')).toBeTruthy()
     expect(screen.getByText('tiktok/login-dev')).toBeTruthy()
     expect(screen.getByText('DEV')).toBeTruthy()
-    // The standalone script is not swallowed into the plugin group (it appears once as the
-    // trigger's current value, and once as its own list item).
+    // A name carrying no plugin is not swallowed into the plugin group (it appears once as
+    // the trigger's current value, and once as its own list item).
     expect(screen.getAllByText('checkout').length).toBeGreaterThanOrEqual(1)
   })
 })

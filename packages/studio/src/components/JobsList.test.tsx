@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@/lib/test/nav'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { cleanup, renderWithApi } from '@/lib/test/render'
@@ -141,5 +141,41 @@ describe('JobsList — the pacing column (plan 94 §3.7, §4.9, §4.10, F25, ste
       {},
     )
     await waitFor(() => expect(screen.getByText(/waiting — next repetition in 4s/)).toBeTruthy())
+  })
+})
+
+/**
+ * Plan 103 §9 Q2 (answered 2026-08-16, closing step 103.11's audit row 4) —
+ * `onOpenDetail` is what makes a row a real control again once
+ * `linkToDetail` is `false`: the device popup's own Jobs tab needs the
+ * script-name cell to open `JobDetailPanel` IN PLACE rather than the
+ * `next/link` that would unmount the Wall this popup floats over.
+ */
+describe('JobsList — linkToDetail={false} with onOpenDetail (plan 103 §9 Q2)', () => {
+  test('the script name is a button that calls onOpenDetail with the job id, not a link', async () => {
+    let opened: string | null = null
+    renderWithApi(
+      <Wrapped
+        empty={{ title: 'none', description: '' }}
+        linkToDetail={false}
+        onOpenDetail={(id) => (opened = id)}
+        fetchPage={async () => ({ items: [job], nextCursor: null, total: 1 })}
+      />,
+      {},
+    )
+    const button = await screen.findByRole('button', { name: 'my-pipeline@1.0.0' })
+    expect(screen.queryByRole('link', { name: 'my-pipeline@1.0.0' })).toBeNull()
+    fireEvent.click(button)
+    expect(opened).toBe('job-1')
+  })
+
+  test('linkToDetail={false} with no onOpenDetail stays inert, as before this plan (unchanged default)', async () => {
+    renderWithApi(
+      <Wrapped empty={{ title: 'none', description: '' }} linkToDetail={false} fetchPage={async () => ({ items: [job], nextCursor: null, total: 1 })} />,
+      {},
+    )
+    await waitFor(() => expect(screen.getByText('my-pipeline@1.0.0')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'my-pipeline@1.0.0' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'my-pipeline@1.0.0' })).toBeNull()
   })
 })

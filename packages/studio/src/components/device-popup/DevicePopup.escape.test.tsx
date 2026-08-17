@@ -1,18 +1,21 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { fireEvent, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 /**
- * `FocusOverlay`'s `Esc`-vs-`BACK` precedence (plan 91 §3.11) — the "real
- * collision" the plan calls out by name: `LiveView.tsx`'s own `onKeyDown`
- * already binds `Esc` to `BACK` (`packages/studio/src/components/LiveView.tsx`),
- * and the overlay must claim the SAME key to close itself without stealing
- * it. This file deliberately does NOT mock `LiveView` (unlike
- * `FocusOverlay.test.tsx`) — the precedence rule lives in the interaction
- * between `LiveView`'s real `onKeyDown`/`preventDefault` and this
- * component's own `window` listener, so proving it needs the real thing.
+ * `DevicePopup`'s `Esc` precedence (plan 91 §3.11; plan 103 §3.5's three-row
+ * table — replaces `wall/FocusOverlay.escape.test.tsx`, moved rather than
+ * duplicated per §4.3): (1) an open action popup takes `Esc` and closes
+ * itself, (2) otherwise the live canvas sends `BACK` when it has focus,
+ * (3) otherwise `Esc` closes the device popup. This file deliberately does
+ * NOT mock `LiveView` (unlike `DevicePopup.test.tsx`) for rules 2 and 3 —
+ * the precedence there lives in the interaction between `LiveView`'s real
+ * `onKeyDown`/`preventDefault` and this component's own `window` listener,
+ * so proving it needs the real thing. Rule 1 uses the real `AssistDialog`
+ * for the same reason — Radix's own `DismissableLayer` is what actually
+ * implements it, not a line of code in `DevicePopup.tsx`.
  */
 let wsRequestImpl: (msg: { type: string; id?: string; payload?: unknown }) => Promise<unknown> = () =>
   Promise.reject(new Error('ws not available in test'))
@@ -48,7 +51,7 @@ mock.module('@/lib/ws', () => ({
   newId: () => 'test-id',
 }))
 
-const { FocusOverlay } = await import('./FocusOverlay')
+const { DevicePopup } = await import('./DevicePopup')
 
 afterEach(() => {
   cleanup()
@@ -110,18 +113,56 @@ function routeRequests() {
   }
 }
 
-describe('FocusOverlay — Esc vs BACK precedence (plan 91 §3.11)', () => {
-  test('the canvas focused with input enabled: Esc sends BACK and does NOT close the overlay', async () => {
+describe('DevicePopup — Esc precedence (plan 103 §3.5)', () => {
+  test('rule 1: an open action popup (Assist) takes Esc and closes ITSELF — the device popup stays open', async () => {
+    wsRequestImpl = (msg) => {
+      if (msg.type === 'stream.start') {
+        return Promise.resolve({
+          type: 'stream.started',
+          id: msg.id,
+          payload: { deviceId: 'dev-1', streamId: 1, codec: 'png', width: 1080, height: 2400 },
+        })
+      }
+      return Promise.reject(new Error(`unexpected request: ${msg.type}`))
+    }
+    const busyDevice = {
+      ...idleDevice,
+      status: 'busy',
+      heldBy: { kind: 'job', id: 'job-1', label: 'checkout@1.4.2', runId: null, takeable: false, acquiredAt: 0, expiresAt: null },
+    }
+    let closed = false
+    const { getByText, getByRole } = renderWithApi(
+      <TooltipProvider>
+        <DevicePopup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => (closed = true)} />
+      </TooltipProvider>,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: busyDevice } } },
+    )
+    await waitFor(() => expect(getByText(/checkout@1\.4\.2/)).toBeTruthy())
+    fireEvent.click(getByRole('button', { name: 'Assist' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+
+    // Radix's `DismissableLayer` (capture phase, on `document`) dismisses
+    // the TOPMOST open layer and calls `preventDefault()` before this
+    // popup's own bubble-phase `window` listener ever sees the event — so
+    // the dialog closes and the popup does not, with no code in
+    // `DevicePopup.tsx` deciding between the two.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(closed).toBe(false)
+  })
+
+  test('rule 2: the canvas focused with input enabled — Esc sends BACK and does NOT close the popup', async () => {
     routeRequests()
     let closed = false
     const { getByLabelText } = renderWithApi(
       <TooltipProvider>
-        <FocusOverlay deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => (closed = true)} />
+        <DevicePopup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => (closed = true)} />
       </TooltipProvider>,
       baseResponses,
     )
-    // The idle device is auto-claimed (no "Take control" rail item exists —
-    // see `FocusOverlay.tsx`'s own header comment) — wait for that to land
+    // The idle device is auto-claimed (no "Take control" row exists — see
+    // `DevicePopup.tsx`'s own header comment) — wait for that to land
     // before touching the canvas, or `inputEnabled` would still be false.
     const canvas = await waitFor(() => getByLabelText('Device screen'))
     fireEvent.pointerDown(canvas, { clientX: 10, clientY: 10 })
@@ -138,7 +179,7 @@ describe('FocusOverlay — Esc vs BACK precedence (plan 91 §3.11)', () => {
     expect(closed).toBe(false)
   })
 
-  test('input NOT enabled (a busy device, not yet assisted): Esc closes the overlay and sends no BACK', async () => {
+  test('rule 3: input NOT enabled (a busy device, not yet assisted) — Esc closes the popup and sends no BACK', async () => {
     wsRequestImpl = (msg) => {
       if (msg.type === 'stream.start') {
         return Promise.resolve({
@@ -157,7 +198,7 @@ describe('FocusOverlay — Esc vs BACK precedence (plan 91 §3.11)', () => {
     let closed = false
     const { getByText, getByLabelText } = renderWithApi(
       <TooltipProvider>
-        <FocusOverlay deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => (closed = true)} />
+        <DevicePopup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => (closed = true)} />
       </TooltipProvider>,
       { ...baseResponses, '/api/devices/dev-1': { body: { device: busyDevice } } },
     )
@@ -167,7 +208,7 @@ describe('FocusOverlay — Esc vs BACK precedence (plan 91 §3.11)', () => {
     fireEvent.keyDown(canvas, { key: 'Escape' })
     // `LiveView`'s own `onKeyDown` returns immediately when `inputEnabled`
     // is false — it never calls `preventDefault()`, so the bubbled `window`
-    // event this overlay listens for is NOT already consumed.
+    // event this popup listens for is NOT already consumed.
     fireEvent.keyDown(window, { key: 'Escape' })
 
     await waitFor(() => expect(closed).toBe(true))

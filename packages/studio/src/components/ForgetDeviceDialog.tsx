@@ -35,12 +35,15 @@ export function ForgetDeviceDialog({
   open,
   onOpenChange,
   onDone,
+  nonModal = false,
 }: {
   device: DeviceInfo | null
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Called after a successful Forget OR Block — either way the device just left the fleet. */
   onDone: () => void
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  nonModal?: boolean
 }) {
   const [deleteHistory, setDeleteHistory] = useState(false)
   const [counts, setCounts] = useState<HistoryCounts | null>(null)
@@ -112,8 +115,8 @@ export function ForgetDeviceDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
+      <DialogContent overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>Forget {device.label}?</DialogTitle>
           <DialogDescription>

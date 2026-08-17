@@ -14,10 +14,14 @@ import { relativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   deleteWorkspaceFile,
+  defaultPublishName,
   listWorkspace,
   publishScriptFromWorkspace,
   readWorkspaceFile,
   writeWorkspaceFile,
+  PLUGIN_NAME_SHAPE,
+  SCRIPT_MEMBER_NAME_SHAPE,
+  SCRIPT_VERSION_SHAPE,
   type WorkspaceFileMeta,
   type WorkspaceListEntry,
 } from '@/lib/workspace'
@@ -84,7 +88,11 @@ function WorkspaceView() {
   const [creating, setCreating] = useState(false)
 
   const [publishOpen, setPublishOpen] = useState(false)
-  const [publishName, setPublishName] = useState('')
+  // Two halves, not one field (plan 110 §3.2) — a script is published as
+  // `<plugin>/<script>`, and the operator has to be able to see which half a
+  // hint is about.
+  const [publishPlugin, setPublishPlugin] = useState('')
+  const [publishMember, setPublishMember] = useState('')
   const [publishVersion, setPublishVersion] = useState('1.0.0')
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
@@ -198,20 +206,49 @@ function WorkspaceView() {
 
   const openPublish = () => {
     if (!selectedPath) return
-    const base = fileName(selectedPath).replace(/\.[^.]+$/, '')
-    setPublishName(base)
+    const suggested = defaultPublishName(selectedPath)
+    setPublishPlugin(suggested.plugin)
+    setPublishMember(suggested.script)
     setPublishVersion('1.0.0')
     setPublishError(null)
     setPublishOpen(true)
   }
 
+  const trimmedPlugin = publishPlugin.trim()
+  const trimmedMember = publishMember.trim()
+  const trimmedVersion = publishVersion.trim()
+
+  /**
+   * The same shapes `script.publish` enforces, checked here so a bad name is a
+   * field hint instead of a round trip that comes back as a schema refusal
+   * naming neither half (plan 110 §3.2).
+   */
+  const pluginHint = !trimmedPlugin
+    ? 'Plugin name is missing. Every script belongs to a plugin, so this half is required.'
+    : PLUGIN_NAME_SHAPE.test(trimmedPlugin)
+      ? null
+      : 'Plugin name can only use lowercase letters, digits and dashes, and must start with a letter or a digit.'
+  const memberHint = !trimmedMember
+    ? 'Script name is missing. Name the script inside the plugin — "main" if it is the only one.'
+    : SCRIPT_MEMBER_NAME_SHAPE.test(trimmedMember)
+      ? null
+      : 'Script name can only use lowercase letters, digits, dots, dashes and underscores, and must start with a letter or a digit.'
+  const versionHint = SCRIPT_VERSION_SHAPE.test(trimmedVersion) ? null : 'Version must be three numbers, like 1.0.0.'
+  const publishBlocked = pluginHint !== null || memberHint !== null || versionHint !== null
+
   const doPublish = async () => {
     if (!selectedPath) return
+    // Never sent when a hint is showing — the button is disabled too, but the
+    // rule lives here so no other caller can slip past it.
+    if (publishBlocked) return
     setPublishing(true)
     setPublishError(null)
     try {
-      const result = await publishScriptFromWorkspace(selectedPath, publishName.trim(), publishVersion.trim())
+      const result = await publishScriptFromWorkspace(selectedPath, `${trimmedPlugin}/${trimmedMember}`, trimmedVersion)
       setPublishOpen(false)
+      // `/scripts` itself is now a redirect to `/plugins`; the version's own
+      // detail page under it is untouched and is where a fresh publish has
+      // something to show.
       router.push(`/scripts/detail?id=${result.id}`)
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err))
@@ -383,18 +420,55 @@ function WorkspaceView() {
           <DialogHeader>
             <DialogTitle>Publish as script</DialogTitle>
             <DialogDescription>
-              The core bundles <span className="readout">{selectedPath}</span> itself — imports outside{' '}
-              <span className="readout">@enkaku/sdk</span>, <span className="readout">zod</span>, or another workspace path fail the build.
+              A script is published as part of a plugin, so give it both names — the plugin is created on the first publish if it does not exist yet.
+              The core bundles <span className="readout">{selectedPath}</span> itself — imports outside <span className="readout">@enkaku/sdk</span>,{' '}
+              <span className="readout">zod</span>, or another workspace path fail the build.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="publish-name">Name</Label>
-              <Input id="publish-name" value={publishName} onChange={(e) => setPublishName(e.target.value)} />
+            <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="publish-plugin">Plugin</Label>
+                <Input
+                  id="publish-plugin"
+                  value={publishPlugin}
+                  onChange={(e) => setPublishPlugin(e.target.value)}
+                  placeholder="checkout"
+                  aria-invalid={pluginHint !== null}
+                  className={cn(pluginHint && 'border-led-danger')}
+                />
+              </div>
+              <span className="pb-2 text-fg-muted">/</span>
+              <div className="space-y-1.5">
+                <Label htmlFor="publish-script">Script</Label>
+                <Input
+                  id="publish-script"
+                  value={publishMember}
+                  onChange={(e) => setPublishMember(e.target.value)}
+                  placeholder="main"
+                  aria-invalid={memberHint !== null}
+                  className={cn(memberHint && 'border-led-danger')}
+                />
+              </div>
             </div>
+            {pluginHint && <p className="text-[11.5px] text-led-danger">{pluginHint}</p>}
+            {memberHint && <p className="text-[11.5px] text-led-danger">{memberHint}</p>}
+            {!publishBlocked && (
+              <p className="text-[11.5px] text-fg-muted">
+                Publishes as <span className="readout">{`${trimmedPlugin}/${trimmedMember}`}</span>.
+              </p>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="publish-version">Version</Label>
-              <Input id="publish-version" value={publishVersion} onChange={(e) => setPublishVersion(e.target.value)} placeholder="1.0.0" />
+              <Input
+                id="publish-version"
+                value={publishVersion}
+                onChange={(e) => setPublishVersion(e.target.value)}
+                placeholder="1.0.0"
+                aria-invalid={versionHint !== null}
+                className={cn(versionHint && 'border-led-danger')}
+              />
+              {versionHint && <p className="text-[11.5px] text-led-danger">{versionHint}</p>}
             </div>
             {publishError && (
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/40 bg-led-danger/5 p-2 text-[11.5px] text-led-danger">
@@ -406,7 +480,7 @@ function WorkspaceView() {
             <Button variant="outline" onClick={() => setPublishOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={() => void doPublish()} disabled={publishing || !publishName.trim() || !publishVersion.trim()}>
+            <Button onClick={() => void doPublish()} disabled={publishing || publishBlocked}>
               {publishing ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Rocket className="size-3.5" aria-hidden />}
               Publish
             </Button>

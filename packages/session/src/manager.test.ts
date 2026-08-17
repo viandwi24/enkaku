@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient } from '@enkaku/adb'
+import type { GuestAgentClientRunner } from '@enkaku/drivers'
 import type { ScrcpySession } from '@enkaku/scrcpy'
 import { createSessionManager } from './manager'
 import type { DeviceSnapshot, DeviceSnapshotSource } from './types'
@@ -321,7 +322,7 @@ describe('SessionManager — quality profiles (plan 42 §4.5)', () => {
     await manager.closeAll()
   })
 
-  test('a wall request against a session already at control quality is shared as-is — never restarted, never downgraded', async () => {
+  test('a wall request against a device already at control quality builds its OWN entry — plan 100 §4.2, two independent slots, never shared', async () => {
     let built = 0
     const manager = createSessionManager({
       client: fakeClient(),
@@ -335,9 +336,9 @@ describe('SessionManager — quality profiles (plan 42 §4.5)', () => {
     const control = await manager.acquire(DEVICE_ID, () => {}, 'control')
     expect(control.quality).toBe('control')
     const wallViewer = await manager.acquire(DEVICE_ID, () => {}, 'wall')
-    expect(wallViewer).toBe(control)
-    expect(wallViewer.quality).toBe('control')
-    expect(built).toBe(1)
+    expect(wallViewer).not.toBe(control)
+    expect(wallViewer.quality).toBe('wall')
+    expect(built).toBe(2) // two independent, concurrent scrcpy sessions
     await manager.closeAll()
   })
 
@@ -354,7 +355,7 @@ describe('SessionManager — quality profiles (plan 42 §4.5)', () => {
     await manager.closeAll()
   })
 
-  test('opening Control on a device streaming at wall quality upgrades it: the session restarts at control quality', async () => {
+  test('opening Control on a device streaming at wall quality does NOT restart the wall entry — plan 100 §3.2, a second independent entry instead', async () => {
     let built = 0
     const manager = createSessionManager({
       client: fakeClient(),
@@ -374,10 +375,301 @@ describe('SessionManager — quality profiles (plan 42 §4.5)', () => {
     const control = await manager.acquire(DEVICE_ID, onFrameControl, 'control')
     expect(control.quality).toBe('control')
     expect(control).not.toBe(wall)
-    expect(built).toBe(2) // restarted, not reused
+    expect(built).toBe(2) // a SECOND, independent session — the wall entry was never rebuilt
 
-    // The wall viewer's subscription survives the restart rather than being dropped.
+    // Both slots stay open and independently addressable — `get` resolves
+    // the highest-quality one (control); `getByQuality` reaches either.
     expect(manager.get(DEVICE_ID)).toBe(control)
+    expect(manager.getByQuality!(DEVICE_ID, 'wall')).toBe(wall)
+    expect(manager.getByQuality!(DEVICE_ID, 'control')).toBe(control)
+    await manager.closeAll()
+  })
+})
+
+/**
+ * Plan 100 §3.2, §4.2, §5 step 100.4 — the second entry slot itself. G8's
+ * restart is gone; a `control` acquire against an open `wall` entry now
+ * builds a second, independent session and skips the wake/rotate/text-input/
+ * farm-tag sequence entirely, because the open wall entry is live proof it
+ * already ran. `PREP_DEVICE_ID`'s snapshot is deliberately NOT the shared
+ * `devices`/`snapshot` fixture above: `keepAwake: 'off'` and no rotation/
+ * text-input/guest-agent wiring there mean those four calls are already
+ * no-ops for every OTHER test in this file regardless of `skipDevicePrep` —
+ * which would make a "zero calls" assertion vacuous. This fixture is built
+ * so the ordinary (non-fast) path provably WOULD issue every one of those
+ * commands, so the fast path's zero-calls property is actually exercised.
+ */
+describe('SessionManager — the fast-path control entry (plan 100 §3.2, §4.2, §5 step 100.4)', () => {
+  const PREP_DEVICE_ID = 'dev-prep'
+  const prepSnapshot: DeviceSnapshot = {
+    ...snapshot,
+    id: PREP_DEVICE_ID,
+    stableId: 'STABLE-PREP',
+    serial: 'SERIAL-PREP',
+    keepAwake: 'while-charging', // wakeDevice sends KEYCODE_WAKEUP + svc power stayon when NOT skipped
+    rotation: 'lock-portrait', // applyRotation reads+writes accelerometer_rotation/user_rotation when NOT skipped
+    textInput: 'auto', // applyTextInput enables+sets the Enkaku IME when a capable agent is wired and NOT skipped
+  }
+  const prepDevices: DeviceSnapshotSource = { get: (id) => (id === PREP_DEVICE_ID ? prepSnapshot : null) }
+
+  /** Every shell command succeeds instantly AND is recorded, so a test can
+   * assert exactly which commands were (or were not) sent. */
+  function trackingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return ''
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  /** A guest-agent runner whose `hello()` advertises `text-input` — the one
+   * capability `applyTextInput`'s `'auto'` mode actually acts on. Mirrors
+   * `text-input.test.ts`'s own `fakeRunner` helper. */
+  function fakeTextInputAgent(): GuestAgentClientRunner {
+    return (async (fn: (client: unknown) => unknown) => fn({ hello: async () => ({ capabilities: ['text-input'] }) })) as unknown as GuestAgentClientRunner
+  }
+
+  test('the fast path issues ZERO wake/rotate/text-input/farm-tag commands — the wall entry is live proof they already ran', async () => {
+    const { client, calls } = trackingClient()
+    let scrcpyBuilds = 0
+    const manager = createSessionManager({
+      client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async () => {
+        scrcpyBuilds++
+        return fakeScrcpy()
+      },
+    })
+
+    // Baseline: the ORDINARY path (wall, first entry for this device) DOES
+    // issue every one of these commands with this fixture — proving the
+    // fixture is not vacuously silent regardless of skipDevicePrep.
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    expect(calls.some((c) => c.includes('KEYCODE_WAKEUP'))).toBe(true)
+    expect(calls.some((c) => c.includes('stayon'))).toBe(true)
+    expect(calls.some((c) => c.includes('accelerometer_rotation') || c.includes('user_rotation'))).toBe(true)
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(true)
+    expect(calls.some((c) => c.includes('debug.enkaku.instrumented'))).toBe(true)
+
+    calls.length = 0 // isolate the SECOND (control, fast-path) build's own commands
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+
+    expect(scrcpyBuilds).toBe(2) // two independent, concurrent scrcpy sessions (G12)
+    expect(calls.some((c) => c.includes('KEYCODE_WAKEUP'))).toBe(false)
+    expect(calls.some((c) => c.includes('stayon'))).toBe(false)
+    expect(calls.some((c) => c.includes('accelerometer_rotation') || c.includes('user_rotation'))).toBe(false)
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+    expect(calls.some((c) => c.includes('debug.enkaku.instrumented'))).toBe(false)
+    // No command at all was sent for the fast build — not merely none of
+    // the five above, nothing whatsoever (it went straight to makeScrcpy).
+    expect(calls).toEqual([])
+
+    await manager.closeAll()
+  })
+
+  test('a device with no open wall entry still gets the full, unchanged control acquire — no regression for an operator who never uses the Wall', async () => {
+    const { client, calls } = trackingClient()
+    const manager = createSessionManager({
+      client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+    expect(calls.some((c) => c.includes('KEYCODE_WAKEUP'))).toBe(true)
+    expect(calls.some((c) => c.includes('stayon'))).toBe(true)
+    expect(calls.some((c) => c.includes('debug.enkaku.instrumented'))).toBe(true)
+    await manager.closeAll()
+  })
+
+  test('the wall entry is never touched: its makeScrcpy build count and its session identity stay unchanged when control is acquired afterward', async () => {
+    let scrcpyBuilds = 0
+    const phases: Array<{ deviceId: string; phase: string }> = []
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      onPhase: (deviceId, phase) => phases.push({ deviceId, phase }),
+      makeScrcpy: async () => {
+        scrcpyBuilds++
+        return fakeScrcpy()
+      },
+    })
+
+    const wall = await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    expect(scrcpyBuilds).toBe(1)
+    phases.length = 0 // isolate the control build's own phase events
+
+    const control = await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+    expect(control).not.toBe(wall)
+    expect(scrcpyBuilds).toBe(2) // the wall entry's own build count did NOT increment
+    // No phase events at all landed for the wall session's own entry — a
+    // restart would have re-emitted 'connecting'/'waking'/... for it.
+    expect(phases.filter((p) => p.deviceId === PREP_DEVICE_ID).length).toBeGreaterThan(0) // the control build itself DID report phases
+    expect(phases.some((p) => p.phase === 'waking')).toBe(false) // fast path: no wake-phase breadcrumb (§5 step 100.5)
+    // The wall entry is still reachable, unchanged, at its own slot.
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).toBe(wall)
+
+    await manager.closeAll()
+  })
+
+  test('releasing the control entry does not affect the wall entry refcount, or vice versa', async () => {
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      idleTtlSec: () => 0, // close immediately on refcount 0, so a wrong-slot release is observable right away
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    const onWall = () => {}
+    const onControl = () => {}
+    await manager.acquire(PREP_DEVICE_ID, onWall, 'wall')
+    await manager.acquire(PREP_DEVICE_ID, onControl, 'control')
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).not.toBeNull()
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'control')).not.toBeNull()
+
+    manager.release(PREP_DEVICE_ID, onControl)
+    // Control closed (idleTtlSec 0); the wall entry is completely unaffected.
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'control')).toBeNull()
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).not.toBeNull()
+
+    manager.release(PREP_DEVICE_ID, onWall)
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).toBeNull()
+
+    await manager.closeAll()
+  })
+
+  test('a fast-path build that cannot produce a real scrcpy session throws E_CONTROL_SESSION_UNAVAILABLE, never falls back to screencap-loop under the Control label, and leaves the wall entry untouched', async () => {
+    let scrcpyBuilds = 0
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async (_deviceId, _transport, profile) => {
+        scrcpyBuilds++
+        // The wall build (profile.maxFps === 5, this fixture's own wall
+        // default) succeeds; the control (fast-path) build fails — the
+        // shape H2 names: a platform rejection, not a hang.
+        if (scrcpyBuilds > 1) throw new Error('encoder busy: only one concurrent MediaCodec session on this chipset')
+        return fakeScrcpy()
+      },
+    })
+
+    const wall = await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    await expect(manager.acquire(PREP_DEVICE_ID, () => {}, 'control')).rejects.toMatchObject({
+      code: 'E_CONTROL_SESSION_UNAVAILABLE',
+    })
+
+    // No control entry was left behind — a bare `get`/`getByQuality` proves it.
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'control')).toBeNull()
+    // The wall entry is completely untouched — same object, still open.
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).toBe(wall)
+    expect(manager.get(PREP_DEVICE_ID)).toBe(wall) // highest-quality-wins falls back to wall since control never opened
+
+    await manager.closeAll()
+  })
+
+  test('a device deliberately configured for screencap-loop is never reported as "control unavailable" — the fast path just builds its own screencap-loop entry', async () => {
+    const screencapOnlySnapshot: DeviceSnapshot = { ...prepSnapshot, id: 'dev-screencap-only', display: 'screencap-loop' }
+    const source: DeviceSnapshotSource = { get: (id) => (id === 'dev-screencap-only' ? screencapOnlySnapshot : null) }
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: source,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      // makeScrcpy is never even called for this device (opts.display === 'screencap-loop').
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    await manager.acquire('dev-screencap-only', () => {}, 'wall')
+    const control = await manager.acquire('dev-screencap-only', () => {}, 'control')
+    expect(control.displayEngineId).toBe('screencap-loop')
+    await manager.closeAll()
+  })
+
+  test('closeDevice closes BOTH open entries for a device, not just one', async () => {
+    const closedReasons: string[] = []
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      onEvent: (_deviceId, kind, meta) => {
+        if (kind === 'session.closed') closedReasons.push(String(meta.reason))
+      },
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+    await manager.closeDevice(PREP_DEVICE_ID)
+
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).toBeNull()
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'control')).toBeNull()
+    expect(closedReasons.filter((r) => r === 'device_gone').length).toBe(2)
+  })
+
+  test('closeIfIdle closes every IDLE slot a device holds, but leaves an actively-viewed slot alone', async () => {
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      idleTtlSec: () => 60, // long enough that release() alone would not close it
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    const onWall = () => {}
+    const onControl = () => {}
+    await manager.acquire(PREP_DEVICE_ID, onWall, 'wall')
+    manager.release(PREP_DEVICE_ID, onWall) // refcount 0, idleSince set — idle, but not yet TTL-closed (idleTtlSec: 60)
+    await manager.acquire(PREP_DEVICE_ID, onControl, 'control') // stays subscribed — active
+
+    await manager.closeIfIdle(PREP_DEVICE_ID)
+
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'wall')).toBeNull() // idle — closed
+    expect(manager.getByQuality!(PREP_DEVICE_ID, 'control')).not.toBeNull() // actively viewed — untouched
+
+    manager.release(PREP_DEVICE_ID, onControl)
+    await manager.closeAll()
+  })
+
+  test('videoStats reports both slots for a device, each with its own quality and profile', async () => {
+    const manager = createSessionManager({
+      client: trackingClient().client,
+      devices: prepDevices,
+      log: silentLog(),
+      withGuestAgentClient: () => fakeTextInputAgent(),
+      makeScrcpy: async () => fakeScrcpy(),
+      resolveProfile: (_deviceId, quality) =>
+        quality === 'control'
+          ? { quality, maxSize: 1600, maxFps: 30, bitRate: 4_000_000, source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' } }
+          : { quality, maxSize: 480, maxFps: 5, bitRate: 800_000, source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' } },
+    })
+
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+
+    const stats = manager.videoStats!()
+    expect(stats.streams).toEqual({ control: 1, wall: 1 })
+    expect(stats.profiles).toEqual(
+      expect.arrayContaining([
+        { deviceId: PREP_DEVICE_ID, quality: 'control', maxSize: 1600, maxFps: 30, bitRate: 4_000_000 },
+        { deviceId: PREP_DEVICE_ID, quality: 'wall', maxSize: 480, maxFps: 5, bitRate: 800_000 },
+      ]),
+    )
     await manager.closeAll()
   })
 })

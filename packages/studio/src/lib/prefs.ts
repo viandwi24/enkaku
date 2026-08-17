@@ -57,13 +57,56 @@ export function writeSessionPrefs(patch: Partial<SessionPrefs>): void {
 
 // A genuine cross-session preference — survives a new tab on purpose.
 const LocalPrefsSchema = z.object({
-  tileSize: z.enum(['s', 'm', 'l']).default('m'),
+  /**
+   * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the default
+   * bumped from `'m'` to `'l'` — a side-by-side against `refs/ui` found our
+   * Wall reading noticeably smaller than the reference's own large,
+   * few-columns tiles. The reference is a data-bound mockup with no
+   * literal grid CSS to read an exact pixel target off (`gridTemplateColumns`
+   * is computed by script, not present in the markup), so rather than
+   * inventing a new number, this widens the STARTING size using a mapping
+   * plan 92 §3.11 already specified and already ships (`TILE_SIZE_PX`,
+   * unchanged by this step) — Large was already the biggest of three
+   * legitimate, tested sizes; it simply was not the one an operator saw
+   * first. `s`/`m` stay reachable exactly as before.
+   */
+  tileSize: z.enum(['s', 'm', 'l']).default('l'),
+  /**
+   * Plan 101 (M66) §3.4, step 101.2 — the sidebar's collapsed/expanded
+   * state (222px / 72px). Unlike `view` above, there is no "must always be
+   * this on a fresh tab" rule here — collapse is a property of the SCREEN
+   * an operator is sitting in front of, the same reasoning `tileSize`
+   * already uses, so it belongs beside it in `localStorage` rather than in
+   * the per-tab `sessionStorage` store.
+   */
+  sidebarCollapsed: z.boolean().default(false),
+  /**
+   * Plan 102 (M67) §5 step 102.6 — the workflow editor's List <-> Canvas
+   * toggle. The list stays the default and the editor of record (§3.5); a
+   * property of the screen someone is sitting in front of, not a "must
+   * always start this way" rule, so it belongs beside `sidebarCollapsed`
+   * above rather than in the per-tab session store.
+   */
+  workflowEditorView: z.enum(['list', 'canvas']).default('list'),
+  /**
+   * Plan 101 (M66) §5 step 101.7 — the devices grid's page size (List and
+   * Wall alike, ungrouped only — see `app/page.tsx`'s own note on why
+   * grouping and pagination do not combine). A property of the screen an
+   * operator is sitting in front of, exactly `tileSize`'s own reasoning, so
+   * it belongs beside it in `localStorage` rather than resetting to the
+   * default every time a fresh tab lands here.
+   */
+  pageSize: z.union([z.literal(12), z.literal(24), z.literal(48), z.literal(96)]).default(24),
 })
 export type LocalPrefs = z.infer<typeof LocalPrefsSchema>
 export type TileSize = LocalPrefs['tileSize']
+export type PageSize = LocalPrefs['pageSize']
 
 /** The `140 / 180 / 260` px minimum tile widths §3.11 specifies, keyed by the S/M/L a person actually picks. */
 export const TILE_SIZE_PX: Record<TileSize, number> = { s: 140, m: 180, l: 260 }
+
+/** The devices grid's page-size choices (plan 101 §5 step 101.7) — the reference's own fixed 24 kept as the default, an operator can widen or narrow it. */
+export const PAGE_SIZE_OPTIONS: readonly PageSize[] = [12, 24, 48, 96]
 
 /** Reads `localStorage` through the schema; any failure (private mode, corrupt value) yields the schema default (`'m'`). */
 export function readLocalPrefs(): LocalPrefs {

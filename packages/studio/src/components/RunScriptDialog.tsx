@@ -17,11 +17,12 @@ import {
   type RuntimeEnvelope,
   type WorkflowDoc,
 } from '@enkaku/protocol'
-import { DevicePicker } from '@/components/DevicePicker'
 import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { RuntimeOverrideSection } from '@/components/schema-form/RuntimeOverrideSection'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { TargetPicker } from '@/components/target/TargetPicker'
+import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -77,8 +78,10 @@ export interface ScriptRow {
   kind?: 'script' | 'workflow'
 }
 
-type Target = 'single' | 'cluster' | 'devices'
 type Kind = 'script' | 'workflow'
+
+/** Every mode this dialog has ever offered — unchanged by plan 104's extraction (`RunScriptDialog` was §3.1's "first caller", not a narrower one). */
+const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
 
 /** `ms` rounded to the nearest whole minute, then to "N min" or "H h M m" — the format the consequence sentence's "up to about" duration estimate uses (plan 99 §3.11, §4.11). Never below 1 min for a positive `ms`, so a short node timeout does not print "0 min". */
 function formatMsRough(ms: number): string {
@@ -412,7 +415,7 @@ function byVersionDesc(a: ScriptRow, b: ScriptRow): number {
 interface NameGroup {
   name: string
   versions: ScriptRow[]
-  /** The owning plugin's id — explicit on a `versions[0].pluginName`, else derived from a `<plugin>/<script>` name (plan 82 §4.2's own naming rule); null for a standalone script. */
+  /** The owning plugin's id — explicit on a `versions[0].pluginName`, else derived from a `<plugin>/<script>` name (plan 82 §4.2's own naming rule); null for a name that carries no plugin, which today means a workflow. */
   pluginName: string | null
   /** True when EVERY version in this group is a dev entry — a group never mixes a published and a dev row under the same exact name/version, so "any" and "every" agree here. */
   isDev: boolean
@@ -438,8 +441,8 @@ function groupByName(scripts: ScriptRow[]): NameGroup[] {
  * `tiktok/warmup`) is already CONSECUTIVE (they share the literal
  * `tiktok/` prefix) — so this only needs to bucket adjacent same-plugin
  * runs under one heading, the same "consecutive run" trick
- * `SectionNav.tsx`'s grouping already uses. A standalone script (no
- * plugin) gets no heading, rendered exactly as it always was.
+ * `SectionNav.tsx`'s grouping already uses. A name carrying no plugin (a
+ * workflow) gets no heading, rendered exactly as it always was.
  */
 function groupByPlugin(groups: NameGroup[]): Array<{ pluginName: string | null; items: NameGroup[] }> {
   const runs: Array<{ pluginName: string | null; items: NameGroup[] }> = []
@@ -466,9 +469,11 @@ export function RunScriptDialog({
   devices,
   initialDevice,
   initialCluster,
+  initialSelectedIds,
   lockedDevice,
   onLaunched,
   onClose,
+  nonModal = false,
 }: {
   /** The script, when the surrounding screen already decided it (the Scripts pages). */
   script: ScriptRow | null
@@ -483,6 +488,15 @@ export function RunScriptDialog({
   initialDevice?: string | null
   initialCluster?: string | null
   /**
+   * Plan 104 (M69) §3.2 — a LIVE multi-selection the caller already has (a
+   * device popup's own candidate set, the Wall/List's own `selectedIds`).
+   * When non-empty, it wins over `initialDevice`/`initialCluster` and the
+   * dialog opens on `devices` mode, pre-filled — still fully editable, never
+   * a lock (§3.2's own rule). Omitted by every caller that predates this
+   * plan, which reproduces their exact previous default.
+   */
+  initialSelectedIds?: readonly string[]
+  /**
    * The device is already decided by the surrounding screen, so the dialog
    * drops its whole target section: no tabs, no picker, nothing to get wrong.
    * Asking "which device?" on a device's own page is a question the screen has
@@ -496,6 +510,8 @@ export function RunScriptDialog({
    */
   onLaunched?: (result: { jobId?: string; batchId?: string }) => void
   onClose: () => void
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row); see `AssistDialog`'s own doc comment on the same prop for why. */
+  nonModal?: boolean
 }) {
   // The Workflow | Script segmented filter (plan 99 §4.11, step 99.10) — the
   // sanctioned `kind === 'workflow'` comparison this file is one of only
@@ -514,11 +530,7 @@ export function RunScriptDialog({
   const groups = groupByName(filteredScripts)
   const [pickedName, setPickedName] = useState<string>('')
   const [pickedId, setPickedId] = useState<string>('')
-  const [target, setTarget] = useState<Target>('single')
   const locked = lockedDevice ?? null
-  const [deviceId, setDeviceId] = useState('')
-  const [deviceIds, setDeviceIds] = useState<string[]>([])
-  const [clusterId, setClusterId] = useState('')
   const [clusters, setClusters] = useState<ClusterInfo[]>([])
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
@@ -528,12 +540,6 @@ export function RunScriptDialog({
   // device is targeted" — a single device with a real repeat draft is ALSO
   // the moment a plain `POST /api/jobs` stops being enough.
   const [repeat, setRepeat] = useState<RepeatDraft>(REPEAT_DEFAULT)
-  // Plan 94 §4.10, §9 Q4 — required only for a run that targets the WHOLE
-  // farm's currently-usable devices, never for an ordinary multi-device
-  // pick (the brief's own "not every run" instruction). Reset whenever the
-  // target composition changes so a stale confirmation can never survive a
-  // target switch.
-  const [fleetConfirm, setFleetConfirm] = useState('')
   const [params, setParams] = useState<unknown>(undefined)
   // Plan 98 §3.9 item 2, §5 step 98.8 — the collapsed Runtime section's own
   // value, kept separate from `params`: params belong to the script author,
@@ -572,6 +578,12 @@ export function RunScriptDialog({
   const usable = devices.filter((d) => d.status !== 'quarantined')
   const readyNow = usable.filter((d) => d.status !== 'offline')
 
+  // Plan 104 (M69) §3.1, §4 — the target model extracted out of this dialog
+  // (G1: it was the only place it existed). `reset()` below re-derives
+  // target/deviceId/deviceIds/clusterId from context exactly where this
+  // file's own effect used to set four pieces of state by hand.
+  const targetSelection = useTargetSelection({ usableCount: usable.length, clusters })
+
   // Preselect the newest version of the first script IN THE CURRENT FILTER.
   // A picker that opens on nothing makes the operator do work the screen
   // could have done.
@@ -605,13 +617,10 @@ export function RunScriptDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kindFilter])
 
-  // A typed fleet-wide confirmation (below) belongs to ONE specific
-  // selection — switching target, cluster or device list must not leave a
-  // stale confirmation valid for whatever the operator picks next.
-  useEffect(() => {
-    setFleetConfirm('')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, clusterId, deviceIds.length])
+  // The typed fleet-wide confirmation's own reset-on-change effect now
+  // lives inside `useTargetSelection` itself (identical dependency array:
+  // target, clusterId, deviceIds.length) — every dialog that reuses the
+  // hook gets it for free instead of re-declaring it.
 
   useEffect(() => {
     if (!script && !scripts) return
@@ -628,30 +637,27 @@ export function RunScriptDialog({
     // A script with no `paramsSchema` never mounts `SchemaForm`, which would
     // otherwise leave a PREVIOUS script's `false` stuck forever (F14).
     setFormCanSubmit(true)
-    setDeviceIds([])
     setConcurrency(0)
     setOrder('as-listed')
     setRepeat(REPEAT_DEFAULT)
-    setFleetConfirm('')
-    if (initialCluster) {
-      setTarget('cluster')
-      setClusterId(initialCluster)
-    } else {
-      setTarget('single')
-      // An explicitly-arrived-at device wins even when it is offline — the
-      // operator opened this dialog FROM that phone's page, so silently
-      // swapping their choice for a different one would be the surprise.
-      // Only the fallback prefers a device that can start immediately
-      // (`readyNow`), dropping to `usable` when every device is offline, so
-      // an all-asleep farm still opens on a real pick instead of a blank.
-      setDeviceId(
-        initialDevice && usable.some((d) => d.id === initialDevice)
-          ? initialDevice
-          : (readyNow[0]?.id ?? usable[0]?.id ?? ''),
-      )
-    }
+    // Plan 104 (M69) §3.2's own table, applied here exactly as it used to be
+    // spelled out by hand: a live multi-selection wins (when the caller
+    // passes one — most `RunScriptDialog` callers still do not, so this is
+    // additive, not a behaviour change for them), else an explicit cluster,
+    // else an explicit/fallback single device. `initialDevice` winning even
+    // while offline, and the `readyNow` → `usable` fallback order, are
+    // unchanged from before this extraction — see `computeDefaultTarget`'s
+    // own doc comment for the exact rule now shared by every picker.
+    targetSelection.reset({
+      devices: usable,
+      readyNow,
+      allow: TARGET_ALLOW,
+      initialDeviceId: initialDevice,
+      initialSelectedIds,
+      initialClusterId: initialCluster,
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, scripts, initialDevice, initialCluster, devices.length])
+  }, [script, scripts, initialDevice, initialCluster, initialSelectedIds, devices.length])
 
   // Resolved synchronously so the rest of the render never has to ask whether
   // a script exists: the explicit pick, else the newest of the first script
@@ -722,8 +728,8 @@ export function RunScriptDialog({
     if (!scripts) return null
     const nothingPublished = scripts.length === 0
     return (
-      <Dialog open onOpenChange={(v) => !v && onClose()}>
-        <DialogContent className="sm:max-w-lg">
+      <Dialog open onOpenChange={(v) => !v && onClose()} modal={!nonModal}>
+        <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
           <DialogHeader>
             <DialogTitle>Run a script</DialogTitle>
             <DialogDescription>
@@ -767,7 +773,10 @@ export function RunScriptDialog({
     )
   }
 
-  const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
+  // Plan 104 (M69) §3.1, §4 — every one of these used to be computed here by
+  // hand; `useTargetSelection` (above) now owns them, so no dialog computes
+  // its own target count (plan 104 §6 acceptance).
+  const { target, deviceId, deviceIds, clusterId, resolvedCount: targetCount, fleetConfirmed, hasTarget } = targetSelection
   // Plan 94 §3.6 — a single device is still "one device", but a real repeat
   // draft on it is ALSO a batch (`count > 1` is the trigger, independent of
   // device count). `effectiveDeviceCount` feeds the stagger/finish-time math
@@ -775,17 +784,7 @@ export function RunScriptDialog({
   const effectiveDeviceCount = target === 'single' ? 1 : targetCount
   const pacingActive = isPacingDraft(repeat)
   const intervalInverted = repeat.intervalMinSec > repeat.intervalMaxSec
-  // Plan 94 §9 Q4 — "fleet-wide", not "more than one device": every
-  // currently-usable device in the farm, matched by count. `usable.length`
-  // is already computed above from the SAME status filter the picker itself
-  // disables against, so this cannot flag a target the picker would have
-  // refused anyway.
-  const fleetWide = (target === 'cluster' || target === 'devices') && targetCount > 0 && usable.length > 0 && targetCount >= usable.length
-  const fleetConfirmed = !fleetWide || fleetConfirm.trim() === String(targetCount)
-  const canSubmit =
-    (target === 'single' ? !!deviceId : target === 'cluster' ? !!clusterId && targetCount > 0 : deviceIds.length > 0) &&
-    !(pacingActive && intervalInverted) &&
-    fleetConfirmed
+  const canSubmit = hasTarget && !(pacingActive && intervalInverted) && fleetConfirmed
 
   // `undefined` (not `{}`) for "the operator touched nothing" — matching
   // `params`'s own `?? {}` convention right below, and keeping an empty
@@ -875,8 +874,8 @@ export function RunScriptDialog({
   }
 
   return (
-    <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open onOpenChange={(v) => !v && onClose()} modal={!nonModal}>
+      <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>
             Run {chosen.name}
@@ -1024,26 +1023,8 @@ export function RunScriptDialog({
               </p>
             </div>
           ) : (
-            <Tabs value={target} onValueChange={(v) => setTarget(v as Target)}>
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="single">Single device</TabsTrigger>
-                <TabsTrigger value="cluster">Cluster</TabsTrigger>
-                <TabsTrigger value="devices">Multiple devices</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <TargetPicker selection={targetSelection} devices={devices} clusters={clusters} allow={TARGET_ALLOW} />
           )}
-
-          {!locked && target === 'single' &&
-            (devices.length === 0 ? (
-              <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
-                No device is enrolled yet. Connect one first.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                <Label className="text-[13px] font-normal">Device</Label>
-                <DevicePicker devices={devices} value={deviceId} onChange={setDeviceId} multiple={false} />
-              </div>
-            ))}
 
           {/* Plan 94 §3.6 — a single device can repeat too; it just has no
               fleet to stagger across, so `showStagger` is off. */}
@@ -1062,37 +1043,6 @@ export function RunScriptDialog({
               1 device {repeatClause(repeat, effectiveDeviceCount)} — this creates a batch of {repeat.count} jobs, the
               same as any other repeating run.
             </p>
-          )}
-
-          {target === 'cluster' && (
-            <div className="space-y-1.5">
-              <Label className="text-[13px] font-normal">Cluster</Label>
-              {clusters.length === 0 ? (
-                <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
-                  No cluster is saved yet — create one from the Clusters page, or pick "Multiple devices" instead.
-                </p>
-              ) : (
-                <Select value={clusterId} onValueChange={setClusterId}>
-                  <SelectTrigger className="h-8 w-full text-[12.5px]">
-                    <SelectValue placeholder="Pick a cluster" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {clusters.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.name} <span className="readout text-fg-subtle">· {c.usableCount} now</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-          )}
-
-          {target === 'devices' && (
-            <div className="space-y-1.5">
-              <Label className="text-[13px] font-normal">Devices</Label>
-              <DevicePicker devices={devices} value={deviceIds} onChange={setDeviceIds} multiple />
-            </div>
           )}
 
           {(target === 'cluster' || target === 'devices') && (
@@ -1147,26 +1097,9 @@ export function RunScriptDialog({
             />
           )}
 
-          {/* Plan 94 §9 Q4 — fleet-wide friction, not per-run friction: only
-              when the pick covers every currently-usable device, and it is a
-              plain click-through otherwise (the brief's own "not every
-              run"). */}
-          {fleetWide && (
-            <div className="space-y-1.5 rounded-lg border border-led-warn/30 bg-led-warn/5 p-3">
-              <p className="text-[12.5px] font-medium text-led-warn">This targets every usable device on the farm</p>
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">
-                Type <span className="readout">{targetCount}</span> to confirm running on all {targetCount} device
-                {targetCount === 1 ? '' : 's'}.
-              </p>
-              <Input
-                value={fleetConfirm}
-                onChange={(e) => setFleetConfirm(e.target.value)}
-                placeholder={String(targetCount)}
-                className="readout h-8 w-24 text-[12.5px]"
-                aria-label="Type the device count to confirm"
-              />
-            </div>
-          )}
+          {/* The fleet-wide confirmation itself now renders INSIDE
+              `TargetPicker` above (plan 104 §3.4 — Forget's own fleet-wide
+              confirmation is the same block, reused, not reinvented). */}
 
           {chosen.paramsSchema ? (
             <>

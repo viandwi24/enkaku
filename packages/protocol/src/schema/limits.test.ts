@@ -151,6 +151,21 @@ describe('checkDeclaredSchema — x-enkaku hints (R2 territory: no pattern here,
     }
     expect(findingsFor('maxLabelChars')(schema).length).toBe(1)
   })
+
+  test('the two workspace path kinds pass the publish gate — they are embedded in plugin surfaces and published script params, and both are gated here', () => {
+    const schema = z.toJSONSchema(
+      z.object({
+        outDir: z.string().default('/videos').meta(ui({ title: 'Output folder', kind: 'workspaceFolder' })),
+        captions: z.string().default('/captions.txt').meta(ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })),
+      }),
+    )
+    expect(checkDeclaredSchema(schema)).toEqual([])
+  })
+
+  test("extensions on anything but kind: 'workspaceFile' is refused under 'hints', the same way a stray unit is", () => {
+    const schema = { type: 'object', properties: { x: { type: 'string', [ENKAKU_META_KEY]: { kind: 'workspaceFolder', extensions: ['.txt'] } } } }
+    expect(findingsFor('hints')(schema).length).toBeGreaterThan(0)
+  })
 })
 
 describe('checkDeclaredSchema — showWhen sibling existence (plan 95 §3.6)', () => {

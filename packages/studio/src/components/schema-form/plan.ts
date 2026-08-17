@@ -28,13 +28,13 @@ import type { JsonSchemaNode } from './types'
  * |---|---|---|---|
  * | 1 | `$ref` present | resolve against the root **with a visited set**; a cycle → `json` ("this parameter refers to itself") | structural |
  * | 2 | node depth > `SCHEMA_LIMITS.maxDepth` | `json` ("too deeply nested to render") | safety |
- * | 3 | `x-enkaku.kind` present **and valid for this node's structural type** | the control for that kind | **declared** |
+ * | 3 | `x-enkaku.kind` present **and valid for this node's structural type** | the control for that kind, from `planDeclaredKind`'s single lookup — a number control, a text control, or a workspace path browser (`workspaceFolder`/`workspaceFile`, both string-only) | **declared** |
  * | 4 | `enum` or `const` present | `choice` (decorated by `labels`, then by `source`) | structural |
  * | 5 | `type: 'boolean'` | `toggle` | structural |
  * | 6 | `prefixItems` of length 2, both numeric | `pair` — `ordered` from `x-enkaku`, default `true`; each half planned by rows 3/9 | structural |
  * | 7 | `type: 'string'` and `format` in `{date-time, uri, email}` | the matching control | **JSON Schema's own semantics** |
  * | 8 | `type: 'string'` | `text` (`multiline` from `x-enkaku`, else from `maxLength > 200`) | structural |
- * | 9 | `type: 'number' \| 'integer'` | `number` — bounds from `minimum`/`maximum` **unless they are the `±MAX_SAFE_INTEGER` sentinels** (F5), step from `multipleOf` | structural |
+ * | 9 | `type: 'number' \| 'integer'` | `number` — bounds from `minimum`/`maximum` **unless they are the `±MAX_SAFE_INTEGER` sentinels** (F5); `step` (the HTML validation attribute) is `multipleOf` when the schema states one, else `1` for `integer` and `'any'` for `number` (96.31); `increment` (the +/- button delta, always a real number — see `numberBounds`'s own doc comment) is `multipleOf` or `1` the same way, else a fixed `0.01` for an unconstrained float | structural |
  * | 10 | `type: 'array'` with object `items` | `table` — one planned column per property | structural |
  * | 11 | `type: 'array'` with scalar `items` | `list` of the planned item | structural |
  * | 12 | `type: 'object'` with a non-empty `properties` | `group`, children planned in declaration order | structural |
@@ -148,7 +148,25 @@ export type FieldPlan =
       unit?: DurationUnit
       min?: number
       max?: number
-      step?: number
+      /**
+       * The HTML `step` VALIDATION attribute (96.31) — never the +/- button
+       * delta, see `increment` below. `'any'` is a real, valid HTML attribute
+       * value ("no step constraint") but is not itself a number, which is
+       * exactly why it cannot double as a button delta — see `NumberField`'s
+       * own doc comment for the bug this split fixes.
+       */
+      step?: number | 'any'
+      /**
+       * The +/- stepper button delta (96.31) — always a real number, never
+       * `'any'`. Deliberately a SEPARATE field from `step`: an HTML `<input
+       * step="any">` is what makes a plain float like `gestureCurvature`
+       * (0.08) pass browser validation, but `'any'` is meaningless as an
+       * arithmetic increment — `Number('any')` is `NaN`, which would
+       * silently disable both buttons if `NumberField` computed its delta
+       * from `step` the way it used to. See `numberBounds`'s own doc comment
+       * for how this is derived.
+       */
+      increment?: number
       /**
        * Plan 98 §3.5, §3.9, §4.3 — how hard THIS field's own limit is
        * actually enforced, straight off the schema's `x-enkaku.enforcement`
@@ -167,6 +185,26 @@ export type FieldPlan =
     }
   | { control: 'pair'; ordered: boolean; item: Extract<FieldPlan, { control: 'number' }> }
   | { control: 'text'; multiline: boolean; format?: 'uri' | 'email' | 'date-time'; maxLength?: number }
+  | {
+      /**
+       * `kind: 'workspaceFolder'` / `kind: 'workspaceFile'` — one control
+       * value for both, discriminated by `target`, because a folder browser
+       * and a file browser over the same tree are the same widget with one
+       * different answer to "what is clickable". `renderControl` therefore
+       * still dispatches on `control` alone.
+       *
+       * The VALUE is a workspace path (`/videos`, `/captions.txt`) — always
+       * absolute within the workspace, never a host filesystem path. A
+       * folder is stored WITHOUT its trailing slash (`fs.list` returns
+       * `/videos/`; `normaliseWorkspacePath` refuses that form), except the
+       * workspace root, which is `/`.
+       */
+      control: 'workspacePath'
+      target: 'folder' | 'file'
+      /** `target: 'file'` only, and only when the author declared one —
+       *  narrows what the browser OFFERS, never what it accepts. */
+      extensions?: string[]
+    }
   | { control: 'list'; item: FieldPlan }
   | { control: 'table'; columns: { key: string; label: string; plan: FieldPlan }[] }
   | { control: 'group'; heading?: string; children: PlannedField[] }
@@ -226,6 +264,26 @@ function isTextKind(kind: ParamKind): kind is 'text' | 'packageName' {
   return kind === 'text' || kind === 'packageName'
 }
 
+function isWorkspacePathKind(kind: ParamKind): kind is 'workspaceFolder' | 'workspaceFile' {
+  return kind === 'workspaceFolder' || kind === 'workspaceFile'
+}
+
+/**
+ * Every kind whose value is a STRING — the ones row 3 checks against
+ * `type: 'string'` rather than against a numeric type. Restated here rather
+ * than imported because `@enkaku/protocol` exports the vocabulary itself,
+ * not this predicate; the two cannot silently drift, because
+ * `planKindNumber` below narrows to `Exclude<ParamKind, StringKind>` and
+ * assigns it to `FieldPlan`'s `NumberKind`, which the protocol derives from
+ * its OWN string-kind list. Forget a kind here and that assignment stops
+ * typechecking.
+ */
+type StringKind = 'text' | 'packageName' | 'workspaceFolder' | 'workspaceFile'
+
+function isStringKind(kind: ParamKind): kind is StringKind {
+  return isTextKind(kind) || isWorkspacePathKind(kind)
+}
+
 /**
  * Row 3's "valid for this node's structural type" test. Deliberately
  * excludes any node that ALSO carries an `enum`/`const`: a `kind` hint must
@@ -236,7 +294,7 @@ function isTextKind(kind: ParamKind): kind is 'text' | 'packageName' {
  */
 function kindStructurallyValid(kind: ParamKind, node: JsonSchemaNode): boolean {
   if (hasEnumOrConst(node)) return false
-  if (isTextKind(kind)) return baseType(node) === 'string'
+  if (isStringKind(kind)) return baseType(node) === 'string'
   if (!isNumericType(baseType(node))) return false
   // `chance` additionally requires the domain the vocabulary promises
   // (plan 95 §3.2): "the resolver REQUIRES minimum: 0 and maximum: 1; a
@@ -247,21 +305,50 @@ function kindStructurallyValid(kind: ParamKind, node: JsonSchemaNode): boolean {
   return true
 }
 
-/** Bounds shared by every numeric plan (rows 3's numeric kinds, row 6's
- *  pair halves, row 9's plain number). `±MAX_SAFE_INTEGER` is what
- *  `z.number().int()` emits with no explicit bounds (F5, measured) — that
- *  describes "no bound", not a slider's ends, so it is treated as absent. */
-function numberBounds(node: JsonSchemaNode): { min?: number; max?: number; step?: number } {
+/**
+ * 96.31 — the fix for "Settings unsavable": HTML's own default `step` for
+ * `type="number"` is `1` whenever the attribute is OMITTED, so a field like
+ * `gestureCurvature` (`min(0).max(0.5).default(0.08)`, no `.multipleOf()`)
+ * used to plan `step: undefined`, `NumberField` left the attribute off, and
+ * the browser rejected its own stored `0.08` as "not a multiple of 1" — the
+ * exact error the owner hit. The JSON-Schema-correct rule this restores:
+ * `type: 'integer'` gets `step: 1`; `type: 'number'` gets `step: 'any'`
+ * UNLESS `multipleOf` says otherwise. `multipleOf` wins over both when
+ * present, on either type.
+ *
+ * `increment` is a second, deliberately separate value (see `FieldPlan`'s own
+ * doc comment on why `step` cannot double as the button delta once `'any'`
+ * is a possible `step`). It answers a different question — "what should one
+ * click of + do?" — and is always a plain number:
+ *   - `multipleOf`, when the schema states one — the same value as `step`,
+ *     because a declared multiple IS the natural increment.
+ *   - `1` for an `integer` with no `multipleOf` — unchanged from today.
+ *   - `0.01` for a `number` with no `multipleOf` — a fixed constant, not
+ *     derived from `min`/`max`, because every bounded float in this
+ *     workspace (`gestureCurvature`: 0–0.5, exactly 50 clicks end to end;
+ *     `lat`/`lng`: real-world coordinates, typed rather than clicked to a
+ *     specific value) reads naturally at hundredths, and a bounds-derived
+ *     increment would make the SAME field's click size depend on where its
+ *     author happened to set `max` — a wrong guess for one field silently
+ *     changing the increment on every other unrelated float. `1` (too coarse
+ *     — jumps straight over `gestureCurvature`'s whole range) and `'any'`
+ *     (not a number at all) are the two values §3.2's "a wrong inference
+ *     must not cost the operator a valid value" rule already rules out.
+ */
+function numberBounds(node: JsonSchemaNode): { min?: number; max?: number; step?: number | 'any'; increment?: number } {
   const rawMin = numOrUndefined(node.minimum) ?? numOrUndefined((node as Record<string, unknown>).exclusiveMinimum)
   const rawMax = numOrUndefined(node.maximum) ?? numOrUndefined((node as Record<string, unknown>).exclusiveMaximum)
+  const multipleOf = numOrUndefined((node as Record<string, unknown>).multipleOf)
+  const isInteger = baseType(node) === 'integer'
   return {
     min: rawMin === -MAX_SAFE ? undefined : rawMin,
     max: rawMax === MAX_SAFE ? undefined : rawMax,
-    step: numOrUndefined((node as Record<string, unknown>).multipleOf),
+    step: multipleOf ?? (isInteger ? 1 : 'any'),
+    increment: multipleOf ?? (isInteger ? 1 : 0.01),
   }
 }
 
-function planKindNumber(node: JsonSchemaNode, kind: Exclude<ParamKind, 'text' | 'packageName'>, hints: ParamHints): Extract<FieldPlan, { control: 'number' }> {
+function planKindNumber(node: JsonSchemaNode, kind: Exclude<ParamKind, StringKind>, hints: ParamHints): Extract<FieldPlan, { control: 'number' }> {
   return { control: 'number', kind, unit: kind === 'duration' ? hints.unit : undefined, enforcement: hints.enforcement, ...numberBounds(node) }
 }
 
@@ -273,6 +360,30 @@ function planTextPlain(node: JsonSchemaNode, hints: ParamHints): Extract<FieldPl
   const maxLength = numOrUndefined(node.maxLength)
   const multiline = hints.multiline ?? (typeof maxLength === 'number' && maxLength > 200)
   return { control: 'text', multiline, maxLength }
+}
+
+function planWorkspacePath(kind: 'workspaceFolder' | 'workspaceFile', hints: ParamHints): Extract<FieldPlan, { control: 'workspacePath' }> {
+  return {
+    control: 'workspacePath',
+    target: kind === 'workspaceFolder' ? 'folder' : 'file',
+    // A folder has nothing to filter, so a stray `extensions` on one is
+    // dropped here rather than carried into a control that would ignore it
+    // (`ParamHintsSchema` already refuses the combination at publish; this
+    // is the render-time half, for a schema stored before it did).
+    ...(kind === 'workspaceFile' && hints.extensions ? { extensions: hints.extensions } : {}),
+  }
+}
+
+/**
+ * Row 3's whole body: ONE lookup from a declared, structurally-valid `kind`
+ * to the control that draws it. Every kind goes through here — adding one is
+ * a case in this function, never a new `if` in `planField` (which is what
+ * keeps the precedence table diffable against the `if` chain by eye).
+ */
+function planDeclaredKind(node: JsonSchemaNode, kind: ParamKind, hints: ParamHints): FieldPlan {
+  if (isWorkspacePathKind(kind)) return planWorkspacePath(kind, hints)
+  if (isTextKind(kind)) return planTextPlain(node, hints)
+  return planKindNumber(node, kind, hints)
 }
 
 function planChoice(node: JsonSchemaNode, hints: ParamHints): FieldPlan {
@@ -301,7 +412,7 @@ function isPairNode(node: JsonSchemaNode, root: JsonSchemaNode): boolean {
 function planPair(node: JsonSchemaNode, hints: ParamHints, root: JsonSchemaNode): FieldPlan {
   const half = deref((node.prefixItems as JsonSchemaNode[])[0]!, root)
   const item =
-    hints.kind && !isTextKind(hints.kind) && kindStructurallyValid(hints.kind, half) ? planKindNumber(half, hints.kind, hints) : planPlainNumber(half)
+    hints.kind && !isStringKind(hints.kind) && kindStructurallyValid(hints.kind, half) ? planKindNumber(half, hints.kind, hints) : planPlainNumber(half)
   return { control: 'pair', ordered: hints.ordered ?? true, item }
 }
 
@@ -438,7 +549,7 @@ export function planField(node: JsonSchemaNode, ctx: PlanContext, inheritedHints
   // outside [0,1]) simply does not match and falls through — see
   // `kindStructurallyValid`'s doc comment for the reasoning.
   if (hints.kind && kindStructurallyValid(hints.kind, node)) {
-    return isTextKind(hints.kind) ? planTextPlain(node, hints) : planKindNumber(node, hints.kind, hints)
+    return planDeclaredKind(node, hints.kind, hints)
   }
 
   // Row 4 — enum or const: a closed choice, decorated by `labels` now and

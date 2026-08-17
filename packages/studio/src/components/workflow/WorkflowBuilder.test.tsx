@@ -3,9 +3,20 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { checkWorkflow, WorkflowDocSchema, type ResolvedNodeScript, type ScriptRef } from '@enkaku/protocol'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { emptyDraft } from './model'
+import { addScriptNode, emptyDraft, updateNode } from './model'
 import type { ScriptOption } from './ScriptPicker'
 import { WorkflowBuilder } from './WorkflowBuilder'
+
+// happy-dom has no ResizeObserver — @xyflow/react's viewport measurement
+// needs one to mount without throwing (same stub `WorkflowCanvas.test.tsx`
+// uses). Only the canvas-view tests below need this; the list-view tests
+// above never mount `WorkflowCanvas` at all.
+class StubResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver ??= StubResizeObserver
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
@@ -167,3 +178,79 @@ describe('WorkflowBuilder — the owner\'s example, built with no JSON typed any
     await waitFor(() => expect(published).toEqual({ id: 'wf-1', name: 'tiktok-search-pipeline', version: '1.0.0' }))
   })
 })
+
+/**
+ * Plan 102 (M67) §3.5, §5 step 102.4 — the canvas's side panel renders the
+ * SAME `NodeCard` the list uses (never a second implementation), and an
+ * edit made through it lands in the one shared draft — provable end to end
+ * only through `WorkflowBuilder` itself, since that is the component that
+ * decides which surface mounts `NodeCard` and wires its callbacks to
+ * `patchNode`/`updateNode` (`model.ts`). `WorkflowCanvas.test.tsx` proves
+ * the canvas renders no editor of its own; this proves what DOES.
+ */
+describe('WorkflowBuilder — the canvas side panel (plan 102 §3.5, §5 step 102.4)', () => {
+  function twoNodeDraft() {
+    let d = emptyDraft()
+    d.name = 'wf'
+    d = addScriptNode(d, 'first')
+    d = addScriptNode(d, 'second')
+    d = updateNode(d, 0, { script: 'demo@1.0.0' })
+    d = updateNode(d, 1, { script: 'demo@1.0.0' })
+    return d
+  }
+
+  const scripts: ScriptOption[] = [{ id: 's-demo', name: 'demo', version: '1.0.0', enabled: true, paramsSchema: null }]
+
+  test('selecting a node on the canvas opens a panel mounting node-card-<index> — the identical testid the list uses, never a second one', () => {
+    renderWithApi(<WorkflowBuilder initialDraft={twoNodeDraft()} scripts={scripts} onPublished={() => {}} />, {})
+
+    fireEvent.click(screen.getByRole('button', { name: /^Canvas$/ }))
+    expect(screen.queryByTestId('node-card-0')).toBeNull() // canvas is up; nothing selected yet, no panel
+
+    fireEvent.click(screen.getByText('first'))
+    expect(screen.getAllByTestId(/node-card-/)).toHaveLength(1) // exactly one card exists anywhere on screen
+    expect(screen.getByTestId('node-card-0')).toBeTruthy()
+    expect(screen.getByText('editing · first')).toBeTruthy()
+  })
+
+  test('editing the title in the panel lands in the SAME draft the list reads — switching back to List shows the edit', () => {
+    renderWithApi(<WorkflowBuilder initialDraft={twoNodeDraft()} scripts={scripts} onPublished={() => {}} />, {})
+
+    fireEvent.click(screen.getByRole('button', { name: /^Canvas$/ }))
+    fireEvent.click(screen.getByText('first'))
+    const panelCard = within(screen.getByTestId('node-card-0'))
+    fireEvent.change(panelCard.getByLabelText('Node title'), { target: { value: 'First Step' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /^List$/ }))
+    const listCard = within(screen.getByTestId('node-card-0'))
+    expect((listCard.getByLabelText('Node title') as HTMLInputElement).value).toBe('First Step')
+  })
+
+  test('clicking a different node swaps the panel to that node, and Close hides it without touching the draft', () => {
+    renderWithApi(<WorkflowBuilder initialDraft={twoNodeDraft()} scripts={scripts} onPublished={() => {}} />, {})
+
+    fireEvent.click(screen.getByRole('button', { name: /^Canvas$/ }))
+    fireEvent.click(screen.getByText('first'))
+    expect(screen.getByTestId('node-card-0')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('second'))
+    expect(screen.queryByTestId('node-card-0')).toBeNull()
+    expect(screen.getByTestId('node-card-1')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close node editor' }))
+    expect(screen.queryByTestId(/node-card-/)).toBeNull()
+  })
+
+  test('switching to List clears the canvas selection — reopening Canvas starts with no panel', () => {
+    renderWithApi(<WorkflowBuilder initialDraft={twoNodeDraft()} scripts={scripts} onPublished={() => {}} />, {})
+
+    fireEvent.click(screen.getByRole('button', { name: /^Canvas$/ }))
+    fireEvent.click(screen.getByText('first'))
+    expect(screen.getByTestId('node-card-0')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^List$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Canvas$/ }))
+    expect(screen.queryByTestId(/node-card-/)).toBeNull()
+  })
+})
+

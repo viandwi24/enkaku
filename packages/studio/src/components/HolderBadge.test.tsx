@@ -11,34 +11,57 @@ const USER: LeaseHolder = { kind: 'user', id: 'u1', label: 'Alice', runId: null,
 const JOB: LeaseHolder = { kind: 'job', id: 'job-1', label: 'checkout@1.4.2', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }
 const AGENT: LeaseHolder = { kind: 'agent', id: 'agent-1', label: 'Triage bot', runId: 'run-1', takeable: true, acquiredAt: 0, expiresAt: null }
 
+const GRANT_TTL_SEC = 300
+const nowSec = () => Math.floor(Date.now() / 1000)
+/** A grant `touch()`ed just now (`co-control.ts`'s own math: `expiresAt = now + grantTtlSec`) — reads "assisting". */
+const justTouched = (holder: LeaseHolder): LeaseHolder => ({ ...holder, expiresAt: nowSec() + GRANT_TTL_SEC })
+/** A grant touched long enough ago that it is well outside `ASSIST_ACTIVITY_WINDOW_SEC` but still holds — reads "may assist". */
+const idleGrant = (holder: LeaseHolder): LeaseHolder => ({ ...holder, expiresAt: nowSec() + 30 })
+
 /**
  * `variant: 'assists'` (plan 91 §3.4 item 4, §4.4) — the SAME shape as
  * `heldBy`'s badge, but painted amber (`--color-led-warn`, the one colour
  * `docs/design.md` reserves for a live, self-expiring condition) and worded
  * as an assist, never a control — an assist grant's `takeable` is always
  * `false` (plan 91 §3.2), so it must never read like a takeover candidate.
+ *
+ * Plan 105 §3.2 split this further: "Assisting" (present tense — input
+ * within `ASSIST_ACTIVITY_WINDOW_SEC`) versus "May assist" (a held, idle
+ * grant) — an authorization must never be worded as an activity it is not
+ * currently performing (`docs/design.md`'s degraded/partial-state rule).
  */
-describe('HolderBadge — variant="assists" (plan 91 §3.4 item 4, §4.4)', () => {
+describe('HolderBadge — variant="assists" (plan 91 §3.4 item 4, §4.4; split by plan 105 §3.2)', () => {
   test('the default variant ("holds") is unchanged — a person reads "Controlled by"', () => {
     renderWithApi(<HolderBadge holder={USER} />)
     expect(screen.getByTitle('Controlled by Alice')).toBeTruthy()
   })
 
-  test('a person assisting reads "Assisting", never "Controlled by"', () => {
-    renderWithApi(<HolderBadge holder={USER} variant="assists" />)
+  test('a person just touched reads "Assisting", never "Controlled by"', () => {
+    renderWithApi(<HolderBadge holder={justTouched(USER)} variant="assists" grantTtlSec={GRANT_TTL_SEC} />)
     expect(screen.getByTitle('Assisting — Alice')).toBeTruthy()
     expect(screen.queryByTitle('Controlled by Alice')).toBeNull()
   })
 
-  test('a job being assisted reads "Assisted by", not "Running"', () => {
-    const { container } = renderWithApi(<HolderBadge holder={JOB} variant="assists" />)
-    expect(screen.getByTitle('Assisted by checkout@1.4.2 — open the job')).toBeTruthy()
+  test('an idle grant reads "May assist", never "Assisting" — an authorization is not an activity', () => {
+    renderWithApi(<HolderBadge holder={idleGrant(USER)} variant="assists" grantTtlSec={GRANT_TTL_SEC} />)
+    expect(screen.getByTitle('May assist — Alice')).toBeTruthy()
+    expect(screen.queryByTitle('Assisting — Alice')).toBeNull()
+  })
+
+  test('a grant with no expiry at all (a defensive fixture — a real grant always sets one) reads "May assist", never overclaiming activity', () => {
+    renderWithApi(<HolderBadge holder={USER} variant="assists" />)
+    expect(screen.getByTitle('May assist — Alice')).toBeTruthy()
+  })
+
+  test('a job shape being assisted reads "Assisting"/"May assist", not "Running"', () => {
+    const { container } = renderWithApi(<HolderBadge holder={justTouched(JOB)} variant="assists" grantTtlSec={GRANT_TTL_SEC} />)
+    expect(screen.getByTitle('Assisting — checkout@1.4.2 — open the job')).toBeTruthy()
     expect(container.querySelector('a[href="/jobs/detail?id=job-1"]')).toBeTruthy()
   })
 
-  test('an agent being assisted reads "Assisted by", not "Driven by"', () => {
-    renderWithApi(<HolderBadge holder={AGENT} variant="assists" />)
-    expect(screen.getByTitle('Assisted by Triage bot — open the agent')).toBeTruthy()
+  test('an agent shape being assisted reads "Assisting"/"May assist", not "Driven by"', () => {
+    renderWithApi(<HolderBadge holder={justTouched(AGENT)} variant="assists" grantTtlSec={GRANT_TTL_SEC} />)
+    expect(screen.getByTitle('Assisting — Triage bot — open the agent')).toBeTruthy()
   })
 
   test('the assist variant paints amber (--color-led-warn), never the neutral "holds" colour', () => {

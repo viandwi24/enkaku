@@ -50,6 +50,8 @@ function fakeScheduler(): Scheduler {
 function publishCappedScript(db: Db, id: string, name: string, maxConcurrent: number) {
   db.insert(scripts)
     .values({
+      pluginId: 'p-fixture',
+      exportId: 'main',
       id,
       name,
       version: '1.0.0',

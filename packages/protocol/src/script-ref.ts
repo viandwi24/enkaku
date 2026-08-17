@@ -9,8 +9,9 @@ import { z } from 'zod'
  * `name` may carry ONE `/` (plan 82 §4.2) — a plugin member's name is
  * `<plugin>/<script>` (`tiktok/login`), written that way in the `scripts`
  * table so this schema, `parseScriptRef`, and `resolveScriptRef` all work on
- * a plugin's scripts completely unmodified: there is exactly one name shape,
- * a standalone script's just never has a slash in it.
+ * a plugin's scripts completely unmodified: there is exactly one name shape.
+ * The slash is optional only because a workflow's name carries none (plan 110
+ * §3.3), as do rows published before a script had to belong to a plugin.
  */
 export const ScriptRefSchema = z
   .string()

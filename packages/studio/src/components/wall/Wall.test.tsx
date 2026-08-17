@@ -22,7 +22,6 @@ import { cleanup, renderWithApi } from '@/lib/test/render'
 mock.module('@/components/wall/WallTile', () => ({
   WallTile: ({
     device,
-    selectable,
     selected,
     onToggleSelect,
     focused,
@@ -31,7 +30,6 @@ mock.module('@/components/wall/WallTile', () => ({
     rootRef,
   }: {
     device: DeviceInfo
-    selectable?: boolean
     selected?: boolean
     onToggleSelect?: () => void
     focused?: boolean
@@ -48,7 +46,7 @@ mock.module('@/components/wall/WallTile', () => ({
     return (
       <div
         data-testid={`tile-${device.id}`}
-        data-selectable={String(!!selectable)}
+        data-selectable={String(!!onToggleSelect)}
         data-selected={String(!!selected)}
         data-focused={String(!!focused)}
         data-live={String(!!live)}
@@ -96,9 +94,6 @@ class AutoVisibleIntersectionObserver implements IntersectionObserver {
   }
 }
 globalThis.IntersectionObserver = AutoVisibleIntersectionObserver as unknown as typeof IntersectionObserver
-
-/** `DWELL_MS` (400ms) plus headroom — every test below that asserts a device is actually LIVE (not just rendered) has to wait at least this long, since `useLiveSet` never promotes a tile before it has been "visible" this long. */
-const DWELL_WAIT_MS = 1500
 
 afterEach(cleanup)
 
@@ -166,34 +161,33 @@ function adbStatsBody(maxTiles: number, videoBytesPerSec = 0) {
 }
 
 describe('Wall', () => {
-  test('renders a tile per device and reads the live-tile budget from /api/adb/stats', async () => {
-    const { getByText, getByTestId } = renderWithApi(<Wall devices={[device]} jobs={[]} />, {
+  test('renders a tile per device once the live-tile budget answers from /api/adb/stats', async () => {
+    const { getByTestId } = renderWithApi(<Wall devices={[device]} jobs={[]} />, {
       '/api/adb/stats': adbStatsBody(4),
     })
     // The real grid only replaces the loading skeleton once the budget
     // answers (Plan 92 §4.7 "settings unknown" — fixes F14's neighbour
     // finding), so the tile testid is not there on the very first render.
     await waitFor(() => expect(getByTestId('tile-dev-1')).toBeTruthy())
-    expect(getByText(/capped at 4 at once/)).toBeTruthy()
   })
 
   /**
-   * The status strip's video-rate figure (plan 92 §5 step 92.9 — the piece
-   * 92.6 deferred and 92.8 could not reach, `packages/studio/src/
-   * components/wall/**` sitting outside its own file-ownership boundary).
-   * Proves the number is READ, not invented: `2_500_000` bytes/s in the
-   * fixture becomes `20.0 Mbit/s` via `formatMbps(bytesPerSec * 8)`, the
-   * identical conversion the settings page's own `MeasuredBlock` uses
-   * (`FarmVideoFields.tsx`), so the two readers can never disagree about
-   * the arithmetic even though they poll independently.
+   * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the farm-wide
+   * status strip ("N of M devices live · capped at X at once · Y Mbit/s
+   * across the farm") that used to sit above this grid is gone — the
+   * owner's own words: *"gausah ada bilah shorcut kaya '2 total' atau '0
+   * ready' atau gimana."* `refs/ui`'s own Devices screen has no farm-wide
+   * count anywhere near the grid either.
    */
-  test('the status strip reports the farm-wide measured video rate once /api/adb/stats answers', async () => {
-    const { getByText } = renderWithApi(<Wall devices={[device]} jobs={[]} />, {
+  test('no farm-wide status strip renders above the grid', async () => {
+    const { getByTestId, queryByText } = renderWithApi(<Wall devices={[device]} jobs={[]} />, {
       '/api/adb/stats': adbStatsBody(4, 2_500_000),
     })
-    await waitFor(() => expect(getByText(/capped at 4 at once/)).toBeTruthy())
-    await waitFor(() => expect(getByText('20.0 Mbit/s')).toBeTruthy())
-    expect(getByText(/across the farm/)).toBeTruthy()
+    await waitFor(() => expect(getByTestId('tile-dev-1')).toBeTruthy())
+    expect(queryByText(/devices? live/)).toBeNull()
+    expect(queryByText(/capped at/)).toBeNull()
+    expect(queryByText(/Mbit\/s/)).toBeNull()
+    expect(queryByText(/across the farm/)).toBeNull()
   })
 
   /**
@@ -242,74 +236,18 @@ describe('Wall', () => {
 })
 
 /**
- * The status strip's blocked/budgeted breakdown (Plan 92 §4.7, §3.9, fixes
- * F16's sibling finding): "12 of 100 live" on its own does not say what the
- * other 88 are doing — the breakdown is what turns that into an honest
- * number instead of an implied "the rest failed".
- */
-describe('Wall — the status strip breakdown (plan 92 §4.7, §3.9)', () => {
-  const asleepDevice: DeviceInfo = {
-    ...device,
-    id: 'dev-2',
-    label: 'asleep phone',
-    readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: 0 },
-  }
-  const offlineDevice: DeviceInfo = { ...device, id: 'dev-3', label: 'offline phone', status: 'offline' }
-  const quarantinedDevice: DeviceInfo = {
-    ...device,
-    id: 'dev-4',
-    label: 'quarantined phone',
-    status: 'quarantined',
-    quarantineReason: 'auto-battery',
-  }
-
-  test('a healthy farm with room under the cap shows no breakdown title', async () => {
-    const { getByText } = renderWithApi(<Wall devices={[device]} jobs={[]} />, {
-      '/api/adb/stats': adbStatsBody(8),
-    })
-    // The device must DWELL (plan 92 §3.2 rule 2, `useLiveSet`'s `DWELL_MS`)
-    // before the live-set policy promotes it — even though the fake
-    // `IntersectionObserver` above reports it "visible" immediately.
-    await waitFor(() => expect(getByText(/1 of 1 device live/)).toBeTruthy(), { timeout: DWELL_WAIT_MS })
-    const strip = getByText(/1 of 1 device live/)
-    expect(strip.getAttribute('title')).toBeNull()
-  })
-
-  test('asleep/offline/quarantined devices are neither live nor counted as budgeted, and appear in the hover breakdown', async () => {
-    const { getByText } = renderWithApi(
-      <Wall devices={[device, asleepDevice, offlineDevice, quarantinedDevice]} jobs={[]} />,
-      { '/api/adb/stats': adbStatsBody(8) },
-    )
-    await waitFor(() => expect(getByText(/1 of 4 devices live/)).toBeTruthy(), { timeout: DWELL_WAIT_MS })
-    const strip = getByText(/1 of 4 devices live/)
-    expect(strip.getAttribute('title')).toBe('1 asleep · 1 offline · 1 quarantined')
-  })
-
-  test('devices outside the live cap are reported as "outside the live budget"', async () => {
-    const other: DeviceInfo = { ...device, id: 'dev-5', label: 'second phone' }
-    const { getByText } = renderWithApi(<Wall devices={[device, other]} jobs={[]} />, {
-      '/api/adb/stats': adbStatsBody(1),
-    })
-    await waitFor(() => expect(getByText(/1 of 2 devices live/)).toBeTruthy(), { timeout: DWELL_WAIT_MS })
-    const strip = getByText(/1 of 2 devices live/)
-    expect(strip.getAttribute('title')).toBe('1 outside the live budget')
-  })
-})
-
-/**
  * Group selection and the focused tile (plan 91 §3.11/§5 step 91.8, F11,
  * F12, F13) are state the PARENT page owns (`app/page.tsx`) — this proves
  * `Wall` actually threads them through to each `WallTile` rather than
  * dropping them, the seam this step added to the component.
  */
-describe('Wall — selection and focus wiring (plan 91 §5 step 91.8)', () => {
-  test('selectable/selected/focused reach the tile named by id, not every tile', async () => {
+describe('Wall — selection and focus wiring (plan 91 §5 step 91.8; no more `selectable` prop, plan 101 §5 step 101.7)', () => {
+  test('onToggleSelect/selected/focused reach the tile named by id, not every tile', async () => {
     const other: DeviceInfo = { ...device, id: 'dev-2', label: 'pixel 8' }
     const { getByTestId } = renderWithApi(
       <Wall
         devices={[device, other]}
         jobs={[]}
-        selectable
         selectedIds={['dev-1']}
         onToggleSelect={() => {}}
         focusId="dev-2"
@@ -320,6 +258,10 @@ describe('Wall — selection and focus wiring (plan 91 §5 step 91.8)', () => {
       // until then.
       { '/api/adb/stats': adbStatsBody(8) },
     )
+    // `data-selectable` here is the mock's own stand-in for "did this tile
+    // receive an `onToggleSelect`" (plan 101 §5 step 101.7 — `WallTile` no
+    // longer has a `selectable` prop; a click toggles whenever
+    // `onToggleSelect` is present at all).
     await waitFor(() => expect(getByTestId('tile-dev-1').dataset.selectable).toBe('true'))
     expect(getByTestId('tile-dev-1').dataset.selected).toBe('true')
     expect(getByTestId('tile-dev-1').dataset.focused).toBe('false')
@@ -330,12 +272,26 @@ describe('Wall — selection and focus wiring (plan 91 §5 step 91.8)', () => {
   test('a tile toggling selection calls onToggleSelect with its own id', async () => {
     let toggledId: string | null = null
     const { getByLabelText } = renderWithApi(
-      <Wall devices={[device]} jobs={[]} selectable selectedIds={[]} onToggleSelect={(id) => (toggledId = id)} />,
+      <Wall devices={[device]} jobs={[]} selectedIds={[]} onToggleSelect={(id) => (toggledId = id)} />,
       { '/api/adb/stats': adbStatsBody(8) },
     )
     const toggle = await waitFor(() => getByLabelText('toggle-dev-1'))
     fireEvent.click(toggle)
     expect(toggledId).toBe('dev-1')
+  })
+
+  /**
+   * Plan 101 §5 step 101.7 — when the parent supplies no `onToggleSelect` at
+   * all, `Wall` must not invent one: `WallTile` reads its OWN
+   * `onToggleSelect` prop's presence to decide whether a click toggles or
+   * falls back to navigating, so an always-present wrapper function here
+   * would silently make every click toggle even for a caller with no
+   * selection concept.
+   */
+  test('with no onToggleSelect at all, the tile receives none either (not a wrapped no-op)', async () => {
+    const { getByTestId } = renderWithApi(<Wall devices={[device]} jobs={[]} />, { '/api/adb/stats': adbStatsBody(8) })
+    await waitFor(() => expect(getByTestId('tile-dev-1')).toBeTruthy())
+    expect(getByTestId('tile-dev-1').dataset.selectable).toBe('false')
   })
 
   test('a tile calling onFocus reports its own id', async () => {
@@ -347,5 +303,40 @@ describe('Wall — selection and focus wiring (plan 91 §5 step 91.8)', () => {
     const focusBtn = await waitFor(() => getByLabelText('focus-dev-1'))
     fireEvent.click(focusBtn)
     expect(focusedId).toBe('dev-1')
+  })
+
+  /**
+   * The right-click context menu (plan 101 §3.9, §5 step 101.5, G15) — Wall
+   * wraps each `WallTile` in a plain `data-device-id` div carrying
+   * `onContextMenu`, WITHOUT editing `WallTile.tsx` itself (out of this
+   * step's remit; see `Wall.tsx`'s own comment on the prop). This proves
+   * both halves: the wrapper attribute `useDragSelect` looks for exists,
+   * and right-clicking anywhere on the tile reaches the callback with the
+   * tile's own device id — not the whole list, not another tile's.
+   */
+  test('the data-device-id wrapper exists on each tile — what useDragSelect intersects against', async () => {
+    const other: DeviceInfo = { ...device, id: 'dev-2', label: 'pixel 8' }
+    const { container, getByTestId } = renderWithApi(<Wall devices={[device, other]} jobs={[]} />, { '/api/adb/stats': adbStatsBody(8) })
+    await waitFor(() => expect(getByTestId('tile-dev-1')).toBeTruthy())
+    expect(container.querySelector('[data-device-id="dev-1"]')).toBeTruthy()
+    expect(container.querySelector('[data-device-id="dev-2"]')).toBeTruthy()
+  })
+
+  test('right-clicking a tile calls onDeviceContextMenu with THAT tile\'s own id, not another one\'s', async () => {
+    const other: DeviceInfo = { ...device, id: 'dev-2', label: 'pixel 8' }
+    let reportedId: string | null = null
+    const { getByTestId } = renderWithApi(
+      <Wall devices={[device, other]} jobs={[]} onDeviceContextMenu={(id) => (reportedId = id)} />,
+      { '/api/adb/stats': adbStatsBody(8) },
+    )
+    const tile2 = await waitFor(() => getByTestId('tile-dev-2'))
+    fireEvent.contextMenu(tile2)
+    expect(reportedId).toBe('dev-2')
+  })
+
+  test('a Wall with no onDeviceContextMenu wired never throws on a right-click', async () => {
+    const { getByTestId } = renderWithApi(<Wall devices={[device]} jobs={[]} />, { '/api/adb/stats': adbStatsBody(8) })
+    const tile = await waitFor(() => getByTestId('tile-dev-1'))
+    expect(() => fireEvent.contextMenu(tile)).not.toThrow()
   })
 })

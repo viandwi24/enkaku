@@ -73,8 +73,27 @@ export const scriptGet = defineCapability({
   },
 })
 
+/**
+ * Plan 110 §3.2, §5 step 110.3 — a published script's name is
+ * `<plugin>/<script>`, because a script cannot exist outside a plugin. The
+ * plugin half is `definePlugin`'s own id shape; the script half additionally
+ * allows `.`/`_`, which a recording's name may contain (`plugins/owner.ts`).
+ *
+ * Expressed in the INPUT SCHEMA and not only in the writer's refusal because
+ * this capability is what the AI agent and MCP call: the schema is the tool
+ * description a model reads before it writes anything, so the requirement has
+ * to be visible there, not discovered from an error after a build.
+ */
+const MEMBER_NAME_SHAPE = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9._-]*$/
+
 const PublishFields = {
-  name: z.string().min(1),
+  name: z
+    .string()
+    .min(1)
+    .regex(
+      MEMBER_NAME_SHAPE,
+      'a script is published as "<plugin>/<script>" — a script cannot exist outside a plugin (plan 110 §3.2). Write the entry as definePlugin({ id, version, scripts: [ … ] }) and publish it as "<that id>/<the member id>".',
+    ),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/),
   paramsSchema: z.unknown().optional(),
   /** Plan 97 §4.4, §4.7 — mirrors `paramsSchema` above exactly. */
@@ -106,7 +125,7 @@ export const scriptPublish = defineCapability({
   deadline: 40_000,
   effect: 'write',
   description:
-    'Publish a new script version, either from a pre-built bundle or from a workspace path (which the core bundles itself). (name, version) must be unique — publishing an existing pair refuses with script_version_exists. Importing anything outside @enkaku/sdk, zod, or another workspace path fails the build and publishes nothing.',
+    'Publish a new version of a PLUGIN member, either from a pre-built bundle or from a workspace path (which the core bundles itself). `name` must be "<plugin>/<script>": a script cannot exist outside a plugin, so write the entry as definePlugin({ id, version, scripts: [ … ] }) — the owning plugin is created on first publish and the script is published as a member of it. (name, version) must be unique — publishing an existing pair refuses with script_version_exists. A plugin published as a verified package (POST /api/plugins) cannot gain a member this way; add it to that plugin\'s bundle and republish the plugin. Importing anything outside @enkaku/sdk, zod, or another workspace path fails the build and publishes nothing.',
   handler: async (ctx, input) => {
     if ('path' in input) {
       const { bundle, source } = await buildScriptFromWorkspace(ctx.workspace, input.path)

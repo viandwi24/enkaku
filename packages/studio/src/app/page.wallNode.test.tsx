@@ -19,7 +19,7 @@ import { cleanup, renderWithApi } from '@/lib/test/render'
  * this test the same way it broke the product.
  *
  * `LiveView` (a WebCodecs/WS video decoder) is the one exception, mocked out
- * for the same reason `WallTile.test.tsx`/`FocusOverlay.test.tsx` mock it out
+ * for the same reason `WallTile.test.tsx`/`DevicePopup.test.tsx` mock it out
  * of their own tests — standing up a real decoder in happy-dom is not needed
  * to prove the caption text sitting beside it, and `WallTile`'s caption does
  * not depend on `LiveView` having mounted successfully.
@@ -30,12 +30,12 @@ mock.module('@/components/LiveView', () => ({
 
 let wsListener: ((m: { type: string; payload: unknown }) => void) | null = null
 mock.module('@/lib/ws', () => ({
-  // `page.tsx` also statically imports `FocusOverlay`, which imports
+  // `page.tsx` also statically imports `DevicePopup`, which imports
   // `AssistDialog` (`instanceof` check in its own catch branch) — the whole
-  // module graph is loaded even though this file never opens the focus
-  // overlay, so the mock still has to export this named binding or the
+  // module graph is loaded even though this file never opens the device
+  // popup, so the mock still has to export this named binding or the
   // dynamic `import('./page')` below fails to link. Same precedent
-  // `FocusOverlay.test.tsx` already set for itself.
+  // `DevicePopup.test.tsx` already set for itself.
   WsRequestError: class WsRequestError extends Error {
     code: string
     constructor(code: string, message: string) {

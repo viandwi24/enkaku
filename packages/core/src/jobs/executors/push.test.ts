@@ -41,6 +41,9 @@ describe('createPushExecutor', () => {
       async install() {
         return { package: null, durationMs: 0, output: '' }
       },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
+      },
       async push(deviceId, artifactId, remotePath, opts) {
         pushCalledWith = { deviceId, artifactId, remotePath }
         opts.onProgress?.(10, 10)
@@ -72,6 +75,9 @@ describe('createPushExecutor', () => {
     const transfer: TransferService = {
       async install() {
         return { package: null, durationMs: 0, output: '' }
+      },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
       },
       async push() {
         controller.abort()

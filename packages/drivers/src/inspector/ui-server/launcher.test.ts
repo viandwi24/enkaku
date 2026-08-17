@@ -25,16 +25,29 @@ function dumpsysOutput(opts: { installed?: boolean; versionCode?: number } = {})
 }
 
 /**
+ * `pm list packages com.github.uiautomator` as a real device answers it — the
+ * substring filter matches BOTH packages on a healthy device. `app`/`test`
+ * select which of the two lines are present.
+ */
+function pmListOutput(opts: { app?: boolean; test?: boolean } = {}): string {
+  const lines: string[] = []
+  if (opts.app !== false) lines.push(`package:${UI_SERVER_PACKAGE}`)
+  if (opts.test !== false) lines.push(`package:${UI_SERVER_TEST_PACKAGE}`)
+  return `${lines.join('\n')}\n`
+}
+
+/**
  * A fake `hostAdb` good enough to drive `start()`/`stop()`: `forward` always
  * succeeds, and `forward --list` reports the port as owned by the launcher's
  * own serial — matching the real device behaviour once `adb forward` has run.
  * `exec`'s `dumpsys package` reply defaults to "installed, versionCode
- * 2003003" (the plan's own real-farm evidence) — tests that care about the
- * verification outcome override it via `dumpsysReply`.
+ * 2003003" (the plan's own real-farm evidence) and its `pm list packages`
+ * reply to "both APKs present" — tests that care about either verification
+ * outcome override them via `dumpsysReply`/`pmListReply`.
  */
 function fakeDeps(
   overrides: Partial<UiServerLauncherDeps> = {},
-  opts: { dumpsysReply?: (cmd: string) => string } = {},
+  opts: { dumpsysReply?: (cmd: string) => string; pmListReply?: () => string } = {},
 ): {
   deps: UiServerLauncherDeps
   execCalls: string[]
@@ -55,6 +68,7 @@ function fakeDeps(
     exec: async (cmd) => {
       execCalls.push(cmd)
       if (cmd.startsWith('dumpsys package')) return opts.dumpsysReply?.(cmd) ?? dumpsysOutput()
+      if (cmd.startsWith('pm list packages')) return opts.pmListReply?.() ?? pmListOutput()
       return ''
     },
     hostAdb: async (args) => {
@@ -280,5 +294,163 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
 
     const { deps: missingDeps } = fakeDeps({}, { dumpsysReply: () => dumpsysOutput({ installed: false }) })
     expect(await createUiServerLauncher(missingDeps).isInstalled()).toBe(false)
+  })
+
+  test('isInstalled() is false when only the app package is there — the instrumentation cannot run without the test one', async () => {
+    const { deps } = fakeDeps({}, { pmListReply: () => pmListOutput({ test: false }) })
+    expect(await createUiServerLauncher(deps).isInstalled()).toBe(false)
+  })
+})
+
+/**
+ * The app-installed/test-missing state, observed on ZP2222RMBS (moto g06):
+ * `dumpsys package com.github.uiautomator` answers perfectly, `pm list
+ * packages | grep uiautomator` shows only the app, and the instrumentation
+ * (which targets the TEST package) dies with `ended unexpectedly: closed`.
+ */
+describe('ensureInstalled() — the instrumentation package is verified too, not just the app', () => {
+  test('app installed, test package missing → detected, installBoth() runs, and the device is usable afterwards', async () => {
+    let installed = false
+    const { deps, hostAdbCalls, logs } = fakeDeps({}, { pmListReply: () => pmListOutput({ test: installed }) })
+    const baseHostAdb = deps.hostAdb
+    deps.hostAdb = async (args, opts) => {
+      if (args.includes('install')) installed = true
+      return baseHostAdb(args, opts)
+    }
+    const launcher = createUiServerLauncher(deps)
+
+    await launcher.ensureInstalled()
+
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2) // app + test
+    expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(0)
+    expect(logs.some((l) => l.level === 'warn' && l.msg.includes(`${UI_SERVER_TEST_PACKAGE} is missing`))).toBe(true)
+    expect(logs.some((l) => l.level === 'info' && l.msg.includes(`${UI_SERVER_TEST_PACKAGE} installed and verified`))).toBe(true)
+  })
+
+  test('both packages missing → unchanged from today: one installBoth(), no uninstall, no throw', async () => {
+    let installed = false
+    const { deps, hostAdbCalls, mismatches } = fakeDeps(
+      { expectedArtifact: { versionCode: 2003003 } },
+      {
+        dumpsysReply: () => dumpsysOutput({ installed }),
+        pmListReply: () => (installed ? pmListOutput() : ''),
+      },
+    )
+    const originalHostAdb = deps.hostAdb
+    deps.hostAdb = async (args, opts) => {
+      if (args.includes('install')) installed = true
+      return originalHostAdb(args, opts)
+    }
+    const launcher = createUiServerLauncher(deps)
+
+    await launcher.ensureInstalled()
+
+    expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(0)
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2)
+    expect(mismatches).toHaveLength(0)
+  })
+
+  test('both packages present → NO reinstall (this is the hot path: every session start runs it)', async () => {
+    const { deps, hostAdbCalls } = fakeDeps({ expectedArtifact: { versionCode: 2003003 } })
+    const launcher = createUiServerLauncher(deps)
+
+    await launcher.ensureInstalled()
+
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(0)
+    expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(0)
+  })
+
+  test('a repair that does not bring the test package back throws ONE error naming it — never a socket timeout', async () => {
+    const { deps, hostAdbCalls, mismatches } = fakeDeps({}, { pmListReply: () => pmListOutput({ test: false }) })
+    const launcher = createUiServerLauncher(deps)
+
+    await expect(launcher.ensureInstalled()).rejects.toThrow(
+      `${UI_SERVER_TEST_PACKAGE} is not installed on serial-1 after one repair attempt — ${UI_SERVER_PACKAGE} alone cannot run the ui-server instrumentation (${UI_SERVER_INSTRUMENTATION})`,
+    )
+    // Exactly one repair cycle, then degrade — the same budget as plan 41 §3.3.
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2)
+    expect(mismatches).toEqual([{ reason: 'not_installed' }])
+  })
+
+  test('start() degrades through the same path, before the instrumentation is ever launched', async () => {
+    const { deps, streamCalls } = fakeDeps({}, { pmListReply: () => pmListOutput({ test: false }) })
+    const launcher = createUiServerLauncher(deps)
+
+    await expect(launcher.start(9123)).rejects.toThrow(UI_SERVER_TEST_PACKAGE)
+    expect(streamCalls).toHaveLength(0)
+  })
+
+  test('after the version-mismatch repair, a still-absent test package is reported without a SECOND install cycle', async () => {
+    let dumpsysCalls = 0
+    const { deps, hostAdbCalls } = fakeDeps(
+      { expectedArtifact: { versionCode: 2003003 } },
+      {
+        // First read: stale (drives the version_mismatch repair). After the
+        // reinstall: the expected version — but the test package never appears.
+        dumpsysReply: () => (++dumpsysCalls === 1 ? dumpsysOutput({ versionCode: 2001001 }) : dumpsysOutput({ versionCode: 2003003 })),
+        pmListReply: () => pmListOutput({ test: false }),
+      },
+    )
+    const launcher = createUiServerLauncher(deps)
+
+    await expect(launcher.ensureInstalled()).rejects.toThrow(
+      `${UI_SERVER_TEST_PACKAGE} is not installed on serial-1 after reinstalling both APKs`,
+    )
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2) // the mismatch repair's, and no more
+  })
+
+  test('an unreadable package listing is skipped, not treated as a missing test package', async () => {
+    const { deps, hostAdbCalls, logs } = fakeDeps({}, { pmListReply: () => '' })
+    const launcher = createUiServerLauncher(deps)
+
+    await launcher.ensureInstalled()
+
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(0)
+    expect(logs.some((l) => l.msg.includes('could not read the installed package list'))).toBe(true)
+  })
+})
+
+describe('installApk (plan 106 §5 step 106.8) — routes installBoth() through the transfer machinery instead of a raw hostAdb install', () => {
+  test('when supplied, BOTH apks go through installApk, and hostAdb never sees an "install" call', async () => {
+    const installCalls: Array<{ localPath: string; label: 'app' | 'test' }> = []
+    const { deps, hostAdbCalls } = fakeDeps(
+      {
+        installApk: async (localPath, label) => {
+          installCalls.push({ localPath, label })
+        },
+      },
+      { dumpsysReply: () => dumpsysOutput({ installed: false }) },
+    )
+    const launcher = createUiServerLauncher(deps)
+    await launcher.ensureInstalled()
+
+    expect(installCalls).toEqual([
+      { localPath: '/tools/ui-server.apk', label: 'app' },
+      { localPath: '/tools/ui-server-test.apk', label: 'test' },
+    ])
+    expect(hostAdbCalls.some((a) => a.includes('install'))).toBe(false)
+  })
+
+  test('a rejection from installApk propagates — the repair-once loop still applies on top of it', async () => {
+    const { deps, hostAdbCalls } = fakeDeps(
+      {
+        installApk: async () => {
+          throw new Error('E_INSTALL_FAILED: INSTALL_FAILED_VERIFICATION_FAILURE')
+        },
+      },
+      { dumpsysReply: () => dumpsysOutput({ installed: false }) },
+    )
+    const launcher = createUiServerLauncher(deps)
+
+    await expect(launcher.ensureInstalled()).rejects.toThrow(/INSTALL_FAILED_VERIFICATION_FAILURE/)
+    expect(hostAdbCalls.some((a) => a.includes('install'))).toBe(false)
+  })
+
+  test('absent (the default): falls back to the raw hostAdb install path unchanged — every OTHER test in this file proves this', async () => {
+    const { deps, hostAdbCalls } = fakeDeps({}, { dumpsysReply: () => dumpsysOutput({ installed: false }) })
+    expect(deps.installApk).toBeUndefined()
+    const launcher = createUiServerLauncher(deps)
+    await launcher.ensureInstalled()
+    expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2)
   })
 })

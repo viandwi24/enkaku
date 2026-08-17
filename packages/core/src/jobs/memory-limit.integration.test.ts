@@ -124,7 +124,7 @@ async function runOneMemoryHogJob(opts: {
 
   const { scripts } = await import('../db/schema')
   db.insert(scripts)
-    .values({ id: 's-memory-hog', name: 'memory-hog', version: '1.0.0', bundle: opts.bundle, enabled: true, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id: 's-memory-hog', name: 'memory-hog', version: '1.0.0', bundle: opts.bundle, enabled: true, createdAt: new Date() })
     .run()
 
   const runner = createJobRunner({

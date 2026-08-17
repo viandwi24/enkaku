@@ -1,5 +1,5 @@
 import { type ReactNode, useMemo } from 'react'
-import { formatValue } from '@enkaku/protocol'
+import { formatFieldValue } from '@/lib/format'
 import type { FieldPlan, PlannedField } from '../schema-form/plan'
 import type { JsonSchemaNode } from '../schema-form/types'
 import { planResult, type PlannedResultField } from './plan-result'
@@ -8,9 +8,12 @@ import { planResult, type PlannedResultField } from './plan-result'
  * Plan 97 §3.6, §4.8 — a result's own read-only twin of `SchemaForm`. It
  * never edits, never validates, and consumes exactly what `planResult`
  * plans: a `FieldPlan` (from `planField`, unchanged — K3) paired with the
- * value it actually holds, formatted through `formatValue` (K4) so a result
- * reading `4 min 12 s` and a form label reading `4 min 12 s` come from the
- * same line of code.
+ * value it actually holds, formatted through `formatFieldValue` (K4) so a
+ * result reading `4 min 12 s` and a form label reading `4 min 12 s` come
+ * from the same line of code. `formatFieldValue` is `@enkaku/protocol`'s own
+ * `formatValue` plus the one browser-only case — `kind: 'timestamp'` reads
+ * as `relativeTime`, because a result on screen is being read NOW (plan 108
+ * step 108.7 item A).
  *
  * `planResult`'s three rules (R1/R2/R3) apply only at the TOP level (its own
  * module doc explains why); everything BELOW the top level — a nested
@@ -60,10 +63,13 @@ function renderScalar(plan: FieldPlan, value: unknown): string {
       return match ? match.label : String(value)
     }
     case 'number':
-      return formatValue(plan.kind, plan.unit, value)
+      return formatFieldValue(plan.kind, plan.unit, value)
     case 'pair':
-      return formatValue(plan.item.kind, plan.item.unit, value)
+      return formatFieldValue(plan.item.kind, plan.item.unit, value)
     case 'text':
+    // A workspace path IS its own best rendering — `/captions.txt`, not
+    // `"/captions.txt"` with the quotes a JSON fallback would add.
+    case 'workspacePath':
       return typeof value === 'string' && value.length > 0 ? value : '—'
     default:
       return jsonText(value)

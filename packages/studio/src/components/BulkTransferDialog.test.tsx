@@ -104,3 +104,40 @@ describe('BulkTransferDialog (plan 93 §3.11, §3.13, §4.8, F15, step 93.11)', 
     expect((posted as { params: { remotePath: string } }).params.remotePath).toBe('/sdcard/report.txt')
   })
 })
+
+describe('BulkTransferDialog — re-attach instead of a fresh Push/Pull (plan 107 §3.6, step 107.5)', () => {
+  test('a fully-overlapping ephemeral push on the sole target re-attaches to its own byte progress, no fresh Push button', async () => {
+    const devices = [makeDevice('d1', 'Phone A')]
+    renderWithApi(<BulkTransferDialog mode="push" open devices={devices} onOpenChange={() => {}} />, {
+      '/api/transfers': {
+        body: { transfers: [{ transferId: 'tr-1', deviceId: 'd1', kind: 'push', state: 'running', startedAt: 100, updatedAt: 100, sent: 10, total: 100, ok: null, error: null }] },
+      },
+      '/api/jobs*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/batches*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/command-runs*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/devices': { body: { items: devices, nextCursor: null, total: devices.length } },
+    })
+
+    await waitFor(() => expect(screen.getByText(/re-attached to the operation already running/i)).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Push' })).toBeNull()
+  })
+
+  test('a partial overlap on a pull is named, never merged — Pull stays disabled until narrowed', async () => {
+    const user = userEvent.setup()
+    const devices = [makeDevice('d1', 'Phone A'), makeDevice('d2', 'Phone B')]
+    renderWithApi(<BulkTransferDialog mode="pull" open devices={devices} onOpenChange={() => {}} />, {
+      '/api/transfers': {
+        body: { transfers: [{ transferId: 'tr-1', deviceId: 'd1', kind: 'pull', state: 'running', startedAt: 100, updatedAt: 100, sent: 10, total: null, ok: null, error: null }] },
+      },
+      '/api/jobs*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/batches*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/command-runs*': { body: { items: [], nextCursor: null, total: 0 } },
+      '/api/devices': { body: { items: devices, nextCursor: null, total: devices.length } },
+    })
+
+    await waitFor(() => expect(screen.getByText(/already running on 1 of the selected devices/i)).toBeTruthy())
+    await user.type(screen.getByPlaceholderText('/sdcard/report.txt'), '/sdcard/report.txt')
+    const pullButton = screen.getByRole('button', { name: 'Pull' }) as HTMLButtonElement
+    expect(pullButton.disabled).toBe(true)
+  })
+})

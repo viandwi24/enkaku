@@ -48,7 +48,17 @@ describe('planResult — delegation (H3: a flat object of scalars plus one recor
     const fields = planResult(autoScrollResult, value)
     const byPath = new Map(fields.map((f) => [f.path, f]))
 
-    expect(byPath.get('videos')?.plan).toEqual({ control: 'number', kind: 'count', unit: undefined, enforcement: undefined })
+    // `step`/`increment` land here too (96.31) — `planResult` delegates to
+    // the SAME `planField` a form uses, unchanged, so an integer result
+    // field plans `step: 1`/`increment: 1` exactly as a form's would.
+    expect(byPath.get('videos')?.plan).toEqual({
+      control: 'number',
+      kind: 'count',
+      unit: undefined,
+      enforcement: undefined,
+      step: 1,
+      increment: 1,
+    })
     expect(byPath.get('watchSeconds')?.plan).toMatchObject({ control: 'number', kind: 'duration', unit: 's' })
     expect(byPath.get('matchRate')?.plan).toMatchObject({ control: 'number', kind: 'chance' })
     expect(byPath.get('endedOnStall')?.plan).toEqual({ control: 'toggle' })

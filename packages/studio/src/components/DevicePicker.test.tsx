@@ -45,7 +45,9 @@ describe('DevicePicker — assistedBy (plan 91 §3.4 item 4, §4.4, F25, gap 2)'
     const device: DeviceInfo = {
       ...BASE_DEVICE,
       heldBy: { kind: 'job', id: 'job-1', label: 'checkout@1.4.2', runId: null, takeable: false, acquiredAt: 0, expiresAt: null },
-      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+      // Plan 105 §3.2 — a fresh `expiresAt` (just touched) so this reads
+      // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
     }
     renderWithApi(<DevicePicker devices={[device]} value="" onChange={() => {}} />)
     // `HolderBadge` defaults to `asLink={true}` here (the picker's row is a

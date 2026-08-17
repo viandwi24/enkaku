@@ -39,6 +39,9 @@ describe('createPullExecutor', () => {
       async install() {
         return { package: null, durationMs: 0, output: '' }
       },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
+      },
       async push() {
         return { mediaScan: { ran: false, method: null, ms: 0 } }
       },
@@ -70,6 +73,9 @@ describe('createPullExecutor', () => {
     const transfer: TransferService = {
       async install() {
         return { package: null, durationMs: 0, output: '' }
+      },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
       },
       async push() {
         return { mediaScan: { ran: false, method: null, ms: 0 } }

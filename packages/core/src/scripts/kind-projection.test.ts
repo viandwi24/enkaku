@@ -44,7 +44,7 @@ function minimalWorkflowDoc(name: string, version = '1.0.0'): WorkflowDoc {
 
 function seedScript(db: Db, id: string, name: string, version = '1.0.0') {
   db.insert(scripts)
-    .values({ id, name, version, kind: 'script', bundle: 'export {}', enabled: true, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, kind: 'script', bundle: 'export {}', enabled: true, createdAt: new Date() })
     .run()
 }
 
@@ -96,7 +96,7 @@ describe('GET /api/scripts — kind projection (plan 99 §5 step 99.6)', () => {
     // Deliberately not calling seedScript's explicit `kind: 'script'` — this
     // mirrors a row inserted through the pre-plan-99 insert shape, relying
     // purely on the column's own `NOT NULL DEFAULT 'script'`.
-    db.insert(scripts).values({ id: 's-old', name: 'old-script', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+    db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 's-old', name: 'old-script', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
     const app = createScriptRoutes({ db })
     const res = await app.request('/s-old')
     const body = (await res.json()) as { script: { kind: string } }

@@ -1,9 +1,9 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Download, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, Search, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
+import { Download, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, Search, SlidersHorizontal, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   connectionBadge,
@@ -40,18 +40,21 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Wall } from '@/components/wall/Wall'
-import { FocusOverlay } from '@/components/wall/FocusOverlay'
+import { DevicePopup } from '@/components/device-popup/DevicePopup'
 import { SelectionCursorBadge } from '@/components/wall/SelectionCursorBadge'
+import { DeviceContextMenu } from '@/components/wall/DeviceContextMenu'
+import { useDragSelect } from '@/components/wall/useDragSelect'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useBulkSelection } from '@/hooks/use-bulk-selection'
 import { api, describeApiError, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
 import { isAdmin, useAuth } from '@/lib/auth'
-import { readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
+import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -80,6 +83,26 @@ const CONNECTION_FILTER_LABEL: Record<ConnectionFilter, string> = {
   wifi: 'Wi-Fi',
   tcp: 'TCP (unknown)',
 }
+/**
+ * The floating pill treatment (plan 101 §5 step 101.7's second owner note,
+ * folded in mid-step, 2026-08-16; header composition corrected by step
+ * 101.8, 2026-08-16) — `refs/ui`'s own Devices-screen chrome
+ * (`data-screen-label="Devices"`'s search/Cluster/Status row): a rounded,
+ * blurred capsule instead of a plain bordered box. Shared by the header's
+ * Search/Cluster/Status pills (`PageHeader`'s `actions`, matching the
+ * reference's own header exactly) and the filter row's "Filters" popover
+ * trigger below, so all of them read as one family — height, radius, fill,
+ * blur and border all come from here, and each caller only adds what makes
+ * IT different (a width, an extra gap). Blur is permitted here:
+ * `docs/design.md`'s corrected rule is "nothing that scales with device
+ * count," not "exactly one element" — a fixed handful of header/filter
+ * pills never multiplies with the fleet the way a per-tile blur would
+ * (plan 100's decode-budget argument is about repeated cost, not blur as
+ * such).
+ */
+const PILL =
+  'flex h-9 items-center gap-1.5 rounded-full border border-line bg-surface-2/55 px-3.5 text-[12.5px] shadow-lg backdrop-blur-[18px] backdrop-saturate-[150%]'
+
 /** The View and Group controls (plan 47 §3.6, §4.5) — both linkable in the query string. */
 type View = 'list' | 'wall'
 type GroupBy = 'none' | 'cluster' | 'status' | 'tag'
@@ -145,6 +168,21 @@ function DashboardView() {
   // (via `readLocalPrefs`/`writeLocalPrefs`) and survives a new tab on
   // purpose, unlike `view` above.
   const [tileSize, setTileSizeState] = useState<TileSize>(() => readLocalPrefs().tileSize)
+  // Pagination (plan 101 §5 step 101.7, requirement 4) — client-side, over
+  // the already-fetched `filtered` set: every WS device event keeps updating
+  // `devices` exactly as it does today, and a device on page 3 that goes
+  // offline still updates in place, because paging never re-fetches or
+  // reshapes that state — it only slices the same array a moment before
+  // rendering. `page` itself is NOT persisted (an ephemeral position, not a
+  // preference); `pageSize` is, the same `localStorage` mechanism `tileSize`
+  // already uses (a property of the screen someone is sitting in front of).
+  const [pageSize, setPageSizeState] = useState<PageSize>(() => readLocalPrefs().pageSize)
+  const [pageRaw, setPageRaw] = useState(0)
+  const setPageSize = (n: PageSize) => {
+    setPageSizeState(n)
+    setPageRaw(0)
+    writeLocalPrefs({ pageSize: n })
+  }
   const [error, setError] = useState<string | null>(null)
   const [enrollOpen, setEnrollOpen] = useState(false)
   // Multi-select for a batch action (plan 39 §4.5, §4.7) — "Install on
@@ -153,9 +191,21 @@ function DashboardView() {
   // `useBulkSelection` below, which needs a plain array to hand back a
   // single `setSelected` call — and, unlike before, selection now works in
   // BOTH List and Wall view off this one piece of state (F11: the wall
-  // tile used to hard-code no selection surface at all).
-  const [selectMode, setSelectMode] = useState(false)
+  // tile used to hard-code no selection surface at all). Plan 101 §5 step
+  // 101.7 (folded in mid-step, 2026-08-16) removed the separate "select
+  // mode" this used to gate: a click on a device toggles it directly now,
+  // matching `refs/ui`'s own model, so there is no longer a mode to enter or
+  // exit — only `selectedIds` itself remains.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // Drag-box select and the right-click context menu (plan 101 §3.9, §5 step
+  // 101.5, G15) — both drive this SAME `selectedIds`/`setSelectedIds` pair,
+  // never a selection state of their own. `gridContainerRef` wraps whichever
+  // view is actually rendering devices below (List, grouped List, or Wall);
+  // `useDragSelect` looks for `data-device-id` wrappers anywhere inside it,
+  // so one hook instance covers both views without either needing to know
+  // about the other's DOM shape.
+  const gridContainerRef = useRef<HTMLDivElement>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null)
   const [installBatchOpen, setInstallBatchOpen] = useState(false)
   // Push/Pull file (plan 93 §3.11, §3.16, §4.8, F15, step 93.11) — one
   // dialog, two modes, beside the existing Install: `BulkTransferDialog`
@@ -566,12 +616,66 @@ function DashboardView() {
     )
   }, [filtered, group])
 
+  // Pagination applies to the UNGROUPED grid only (plan 101 §5 step 101.7).
+  // Grouping (None | Cluster | Status | Tag) reorganises `filtered` into
+  // named buckets that each want to show everything they contain — a "page
+  // 2 of 4" spanning bucket boundaries would not read as browsing a list the
+  // way `refs/ui`'s own flat `Showing X of Y` + Prev/Next does, and the
+  // reference has no grouping concept to weigh against anyway. So: grouped
+  // view keeps today's behaviour (every match rendered, no page controls);
+  // ungrouped List and Wall both page over `filtered` the same way, since
+  // grouping is shared between them already (`groups` above feeds both).
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  // Clamped rather than reset by an effect: an effect keyed on `filtered`
+  // would fire on every WS device push (a NEW array from the `useMemo`
+  // above), yanking an operator back to page 0 while they are mid-review of
+  // page 3 just because one unrelated device's battery ticked over. Clamping
+  // at read time keeps `page` itself untouched by anything but the
+  // filter-reset effect below and the Prev/Next handlers.
+  const page = Math.min(pageRaw, totalPages - 1)
+  const pageStart = page * pageSize
+  const pageDevices = useMemo(() => filtered.slice(pageStart, pageStart + pageSize), [filtered, pageStart, pageSize])
+
+  // A page reset belongs to an operator actively narrowing the list, never
+  // to a live device update — keyed on the SAME filter inputs `filtered`
+  // itself depends on, deliberately excluding `devices` (which changes on
+  // every WS push) so this never fires for a reason unrelated to the
+  // operator's own click.
+  useEffect(() => {
+    setPageRaw(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, query, selectedTags, clusterFilter, readinessFilter, connectionFilter, group])
+
+  const goPrevPage = () => setPageRaw(Math.max(0, page - 1))
+  const goNextPage = () => setPageRaw(Math.min(totalPages - 1, page + 1))
+
   const toggleSelected = (id: string) =>
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
 
-  const exitSelectMode = () => {
-    setSelectMode(false)
-    setSelectedIds([])
+  /**
+   * Plan 101 §5 step 101.7 (folded in mid-step, 2026-08-16): there is no more
+   * "select mode" to exit — a click on any device toggles it directly
+   * (`refs/ui`'s own model), so the only remaining action is clearing
+   * whatever is currently selected. Renamed from `exitSelectMode` at every
+   * call site (the dialogs that used to call it on close still want the
+   * SAME behaviour — clear the selection once the bulk action finishes).
+   */
+  const clearSelection = () => setSelectedIds([])
+
+  /**
+   * A click on a device toggles it directly now (plan 101 §5 step 101.7) —
+   * shared by both grid views' wrapper `onClick` below. Bails when the click
+   * actually landed on one of the card's OWN interactive descendants (a
+   * link, a button, a form control, a menu item) so `DeviceCard`'s label
+   * link, Control/Run, and its "More actions" menu keep working exactly as
+   * they did before this step — only a click on the REST of the card (or a
+   * `WallTile`, whose own internal click handler calls this identically)
+   * toggles selection. Mirrors `useDragSelect.ts`'s own bail-on-interactive
+   * philosophy without duplicating its DOM-walk technique.
+   */
+  const toggleDeviceOnClick = (id: string, e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest?.('a, button, input, select, textarea, [role="menuitem"]')) return
+    toggleSelected(id)
   }
 
   // Select-all / tri-state (plan 91 §5 step 91.8, F12) — over the currently
@@ -580,6 +684,40 @@ function DashboardView() {
   // what is actually on screen, not the whole unfiltered fleet.
   const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
   const bulk = useBulkSelection(filteredIds, selectedIds, setSelectedIds)
+
+  // The drag rectangle itself (plan 101 §5 step 101.5) — `onSelect` is
+  // `setSelectedIds` directly, not a wrapping arrow, so the SAME array this
+  // page already reads everywhere (the toolbar, `bulk`, `DeviceCard`/`Wall`'s
+  // own `selected` props) is what a drag ever writes to. No more
+  // `onDragStart` (plan 101 §5 step 101.7 dropped "select mode" entirely —
+  // selection is always live, so there is no mode left to turn on).
+  const dragSelect = useDragSelect({
+    containerRef: gridContainerRef,
+    selectedIds,
+    onSelect: setSelectedIds,
+  })
+
+  // Right-click opens the context menu (plan 101 §5 step 101.5, G15) —
+  // `refs/ui`'s own rule: a device already inside the current selection
+  // keeps the whole selection (so right-clicking one of eight selected
+  // devices still offers to act on all eight); a device NOT in it becomes
+  // the sole selection, exactly like a plain left click would.
+  const handleDeviceContextMenu = (id: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    setSelectedIds((prev) => (prev.includes(id) ? prev : [id]))
+    setContextMenu({ x: e.clientX, y: e.clientY, deviceId: id })
+  }
+
+  /**
+   * How many of the "Filters" popover's own filters (readiness, connection,
+   * group-by) are set away from their default (plan 101 §5 step 101.8) —
+   * shown as a small badge on the popover's trigger pill so an operator can
+   * tell at a glance that something in there is narrowing the list, without
+   * opening it to check. Cluster and status live in the header now (their
+   * own pills), so they are not counted here.
+   */
+  const activeSecondaryFilterCount =
+    (readinessFilter !== 'all' ? 1 : 0) + (connectionFilter !== 'all' ? 1 : 0) + (group !== 'none' ? 1 : 0)
 
   const releaseQuarantine = (d: DeviceInfo) =>
     // Not one of the call sites the plan named for this file — found while
@@ -637,96 +775,96 @@ function DashboardView() {
     <>
       <PageHeader
         title="Devices"
-        description="Phones connected to this farm"
+        titlePill
+        meta={
+          // `refs/ui`'s own title pill carries the word "Devices" plus a
+          // divider plus the TOTAL farm count in ONE object, not a heading
+          // beside a separate badge (plan 101 §5 step 101.8, owner-specified
+          // 2026-08-16 — a side-by-side against `refs/ui` found the 101.7
+          // version still rendered these as two objects). `PageHeader`'s
+          // new `titlePill` prop (added by this step) supplies the pill
+          // shell and the divider; this screen only owns the count inside
+          // it. Farm-wide (`devices?.length`), not the filtered subset —
+          // `refs/ui`'s own `totalDevices` is `all.length`, unfiltered, and
+          // the Status pill below already answers "how many match the
+          // filters."
+          devices !== null && <span className="readout text-fg-muted">{devices.length}</span>
+        }
         actions={
           <div className="flex items-center gap-2">
-            {/* List | Wall (plan 42 §4.6) — a mode on this page, so the
-                filters and tags below apply to the wall unchanged. */}
-            <div className="inline-flex items-center rounded-lg border p-0.5">
-              <button
-                type="button"
-                aria-pressed={view === 'list'}
-                onClick={() => setView('list')}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors',
-                  view === 'list' ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
-                )}
-              >
-                <List className="size-3.5" aria-hidden />
-                List
-              </button>
-              <button
-                type="button"
-                aria-pressed={view === 'wall'}
-                onClick={() => setView('wall')}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors',
-                  view === 'wall' ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
-                )}
-              >
-                <LayoutGrid className="size-3.5" aria-hidden />
-                Wall
-              </button>
+            {/* Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the
+                header row now holds exactly what `refs/ui`'s own
+                `data-screen-label="Devices"` header holds — a compact
+                Search, a `Cluster:` pill, a `Status:` pill — plus the ONE
+                primary action `docs/design.md`'s `PageHeader` rule calls
+                for ("+ Add device"). Everything the previous version of
+                this header also carried — List/Wall, tile size, Select
+                all, Discovered — is a VIEW or BULK control, not page
+                identity, and moved down into the filter row below; the ⋮
+                menu is unchanged (still just "Renumber fleet…"). */}
+            <div className={cn(PILL, 'min-w-[140px] max-w-[200px] flex-1 gap-2')}>
+              <Search className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search name or serial…"
+                aria-label="Search devices"
+                className="h-auto border-0 bg-transparent p-0 text-[12.5px] shadow-none focus-visible:ring-0"
+              />
             </div>
-            {/* Tile size — S / M / L (plan 92 §3.11): a wall control, not a
-                setting. It is a property of the screen someone is sitting in
-                front of, so it persists in `localStorage` (`writeLocalPrefs`,
-                unlike `view`'s own per-tab `sessionStorage` above) and only
-                appears once the Wall is actually on screen, since it has no
-                effect on the List. */}
-            {view === 'wall' && (
-              <div className="inline-flex items-center rounded-lg border p-0.5" role="group" aria-label="Tile size">
-                {(
-                  [
-                    ['s', 'Small tiles'],
-                    ['m', 'Medium tiles'],
-                    ['l', 'Large tiles'],
-                  ] as const
-                ).map(([size, label]) => (
-                  <button
-                    key={size}
-                    type="button"
-                    aria-pressed={tileSize === size}
-                    aria-label={label}
-                    title={label}
-                    onClick={() => setTileSize(size)}
-                    className={cn(
-                      'rounded-md px-2 py-1 text-[11px] font-semibold uppercase leading-none transition-colors',
-                      tileSize === size ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
-                    )}
-                  >
-                    {size}
-                  </button>
+
+            {/* This row's mapping of `refs/ui`'s own "Cluster:" dropdown —
+                moved up from the filter row below to match the reference's
+                own header composition exactly (plan 101 §5 step 101.8). */}
+            <Select value={clusterFilter} onValueChange={setClusterFilter}>
+              <SelectTrigger className={cn(PILL, 'w-auto gap-1.5')} aria-label="Filter by cluster">
+                <span className="text-fg-subtle">Cluster:</span>
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All clusters</SelectItem>
+                <SelectItem value="none">Unclustered</SelectItem>
+                {clusters.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
                 ))}
-              </div>
-            )}
-            {/* Selection now works in EITHER view (plan 91 §5 step 91.8,
-                F11) — no longer gated to `view === 'list'`, since it is one
-                shared `useBulkSelection` instance behind both the table and
-                the Wall. */}
-            {selectMode ? (
-              <>
-                <Button size="sm" variant="ghost" onClick={bulk.toggleAll}>
-                  {bulk.allChecked ? 'Clear all' : 'Select all'}
-                </Button>
-                <Button size="sm" variant="outline" onClick={exitSelectMode}>
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <Button size="sm" variant="outline" onClick={() => setSelectMode(true)}>
-                Select devices
-              </Button>
-            )}
-            {/* Discovered tray entry point (plan 56 §4.5) — deliberately
-                absent, not disabled, when the tray is empty: a queue with
-                nothing in it should cost nothing visually. */}
-            {discovered.length > 0 && (
-              <Button size="sm" variant="outline" onClick={() => setTrayOpen(true)}>
-                <Inbox className="size-3.5" aria-hidden />
-                Discovered ({discovered.length})
-              </Button>
-            )}
+              </SelectContent>
+            </Select>
+
+            {/* This row's mapping of `refs/ui`'s own "Status:" dropdown
+                (plan 101 §5 step 101.8) — still the same filter that
+                replaced the old four-tile stat strip (plan 101 §5 step
+                101.7, requirement 6); the counts stay folded into each
+                option's own label. */}
+            <Select value={filter} onValueChange={(v) => setFilter(v as Filter)}>
+              <SelectTrigger className={cn(PILL, 'w-auto gap-1.5')} aria-label="Filter by status">
+                <span className="text-fg-subtle">Status:</span>
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All devices ({summary.all})</SelectItem>
+                <SelectItem value="ready">
+                  <span className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-led-ok" aria-hidden />
+                    Ready ({summary.ready})
+                  </span>
+                </SelectItem>
+                <SelectItem value="inUse">
+                  <span className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-led-active" aria-hidden />
+                    In use ({summary.inUse})
+                  </span>
+                </SelectItem>
+                <SelectItem value="attention">
+                  <span className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-led-danger" aria-hidden />
+                    Needs attention ({summary.attention})
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
             <Button size="sm" onClick={() => setEnrollOpen(true)}>
               <Plus className="size-4" aria-hidden />
               Add device
@@ -763,110 +901,185 @@ function DashboardView() {
       />
 
       <div className="space-y-4 px-5 py-4">
-        {/* The summary doubles as the filter: clicking "needs attention"
-            filters straight away, instead of being a number you cannot act on. */}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {(
-            [
-              ['all', 'Total', summary.all, ''],
-              ['ready', 'Ready', summary.ready, 'text-led-ok'],
-              ['inUse', 'In use', summary.inUse, 'text-led-active'],
-              ['attention', 'Needs attention', summary.attention, 'text-led-danger'],
-            ] as const
-          ).map(([key, label, value, tone]) => (
+        {/* Plan 101 §5 step 101.8 (owner-specified, 2026-08-16) — the view/
+            bulk-control row: List/Wall, tile size, Select all, and
+            Discovered moved down here from the header (they are view/bulk
+            controls, not page identity — `docs/design.md`'s `PageHeader`
+            rule reserves the header's right side for the one primary
+            action). The three less-used filters (readiness, connection,
+            group-by) collapsed behind one "Filters" popover pill — kept as
+            real, working filters (nothing was dropped chasing a mockup's
+            control count), just no longer five full-width dropdowns in a
+            row the way this screen rendered them before. */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* List | Wall (plan 42 §4.6) — a mode on this page, so the
+              filters and tags below apply to the wall unchanged. */}
+          <div className="inline-flex items-center rounded-lg border p-0.5">
             <button
-              key={key}
               type="button"
-              aria-pressed={filter === key}
-              onClick={() => setFilter(key as Filter)}
+              aria-pressed={view === 'list'}
+              onClick={() => setView('list')}
               className={cn(
-                'rounded-lg border bg-surface px-3.5 py-3 text-left transition-colors',
-                filter === key ? 'border-accent' : 'hover:border-line-strong',
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors',
+                view === 'list' ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
               )}
             >
-              <div className={cn('readout text-2xl leading-none', value > 0 ? tone : 'text-fg-subtle')}>
-                {value}
-              </div>
-              <div className="rack-label mt-1.5">{label}</div>
+              <List className="size-3.5" aria-hidden />
+              List
             </button>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative max-w-xs flex-1">
-            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name or serial…"
-              aria-label="Search devices"
-              className="h-8 pl-8 text-[12.5px]"
-            />
+            <button
+              type="button"
+              aria-pressed={view === 'wall'}
+              onClick={() => setView('wall')}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors',
+                view === 'wall' ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
+              )}
+            >
+              <LayoutGrid className="size-3.5" aria-hidden />
+              Wall
+            </button>
           </div>
-
-          {/* A cluster filter, including an explicit "Unclustered" option
-              (plan 22.0 §4.5, acceptance #4) — separate from the tag chips
-              below since a device has at most one cluster but any number of tags. */}
-          <Select value={clusterFilter} onValueChange={setClusterFilter}>
-            <SelectTrigger className="h-8 w-[10.5rem] text-[12.5px]" aria-label="Filter by cluster">
-              <SelectValue placeholder="All clusters" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All clusters</SelectItem>
-              <SelectItem value="none">Unclustered</SelectItem>
-              {clusters.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
-                  {c.name}
-                </SelectItem>
+          {/* Tile size — S / M / L (plan 92 §3.11): a wall control, not a
+              setting. It is a property of the screen someone is sitting in
+              front of, so it persists in `localStorage` (`writeLocalPrefs`,
+              unlike `view`'s own per-tab `sessionStorage` above) and only
+              appears once the Wall is actually on screen, since it has no
+              effect on the List. */}
+          {view === 'wall' && (
+            <div className="inline-flex items-center rounded-lg border p-0.5" role="group" aria-label="Tile size">
+              {(
+                [
+                  ['s', 'Small tiles'],
+                  ['m', 'Medium tiles'],
+                  ['l', 'Large tiles'],
+                ] as const
+              ).map(([size, label]) => (
+                <button
+                  key={size}
+                  type="button"
+                  aria-pressed={tileSize === size}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => setTileSize(size)}
+                  className={cn(
+                    'rounded-md px-2 py-1 text-[11px] font-semibold uppercase leading-none transition-colors',
+                    tileSize === size ? 'bg-surface-2 text-fg' : 'text-fg-subtle hover:text-fg-muted',
+                  )}
+                >
+                  {size}
+                </button>
               ))}
-            </SelectContent>
-          </Select>
+            </div>
+          )}
+          {/* Selection works in EITHER view (plan 91 §5 step 91.8, F11) off
+              one shared `useBulkSelection` instance. Plan 101 §5 step
+              101.7 (folded in mid-step) removed "Select devices"/"Cancel"
+              along with the "select mode" they toggled — `refs/ui` has no
+              such button either, since a click on any device already
+              selects it directly. "Select all" stays: it is a genuine
+              capability the reference does not need (its own grid has no
+              pagination-spanning selection problem) but this farm-scale
+              product does — an operator drag-selecting only ever reaches
+              what is actually rendered on the current page (plan 101 §5
+              step 101.7's own pagination), so "everything matching the
+              filters, across every page" needs a control drag alone
+              cannot express. */}
+          {filteredIds.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={bulk.toggleAll}>
+              {bulk.allChecked ? 'Clear all' : 'Select all'}
+            </Button>
+          )}
+          {/* Discovered tray entry point (plan 56 §4.5) — deliberately
+              absent, not disabled, when the tray is empty: a queue with
+              nothing in it should cost nothing visually. */}
+          {discovered.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setTrayOpen(true)}>
+              <Inbox className="size-3.5" aria-hidden />
+              Discovered ({discovered.length})
+            </Button>
+          )}
 
-          {/* Readiness filter (plan 43 §4.6, §5 step 43.5) — narrows by
-              `actual`, the same field the badge itself shows. */}
-          <Select value={readinessFilter} onValueChange={(v) => setReadinessFilter(v as ReadinessFilter)}>
-            <SelectTrigger className="h-8 w-[8.5rem] text-[12.5px]" aria-label="Filter by readiness">
-              <SelectValue placeholder="Any readiness" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Any readiness</SelectItem>
-              <SelectItem value="hot">Hot</SelectItem>
-              <SelectItem value="awake">Awake</SelectItem>
-              <SelectItem value="asleep">Asleep</SelectItem>
-            </SelectContent>
-          </Select>
+          <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
 
-          {/* Connection filter (plan 88 §3.1, §4.1, §4.9, F5) — narrows by
-              the same badge value the card and the wall render, plus a
-              coarser "On the network" bucket for the more common question
-              (see the type's own comment for why both exist). */}
-          <Select value={connectionFilter} onValueChange={(v) => setConnectionFilter(v as ConnectionFilter)}>
-            <SelectTrigger className="h-8 w-[10rem] text-[12.5px]" aria-label="Filter by connection">
-              <SelectValue placeholder="Any connection" />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(CONNECTION_FILTER_LABEL) as ConnectionFilter[]).map((key) => (
-                <SelectItem key={key} value={key}>
-                  {CONNECTION_FILTER_LABEL[key]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Readiness, connection, and group-by (plan 101 §5 step 101.8) —
+              real filters `refs/ui`'s own two-dropdown Devices header has no
+              equivalent for. Kept, not dropped (per this step's own
+              instruction not to lose a working capability chasing a
+              mockup's exact control count) — just behind one popover pill
+              instead of three more full-width dropdowns in this row, so the
+              row itself reads as compact pills the way `refs/ui`'s header
+              does. */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className={cn(PILL, 'gap-1.5')}>
+                <SlidersHorizontal className="size-3.5 text-fg-subtle" aria-hidden />
+                Filters
+                {activeSecondaryFilterCount > 0 && (
+                  <span className="readout rounded-full bg-accent/20 px-1.5 text-[10px] leading-4 text-accent-strong">
+                    {activeSecondaryFilterCount}
+                  </span>
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 space-y-3">
+              <div className="space-y-1.5">
+                <label className="rack-label block text-fg-subtle">Readiness</label>
+                {/* Readiness narrows by `actual` (plan 43 §4.6), the same field the badge itself shows. */}
+                <Select value={readinessFilter} onValueChange={(v) => setReadinessFilter(v as ReadinessFilter)}>
+                  <SelectTrigger className="w-full" aria-label="Filter by readiness">
+                    <SelectValue placeholder="Any readiness" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Any readiness</SelectItem>
+                    <SelectItem value="hot">Hot</SelectItem>
+                    <SelectItem value="awake">Awake</SelectItem>
+                    <SelectItem value="asleep">Asleep</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-          {/* Group by: None | Cluster | Status | Tag (plan 47 §3.6, §4.5) —
-              applies to the table AND the Wall, from the same `groups`
-              value. This is what replaced the separate `/topology` route. */}
-          <Select value={group} onValueChange={(v) => setGroup(v as GroupBy)}>
-            <SelectTrigger className="h-8 w-[9.5rem] text-[12.5px]" aria-label="Group by">
-              <SelectValue placeholder="Group by" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No grouping</SelectItem>
-              <SelectItem value="cluster">Group by cluster</SelectItem>
-              <SelectItem value="status">Group by status</SelectItem>
-              <SelectItem value="tag">Group by tag</SelectItem>
-            </SelectContent>
-          </Select>
+              {/* Connection filter (plan 88 §3.1, §4.1, §4.9, F5) — narrows by
+                  the same badge value the card and the wall render, plus a
+                  coarser "On the network" bucket for the more common question
+                  (see the type's own comment for why both exist). */}
+              <div className="space-y-1.5">
+                <label className="rack-label block text-fg-subtle">Connection</label>
+                <Select value={connectionFilter} onValueChange={(v) => setConnectionFilter(v as ConnectionFilter)}>
+                  <SelectTrigger className="w-full" aria-label="Filter by connection">
+                    <SelectValue placeholder="Any connection" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(CONNECTION_FILTER_LABEL) as ConnectionFilter[]).map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {CONNECTION_FILTER_LABEL[key]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Group by: None | Cluster | Status | Tag (plan 47 §3.6, §4.5) —
+                  applies to the table AND the Wall, from the same `groups`
+                  value. This is what replaced the separate `/topology` route;
+                  `refs/ui` has no grouping concept at all, so this is likewise a
+                  kept, not a dropped, capability. */}
+              <div className="space-y-1.5">
+                <label className="rack-label block text-fg-subtle">Group by</label>
+                <Select value={group} onValueChange={(v) => setGroup(v as GroupBy)}>
+                  <SelectTrigger className="w-full" aria-label="Group by">
+                    <SelectValue placeholder="Group by" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No grouping</SelectItem>
+                    <SelectItem value="cluster">Group by cluster</SelectItem>
+                    <SelectItem value="status">Group by status</SelectItem>
+                    <SelectItem value="tag">Group by tag</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Tag filter bar (plan 19 §4.5): AND semantics, same as the API. */}
@@ -900,15 +1113,230 @@ function DashboardView() {
           </div>
         )}
 
-        {/* The toolbar itself is view-agnostic too (plan 91 §5 step 91.8,
-            F11) — Wake/Sleep/Install/Forget apply to whatever is selected
-            regardless of which view picked it. */}
-        {selectMode && selectedIds.length > 0 && (
-          <div className="flex items-center justify-between rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-2.5">
+        {/*
+          The drag-select surface (plan 101 §3.9, §5 step 101.5, G15). This
+          div wraps EVERY branch below, including the loading/error/empty
+          ones — a mousedown there finds no `data-device-id` elements and
+          the drag ends up selecting nothing, which costs nothing worth
+          special-casing out. `select-none` while dragging is exactly
+          `refs/ui`'s own `userSelect: dragSelecting ? 'none' : 'auto'`: a
+          drag rectangle should not also be highlighting card text underneath
+          it, and dropping the class once the drag ends restores ordinary
+          text selection everywhere in this grid.
+        */}
+        <div
+          ref={gridContainerRef}
+          data-testid="device-grid"
+          onMouseDown={dragSelect.onGridMouseDown}
+          className={dragSelect.dragging ? 'select-none' : undefined}
+        >
+        {error ? (
+          <ErrorState message={error} onRetry={load} />
+        ) : devices === null ? (
+          <LoadingRows rows={4} />
+        ) : devices.length === 0 && discovered.length > 0 ? (
+          // The farm is empty but a phone IS plugged in, waiting to be
+          // admitted (plan 56). Telling that operator to "plug in a phone"
+          // would be answering a question they did not ask, about a thing
+          // they already did.
+          <EmptyState
+            icon={<Smartphone className="size-4" aria-hidden />}
+            title={discovered.length === 1 ? 'One phone is waiting to be added' : `${discovered.length} phones are waiting to be added`}
+            description={<>Connecting a phone does not add it to the farm. Open Discovered to name it and add it.</>}
+            action={<Button onClick={() => setTrayOpen(true)}>Open Discovered</Button>}
+          />
+        ) : devices.length === 0 ? (
+          <EmptyState
+            icon={<Smartphone className="size-4" aria-hidden />}
+            title="No devices yet"
+            description={
+              <>
+                Plug in a phone over USB with USB debugging turned on, then accept the prompt on its screen. For
+                devices on the same network, use wireless pairing.
+              </>
+            }
+            action={<Button onClick={() => setEnrollOpen(true)}>Add device</Button>}
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            title="Nothing matches"
+            description="Change the search or pick a different filter."
+            action={
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setQuery('')
+                  setFilter('all')
+                }}
+              >
+                Show all
+              </Button>
+            }
+          />
+        ) : view === 'wall' ? (
+          <Wall
+            // Paged only when ungrouped (plan 101 §5 step 101.7) — see the
+            // `pageDevices`/`totalPages` note above `toggleSelected`. Grouped,
+            // this still passes the FULL filtered set, matching Wall.tsx's
+            // own long-standing rule that the live-tile budget is computed
+            // over the whole flat list regardless of sectioning.
+            devices={group === 'none' ? pageDevices : filtered}
+            jobs={jobs}
+            groups={groups}
+            selectedIds={selectedIds}
+            onToggleSelect={toggleSelected}
+            onDeviceContextMenu={handleDeviceContextMenu}
+            focusId={focusId}
+            onFocus={setFocus}
+            minTileWidthPx={TILE_SIZE_PX[tileSize]}
+          />
+        ) : groups ? (
+          <div className="space-y-5">
+            {groups.map(([tag, list]) => (
+              <div key={tag}>
+                <h3 className="rack-label mb-2">
+                  {tag} <span className="text-fg-subtle">· {list.length}</span>
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  {list.map((d) => (
+                    // The drag-select/context-menu/click-to-select wrapper
+                    // (plan 101 §5 step 101.5; click-to-select added §5 step
+                    // 101.7) — `data-device-id` is what `useDragSelect`'s
+                    // intersection test and `handleDeviceContextMenu` both
+                    // key off. A plain, unstyled `div`: CSS Grid's own
+                    // default `stretch` fills it to the cell exactly as
+                    // `DeviceCard` filled that cell directly before, so
+                    // wrapping it changes no layout. `onClick` bails on a
+                    // click that landed on one of `DeviceCard`'s OWN
+                    // interactive descendants (its label link, Control/Run,
+                    // "More actions") so those keep working unchanged —
+                    // `toggleDeviceOnClick`'s own doc comment.
+                    <div
+                      key={`${tag}-${d.id}`}
+                      data-device-id={d.id}
+                      onClick={(e) => toggleDeviceOnClick(d.id, e)}
+                      onContextMenu={(e) => handleDeviceContextMenu(d.id, e)}
+                    >
+                      <DeviceCard
+                        device={d}
+                        runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
+                        onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                        canReleaseQuarantine={canReleaseQuarantine}
+                        onRequestForget={() => {
+                          setForgetTarget(d)
+                          setForgetOpen(true)
+                        }}
+                        onRequestDisconnect={() => {
+                          setDisconnectTarget(d)
+                          setDisconnectOpen(true)
+                        }}
+                        onReconnect={() => void reconnectDevice(d)}
+                        selected={selectedIds.includes(d.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {/* Paged (plan 101 §5 step 101.7) — the ungrouped List reads the
+                same `pageDevices` slice the ungrouped Wall does above. */}
+            {pageDevices.map((d) => (
+              <div
+                key={d.id}
+                data-device-id={d.id}
+                onClick={(e) => toggleDeviceOnClick(d.id, e)}
+                onContextMenu={(e) => handleDeviceContextMenu(d.id, e)}
+              >
+                <DeviceCard
+                  device={d}
+                  runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
+                  onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
+                  canReleaseQuarantine={canReleaseQuarantine}
+                  onRequestForget={() => {
+                    setForgetTarget(d)
+                    setForgetOpen(true)
+                  }}
+                  onRequestDisconnect={() => {
+                    setDisconnectTarget(d)
+                    setDisconnectOpen(true)
+                  }}
+                  onReconnect={() => void reconnectDevice(d)}
+                  selected={selectedIds.includes(d.id)}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        </div>
+
+        {/* Pagination (plan 101 §5 step 101.7, requirement 4) — `refs/ui`'s
+            own `Showing X devices` + Prev/Next, plus a page-size control the
+            reference does not have. Ungrouped only (see the `pageDevices`
+            note above `toggleSelected`); a grouped grid keeps showing every
+            match, as it always has. */}
+        {group === 'none' && filtered.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-2 pt-1">
+            <span className="text-[11.5px] text-fg-subtle">
+              Showing {pageStart + 1}–{Math.min(pageStart + pageSize, filtered.length)} of {filtered.length} device
+              {filtered.length === 1 ? '' : 's'}
+            </span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="page-size" className="text-[11.5px] text-fg-subtle">
+                  Per page
+                </label>
+                <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v) as PageSize)}>
+                  <SelectTrigger id="page-size" className="h-7 w-[4.5rem] text-[12px]" aria-label="Devices per page">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PAGE_SIZE_OPTIONS.map((n) => (
+                      <SelectItem key={n} value={String(n)}>
+                        {n}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" disabled={page <= 0} onClick={goPrevPage}>
+                  Prev
+                </Button>
+                <span className="readout text-[11.5px] text-fg-subtle">
+                  {page + 1} / {totalPages}
+                </span>
+                <Button size="sm" variant="outline" disabled={page >= totalPages - 1} onClick={goNextPage}>
+                  Next
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* The selection action bar (plan 101 §5 step 101.7, requirement 5) —
+          `refs/ui`'s own bottom-centre floating pill, `position: fixed` so
+          it sits above the grid regardless of scroll position rather than
+          taking a row in the page's own flow (its pre-101.7 shape). Every
+          button here is the SAME function the right-click context menu
+          calls for the same label — never a second list (unchanged from
+          before this step; only the wrapper's positioning moved). No
+          `backdrop-filter` (plan 101 §3.6): a solid `bg-surface` reads
+          exactly as clearly here as the reference's own solid dark-grey
+          panel does, and this bar is not one of the per-device surfaces
+          that rule is even about, but it also is not free to spend GPU on a
+          blur just because it is allowed to ask. */}
+      {selectedIds.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-4">
+          <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-3 rounded-xl border border-accent/40 bg-surface px-4 py-2.5 shadow-lg">
             <span className="text-[12.5px]">
               {selectedIds.length} device{selectedIds.length === 1 ? '' : 's'} selected
             </span>
-            <div className="flex items-center gap-2">
+            <div className="h-4 w-px bg-line" aria-hidden />
+            <div className="flex flex-wrap items-center gap-2">
               {/* Warming or sleeping a whole cluster is the actual use case
                   (plan 43 §4.6) — one tile at a time is the thing that would
                   make an operator write a script. Each device is set
@@ -962,137 +1390,58 @@ function DashboardView() {
                 Forget selected
               </Button>
             </div>
+            <div className="h-4 w-px bg-line" aria-hidden />
+            <Button size="sm" variant="ghost" onClick={clearSelection}>
+              Clear
+            </Button>
           </div>
-        )}
-
-        {error ? (
-          <ErrorState message={error} onRetry={load} />
-        ) : devices === null ? (
-          <LoadingRows rows={4} />
-        ) : devices.length === 0 && discovered.length > 0 ? (
-          // The farm is empty but a phone IS plugged in, waiting to be
-          // admitted (plan 56). Telling that operator to "plug in a phone"
-          // would be answering a question they did not ask, about a thing
-          // they already did.
-          <EmptyState
-            icon={<Smartphone className="size-4" aria-hidden />}
-            title={discovered.length === 1 ? 'One phone is waiting to be added' : `${discovered.length} phones are waiting to be added`}
-            description={<>Connecting a phone does not add it to the farm. Open Discovered to name it and add it.</>}
-            action={<Button onClick={() => setTrayOpen(true)}>Open Discovered</Button>}
-          />
-        ) : devices.length === 0 ? (
-          <EmptyState
-            icon={<Smartphone className="size-4" aria-hidden />}
-            title="No devices yet"
-            description={
-              <>
-                Plug in a phone over USB with USB debugging turned on, then accept the prompt on its screen. For
-                devices on the same network, use wireless pairing.
-              </>
-            }
-            action={<Button onClick={() => setEnrollOpen(true)}>Add device</Button>}
-          />
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            title="Nothing matches"
-            description="Change the search or pick a different filter."
-            action={
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setQuery('')
-                  setFilter('all')
-                }}
-              >
-                Show all
-              </Button>
-            }
-          />
-        ) : view === 'wall' ? (
-          <Wall
-            devices={filtered}
-            jobs={jobs}
-            groups={groups}
-            selectable={selectMode}
-            selectedIds={selectedIds}
-            onToggleSelect={toggleSelected}
-            focusId={focusId}
-            onFocus={setFocus}
-            minTileWidthPx={TILE_SIZE_PX[tileSize]}
-          />
-        ) : groups ? (
-          <div className="space-y-5">
-            {groups.map(([tag, list]) => (
-              <div key={tag}>
-                <h3 className="rack-label mb-2">
-                  {tag} <span className="text-fg-subtle">· {list.length}</span>
-                </h3>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {list.map((d) => (
-                    <DeviceCard
-                      key={`${tag}-${d.id}`}
-                      device={d}
-                      runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
-                      onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
-                      canReleaseQuarantine={canReleaseQuarantine}
-                      onRequestForget={() => {
-                        setForgetTarget(d)
-                        setForgetOpen(true)
-                      }}
-                      onRequestDisconnect={() => {
-                        setDisconnectTarget(d)
-                        setDisconnectOpen(true)
-                      }}
-                      onReconnect={() => void reconnectDevice(d)}
-                      selectable={selectMode}
-                      selected={selectedIds.includes(d.id)}
-                      onToggleSelect={() => toggleSelected(d.id)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {filtered.map((d) => (
-              <DeviceCard
-                key={d.id}
-                device={d}
-                runningJob={jobs.find((j) => j.deviceId === d.id) ?? null}
-                onReleaseQuarantine={d.status === 'quarantined' ? () => void releaseQuarantine(d) : undefined}
-                canReleaseQuarantine={canReleaseQuarantine}
-                onRequestForget={() => {
-                  setForgetTarget(d)
-                  setForgetOpen(true)
-                }}
-                onRequestDisconnect={() => {
-                  setDisconnectTarget(d)
-                  setDisconnectOpen(true)
-                }}
-                onReconnect={() => void reconnectDevice(d)}
-                selectable={selectMode}
-                selected={selectedIds.includes(d.id)}
-                onToggleSelect={() => toggleSelected(d.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* "mouse akan ada indikator device yang terseleksi berapa" (plan 91
           §0.3, §5 step 91.8, F11/F12) — a live count that follows the
           cursor while selecting, in either view. `position: fixed`, so
           where it mounts in the tree does not matter. */}
-      <SelectionCursorBadge active={selectMode} count={selectedIds.length} />
+      <SelectionCursorBadge active={selectedIds.length > 0} count={selectedIds.length} />
 
-      {/* The focus overlay (plan 91 §3.11, §5 step 91.9) — only on the Wall,
-          only once a tile has actually been double-clicked. `devices` is the
-          FULL, unfiltered list (not `filtered`): a selected device that has
-          scrolled out of the current filter must still be a valid Mirror
-          candidate. */}
+      {/* The drag rectangle overlay (plan 101 §5 step 101.5, G15 —
+          `refs/ui`'s own `dragBoxStyle`) — `position: fixed`, `pointer-
+          events-none` so it never steals the mouseup that ends the drag,
+          rendered in accent tokens rather than a hex literal
+          (`design-rules.test.ts`'s hex-literal rule, plan 101 §3.1). */}
+      {dragSelect.dragging && dragSelect.rect && (
+        <div
+          className="pointer-events-none fixed z-50 border border-accent bg-accent/10"
+          style={{ left: dragSelect.rect.left, top: dragSelect.rect.top, width: dragSelect.rect.width, height: dragSelect.rect.height }}
+        />
+      )}
+
+      {/* The right-click context menu (plan 101 §5 step 101.5, G15;
+          rebuilt on `SidePanel`/`ActionsList` by plan 103 §5 step 103.10 —
+          see that file's own doc comment for the full account, including
+          the mapping table for every entry the old hand-written list used
+          to carry). `devices` is the FULL, unfiltered list, matching
+          `DevicePopup`'s own identical reasoning just below: a selected
+          device that has scrolled out of the current filter must still be
+          a valid target. */}
+      {contextMenu && (
+        <DeviceContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          deviceId={contextMenu.deviceId}
+          devices={devices ?? []}
+          selectedIds={selectedIds}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* The device popup (plan 91 §3.11, §5 step 91.9; evolved by plan 103
+          §4.1, §5 step 103.2) — only on the Wall, only once a tile has
+          actually been double-clicked. `devices` is the FULL, unfiltered
+          list (not `filtered`): a selected device that has scrolled out of
+          the current filter must still be a valid Mirror candidate. */}
       {view === 'wall' && focusId && (
-        <FocusOverlay deviceId={focusId} devices={devices ?? []} selectedIds={selectedIds} onClose={clearFocus} />
+        <DevicePopup deviceId={focusId} devices={devices ?? []} selectedIds={selectedIds} onClose={clearFocus} />
       )}
 
       <DiscoveredTray
@@ -1107,13 +1456,18 @@ function DashboardView() {
         }}
       />
       <EnrollmentDialog open={enrollOpen} onOpenChange={setEnrollOpen} unauthorizedSerials={unauthorized} />
+      {/* Plan 104 (M69) §3.4 — `devices` (the Wall's own selection) is the
+          DEFAULT, pre-filled; `allDevices` is the whole pool so the picker
+          can also switch to a cluster or a different device list. */}
       <InstallBatchDialog
         open={installBatchOpen}
         onOpenChange={(o) => {
           setInstallBatchOpen(o)
-          if (!o) exitSelectMode()
+          if (!o) clearSelection()
         }}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+        allDevices={devices ?? []}
+        clusters={clusters}
       />
       <BulkTransferDialog
         mode={bulkTransferOpen ?? 'push'}
@@ -1121,10 +1475,12 @@ function DashboardView() {
         onOpenChange={(o) => {
           if (!o) {
             setBulkTransferOpen(null)
-            exitSelectMode()
+            clearSelection()
           }
         }}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+        allDevices={devices ?? []}
+        clusters={clusters}
       />
       {/* Plan 93 §3.15, §4.8, F15, H3, step 93.11 — `wakeOrSleepSelected`'s
           own report: the same `OutcomeSummary`/`SkippedGroups` pair every
@@ -1194,10 +1550,11 @@ function DashboardView() {
       />
       <BulkForgetDialog
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+        allDevices={devices ?? []}
         open={bulkForgetOpen}
         onOpenChange={(o) => {
           setBulkForgetOpen(o)
-          if (!o) exitSelectMode()
+          if (!o) clearSelection()
         }}
         onDone={() => void load()}
       />

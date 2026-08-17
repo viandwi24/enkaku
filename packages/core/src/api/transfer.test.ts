@@ -25,6 +25,7 @@ function fakeLeases(result: { ok: true } | { ok: false; code: string; message: s
 function fakeTransfer(overrides: Partial<TransferService> = {}): TransferService {
   return {
     install: async () => ({ package: 'com.example', durationMs: 1, output: 'Success' }),
+    installFromLocalApk: async () => ({ package: 'com.example', durationMs: 1, output: 'Success' }),
     push: async () => ({ mediaScan: { ran: false, method: null, ms: 0 } }),
     pull: async () => ({ artifactId: 'art-1', bytes: 42 }),
     cancel: () => {},

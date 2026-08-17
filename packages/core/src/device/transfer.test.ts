@@ -148,6 +148,8 @@ class FakeSyncPeer implements RawStream {
 class FakeAdbBackend implements AdbBackend {
   fs = new Map<string, FakeFile>()
   execCalls: string[] = []
+  /** Every `pm install ...` (or other lane) command actually run — plan 106 §5 step 106.8's own "assert the flags survive the move" requirement reads this. */
+  execStreamCalls: string[] = []
   openRawCalls = 0
   pmInstall: { output: string; reason: AdbStreamEndReason } = { output: '12345\nSuccess\n', reason: 'closed' }
   /** Media-scan exec results (plan 90 §4.6) — defaults model a device where `scan_file` succeeds outright. */
@@ -172,7 +174,8 @@ class FakeAdbBackend implements AdbBackend {
     return { stdout: '', stderr: '', exitCode: null }
   }
 
-  async execStream(_serial: string, _cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle> {
+  async execStream(_serial: string, cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle> {
+    this.execStreamCalls.push(cmd)
     let ended = false
     const finish = (reason: AdbStreamEndReason) => {
       if (ended) return
@@ -589,6 +592,140 @@ describe('TransferService.install', () => {
       code: 'E_TRANSFER_TOO_LARGE',
     })
     expect(h.backend.openRawCalls).toBe(0)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * Plan 106 §5 step 106.8 — device preparation (`ui-server-component.ts`)
+ * routes its APK installs through THIS method instead of one opaque
+ * `hostAdb install` call. Same `performInstall` machinery `install()` uses
+ * above (the tests deliberately mirror that describe block's own cases), the
+ * one difference being the source: a caller-resolved absolute LOCAL path,
+ * never a row in the `artifacts` table (a toolchain-managed APK the operator
+ * never uploaded).
+ */
+describe('TransferService.installFromLocalApk (plan 106 §5 step 106.8)', () => {
+  function writeLocalApk(h: TestHarness, name: string, content: Uint8Array): string {
+    const abs = join(h.dataDir, name)
+    writeFileSync(abs, content)
+    return abs
+  }
+
+  test('-r and -g both apply by default — the flags must survive the move off hostAdb install -r -g', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    h.backend.pmInstall = { output: 'Success\n', reason: 'closed' }
+
+    await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })
+
+    expect(h.backend.execStreamCalls.length).toBe(1)
+    expect(h.backend.execStreamCalls[0]).toContain('pm install -r -g ')
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('reinstall: false / grantPermissions: false drop -r / -g respectively', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    h.backend.pmInstall = { output: 'Success\n', reason: 'closed' }
+
+    await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId(), reinstall: false, grantPermissions: false })
+
+    const cmd = h.backend.execStreamCalls[0] ?? ''
+    expect(cmd).not.toContain('-r')
+    expect(cmd).not.toContain('-g')
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('no row is ever added to the artifacts table — a preparation install never fabricates one for a file the operator never uploaded', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    h.backend.pmInstall = { output: 'Success\n', reason: 'closed' }
+
+    await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })
+
+    expect(h.db.select().from(artifacts).all().length).toBe(0)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('pm install exiting 0 while printing "Failure [...]" is still recorded as a failure with the verbatim reason — never a false success (the owner\'s own INSTALL_FAILED_VERIFICATION_FAILURE)', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    // `reason: 'closed'` models pm's real behaviour on some builds: the
+    // shell command exits cleanly (stream closes normally) while stdout
+    // itself carries the failure — `parseInstallOutput` decides from the
+    // TEXT, never an exit code, exactly because of this case.
+    h.backend.pmInstall = { output: '1\nFailure [INSTALL_FAILED_VERIFICATION_FAILURE]\n', reason: 'closed' }
+
+    await expect(h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })).rejects.toMatchObject({
+      code: 'E_INSTALL_FAILED',
+      message: 'INSTALL_FAILED_VERIFICATION_FAILURE',
+    })
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('the staged file is deleted in a finally on success', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    h.backend.pmInstall = { output: 'Success\n', reason: 'closed' }
+
+    await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })
+
+    const rmCalls = h.backend.execCalls.filter((c) => c.startsWith('rm -f'))
+    expect(rmCalls.length).toBe(1)
+    expect(rmCalls[0]).toMatch(/enkaku-.*\.apk/)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('the staged file is deleted in a finally on a failed pm install', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(10))
+    h.backend.pmInstall = { output: 'Failure [INSTALL_FAILED_VERIFICATION_FAILURE]', reason: 'closed' }
+
+    await expect(h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })).rejects.toBeDefined()
+
+    const rmCalls = h.backend.execCalls.filter((c) => c.startsWith('rm -f'))
+    expect(rmCalls.length).toBe(1)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('the staged file is deleted in a finally on cancel — mid-transfer, not just a hard process kill', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(65536 * 4))
+    const transferId = nextTransferId()
+    let cancelled = false
+
+    const promise = h.service.installFromLocalApk('dev1', abs, {
+      transferId,
+      onProgress: (sent) => {
+        if (sent > 0 && !cancelled) {
+          cancelled = true
+          h.service.cancel(transferId)
+        }
+      },
+    })
+
+    await expect(promise).rejects.toBeDefined()
+    const rmCalls = h.backend.execCalls.filter((c) => c.startsWith('rm -f'))
+    expect(rmCalls.length).toBe(1)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('refuses an apk over maxPushBytes before touching the device', async () => {
+    const h = harness({ maxPushBytes: 5 })
+    const abs = writeLocalApk(h, 'ui-server.apk', new Uint8Array(20))
+    await expect(h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })).rejects.toMatchObject({
+      code: 'E_TRANSFER_TOO_LARGE',
+    })
+    expect(h.backend.openRawCalls).toBe(0)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('a missing local file is refused with a clear error, never a silent hang', async () => {
+    const h = harness()
+    await expect(h.service.installFromLocalApk('dev1', join(h.dataDir, 'nope.apk'), { transferId: nextTransferId() })).rejects.toMatchObject({
+      code: 'E_NOT_FOUND',
+    })
     rmSync(h.dataDir, { recursive: true, force: true })
   })
 })

@@ -112,10 +112,11 @@ export default function BatchesPage() {
           empty={{
             icon: <Boxes className="size-4" aria-hidden />,
             title: 'No batches yet',
-            description: 'Run a script across a cluster or a multi-device selection from the Scripts page to see its report here.',
+            description:
+              'Run a script across a cluster or a multi-device selection from the Plugins & scripts page to see its report here.',
             action: (
               <Button asChild>
-                <Link href="/scripts">Open Scripts</Link>
+                <Link href="/plugins">Browse scripts</Link>
               </Button>
             ),
           }}

@@ -42,6 +42,9 @@ describe('createInstallExecutor', () => {
         opts.onProgress?.(10, 10)
         return { package: 'com.example', durationMs: 5, output: 'Success' }
       },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
+      },
       async push() {
         return { mediaScan: { ran: false, method: null, ms: 0 } }
       },
@@ -73,6 +76,9 @@ describe('createInstallExecutor', () => {
         controller.abort()
         await Bun.sleep(1)
         throw Object.assign(new Error('cancelled'), { code: 'E_TRANSFER_CANCELLED' })
+      },
+      async installFromLocalApk() {
+        throw new Error('not exercised by this test')
       },
       async push() {
         return { mediaScan: { ran: false, method: null, ms: 0 } }

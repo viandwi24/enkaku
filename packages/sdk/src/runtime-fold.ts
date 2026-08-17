@@ -1,10 +1,10 @@
 import { RuntimeEnvelopeSchema, type RuntimeEnvelope } from '@enkaku/protocol'
 
 /**
- * The `timeout`/`retries` ⇒ `runtime` fold (plan 98 §4.2), shared between
- * `defineScript` (a standalone `ScriptDefinition`) and `definePlugin` (each
- * member, which never goes through `defineScript` itself — see
- * `plugin.ts`'s own doc comment on `PluginMemberScript`). Both deprecated,
+ * The `timeout`/`retries` ⇒ `runtime` fold (plan 98 §4.2), applied by
+ * `definePlugin` to every member. It used to be shared with `defineScript`
+ * too; plan 110 §4.2 removed that function, so `definePlugin` is now the only
+ * caller — the fold itself is unchanged. Both deprecated,
  * top-level fields keep working forever (§4.3 "replace, never version" does
  * not apply to an author-facing field that a published script already used
  * — this one folds instead of breaking), but a script that sets BOTH

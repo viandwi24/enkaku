@@ -74,7 +74,7 @@ describe('a real job records a real peakRssBytes end to end (plan 98 §4.4, §4.
 
     const { scripts } = await import('../db/schema')
     db.insert(scripts)
-      .values({ id: 's-fast', name: 'fast', version: '1.0.0', bundle: FAST_BUNDLE, enabled: true, createdAt: new Date() })
+      .values({ pluginId: 'p-fixture', exportId: 'main', id: 's-fast', name: 'fast', version: '1.0.0', bundle: FAST_BUNDLE, enabled: true, createdAt: new Date() })
       .run()
 
     // NO `isolation` override — the default (`resolveIsolation()` inside

@@ -2,12 +2,17 @@
 import { resolve } from 'node:path'
 import { publish } from './publish'
 import { devCommand } from './dev'
+import { initCommand } from './init'
 
 const USAGE = `enkaku — CLI SDK Enkaku
 
 Usage:
+  enkaku init <name>
   enkaku publish <entry.ts> [--farm <url>] [--token <token>] [--stage-only]
   enkaku dev <entry.ts> [--farm <url>] [--token <token>] [--name <name>] [--no-watch]
+
+A plugin is the only thing the farm publishes — a script cannot exist outside
+one. "enkaku init" scaffolds a plugin project that publishes with no edits.
 
 Options:
   --farm         Core URL (defaults to http://localhost:7700 or the ENKAKU_FARM_URL env var)
@@ -29,14 +34,14 @@ function hasFlag(argv: string[], name: string): boolean {
 const argv = process.argv.slice(2)
 const command = argv[0]
 
-if (command !== 'publish' && command !== 'dev') {
+if (command !== 'publish' && command !== 'dev' && command !== 'init') {
   console.log(USAGE)
   process.exit(command ? 1 : 0)
 }
 
-const entry = argv[1]
-if (!entry || entry.startsWith('--')) {
-  console.error('error: an entry script is required\n')
+const target = argv[1]
+if (!target || target.startsWith('--')) {
+  console.error(command === 'init' ? 'error: a plugin name is required\n' : 'error: an entry script is required\n')
   console.log(USAGE)
   process.exit(1)
 }
@@ -45,16 +50,18 @@ const farmUrl = flag(argv, 'farm') ?? process.env.ENKAKU_FARM_URL ?? 'http://loc
 const token = flag(argv, 'token') ?? process.env.ENKAKU_TOKEN
 
 try {
-  if (command === 'publish') {
+  if (command === 'init') {
+    initCommand({ name: target })
+  } else if (command === 'publish') {
     await publish({
-      entry: resolve(entry),
+      entry: resolve(target),
       farmUrl,
       ...(token ? { token } : {}),
       ...(hasFlag(argv, 'stage-only') ? { stageOnly: true } : {}),
     })
   } else {
     await devCommand({
-      entry: resolve(entry),
+      entry: resolve(target),
       farmUrl,
       ...(token ? { token } : {}),
       ...(flag(argv, 'name') ? { name: flag(argv, 'name') } : {}),

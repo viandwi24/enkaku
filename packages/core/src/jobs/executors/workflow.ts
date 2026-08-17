@@ -28,28 +28,29 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  * `maxSteps` (a count, not a duration, checked below). This is the coarse
  * backstop: "how long may one device be held by one pipeline."
  *
- * `workflow.maxTotalMs` IS now a real, Studio-editable farm setting
+ * `workflow.maxTotalMs` IS a real, Studio-editable farm setting
  * (`packages/protocol/src/settings.ts`, registered on the Jobs tab —
  * `packages/studio/src/components/settings/farmSections.ts` — plan 99 §5
- * items 1-2, once `settings.ts` was free of the concurrent diff that had
- * blocked this at step 99.7). `checkWorkflow`'s own publish-time arithmetic
- * (`packages/protocol/src/workflow-check.ts`, `E_WORKFLOW_BUDGET_IMPOSSIBLE`,
- * §4.3 check 7) reads it through that route. **This file's own runtime
- * check, below, does not yet read the live setting** — `daemon.ts` is
- * outside this step's file list too (a concurrent worker holds it, evidenced
- * by its own multi-hundred-line in-flight diff at the time of writing), so
- * its `createWorkflowExecutor({...})` call still passes the literal closure
- * `settings: () => ({ maxTotalMs: DEFAULT_WORKFLOW_MAX_TOTAL_MS })` step 99.7
- * wired in. `DEFAULT_WORKFLOW_MAX_TOTAL_MS` is kept in exact sync with
- * `settings.ts`'s own `workflow.maxTotalMs` default (both `21_600_000`, 6h),
- * so a farm that has never touched the setting sees no behaviour change
- * either way — but an operator who DOES change it from Studio will see the
- * publish-time check honour their number while the runtime clock keeps
- * enforcing the old default until `daemon.ts`'s one line is swapped to
- * `settings: () => settingsStore.get().workflow`. The seam
- * (`WorkflowExecutorDeps.settings: () => WorkflowSettings`, read fresh,
- * never captured) already matches §4.10's shape; only that one call site is
- * deferred.
+ * items 1-2). **This file's own runtime check, below, reads the LIVE
+ * setting**: `daemon.ts`'s `createWorkflowExecutor({...})` call passes
+ * `settings: () => settingsStore.get().workflow`, not a captured literal —
+ * guarded by `workflow-settings-wiring.test.ts` (this directory), which
+ * fails by name if a future edit regresses it back to
+ * `DEFAULT_WORKFLOW_MAX_TOTAL_MS`. `checkWorkflow`'s own publish-time
+ * arithmetic (`packages/protocol/src/workflow-check.ts`,
+ * `E_WORKFLOW_BUDGET_IMPOSSIBLE`, §4.3 check 7) is ALSO now live:
+ * `daemon.ts`'s `createWorkflowRoutes({...})` call passes the identical
+ * `settings: () => settingsStore.get().workflow` accessor, guarded by
+ * `daemon-wiring.test.ts`'s own workflow-routes describe block
+ * (docs/settings-audit.md #3, `docs/plans/96-m61-hotfixes.md`). Until that
+ * fix landed, this file's own comment (and `settings.ts`'s) described the
+ * gap BACKWARDS — claiming the runtime executor was still hardcoded and the
+ * publish-time check was already live, the exact opposite of the truth at
+ * the time (the runtime clock was live; the publish route was the one still
+ * falling back to the schema default via `api/workflows.ts`'s `budgetFor`).
+ * `DEFAULT_WORKFLOW_MAX_TOTAL_MS` stays exported: several `*.test.ts` files
+ * in this directory build a `WorkflowExecutorDeps` directly and use it as
+ * their own literal default, independent of the live wiring above.
  */
 export const DEFAULT_WORKFLOW_MAX_TOTAL_MS = 21_600_000 // 6h — plan 99 §4.10's own default; matches settings.ts's `workflow.maxTotalMs` default exactly
 

@@ -10,8 +10,8 @@ import type { ScriptRow } from '../db/schema'
  * `scripts` rows sharing one plugin bundle all carry byte-identical
  * `bundle` columns, so keying on the id (which differs per row) used to
  * write twenty identical ~700 KB files for one plugin publish. Keying on
- * the content hash alone collapses that to one file, and a standalone
- * script — one row, one hash — behaves exactly as before: same file,
+ * the content hash alone collapses that to one file, and a one-member
+ * plugin — one row, one hash — behaves exactly as before: same file,
  * different name.
  */
 export async function materializeBundle(dataDir: string, script: ScriptRow): Promise<string> {

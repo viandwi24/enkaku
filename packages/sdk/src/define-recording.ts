@@ -1,19 +1,17 @@
 import { z } from 'zod'
 import type { RecordingDoc, RecordingStep, RecordingTarget } from '@enkaku/protocol'
 import { RecordingDocSchema } from '@enkaku/protocol'
-import { defineScript } from './define-script'
 import type { DeviceApi, ScriptContext, ScriptDefinition, ScriptLogger } from './types'
 
 /**
  * The replay interpreter for a recording document (plan 94 §3.1, §4.3, step
- * 94.1). `defineRecording` is a THIN wrapper, matching `defineScript`'s own
+ * 94.1). `defineRecording` is a THIN wrapper, matching the SDK's own
  * constitutional constraint (F18: "all orchestration belongs to the core's
  * runner, so a script published with an older SDK keeps working on a newer
  * core") — it validates `doc`, derives `id`/`version`/`params`/`reset`/`timing`
- * from it, and hands the result to `defineScript` itself, so a recording-
- * derived `ScriptDefinition` goes through EXACTLY the same validation, fold,
- * and freeze as one a human typed by hand (plan 94 acceptance criterion 2: "no
- * code path anywhere that special-cases it").
+ * from it, and returns an ordinary frozen `ScriptDefinition`, indistinguishable
+ * from one a human typed by hand (plan 94 acceptance criterion 2: "no code path
+ * anywhere that special-cases it").
  *
  * ---
  *
@@ -76,10 +74,17 @@ function textFor(step: Extract<RecordingStep, { kind: 'text' }>, params: Recordi
 
 /**
  * Validates `doc`, derives `id`/`version`/`params`/`reset`/`timing` from it
- * (plan 94 §4.3), and returns an ordinary `ScriptDefinition` — produced by
- * `defineScript` itself, never assembled by hand, so it is indistinguishable
- * from one an operator wrote (acceptance criterion 2). No timeouts, no
- * retries, no orchestration here — F18, same as `defineScript`.
+ * (plan 94 §4.3), and returns an ordinary frozen `ScriptDefinition`, so it is
+ * indistinguishable from one an operator wrote (acceptance criterion 2). No
+ * timeouts, no retries, no orchestration here — F18.
+ *
+ * Plan 110 §4.2 removed `defineScript`, which this used to hand `def` to for
+ * its validate-fold-freeze. Nothing is lost by the removal: every check that
+ * call made is already made, HARDER, by `RecordingDocSchema` above — `name`
+ * is `min(1).regex(...)` and `version` is a semver regex — and the derived
+ * definition declares no `timeout`/`retries`/`runtime` at all, so the runtime
+ * fold was a guaranteed no-op. The freeze is the only part that did anything,
+ * and it is kept verbatim.
  */
 export function defineRecording(doc: RecordingDoc, deps: DefineRecordingDeps = {}): ScriptDefinition<z.ZodTypeAny> {
   const parsed = RecordingDocSchema.parse(doc)
@@ -142,5 +147,5 @@ export function defineRecording(doc: RecordingDoc, deps: DefineRecordingDeps = {
     timing: { betweenActionMs: [0, 0] },
   }
 
-  return defineScript(def)
+  return Object.freeze(def)
 }

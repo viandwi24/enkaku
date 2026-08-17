@@ -284,6 +284,9 @@ describe('assist containment (plan 91 §0 F1, §5 step 91.4, §7.1 "containment"
       install: async () => {
         throw new Error('not used')
       },
+      installFromLocalApk: async () => {
+        throw new Error('not used')
+      },
       push: async () => {
         throw new Error('push reached the device — the assist grant must not have authorised it')
       },

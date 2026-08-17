@@ -7,6 +7,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import { scripts } from '../db/schema'
+import { RECORDINGS_PLUGIN_NAME, resolveRecordingsOwner } from '../plugins/owner'
 import { buildScriptFromWorkspace } from '../scripts/build'
 import { publishScript } from '../scripts/service'
 import { EnkakuError } from '../util/errors'
@@ -31,6 +32,13 @@ import type { RecordingService } from '../recording/service'
  * publishes as an ORDINARY script row, indistinguishable from a hand-written
  * one (acceptance criterion 2): nothing here ever writes `kind: 'recording'`,
  * because no such kind exists, deliberately.
+ *
+ * Since plan 110 §3.4 that ordinary row is an ordinary PLUGIN MEMBER row —
+ * `recordings/<slug>`, owned by the synthetic `recordings` plugin
+ * (`plugins/owner.ts`) — which is precisely what keeps it indistinguishable
+ * from a hand-written one, now that a hand-written script is a plugin member
+ * too (§3.2). Nothing else about this file's publish path moved: the same
+ * compile, the same `buildScriptFromWorkspace`, the same writer.
  *
  * **One addition beyond §4.9's own six-row table, flagged here and in this
  * step's report rather than silently added: `POST /` (create).** The table
@@ -122,9 +130,21 @@ function isDetached(workspace: WorkspaceStore, slug: string): boolean {
   }
 }
 
+/**
+ * The published NAME of a recording (plan 110 §3.4): `recordings/<slug>`, a
+ * member of the farm's synthetic `recordings` plugin. A recording published
+ * BEFORE that change is a row named `<slug>` with no owning plugin, which the
+ * farm no longer resolves at all (`scripts/service.ts`'s `isUnownedScriptRow`)
+ * — it is deliberately not looked up here, and re-recording publishes it under
+ * the owned name above.
+ */
+function publishedName(slug: string): string {
+  return `${RECORDINGS_PLUGIN_NAME}/${slug}`
+}
+
 /** The latest version this recording's NAME has ever published as, or `null` — read straight off `scripts`, never a second source of truth. */
 function latestPublishedVersion(db: Db, name: string): string | null {
-  const rows = db.select({ version: scripts.version }).from(scripts).where(eq(scripts.name, name)).all()
+  const rows = db.select({ version: scripts.version }).from(scripts).where(eq(scripts.name, publishedName(name))).all()
   if (rows.length === 0) return null
   return [...rows].sort((a, b) => compareSemver(b.version, a.version))[0]?.version ?? null
 }
@@ -315,14 +335,22 @@ export function createRecordingRoutes(deps: { db: Db; workspace: WorkspaceStore;
 
     // F11: the SAME server-side bundler `script.publish`'s `{ path }` form uses — never a bundle assembled by hand.
     const { bundle, source } = await buildScriptFromWorkspace(workspace, compiledPath(slug))
+    // Plan 110 §3.4, §5 step 110.2 — a recording is published as a MEMBER of
+    // the synthetic `recordings` plugin, created on first publish and never
+    // installable. That is what makes it satisfy the rule every other script
+    // now satisfies (§3.2), and it gives every recording one KV namespace
+    // (`recordings`) rather than one per recording.
+    const owner = resolveRecordingsOwner(db)
     const script = publishScript(db, {
-      name: parsed.data.name,
+      name: publishedName(parsed.data.name),
       version: parsed.data.version,
       bundle,
       source,
       paramsSchema: paramsJsonSchemaFor(parsed.data),
       // `kind` deliberately omitted — defaults to `'script'` (`publishScript`'s own doc comment), the
       // same row shape a hand-written script publishes as (acceptance criterion 2).
+      pluginId: owner.id,
+      exportId: parsed.data.name,
     })
     deps.audit?.record({ userId: actorId(c), action: 'script.publish', target: script.id, meta: { name: script.name, version: script.version, source: 'recording', slug } })
     return c.json({ script }, 201)

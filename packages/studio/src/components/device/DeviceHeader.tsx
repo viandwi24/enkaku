@@ -111,6 +111,141 @@ export function mmss(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+/**
+ * Battery level and temperature, inline and unconditional (plan 103 §5 —
+ * closes step 103.11's audit row 22). Extracted so `DevicePopup.tsx` can
+ * mount the SAME warning this header always has, rather than a thinner
+ * reimplementation of it — `docs/design.md`'s own words: *"the farm's early
+ * warning for a phone cooking itself, and a warning nobody opens is not a
+ * warning."* Renders nothing while `battery` is `null` (not yet known),
+ * exactly like the inline block this replaces.
+ */
+export function BatteryTempInline({ battery }: { battery: BatteryState | null }) {
+  if (!battery) return null
+  const charging = battery.status === 'charging'
+  const hot = battery.temperatureC >= HOT_C
+  const lowBattery = battery.level < LOW_BATTERY_PCT
+  return (
+    <span className="flex items-center gap-2.5">
+      <span className={cn('readout flex items-center gap-1 text-[12px]', lowBattery && 'text-led-warn')}>
+        {charging ? (
+          <BatteryCharging className="size-3.5 text-fg-subtle" aria-hidden />
+        ) : (
+          <Battery className="size-3.5 text-fg-subtle" aria-hidden />
+        )}
+        {battery.level}%
+      </span>
+      <span className={cn('readout flex items-center gap-1 text-[12px]', hot && 'text-led-danger')}>
+        <Thermometer className="size-3.5 text-fg-subtle" aria-hidden />
+        {battery.temperatureC.toFixed(1)}°C
+      </span>
+    </span>
+  )
+}
+
+/**
+ * Who is watching this device — the count is what an operator watches, the
+ * list is what they look up (§3.3 above). Extracted (plan 103 §5, closes
+ * step 103.11's audit row 20) so `DevicePopup.tsx` can mount the SAME
+ * popover instead of a thinner one.
+ */
+export function ViewersPopover({
+  viewers,
+  now,
+  mySessionId,
+  hoveredSessionId,
+  onHoverSession,
+}: {
+  viewers: Viewer[]
+  now: number
+  mySessionId: string | null
+  hoveredSessionId: string | null
+  onHoverSession: (sessionId: string | null) => void
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-[12px]" aria-label={`Viewers (${viewers.length})`}>
+          <Eye className="size-3.5" aria-hidden />
+          <span className="readout">{viewers.length}</span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent>
+        <h2 className="rack-label mb-2.5">watching now</h2>
+        <ViewerList viewers={viewers} now={now} mySessionId={mySessionId} hoveredSessionId={hoveredSessionId} onHoverSession={onHoverSession} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * Cluster, stable id, serial (both copyable), api level, screen resolution,
+ * density, guest agent version, and the active engines with the live
+ * fallback warning — everything an operator looks up rather than watches
+ * (§3.3 above). Extracted (plan 103 §5, closes step 103.11's audit row 21)
+ * so `DevicePopup.tsx` can mount the SAME popover `DeviceHeader` always has
+ * — including the serial an operator would paste into an external `adb`
+ * command — instead of a thinner reimplementation.
+ */
+export function DeviceDetailsPopover({
+  device,
+  registry,
+  inspectorFallback,
+  agentVersion,
+  settingsHref,
+}: {
+  device: DeviceDetailInfo
+  registry: RegistryResponse | null
+  /** The EFFECTIVE inspector engine dropped to the fallback for this session (plan 34 §4.6), or null. */
+  inspectorFallback: { to: string; reason: string } | null
+  agentVersion?: string | null
+  settingsHref: string
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="size-7" aria-label="Device details">
+          <Info className="size-4" aria-hidden />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80">
+        <h2 className="rack-label mb-2.5">this device</h2>
+        <dl className="space-y-1.5">
+          {/* Always shown, even unclustered — a field, not an omission (plan 22.0 §4.5). */}
+          <Row label="cluster" value={device.cluster ? device.cluster.name : 'Unclustered'} />
+          <Row label="stable id" value={device.stableId} copyable />
+          <Row label="serial" value={device.serial} copyable />
+          <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />
+          <Row label="screen" value={device.screenW && device.screenH ? `${device.screenW}×${device.screenH}` : '—'} />
+          <Row label="density" value={device.density ? `${device.density} dpi` : '—'} />
+          <Row label="guest agent" value={agentVersion ?? '—'} />
+        </dl>
+
+        <h2 className="rack-label mb-2.5 mt-4">active engines</h2>
+        <dl className="space-y-1.5">
+          {ENGINE_ROWS.map((r) => {
+            // The `inspection` row reports the EFFECTIVE engine, not just
+            // what is configured (plan 34 §3.1, §4.6): a session that fell
+            // back to `uiautomator-dump` is running the slow path.
+            const fallback = r.key === 'inspection' ? inspectorFallback : null
+            return (
+              <Row
+                key={r.key}
+                label={r.label}
+                value={fallback ? `${engineName(registry, r.reg, fallback.to)} (fallback)` : engineName(registry, r.reg, device[r.key])}
+                warn={fallback !== null}
+              />
+            )
+          })}
+        </dl>
+        <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
+          <Link href={settingsHref}>Change</Link>
+        </Button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function DeviceHeader({
   device,
   status,
@@ -142,6 +277,7 @@ export function DeviceHeader({
   onAskAgentOpenChange,
   agentVersion,
   labelState,
+  assistGrantTtlSec,
 }: {
   device: DeviceDetailInfo
   status: DeviceStatus
@@ -208,11 +344,17 @@ export function DeviceHeader({
    * an existing test fixture predating this field keeps compiling.
    */
   labelState?: DeviceLabelState | null
+  /**
+   * `coControl.grantTtlSec`, the real farm setting (plan 105 §3.2) — passed
+   * to the `assistedBy` badge below so its "Assisting"/"May assist" split
+   * (`HolderBadge`'s own `deriveAssistActivity`) is computed from the actual
+   * TTL rather than the component's shipped-default fallback. Optional so an
+   * existing test fixture (or a caller before this plan) keeps compiling —
+   * `HolderBadge` itself falls back to the same default either way.
+   */
+  assistGrantTtlSec?: number
 }) {
   const canTakeControl = status === 'idle'
-  const charging = battery?.status === 'charging'
-  const hot = battery !== null && battery.temperatureC >= HOT_C
-  const lowBattery = battery !== null && battery.level < LOW_BATTERY_PCT
   const settingsHref = `/device?id=${encodeURIComponent(device.id)}&tab=settings`
   // `?? null` guards a hand-built test fixture that omits the field
   // entirely (undefined) — `DeviceInfoSchema.number` is `.default(null)` on
@@ -240,7 +382,7 @@ export function DeviceHeader({
               covers a caller that predates the field (an existing test
               fixture, the same guard `DeviceCard`/`WallTile` use). */}
           {(device.assistedBy ?? []).map((a) => (
-            <HolderBadge key={a.id} holder={a} variant="assists" />
+            <HolderBadge key={a.id} holder={a} variant="assists" {...(assistGrantTtlSec ? { grantTtlSec: assistGrantTtlSec } : {})} />
           ))}
 
           {/* Plan 90 §5 step 90.6 (fixes F10) — quiet for `ready`/`absent`/
@@ -261,23 +403,16 @@ export function DeviceHeader({
 
           {/* Deliberately NOT behind a popover (§3.3): a swelling battery or a
               phone cooking itself is only useful as a warning if it is seen
-              without anyone thinking to look for it. */}
-          {battery && (
-            <span className="flex items-center gap-2.5">
-              <span className={cn('readout flex items-center gap-1 text-[12px]', lowBattery && 'text-led-warn')}>
-                {charging ? (
-                  <BatteryCharging className="size-3.5 text-fg-subtle" aria-hidden />
-                ) : (
-                  <Battery className="size-3.5 text-fg-subtle" aria-hidden />
-                )}
-                {battery.level}%
-              </span>
-              <span className={cn('readout flex items-center gap-1 text-[12px]', hot && 'text-led-danger')}>
-                <Thermometer className="size-3.5 text-fg-subtle" aria-hidden />
-                {battery.temperatureC.toFixed(1)}°C
-              </span>
-            </span>
-          )}
+              without anyone thinking to look for it.
+              Called as a PLAIN FUNCTION, not `<BatteryTempInline .../>` —
+              this component has no hooks of its own (same reasoning
+              `DeviceHeader` itself is called directly, this file's own
+              header), and `DeviceHeader.test.tsx`'s own walker deliberately
+              never invokes a child COMPONENT (its own doc comment) — calling
+              it here splices its actual output straight into the tree the
+              walker already descends through `children`, exactly as if this
+              were still inlined JSX. */}
+          {BatteryTempInline({ battery })}
 
           {/* An engine that fell back is the one engine fact worth interrupting
               for — the slow path is running and nothing else says so. */}
@@ -299,78 +434,14 @@ export function DeviceHeader({
             </Tooltip>
           )}
 
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 px-2 text-[12px]"
-                aria-label={`Viewers (${viewers.length})`}
-              >
-                <Eye className="size-3.5" aria-hidden />
-                <span className="readout">{viewers.length}</span>
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent>
-              <h2 className="rack-label mb-2.5">watching now</h2>
-              <ViewerList
-                viewers={viewers}
-                now={now}
-                mySessionId={mySessionId}
-                hoveredSessionId={hoveredSessionId}
-                onHoverSession={onHoverSession}
-              />
-            </PopoverContent>
-          </Popover>
+          {/* Both called as PLAIN FUNCTIONS, same reasoning as
+              `BatteryTempInline` above — `DeviceHeader.test.tsx`'s own
+              `rowValue`/`textOf` helpers need the actual `Row`/text nodes
+              spliced into this tree, not an opaque, uninvoked component
+              instance. */}
+          {ViewersPopover({ viewers, now, mySessionId, hoveredSessionId, onHoverSession })}
 
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="size-7" aria-label="Device details">
-                <Info className="size-4" aria-hidden />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-80">
-              <h2 className="rack-label mb-2.5">this device</h2>
-              <dl className="space-y-1.5">
-                {/* Always shown, even unclustered — a field, not an omission (plan 22.0 §4.5). */}
-                <Row label="cluster" value={device.cluster ? device.cluster.name : 'Unclustered'} />
-                <Row label="stable id" value={device.stableId} copyable />
-                <Row label="serial" value={device.serial} copyable />
-                <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />
-                <Row label="screen" value={device.screenW && device.screenH ? `${device.screenW}×${device.screenH}` : '—'} />
-                <Row label="density" value={device.density ? `${device.density} dpi` : '—'} />
-                {/* Plan 90 §5 step 90.6, fixes F11 — the agent's `appVersion` was already returned by
-                    `GET .../guest-agent` and rendered nowhere. A looked-up fact, so it sits here with
-                    the rest rather than inline in the always-visible row above. */}
-                <Row label="guest agent" value={agentVersion ?? '—'} />
-              </dl>
-
-              <h2 className="rack-label mb-2.5 mt-4">active engines</h2>
-              <dl className="space-y-1.5">
-                {ENGINE_ROWS.map((r) => {
-                  // The `inspection` row reports the EFFECTIVE engine, not just
-                  // what is configured (plan 34 §3.1, §4.6): a session that fell
-                  // back to `uiautomator-dump` is running the slow path.
-                  const fallback = r.key === 'inspection' ? inspectorFallback : null
-                  return (
-                    <Row
-                      key={r.key}
-                      label={r.label}
-                      value={
-                        fallback
-                          ? `${engineName(registry, r.reg, fallback.to)} (fallback)`
-                          : engineName(registry, r.reg, device[r.key])
-                      }
-                      warn={fallback !== null}
-                    />
-                  )
-                })}
-              </dl>
-              <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
-                <Link href={settingsHref}>Change</Link>
-              </Button>
-            </PopoverContent>
-          </Popover>
+          {DeviceDetailsPopover({ device, registry, inspectorFallback, agentVersion, settingsHref })}
         </div>
       }
       actions={

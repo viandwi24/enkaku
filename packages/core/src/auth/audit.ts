@@ -167,10 +167,28 @@ export type AuditAction =
   | 'plugin.activate'
   | 'plugin.rollback'
   | 'plugin.disable'
+  // The way back from `plugin.disable` (`POST /api/plugins/:name/enable`) —
+  // its own action rather than a `meta` flag on `plugin.disable`, so "who
+  // brought this plugin back, and when" is as answerable as who took it down.
+  | 'plugin.enable'
   | 'plugin.reload'
   | 'plugin.restart'
   | 'plugin.delete'
   | 'plugin.dev'
+  // A write/delete through a plugin's own data routes (plan 108 §4.5, step 108.4) — kept apart
+  // from `kv.set`/`kv.delete` above so the log says WHICH plugin's namespace was touched and by
+  // which surface. `meta` names the plugin, scope, and stableId; never the value, the same rule
+  // the `kv.*` pair states.
+  | 'plugin.data.set'
+  | 'plugin.data.delete'
+  // One DECLARED action executed from a plugin's screen (plan 108 §4.5, step
+  // 108.5) — one row per execution, whatever the action's kind. `meta` names
+  // the plugin, the action id, the kind, and the RESOLVED target (the device
+  // a job was enqueued on, the batch a fan-out created, the namespaced key a
+  // write touched). Kept apart from the `job.run`/`plugin.data.*` row the
+  // dispatch itself may also write: those say WHAT happened, this says which
+  // screen's button asked for it.
+  | 'plugin.action'
   // The command console (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
   // run, the same "create the run, audit it once" shape `createBatch`'s own
   // `job.run` row already has (`clusters/dispatch.ts`). `meta` carries the

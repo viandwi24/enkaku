@@ -1,6 +1,8 @@
 # Writing scripts
 
-Scripts are written with `@enkaku/sdk` (`bun add @enkaku/sdk zod`) — the full shape, the trust model, and publishing are documented in [`packages/sdk/README.md`](../../packages/sdk/README.md). This page covers one thing: finding a selector without guessing.
+Scripts are written with `@enkaku/sdk` — the full shape, the trust model, and publishing are documented in [`packages/sdk/README.md`](../../packages/sdk/README.md). Start with `bunx enkaku init my-pack`: a script is always a member of a **plugin** (there is no other shape, and `enkaku publish` refuses one), and the scaffold writes a one-member plugin that publishes with no edits.
+
+This page covers one thing: finding a selector without guessing.
 
 ## Finding a selector
 

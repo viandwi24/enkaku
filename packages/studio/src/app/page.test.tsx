@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@/lib/test/nav'
 import { mockRouter, setSearchParams } from '@/lib/test/nav'
 import { AuthContext, type AuthState } from '@/lib/auth'
 import { readLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { cleanup, renderWithApi } from '@/lib/test/render'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type { DeviceInfo } from '@enkaku/protocol'
 
 /**
@@ -96,6 +97,29 @@ function emitReconnect(): void {
 }
 
 const { default: Dashboard } = await import('./page')
+
+/**
+ * Plan 101 §5 step 101.7 (folded in mid-step, 2026-08-16) — no more
+ * checkbox: a click on a device's own `[data-device-id]` wrapper toggles
+ * selection directly. Clicking the WRAPPER itself (not the label link or any
+ * other interactive descendant inside `DeviceCard`) is what guarantees the
+ * click actually toggles rather than bailing (`toggleDeviceOnClick`'s own
+ * doc comment, `app/page.tsx`) — the same reason `screen.getByText(label)`
+ * is walked UP to its `[data-device-id]` ancestor rather than clicked
+ * directly (the label is inside `DeviceCard`'s own link).
+ */
+function clickDevice(label: string): void {
+  const wrapper = screen.getByText(label).closest('[data-device-id]')
+  if (!wrapper) throw new Error(`No [data-device-id] wrapper found for "${label}"`)
+  fireEvent.click(wrapper)
+}
+
+/** Reads `DeviceCard`'s own selected styling (`border-accent`) off the `[data-device-id]` wrapper's first child — there is no checkbox to read `.checked` off any more. */
+function isDeviceSelected(container: HTMLElement, id: string): boolean {
+  const wrapper = container.querySelector(`[data-device-id="${id}"]`)
+  const card = wrapper?.firstElementChild
+  return !!card?.className.includes('border-accent')
+}
 
 /**
  * Plan 92 §3.10, §4.9 — `view` lives in `sessionStorage`, which happy-dom
@@ -202,12 +226,25 @@ describe('Dashboard — connection filter', () => {
     '/api/devices?*': { body: { items: [usbDevice, otgDevice, wifiDevice], nextCursor: null, total: 3 } },
   }
 
+  /**
+   * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the connection
+   * filter moved from an always-visible dropdown in the filter row into the
+   * "Filters" popover (alongside readiness and group-by) — opening it first
+   * is what makes the `combobox` findable at all now, since Radix unmounts
+   * `PopoverContent` while closed.
+   */
+  async function openFiltersPopover() {
+    fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
+    await screen.findByRole('combobox', { name: 'Filter by connection' })
+  }
+
   test('"On the network" keeps every non-USB device and drops the USB one', async () => {
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('usb phone')).toBeTruthy())
     expect(screen.getByText('otg phone')).toBeTruthy()
     expect(screen.getByText('wifi phone')).toBeTruthy()
 
+    await openFiltersPopover()
     fireEvent.click(screen.getByRole('combobox', { name: 'Filter by connection' }))
     fireEvent.click(await screen.findByRole('option', { name: 'On the network' }))
 
@@ -220,6 +257,7 @@ describe('Dashboard — connection filter', () => {
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('otg phone')).toBeTruthy())
 
+    await openFiltersPopover()
     fireEvent.click(screen.getByRole('combobox', { name: 'Filter by connection' }))
     fireEvent.click(await screen.findByRole('option', { name: 'OTG' }))
 
@@ -325,7 +363,10 @@ describe('Dashboard — assist.changed patches assistedBy live (plan 91 §3.4 it
       type: 'assist.changed',
       payload: {
         deviceId: 'dev-1',
-        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+        // Plan 105 §3.2 — a fresh `expiresAt` (just touched, matching what
+        // a real `assist.changed` broadcast always carries) so this reads
+        // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
       },
     })
 
@@ -340,7 +381,10 @@ describe('Dashboard — assist.changed patches assistedBy live (plan 91 §3.4 it
       type: 'assist.changed',
       payload: {
         deviceId: 'some-other-device',
-        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+        // Plan 105 §3.2 — a fresh `expiresAt` (just touched, matching what
+        // a real `assist.changed` broadcast always carries) so this reads
+        // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
       },
     })
 
@@ -355,7 +399,10 @@ describe('Dashboard — assist.changed patches assistedBy live (plan 91 §3.4 it
       type: 'assist.changed',
       payload: {
         deviceId: 'dev-1',
-        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+        // Plan 105 §3.2 — a fresh `expiresAt` (just touched, matching what
+        // a real `assist.changed` broadcast always carries) so this reads
+        // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+        assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
       },
     })
     await waitFor(() => expect(screen.getByTitle('Assisting — Alice')).toBeTruthy())
@@ -484,51 +531,48 @@ describe('Dashboard — Wall selection, the cursor badge, and ?focus= (plan 91 �
   const deviceB = { ...device, id: 'dev-2', label: 'pixel 8' }
   const responses = { ...baseResponses, '/api/devices?*': { body: { items: [device, deviceB], nextCursor: null, total: 2 } } }
 
-  // These tests select via `DeviceCard`'s real checkbox (List), then some
-  // switch to Wall by hand — they are about the List<->Wall wiring, not
-  // about which view opens by default (plan 92 §9 Q1's own test lives
-  // below in its own describe block), so this pins the starting view.
+  // These tests select via a click on `DeviceCard`'s own wrapper (List),
+  // then some switch to Wall by hand — they are about the List<->Wall
+  // wiring, not about which view opens by default (plan 92 §9 Q1's own test
+  // lives below in its own describe block), so this pins the starting view.
   beforeEach(() => setSearchParams({ view: 'list' }))
 
   test('selection survives a view switch (List -> Wall -> List) — the hand-rolled Set is gone, one array backs both', async () => {
-    renderWithApi(<Dashboard />, responses)
+    const { container } = renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
+    clickDevice('moto g06')
+    await waitFor(() => expect(isDeviceSelected(container, 'dev-1')).toBe(true))
 
     fireEvent.click(screen.getByRole('button', { name: 'Wall' }))
     await waitFor(() => expect(screen.getByTestId('tile-dev-1').dataset.selected).toBe('true'))
     expect(screen.getByTestId('tile-dev-2').dataset.selected).toBe('false')
 
     fireEvent.click(screen.getByRole('button', { name: 'List' }))
-    const checkbox = (await screen.findByRole('checkbox', { name: /moto g06/i })) as HTMLInputElement
-    expect(checkbox.checked).toBe(true)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    expect(isDeviceSelected(container, 'dev-1')).toBe(true)
   })
 
   test('the cursor badge names the live selected count', async () => {
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
-
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
     expect(screen.queryByText(/selected$/)).toBeNull()
 
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /pixel 8/i }))
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
     fireEvent.mouseMove(window, { clientX: 50, clientY: 60 })
 
     await waitFor(() => expect(screen.getByText('2 selected')).toBeTruthy())
   })
 
   test('"Select all" selects every filtered device (tri-state, plan 91 §5 step 91.8, F12)', async () => {
-    renderWithApi(<Dashboard />, responses)
+    const { container } = renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
 
-    expect((screen.getByRole('checkbox', { name: /moto g06/i }) as HTMLInputElement).checked).toBe(true)
-    expect((screen.getByRole('checkbox', { name: /pixel 8/i }) as HTMLInputElement).checked).toBe(true)
+    expect(isDeviceSelected(container, 'dev-1')).toBe(true)
+    expect(isDeviceSelected(container, 'dev-2')).toBe(true)
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeTruthy()
   })
 
@@ -542,6 +586,202 @@ describe('Dashboard — Wall selection, the cursor badge, and ?focus= (plan 91 �
     fireEvent.click(screen.getByLabelText('focus-dev-1'))
 
     expect(mockRouter.replace).toHaveBeenCalledWith(expect.stringContaining('focus=dev-1'))
+  })
+})
+
+/**
+ * Drag-box select and the right-click context menu (plan 101 §3.9, §5 step
+ * 101.5, G15). `WallTile` stays mocked (see the file header) — these tests
+ * are about `app/page.tsx`'s OWN wiring: does a drag write into the exact
+ * same `selectedIds` the checkbox does, does right-click reuse the
+ * toolbar's own actions, does it work the same on both views. The drag
+ * rectangle's own intersection MATH is proven directly by
+ * `useDragSelect.test.ts` — there is no real CSS layout engine under
+ * happy-dom (`getBoundingClientRect` always reads a zero rect, the same
+ * limitation `WallTile.test.tsx` already documents and works around), so
+ * every `data-device-id` wrapper here gets its rect assigned by hand before
+ * a drag is simulated over it.
+ */
+describe('Dashboard — drag-box select and the context menu (plan 101 §3.9, §5 step 101.5, G15)', () => {
+  const deviceB = { ...device, id: 'dev-2', label: 'pixel 8' }
+  // Plan 103 §5 step 103.10 — the context menu now renders `SidePanel`
+  // (panel 3), which fetches the RIGHT-CLICKED device's own detail
+  // (`/api/devices/:id`, `DeviceDetailResponseSchema` — extra engine-name
+  // fields beyond the fleet list's own `DeviceInfo`) the same way
+  // `DevicePopup` already does; the old item-list menu never made this
+  // call at all.
+  const deviceDetail = { ...device, transport: 'adb-usb', display: 'scrcpy', liveDisplay: null, input: 'adb-input', inspection: 'ui-server', settings: null, nodeId: null }
+  const deviceBDetail = { ...deviceB, transport: 'adb-usb', display: 'scrcpy', liveDisplay: null, input: 'adb-input', inspection: 'ui-server', settings: null, nodeId: null }
+  const responses = {
+    ...baseResponses,
+    '/api/devices?*': { body: { items: [device, deviceB], nextCursor: null, total: 2 } },
+    '/api/devices/dev-1': { body: { device: deviceDetail } },
+    '/api/devices/dev-2': { body: { device: deviceBDetail } },
+  }
+
+  // Pinned to List for the drag tests below, the same reason the Wall
+  // selection describe block above pins it — these are about the List<->grid
+  // wiring, not about which view opens by default.
+  beforeEach(() => setSearchParams({ view: 'list' }))
+
+  function stubRects(container: HTMLElement) {
+    const a = container.querySelector('[data-device-id="dev-1"]') as HTMLElement
+    const b = container.querySelector('[data-device-id="dev-2"]') as HTMLElement
+    a.getBoundingClientRect = () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100, x: 0, y: 0, toJSON: () => undefined }) as DOMRect
+    b.getBoundingClientRect = () => ({ left: 200, top: 0, right: 300, bottom: 100, width: 100, height: 100, x: 200, y: 0, toJSON: () => undefined }) as DOMRect
+  }
+
+  test('dragging a rectangle over both cards selects exactly them — the same set clicking both individually would produce (this step\'s own acceptance criterion)', async () => {
+    const { container } = renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    stubRects(container)
+    const grid = screen.getByTestId('device-grid')
+
+    fireEvent.mouseDown(grid, { clientX: -10, clientY: -10, button: 0 })
+    fireEvent.mouseMove(window, { clientX: 310, clientY: 110 })
+    fireEvent.mouseUp(window)
+
+    await waitFor(() => expect(isDeviceSelected(container, 'dev-1')).toBe(true))
+    expect(isDeviceSelected(container, 'dev-2')).toBe(true)
+  })
+
+  test('a rectangle covering only one card selects only that one', async () => {
+    const { container } = renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    stubRects(container)
+    const grid = screen.getByTestId('device-grid')
+
+    fireEvent.mouseDown(grid, { clientX: -10, clientY: -10, button: 0 })
+    fireEvent.mouseMove(window, { clientX: 50, clientY: 50 })
+    fireEvent.mouseUp(window)
+
+    await waitFor(() => expect(isDeviceSelected(container, 'dev-1')).toBe(true))
+    expect(isDeviceSelected(container, 'dev-2')).toBe(false)
+  })
+
+  /**
+   * Plan 101 §5 step 101.7 (folded in mid-step) removed "select mode"
+   * entirely — a drag (or a plain click) always selects now, so there is no
+   * mode left to auto-enter. This just re-proves the drag itself still
+   * works with no button pressed first, which used to be the interesting
+   * part of this test before "Select devices" existed to press.
+   */
+  test('a drag selects immediately — no button to press first', async () => {
+    const { container } = renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Select devices' })).toBeNull()
+    stubRects(container)
+    const grid = screen.getByTestId('device-grid')
+
+    fireEvent.mouseDown(grid, { clientX: -10, clientY: -10, button: 0 })
+    fireEvent.mouseMove(window, { clientX: 50, clientY: 50 })
+    fireEvent.mouseUp(window)
+
+    await waitFor(() => expect(isDeviceSelected(container, 'dev-1')).toBe(true))
+  })
+
+  test('a mousedown that starts ON a card does not begin a rectangle — a plain click on the card still toggles it normally', async () => {
+    const { container } = renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    const card = container.querySelector('[data-device-id="dev-1"]') as HTMLElement
+
+    fireEvent.mouseDown(card)
+    fireEvent.click(card)
+
+    expect(isDeviceSelected(container, 'dev-1')).toBe(true)
+    // No rectangle ever appeared (a drag starting on a card is a no-op, per
+    // `useDragSelect.ts`'s own bail) — the OTHER device was never touched.
+    expect(isDeviceSelected(container, 'dev-2')).toBe(false)
+  })
+
+  test('right-click a device NOT currently selected replaces the selection with just it, and the menu names it', async () => {
+    // Plan 103 §5 step 103.10 — the menu now reuses `ActionsList`'s Row/
+    // Tooltip pieces (a disabled row, e.g. Disconnect on a USB device,
+    // renders inside a Radix `Tooltip`), which requires an ancestor
+    // `TooltipProvider` the same way `ActionsList.test.tsx`/`DevicePopup.
+    // test.tsx` already supply one — `app/layout.tsx` provides it for real
+    // in production; this file's own `<Dashboard />` render never needed
+    // one before because nothing in its tree mounted a Tooltip until now.
+    const { container } = renderWithApi(
+      <TooltipProvider>
+        <Dashboard />
+      </TooltipProvider>,
+      responses,
+    )
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    fireEvent.contextMenu(screen.getByText('moto g06'))
+
+    // Plan 103 §5 step 103.10 — the menu is now panel 3 itself (`role="region"`,
+    // a header naming the device, `SidePanel`'s Actions tab), not the old
+    // `role="menu"` item list. The header starts as the bare device id
+    // (before its own `/api/devices/dev-1` fetch resolves) and becomes the
+    // label once it does — `findByRole` polls until it matches, which is
+    // the async proof that this fetch actually happened.
+    const menu = await screen.findByRole('region', { name: 'Device actions — moto g06' })
+    expect(menu).toBeTruthy()
+    await waitFor(() => expect(isDeviceSelected(container, 'dev-1')).toBe(true))
+    expect(isDeviceSelected(container, 'dev-2')).toBe(false)
+  })
+
+  test('right-click a device already part of a multi-selection keeps the WHOLE selection, and the menu names the count', async () => {
+    const { container } = renderWithApi(
+      <TooltipProvider>
+        <Dashboard />
+      </TooltipProvider>,
+      responses,
+    )
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
+
+    fireEvent.contextMenu(screen.getByText('moto g06'))
+
+    // "N devices selected" is computed from `selectedIds` directly (plan
+    // 103 §5 step 103.10) — unlike the single-device label above, it does
+    // NOT wait on the device detail fetch, so it is correct immediately.
+    const menu = await screen.findByRole('region', { name: 'Device actions — 2 devices selected' })
+    expect(menu).toBeTruthy()
+    expect(isDeviceSelected(container, 'dev-1')).toBe(true)
+    expect(isDeviceSelected(container, 'dev-2')).toBe(true)
+  })
+
+  test('the context menu\'s "Adb command" opens the SAME single-device terminal the popup\'s own row opens — not a navigation (plan 103 §5 step 103.10)', async () => {
+    renderWithApi(
+      <TooltipProvider>
+        <Dashboard />
+      </TooltipProvider>,
+      responses,
+    )
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    fireEvent.contextMenu(screen.getByText('moto g06'))
+    const menu = await screen.findByRole('region', { name: 'Device actions — moto g06' })
+    // "Run command…" was the old item list's own wording for this row
+    // (`router.push` straight to `/console`); the merged action list words
+    // it once, like the popup's own "Adb command" row, and opens
+    // `AdbCommandDialog` in place instead of navigating away from the Wall.
+    fireEvent.click(within(menu).getByRole('button', { name: 'Adb command' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByText('No commands run yet')).toBeTruthy())
+    expect(mockRouter.push).not.toHaveBeenCalled()
+  })
+
+  test('right-click also opens the menu on the Wall — same component, same reused actions', async () => {
+    renderWithApi(
+      <TooltipProvider>
+        <Dashboard />
+      </TooltipProvider>,
+      responses,
+    )
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Wall' }))
+    await waitFor(() => expect(screen.getByTestId('tile-dev-1')).toBeTruthy())
+
+    fireEvent.contextMenu(screen.getByTestId('tile-dev-1'))
+
+    expect(await screen.findByRole('region', { name: 'Device actions — moto g06' })).toBeTruthy()
   })
 })
 
@@ -618,11 +858,13 @@ describe('Dashboard — the Wall is the unconditional front door (plan 92 §3.10
 /**
  * The Tile size control (plan 92 §3.11, §4.9, step 92.5) — a wall control,
  * not a setting: absent on List (it has no effect there), present on Wall,
- * defaulting to Medium, and a pick persists in `localStorage` (checked via
- * `readLocalPrefs` directly rather than a second storage-key literal).
+ * and a pick persists in `localStorage` (checked via `readLocalPrefs`
+ * directly rather than a second storage-key literal). Default bumped from
+ * Medium to Large by plan 101 §5 step 101.8 (owner-specified, 2026-08-16) —
+ * see `lib/prefs.ts`'s own comment on why.
  */
-describe('Dashboard — Tile size control (plan 92 §3.11, §4.9, step 92.5)', () => {
-  test('absent on List, present on Wall, defaults to Medium, and picking Large writes localStorage', async () => {
+describe('Dashboard — Tile size control (plan 92 §3.11, §4.9, step 92.5; default bumped by plan 101 §5 step 101.8)', () => {
+  test('absent on List, present on Wall, defaults to Large, and picking Medium writes localStorage', async () => {
     setSearchParams({ view: 'list' })
     renderWithApi(<Dashboard />, baseResponses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
@@ -630,12 +872,12 @@ describe('Dashboard — Tile size control (plan 92 §3.11, §4.9, step 92.5)', (
 
     fireEvent.click(screen.getByRole('button', { name: 'Wall' }))
     await waitFor(() => expect(screen.getByRole('group', { name: 'Tile size' })).toBeTruthy())
-    expect(screen.getByRole('button', { name: 'Medium tiles' }).getAttribute('aria-pressed')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Large tiles' }))
     expect(screen.getByRole('button', { name: 'Large tiles' }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Medium tiles' }).getAttribute('aria-pressed')).toBe('false')
-    expect(readLocalPrefs().tileSize).toBe('l')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Medium tiles' }))
+    expect(screen.getByRole('button', { name: 'Medium tiles' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Large tiles' }).getAttribute('aria-pressed')).toBe('false')
+    expect(readLocalPrefs().tileSize).toBe('m')
   })
 })
 
@@ -657,9 +899,8 @@ describe('Dashboard — Run command / Push / Pull toolbar, and the wake/sleep re
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /pixel 8/i }))
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
 
     const link = screen.getByText('Run command…').closest('a')
     expect(link?.getAttribute('href')).toBe('/console?deviceIds=dev-1,dev-2')
@@ -669,8 +910,7 @@ describe('Dashboard — Run command / Push / Pull toolbar, and the wake/sleep re
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
+    clickDevice('moto g06')
     fireEvent.click(screen.getByRole('button', { name: 'Push file…' }))
 
     await waitFor(() => expect(screen.getByText('Push file to 1 device')).toBeTruthy())
@@ -680,8 +920,7 @@ describe('Dashboard — Run command / Push / Pull toolbar, and the wake/sleep re
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
+    clickDevice('moto g06')
     fireEvent.click(screen.getByRole('button', { name: 'Pull file…' }))
 
     await waitFor(() => expect(screen.getByText('Pull file from 1 device')).toBeTruthy())
@@ -695,9 +934,8 @@ describe('Dashboard — Run command / Push / Pull toolbar, and the wake/sleep re
     })
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /pixel 8/i }))
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
     fireEvent.click(screen.getByRole('button', { name: 'Wake selected' }))
 
     await waitFor(() => expect(screen.getByText('1 ok · 1 failed · 0 skipped (2/2)')).toBeTruthy())
@@ -773,9 +1011,8 @@ describe('Dashboard — Apply labels (plan 89 §3.7 point 3, §5 step 89.8)', ()
     })
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /pixel 8/i }))
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
     fireEvent.click(screen.getByRole('button', { name: 'Apply labels' }))
 
     await waitFor(() => expect(screen.getByText('1 ok · 0 failed · 1 skipped (2/2)')).toBeTruthy())
@@ -795,11 +1032,215 @@ describe('Dashboard — Apply labels (plan 89 §3.7 point 3, §5 step 89.8)', ()
     })
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select devices' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /moto g06/i }))
+    clickDevice('moto g06')
     fireEvent.click(screen.getByRole('button', { name: 'Apply labels' }))
 
     await waitFor(() => expect(screen.getByText('0 ok · 1 failed · 0 skipped (1/1)')).toBeTruthy())
     expect(screen.getByText('device_not_found: no such device')).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 101 §5 step 101.7, requirement 6 — the four-tile stat strip
+ * (`2 total`, `0 ready`, …) is gone; the same `filter` state it used to
+ * drive moves into a `Select` beside the other filters, with the counts
+ * folded into each option's own label so "how many are ready" is still one
+ * glance away.
+ */
+describe('Dashboard — the status filter replaces the stat strip (plan 101 §5 step 101.7, requirement 6)', () => {
+  const readyDevice = { ...device, id: 'dev-1', label: 'ready phone', status: 'idle' }
+  const busyDevice = { ...device, id: 'dev-2', label: 'busy phone', status: 'busy' }
+  const responses = { ...baseResponses, '/api/devices?*': { body: { items: [readyDevice, busyDevice], nextCursor: null, total: 2 } } }
+
+  beforeEach(() => setSearchParams({ view: 'list' }))
+
+  test('no stat-strip tiles render — no "Total"/"Ready"/"Needs attention" buttons', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('ready phone')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /^Total$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Needs attention/ })).toBeNull()
+  })
+
+  test('the status Select narrows the list the same way the old "Ready" tile did', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('busy phone')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by status' }))
+    fireEvent.click(await screen.findByRole('option', { name: /^Ready/ }))
+
+    await waitFor(() => expect(screen.queryByText('busy phone')).toBeNull())
+    expect(screen.getByText('ready phone')).toBeTruthy()
+  })
+
+  test('each option carries the same count the old stat tile showed', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('ready phone')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by status' }))
+    expect(await screen.findByRole('option', { name: 'Ready (1)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'In use (1)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'All devices (2)' })).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 101 §5 step 101.7, requirement 4 — client-side pagination over the
+ * already-fetched `filtered` set (the plan's own §0 decision: keeps live WS
+ * updates and selection semantics exactly as they were, the far smaller
+ * change against server-side keyset paging). `pageDevices` feeds List and
+ * Wall identically when ungrouped, so these are exercised on List, where
+ * `DeviceCard` renders for real (Wall's own tile is mocked at the top of
+ * this file for unrelated reasons).
+ */
+describe('Dashboard — pagination (plan 101 §5 step 101.7, requirement 4)', () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({ ...device, id: `dev-${i + 1}`, label: `device ${i + 1}` }))
+  const responses = { ...baseResponses, '/api/devices?*': { body: { items: many, nextCursor: null, total: 30 } } }
+
+  beforeEach(() => setSearchParams({ view: 'list' }))
+
+  test('defaults to 24 per page, shows the range, and Prev starts disabled', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
+
+    expect(screen.getByText('Showing 1–24 of 30 devices')).toBeTruthy()
+    expect(screen.queryByText('device 25')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Prev' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Next' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  test('Next reveals the remaining devices and then disables itself', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    await waitFor(() => expect(screen.getByText('device 25')).toBeTruthy())
+    expect(screen.queryByText('device 1')).toBeNull()
+    expect(screen.getByText('Showing 25–30 of 30 devices')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Next' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Prev' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  test('changing the page size resets to page 1 and persists to localStorage (plan 101 §5 step 101.7)', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(screen.getByText('device 25')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Devices per page' }))
+    fireEvent.click(await screen.findByRole('option', { name: '12' }))
+
+    await waitFor(() => expect(screen.getByText('Showing 1–12 of 30 devices')).toBeTruthy())
+    expect(readLocalPrefs().pageSize).toBe(12)
+  })
+
+  /**
+   * The requirement this whole hook exists to satisfy: an operator who
+   * selects devices, pages forward, and presses a bulk action must act on
+   * every one selected — not just whatever is currently rendered.
+   */
+  test('a selection made on page 1 survives paging to page 2 (`selectedIds` is not page-scoped)', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
+
+    clickDevice('device 1')
+    clickDevice('device 2')
+    expect(screen.getByText('2 devices selected')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(screen.getByText('device 25')).toBeTruthy())
+    expect(screen.getByText('2 devices selected')).toBeTruthy()
+  })
+
+  test('grouping suspends pagination — every match renders and no page controls appear', async () => {
+    setSearchParams({ view: 'list', group: 'status' })
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
+
+    expect(screen.getByText('device 30')).toBeTruthy()
+    expect(screen.queryByText(/^Showing \d/)).toBeNull()
+  })
+})
+
+/**
+ * Plan 101 §5 step 101.7, requirement 5 — the selection action bar floats
+ * (bottom-centre, `position: fixed`) instead of sitting inline in the
+ * page's own flow, the way it did before this step.
+ */
+describe('Dashboard — the selection action bar floats (plan 101 §5 step 101.7, requirement 5)', () => {
+  const deviceB = { ...device, id: 'dev-2', label: 'pixel 8' }
+  const responses = { ...baseResponses, '/api/devices?*': { body: { items: [device, deviceB], nextCursor: null, total: 2 } } }
+
+  beforeEach(() => setSearchParams({ view: 'list' }))
+
+  test('absent with nothing selected, and fixed-positioned once something is', async () => {
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+    expect(screen.queryByText(/device.? selected$/)).toBeNull()
+
+    clickDevice('moto g06')
+
+    const label = screen.getByText('1 device selected')
+    const bar = label.closest('.fixed')
+    expect(bar).toBeTruthy()
+    expect(bar?.className).toContain('bottom-6')
+  })
+})
+
+/**
+ * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16) — the header row
+ * consolidated to match `refs/ui`'s own `data-screen-label="Devices"`
+ * header: ONE title pill (`Devices` + the farm-wide count, merged via
+ * `PageHeader`'s new `titlePill` prop), Search/Cluster/Status pills beside
+ * it, and everything else (List/Wall, tile size, Select all, Discovered)
+ * moved down into the filter row, with the less-used filters
+ * (readiness/connection/group-by) behind one "Filters" popover.
+ */
+describe('Dashboard — the title pill and consolidated header (plan 101 §5 step 101.8)', () => {
+  test('the title pill carries both "Devices" and the total farm count as one object', async () => {
+    renderWithApi(<Dashboard />, baseResponses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    const heading = screen.getByRole('heading', { name: 'Devices' })
+    const pill = heading.closest('.rounded-full')
+    expect(pill).toBeTruthy()
+    expect(pill?.textContent).toContain('1')
+  })
+
+  test('Cluster and Status pills sit in the header, always mounted — no popover to open first', async () => {
+    renderWithApi(<Dashboard />, baseResponses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    expect(screen.getByRole('combobox', { name: 'Filter by cluster' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Filter by status' })).toBeTruthy()
+  })
+
+  test('readiness, connection, and group-by are reachable through the "Filters" popover, not mounted until it opens', async () => {
+    renderWithApi(<Dashboard />, baseResponses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    expect(screen.queryByRole('combobox', { name: 'Filter by readiness' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Filter by connection' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Group by' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+
+    expect(await screen.findByRole('combobox', { name: 'Filter by readiness' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Filter by connection' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Group by' })).toBeTruthy()
+  })
+
+  test('picking a readiness filter through the popover still narrows the list (the filter itself still works after moving)', async () => {
+    const asleepDevice = { ...device, id: 'dev-2', label: 'asleep phone', readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: 0 } }
+    renderWithApi(<Dashboard />, { ...baseResponses, '/api/devices?*': { body: { items: [device, asleepDevice], nextCursor: null, total: 2 } } })
+    await waitFor(() => expect(screen.getByText('asleep phone')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Filter by readiness' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Asleep' }))
+
+    await waitFor(() => expect(screen.queryByText('moto g06')).toBeNull())
+    expect(screen.getByText('asleep phone')).toBeTruthy()
   })
 })

@@ -458,7 +458,7 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny, R exten
    * farm-wide concurrency, the SDK contract major (plan 98 §3.2, §4.1).
    * EVERY field is a restriction the script places on ITSELF, never a
    * permission it requests (§3.2 — permanent). `timeout`/`retries` below
-   * are folded into this by `defineScript`/`definePlugin`
+   * are folded into this by `definePlugin`
    * (`runtime.timeoutMs ?? timeout`) — declaring both with two different
    * values throws at import time, on the author's own machine, rather than
    * silently picking one (plan 98 §4.2).

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { z } from 'zod'
-import type { WorkflowDoc } from '@enkaku/protocol'
+import { JobNodesResponseSchema, type WorkflowDoc } from '@enkaku/protocol'
 import { BadResponseError } from './actions'
-import { estimateWorkflowDuration, fetchAllPages, JobNodesEnvelopeSchema } from './api'
+import { estimateWorkflowDuration, fetchAllPages } from './api'
 
 /**
  * `fetchAllPages`'s optional parser (plan 95 §5 step 95.5, fixes F8): an
@@ -65,16 +65,20 @@ describe('fetchAllPages — with a parser', () => {
 })
 
 /**
- * `JobNodesEnvelopeSchema` (plan 99 §4.9, step 99.10) — pinned against the
- * REAL `{ items, finalized }` shape `GET /api/jobs/:id/nodes` actually
- * returns (`packages/core/src/services/job-service.ts`'s `nodes()`), not
- * the shadowed `{ jobId, nodes, finalized }` `@enkaku/protocol`'s own
- * `JobNodesResponseSchema` currently resolves to (this file's own module
- * doc explains the collision in full). This test is the guard: it fails the
- * moment someone "cleans up" this local schema back to the package export
- * without first confirming the collision is gone.
+ * `JobNodesResponseSchema` as it resolves THROUGH the `@enkaku/protocol`
+ * barrel (plan 99 §4.9, step 99.10) — pinned against the real
+ * `{ items, finalized }` shape `GET /api/jobs/:id/nodes` returns
+ * (`packages/core/src/services/job-service.ts`'s `nodes()`).
+ *
+ * Imported from the package root, not from a submodule, deliberately: the
+ * name was once declared twice inside `@enkaku/protocol` and the barrel
+ * resolved it to the wrong, `{ jobId, nodes, finalized }`-shaped one, which
+ * would make `api()`'s `safeParse` throw `BadResponseError` on every correct
+ * response and silently empty the node timeline. This is the Studio-side
+ * guard for that; `packages/protocol/src/export-uniqueness.test.ts` is the
+ * package-side one.
  */
-describe('JobNodesEnvelopeSchema — the REAL wire shape (plan 99 §4.9, step 99.10)', () => {
+describe('JobNodesResponseSchema — the REAL wire shape (plan 99 §4.9, step 99.10)', () => {
   test('parses the real { items, finalized } envelope', () => {
     const body = {
       items: [
@@ -95,14 +99,14 @@ describe('JobNodesEnvelopeSchema — the REAL wire shape (plan 99 §4.9, step 99
       ],
       finalized: true,
     }
-    const parsed = JobNodesEnvelopeSchema.parse(body)
+    const parsed = JobNodesResponseSchema.parse(body)
     expect(parsed.items).toHaveLength(1)
     expect(parsed.finalized).toBe(true)
   })
 
-  test('the SHADOWED { jobId, nodes, finalized } shape does NOT parse here — proving this file avoids it', () => {
-    const otherSessionsShape = { jobId: 'job-1', nodes: [], finalized: true }
-    expect(JobNodesEnvelopeSchema.safeParse(otherSessionsShape).success).toBe(false)
+  test('the once-shadowing { jobId, nodes, finalized } shape does NOT parse — proving the barrel resolves the right schema', () => {
+    const removedShape = { jobId: 'job-1', nodes: [], finalized: true }
+    expect(JobNodesResponseSchema.safeParse(removedShape).success).toBe(false)
   })
 })
 

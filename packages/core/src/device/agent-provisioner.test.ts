@@ -6,6 +6,7 @@ import type { GuestAgentCapability, HelloResult } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
+import { EnkakuError } from '../util/errors'
 import { createAgentProvisioner, createAgentProvisionerRoutes, MIN_SUPPORTED_SDK, type AgentProvisionerDeps } from './agent-provisioner'
 
 /** Mirrors `authMiddleware` well enough for a route test — same pattern `api/guest-agent.test.ts` uses. */
@@ -134,9 +135,14 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect(status.attempts).toBe(0)
       expect(status.nextAttemptAt).toBeNull()
 
-      // Persisted, not just returned.
+      // Persisted, not just returned — split across two columns since plan
+      // 106 §5 step 106.5: `devices.preparation['guest-agent']` carries the
+      // state-machine facts (authoritative), `devices.agent` carries only
+      // the identity facts learned from `hello()` (no `state` field at all).
       const row = readRow(db)
-      expect(row.agent).toMatchObject({ state: 'ready', appVersion: '1.0.0' })
+      expect(row.preparation).toMatchObject({ 'guest-agent': { state: 'ready' } })
+      expect(row.agent).toMatchObject({ appVersion: '1.0.0' })
+      expect(row.agent).not.toHaveProperty('state')
 
       // Exactly one transition event, absent → ready.
       const agentEvents = events.filter((e) => e.kind === 'device.agent')
@@ -520,8 +526,75 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect(status.state).toBe('absent')
       expect(hostAdbCalls.some((c) => c.args.includes('uninstall'))).toBe(true)
       const row = readRow(db)
-      expect(row.agent).toMatchObject({ state: 'absent' })
+      expect(row.preparation).toMatchObject({ 'guest-agent': { state: 'absent' } })
       expect(events.some((e) => e.kind === 'device.agent')).toBe(true)
+    })
+  })
+
+  describe('plan 106 §5 step 106.5: devices.preparation is authoritative, devices.agent is derived', () => {
+    test('an existing legacy devices.agent value (pre-106.5 shape, full AgentStatus with no preparation entry) survives with the same meaning', async () => {
+      const { deps, db } = fakeDeps()
+      seedDevice(db, {
+        agent: {
+          state: 'failed',
+          appVersion: '2.3.0',
+          versionCode: 9,
+          androidSdkInt: 33,
+          capabilities: ['socks5-route'],
+          reason: 'device offline mid-install',
+          checkedAt: 1_700_000_000,
+          attempts: 3,
+          nextAttemptAt: null,
+        } as unknown as DeviceRow['agent'],
+        // No `preparation` column populated — exactly the shape every row
+        // written before this step has.
+      })
+      const status = await createAgentProvisioner(deps).status('dev-1')
+      expect(status).toMatchObject({
+        state: 'failed',
+        appVersion: '2.3.0',
+        versionCode: 9,
+        androidSdkInt: 33,
+        capabilities: ['socks5-route'],
+        reason: 'device offline mid-install',
+        checkedAt: 1_700_000_000,
+        attempts: 3,
+        nextAttemptAt: null,
+      })
+    })
+
+    test('a real pass writes BOTH columns from the same computed value, in one update — they cannot disagree because there is exactly one writer', async () => {
+      const { deps, db } = fakeDeps({
+        makeLauncher: fakeMakeLauncher({
+          ensureInstalled: async () => {
+            throw new Error('device offline mid-install')
+          },
+        }),
+      })
+      seedDevice(db)
+      const status = await createAgentProvisioner(deps).ensure('dev-1')
+      expect(status.state).toBe('failed')
+
+      const row = readRow(db)
+      const prep = row.preparation as Record<string, { state: string; reason: string | null; attempts: number }>
+      expect(prep['guest-agent']?.state).toBe('failed')
+      expect(prep['guest-agent']?.reason).toBe(status.reason)
+      expect(prep['guest-agent']?.attempts).toBe(status.attempts)
+      // The identity cache no longer carries a state-bearing fact at all —
+      // nothing left for it to disagree with `devices.preparation` about.
+      expect(row.agent).not.toHaveProperty('state')
+      expect(row.agent).not.toHaveProperty('reason')
+      expect(row.agent).not.toHaveProperty('attempts')
+    })
+
+    test('an unregistered, unrelated preparation component already recorded for this device survives a guest-agent write untouched', async () => {
+      const { deps, db } = fakeDeps()
+      seedDevice(db, { preparation: { 'ui-server': { state: 'ready', version: '7', reason: null, checkedAt: 1, attempts: 0, nextAttemptAt: null } } as unknown as DeviceRow['preparation'] })
+      await createAgentProvisioner(deps).ensure('dev-1')
+      const row = readRow(db)
+      const prep = row.preparation as Record<string, { state: string; version: string | null }>
+      expect(prep['ui-server']).toMatchObject({ state: 'ready', version: '7' })
+      expect(prep['guest-agent']?.state).toBe('ready')
     })
   })
 
@@ -540,6 +613,63 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       const installCall = hostAdbCalls.find((c) => c.args.includes('install'))
       expect(installCall?.opts).toEqual({ lane: 'install', serial: 'serial-dev-1' })
     })
+  })
+})
+
+describe('createAgentProvisioner — runningSince (plan 106 §5 step 106.7)', () => {
+  test('reports in flight while runOnePass is pending (including a R1 forced-repair recursion), and clears on settle', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const { deps, db } = fakeDeps({
+      hello: async () => {
+        await gate
+        return HELLO_OK
+      },
+    })
+    seedDevice(db)
+    const provisioner = createAgentProvisioner(deps)
+
+    expect(provisioner.runningSince('dev-1')).toBeNull()
+    const pending = provisioner.ensure('dev-1')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(provisioner.runningSince('dev-1')).toBe(1_000_000_000)
+    expect(provisioner.runningSince('dev-2')).toBeNull() // never leaks into another device's slot
+
+    release!()
+    const status = await pending
+    expect(status.state).toBe('ready')
+    expect(provisioner.runningSince('dev-1')).toBeNull()
+  })
+
+  test('clears on an E_ADB_UNAVAILABLE defer too — never left looking in flight forever', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const { deps, db } = fakeDeps({
+      makeLauncher: fakeMakeLauncher({
+        ensureInstalled: async () => {
+          await gate
+          throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+        },
+      }),
+    })
+    seedDevice(db)
+    const provisioner = createAgentProvisioner(deps)
+
+    const pending = provisioner.ensure('dev-1')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(provisioner.runningSince('dev-1')).toBe(1_000_000_000)
+
+    release!()
+    const status = await pending
+    expect(status.state).toBe('absent') // deferred, untouched prior
+    expect(provisioner.runningSince('dev-1')).toBeNull()
   })
 })
 

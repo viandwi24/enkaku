@@ -136,7 +136,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
         <EmptyState
           icon={<KeyRound className="size-4" aria-hidden />}
           title="Enter a namespace to browse"
-          description="A namespace is the owning plugin's id, or a standalone script's name — whatever it passed to ctx.kv."
+          description="A namespace is the owning plugin's id — whatever the script passed to ctx.kv."
         />
       ) : error ? (
         <ErrorState message={error} onRetry={() => load(browsedNamespace)} />

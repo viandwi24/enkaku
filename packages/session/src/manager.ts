@@ -11,6 +11,18 @@ import { sameVideoNumbers, type VideoProfile } from './video-profile'
 const DEFAULT_IDLE_TTL_SEC = 5
 
 interface Entry {
+  /**
+   * Plan 100 §4.2, §5 step 100.4 — the `entries` map is now keyed by
+   * `entryKey(deviceId, quality)`, not `deviceId` alone (a device can hold
+   * a `wall` entry and a `control` entry at once). `deviceId`/`quality`
+   * are kept on the entry itself too so every iteration site (`closeDevice`,
+   * `closeIfIdle`, `videoStats`, `idleSessions`, `activeDeviceIds`,
+   * `reprofile`) can read them directly rather than re-parsing the key
+   * string or trusting `entry.session.quality` (a fixture-typed
+   * `DeviceSession` may not set it).
+   */
+  deviceId: string
+  quality: Quality
   session: DeviceSession
   refcount: number
   frameSubscribers: Set<(chunk: Uint8Array, meta: FrameMeta) => void>
@@ -28,19 +40,57 @@ interface Entry {
 }
 
 export interface SessionManager {
-  /** Create or fetch the single session for a device and bump its refcount.
-   * `quality` (Plan 42 §4.5) defaults to `control`; requesting `control`
-   * against a session that came up at `wall` upgrades it (restart, never a
-   * silent downgrade the other way). */
+  /**
+   * Create or fetch the session for `(deviceId, quality)` and bump its
+   * refcount (plan 100 §4.2, §5 step 100.4 — `entries` is now keyed by the
+   * PAIR, not `deviceId` alone, so a `wall` entry and a `control` entry for
+   * the SAME device coexist independently). `quality` defaults to
+   * `control`, unchanged.
+   *
+   * Acquiring `control` while a `wall` entry for the same device is already
+   * open takes a FAST path: the open wall entry is live proof the device is
+   * already awake, rotated, tagged, and has its keyboard set, so the new
+   * `control` entry's build skips re-deriving any of that and goes straight
+   * to a second, independent scrcpy session (§3.2's option 3, confirmed
+   * feasible on real hardware — G12). The wall entry itself is never
+   * touched: no restart, no phase events, no build-count increment on it.
+   * `upgradeToControl` — the pre-100.4 `wall → control` RESTART — no longer
+   * exists; there is nothing left to upgrade, only a second slot to fill.
+   *
+   * When that fast build cannot produce a real second scrcpy session
+   * (`makeScrcpy` rejects, or the device's own configured engine is not
+   * scrcpy — H2), this throws `SessionError('E_CONTROL_SESSION_UNAVAILABLE',
+   * ...)` rather than silently falling back to screencap-loop or handing
+   * back the wall entry disguised as control (§3.7, §4.4) — the caller
+   * (`ws-handlers.ts`'s `stream.start`) decides whether to substitute the
+   * wall entry's own frames, and says so on the wire.
+   *
+   * A `control` acquire against a device with no open `wall` entry, and
+   * every `wall` acquire regardless, build the ordinary way — unchanged
+   * from before this plan.
+   */
   acquire(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void, quality?: Quality): Promise<DeviceSession>
   release(deviceId: string, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void
   /**
-   * Restart a device's OPEN session at `quality` with a freshly resolved
-   * video profile, carrying its subscribers and refcount onto the fresh
-   * entry (plan 92 §3.8 — the generalisation of the pre-plan-92
-   * `upgradeToControl`, whose coalescing `upgrading` map and carry-over
-   * behaviour this reuses verbatim rather than reimplementing). A no-op when
-   * the device has no open entry — nothing to restart, and a plain `acquire`
+   * Plan 100 §4.2 — the highest-quality open entry for THIS specific
+   * `quality` slot, never the other one. Added because `get(deviceId)`
+   * below now means "whichever entry is more specific" (highest-quality
+   * wins), which is the wrong answer for a caller that just acquired a
+   * SPECIFIC quality and needs to read back exactly that entry (e.g. a
+   * WS viewer reading `videoConfig`/`requestKeyframe` for the stream IT is
+   * showing, not whichever entry happens to be "more control-y" right now).
+   * Optional for the same fixture-compatibility reason every other method
+   * here already is.
+   */
+  getByQuality?(deviceId: string, quality: Quality): DeviceSession | null
+  /**
+   * Restart a device's OPEN session AT `quality` — that one slot only,
+   * never crossing quality (plan 100 §3.2: the pre-100.4 `wall → control`
+   * restart is gone; this remains exactly what plan 92 §3.8 built it for —
+   * a same-quality requality, e.g. an operator changing `wall.wallPreset`
+   * restarting every open `wall` entry in place). Carries its subscribers
+   * and refcount onto the fresh entry. A no-op when the device has no open
+   * entry at that quality — nothing to restart, and a plain `acquire`
    * builds the right thing directly. `detail` (plan 92 §3.8 rule 5) reaches
    * `onPhase` for every phase of the rebuild that does not supply its own,
    * so a restart the operator did not ask to watch still explains itself
@@ -291,31 +341,69 @@ function createBuildLane(maxConcurrent: () => number) {
 }
 
 /**
+ * Plan 100 §4.2, §5 step 100.4 — the composite map key: `entries` now holds
+ * at most one entry per `(deviceId, quality)` pair rather than one per
+ * device, so a `wall` entry and a `control` entry for the SAME device
+ * coexist as two independent map entries.
+ */
+function entryKey(deviceId: string, quality: Quality): string {
+  return `${deviceId}:${quality}`
+}
+
+/**
  * One DisplaySource per device is shared across every viewer; the capture
  * loop only runs while there is at least one subscriber (saves device battery).
  */
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const entries = new Map<string, Entry>()
+  /**
+   * Plan 100 §4.2 — `release(deviceId, onFrame)`'s signature stays bare
+   * (unchanged from before this plan), but the manager now needs to know
+   * WHICH of a device's up-to-two open entries a given subscriber belongs
+   * to. A subscriber is only ever registered against one `acquire` call, so
+   * this is a plain inverted index kept in lockstep with each entry's own
+   * `frameSubscribers` set (set on attach, deleted on release AND on
+   * `closeEntry`, so a subscriber orphaned by a force-close is never left
+   * pointing at a key that no longer resolves to anything) — never trusting
+   * a caller to re-supply the right quality, which is exactly how "a
+   * subscriber released against the wrong slot silently detaches the wrong
+   * stream" would happen.
+   */
+  const subscriberEntry = new Map<(chunk: Uint8Array, meta: FrameMeta) => void, string>()
   const idleTtlSec = deps.idleTtlSec ?? (() => DEFAULT_IDLE_TTL_SEC)
   const maxIdleSessions = deps.maxIdleSessions ?? (() => Infinity)
   // Unbounded when no accessor is wired (F9's pre-plan-92 behaviour) — see
   // `SessionManagerDeps.maxConcurrentBuilds`'s own comment for why.
   const buildLane = createBuildLane(deps.maxConcurrentBuilds ?? (() => Infinity))
 
-  const dispatchFrame = (deviceId: string) => (chunk: Uint8Array, meta: FrameMeta) => {
-    const entry = entries.get(deviceId)
+  const dispatchFrame = (key: string) => (chunk: Uint8Array, meta: FrameMeta) => {
+    const entry = entries.get(key)
     if (!entry) return
     for (const cb of entry.frameSubscribers) cb(chunk, meta)
   }
 
-  async function closeEntry(deviceId: string, reason = 'released'): Promise<void> {
-    const entry = entries.get(deviceId)
+  /** Attach a subscriber to an already-resolved entry — the shared tail of
+   * every `acquire` branch below (existing entry, or a freshly built one). */
+  function attach(key: string, entry: Entry, onFrame: (chunk: Uint8Array, meta: FrameMeta) => void): void {
+    if (entry.closeTimer) {
+      clearTimeout(entry.closeTimer)
+      entry.closeTimer = null
+    }
+    entry.idleSince = null
+    entry.refcount++
+    entry.frameSubscribers.add(onFrame)
+    subscriberEntry.set(onFrame, key)
+  }
+
+  async function closeEntry(key: string, reason = 'released'): Promise<void> {
+    const entry = entries.get(key)
     if (!entry) return
-    entries.delete(deviceId)
+    entries.delete(key)
     if (entry.closeTimer) clearTimeout(entry.closeTimer)
-    await entry.session.close().catch((err) => deps.log.warn(`failed to close session ${deviceId}: ${String(err)}`))
-    deps.onEvent?.(deviceId, 'session.closed', { reason })
-    deps.log.info(`session closed: ${deviceId}`)
+    for (const sub of entry.frameSubscribers) subscriberEntry.delete(sub)
+    await entry.session.close().catch((err) => deps.log.warn(`failed to close session ${entry.deviceId}: ${String(err)}`))
+    deps.onEvent?.(entry.deviceId, 'session.closed', { reason })
+    deps.log.info(`session closed: ${entry.deviceId} (${entry.quality})`)
   }
 
   /**
@@ -323,7 +411,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
    * of entries currently idle (no subscriber, sitting on their TTL timer)
    * exceeds the cap, the least-recently-idle ones are closed immediately —
    * not merely scheduled — so the farm never holds more idle sessions than
-   * the setting allows, even for the instant between two releases.
+   * the setting allows, even for the instant between two releases. Plan 100
+   * §4.2/G17: a device holding both a `wall` and a `control` entry counts
+   * as up to two idle entries here, exactly as it should — this cap already
+   * governs total idle sessions farm-wide, unchanged by this plan.
    */
   function enforceIdleCap(): void {
     const cap = maxIdleSessions()
@@ -332,13 +423,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       .filter(([, e]) => e.idleSince !== null)
       .sort(([, a], [, b]) => (a.idleSince as number) - (b.idleSince as number))
     while (idle.length > cap) {
-      const [deviceId] = idle.shift()!
-      void closeEntry(deviceId, 'idle_evicted')
+      const [key] = idle.shift()!
+      void closeEntry(key, 'idle_evicted')
     }
   }
 
   /**
-   * Build one session for a device. Serialised by `inFlight` above.
+   * Build one session for `(deviceId, quality)`. Serialised by `inFlight`
+   * above (keyed by `entryKey`, plan 100 §4.2).
    *
    * `restartDetail` (plan 92 §3.8 rule 5) is set only when this build is a
    * `restartAt`/`reprofile` restart, never a fresh `acquire` — it becomes the
@@ -346,14 +438,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
    * already carry its own, so a viewer sees WHY its picture just went dark
    * ("Starting video — applying new video settings") instead of a bare
    * reconnect.
+   *
+   * `fastOpts` (plan 100 §3.2, §4.2, §5 step 100.4) is set ONLY by the
+   * `control`-quality fast path below, when an already-open `wall` entry for
+   * the same device is live proof this device is already awake, rotated,
+   * tagged, and keyboard-set: `skipDevicePrep` skips re-deriving any of
+   * that, and `requireScrcpy` makes a failed second scrcpy build a hard
+   * failure rather than a silent screencap-loop degrade (§3.7, §4.4). Never
+   * set for an ordinary acquire, a restart, or a wall build.
    */
-  async function createEntry(deviceId: string, quality: Quality, restartDetail?: string): Promise<Entry> {
+  async function createEntry(
+    deviceId: string,
+    quality: Quality,
+    restartDetail?: string,
+    fastOpts?: { skipDevicePrep?: boolean; requireScrcpy?: boolean },
+  ): Promise<Entry> {
     const row = deps.devices.get(deviceId)
     if (!row) throw new SessionError('device_not_found', `no such device: ${deviceId}`)
     if (row.status === 'offline') {
       throw new SessionError('device_not_ready', `device ${row.label} is offline`)
     }
 
+    const key = entryKey(deviceId, quality)
     // Assigned as soon as createSession resolves; onDisplayError compares
     // against it to tell "my session died" from "some other session died".
     let created: DeviceSession | null = null
@@ -387,11 +493,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // this device's own override), so `createSession`/`makeScrcpy` never
         // need to look `quality` up in a table themselves.
         ...(videoProfile ? { videoProfile } : {}),
+        // plan 100 §3.2, §4.2, §5 step 100.4 — see this function's own doc
+        // comment above for what these two do and when they are set.
+        ...(fastOpts?.skipDevicePrep ? { skipDevicePrep: true } : {}),
+        ...(fastOpts?.requireScrcpy ? { requireScrcpy: true } : {}),
       },
       {
         client: deps.client,
         log: deps.log.child(`session:${row.label}`),
-        onFrame: dispatchFrame(deviceId),
+        onFrame: dispatchFrame(key),
         onDisplayError: (err) => {
           const reason = err instanceof Error ? err.message : String(err)
           // Only the session currently published may tear its entry down.
@@ -400,14 +510,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // moment later — by which time a replacement may already be serving
           // the device. Without this guard a routine close, or any session left
           // behind by an earlier race, takes the healthy one with it.
-          const current = entries.get(deviceId)?.session
+          const current = entries.get(key)?.session
           if (current !== undefined && current !== created) {
-            deps.log.debug(`ignoring a display error from a session no longer in use on ${deviceId}: ${reason}`)
+            deps.log.debug(`ignoring a display error from a session no longer in use on ${deviceId} (${quality}): ${reason}`)
             return
           }
-          deps.log.warn(`display error on ${deviceId}: ${reason} — closing the session`)
+          deps.log.warn(`display error on ${deviceId} (${quality}): ${reason} — closing the session`)
           deps.onSessionEnded?.(deviceId, reason)
-          void closeEntry(deviceId, reason)
+          void closeEntry(key, reason)
         },
         ...(deps.makeInspector ? { makeInspector: deps.makeInspector } : {}),
         ...(deps.makeScrcpy ? { makeScrcpy: deps.makeScrcpy } : {}),
@@ -422,8 +532,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     created = session
     // No subscribers and refcount 0: every caller of `acquire` attaches
     // itself once this resolves, including the one that started the work.
-    const entry: Entry = { session, refcount: 0, frameSubscribers: new Set(), closeTimer: null, idleSince: null, videoProfile }
-    entries.set(deviceId, entry)
+    const entry: Entry = { deviceId, quality, session, refcount: 0, frameSubscribers: new Set(), closeTimer: null, idleSince: null, videoProfile }
+    entries.set(key, entry)
     await session.display.start()
     // Sockets are up but no frame has arrived yet — the last phase before
     // `ready`, which session.ts emits itself from the first onFrame (§4.3).
@@ -436,12 +546,42 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       inspection: row.inspection ?? 'ui-server',
       quality: session.quality,
     })
-    deps.log.info(`session opened: ${row.label} (${deviceId})`)
+    deps.log.info(`session opened: ${row.label} (${deviceId}) at ${quality}`)
     return entry
   }
 
   /**
-   * Creations already running, keyed by device.
+   * Plan 100 §3.2, §4.2, §5 step 100.4 — decides whether THIS build gets the
+   * fast path, then builds it. A `control` request against a device with an
+   * already-open `wall` entry takes the fast path (skips wake/rotate/
+   * text-input/farm-tag, requires a real second scrcpy session or throws);
+   * every other request — `wall`, or `control` with no open `wall` entry —
+   * builds the ordinary, unchanged way. Checked fresh at the moment the
+   * build lane actually grants a permit (not at `acquire` call time), so a
+   * build queued behind the farm-wide lane sees the wall entry's true state
+   * at build time, not a stale snapshot from when it was first requested.
+   *
+   * A `wall` entry appearing or disappearing in the narrow window between
+   * `acquire` checking `entries` and this function running is a real but
+   * bounded race (the same shape the pre-100.4 `acquire` already documented
+   * for a concurrent wall-first request): the affected build simply takes
+   * whichever path was true a moment earlier, and self-heals on the next
+   * `acquire` either way — it never produces a wrong or missing entry.
+   */
+  async function buildEntry(deviceId: string, quality: Quality): Promise<Entry> {
+    if (quality === 'control') {
+      const wallEntry = entries.get(entryKey(deviceId, 'wall'))
+      if (wallEntry) {
+        return createEntry(deviceId, quality, undefined, { skipDevicePrep: true, requireScrcpy: true })
+      }
+    }
+    return createEntry(deviceId, quality)
+  }
+
+  /**
+   * Creations already running, keyed by `entryKey` (plan 100 §4.2) — a
+   * `wall` build and a `control` build for the SAME device are independent
+   * and must never coalesce into one promise.
    *
    * Starting a session takes the better part of a second (push the jar, launch
    * scrcpy-server, connect two sockets). `acquire` used to check `entries` and
@@ -456,49 +596,53 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const inFlight = new Map<string, Promise<Entry>>()
 
   /**
-   * Restarts already running, keyed by device — the same coalescing reason
-   * as `inFlight` above, so two restart requests arriving together for the
-   * SAME device (a `control`-quality acquire racing a settings-driven
-   * `reprofile`, say) restart the session exactly once. This map — and the
-   * subscriber/refcount carry-over inside `restartAt` below — is the
-   * pre-plan-92 `upgrading` map verbatim (plan 92 §3.8: "keeping its
-   * coalescing map and its subscriber carry-over unchanged"); only the
-   * mechanism it now drives (`restartAt`, general in `quality`) is new.
+   * Restarts already running, keyed by `entryKey` — the same coalescing
+   * reason as `inFlight` above, so two restart requests arriving together
+   * for the SAME `(deviceId, quality)` (e.g. two `reprofile` passes racing)
+   * restart the session exactly once. This map — and the subscriber/
+   * refcount carry-over inside `restartAt` below — is the pre-plan-92
+   * `upgrading` map verbatim (plan 92 §3.8: "keeping its coalescing map and
+   * its subscriber carry-over unchanged"); only the mechanism it now drives
+   * (`restartAt`, general in `quality`) is new.
    */
   const upgrading = new Map<string, Promise<void>>()
 
   /**
-   * Restart a device's OPEN session at `quality`, with a freshly resolved
-   * profile, carrying subscribers and refcount onto the fresh entry (plan 92
-   * §3.8 — the generalisation of the pre-plan-92 `upgradeToControl`, which
-   * this function's body used to be, unconditionally, for exactly the
-   * `wall → control` transition). A no-op when the device has no open entry
-   * — nothing to restart, and a plain `acquire` builds the right thing
-   * directly; this function never itself decides WHETHER a restart is
-   * warranted, only how to carry one out safely — `upgradeToControl` below
-   * and `reprofile` are the two callers that each own their own "should
-   * this restart happen at all" rule.
+   * Restart a device's OPEN session AT `quality` — that one slot only, with
+   * a freshly resolved profile, carrying subscribers and refcount onto the
+   * fresh entry. Plan 100 §3.2: the pre-100.4 `wall → control` restart
+   * (`upgradeToControl`, which this function's body used to unconditionally
+   * BE) is gone — that transition is now "open a second entry" (§4.2's
+   * `buildEntry` fast path), never a same-slot rebuild. This function keeps
+   * doing exactly what it did for `reprofile` (plan 92 §3.8): a same-quality
+   * requality of an entry that is unambiguously still open. A no-op when
+   * the device has no open entry at `quality` — nothing to restart, and a
+   * plain `acquire` builds the right thing directly.
    */
   async function restartAt(deviceId: string, quality: Quality, detail?: string): Promise<void> {
-    if (!entries.has(deviceId)) return
-    let pending = upgrading.get(deviceId)
+    const key = entryKey(deviceId, quality)
+    if (!entries.has(key)) return
+    let pending = upgrading.get(key)
     if (!pending) {
       pending = (async () => {
-        const old = entries.get(deviceId)
+        const old = entries.get(key)
         if (!old) return
-        entries.delete(deviceId)
+        entries.delete(key)
         if (old.closeTimer) clearTimeout(old.closeTimer)
         await old.session.close().catch((err) => deps.log.warn(`failed to close session ${deviceId}: ${String(err)}`))
-        // `detail` is only ever set by a `reprofile` pass today (§3.8 rule
-        // 5) — kept as a distinct reason from the plain wall→control
-        // upgrade's `quality_upgrade` so a device event log reader can tell
-        // "an operator watched Control" from "a settings save reprofiled
-        // this session" without decoding `detail` text.
+        // `detail` is always set by `reprofile` today (§3.8 rule 5) — the
+        // only remaining caller of `restartAt` since `upgradeToControl` was
+        // deleted (plan 100 §3.2). The `quality_upgrade` reason kept below
+        // is a defensive fallback for any future caller of this general
+        // primitive that restarts with no detail, not a live path today.
         deps.onEvent?.(deviceId, 'session.closed', { reason: detail ? 'video_reprofile' : 'quality_upgrade' })
         // Through the build lane (plan 92 §3.3) like every other new build —
         // a restart pushes a fresh jar and spawns a fresh scrcpy child
         // exactly like a brand-new session does, so it competes for the
-        // same farm-wide permits.
+        // same farm-wide permits. Never the fast path (`fastOpts` omitted):
+        // a same-quality restart still needs the full wake/rotate/text/tag
+        // sequence — see 96.24/§4.5's own reasoning for why this plan does
+        // not change that.
         const fresh = await buildLane.run(() => createEntry(deviceId, quality, detail))
         // Carry the old entry's subscribers and refcount onto the fresh one —
         // an existing viewer (a wall tile, a device page) keeps receiving
@@ -506,99 +650,72 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // the new session is ready. This is the ENTIRE reason a restart
         // never has to be announced to a viewer separately from
         // `session.progress` (§4.5): the WS subscription itself survives.
-        for (const sub of old.frameSubscribers) fresh.frameSubscribers.add(sub)
+        for (const sub of old.frameSubscribers) {
+          fresh.frameSubscribers.add(sub)
+          subscriberEntry.set(sub, key) // same key string (quality unchanged) — kept in sync regardless
+        }
         fresh.refcount = old.refcount
-        entries.set(deviceId, fresh)
+        entries.set(key, fresh)
       })()
-      upgrading.set(deviceId, pending)
-      void pending.finally(() => upgrading.delete(deviceId))
+      upgrading.set(key, pending)
+      void pending.finally(() => upgrading.delete(key))
     }
     await pending
   }
 
-  /**
-   * Opening Control on a device streaming at `wall` quality upgrades it: the
-   * session restarts at `control` quality (Plan 42 §3.5, §4.5). A
-   * `wall`-quality entry is NEVER touched for a `wall` request, and a
-   * `control`-quality entry is never restarted by this path: the guard below
-   * is the ENTIRE "should this restart happen" decision — `restartAt` itself
-   * (above) no longer makes it, now that it also serves `reprofile`.
-   */
-  async function upgradeToControl(deviceId: string): Promise<void> {
-    const existing = entries.get(deviceId)
-    if (!existing || existing.session.quality !== 'wall') return
-    // The `detail` is not decoration. scrcpy's `max_size`/`video_bit_rate`/
-    // `max_fps` are LAUNCH arguments, so raising a wall tile to Control can
-    // only be done by tearing the session down and starting it again — the
-    // operator sees a second "Waking the device" a moment after the first one
-    // already finished, and without this line nothing on screen explains why.
-    //
-    // `reprofile` (the settings path) has passed a detail since plan 92 §3.8
-    // rule 5; this call site — the one an operator crosses every single time
-    // they click a wall tile open — did not, so F17 was closed for the rare
-    // path and left open for the common one.
-    await restartAt(deviceId, 'control', 'the wall streams at a lower quality — restarting this device at full quality for Control')
-  }
-
   return {
     async acquire(deviceId, onFrame, quality = 'control') {
-      if (quality === 'control') await upgradeToControl(deviceId)
-
-      const existing = entries.get(deviceId)
+      const key = entryKey(deviceId, quality)
+      const existing = entries.get(key)
       if (existing) {
-        if (existing.closeTimer) {
-          clearTimeout(existing.closeTimer)
-          existing.closeTimer = null
-        }
-        existing.idleSince = null
-        existing.refcount++
-        existing.frameSubscribers.add(onFrame)
+        attach(key, existing, onFrame)
         return existing.session
       }
 
-      let pending = inFlight.get(deviceId)
+      let pending = inFlight.get(key)
       if (!pending) {
         // The build lane's permit wait happens INSIDE this promise (plan 92
         // §3.3, §4.3) — `inFlight.set` below runs synchronously, before the
-        // permit is ever granted, so a second `acquire` for this SAME device
-        // arriving while the first is still queued sees `inFlight` already
-        // populated and joins this one promise rather than requesting a
-        // permit of its own. The dedupe map and the farm-wide lane are
-        // deliberately orthogonal: the map bounds builds PER DEVICE (one),
-        // the lane bounds builds ACROSS THE FARM (`maxConcurrentBuilds()`) —
-        // taking the permit inside the map's critical section instead would
-        // make a queued build hold this device's dedupe slot while it waits,
-        // and every later subscriber for the SAME device would then queue
-        // behind the lane too instead of sharing the one build it should.
-        pending = buildLane.run(() => createEntry(deviceId, quality))
-        inFlight.set(deviceId, pending)
-        void pending.catch(() => undefined).finally(() => inFlight.delete(deviceId))
+        // permit is ever granted, so a second `acquire` for this SAME
+        // `(deviceId, quality)` arriving while the first is still queued
+        // sees `inFlight` already populated and joins this one promise
+        // rather than requesting a permit of its own. The dedupe map and
+        // the farm-wide lane are deliberately orthogonal: the map bounds
+        // builds PER ENTRY (one), the lane bounds builds ACROSS THE FARM
+        // (`maxConcurrentBuilds()`) — taking the permit inside the map's
+        // critical section instead would make a queued build hold this
+        // entry's dedupe slot while it waits, and every later subscriber
+        // for the SAME entry would then queue behind the lane too instead
+        // of sharing the one build it should. `buildEntry` (plan 100 §4.2)
+        // is what decides fast-path vs ordinary at the moment the permit is
+        // actually granted.
+        pending = buildLane.run(() => buildEntry(deviceId, quality))
+        inFlight.set(key, pending)
+        void pending.catch(() => undefined).finally(() => inFlight.delete(key))
       }
       // Every caller attaches itself, including the one that started the work:
-      // `createEntry` deliberately returns an entry with no subscribers.
+      // `createEntry` deliberately returns an entry with no subscribers. A
+      // rejected `pending` (e.g. the fast path's `E_CONTROL_SESSION_UNAVAILABLE`)
+      // propagates straight out of this `await` — no entry was ever set, so
+      // there is nothing here to clean up.
       await pending
-      // A concurrent `wall`-first request may have created the entry at `wall`
-      // quality while THIS caller wanted `control` — upgrade before attaching.
-      // (A `wall` caller racing the SAME window can, in principle, still end
-      // up attached to the pre-upgrade entry; this is bounded to the single
-      // instant a brand-new session is first created under mixed-quality
-      // concurrent requests, and self-heals on the next `acquire` either way.)
-      if (quality === 'control') await upgradeToControl(deviceId)
-      const entry = entries.get(deviceId)
+      const entry = entries.get(key)
       if (!entry) throw new SessionError('device_not_ready', `session for ${deviceId} disappeared during acquire`)
-      if (entry.closeTimer) {
-        clearTimeout(entry.closeTimer)
-        entry.closeTimer = null
-      }
-      entry.idleSince = null
-      entry.refcount++
-      entry.frameSubscribers.add(onFrame)
+      attach(key, entry, onFrame)
       return entry.session
     },
 
     release(deviceId, onFrame) {
-      const entry = entries.get(deviceId)
-      if (!entry) return
+      // `deviceId` is kept for signature compatibility (plan 100 §4.2's own
+      // "keep every public method signature unchanged" rule) but is not
+      // needed to find the entry: `subscriberEntry` already knows exactly
+      // which slot THIS subscriber belongs to, which is what makes this
+      // safe against a caller that mismatches deviceId/quality — a bug that
+      // would otherwise silently detach the wrong stream.
+      const key = subscriberEntry.get(onFrame)
+      const entry = key ? entries.get(key) : undefined
+      if (!key || !entry) return
+      subscriberEntry.delete(onFrame)
       entry.frameSubscribers.delete(onFrame)
       entry.refcount = Math.max(0, entry.refcount - 1)
       if (entry.refcount > 0) return
@@ -606,46 +723,64 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const ttlSec = idleTtlSec()
       // 0 closes it immediately — the pre-plan-42 behaviour, exactly (Plan 42 §4.4, acceptance #10).
       if (ttlSec <= 0) {
-        void closeEntry(deviceId, 'no_viewers')
+        void closeEntry(key, 'no_viewers')
         return
       }
       // A viewer that reconnects quickly re-attaches to a live session
       // (Plan 42 §3.4) instead of paying the full session start-up again.
-      entry.closeTimer = setTimeout(() => void closeEntry(deviceId, 'idle_timeout'), ttlSec * 1000)
+      entry.closeTimer = setTimeout(() => void closeEntry(key, 'idle_timeout'), ttlSec * 1000)
       enforceIdleCap()
     },
 
     get(deviceId) {
-      return entries.get(deviceId)?.session ?? null
+      // Plan 100 §4.2 — highest-quality wins: `control` if that entry is
+      // open, else `wall`, else null. Every pre-100.4 caller of bare
+      // `get(deviceId)` wants "what am I actually showing this device as",
+      // and Control is always the more specific answer when both exist.
+      // `getByQuality` below is for the few callers that need a SPECIFIC
+      // slot rather than this resolution.
+      return entries.get(entryKey(deviceId, 'control'))?.session ?? entries.get(entryKey(deviceId, 'wall'))?.session ?? null
+    },
+
+    getByQuality(deviceId, quality) {
+      return entries.get(entryKey(deviceId, quality))?.session ?? null
     },
 
     restartAt,
 
     async reprofile(reason) {
-      const restarted: string[] = []
-      const skippedBusy: string[] = []
+      // Deduped by device id (plan 100 §4.2): a device can now have both a
+      // `wall` and a `control` entry restart in the same pass (distinct
+      // settings changes touching both preset tables at once is rare but
+      // possible), and the Studio toast this feeds
+      // (`buildReprofileToast`, `packages/studio/src/components/video/
+      // video-quality.ts`) reports "applied to N DEVICES" — counting the
+      // same device twice would overstate that.
+      const restartedIds = new Set<string>()
+      const skippedBusyIds = new Set<string>()
       let unchanged = 0
       // Nothing to compare an open session's own profile against — a
       // no-op, not a guess (plan 92 §3.8's own reading of `resolveProfile`
       // being optional, mirroring `resolveProfile`'s own doc comment above).
-      if (!deps.resolveProfile) return { restarted, skippedBusy, unchanged }
+      if (!deps.resolveProfile) return { restarted: [], skippedBusy: [], unchanged }
       const resolveProfile = deps.resolveProfile
       deps.log.info(`reprofile: ${reason}`)
-      // Snapshot the candidate ids up front: `restartAt` replaces its own
+      // Snapshot the candidate keys up front: `restartAt` replaces its own
       // entry (delete, then set, once the rebuild finishes) while this loop
       // runs, and a live `Map` must not be mutated out from under iteration.
       const restarts: Promise<void>[] = []
-      for (const deviceId of [...entries.keys()]) {
-        const entry = entries.get(deviceId)
+      for (const key of [...entries.keys()]) {
+        const entry = entries.get(key)
         if (!entry) continue // closed by something else between the snapshot and here
+        const deviceId = entry.deviceId
         // Rule 4 (§3.8): never mid-job — video keeps running while a device
         // is busy (spec §10.1), and a settings save must not be the thing
         // that interrupts a running script.
         if (deps.devices.get(deviceId)?.status === 'busy') {
-          skippedBusy.push(deviceId)
+          skippedBusyIds.add(deviceId)
           continue
         }
-        const quality = entry.session.quality
+        const quality = entry.quality
         // `entry.videoProfile` (not `entry.session.videoProfile`, which
         // exists purely for a fixture-typed `DeviceSession` and is typed
         // optional for that reason): the two are the SAME object whenever
@@ -664,7 +799,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           unchanged++
           continue
         }
-        restarted.push(deviceId)
+        restartedIds.add(deviceId)
         // Rule 3: through `restartAt` → the SAME build lane every other
         // build queues behind, so this is dispatched (not awaited one at a
         // time) — the lane, not this loop, decides how many run at once.
@@ -672,45 +807,57 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         restarts.push(restartAt(deviceId, quality, 'applying new video settings'))
       }
       await Promise.all(restarts)
-      return { restarted, skippedBusy, unchanged }
+      return { restarted: [...restartedIds], skippedBusy: [...skippedBusyIds], unchanged }
     },
 
-    closeDevice: (deviceId) => closeEntry(deviceId, 'device_gone'),
+    // Plan 100 §4.2 — the device vanished; every entry it holds (both `wall`
+    // and `control`, when both are open) must go, not just one.
+    async closeDevice(deviceId) {
+      const keys = [...entries.entries()].filter(([, e]) => e.deviceId === deviceId).map(([key]) => key)
+      await Promise.all(keys.map((key) => closeEntry(key, 'device_gone')))
+    },
 
+    // Plan 100 §4.2 — close every IDLE entry this device holds (both `wall`
+    // and `control`, when both are open and idle), so a job claim never
+    // inherits a stale entry at EITHER slot.
     async closeIfIdle(deviceId) {
-      const entry = entries.get(deviceId)
-      if (!entry || entry.refcount > 0) return
-      await closeEntry(deviceId, 'claimed')
+      const idle = [...entries.entries()].filter(([, e]) => e.deviceId === deviceId && e.refcount === 0).map(([key]) => key)
+      await Promise.all(idle.map((key) => closeEntry(key, 'claimed')))
     },
 
     idleSessions() {
-      return [...entries.entries()]
-        .filter(([, e]) => e.idleSince !== null)
-        .map(([deviceId, e]) => ({ deviceId, idleSince: e.idleSince as number }))
+      return [...entries.values()]
+        .filter((e) => e.idleSince !== null)
+        .map((e) => ({ deviceId: e.deviceId, idleSince: e.idleSince as number }))
         .sort((a, b) => a.idleSince - b.idleSince)
     },
 
     async closeAll(reason = 'shutdown') {
-      const ids = [...entries.keys()]
-      await Promise.all(ids.map((id) => closeEntry(id, reason)))
-      return ids.length
+      const keys = [...entries.keys()]
+      await Promise.all(keys.map((key) => closeEntry(key, reason)))
+      return keys.length
     },
 
     activeDeviceIds() {
-      return [...entries.keys()]
+      // Deduped (plan 100 §4.2): this reports DEVICES with an open session,
+      // not sessions — a device holding both a `wall` and a `control` entry
+      // still counts once, matching what every pre-100.4 caller (the adb
+      // restart confirmation's "N screens will stop" preview) already means
+      // by "device ids".
+      return [...new Set([...entries.values()].map((e) => e.deviceId))]
     },
 
     videoStats() {
       let control = 0
       let wall = 0
       const profiles: { deviceId: string; quality: Quality; maxSize: number; maxFps: number; bitRate: number }[] = []
-      for (const [deviceId, entry] of entries) {
-        if (entry.session.quality === 'control') control++
+      for (const entry of entries.values()) {
+        if (entry.quality === 'control') control++
         else wall++
         if (entry.videoProfile) {
           profiles.push({
-            deviceId,
-            quality: entry.session.quality,
+            deviceId: entry.deviceId,
+            quality: entry.quality,
             maxSize: entry.videoProfile.maxSize,
             maxFps: entry.videoProfile.maxFps,
             bitRate: entry.videoProfile.bitRate,

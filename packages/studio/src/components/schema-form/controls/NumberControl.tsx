@@ -60,6 +60,7 @@ export function NumberControl({
       min={plan.min}
       max={plan.max}
       step={plan.step}
+      increment={plan.increment}
       error={Boolean(error)}
       onChange={(next) => onChange(path, next)}
     />

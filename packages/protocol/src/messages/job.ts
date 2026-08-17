@@ -242,7 +242,7 @@ export const JobSummarySchema = z.object({
   jobId: z.string(),
   scriptName: z.string().nullable(),
   scriptVersion: z.string().nullable(),
-  /** 'standalone' | 'plugin' | 'dev' (plan 82 §3.3) once that column exists. */
+  /** 'plugin' | 'dev' (`ScriptOrigin`, plan 82 §3.3) once that column exists. */
   origin: z.string().nullable(),
   pluginName: z.string().nullable(),
   status: JobStatusSchema,
@@ -450,109 +450,11 @@ export const JobWaitingMessage = z.object({
   }),
 })
 
-// ---- Plan 99 §4.9, step 99.8: the node timeline and resume ----
-
-/**
- * One node execution's failure, as the timeline reports it (plan 99 §4.9).
- *
- * A local two-field object rather than a shared `ErrorSchema`, because this
- * package has no such schema: the only precedents are `ShellReplyErrorSchema`
- * and `ClipboardReplyErrorSchema` in `tunnel.ts`, both `{ code, message }`
- * declared locally for exactly this reason. This mirrors that pair's shape so
- * a future consolidation is a rename, not a redesign — and it maps 1:1 onto
- * the two columns the row actually has (`job_nodes.error_code`,
- * `job_nodes.error`).
- */
-export const JobNodeErrorSchema = z.object({
-  /** `job_nodes.error_code` — null on a row that failed before a code was assigned. */
-  code: z.string().nullable().default(null),
-  message: z.string(),
-})
-export type JobNodeError = z.infer<typeof JobNodeErrorSchema>
-
-/**
- * One row of `job_nodes` — one node EXECUTION, not one document node (plan 99
- * §4.9, acceptance #8: "every node execution is a row", including skipped
- * ones).
- *
- * `seq` is part of the shape rather than an implementation detail, and it is
- * what the timeline is ordered and keyed by. `nodeId` is NOT unique within a
- * job: the table's unique index is `(job_id, seq)` and its `(job_id, node_id)`
- * index is deliberately non-unique, because a loop re-executes the same
- * document node and each pass is its own row. A timeline keyed on `nodeId`
- * alone would silently collapse every iteration of a loop into one entry.
- *
- * Timestamps are unix SECONDS, matching `JobInfoSchema.startedAt`/`finishedAt`
- * above and the repo-wide rule that DB timestamps are integer unix seconds
- * (Drizzle `mode: 'timestamp'`). Not `z.date()`: this schema validates a JSON
- * HTTP body, and JSON has no date type — a `z.date()` field would reject every
- * real response.
- *
- * The nullable fields are nullable because the COLUMN is: `scriptId`,
- * `scriptName` and `scriptVersion` are all null for a `gate` node, which has
- * no script at all.
- */
-export const JobNodeSchema = z.object({
-  /** 0-based execution order within the job. Exceeds the document's node count when a loop ran. */
-  seq: z.number().int(),
-  /** The document's node id. Repeats across rows when a loop re-executed it. */
-  nodeId: z.string(),
-  kind: z.enum(['script', 'gate']),
-  /** Resolved at execution, never `@latest` — what actually ran. Null for a gate. */
-  scriptId: z.string().nullable().default(null),
-  scriptName: z.string().nullable().default(null),
-  scriptVersion: z.string().nullable().default(null),
-  status: JobNodeStatusSchema,
-  duration: z.object({
-    /** Unix seconds; null while the node has not started (or never did — a skipped row). */
-    startedAt: z.number().nullable().default(null),
-    finishedAt: z.number().nullable().default(null),
-    /** Server-computed convenience; null whenever either endpoint above is null. */
-    elapsedMs: z.number().int().nullable().default(null),
-  }),
-  attempts: z.object({
-    /**
-     * Attempts spent on THIS execution — straight from `job_nodes.attempts`.
-     * Named `current` to keep the peer-facing shape, but it is a completed
-     * count, not an in-flight index.
-     */
-    current: z.number().int().min(0).default(0),
-    /**
-     * The node's retry BUDGET. Nullable because no column stores it: it comes
-     * from the workflow document the job ran, so a caller reading a row whose
-     * document is gone gets an honest null rather than a fabricated number.
-     */
-    total: z.number().int().min(0).nullable().default(null),
-    lastError: JobNodeErrorSchema.nullable().default(null),
-  }),
-  output: z.object({
-    /** Whatever the node returned. `unknown` for the same reason `JobDetail.result` is. */
-    value: z.unknown(),
-    /** Set when the value was too large to store: the cap, and what was dropped (`job_nodes.output_truncated`). */
-    truncated: z.string().nullable().default(null),
-    error: JobNodeErrorSchema.nullable().default(null),
-    /** A gate's PredicateTrace and the branch it took (plan 99 §3.7). Null for a script node. */
-    verdict: z.unknown(),
-  }),
-  /** Set on seq 0 of a resumed job (plan 99 §3.5); null on every other row. */
-  resumedFromJobId: z.string().nullable().default(null),
-  resumedFromNode: z.string().nullable().default(null),
-})
-export type JobNode = z.infer<typeof JobNodeSchema>
-
-/**
- * `GET /api/jobs/:id/nodes` (plan 99 §4.9, step 99.8).
- *
- * `finalized` says the parent job has settled, which is what tells a poller to
- * stop and a "Resume from here" control that it may appear: resume is refused
- * with `409` while the job is not terminal.
- */
-export const JobNodesResponseSchema = z.object({
-  jobId: z.string(),
-  nodes: z.array(JobNodeSchema),
-  finalized: z.boolean(),
-})
-export type JobNodesResponse = z.infer<typeof JobNodesResponseSchema>
+// ---- Plan 99 §3.5, §4.9, step 99.8: resume ----
+//
+// The node timeline's own schemas (`JobNodeInfoSchema`, `JobNodesResponseSchema`)
+// live in `../api/jobs` with the rest of the REST envelopes — only the
+// `job.status` node block's `JobNodeStatusSchema` (above) belongs here.
 
 /**
  * `POST /api/jobs/:id/resume` request body (plan 99 §3.5, §4.9).

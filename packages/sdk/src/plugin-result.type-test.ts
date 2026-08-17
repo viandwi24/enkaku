@@ -3,9 +3,11 @@ import { z } from 'zod'
 import { definePlugin, type PluginMemberScript } from './plugin'
 
 /**
- * Plan 97 §3.2, §5 step 97.8 — the plugin-member half of H1
- * (`result.type-test.ts` already proves the standalone `defineScript` half).
- * `sdk/src/plugin.ts`'s `PluginMemberScript<S, R>` now carries the same
+ * Plan 97 §3.2, §5 step 97.8 — H1, proven for a plugin member. This is the
+ * WHOLE of H1's coverage since plan 110 §4.2 removed `defineScript` and with
+ * it `result.type-test.ts`, the half that covered it: a plugin member is now
+ * the only shape a script is authored in, so there is no second half left to
+ * prove. `sdk/src/plugin.ts`'s `PluginMemberScript<S, R>` carries the same
  * second generic `ScriptDefinition<S, R>` does — closing the gap step 97.2
  * left open and named as "left for whoever picks up 97.8".
  *
@@ -15,10 +17,14 @@ import { definePlugin, type PluginMemberScript } from './plugin'
  * `definePlugin`'s array-position inference, which cannot carry a second,
  * independent generic per element (tried; recorded there).
  *
- * `@ts-expect-error` is the assertion, matching `result.type-test.ts`'s own
- * technique — see that file's header for why. Named `.type-test.ts` so it
- * is exercised by `bash scripts/typecheck.sh`'s real `tsc --noEmit -p
- * packages/sdk`, not by `bun test`'s type-stripped run (though it can still
+ * `@ts-expect-error` is the assertion: `bash scripts/typecheck.sh` runs real
+ * `tsc --noEmit -p packages/sdk` over this file, and `@ts-expect-error` is
+ * itself a compile error when the following line does NOT already fail to
+ * compile (the identical technique `vocabulary.test.ts` uses for `ui()`'s
+ * overloads). So a regression that made a wrong `run` return value legal
+ * again would fail typecheck HERE, not silently pass. Named `.type-test.ts`,
+ * outside `bun test`'s default discovery glob, because its job is served
+ * entirely by `tsc` — Bun strips types without checking them (it can still
  * be run explicitly, inertly, with `bun test`).
  */
 describe('PluginMemberScript<S, R> — H1 for a plugin member (plan 97 §3.2, §5 step 97.8)', () => {

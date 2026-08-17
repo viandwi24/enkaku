@@ -466,6 +466,8 @@ describe('createJobService.enqueue — invalid params are refused before any dev
     const db = setUpDb()
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout',
         name: 'checkout',
         version: '1.0.0',
@@ -516,6 +518,8 @@ describe('createJobService.enqueue — invalid params are refused before any dev
     const db = setUpDb()
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout',
         name: 'checkout',
         version: '1.0.0',

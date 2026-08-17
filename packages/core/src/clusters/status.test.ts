@@ -12,8 +12,8 @@ function setUp() {
   return opened.db
 }
 
-function seedBatch(db: Db, id: string) {
-  db.insert(batches).values({ id, scriptId: 'internal:sleep', status: 'queued', createdAt: new Date() }).run()
+function seedBatch(db: Db, id: string, status: 'queued' | 'running' | 'stopping' | 'success' | 'failed' | 'cancelled' = 'queued') {
+  db.insert(batches).values({ id, scriptId: 'internal:sleep', status, createdAt: new Date() }).run()
 }
 
 let seq = 0
@@ -177,5 +177,69 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
     expect(row?.status).toBe('failed')
     expect(row?.finishedAt).not.toBeNull()
     expect(broadcasts[0]?.payload.status).toBe('failed')
+  })
+})
+
+/**
+ * `docs/plans/96-m61-hotfixes.md` §96.30 — the owner's own stuck tray entry,
+ * reproduced directly: a batch whose every job row is gone (the real path is
+ * `device/lifecycle.ts`'s `forget({ deleteHistory: true })`, simulated here
+ * by deleting the job row straight from the DB — the effect on this
+ * function is identical either way, since it only ever reads
+ * `jobStore.listByBatch`) must reach a TERMINAL status instead of being held
+ * at whatever it was — this is the write-time half of the fix; `api/
+ * batches.ts`'s `statusOf` (proven in `batches.test.ts`) is the read-time
+ * half that heals a row already stuck in the database before this fix
+ * shipped, with no migration and no backfill.
+ */
+describe('recomputeBatchStatus — a batch with zero jobs resolves to a terminal status instead of being held (§96.30)', () => {
+  test('`stopping` with no jobs left reaches `cancelled`, not held forever — reproduces the owner\'s stuck tray entry', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    seedBatch(db, 'b1', 'stopping')
+    // No jobs at all — mirrors `stopBatch`'s own call site on a batch whose
+    // only device was already forgotten before the operator hit Stop.
+
+    const broadcasts: { payload: { status: string } }[] = []
+    const result = recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+
+    const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+    expect(row?.status).toBe('cancelled')
+    expect(row?.finishedAt).not.toBeNull()
+    expect(result?.status).toBe('cancelled')
+    expect(broadcasts[0]?.payload.status).toBe('cancelled')
+  })
+
+  test('a stale `running`/`queued` row with zero jobs also resolves to `cancelled`, not just `stopping`', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    seedBatch(db, 'b1', 'running')
+
+    recomputeBatchStatus({ db, jobStore, broadcast: () => {} }, 'b1')
+    const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+    expect(row?.status).toBe('cancelled')
+    expect(row?.finishedAt).not.toBeNull()
+  })
+
+  test('a batch already terminal with zero jobs is left alone — no re-broadcast, no finishedAt disturbed', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    seedBatch(db, 'b1', 'success')
+    const before = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+
+    const broadcasts: unknown[] = []
+    const result = recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+
+    expect(result).toBeNull()
+    expect(broadcasts).toHaveLength(0)
+    const after = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+    expect(after?.status).toBe('success')
+    expect(after?.finishedAt?.getTime()).toBe(before?.finishedAt?.getTime())
+  })
+
+  test('an unknown batch id still returns null (unaffected by the new branch)', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    expect(recomputeBatchStatus({ db, jobStore, broadcast: () => {} }, 'no-such-batch')).toBeNull()
   })
 })

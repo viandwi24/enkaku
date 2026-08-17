@@ -123,6 +123,25 @@ export type Permission =
    * setting — nothing here widens it for an operator.
    */
   | 'kv.manage'
+  /**
+   * Read and write ONE plugin's own KV namespace through
+   * `/api/plugins/:name/data/*` (plan 108 §3.7, step 108.4) — in the
+   * `OPERATOR` set below, unlike `kv.manage` directly above it.
+   *
+   * The two are not redundant, and this one is not a weakening of that one.
+   * `kv.manage` guards `/api/kv`, where the namespace is a QUERY PARAMETER:
+   * `GET /api/kv/entry?namespace=…` can return a non-secret plaintext for
+   * ANY namespace in the farm, so it stays admin-only exactly as it is.
+   * `plugin.data` is structurally narrower: the namespace is never supplied
+   * by the caller at all — it is the `:name` path segment, forced onto every
+   * store call, and the route refuses with 404 unless a plugin of that name
+   * is currently `active` or holds a dev slot. An operator therefore reaches
+   * plugin data and nothing else, which is the boundary §3.7 is buying (a
+   * boundary between plugin data and the rest of the database, not between
+   * operators — an operator can already publish and run a script inside any
+   * plugin, which reaches the same rows).
+   */
+  | 'plugin.data'
 
 const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.view',
@@ -143,8 +162,10 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'job.run',
   'tool.view',
   'settings.view',
+  'plugin.data',
 ])
 // 'kv.manage' is deliberately NOT in OPERATOR (see its comment) — admin only.
+// 'plugin.data' IS, and does not widen it: see its own comment for why the two are different.
 
 /** Every permission the ACL matrix knows about — used to validate a caller-supplied permission NAME (e.g. an agent's `permissions` list, plan 65 §4.5) is real rather than a typo that would silently never match anything. */
 export const ALL_PERMISSIONS: readonly Permission[] = [
@@ -178,6 +199,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'user.manage',
   'audit.view',
   'kv.manage',
+  'plugin.data',
 ]
 
 export function isPermission(value: string): value is Permission {

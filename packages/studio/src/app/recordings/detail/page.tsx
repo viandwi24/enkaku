@@ -288,7 +288,9 @@ function RecordingDetailInner() {
         onSuccess: () => {
           setDirty(false)
           load()
-          toast.success(`Published ${detail?.doc.name}@${publishVersion} — it now appears in the scripts list`)
+          // `recordings/<name>` (plan 110 §3.4) — the server publishes every recording as a member of
+          // the synthetic `recordings` plugin, so that is the name an operator has to look for.
+          toast.success(`Published recordings/${detail?.doc.name}@${publishVersion} — it now appears under the recordings plugin`)
         },
       },
     )
@@ -484,8 +486,8 @@ function RecordingDetailInner() {
                 Publish as script
               </Button>
               <p className="text-[10.5px] leading-relaxed text-fg-subtle">
-                Publishes an ordinary script row — it appears in the scripts list, resolves as {detail.doc.name}@latest, and runs from the run dialog like
-                any other script.
+                Publishes as a member of the recordings plugin — it resolves as recordings/{detail.doc.name}@latest, and runs from the run dialog like any
+                other script.
               </p>
             </div>
           )}

@@ -70,8 +70,8 @@ export function createRemoteJobBridge(deps: {
 
       async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
         // Plan 82 §3.3: through the registry, not a direct `scripts` table
-        // read — a node-owned device can just as well run a published
-        // plugin member as a standalone script (a dev entry too, though
+        // read — a node-owned device runs a published plugin member the
+        // same way the local executor does (a dev entry too, though
         // scheduling one is out of scope per §2; an ad-hoc run is not).
         const entry = deps.registry.get(job.scriptId)
         if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)

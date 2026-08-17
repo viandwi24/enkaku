@@ -28,10 +28,46 @@ export type VerifyChildMessage =
       version: string
       title?: string
       description?: string
-      scripts: { id: string; paramsSchema: unknown; resultSchema?: unknown; runtime: RuntimeEnvelope | null }[]
+      scripts: {
+        id: string
+        paramsSchema: unknown
+        resultSchema?: unknown
+        runtime: RuntimeEnvelope | null
+        /** Plan 108 §0.2 P8, step 108.3 — reported at last, so a screen can name a script the way its author did. Present only when the member declared one, so a bundle that declares neither reports exactly what it reported before. */
+        title?: string
+        description?: string
+      }[]
+      /**
+       * Plan 108 §3.9, step 108.3 — the plugin's declared surface, RAW,
+       * exactly as the bundle states it. Absent when the bundle declares
+       * none, which is the byte-identical case acceptance criterion 1 turns
+       * on.
+       *
+       * `unknown` on purpose: the PARENT (`verify-child.ts`'s
+       * `finalizeReport`) is what validates it, independently, for the same
+       * reason it re-checks member ids, versions, and runtime envelopes — a
+       * hand-crafted bundle need never have gone through `definePlugin()`,
+       * so the SDK's own author-time check cannot be the only one.
+       */
+      surface?: unknown
       resetPackages: string[]
     }
-  | { ok: false; error: string }
+  | { ok: false; error: string; errorCode?: string }
+
+/**
+ * A refusal the child can put a NAME on, so the parent reports the real code
+ * rather than the generic `E_PLUGIN_VERIFY_FAILED`. Every other throw in this
+ * file stays a plain `Error` and keeps the generic code, unchanged.
+ */
+class VerifyChildError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'VerifyChildError'
+  }
+}
 
 function send(msg: VerifyChildMessage): void {
   process.send?.(msg)
@@ -52,9 +88,9 @@ async function main(): Promise<void> {
       throw new Error('the bundle has no default export produced by definePlugin() — expected a `scripts` array')
     }
     // Publish path 2 of 3 (plan 95 §4.9, §5 step 95.5) — the same
-    // `checkDeclaredSchema` gate `POST /api/scripts` runs for a standalone
-    // script, applied here to every member of a plugin bundle so a plugin
-    // cannot take the path a standalone script cannot. A `'group'` finding
+    // `checkDeclaredSchema` gate `POST /api/scripts` runs on a direct
+    // publish, applied here to every member of a plugin bundle so neither
+    // route can take a path the other refuses. A `'group'` finding
     // is the non-consecutive-group WARNING (plan 95 §3.5) and does not
     // fail verification on its own — every other finding does.
     const scripts = def.scripts.map((s) => {
@@ -94,8 +130,43 @@ async function main(): Promise<void> {
           `E_RUNTIME_ENVELOPE_INVALID: script "${s.id}"'s runtime envelope: ${runtimeParse.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
         )
       }
-      return { id: s.id, paramsSchema, resultSchema, runtime: runtimeParse.data }
+      // Plan 108 §0.2 P8, §5 step 108.3 — a member's human name and blurb,
+      // typed on `PluginMemberScript` and written by both shipped packs, but
+      // never reported until now, which is why no screen could show a
+      // script's title. Read defensively (`typeof`) rather than trusted from
+      // the type, for this file's usual reason — the bundle may never have
+      // been through `definePlugin()`. A non-string is DROPPED rather than
+      // refused: this metadata is cosmetic, it gates nothing, and refusing a
+      // whole plugin over a mistyped label would be out of proportion.
+      const meta = s as { title?: unknown; description?: unknown }
+      return {
+        id: s.id,
+        paramsSchema,
+        resultSchema,
+        runtime: runtimeParse.data,
+        ...(typeof meta.title === 'string' && meta.title.length > 0 ? { title: meta.title } : {}),
+        ...(typeof meta.description === 'string' && meta.description.length > 0 ? { description: meta.description } : {}),
+      }
     })
+    // Plan 108 §3.9, §5 step 108.3 — the surface, JSON round-tripped before
+    // it crosses the IPC boundary. Two reasons, both about the boundary
+    // rather than the content: it is stored as JSON in `plugins.manifest`, so
+    // what the parent validates should be exactly what will be persisted; and
+    // structured clone would otherwise carry (or choke on) values JSON cannot
+    // express — a function, a `Map`, a circular reference — turning an
+    // authoring mistake into an IPC crash instead of a named refusal.
+    let surface: unknown
+    const declaredSurface: unknown = (def as { surface?: unknown }).surface
+    if (declaredSurface !== undefined) {
+      try {
+        surface = JSON.parse(JSON.stringify(declaredSurface)) as unknown
+      } catch (err) {
+        throw new VerifyChildError(
+          'E_PLUGIN_SURFACE_INVALID',
+          `the declared surface cannot be serialised to JSON: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     send({
       ok: true,
       pluginId: def.id,
@@ -103,10 +174,15 @@ async function main(): Promise<void> {
       ...(def.title ? { title: def.title } : {}),
       ...(def.description ? { description: def.description } : {}),
       scripts,
+      ...(surface !== undefined ? { surface } : {}),
       resetPackages: def.reset?.packages ?? [],
     })
   } catch (err) {
-    send({ ok: false, error: err instanceof Error ? (err.stack ?? err.message) : String(err) })
+    send({
+      ok: false,
+      error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+      ...(err instanceof VerifyChildError ? { errorCode: err.code } : {}),
+    })
   } finally {
     // Give the IPC message time to flush before the process exits — the same pattern `child-entry.ts` uses.
     setTimeout(() => process.exit(0), 20)

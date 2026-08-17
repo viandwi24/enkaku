@@ -51,13 +51,43 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  overlay = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  /**
+   * The non-modal path (plan 103 §3.2, step 103.1) — pass `overlay={false}`
+   * here AND `modal={false}` on the surrounding `<Dialog>`. Both are needed
+   * at the CALL SITE (G4): `Dialog` already spreads `modal` through to
+   * `DialogPrimitive.Root` unchanged, but this component still had the only
+   * place that could suppress the `bg-black/50` overlay itself.
+   *
+   * A device popup (plan 103) opens dialogs — Run script, Assist,
+   * Disconnect, Forget, Install apk — OVER a live phone the operator is
+   * actively watching. The ordinary modal path dims that phone to 50% black
+   * and traps focus on it, which is backwards for a screen the operator most
+   * wants to keep watching while the dialog is open.
+   *
+   * **Evidence recheck (H1, plan 103 §7 test plan):** against the pinned
+   * `radix-ui@1.6.7` / `@radix-ui/react-dialog@1.1.23`, `Dialog.Overlay`
+   * ALREADY returns `null` when `context.modal` is `false`
+   * (`@radix-ui/react-dialog/dist/index.mjs`'s own `DialogOverlay`), and
+   * `Dialog.Content` already switches to `DialogContentNonModal`
+   * (`trapFocus: false`, `disableOutsidePointerEvents: false`, and it never
+   * calls `hideOthers()` on the rest of the page) purely from `modal={false}`
+   * on the root — with NO help from this file. So `overlay={false}` here is
+   * not fixing a reproducible dimming bug in the installed version; it is
+   * kept anyway so the non-modal INTENT is explicit and readable at each
+   * call site, rather than depending on a reader tracing into
+   * `node_modules` to discover that Radix already does the right thing.
+   * Radix's own Escape-to-dismiss (`DismissableLayer`'s `onDismiss`) is
+   * unconditional either way, so it needs no change here.
+   */
+  overlay?: boolean
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
-      <DialogOverlay />
+      {overlay && <DialogOverlay />}
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(

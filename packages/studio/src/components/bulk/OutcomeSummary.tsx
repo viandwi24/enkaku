@@ -27,7 +27,22 @@ export function OutcomeSummary({ counts, label }: { counts: OutcomeCounts; label
   const percent = counts.total > 0 ? Math.round((settled / counts.total) * 100) : 0
   return (
     <div className="space-y-1.5" data-testid="outcome-summary">
-      <Progress value={percent} aria-label={label ?? 'Outcome progress'} />
+      {/*
+       * `counts.total === 0` means there is nothing to show progress OF —
+       * every real caller of this component (a batch, a command run) has at
+       * least one member when it is genuinely in flight, so reaching zero
+       * here is either a not-yet-hydrated fixture or the exact core defect
+       * `docs/plans/96-m61-hotfixes.md` §96.30 fixed (every member deleted
+       * out from under a still-open batch). Either way, a bar has nothing
+       * true to say about "0 of 0" — `Progress value={0}` already renders
+       * its indicator fully hidden (see `components/ui/progress.tsx`'s own
+       * `translateX`), but the track underneath it (`bg-primary/20`, itself
+       * a full-width, always-visible pill) still reads as a bar with
+       * something to show. Omitting it entirely, rather than trusting a
+       * value of 0 to look "empty enough", is the fix the owner's own
+       * screenshot asked for: zero work renders no bar at all.
+       */}
+      {counts.total > 0 && <Progress value={percent} aria-label={label ?? 'Outcome progress'} />}
       <p className="text-[11.5px] text-fg-muted">
         {counts.ok} ok · {counts.failed} failed · {counts.skipped} skipped ({settled}/{counts.total})
       </p>

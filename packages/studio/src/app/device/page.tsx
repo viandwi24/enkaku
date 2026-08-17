@@ -43,6 +43,7 @@ import { PhysicalLabellingPanel } from '@/components/device/PhysicalLabellingPan
 import { RotationQuickAction } from '@/components/device/RotationQuickAction'
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
 import { AssistDialog } from '@/components/device/AssistDialog'
+import { assistEndCopy } from '@/components/device-popup/ControlState'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { JobStatusBadge } from '@/components/StatusBadge'
@@ -342,17 +343,20 @@ function DeviceDetail() {
         // needs no notice, the same restraint `releaseControl` shows for a
         // deliberate release.
         setAssisting(null)
-        if (msg.payload.reason !== 'released') {
-          setNotice(
-            msg.payload.reason === 'ttl'
-              ? 'Assisting stopped automatically after a period of inactivity.'
-              : msg.payload.reason === 'primary_ended'
-                ? 'Assisting stopped — the job it was helping has finished.'
-                : msg.payload.reason === 'mode_off'
-                  ? 'Assisting was turned off for this farm.'
-                  : 'Assisting stopped — the connection dropped.',
-          )
-        }
+        // Plan 105 (M70) §3.4/§5 step 105.3 — the same wording
+        // `DevicePopup.tsx` uses, from the one place it is written
+        // (`assistEndCopy`, `@/components/device-popup/ControlState`), so
+        // this legacy page and the popup can never disagree about what an
+        // `AssistEndReason` says. `null` for `released` — "they stopped, no
+        // message needed" (§3.4's own words). This page's `notice` is a
+        // plain string (shared with `lease.revoked` below, a different
+        // message entirely) rather than the popup's richer
+        // `{ message, offerTakeControl }` shape, so `primary_ended`'s "take
+        // control in place" affordance is not rendered here — the header's
+        // own Take control button already appears the moment the device
+        // becomes free, one small step away rather than inline.
+        const copy = assistEndCopy(msg.payload.reason, assistGrantTtlSec)
+        if (copy) setNotice(copy.message)
       } else if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === deviceId) {
         // The effective engine for the CURRENT session dropped to the
         // fallback (plan 34 §4.6) — reported until the next session start.
@@ -692,6 +696,7 @@ function DeviceDetail() {
         onAskAgentOpenChange={setAskAgentOpen}
         agentVersion={agentVersion}
         labelState={labelState}
+        assistGrantTtlSec={assistGrantTtlSec}
       />
 
       <EntityTabs

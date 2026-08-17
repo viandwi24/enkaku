@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import {
-  AgentStatusSchema,
   DEFAULT_AGENT_STATUS,
+  DevicePreparationSchema,
   type AgentState,
   type AgentStatus,
+  type DevicePreparation,
   type GuestAgentCapability,
   type HelloResult,
 } from '@enkaku/protocol'
@@ -23,6 +24,8 @@ import { devices, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
+import { hasExhaustedRetryBudget, isWithinBackoffWindow, nextBoundedRetry } from './bounded-retry'
+import { GUEST_AGENT_COMPONENT_ID, deriveGuestAgentIdentity, deriveGuestAgentPreparation } from './preparation/guest-agent-status'
 
 /**
  * Provisioning: one agent on every phone (plan 90 §3.8, §4.3, fixes F7, F9,
@@ -112,21 +115,47 @@ export interface AgentProvisioner {
   ensureAll(opts?: { force?: boolean }): Promise<AgentProvisionReport>
   /** Uninstall + clear the row. Route/label teardown happens first, by the existing paths (the caller's responsibility — mirrors `DELETE /:id/guest-agent`'s own ordering). */
   remove(deviceId: string, actor: string | null): Promise<AgentStatus>
+  /**
+   * Plan 106 §5 step 106.7 — mirrors `preparation/runner.ts`'s own
+   * `runningSince`: unix seconds since `runOnePass` started for this
+   * device, or `null` when no pass is currently executing. In-memory only,
+   * never persisted and never routed through `maybeRecordTransition` — the
+   * same reasoning `runner.ts`'s doc comment gives (reverting a persisted
+   * intermediate state on an `E_ADB_UNAVAILABLE` defer, or on a core crash
+   * mid-install, is exactly the hazard this stays out of by never writing
+   * one in the first place).
+   */
+  runningSince(deviceId: string): number | null
 }
 
 function nowSeconds(now: () => number): number {
   return Math.floor(now() / 1000)
 }
 
-/** Reads `devices.agent`, Zod-validated (CLAUDE.md: never trust a JSON DB column). A row that fails validation reads as the default "never provisioned" status rather than throwing — an old/corrupt value must not 500 every caller. */
+/**
+ * Reads the guest agent's status, recombined from its two authoritative
+ * sources (plan 106 §5 step 106.5): `devices.preparation['guest-agent']`
+ * for `state`/`reason`/`checkedAt`/`attempts`/`nextAttemptAt`, and
+ * `devices.agent` (narrowed) for `appVersion`/`versionCode`/`androidSdkInt`/
+ * `capabilities`. Zod-validated on both sides (CLAUDE.md: never trust a
+ * JSON DB column) via `guest-agent-status.ts`'s own derive functions, which
+ * this module shares with `registry/device-registry.ts`'s `deriveAgentState`
+ * — one place decides how to read these two columns, not two.
+ */
 function readCached(row: DeviceRow, log: Logger): AgentStatus {
-  if (row.agent === null || row.agent === undefined) return DEFAULT_AGENT_STATUS
-  const parsed = AgentStatusSchema.safeParse(row.agent)
-  if (!parsed.success) {
-    log.warn(`device ${row.id}: stored agent status failed validation, treating as never-provisioned: ${parsed.error.message}`)
-    return DEFAULT_AGENT_STATUS
+  const prep = deriveGuestAgentPreparation(row, log)
+  const identity = deriveGuestAgentIdentity(row, log)
+  return {
+    state: prep.state,
+    appVersion: identity.appVersion,
+    versionCode: identity.versionCode,
+    androidSdkInt: identity.androidSdkInt,
+    capabilities: identity.capabilities,
+    reason: prep.reason,
+    checkedAt: prep.checkedAt,
+    attempts: prep.attempts,
+    nextAttemptAt: prep.nextAttemptAt,
   }
-  return parsed.data
 }
 
 export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisioner {
@@ -146,14 +175,50 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         onLog: (level, msg) => deps.log[level](msg),
       }))
 
+  /** Plan 106 §5 step 106.7 — see `AgentProvisioner.runningSince`'s own doc comment. Keyed by deviceId; one entry, since a device has exactly one guest agent. */
+  const runningSinceMap = new Map<string, number>()
+
   const mustGet = (id: string): DeviceRow => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
     if (!row) throw new EnkakuError('device_not_found', `no such device: ${id}`)
     return row
   }
 
+  /**
+   * Writes both halves of a settled `AgentStatus` in ONE atomic update (plan
+   * 106 §5 step 106.5): `devices.preparation['guest-agent']` gets the
+   * state-machine facts (authoritative — the same shape every other
+   * registered component uses), and `devices.agent` gets narrowed down to
+   * the identity facts alone (`GuestAgentIdentitySchema`, `@enkaku/protocol`
+   * — no `state` field to disagree with the preparation record's). Both
+   * come from this SAME `status` value, computed once by `ensureImpl`, so
+   * they cannot diverge — there is exactly one writer for either column's
+   * guest-agent-related content, this function. The row is re-read fresh
+   * (mirrors `preparation/runner.ts`'s own `writeComponent`) so this write
+   * never clobbers a `preparation` key some OTHER registered component
+   * wrote for the same device between this pass starting and finishing.
+   */
   function writeCached(deviceId: string, status: AgentStatus): void {
-    db.update(devices).set({ agent: status }).where(eq(devices.id, deviceId)).run()
+    const row = mustGet(deviceId)
+    const currentPrep = DevicePreparationSchema.safeParse(row.preparation ?? {}).data ?? {}
+    const nextPrep: DevicePreparation = {
+      ...currentPrep,
+      [GUEST_AGENT_COMPONENT_ID]: {
+        state: status.state,
+        version: status.appVersion,
+        reason: status.reason,
+        checkedAt: status.checkedAt,
+        attempts: status.attempts,
+        nextAttemptAt: status.nextAttemptAt,
+      },
+    }
+    db.update(devices)
+      .set({
+        agent: { appVersion: status.appVersion, versionCode: status.versionCode, androidSdkInt: status.androidSdkInt, capabilities: status.capabilities },
+        preparation: nextPrep,
+      })
+      .where(eq(devices.id, deviceId))
+      .run()
   }
 
   /** Records `device.agent` only on an actual transition (§4.3: "one event per state change") — a clean reconnect that changes nothing must emit no event (acceptance criterion 5). */
@@ -197,6 +262,21 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     }
     const launcher = makeLauncher(row, { expectedArtifact, onMismatch: (info) => { mismatch.current = info } })
 
+    // Plan 106 §5 step 106.8 (§9 Q5): `ui-server-component.ts`'s install was
+    // routed through the transfer machinery (`TransferService.installFromLocalApk`,
+    // real byte progress, a tray entry) — this launcher's OWN install, right
+    // below, is deliberately NOT. `createGuestAgentLauncher`'s `ensureInstalled()`
+    // has an `opts.force` fast-repair path R1 (plan 90 §3.9 rule 1) relies on
+    // — a forced uninstall+reinstall+reverify triggered by a live `hello()`
+    // protocol mismatch, recursed into from THIS function (`runOnePass`,
+    // below, `return runOnePass(row, priorAppVersion, true)`) as one outer
+    // attempt. `runTransfer` has no equivalent of that recursive, mid-pass,
+    // protocol-driven re-trigger; forcing it through would mean rebuilding
+    // R1's own repair cycle on a different primitive, not merely swapping
+    // how ONE install call reports progress — real scope §96.25 already
+    // spent effort getting right once. Left as future work if the owner
+    // wants it (plan 106 §9 Q5's own closing paragraph has the full
+    // reasoning and the tradeoff, stated for the owner to weigh).
     let versionCode: number | null = null
     try {
       const result = await launcher.ensureInstalled(forceReinstall ? { force: true } : undefined)
@@ -297,16 +377,23 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // bypasses this — that IS the "explicit retry" the bound exists to wait
     // for.
     if (!opts?.force && prior.state === 'failed') {
-      if (prior.attempts >= retryBackoffS.length) {
+      if (hasExhaustedRetryBudget(prior, retryBackoffS)) {
         deps.log.debug(`agent-provisioner: device ${row.id} has exhausted its ${retryBackoffS.length} automatic attempts — waiting for an explicit retry`)
         return prior
       }
-      if (prior.nextAttemptAt !== null && checkedAt < prior.nextAttemptAt) {
+      if (isWithinBackoffWindow(prior, checkedAt)) {
         return prior
       }
     }
 
     let result: Awaited<ReturnType<typeof runOnePass>>
+    // Plan 106 §5 step 106.7: the whole `runOnePass` duration counts as
+    // "in flight", including R1's own internal forced-repair-then-re-hello
+    // recursion (invisible to this wrapper — it is still one outer await).
+    // `finally` clears the marker on every exit path: success, a translated
+    // `failed`/`outdated` result, or the `E_ADB_UNAVAILABLE` defer's early
+    // `return prior` below.
+    runningSinceMap.set(row.id, checkedAt)
     try {
       result = await runOnePass(row, prior.appVersion, false)
     } catch (err) {
@@ -322,34 +409,28 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         return prior
       }
       throw err
+    } finally {
+      runningSinceMap.delete(row.id)
     }
 
     // An explicit retry is the honest version of "try again from scratch"
     // (plan 90 §3.7 rule 4's `POST .../network/retry` does the identical
     // thing for route recovery) — it must not inherit an already-exhausted
     // budget, or `force: true` would be indistinguishable from doing
-    // nothing at attempt 3.
-    const priorAttempts = opts?.force ? 0 : prior.attempts
-
-    let attempts: number
-    let nextAttemptAt: number | null
-    if (result.state === 'ready') {
-      attempts = 0
-      nextAttemptAt = null
-    } else if (result.state === 'failed') {
-      attempts = Math.min(priorAttempts + 1, retryBackoffS.length)
-      const backoff = retryBackoffS[Math.min(attempts, retryBackoffS.length) - 1] ?? retryBackoffS[retryBackoffS.length - 1]!
-      nextAttemptAt = attempts < retryBackoffS.length ? checkedAt + backoff : null
-    } else {
-      // 'outdated' — repaired once, still wrong; not the bounded-retry
-      // ladder's concern (that ladder is about transient install failures,
-      // not "this build is genuinely the wrong one"), so it does not
-      // accumulate attempts. It stays visible and actionable ("Update
-      // agent") until the manifest's pin changes or an operator forces a
-      // fresh pass.
-      attempts = 0
-      nextAttemptAt = null
-    }
+    // nothing at attempt 3. `nextBoundedRetry` (`bounded-retry.ts`, plan 106
+    // §3.3) carries this exact arithmetic now — 'outdated' resets the same
+    // as 'ready' there too, for the same reason the old inline comment gave:
+    // it is not the bounded-retry ladder's concern (that ladder is about
+    // transient install failures, not "this build is genuinely the wrong
+    // one"). It stays visible and actionable ("Update agent") until the
+    // manifest's pin changes or an operator forces a fresh pass.
+    const { attempts, nextAttemptAt } = nextBoundedRetry({
+      result: result.state,
+      priorAttempts: prior.attempts,
+      checkedAt,
+      retryBackoffS,
+      forced: !!opts?.force,
+    })
 
     const next: AgentStatus = { ...result, checkedAt, attempts, nextAttemptAt }
     writeCached(row.id, next)
@@ -372,6 +453,10 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     async status(deviceId) {
       const row = mustGet(deviceId)
       return readCached(row, deps.log)
+    },
+
+    runningSince(deviceId) {
+      return runningSinceMap.get(deviceId) ?? null
     },
 
     async ensureAll(opts) {
@@ -441,9 +526,12 @@ export function createAgentProvisionerRoutes(deps: { provisioner: AgentProvision
     const byState: Record<string, number> = {}
     const byVersion: Record<string, number> = {}
     for (const row of rows) {
-      const status = row.agent === null || row.agent === undefined ? DEFAULT_AGENT_STATUS : (AgentStatusSchema.safeParse(row.agent).data ?? DEFAULT_AGENT_STATUS)
-      byState[status.state] = (byState[status.state] ?? 0) + 1
-      const versionKey = status.appVersion ?? 'unknown'
+      // Plan 106 §5 step 106.5: state comes from `devices.preparation['guest-agent']`
+      // (with the legacy-row fallback `deriveGuestAgentPreparation` documents),
+      // never `devices.agent` directly — the same recombination `readCached` uses.
+      const state = deriveGuestAgentPreparation(row).state
+      byState[state] = (byState[state] ?? 0) + 1
+      const versionKey = deriveGuestAgentIdentity(row).appVersion ?? 'unknown'
       byVersion[versionKey] = (byVersion[versionKey] ?? 0) + 1
     }
     return c.json({ total: rows.length, byState, byVersion })

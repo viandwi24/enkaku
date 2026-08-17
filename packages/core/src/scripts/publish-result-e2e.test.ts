@@ -67,7 +67,7 @@ describe('plan 97 §4.4, §4.7 — a declared result schema survives publish →
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        name: 'auto-scroll-e2e',
+        name: 'demo/auto-scroll-e2e',
         version: '1.0.0',
         bundle: 'export default { id: "auto-scroll-e2e" }',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -152,7 +152,7 @@ describe('plan 97 §4.4, §4.7 — a declared result schema survives publish →
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        name: 'hostile-result-e2e',
+        name: 'demo/hostile-result-e2e',
         version: '1.0.0',
         bundle: 'export default {}',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },

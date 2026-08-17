@@ -1,8 +1,38 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNotNull, or, type SQL } from 'drizzle-orm'
 import { compareSemver, isPrereleaseVersion, RuntimeEnvelopeSchema, type RuntimeEnvelope } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { scripts, type ScriptKind, type ScriptRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+
+/**
+ * A `kind: 'script'` row with no owning plugin — a script published before a
+ * script had to be a member of a plugin (plan 110 §3.2). Nothing can create
+ * one any more (`publishScript` below refuses), but a farm that upgraded into
+ * the rule still has them on disk.
+ *
+ * The farm IGNORES them: they are not listed, not grouped, not resolvable, and
+ * cannot be run or scheduled. They are not deleted either — that is the
+ * operator's call (plan 110 §3.5) — and the job history that references them is
+ * untouched, because `jobs.script_name`/`script_version` are denormalised for
+ * exactly this. `createScriptRegistry` counts them once at construction and
+ * warns, so a farm never silently stops running something.
+ *
+ * A `kind: 'workflow'` row also carries no `pluginId` (§3.3: its bundle is a
+ * WorkflowDoc, so there is no plugin for it to be a member of) and is NOT one
+ * of these — it lists, groups and resolves exactly as it always has. That
+ * exception is the only reason this file compares against `kind` at all, and it
+ * is kept HERE, beside `publishScript`'s own `kind` checks, so no other reader
+ * of a `ScriptRow` grows a branch of its own (`db/schema.ts`'s containment note
+ * on the column).
+ */
+export function isUnownedScriptRow(row: Pick<ScriptRow, 'kind' | 'pluginId'>): boolean {
+  return row.kind === 'script' && row.pluginId == null
+}
+
+/** The SQL half of `isUnownedScriptRow` — the `where` every list query over `scripts` applies so the two can never disagree about which rows exist. */
+export function ownedScriptsWhere(): SQL | undefined {
+  return or(isNotNull(scripts.pluginId), eq(scripts.kind, 'workflow'))
+}
 
 /**
  * The one place `scripts.runtime` is read off a raw row and turned into a
@@ -94,6 +124,44 @@ export interface PublishScriptInput {
    * `'workflow'`.
    */
   kind?: ScriptKind
+  /**
+   * Plan 110 §3.2, §4.1 — the owning plugin (`plugins.id`) and which member
+   * of its bundle this row is. Set TOGETHER or not at all, exactly as
+   * `db/schema.ts` says of the two columns themselves ("set together, both
+   * null, or both non-null").
+   *
+   * A `kind: 'script'` row is only ever written WITH them (decision A: "tidak
+   * ada script yang define independen berdiri sendiri"); a `kind: 'workflow'`
+   * row is only ever written WITHOUT them (§3.3). Both halves are enforced
+   * below rather than at any route, so a fifth caller appearing later gets
+   * the rule for free rather than having to be told about it.
+   */
+  pluginId?: string | null
+  exportId?: string | null
+}
+
+/**
+ * Plan 110 §3.2, §4.1, §5 step 110.1 — the one refusal behind the one rule.
+ *
+ * The wording carries three things deliberately, because this string IS the
+ * documentation an author meets at the moment they hit the rule: what the
+ * rule is, what to write instead, and why a workflow does not have to satisfy
+ * it. The third is not politeness — "a workflow is exempt" reads like an
+ * oversight unless the message shows the exemption falling out of the rule's
+ * own wording (§3.3: the rule is "a `kind: 'script'` row is only ever written
+ * with a `pluginId`", so a workflow is outside it by construction, not by
+ * carve-out).
+ */
+export function scriptNeedsPluginMessage(subject: string): string {
+  return (
+    `${subject} has no owning plugin. A script cannot be published outside a plugin (plan 110 §3.2): ` +
+    `the farm only ever writes a kind:'script' row WITH a pluginId, so publish a plugin — ` +
+    `definePlugin({ id, version, scripts: [ … ] }) — and the member is published as "<plugin>/<script>". ` +
+    `A workflow does not have to satisfy this, and not because it was granted an exemption: the rule is ` +
+    `written as "a kind:'script' row is only ever written with a pluginId", and a workflow's bundle is a ` +
+    `WorkflowDoc rather than an ESM bundle — no run(), no members, nothing to share by import — so there is ` +
+    `no plugin for it to be a member of.`
+  )
 }
 
 /**
@@ -133,9 +201,23 @@ export function groupScriptsByName(rows: ScriptRow[]): ScriptGroupInfo[] {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** `q.kind`, when given, filters the underlying ROWS before grouping (plan 99 §4.9, §5 step 99.6) — a `?kind=workflow` request never sees a script-kind row's name collide into its group. */
+/**
+ * `q.kind`, when given, filters the underlying ROWS before grouping (plan 99
+ * §4.9, §5 step 99.6) — a `?kind=workflow` request never sees a script-kind
+ * row's name collide into its group.
+ *
+ * A row with no owning plugin is never listed (`isUnownedScriptRow`): the
+ * script list is the members of this farm's plugins, plus its workflows, and
+ * nothing else. Offering an operator a Run button for something that cannot
+ * resolve is worse than not showing it.
+ */
 export function listScriptGroups(db: Db, q?: { kind?: ScriptKind }): ScriptGroupInfo[] {
-  const rows = q?.kind ? db.select().from(scripts).where(eq(scripts.kind, q.kind)).all() : db.select().from(scripts).all()
+  const owned = ownedScriptsWhere()
+  const rows = db
+    .select()
+    .from(scripts)
+    .where(q?.kind ? and(eq(scripts.kind, q.kind), owned) : owned)
+    .all()
   return groupScriptsByName(rows)
 }
 
@@ -157,8 +239,38 @@ export function getScriptDetail(db: Db, id: string): ScriptDetail | null {
   }
 }
 
-/** Throws `script_version_exists` (409) exactly like the route did inline. */
+/**
+ * The ONE writer of a `scripts` row outside the plugin pipeline (plan 110
+ * §3.2, A2) — and therefore the one place the rule "a script cannot exist
+ * outside a plugin" is enforced. Every publish path in the farm (`POST
+ * /api/scripts`, the `script.publish` capability, workflow publish, recording
+ * publish) reaches this function, so none of them has to know the rule and
+ * none of them can be the exception that was forgotten.
+ *
+ * Throws `E_SCRIPT_NEEDS_PLUGIN` for a plugin-less `kind: 'script'` row, and
+ * `script_version_exists` (409) for a duplicate `(name, version)` exactly like
+ * the route did inline.
+ */
 export function publishScript(db: Db, input: PublishScriptInput): { id: string; name: string; version: string } {
+  const kind = input.kind ?? 'script'
+  const ref = `${input.name}@${input.version}`
+  const hasPluginId = input.pluginId != null && input.pluginId !== ''
+  const hasExportId = input.exportId != null && input.exportId !== ''
+  if (hasPluginId !== hasExportId) {
+    throw new EnkakuError(
+      'E_SCRIPT_NEEDS_PLUGIN',
+      `${ref}: pluginId and exportId are written together — both set, or neither (db/schema.ts) — got pluginId=${hasPluginId ? 'set' : 'null'}, exportId=${hasExportId ? 'set' : 'null'}. A half-owned row would resolve as a plugin member whose member id nothing can select.`,
+    )
+  }
+  if (kind === 'script' && !hasPluginId) {
+    throw new EnkakuError('E_SCRIPT_NEEDS_PLUGIN', scriptNeedsPluginMessage(ref))
+  }
+  if (kind === 'workflow' && hasPluginId) {
+    throw new EnkakuError(
+      'E_BAD_REQUEST',
+      `${ref} is a workflow and never has an owning plugin (plan 110 §3.3): its bundle is a WorkflowDoc, not a plugin member's ESM bundle, so there is no member for exportId to select.`,
+    )
+  }
   const existing = db
     .select()
     .from(scripts)
@@ -173,7 +285,7 @@ export function publishScript(db: Db, input: PublishScriptInput): { id: string; 
       id,
       name: input.name,
       version: input.version,
-      kind: input.kind ?? 'script',
+      kind,
       bundle: input.bundle,
       source: input.source ?? null,
       paramsSchema: input.paramsSchema ?? null,
@@ -181,6 +293,9 @@ export function publishScript(db: Db, input: PublishScriptInput): { id: string; 
       runtime: input.runtime ?? null,
       enabled: true,
       createdAt: new Date(),
+      // Plan 110 §4.1 — checked above, never guessed here.
+      pluginId: input.pluginId ?? null,
+      exportId: input.exportId ?? null,
     })
     .run()
   return { id, name: input.name, version: input.version }

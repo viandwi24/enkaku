@@ -35,8 +35,9 @@ bun run --cwd packages/core db:generate   # generate a Drizzle migration after c
 bun run build:guest-agent   # on-device APK (needs JDK 17 + Android SDK; see apps/guest-agent/README.md)
 bun run doctor              # environment check: toolchain integrity, adb, egress
 bun run probe-server        # the self-hosted egress/geo/DNS probe endpoint (plan 51 §5.3); routes degrade to `skip` when it is unset, never to a false `ok`
-bun test                    # every package EXCEPT studio (which bun test cannot see — read below); device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
-bun run --cwd packages/studio test   # studio's own tests — a SEPARATE, REQUIRED command; see below before assuming a bare `bun test` covers Studio
+bun test <path>             # ONLY the file or directory you changed. An agent must never run the bare, full-suite form — see "NEVER run a full test suite" below
+bun test                    # OWNER AND CI ONLY. Every package EXCEPT studio (which bun test cannot see — read below); device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
+bun run --cwd packages/studio test   # OWNER AND CI ONLY. Studio's own tests — a SEPARATE command, because a bare `bun test` does not cover Studio; ~170 isolated processes, ~80s
 ```
 
 Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. `packages/studio` and `examples` sit outside `bunfig.toml`'s `[test] root = "packages"` and each run as their own invocation (`bun run --cwd packages/studio test`, `bun run --cwd examples test`) — CI runs all three. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.
@@ -44,6 +45,35 @@ Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anythi
 **A bare `bun test` from the repo root never runs `packages/studio`'s tests — this is intentional, and `packages/studio` must be tested with the separate command above.** The root `bunfig.toml` excludes it via `[test].pathIgnorePatterns = ["packages/studio/**"]` (matched from the repo root, not from `[test].root` above it — that setting only changes where Bun *scans*, not what the ignore pattern is relative to). This exists because Studio's component/page tests render through `@testing-library/react` against a real DOM (`happy-dom`, registered by `packages/studio/bunfig.toml`'s own `[test].preload`), and Bun's preload is a single global list for the WHOLE invocation — there is no per-directory scoping within one `bun test` run. Preloading happy-dom globally was tried and broke core tests that stub `globalThis.fetch` themselves, because happy-dom's registration installs its own `fetch`/`WebSocket`/etc. `packages/studio/package.json`'s `test` script also passes `--isolate`, which is required, not cosmetic: several component tests use `mock.module('@/lib/ws', ...)`, and without `--isolate` a mock installed by one test FILE leaks into every file that runs after it in the same process (a documented Bun behavior), silently poisoning unrelated tests depending on file execution order. `.github/workflows/ci.yml` runs both commands — a green `check` job means both.
 
 **After cloning, run `git submodule update --init --recursive`** — `apps/guest-agent` vendors `hev-socks5-tunnel`, and without it the Android build fails on a missing `Android.mk`.
+
+### NEVER run a full test suite. Run only the tests for the files you changed.
+
+**This is a hard rule, not a preference. It applies to every suite — `bun test`, `bun test packages/core`, `bun run --cwd packages/studio test`, all of them.** The owner runs full suites manually; an agent never does.
+
+```bash
+bun test packages/core/src/plugins/binding.test.ts          # yes — one file
+bun test packages/core/src/plugins/                          # yes — the directory you touched
+bun test packages/studio/src/components/plugin-view/         # yes
+bun test                                                     # NO
+bun run --cwd packages/studio test                           # NO
+```
+
+**If you cannot scope a run to the files you touched, skip testing entirely and say so in your report.** A skipped test is a known gap; a suite that cooks the machine for six minutes is a real cost paid every time, for coverage nobody asked for.
+
+Why this is not fussiness — the measured cost on the maintainer's machine (10 cores):
+
+- Studio's `test` script passes `--isolate`, which is **required** (see the paragraph above: without it a `mock.module` leaks between files). `--isolate` means **one fresh process per test file**, and Studio has ~170 of them. Each of those processes builds a complete `happy-dom` from scratch.
+- One Studio run alone is ~80 s. **Four agents running it concurrently took over six minutes** and pinned every core — because contention makes each run slower, which makes the overlap longer, which makes contention worse. It compounds; it does not divide.
+- The laptop overheated and the fans ran flat out. That happened, on this repo, on 2026-08-17.
+
+Two corollaries that caused that incident and must not be repeated:
+
+- **Do not put a full-suite command in a subagent's definition of done** — especially not a Studio run for a worker that never opened a file in `packages/studio`. Scope every worker's verification to what it actually touched.
+- **Never run two test invocations at once.** Besides the CPU cost, concurrent runs share `packages/sdk/src/cli/.test-fixtures` and report inflated, fictional failure counts (25 and 43 were observed for a tree that genuinely had 3).
+
+`bun run typecheck` is cheap and is the exception — run it freely.
+
+**Never run `git stash` (or any whole-tree operation) while other agents may be working.** One agent stashed the tree to establish a baseline and wiped 203 tracked modifications plus 121 untracked files out from under three concurrent workers; nothing was lost only because it popped the stash in time. Baseline against your own paths, never the tree.
 
 ## Rules that get broken when you do not know them
 

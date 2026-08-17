@@ -184,7 +184,10 @@ function ScriptDetail() {
         actions={
           <>
             <Button asChild variant="ghost" size="sm">
-              <Link href="/scripts">
+              {/* The list this page belongs to moved into `/plugins` — one screen for
+                  everything the farm can run. Pointing straight at it rather than at
+                  `/scripts` (still a working redirect) keeps the back button one hop. */}
+              <Link href="/plugins">
                 <ArrowLeft className="size-4" aria-hidden />
                 All scripts
               </Link>
@@ -336,7 +339,7 @@ function ScriptDetail() {
                 run('delete', () => api(`/api/scripts/${script.id}`, ScriptDeleteResponseSchema, { method: 'DELETE' }), {
                   success: `${script.name}@${script.version} deleted`,
                   failure: 'Could not delete the script',
-                  onSuccess: () => router.push('/scripts'),
+                  onSuccess: () => router.push('/plugins'),
                 })
               }
             />

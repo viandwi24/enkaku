@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import { validatePluginSurface, type PluginSurface, type PluginSurfaceInput } from '@enkaku/protocol'
 import { foldRuntimeEnvelope } from './runtime-fold'
 import type { ScriptDefinition } from './types'
 
@@ -6,29 +7,27 @@ const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/
 
 /**
- * A script authored to live inside a plugin (plan 82 §3.6, §4.1). Everything
- * a standalone `ScriptDefinition` has, EXCEPT `version` — a plugin member
- * does not carry its own version; `definePlugin` stamps the plugin's own
- * version onto every member (a member MAY declare one, but only to assert
- * "this had better match the plugin's", never to diverge from it).
+ * A script (plan 82 §3.6, §4.1). Since plan 110 §4.2 this is the ONLY shape a
+ * script is ever authored in — there is no `defineScript` any more, because a
+ * script cannot exist outside a plugin. Everything
+ * `ScriptDefinition` has, EXCEPT `version`: a plugin member does not carry
+ * its own version; `definePlugin` stamps the plugin's own version onto every
+ * member (a member MAY declare one, but only to assert "this had better match
+ * the plugin's", never to diverge from it).
  *
  * This type is declared here, as `Omit<ScriptDefinition<S>, 'version'> &
- * { version?: string }`, rather than by editing `ScriptDefinition` itself in
- * `types.ts` to make `version` optional there. `types.ts` is out of bounds
- * for this change (a concurrent plan owns it in this pass) — but the
- * intended shape is exactly the same either way: `defineScript`'s output
- * (full `ScriptDefinition`, version required) is untouched for a standalone
- * script; a plugin member is authored as a plain object against this looser
- * type instead of going through `defineScript` at all, and `definePlugin`
- * below stamps a real `version` onto it before anything downstream ever
- * sees it — so every `ScriptDefinition` that leaves this module, in a
- * plugin or not, still has a required, validated, semver `version`.
+ * { version?: string }`, rather than by making `version` optional on
+ * `ScriptDefinition` itself in `types.ts`: `ScriptDefinition` is what a member
+ * BECOMES on the way out of `definePlugin` below, once a real `version` has
+ * been stamped onto it — so every `ScriptDefinition` that leaves this module
+ * still has a required, validated, semver `version`, and every consumer
+ * downstream (the runner included) can keep relying on that.
  *
  * The second type parameter `R` (plan 97 §3.2, §4.2, §5 step 97.8) mirrors
- * `ScriptDefinition`'s own — a plugin member can now declare `result` and
- * get the same author-time `run`-return check a standalone `defineScript`
- * script gets (H1). Defaults to `undefined`, exactly like `ScriptDefinition`
- * itself: a member declaring no `result` is unaffected.
+ * `ScriptDefinition`'s own — a member declaring `result` gets an author-time
+ * check that `run` returns the declared shape (H1). Defaults to `undefined`,
+ * exactly like `ScriptDefinition` itself: a member declaring no `result` is
+ * unaffected.
  */
 export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny, R extends z.ZodTypeAny | undefined = undefined> = Omit<
   ScriptDefinition<S, R>,
@@ -37,12 +36,12 @@ export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny, R extends 
   /** Optional — must equal the plugin's own version when given (plan 82 §3.6). Omit it; `definePlugin` fills it in. */
   version?: string
   /**
-   * Human-readable member metadata. The farm does NOT surface these yet: the
-   * verify child reports only `{ id, paramsSchema }` per member
-   * (`verify-child-entry.ts`), so unlike the PLUGIN-level `title`/`description`
-   * — which do reach the `plugins` row — these stay inside the bundle. They are
-   * typed because authors reasonably write them (both example packs do), and so
-   * that plumbing them through later needs no change on the authoring side.
+   * Human-readable member metadata, reported by the verify child alongside
+   * `{ id, paramsSchema, resultSchema, runtime }` and persisted into the
+   * plugin's manifest (plan 108 §0.2 P8, step 108.3) — so a screen naming a
+   * script shows what the author wrote rather than its bare id. Before that
+   * step these were typed but discarded at the verify boundary, which is why
+   * both shipped packs already write them.
    */
   title?: string
   description?: string
@@ -58,6 +57,25 @@ export interface PluginDefinition {
   scripts: PluginMemberScript[]
   /** Merged with each script's own `reset.packages` at the runner (plan 82 §3.10). */
   reset?: { packages?: string[] }
+  /**
+   * The screens this plugin contributes to Studio (plan 108 §4.1) — a
+   * sidebar entry, a table or a frame, and the actions they invoke. Wholly
+   * optional: a plugin omitting it is unaffected in every way, and nothing
+   * downstream of `definePlugin` behaves differently for one.
+   *
+   * Validated at import time on the AUTHOR's machine by `definePlugin`
+   * below, through the same `validatePluginSurface` the verify child and
+   * the parent's independent re-check run (§3.9) — so a defect that would
+   * fail verification on the farm fails here first, before any network
+   * call.
+   *
+   * Typed as `PluginSurfaceInput`, the surface as an AUTHOR writes it, not
+   * the parsed `PluginSurface` every consumer reads: the two differ only in
+   * that every defaulted field (`width`, `selectable`, `rows`, `device`, …)
+   * is optional here. `definePlugin`'s RETURN carries the parsed form —
+   * see `Plugin` below.
+   */
+  surface?: PluginSurfaceInput
 }
 
 /**
@@ -65,8 +83,7 @@ export interface PluginDefinition {
  *
  * `PluginDefinition.scripts` is `PluginMemberScript[]` — i.e. `PluginMemberScript<z.ZodTypeAny>[]`
  * — which erases each member's own params schema, leaving `ctx.params` as `unknown` inside every
- * `run`. That is the asymmetry this fixes: `defineScript<S>` infers a standalone script's params,
- * so a plugin member should infer its own too. The homomorphic mapped type below is what makes
+ * `run`. The homomorphic mapped type below is what makes
  * TypeScript infer `S[K]` per element instead of collapsing the array to its constraint.
  *
  * `result`'s own type (plan 97 §3.2, §5 step 97.8) is deliberately NOT
@@ -88,15 +105,25 @@ type PluginMemberScripts<S extends readonly z.ZodTypeAny[]> = {
   [K in keyof S]: PluginMemberScript<S[K], z.ZodTypeAny | undefined>
 }
 
-/** `definePlugin`'s return: every member has been stamped with a real, required `version` — a genuine `ScriptDefinition[]`. */
-export interface Plugin extends Omit<PluginDefinition, 'scripts'> {
+/**
+ * `definePlugin`'s return: every member has been stamped with a real,
+ * required `version` — a genuine `ScriptDefinition[]` — and `surface`, when
+ * the author declared one, has been through `validatePluginSurface`, so it
+ * is the PARSED form with every default applied (plan 108 §4.1). Both
+ * fields are narrowed on the way out for the same reason: what leaves this
+ * module is canonical, whatever shorthand the author was allowed on the way
+ * in.
+ */
+export interface Plugin extends Omit<PluginDefinition, 'scripts' | 'surface'> {
   scripts: ScriptDefinition[]
+  surface?: PluginSurface
 }
 
 /**
- * No side effects beyond validation, a stamp, and a freeze — matching
- * `defineScript`'s own contract (plan 82 §4.1). Throws on the author's own
- * machine, at import time, never on the farm:
+ * No side effects beyond validation, a stamp, and a freeze (plan 82 §4.1) —
+ * all orchestration (phases, timeouts, retries) belongs to the core's runner,
+ * so a plugin published with an older SDK keeps working on a newer core.
+ * Throws on the author's own machine, at import time, never on the farm:
  *
  * - `id` must match `[a-z0-9][a-z0-9-]*`.
  * - `version` must be semver.
@@ -104,6 +131,11 @@ export interface Plugin extends Omit<PluginDefinition, 'scripts'> {
  * - every member's `id` is unique within the plugin.
  * - a member that declares its own `version` must match the plugin's
  *   exactly — a silent divergence would be unverifiable (plan 82 §3.6).
+ * - `surface`, when present, passes `validatePluginSurface` (plan 108 §4.1)
+ *   — unknown keys, a nav entry naming a missing view, an action reference
+ *   naming a missing action, a duplicate nav id, an unknown icon, and every
+ *   cap. It is the SAME function the farm runs at verify, so the author
+ *   cannot publish a surface that passes here and fails there.
  */
 export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   def: Omit<PluginDefinition, 'scripts'> & { scripts: PluginMemberScripts<S> },
@@ -117,12 +149,24 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   if (!Array.isArray(def.scripts) || def.scripts.length === 0) {
     throw new Error('definePlugin: `scripts` must be a non-empty array')
   }
+  // Plan 108 §4.1 — the author-time half of §3.9's "the parent re-validates
+  // independently". One function, run in both places, so the two can never
+  // disagree about what is wrong with a surface. Every defect is reported
+  // at once rather than one per run: an author fixing four columns should
+  // not need four import cycles to find them.
+  let surface: PluginSurface | undefined
+  if (def.surface !== undefined) {
+    const checked = validatePluginSurface(def.surface)
+    if (!checked.ok) {
+      throw new Error(`definePlugin: surface — ${checked.errors.join('; ')}`)
+    }
+    surface = checked.value
+  }
 
   const seen = new Set<string>()
-  // Plan 98 §4.2 — the same `timeout`/`retries` ⇒ `runtime` fold
-  // `defineScript` applies, per member: a plugin member never goes through
-  // `defineScript` itself (this type's own doc comment above), so this is
-  // the ONLY place that fold happens for a plugin script. Computed in this
+  // Plan 98 §4.2 — the `timeout`/`retries` ⇒ `runtime` fold, per member.
+  // Since plan 110 removed `defineScript` this is the ONLY place that fold
+  // happens for any script at all (`runtime-fold.ts`). Computed in this
   // validation pass (which already throws on the author's own machine, at
   // import time, for every other per-member defect) and applied in the
   // `.map()` below, keyed by id since ids are already known unique here.
@@ -146,8 +190,7 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
     if (!s.params || typeof (s.params as { safeParse?: unknown }).safeParse !== 'function') {
       throw new Error(`definePlugin: script "${s.id}" — \`params\` must be a Zod schema`)
     }
-    // Plan 97 §3.2, §4.2, §5 step 97.8 — the same runtime check `defineScript`
-    // makes for a standalone script (`define-script.ts`): `result` is
+    // Plan 97 §3.2, §4.2, §5 step 97.8 — `result` is
     // validated the same way `params` just above is, only when present — an
     // output schema is optional and always optional (plan 97 §1, criterion 1).
     if (s.result !== undefined && typeof (s.result as { safeParse?: unknown }).safeParse !== 'function') {
@@ -161,10 +204,23 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
     return Object.freeze({ ...s, version: def.version, ...(runtime !== undefined ? { runtime } : {}) }) as ScriptDefinition
   })
 
-  return Object.freeze({ ...def, scripts })
+  // The authored `surface` is dropped from the spread and re-added only
+  // when there was one, so a plugin that declared none carries no `surface`
+  // key at all (rather than one holding `undefined`, which would show up in
+  // `Object.keys` and in anything that walks the definition) — and one that
+  // did carries the PARSED value, never the shorthand it was written as.
+  const { surface: authoredSurface, ...rest } = def
+  void authoredSurface
+  return Object.freeze({ ...rest, scripts, ...(surface !== undefined ? { surface } : {}) })
 }
 
-/** True for a `definePlugin()` result (a `scripts` array) as opposed to a standalone `ScriptDefinition` (a `run` function) — the check `child-entry.ts`'s loader makes (plan 82 §3.2). */
+/**
+ * True for a `definePlugin()` result (a `scripts` array) as opposed to any
+ * other default export, a bare `ScriptDefinition`-shaped object included (a
+ * `run` function, no `scripts`) — the check `child-entry.ts`'s loader makes
+ * (plan 82 §3.2) and the check `enkaku publish`/`enkaku dev` refuse on
+ * (plan 110 §4.2).
+ */
 export function isPlugin(def: unknown): def is Plugin {
   return !!def && typeof def === 'object' && Array.isArray((def as { scripts?: unknown }).scripts)
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { LeaseHolder } from '@enkaku/protocol'
 import { DeviceDetailResponseSchema, RunResponseSchema, ThreadResponseSchema } from '@enkaku/protocol'
+import { SingleDeviceNotice } from '@/components/target/TargetPicker'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/actions'
@@ -23,6 +24,14 @@ import { newId, ws, WsRequestError } from '@/lib/ws'
  * job case honestly if it is ever opened, naming the job and its script
  * with a link to it and to cancel it, exactly like the disabled button's
  * own tooltip.
+ *
+ * Plan 105 (M70) §5 step 105.1, audit row 26: `DevicePopup.tsx` reuses this
+ * dialog unchanged rather than writing a second one — it was previously
+ * reachable only from the legacy device page's `DeviceHeader`, so a device
+ * already held by a job or another person could never be reclaimed from the
+ * popup. `nonModal` (mirroring `AssistDialog`'s own identical prop, plan 103
+ * §3.2 step 103.1) is what makes that reuse safe there: the popup's whole
+ * point is that a dialog opened over a live phone must not dim or freeze it.
  */
 export function TakeControlDialog({
   deviceId,
@@ -31,6 +40,7 @@ export function TakeControlDialog({
   open,
   onOpenChange,
   onTaken,
+  nonModal = false,
 }: {
   deviceId: string
   deviceLabel: string
@@ -40,6 +50,8 @@ export function TakeControlDialog({
   onOpenChange: (open: boolean) => void
   /** Called once the takeover actually succeeds, with the new lease's expiry. */
   onTaken: (expiresAt: number) => void
+  /** The device popup's own path (plan 105 §5 step 105.1) — see the file header. `false` everywhere else (the legacy device page), which is a real navigation and where a backdrop is correct. */
+  nonModal?: boolean
 }) {
   const [current, setCurrent] = useState(holder)
   const [busy, setBusy] = useState(false)
@@ -98,8 +110,8 @@ export function TakeControlDialog({
   const isJob = current.kind === 'job'
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
+      <DialogContent overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>
             Take control of {deviceLabel} from {current.label}?
@@ -129,6 +141,11 @@ export function TakeControlDialog({
             )}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Plan 104 (M69) §3.4 — a lease is one device by definition (plan
+            91 §3.2, plan 71 §3.4): stated explicitly, the same as
+            `AssistDialog`'s own identical notice. */}
+        <SingleDeviceNotice deviceLabel={deviceLabel} />
 
         {staleNotice && (
           <div className="rounded-md border border-led-warn/40 bg-led-warn/5 p-3 text-[12.5px] text-led-warn">{staleNotice}</div>

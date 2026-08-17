@@ -2,20 +2,41 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { Menu, MonitorSmartphone, FileCode2, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, Network } from 'lucide-react'
+import { usePathname, useSearchParams } from 'next/navigation'
+import { ChevronsLeft, Menu, MonitorSmartphone, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, type LucideIcon } from 'lucide-react'
+import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { NotificationBell } from '@/components/NotificationBell'
+import { OperationTray } from '@/components/operations/OperationTray'
 import { ProvisioningBanner } from '@/components/ProvisioningBanner'
 import { AdbServerBanner } from '@/components/layout/AdbServerBanner'
 import { useAuth, type AuthUser } from '@/lib/auth'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
+import { pluginIcon } from '@/lib/plugin-icons'
+import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 
-const NAV = [
+interface NavItem {
+  href: string
+  label: string
+  icon: LucideIcon
+  countKey: keyof Counts | null
+  /**
+   * Shown when `countKey`'s own count is 0 — the ONE place a nav item is
+   * allowed two numbers, and only because one of them is a warning and the
+   * other is a plain count. See the `/plugins` entry below for why.
+   */
+  fallbackCountKey?: keyof Counts
+}
+
+const NAV: NavItem[] = [
   { href: '/', label: 'Devices', icon: MonitorSmartphone, countKey: 'devices' as const },
-  { href: '/scripts', label: 'Scripts', icon: FileCode2, countKey: 'scripts' as const },
+  // No `/scripts` entry — Scripts merged INTO the Plugins screen (owner's own
+  // ask, 2026-08-17), and `/scripts` is now a redirect there. See
+  // `AppShell.test.tsx`'s `NOT_IN_NAV_BY_DESIGN` for why a compatibility
+  // redirect must not get a nav item of its own.
   // Workflows sit at the SAME level as scripts, not underneath them — the
   // owner's own ruling, and the reason `RunScriptDialog` offers a
   // Workflow | Script choice rather than burying one inside the other. The
@@ -33,7 +54,22 @@ const NAV = [
   // tone, not the neutral count every other item uses) while any plugin is
   // `failed`, and it already links to the page: this nav entry IS the
   // warning, not a separate banner living somewhere else.
-  { href: '/plugins', label: 'Plugins', icon: Puzzle, countKey: 'failedPlugins' as const },
+  //
+  // The label names both halves because the screen behind it holds both now.
+  // `fallbackCountKey` is where the old Scripts entry's `scripts` count went,
+  // rather than being dropped: it is FOLDED IN, not stacked beside the
+  // warning. A nav item with two numbers on it is unreadable at 13px, and
+  // these two never compete for attention — "3 plugins are broken" outranks
+  // "41 scripts exist" every time, so the count only shows while there is no
+  // warning to show instead. Nothing an operator could see before is gone;
+  // the number they could see is simply no longer allowed to hide the fault.
+  {
+    href: '/plugins',
+    label: 'Plugins & scripts',
+    icon: Puzzle,
+    countKey: 'failedPlugins' as const,
+    fallbackCountKey: 'scripts' as const,
+  },
   { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
   // The fleet command console (plan 93 §3.16, §4.8, step 93.7) — one adb
@@ -41,11 +77,14 @@ const NAV = [
   // commands. Distinct from a device's own Terminal tab, which stays put.
   { href: '/console', label: 'Console', icon: Terminal, countKey: null },
   { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
-  // Topology — devices grouped by cluster, plus the node/transport view.
-  // It had no nav entry AND no link from anywhere else in Studio, so the
-  // page was reachable only by typing the URL. Placed next to Clusters
-  // because it is the same data seen spatially.
-  { href: '/topology', label: 'Topology', icon: Network, countKey: null },
+  // No `/topology` entry, deliberately — see `AppShell.test.tsx`'s
+  // `NOT_IN_NAV_BY_DESIGN` for the full reasoning. It was added here by
+  // hotfix §96.29 on the belief that it was an orphaned page; it is not a
+  // page at all, but a 22-line compatibility redirect to
+  // `/?view=wall&group=cluster`, and that view already has its own front
+  // door in the grid's `GroupBy` control. A nav item landing on the screen
+  // you are already on, with a filter applied, is the "second front door"
+  // this codebase declined to build for the reference design's Dashboard.
   { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
   { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },
   { href: '/tools', label: 'Tools', icon: Wrench, countKey: null },
@@ -65,6 +104,68 @@ interface Counts {
 }
 
 /**
+ * The sidebar's own read of `GET /api/plugins/ui` (plan 108 §3.5, §5 step
+ * 108.8) — deliberately LOOSER than `@enkaku/protocol`'s own
+ * `PluginUiResponseSchema`, in exactly one place: `icon` is a plain string
+ * here, not `IconNameSchema`.
+ *
+ * The strict enum is the right shape at the boundary that ACCEPTS a plugin
+ * (`definePlugin`, verify, the surface registry — all of which refuse an
+ * unknown name and say so). Re-imposing it here would mean a Studio bundle
+ * older than the core silently dropped a whole plugin's nav group because it
+ * had never heard of one picture; `pluginIcon` falls back instead. Everything
+ * else a nav entry carries is still parsed, never `as`-cast, and a response
+ * that fails this parse leaves the sidebar with no plugin group at all.
+ */
+const PluginNavResponseSchema = z.object({
+  items: z.array(
+    z.object({
+      plugin: z.string().min(1),
+      origin: z.string().default('plugin'),
+      nav: z.array(
+        z.object({
+          id: z.string().min(1),
+          label: z.string().min(1),
+          icon: z.string().default(''),
+          view: z.string().min(1),
+        }),
+      ),
+    }),
+  ),
+})
+type PluginNavGroup = z.infer<typeof PluginNavResponseSchema>['items'][number]
+
+interface PluginNavItem {
+  key: string
+  label: string
+  href: string
+  icon: string
+  /** `origin: 'dev'` — an unpublished dev slot, flagged with a `DEV` chip (criterion 7). */
+  isDev: boolean
+  plugin: string
+  view: string
+}
+
+/**
+ * One flat list of links out of the per-plugin groups. Static export, so a
+ * plugin screen is one page taking query parameters, the way `/device?id=…`
+ * already establishes (plan 108 §3.5).
+ */
+function pluginNavItems(groups: PluginNavGroup[]): PluginNavItem[] {
+  return groups.flatMap((group) =>
+    group.nav.map((entry) => ({
+      key: `${group.plugin}:${entry.id}`,
+      label: entry.label,
+      href: `/plugins/view?name=${encodeURIComponent(group.plugin)}&view=${encodeURIComponent(entry.view)}`,
+      icon: entry.icon,
+      isDev: group.origin === 'dev',
+      plugin: group.plugin,
+      view: entry.view,
+    })),
+  )
+}
+
+/**
  * App frame: fixed sidebar plus page content.
  *
  * The sidebar carries three things a top nav has no room for: counts next to
@@ -73,11 +174,38 @@ interface Counts {
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const [counts, setCounts] = useState<Counts>({ devices: 0, scripts: 0, activeJobs: 0, failedPlugins: 0 })
+  // Plan 108 §5 step 108.8 — what the live plugins contribute to the nav.
+  // Empty until it loads, empty forever if the read fails: a farm with no
+  // plugins and a farm whose plugin list could not be read look the same
+  // here, which is the point — neither is allowed to disturb the static nav.
+  const [pluginNav, setPluginNav] = useState<PluginNavGroup[]>([])
   const [connected, setConnected] = useState(false)
   const [version, setVersion] = useState<string | null>(null)
   const [mode, setMode] = useState<string>('local')
   const [mobileOpen, setMobileOpen] = useState(false)
+  // Plan 101 §3.4, step 101.2 — starts expanded (the server-rendered/first-
+  // paint state, since `localStorage` does not exist during the static
+  // export's prerender) and reads the real preference once mounted, exactly
+  // the same "default, then correct after mount" shape a `localStorage`-backed
+  // value always needs in a statically-exported app.
+  const [collapsed, setCollapsed] = useState(false)
+  useEffect(() => {
+    setCollapsed(readLocalPrefs().sidebarCollapsed)
+  }, [])
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev
+      writeLocalPrefs({ sidebarCollapsed: next })
+      return next
+    })
+  }
   const pathname = usePathname()
+  // A plugin screen is `/plugins/view?name=…&view=…` (plan 108 §3.5), so the
+  // path alone cannot say WHICH entry is the current one — the query is the
+  // whole address. Safe to read here: `AppShell` only ever renders inside
+  // `AuthGate`'s own `<Suspense>` boundary, which is what a static export
+  // needs before it will prerender a `useSearchParams()` caller at all.
+  const searchParams = useSearchParams()
   // Who is signed in, from `AuthGate` (plan 09 §4.14) — `authMode` here is
   // 'local'|'server' (is a login wall in effect at all), a different axis
   // from the `mode` state above ('local'|'orchestrator', which core binary
@@ -88,7 +216,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const [d, s, j, h, p] = await Promise.all([
+        const [d, s, j, h, p, u] = await Promise.all([
           fetch(`${coreBase()}/api/devices`).then((r) => r.json()),
           fetch(`${coreBase()}/api/scripts`).then((r) => r.json()),
           fetch(`${coreBase()}/api/jobs?limit=200`).then((r) => r.json()),
@@ -98,7 +226,18 @@ export function AppShell({ children }: { children: ReactNode }) {
           // `/api/plugins` route (or a request that simply fails) leaves
           // the badge at 0 rather than breaking the whole sidebar.
           fetch(`${coreBase()}/api/plugins`).then((r) => r.json()).catch(() => ({ items: [] })),
+          // Plan 108 §5 step 108.8 (G8) — the nav contributions, on the SAME
+          // pass as the badge above rather than a fetch of their own. Its own
+          // `catch`, like the badge's: a core too old to know this route, or
+          // an operator whose token cannot read it, gets the static nav and
+          // nothing extra — never a sidebar that failed to draw.
+          fetch(`${coreBase()}/api/plugins/ui`).then((r) => r.json()).catch(() => null),
         ])
+        // Parsed, never `as`-cast: a 404/403 body is a perfectly valid JSON
+        // document that simply is not this shape, and `safeParse` is what
+        // turns that into "no plugin group" instead of a render-time throw.
+        const ui = PluginNavResponseSchema.safeParse(u)
+        setPluginNav(ui.success ? ui.data.items : [])
         setCounts({
           // Both endpoints paginate now (plan 30 §4.2) — `total` is the true
           // farm-wide count; `.devices`/`.scripts` would silently cap at the
@@ -137,7 +276,15 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => setMobileOpen(false), [pathname])
 
-  const body = (
+  const pluginItems = pluginNavItems(pluginNav)
+  const activePluginView =
+    pathname === '/plugins/view' ? `${searchParams.get('name') ?? ''}::${searchParams.get('view') ?? ''}` : null
+
+  // The mobile sheet (below 1024px, design.md's own unchanged rule) is
+  // always the full, uncollapsed sidebar — "collapsed" is a floating-desktop
+  // rail concept (plan 101 §3.4), and a full-screen overlay menu has no
+  // width to reclaim by collapsing it.
+  const mobileBody = (
     <SidebarBody
       counts={counts}
       connected={connected}
@@ -147,14 +294,101 @@ export function AppShell({ children }: { children: ReactNode }) {
       user={user}
       authMode={authMode}
       onLogout={() => void logout()}
+      collapsed={false}
+      pluginItems={pluginItems}
+      activePluginView={activePluginView}
     />
   )
 
   return (
+    // A LOCAL provider (nesting inside `layout.tsx`'s app-wide one is
+    // harmless — radix resolves to the nearest ancestor) so `AppShell`
+    // renders correctly in isolation, e.g. under `AppShell.test.tsx`, which
+    // does not itself supply one.
+    <TooltipProvider delayDuration={200}>
     <div className="flex h-dvh overflow-hidden">
-      <aside className="hidden w-56 shrink-0 flex-col border-r bg-surface lg:flex">{body}</aside>
+      {/* Plan 101 §3.4, §4.2, step 101.2 — the collapsible, floating,
+          rounded sidebar. Width transitions 222px <-> 72px over 0.18s; the
+          14px outer margin and 22px radius separate it from the page body
+          the same way the reference's rack-mounted look does. The ONE
+          backdrop blur this refresh permits anywhere (plan 101 §3.6) — an
+          arbitrary-value Tailwind utility (allowed), not the bracket form
+          that names a custom-property COLOUR inside the brackets (that is
+          the specific v3 pattern `design-rules.test.ts` forbids — this is
+          a length/percentage value, a different thing entirely). */}
+      <aside
+        className={cn(
+          'relative m-3.5 hidden shrink-0 flex-col overflow-hidden rounded-[22px] border border-line bg-surface-2/70 backdrop-blur-[20px] backdrop-saturate-[150%] shadow-2xl transition-[width] duration-[180ms] lg:flex',
+          collapsed ? 'w-[72px]' : 'w-[222px]',
+        )}
+      >
+        <SidebarBody
+          counts={counts}
+          connected={connected}
+          version={version}
+          pathname={pathname}
+          mode={mode}
+          user={user}
+          authMode={authMode}
+          onLogout={() => void logout()}
+          collapsed={collapsed}
+          pluginItems={pluginItems}
+          activePluginView={activePluginView}
+        />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-pressed={collapsed}
+              className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-md text-fg-subtle transition-colors hover:bg-surface-3 hover:text-fg"
+            >
+              <ChevronsLeft className={cn('size-3.5 transition-transform', collapsed && 'rotate-180')} aria-hidden />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</TooltipContent>
+        </Tooltip>
+      </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* Plan 101 §5 step 101.8 (owner-specified, 2026-08-16) — the content
+          area's visual counterpart to the sidebar's own float (step 101.2):
+          in `refs/ui` the whole content pane is a large rounded panel inset
+          from the window edge, with its own recessed background and a soft
+          ambient glow, sitting on the dot-grid page — not flush edge-to-edge
+          the way this shell rendered before. Desktop only (`lg:`), matching
+          the sidebar's own `lg:flex` — below that breakpoint the sidebar
+          becomes a full-width sheet and the mobile top bar already reads as
+          its own flush surface, so there is no floating "page" to counter.
+          `bg-surface-2/40` is `--color-surface-2` (converted from the
+          reference's own recessed value per plan 101 §4.1's mapping table)
+          at the reference's own alpha — a token, not a pasted hex literal
+          (plan 101 §3.1; see `globals.css` for the exact conversion, the
+          only file allowed to state one). No `backdrop-filter`
+          here: the reference's own container has none either (only the glow
+          blobs below use `filter: blur()`, a different, cheaper property
+          that never forces a compositing layer the way `backdrop-filter`
+          does), so this costs nothing `design-rules.test.ts` would flag and
+          nothing plan 101 §3.6's "nothing that scales with device count"
+          rule is even about — it is one fixed panel, not a per-device one. */}
+      <div className="relative flex min-w-0 flex-1 flex-col lg:my-3.5 lg:mr-3.5 lg:overflow-hidden lg:rounded-[22px] lg:border lg:border-line lg:bg-surface-2/40 lg:shadow-2xl">
+        {/* The ambient glow (`refs/ui`'s own three radial blobs, reduced to
+            two): built from `--color-accent`/`--color-led-warn` tokens, never
+            a hex literal. The reference's third blob is the logo mark's own
+            pink accent — `docs/design.md` deliberately does not promote
+            that colour to a token ("naming it invites its use as a second
+            accent"), so it is left out here rather than reintroducing the
+            exact thing that rule exists to prevent. `-z-10` and
+            `pointer-events-none` keep it decorative, under everything real. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-32 left-[8%] -z-10 hidden size-[420px] rounded-full bg-accent/25 blur-[110px] lg:block"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -bottom-36 right-[15%] -z-10 hidden size-[420px] rounded-full bg-led-warn/15 blur-[120px] lg:block"
+        />
+
         <div className="flex items-center gap-2 border-b bg-surface px-3 py-2 lg:hidden">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
@@ -164,7 +398,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </SheetTrigger>
             <SheetContent side="left" className="w-56 bg-surface p-0">
               <SheetTitle className="sr-only">Main menu</SheetTitle>
-              {body}
+              {mobileBody}
             </SheetContent>
           </Sheet>
           <Brand />
@@ -183,7 +417,17 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
       </div>
+
+      {/* Plan 107 (M72) §1, §3.1, §4, step 107.3 — one floating, farm-wide
+          tray for every long operation, mounted ONCE here rather than per
+          screen (§9 Q3, recorded as a proposal, not a settled ruling — see
+          that component's own doc comment). Sibling to both the sidebar and
+          the content pane, not nested inside either, so its own `fixed`
+          positioning is never affected by an ancestor gaining a
+          containing-block-creating `filter`/`transform` later. */}
+      <OperationTray />
     </div>
+    </TooltipProvider>
   )
 }
 
@@ -207,6 +451,9 @@ function SidebarBody({
   user,
   authMode,
   onLogout,
+  collapsed,
+  pluginItems,
+  activePluginView,
 }: {
   counts: Counts
   connected: boolean
@@ -216,44 +463,69 @@ function SidebarBody({
   user: AuthUser | null
   authMode: string
   onLogout: () => void
+  /** Plan 101 §3.4, step 101.2 — the 72px rail: icons only, a tooltip names
+   *  every item so nothing moves into a hidden overflow menu. */
+  collapsed: boolean
+  /** Plan 108 §5 step 108.8 — what the live plugins contribute, already flattened. */
+  pluginItems: PluginNavItem[]
+  /** `"<plugin>::<view>"` when a plugin screen is the current page, else `null`. */
+  activePluginView: string | null
 }) {
   return (
     <>
-      <div className="flex h-12 items-center gap-2 border-b px-4">
-        <Brand />
-        <div className="ml-auto">
-          <NotificationBell />
-        </div>
+      <div className={cn('flex h-12 items-center gap-2 border-b border-line px-4', collapsed && 'justify-center px-0')}>
+        {collapsed ? (
+          <Link href="/" aria-label="Enkaku" className="grid size-6 place-items-center rounded bg-accent text-[11px] font-bold text-accent-fg">
+            E
+          </Link>
+        ) : (
+          <>
+            <Brand />
+            <div className="ml-auto">
+              <NotificationBell />
+            </div>
+          </>
+        )}
       </div>
 
-      <nav className="flex-1 space-y-0.5 p-2" aria-label="Main navigation">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2" aria-label="Main navigation">
         {NAV.map((item) => {
           const active = item.href === '/' ? pathname === '/' || pathname === '/device' : pathname.startsWith(item.href)
-          const count = item.countKey ? counts[item.countKey] : null
+          const primary = item.countKey ? counts[item.countKey] : null
           // The Plugins badge is a WARNING (criterion 30), not a neutral
           // count — a farm operator needs it to read as "something is
           // wrong here," the same visual language `DeviceStatusBadge`'s
           // `quarantined` tone already uses, not "here is a number."
-          const isWarning = item.countKey === 'failedPlugins'
+          const isWarning = item.countKey === 'failedPlugins' && primary !== null && primary > 0
+          // Fall back to the neutral count only when the warning has nothing
+          // to say — the two are never shown together (see `NAV` above).
+          const count = primary === 0 && item.fallbackCountKey ? counts[item.fallbackCountKey] : primary
           const Icon = item.icon
-          return (
+          const link = (
             <Link
               key={item.href}
               href={item.href}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] transition-colors',
+                'relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] transition-colors',
+                collapsed && 'justify-center px-0',
                 active
                   ? 'bg-surface-2 font-medium text-fg'
                   : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg',
               )}
             >
               <Icon className="size-4 shrink-0" aria-hidden />
-              <span className="flex-1">{item.label}</span>
-              {count !== null && count > 0 && (
+              {!collapsed && <span className="flex-1">{item.label}</span>}
+              {count !== null && count > 0 && !collapsed && (
                 <span
                   role={isWarning ? 'status' : undefined}
-                  title={isWarning ? `${count} plugin${count === 1 ? '' : 's'} failed to register` : undefined}
+                  title={
+                    isWarning
+                      ? `${count} plugin${count === 1 ? '' : 's'} failed to register`
+                      : item.fallbackCountKey === 'scripts'
+                        ? `${count} script${count === 1 ? '' : 's'} published`
+                        : undefined
+                  }
                   className={cn(
                     'readout rounded px-1.5 text-[11px]',
                     isWarning ? 'bg-led-danger/15 text-led-danger font-medium' : 'bg-surface-3 text-fg-muted',
@@ -262,18 +534,109 @@ function SidebarBody({
                   {count}
                 </span>
               )}
+              {/* Collapsed: the same fact (a badge exists) as a plain dot —
+                  no count is legible at 72px, but its EXISTENCE still is,
+                  so nothing that mattered at full width silently vanishes. */}
+              {count !== null && count > 0 && collapsed && (
+                <span
+                  aria-hidden
+                  className={cn(
+                    'absolute right-1.5 top-1.5 size-1.5 rounded-full',
+                    isWarning ? 'bg-led-danger' : 'bg-accent',
+                  )}
+                />
+              )}
             </Link>
           )
+          if (!collapsed) return link
+          return (
+            <Tooltip key={item.href}>
+              <TooltipTrigger asChild>{link}</TooltipTrigger>
+              <TooltipContent side="right">
+                {item.label}
+                {count !== null && count > 0 ? ` (${count})` : ''}
+              </TooltipContent>
+            </Tooltip>
+          )
         })}
+
+        {/* Plan 108 §3.5, §5 step 108.8, criterion 7 — the plugins' own
+            entries, in ONE labelled group BELOW the static nav and never
+            interleaved with it. Two reasons, both operational: the core nav
+            must not shift position when a plugin is installed or removed
+            (muscle memory for "Jobs is the seventh item" survives), and an
+            operator can see at a glance which entries are the product and
+            which came from a plugin. Absent entirely when no plugin
+            contributes one — a farm with no plugins, and a farm whose
+            `/api/plugins/ui` read failed, render identically. */}
+        {pluginItems.length > 0 && (
+          <div className="space-y-0.5 pt-2" role="group" aria-label="Plugin views">
+            {collapsed ? (
+              // No room for the label at 72px, so the group keeps its
+              // SEPARATION as a rule instead. Nothing is hidden by this: every
+              // entry below is still an icon with a tooltip, same as the
+              // static items.
+              <div className="mx-auto mb-1.5 h-px w-6 bg-line" aria-hidden />
+            ) : (
+              <p className="rack-label px-2.5 pb-1">Plugin views</p>
+            )}
+            {pluginItems.map((item) => {
+              const active = activePluginView === `${item.plugin}::${item.view}`
+              // The name came off the wire, so it is resolved through the
+              // allowlist map — an unrecognised or missing one falls back to
+              // a default icon. A plugin never supplies markup here.
+              const Icon = pluginIcon(item.icon)
+              const link = (
+                <Link
+                  key={item.key}
+                  href={item.href}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={collapsed ? item.label : undefined}
+                  className={cn(
+                    'relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] transition-colors',
+                    collapsed && 'justify-center px-0',
+                    active
+                      ? 'bg-surface-2 font-medium text-fg'
+                      : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg',
+                  )}
+                >
+                  <Icon className="size-4 shrink-0" aria-hidden />
+                  {!collapsed && <span className="min-w-0 flex-1 truncate">{item.label}</span>}
+                  {/* An unpublished dev slot (plan 82 §3.5's own precedence,
+                      criterion 7) — the same chip the run dialog already uses
+                      for a dev script, so "this is not the published thing"
+                      reads the same way in both places. */}
+                  {item.isDev && !collapsed && (
+                    <span className="readout rounded bg-led-warn/15 px-1 text-[10px] text-led-warn">DEV</span>
+                  )}
+                  {item.isDev && collapsed && (
+                    <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-led-warn" />
+                  )}
+                </Link>
+              )
+              if (!collapsed) return link
+              return (
+                <Tooltip key={item.key}>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right">
+                    {item.label}
+                    {item.isDev ? ' (DEV)' : ''} — {item.plugin}
+                  </TooltipContent>
+                </Tooltip>
+              )
+            })}
+          </div>
+        )}
       </nav>
 
-      <div className="border-t p-3">
+      <div className={cn('border-t border-line p-3', collapsed && 'px-0')}>
         {/* Signed-in user + logout (plan 09 §4.14) — hidden entirely in
             local mode, where there is no session to sign out of. Lives here,
             not in a new place: this footer is already where "facts about
-            this instance" (connection, version) sit. */}
-        {authMode === 'server' && user && (
-          <div className="mb-2 flex items-center justify-between gap-2 border-b pb-2">
+            this instance" (connection, version) sit. Collapsed to just the
+            logout icon (with a tooltip) at 72px, same as every nav item. */}
+        {authMode === 'server' && user && !collapsed && (
+          <div className="mb-2 flex items-center justify-between gap-2 border-b border-line pb-2">
             <div className="min-w-0">
               <p className="truncate text-[12px] font-medium text-fg">{user.email}</p>
               <p className="rack-label text-fg-subtle">{user.role}</p>
@@ -289,16 +652,38 @@ function SidebarBody({
             </button>
           </div>
         )}
-        <div className="flex items-center gap-2 text-[11px]">
-          <span
-            className={cn('size-1.5 rounded-full', connected ? 'bg-led-ok' : 'bg-led-danger')}
-            aria-hidden
-          />
-          <span className={connected ? 'text-fg-muted' : 'text-led-danger'}>
-            {connected ? 'core connected' : 'core offline'}
-          </span>
-        </div>
-        {version && <p className="rack-label mt-1.5">version {version}</p>}
+        {authMode === 'server' && user && collapsed && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onLogout}
+                aria-label="Log out"
+                className="mb-2 flex w-full items-center justify-center rounded-md p-1.5 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              >
+                <LogOut className="size-3.5" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">Log out ({user.email})</TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className={cn('flex items-center gap-2 text-[11px]', collapsed && 'justify-center')}>
+              <span
+                className={cn('size-1.5 rounded-full', connected ? 'bg-led-ok' : 'bg-led-danger')}
+                aria-hidden
+              />
+              {!collapsed && (
+                <span className={connected ? 'text-fg-muted' : 'text-led-danger'}>
+                  {connected ? 'core connected' : 'core offline'}
+                </span>
+              )}
+            </div>
+          </TooltipTrigger>
+          {collapsed && <TooltipContent side="right">{connected ? 'core connected' : 'core offline'}</TooltipContent>}
+        </Tooltip>
+        {version && !collapsed && <p className="rack-label mt-1.5">version {version}</p>}
       </div>
     </>
   )

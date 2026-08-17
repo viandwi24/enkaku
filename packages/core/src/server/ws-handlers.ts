@@ -25,7 +25,7 @@ import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { LeaseManager } from '../lease/lease-manager'
 import type { CoControlManager } from '../lease/co-control'
 import type { Hold, ReadinessManager } from '../device/readiness'
-import { DEFAULT_TIMING, resolveTextRoute, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
+import { DEFAULT_TIMING, resolveTextRoute, SessionError, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
 import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
@@ -168,6 +168,17 @@ interface StreamBinding {
   deviceId: string
   remote?: boolean
   onFrame: (chunk: Uint8Array, meta: FrameMeta) => void
+  /**
+   * Plan 100 §4.2, §5 step 100.5 — the quality THIS binding is actually
+   * showing (which can be `wall` even for a `control` request, see
+   * `degradedReason` in `stream.started`). Undefined only for the brief
+   * window between binding creation and `acquire` resolving; set before the
+   * binding is ever stored in `state.streams`. Read later (congestion
+   * keyframe requests) so a lookup always reaches the SAME entry this
+   * viewer is subscribed to — `SessionManager.get(deviceId)` alone would
+   * now resolve the wrong slot whenever the other quality is also open.
+   */
+  quality?: Quality
   lastSize: { width: number; height: number }
   /** Unix seconds — when this binding was created (plan 31 §4.1 Viewer.since). */
   since: number
@@ -463,6 +474,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   /** `action` (plan 90 §3.3, §5 step 90.5) is optional — every existing caller omits it, unchanged. */
   const sendError = (ws: ServerWebSocket<unknown>, code: string, message: string, id?: string, action?: 'install-agent' | 'update-agent') =>
     send(ws, { type: 'error', ...(id ? { id } : {}), payload: { code, message, ...(action ? { action } : {}) } })
+  /**
+   * Plan 100 §4.2, §5 step 100.5 — the SESSION this specific stream binding
+   * is showing, not whichever slot `SessionManager.get(deviceId)` resolves
+   * highest-quality-wins to (now potentially the WRONG one, whenever the
+   * other quality is also open for the same device). Prefers `getByQuality`
+   * when the manager offers it (every production `SessionManager`); falls
+   * back to plain `get(deviceId)` for a test/fixture `SessionManager` that
+   * only implements that — the pre-100.4 behaviour, unchanged for them.
+   */
+  const sessionForBinding = (binding: StreamBinding): DeviceSession | null => {
+    if (binding.remote) return null
+    if (deps.sessions?.getByQuality && binding.quality) return deps.sessions.getByQuality(binding.deviceId, binding.quality)
+    return deps.sessions?.get(binding.deviceId) ?? null
+  }
 
   const stateOf = (ws: ServerWebSocket<unknown>): ConnState => {
     let s = conns.get(ws)
@@ -885,7 +910,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 } else {
                   if (congested && !binding.awaitingKeyframe) {
                     binding.awaitingKeyframe = true
-                    deps.sessions?.get(binding.deviceId)?.requestKeyframe?.()
+                    sessionForBinding(binding)?.requestKeyframe?.()
                   }
                   if (binding.awaitingKeyframe) {
                     // Resume only on a keyframe, and only once the socket drained.
@@ -912,6 +937,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
             let quality: Quality = 'control'
+            // Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set only when
+            // `sessions.acquire`'s fast path for `control` threw
+            // `E_CONTROL_SESSION_UNAVAILABLE` and this viewer was handed the
+            // device's already-open `wall` entry instead. Carried on
+            // `stream.started` itself (`degradedReason`/`degradedDetail`,
+            // `packages/protocol/src/messages/stream.ts`) rather than a new
+            // message type, per §3.7's "two tiers, no silent fallback" rule.
+            let degradedReason: 'control_session_unavailable' | undefined
+            let degradedDetail: string | undefined
+            let localSession: DeviceSession | null = null
             if (remoteNode) {
               // The tunnel protocol does not carry a quality profile yet
               // (Plan 42 §9 open question) — every remote-node device
@@ -934,10 +969,30 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 deps.log.warn(`readiness hold failed for viewer on ${msg.payload.deviceId}, proceeding anyway: ${String(err)}`)
                 return undefined
               })
-              const session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, requestedQuality)
+              let session: DeviceSession
+              try {
+                session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, requestedQuality)
+              } catch (err) {
+                // Plan 100 §4.4: never let the fast-path failure become a
+                // bare `stream.start` refusal for a device that IS streaming
+                // — just not at the quality asked for. Substitute the wall
+                // entry's own frames, honestly labelled, only for exactly
+                // the one coded failure this represents; anything else
+                // (device offline, not found, ...) still refuses ordinarily.
+                if (requestedQuality === 'control' && err instanceof SessionError && err.code === 'E_CONTROL_SESSION_UNAVAILABLE') {
+                  deps.log.warn(`control session unavailable for ${msg.payload.deviceId}, showing the wall feed instead: ${err.message}`)
+                  degradedReason = 'control_session_unavailable'
+                  degradedDetail = err.message
+                  session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, 'wall')
+                } else {
+                  throw err
+                }
+              }
               codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'
               frameSize = session.frameSize
               quality = session.quality
+              localSession = session
+              binding.quality = quality
             } else {
               // The device belongs to no node AND there is no local session.
               sendError(
@@ -966,14 +1021,18 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 width: frameSize.width,
                 height: frameSize.height,
                 quality,
+                ...(degradedReason ? { degradedReason } : {}),
+                ...(degradedDetail ? { degradedDetail } : {}),
               },
             })
             // A new viewer needs SPS/PPS to configure its decoder, and then a
             // keyframe to actually paint something. Sending only the config
             // leaves the canvas black until the encoder's next IDR — seconds
             // later — and the browser rejects the deltas that arrive meanwhile
-            // ("a key frame is required after configure()").
-            const localSession = remoteNode ? null : (deps.sessions?.get(msg.payload.deviceId) ?? null)
+            // ("a key frame is required after configure()"). `localSession`
+            // is the EXACT entry `acquire` returned above (plan 100 §4.2) —
+            // never re-fetched via `sessions.get(deviceId)`, which would
+            // resolve the wrong slot whenever the other quality is also open.
             const primer: FrameMeta = {
               width: frameSize.width,
               height: frameSize.height,
@@ -1021,7 +1080,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // with the server ending the stream first.
             const binding = state.streams.get(msg.payload.streamId)
             if (!binding || binding.remote) return
-            deps.sessions?.get(binding.deviceId)?.requestKeyframe?.()
+            sessionForBinding(binding)?.requestKeyframe?.()
             return
           }
 
@@ -2646,17 +2705,29 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       }
+      // plan 100 §4.2: `activeDeviceIds()` is deduped per DEVICE now that a
+      // device can hold both a `wall` and a `control` entry, each with its
+      // own independent arbiter — reading only the highest-quality-wins
+      // `get(deviceId)` would silently drop the wall entry's own lane stats
+      // whenever both are open. Checked explicitly for both slots when
+      // `getByQuality` is wired; a fixture `SessionManager` that supplies
+      // only `get` (every pre-100.4 test) falls back to that, unchanged.
       for (const deviceId of deps.sessions?.activeDeviceIds?.() ?? []) {
-        const session = deps.sessions?.get(deviceId)
-        if (!session) continue
-        const perLane = session.arbiter.stats()
-        for (const lane of ['pointer', 'keys', 'text'] as const) {
-          const s = perLane[lane]
-          const agg = lanes[lane]
-          agg.depth += s.depth
-          agg.refusals += s.refusals
-          agg.waitMsP50 = Math.max(agg.waitMsP50, s.waitMsP50)
-          agg.waitMsP95 = Math.max(agg.waitMsP95, s.waitMsP95)
+        const sessions = deps.sessions?.getByQuality
+          ? [deps.sessions.getByQuality(deviceId, 'control'), deps.sessions.getByQuality(deviceId, 'wall')].filter(
+              (s): s is DeviceSession => s !== null,
+            )
+          : [deps.sessions?.get(deviceId)].filter((s): s is DeviceSession => s !== null && s !== undefined)
+        for (const session of sessions) {
+          const perLane = session.arbiter.stats()
+          for (const lane of ['pointer', 'keys', 'text'] as const) {
+            const s = perLane[lane]
+            const agg = lanes[lane]
+            agg.depth += s.depth
+            agg.refusals += s.refusals
+            agg.waitMsP50 = Math.max(agg.waitMsP50, s.waitMsP50)
+            agg.waitMsP95 = Math.max(agg.waitMsP95, s.waitMsP95)
+          }
         }
       }
 

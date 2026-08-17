@@ -34,12 +34,15 @@ export function DisconnectDeviceDialog({
   open,
   onOpenChange,
   onDone,
+  nonModal = false,
 }: {
   device: DeviceInfo | null
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Called after a disconnect actually goes through (any of its outcomes) — the caller reloads the list. */
   onDone: () => void
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  nonModal?: boolean
 }) {
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null)
   const [force, setForce] = useState(false)
@@ -89,8 +92,8 @@ export function DisconnectDeviceDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
+      <DialogContent overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>Disconnect {device.label} from the network?</DialogTitle>
           <DialogDescription asChild>

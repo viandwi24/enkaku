@@ -1,11 +1,51 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
 import type { JsonSchemaNode } from '../api/json-schema'
-import { DURATION_UNITS, ENFORCEMENT_LEVELS, ENKAKU_META_KEY, PARAM_KINDS, PARAM_SOURCES, ParamHintsSchema, readHints, ui } from './vocabulary'
+import {
+  DURATION_UNITS,
+  ENFORCEMENT_LEVELS,
+  ENKAKU_META_KEY,
+  PARAM_KINDS,
+  PARAM_SOURCES,
+  ParamHintsSchema,
+  STRING_PARAM_KINDS,
+  readHints,
+  ui,
+} from './vocabulary'
 
 describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
-  test('the kind list is exactly the nine entries §4.1 names — no more, no fewer', () => {
-    expect(PARAM_KINDS).toEqual(['count', 'chance', 'duration', 'bytes', 'bitrate', 'pixels', 'temperature', 'text', 'packageName'])
+  test('the kind list is exactly the twelve entries the vocabulary names — no more, no fewer', () => {
+    expect(PARAM_KINDS).toEqual([
+      'count',
+      'chance',
+      'duration',
+      'timestamp',
+      'bytes',
+      'bitrate',
+      'pixels',
+      'temperature',
+      'text',
+      'packageName',
+      'workspaceFolder',
+      'workspaceFile',
+    ])
+  })
+
+  test('the string kinds are exactly the four whose value is a string', () => {
+    expect(STRING_PARAM_KINDS).toEqual(['text', 'packageName', 'workspaceFolder', 'workspaceFile'])
+    // Every one of them IS a kind — the two lists cannot drift apart into a
+    // "string kind" that is not a kind at all.
+    for (const kind of STRING_PARAM_KINDS) {
+      expect((PARAM_KINDS as readonly string[]).includes(kind)).toBe(true)
+    }
+  })
+
+  test('"timestamp" is an instant and takes no unit — the vocabulary fixes unix seconds (plan 108 §4.3)', () => {
+    expect((PARAM_KINDS as readonly string[]).includes('timestamp')).toBe(true)
+    expect(ParamHintsSchema.safeParse({ kind: 'timestamp' }).success).toBe(true)
+    // `unit` belongs to `duration` alone — an instant declaring one is refused
+    // at the same boundary a `count` declaring one already is.
+    expect(ParamHintsSchema.safeParse({ kind: 'timestamp', unit: 's' }).success).toBe(false)
   })
 
   test('"range" is not a kind — structure states arity, kind states meaning (plan 95 §3.2)', () => {
@@ -109,13 +149,62 @@ describe('ParamHintsSchema — the same schema readHints and checkDeclaredSchema
   })
 
   test('unit is rejected on every non-duration kind', () => {
-    for (const kind of ['count', 'chance', 'bytes', 'bitrate', 'pixels', 'temperature', 'text', 'packageName'] as const) {
+    for (const kind of ['count', 'chance', 'bytes', 'bitrate', 'pixels', 'temperature', 'text', 'packageName', 'workspaceFolder', 'workspaceFile'] as const) {
       expect(ParamHintsSchema.safeParse({ kind, unit: 'ms' }).success).toBe(false)
     }
   })
 
   test('unit with no kind at all is also rejected — unit is duration-only, never ambient', () => {
     expect(ParamHintsSchema.safeParse({ unit: 'ms' }).success).toBe(false)
+  })
+})
+
+describe('the two workspace path kinds (the owner\'s "browse a file/folder in the workspace")', () => {
+  test('both parse on their own, and read back through readHints intact', () => {
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFolder' }).success).toBe(true)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile' }).success).toBe(true)
+    expect(readHints({ [ENKAKU_META_KEY]: { kind: 'workspaceFolder', group: 'Output' } })).toEqual({ kind: 'workspaceFolder', group: 'Output' })
+    expect(readHints({ [ENKAKU_META_KEY]: { kind: 'workspaceFile' } })).toEqual({ kind: 'workspaceFile' })
+  })
+
+  test('neither takes a unit — a path is not a span', () => {
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFolder', unit: 's' }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', unit: 's' }).success).toBe(false)
+  })
+
+  test('extensions belongs to workspaceFile alone — the caption case, .txt', () => {
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: ['.txt'] }).success).toBe(true)
+    expect(readHints({ [ENKAKU_META_KEY]: { kind: 'workspaceFile', extensions: ['.txt', '.srt'] } })).toEqual({
+      kind: 'workspaceFile',
+      extensions: ['.txt', '.srt'],
+    })
+    // Scoped exactly the way `unit` is scoped to `duration`.
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFolder', extensions: ['.txt'] }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ kind: 'text', extensions: ['.txt'] }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ extensions: ['.txt'] }).success).toBe(false)
+  })
+
+  test('an extension must be a lowercase dotted suffix, and the list is bounded', () => {
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: ['txt'] }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: ['.TXT'] }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: [] }).success).toBe(false)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: ['.tar.gz'] }).success).toBe(true)
+    expect(ParamHintsSchema.safeParse({ kind: 'workspaceFile', extensions: Array.from({ length: 11 }, (_, i) => `.e${i}`) }).success).toBe(false)
+  })
+
+  test('ui() carries both kinds, and the extension filter, into x-enkaku', () => {
+    expect(ui({ title: 'Output folder', kind: 'workspaceFolder' })).toEqual({
+      title: 'Output folder',
+      [ENKAKU_META_KEY]: { kind: 'workspaceFolder' },
+    })
+    expect(ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })).toEqual({
+      title: 'Captions',
+      [ENKAKU_META_KEY]: { kind: 'workspaceFile', extensions: ['.txt'] },
+    })
+  })
+
+  test('a script published before these kinds existed is untouched — an unknown kind still degrades to {}', () => {
+    expect(readHints({ [ENKAKU_META_KEY]: { kind: 'workspaceDevice' } })).toEqual({})
   })
 })
 

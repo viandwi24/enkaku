@@ -32,11 +32,34 @@ export const StreamStartedMessage = z.object({
     width: z.number(),
     height: z.number(),
     /**
-     * The quality this viewer actually got — not necessarily what it asked
-     * for: a `wall` request against a device already streaming at `control`
-     * is shared as-is, never downgraded (Plan 42 §3.5).
+     * The quality this viewer actually got. Plan 100 §4.2 gives `wall` and
+     * `control` independent, concurrent sessions per device — a `wall`
+     * request always gets its own `wall` entry and a `control` request
+     * always gets its own `control` entry, so this normally just echoes
+     * back what was asked for. The one exception is `degradedReason` below:
+     * when a `control` request's dedicated second session could not be
+     * built, this reads `wall` (the substitute) even though `control` was
+     * requested — never silently reported as `control` when it is not.
      */
     quality: QualitySchema,
+    /**
+     * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set only when a
+     * `control` request's fast-path second session could not be built
+     * (`SessionManager.acquire` threw `E_CONTROL_SESSION_UNAVAILABLE`) and
+     * the server substituted the device's already-open `wall` entry rather
+     * than leaving the viewer with nothing. Carried on this EXISTING
+     * message rather than a new type, per §3.7's "two tiers, no silent
+     * fallback" rule: the client must render this honestly (§4.4's exact
+     * wording) and offer Retry — never show the substituted picture under
+     * an ordinary Control label. Absent in every other case, including an
+     * ordinary `wall` request that simply got what it asked for.
+     */
+    degradedReason: z.literal('control_session_unavailable').optional(),
+    /** Human-readable detail behind `degradedReason` (the underlying
+     * `SessionError`'s own message, e.g. why `makeScrcpy` rejected) — shown
+     * alongside §4.4's fixed wording, the same "reason code plus free-text
+     * detail" shape `SessionProgressMessage.payload.detail` already uses. */
+    degradedDetail: z.string().optional(),
   }),
 })
 

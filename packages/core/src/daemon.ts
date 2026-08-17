@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
-import { AdbClient, createAdbdShim } from '@enkaku/adb'
+import { AdbClient, createAdbdShim, Semaphore } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
 import {
@@ -37,7 +37,7 @@ import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-ag
 import { createTagRoutes } from './api/tags'
 import { createClusterRoutes } from './api/clusters'
 import { createTopologyRoutes } from './api/topology'
-import { createBatchRoutes } from './api/batches'
+import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
 import { createScheduleRoutes } from './api/schedules'
 import { recomputeBatchStatus } from './clusters/status'
 import { createJobRoutes } from './api/jobs'
@@ -49,6 +49,9 @@ import { createHostAdb, type HostAdb } from './device/host-adb'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
 import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
 import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisioner } from './device/agent-provisioner'
+import { createPreparationRunner, type PreparationRunner } from './device/preparation/runner'
+import { createPreparationRegistry } from './device/preparation/registry'
+import { createDevicePreparationRoutes } from './api/device-preparation'
 import { createLabellingService, type LabellingService } from './device/labelling'
 import { createAdbStatsRoutes } from './api/adb-stats'
 import { createVideoRoutes } from './api/video'
@@ -122,6 +125,8 @@ import { redactShellCommand } from './device/redact'
 import { createLocalShellPort, createRemoteShellPort, type ShellPort } from './device/shell-port'
 import { createTransferService, type TransferService } from './device/transfer'
 import { runTransfer, type TransferBroadcast } from './device/transfer-dispatch'
+import { createTransferRegistry } from './device/transfer-registry'
+import { createTransferRegistryRoutes } from './api/transfers'
 import { createReadinessManager, staticReadinessFallback, type ReadinessManager } from './device/readiness'
 import { createDeviceLifecycle } from './device/lifecycle'
 import { createPairingService, type PairingService } from './enroll/pairing'
@@ -214,6 +219,15 @@ let blobGc: BlobGc | null = null
    * same pattern `onAdmitted`/`rescan` already use for a dep assigned later in this same function.
    */
   let agentProvisionerRef: AgentProvisioner | null = null
+  /**
+   * Device preparation's runner (plan 106 §3.3, §3.5) — `null` until it is
+   * built, right after `agentProvisioner` (same file, same reasoning: no
+   * circular dependency of its own, but read through the SAME forward-ref
+   * closure shape `onDeviceReady`/`agentProvisionerRef` already use, for
+   * consistency and so a future reordering of this function cannot
+   * silently resurrect §96.25's own race).
+   */
+  let preparationRunnerRef: PreparationRunner | null = null
   /**
    * The labelling service (plan 89 §4.6, §5 step 89.6) — `null` until it is
    * built, right after `guestAgent` (same reason `agentProvisionerRef`
@@ -896,15 +910,37 @@ let blobGc: BlobGc | null = null
       // a farm-wide broadcast put every open tab on every device's progress
       // ticks, both a wire-cost bug and a privacy one at 100 devices. Falls
       // back to a debug log before `attachWsRouter` has run.
+      //
+      // `transferRegistry` (plan 107 §3.1, §3.4, §5 step 107.2) is fed from
+      // THIS one object, not threaded through `runTransfer`'s nine call
+      // sites — see `device/transfer-registry.ts`'s own doc comment for why
+      // that is deliberate. `GET /api/transfers` (below, `transferRegistryRoutes`)
+      // is what makes the transfer plan 107 §3.1 found undiscoverable (G2)
+      // discoverable from cold.
+      const transferRegistry = createTransferRegistry()
       const transferBroadcast: TransferBroadcast = {
-        progress: (deviceId, transferId, kind, sent, total) =>
-          broadcastTransferEvent?.(deviceId, { type: 'transfer.progress', payload: { deviceId, transferId, kind, sent, total } }) ??
-          log.child('transfer').debug(`transfer.progress dropped for ${deviceId} — attachWsRouter has not run yet`),
-        done: (deviceId, transferId, kind, ok, error, result) =>
-          broadcastTransferEvent?.(deviceId, {
-            type: 'transfer.done',
-            payload: { deviceId, transferId, kind, ok, ...(error !== undefined ? { error } : {}), ...(result !== undefined ? { result } : {}) },
-          }) ?? log.child('transfer').debug(`transfer.done dropped for ${deviceId} — attachWsRouter has not run yet`),
+        // `origin` (plan 106 §5 step 106.8) is forwarded only to the registry
+        // (`GET /api/transfers`, farm-wide, polled) — NEVER onto the WS
+        // payload below, which stays byte-for-byte the same shape it always
+        // was. F27 (transfer events scoped to viewers of the device) governs
+        // that live per-chunk channel, not this snapshot list, so this is not
+        // a widening of it.
+        progress: (deviceId, transferId, kind, sent, total, origin) => {
+          transferRegistry.progress(deviceId, transferId, kind, sent, total, origin)
+          return (
+            broadcastTransferEvent?.(deviceId, { type: 'transfer.progress', payload: { deviceId, transferId, kind, sent, total } }) ??
+            log.child('transfer').debug(`transfer.progress dropped for ${deviceId} — attachWsRouter has not run yet`)
+          )
+        },
+        done: (deviceId, transferId, kind, ok, error, result, origin) => {
+          transferRegistry.done(deviceId, transferId, kind, ok, error, origin)
+          return (
+            broadcastTransferEvent?.(deviceId, {
+              type: 'transfer.done',
+              payload: { deviceId, transferId, kind, ok, ...(error !== undefined ? { error } : {}), ...(result !== undefined ? { result } : {}) },
+            }) ?? log.child('transfer').debug(`transfer.done dropped for ${deviceId} — attachWsRouter has not run yet`)
+          )
+        },
       }
       const transferService = createTransferService({
         db,
@@ -1742,6 +1778,100 @@ let blobGc: BlobGc | null = null
       // budget before the adb subsystem had even come up. The sweep itself
       // now runs later, right after `adbState = 'ready'` is logged, below.
 
+      // Device preparation's runner and registry (plan 106 §3.2, §3.3, §4)
+      // — built right after `agentProvisioner`, with no circular dependency
+      // of its own (unlike `agentProvisioner`, no component registered here
+      // needs a live guest-agent session). `preparationExec` mirrors
+      // `guestAgentExec` exactly — same `E_ADB_UNAVAILABLE` contract, same
+      // §96.25 fix 2 reasoning: a core-side "adb isn't ready" must be
+      // rethrown so the runner can defer the whole pass rather than score
+      // it as a device failure — but with `profile: 'default'`, matching
+      // the SAME profile a real ui-server session's own exec already uses
+      // (`makeScrcpy`'s sibling inspector wiring, a few hundred lines below).
+      const preparationExec = async (serial: string, cmd: string): Promise<ShellResult> => {
+        if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+        return adb.exec(serial, cmd, { profile: 'default' })
+      }
+      // Plan 106 §5 step 106.8 (§9 Q5's own recommendation, built): routes
+      // the ui-server app/test APK installs through the SAME transfer
+      // machinery `POST /api/devices/:id/install` uses (`runTransfer`, G6),
+      // in place of one opaque `hostAdb install` call with nothing reported
+      // until it resolves — the owner's own failing phone sat on that call
+      // for 45.2s with zero progress. `transferService`/`transferBroadcast`/
+      // `readinessHoldForTransfer` are the SAME instances the script API and
+      // `internal:install` already share (built earlier in this function) —
+      // no second transfer path. `origin: 'preparation'` (plan 106 §5 step
+      // 106.8, plan 107 §3.5) marks the resulting `GET /api/transfers` row
+      // distinctly from an operator's own install, so `OperationTray` labels
+      // it "Device preparation — Install apk" instead of a bare "Install
+      // apk" (`toTransferOperation`, `packages/studio/src/lib/operations.ts`).
+      // The guest agent's OWN install is deliberately NOT converted this
+      // pass — see `agent-provisioner.ts`'s own comment, just above its
+      // `install()` call inside `runOnePass`, and plan 106 §9 Q5 for the
+      // stated reason.
+      //
+      // `preparationInstallSem` (plan 106 §5 step 106.8, H2 re-examined): the
+      // OLD `hostAdb(['install', ...], { lane: 'install' })` path this
+      // replaces was bounded by `adb.maxInstallConcurrent` — `host-adb.ts`'s
+      // own `installSem`. `TransferService.installFromLocalApk`'s streaming
+      // lane (`AdbBackend.openRaw`/`execStream`) has NO comparable farm-wide
+      // cap of its own (verified by reading `packages/adb/src/client.ts`:
+      // `openRaw` bypasses every lane/semaphore entirely, by design, so a
+      // single push never queues behind video/input — see its own doc
+      // comment). Silently losing the pre-existing bound would reopen
+      // exactly the "twenty phones, one install storm" failure mode §3.3
+      // names, on a NEW, unattended code path (the boot sweep / admission
+      // hook) an operator did not choose to fire. This semaphore restores
+      // the SAME bound, read from the SAME `adb.maxInstallConcurrent`
+      // setting `host-adb.ts` already uses (so there is one farm-wide knob
+      // for "how many installs at once," not two to keep in sync), resized
+      // lazily on every acquire exactly like `host-adb.ts`'s own
+      // `syncLimits()`. Deliberately scoped to PREPARATION installs only —
+      // an operator's own `POST /:id/install`/`internal:install` already had
+      // no comparable cap on this lane before this step and still does not;
+      // widening that is a separate, pre-existing condition this step does
+      // not take on (plan 106 §9 Q5's own status note names it explicitly).
+      const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))
+      const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {
+        const wanted = Math.max(1, settingsStore.get().adb.maxInstallConcurrent)
+        if (wanted !== preparationInstallSem.max) preparationInstallSem.resize(wanted)
+        return preparationInstallSem.acquire().then((release) =>
+          runTransfer({
+            transfer: transferService,
+            broadcast: transferBroadcast,
+            deviceId,
+            kind: 'install',
+            origin: 'preparation',
+            holdFor: readinessHoldForTransfer,
+            op: (transferId, onProgress) => transferService.installFromLocalApk(deviceId, localPath, { transferId, onProgress }),
+          })
+            .then(() => {
+              log.child('preparation').debug(`ui-server ${label} apk installed on device ${deviceId} via the transfer machinery`)
+            })
+            .finally(release),
+        )
+      }
+      const preparationRunner = createPreparationRunner({
+        db,
+        registry: createPreparationRegistry({
+          exec: preparationExec,
+          hostAdb: hostAdbHandle.run,
+          installApk: preparationInstallApk,
+          uiServerApkPaths: async () => ({
+            app: await toolchain.resolveToolPath('ui-server'),
+            test: await toolchain.resolveToolPath('ui-server-test'),
+          }),
+          uiServerExpectedArtifact: () => toolchain.deviceArtifactExpectation('ui-server'),
+          log: log.child('preparation'),
+        }),
+        record: recorder!.record,
+        log: log.child('preparation'),
+      })
+      preparationRunnerRef = preparationRunner
+      // Same boot-ordering rule as `agentProvisioner` just above (§96.25 fix
+      // 1): the boot-time `ensureAll()` sweep runs later, right after
+      // `adbState = 'ready'` is logged, never here.
+
       // Plan 58 §4.3, §5.3 — timezone/locale/GPS identity, a device-settings extension living
       // beside the network route rather than inside it (plan 58 §3.1). Reuses `guestAgentExec`
       // (the same adb-queue shell exec `guestAgent` itself uses) and `guestAgent.withGuestAgentClient`
@@ -2062,6 +2192,12 @@ let blobGc: BlobGc | null = null
           // above (within this same code path), well before this point.
           labelling,
         }),
+        // `GET /api/transfers` (plan 107 §3.1, §3.4, §5 step 107.2) — the
+        // registry `transferBroadcast` (constructed unconditionally above,
+        // beside `transferService`) already keeps up to date on every
+        // install/push/pull, regardless of which of its nine call sites
+        // started it.
+        transferRegistryRoutes: createTransferRegistryRoutes({ registry: transferRegistry }),
         // Plan 44 §5.8 — built just above, before adb was ready.
         guestAgentRoutes: guestAgent.routes,
         // Plan 90 §3.8, §4.7 — the fleet-wide "on demand" hook, mounted at
@@ -2070,6 +2206,12 @@ let blobGc: BlobGc | null = null
         agentProvisionerRoutes: createAgentProvisionerRoutes({ provisioner: agentProvisioner, db }).routes,
         // Plan 58 §5.3 — built just above, alongside `guestAgent`.
         deviceIdentityRoutes: deviceIdentity,
+        // Plan 106 §3.3, §4 — built just above, alongside `agentProvisioner`.
+        // `agentProvisioner` bridges the guest agent's own specialised
+        // retry/whole-device-pass engine into this same unified surface
+        // (plan 106 §5 step 106.5 — see `DevicePreparationRoutesDeps.agentProvisioner`'s
+        // own doc comment for why it is bridged rather than registered).
+        devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes,
         tagRoutes: createTagRoutes({ db }),
         clusterRoutes: createClusterRoutes({
           db,
@@ -2324,7 +2466,16 @@ let blobGc: BlobGc | null = null
         // and `/api/workflows/*` 404'd through `server/http.ts`'s catch-all in every real
         // build (docs/plans/96-m61-hotfixes.md §96.11). `scriptRegistry` is the SAME
         // instance every other resolver in this file already shares (F17: one door).
-        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, audit }),
+        //
+        // `settings: () => settingsStore.get().workflow` (docs/settings-audit.md #3,
+        // `docs/plans/96-m61-hotfixes.md`) — without this, `checkWorkflow`'s
+        // publish-time `E_WORKFLOW_BUDGET_IMPOSSIBLE` check always fell back to
+        // `workflow.maxTotalMs`'s hardcoded SCHEMA default (`api/workflows.ts`'s own
+        // `budgetFor`), silently disagreeing with the LIVE value the workflow
+        // executor's runtime clock already enforced (the `createWorkflowExecutor`
+        // call below, wired since plan 99 §5 items 1-2). Guarded by
+        // `daemon-wiring.test.ts`'s workflow-routes describe block.
+        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, audit, settings: () => settingsStore.get().workflow }),
         // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
         // SAME instances every other route/service in this file already shares (one
         // workspace, one recorder — F16/F11's own "never a second store/bundler").
@@ -2341,6 +2492,45 @@ let blobGc: BlobGc | null = null
           devOwnerFromRequest: (c) => {
             const label = c.req.header('x-enkaku-dev-owner')
             return label ? { kind: 'cli', label } : null
+          },
+          // The five `/:name/data/*` routes (plan 108 §4.5, step 108.4) —
+          // one plugin's own KV namespace, forced from the `:name` path
+          // segment. The SAME `kvStore` `/api/kv`'s admin surface and the
+          // job runner's own KV port already share; the namespace is never
+          // a caller input, so there is nothing here to gate beyond it.
+          data: { db, kv: kvStore },
+          // `POST /:name/action/:actionId` (plan 108 §4.5, step 108.5) —
+          // absent this key the route is not registered at all, so a plugin
+          // screen's buttons 404 in a real boot. Every dependency is the
+          // instance the equivalent hand-made request already goes through:
+          // `scriptRegistry` resolves the declared `ScriptRef` exactly as
+          // `POST /api/jobs` does, `jobService` is the one enqueue path, and
+          // `batch` is `api/batches.ts`'s OWN dispatch-deps factory — the
+          // same closures `POST /api/batches` builds, so a batch dispatched
+          // from a plugin screen cannot be gated differently from one
+          // dispatched from the Batches page (its host bag is the same set
+          // of live accessors `batchRoutes` above is given).
+          actions: {
+            registry: scriptRegistry,
+            kv: kvStore,
+            jobService,
+            batch: (actor) =>
+              createBatchDispatchDeps(
+                {
+                  db,
+                  scheduler: scheduler!,
+                  audit,
+                  registry: executors,
+                  findScript,
+                  scriptRegistry,
+                  farmJobSettings: () => settingsStore.get().job,
+                  pacer,
+                  shellMode: () => settingsStore.get().shell.mode,
+                  transferEnabled: () => settingsStore.get().transfer.enabled,
+                },
+                actor,
+              ),
+            getDeviceOwner,
           },
         }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
@@ -3232,6 +3422,14 @@ let blobGc: BlobGc | null = null
             void labellingRef?.reconcile(deviceId).catch((err) =>
               log.warn(`labelling reconcile() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
             )
+            // Plan 106 §3.5's first two hooks — "admission" and "reconnect"
+            // — both resolve to this SAME `onOnline` → `onDeviceReady`
+            // callback, exactly like `agentProvisionerRef`/`labellingRef`
+            // above; see `agentProvisionerRef`'s own comment for why no
+            // second, admission-specific call site is needed.
+            void preparationRunnerRef?.ensure(deviceId).catch((err) =>
+              log.warn(`preparation-runner ensure() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+            )
           },
         })
         await registry.start()
@@ -3336,6 +3534,12 @@ let blobGc: BlobGc | null = null
         void agentProvisioner
           .ensureAll()
           .catch((err) => log.warn(`agent-provisioner boot sweep failed, tolerated: ${String(err)}`))
+        // Plan 106 §3.5's boot-ordering rule, carried over identically from
+        // §96.25 fix 1 above: only now is `adb` genuinely non-null, so this
+        // sweep's own `E_ADB_UNAVAILABLE` window is closed the same way.
+        void preparationRunner
+          .ensureAll()
+          .catch((err) => log.warn(`preparation-runner boot sweep failed, tolerated: ${String(err)}`))
       } catch (err) {
         adbState = 'error'
         // The core stays up: the tools API can still be used to retry the install.

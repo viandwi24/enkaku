@@ -8,18 +8,18 @@ import { HolderBadge } from '@/components/HolderBadge'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { UNAVAILABLE_REASON } from '@/components/device-popup/ControlState'
 
 /**
- * Why a device cannot take control or a job right now (plan 19 §4.4). The one
- * place this text lives — the device page and the picker import it, so they
- * cannot drift apart the way they did when each screen wrote its own copy.
+ * Why a device cannot take control or a job right now (plan 19 §4.4) — the
+ * text itself now lives in `./device-popup/ControlState.tsx` (plan 105 §5
+ * step 105.1's own `free` state reads it too, for the identical reason: one
+ * place, not three drifting apart the way each screen's own copy used to).
+ * Re-exported here because `DeviceHeader.tsx`/`app/device/page.tsx` already
+ * import it from this module, and moving THEIR import instead of leaving one
+ * re-export would touch two more files for no behavioural change.
  */
-export const UNAVAILABLE_REASON: Partial<Record<DeviceStatus, string>> = {
-  offline: 'The device is not connected to this farm',
-  busy: 'An automation job is running',
-  manual: 'Another client is controlling it',
-  quarantined: 'The device was pulled from the queue — return it from the Devices page first',
-}
+export { UNAVAILABLE_REASON }
 
 /**
  * Only `quarantined` truly cannot accept a new job.
@@ -255,7 +255,12 @@ export function DevicePicker(props: DevicePickerProps) {
             {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25)
                 — a narrow, subordinate grant beside `heldBy` above, never a
                 takeover. `?? []` covers a caller that predates the field,
-                the same guard `DeviceCard`/`WallTile` use. */}
+                the same guard `DeviceCard`/`WallTile` use. Plan 105 §3.2/§4
+                — the "assisting" vs "may assist" split lives in
+                `HolderBadge` (`deriveAssistActivity`), shared with every
+                other caller of this component; the picker has no reason to
+                call the full `useControlState` hook, for the same reason
+                `DeviceCard`'s own note gives. */}
             {(d.assistedBy ?? []).map((a) => (
               <HolderBadge key={a.id} holder={a} variant="assists" />
             ))}

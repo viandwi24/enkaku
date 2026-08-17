@@ -5,8 +5,11 @@ import type { RecordingDoc } from '@enkaku/protocol'
 import { defineRecording } from '@enkaku/sdk'
 import type { AuthEnv } from '../auth/middleware'
 import { createAuditLogger } from '../auth/audit'
+import type { ScriptRef } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
-import { scripts } from '../db/schema'
+import { plugins, scripts } from '../db/schema'
+import { createDevSlotStore } from '../plugins/dev-slots'
+import { createScriptRegistry } from '../scripts/registry'
 import { createWorkspaceStore, type WorkspaceStore } from '../workspace/store'
 import type { RecordingService } from '../recording/service'
 import { createRecordingRoutes } from './recordings'
@@ -281,7 +284,8 @@ describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the c
     const res = await app.request('/checkout-flow/publish', { method: 'POST' })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { script: { id: string; name: string; version: string } }
-    expect(body.script.name).toBe('checkout-flow')
+    // Plan 110 §3.4 — a recording is a member of the synthetic `recordings` plugin.
+    expect(body.script.name).toBe('recordings/checkout-flow')
     expect(body.script.version).toBe('1.0.0')
 
     const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
@@ -290,6 +294,48 @@ describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the c
     // DEFAULT a hand-written script gets, never a special marker.
     expect(row?.kind).toBe('script')
     expect(row?.enabled).toBe(true)
+    expect(row?.exportId).toBe('checkout-flow')
+
+    // The owner exists, is the reserved name, and holds the member row (plan 110 §3.4, §5 step 110.2).
+    const owner = db.select().from(plugins).where(eq(plugins.name, 'recordings')).get()
+    expect(owner).toBeTruthy()
+    expect(row?.pluginId).toBe(owner?.id as string)
+    expect(owner?.status).toBe('active')
+    // It never went through verification — nothing about it is a real package.
+    expect(owner?.verifiedAt).toBeNull()
+  })
+
+  test('a second recording joins the SAME owner rather than creating a second plugin (plan 110 §3.4)', async () => {
+    const { db, workspace } = setUp()
+    await writeRecording(workspace, sampleDoc())
+    await writeRecording(workspace, sampleDoc({ name: 'login-flow', version: '2.0.0' }))
+    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
+    await app.request('/checkout-flow/publish', { method: 'POST' })
+    await app.request('/login-flow/publish', { method: 'POST' })
+    const owners = db.select().from(plugins).where(eq(plugins.name, 'recordings')).all()
+    expect(owners).toHaveLength(1)
+    const members = db.select().from(scripts).where(eq(scripts.pluginId, owners[0]?.id as string)).all()
+    expect(members.map((m) => `${m.name}@${m.version}`).sort()).toEqual(['recordings/checkout-flow@1.0.0', 'recordings/login-flow@2.0.0'])
+  })
+
+  /**
+   * Plan 110 §3.4 — members of the synthetic owner version INDEPENDENTLY (each
+   * recording is compiled and published on its own), so `@latest` for one of
+   * them must not be dragged to the owner row's version the way a real
+   * plugin's members are. This is the carve-out `scripts/registry.ts` makes,
+   * asserted through the registry rather than assumed.
+   */
+  test('each recording resolves at its OWN latest version, not the owner row\'s', async () => {
+    const { db, workspace } = setUp()
+    await writeRecording(workspace, sampleDoc())
+    await writeRecording(workspace, sampleDoc({ name: 'login-flow', version: '2.0.0' }))
+    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
+    await app.request('/checkout-flow/publish', { method: 'POST' })
+    await app.request('/login-flow/publish', { method: 'POST' })
+    const registry = createScriptRegistry({ db, dataDir: '/tmp', devSlots: createDevSlotStore() })
+    expect(registry.resolve('recordings/checkout-flow@latest' as ScriptRef).version).toBe('1.0.0')
+    expect(registry.resolve('recordings/login-flow@latest' as ScriptRef).version).toBe('2.0.0')
+    expect(registry.resolve('recordings/checkout-flow@latest' as ScriptRef).origin).toBe('plugin')
   })
 
   test('GET /api/scripts/:id-equivalent source is readable generated source (F12, acceptance criterion 3)', async () => {
@@ -301,13 +347,21 @@ describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the c
     const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
     expect(row?.source).toBeTruthy()
     const source = row?.source as string
-    expect(source).toContain("import { defineRecording } from '@enkaku/sdk'")
-    expect(source).toContain('export default defineRecording(')
+    expect(source).toContain("import { definePlugin, defineRecording } from '@enkaku/sdk'")
+    expect(source).toContain('export default definePlugin(')
+    expect(source).toContain('defineRecording(')
     // A human reading this can see exactly what steps will run — not opaque bundle output.
     expect(source).toContain('"kind": "tap"')
   })
 
-  test('the published bundle is a real, runnable ScriptDefinition — never executed by the build itself (F11, F18)', async () => {
+  /**
+   * Since plan 110 §3.4 the bundle's default export is the one-member
+   * `recordings` PLUGIN, which is what lets `child-entry.ts` select this
+   * recording by the `export_id` on its row and what puts every recording in
+   * one KV namespace. The member itself is still exactly the runnable
+   * `ScriptDefinition` this test has always asserted.
+   */
+  test('the published bundle is a real, runnable plugin member — never executed by the build itself (F11, F18)', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
@@ -316,10 +370,14 @@ describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the c
     const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
     const tmpPath = `/tmp/enkaku-recordings-test-${crypto.randomUUID()}.mjs`
     await Bun.write(tmpPath, row?.bundle as string)
-    const mod = (await import(tmpPath)) as { default: ReturnType<typeof defineRecording> }
-    expect(mod.default.id).toBe('checkout-flow')
+    const mod = (await import(tmpPath)) as { default: { id: string; version: string; scripts: ReturnType<typeof defineRecording>[] } }
+    expect(mod.default.id).toBe('recordings')
     expect(mod.default.version).toBe('1.0.0')
-    expect(typeof mod.default.run).toBe('function')
+    // The member the row's `export_id` names is in the bundle, and is runnable.
+    const member = mod.default.scripts.find((s) => s.id === row?.exportId)
+    expect(member).toBeTruthy()
+    expect(member?.version).toBe('1.0.0')
+    expect(typeof member?.run).toBe('function')
   })
 
   test('the declared params schema requires the recording\'s own {param} field', async () => {
@@ -385,7 +443,7 @@ describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the c
 })
 
 describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
-  test('writes a plain defineScript to /scripts/:slug.ts and deletes the compiled recording entry', async () => {
+  test('writes a one-member plugin to /scripts/:slug.ts and deletes the compiled recording entry', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
@@ -399,8 +457,14 @@ describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
 
     const scriptFile = workspace.read('/scripts/checkout-flow.ts')
     const scriptSource = new TextDecoder().decode(scriptFile.content)
-    expect(scriptSource).toContain("import { defineScript } from '@enkaku/sdk'")
+    // Plan 110 §4.2 — what detach hands the operator is the shape `enkaku init`
+    // scaffolds and `enkaku publish` accepts: a plugin, never a bare script.
+    expect(scriptSource).toContain("import { definePlugin } from '@enkaku/sdk'")
+    expect(scriptSource).toContain('export default definePlugin({')
+    expect(scriptSource).toContain("id: 'checkout-flow',")
+    expect(scriptSource).toContain("id: 'main',")
     expect(scriptSource).not.toContain('defineRecording')
+    expect(scriptSource).not.toContain('defineScript')
 
     // The recording stops regenerating over it (criterion 4) — the compiled entry is gone.
     expect(() => workspace.read('/recordings/checkout-flow.ts')).toThrow()

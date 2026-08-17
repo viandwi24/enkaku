@@ -142,7 +142,7 @@ Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/ins
 | `packages/toolchain` | Tool provisioning: manifest, download with mandatory sha256, versions, active pointer |
 | `packages/drivers` | Five engine layers: adb transport, screencap/scrcpy display, adb/UHID/SDK input, dump/ui-server inspector, guest-agent network route |
 | `packages/scrcpy` | The version-locked scrcpy protocol client: H.264 demuxer, control messages, absolute HID pointer |
-| `packages/sdk` | `@enkaku/sdk` — `defineScript` plus the `enkaku publish` CLI |
+| `packages/sdk` | `@enkaku/sdk` — `definePlugin` plus the `enkaku init` / `publish` / `dev` CLI |
 | `packages/core` | The Bun + Hono daemon: registry, queue/lease, runner, auth/ACL, API and WS |
 | `packages/studio` | The Next.js web UI: dashboard, live control, scripts, jobs, clusters, schedules, topology, guest agents, tools, settings |
 | `packages/node` | The cloud mini-core: enrollment plus an outbound tunnel (M8a) |

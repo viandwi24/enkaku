@@ -26,7 +26,7 @@ const outDir = join(root, 'packages', 'core', 'packs')
  * `examples/` stayed what it was: scripts an author reads and copies, where a break costs an
  * afternoon rather than a release.
  */
-const PACK_ENTRIES = ['plugins/networking/src/index.ts', 'plugins/tiktok-automation-pack/src/index.ts']
+const PACK_ENTRIES = ['plugins/networking/src/index.ts', 'plugins/proxy-manager/src/index.ts', 'plugins/tiktok-automation-pack/src/index.ts']
 
 export interface PackIndexEntry {
   name: string

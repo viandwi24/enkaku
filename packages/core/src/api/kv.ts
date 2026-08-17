@@ -33,11 +33,14 @@ function requireString(value: unknown, name: string): string {
   return value
 }
 
-/** Applied to EVERY entry this route returns — a secret's plaintext is never sent, only its hint
+/** Applied to EVERY entry this route returns — and to every entry `api/plugins.ts`'s
+ * `/:name/data/*` routes return too (plan 108 §4.5, which imports this exact function rather
+ * than writing a second one: one redaction boundary, no second copy to drift). A secret's
+ * plaintext is never sent, only its hint
  * (criterion 4, criterion 10 for `list`). `store.get()`/`.set()`/`.setIfVersion()` all decrypt a
  * secret internally (that is what makes `ctx.kv` usable from a job); this is the boundary that
  * makes sure the HTTP response never carries that decrypted value onward. */
-function redactEntry(entry: KvEntry): Omit<KvEntry, 'value'> & { value: unknown } {
+export function redactEntry(entry: KvEntry): Omit<KvEntry, 'value'> & { value: unknown } {
   return { ...entry, value: entry.secret ? null : entry.value }
 }
 

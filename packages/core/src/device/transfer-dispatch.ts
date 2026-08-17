@@ -1,4 +1,4 @@
-import type { TransferKind } from '@enkaku/protocol'
+import type { TransferKind, TransferOrigin } from '@enkaku/protocol'
 import type { TransferService } from './transfer'
 
 /**
@@ -7,10 +7,20 @@ import type { TransferService } from './transfer'
  * batch executor, and the script IPC bridge, so a transfer started from any
  * of the three places is visible to every viewer of the device the same way
  * (plan §4.4's `transfer.progress`/`transfer.done`).
+ *
+ * `origin` (plan 106 §5 step 106.8, trailing and optional so every existing
+ * caller of `progress`/`done` needs no change) is NEVER put on the WS wire —
+ * `TransferProgressMessage`/`TransferDoneMessage`'s payload shape is
+ * unchanged. It exists only for `transfer-registry.ts` to remember, so `GET
+ * /api/transfers` (farm-wide, polled, plan 107 §3.4) can tell a
+ * device-preparation-initiated install apart from an operator's own — F27
+ * (transfer events scoped to viewers of the device) governs the LIVE
+ * per-chunk channel, not this snapshot list, so widening it here does not
+ * reopen that hotfix.
  */
 export interface TransferBroadcast {
-  progress(deviceId: string, transferId: string, kind: TransferKind, sent: number, total: number | null): void
-  done(deviceId: string, transferId: string, kind: TransferKind, ok: boolean, error?: string, result?: unknown): void
+  progress(deviceId: string, transferId: string, kind: TransferKind, sent: number, total: number | null, origin?: TransferOrigin): void
+  done(deviceId: string, transferId: string, kind: TransferKind, ok: boolean, error?: string, result?: unknown, origin?: TransferOrigin): void
 }
 
 export async function runTransfer<T>(opts: {
@@ -22,6 +32,8 @@ export async function runTransfer<T>(opts: {
   transferId?: string
   /** Cancels the transfer when the signal fires — e.g. a batch/job's abort signal (plan 39 acceptance #9 applied to `internal:install`). */
   signal?: AbortSignal
+  /** Plan 106 §5 step 106.8 — `'preparation'` for the device-preparation runner's own installs; every other caller (the HTTP route, `internal:install`/`push`/`pull`, the script IPC bridge) leaves this unset and gets `'operator'`, unchanged from before this field existed. */
+  origin?: TransferOrigin
   op: (transferId: string, onProgress: (sent: number, total: number | null) => void) => Promise<T>
   /**
    * Readiness hold (plan 43 §3.7 table, §5 step 43.7) — every install/push/pull
@@ -34,6 +46,7 @@ export async function runTransfer<T>(opts: {
   holdFor?: (deviceId: string) => Promise<{ release(): void }>
 }): Promise<T> {
   const transferId = opts.transferId ?? crypto.randomUUID()
+  const origin = opts.origin ?? 'operator'
   const onAbort = () => opts.transfer.cancel(transferId)
   if (opts.signal) {
     if (opts.signal.aborted) onAbort()
@@ -41,12 +54,12 @@ export async function runTransfer<T>(opts: {
   }
   const hold = (await opts.holdFor?.(opts.deviceId).catch(() => null)) ?? null
   try {
-    const result = await opts.op(transferId, (sent, total) => opts.broadcast.progress(opts.deviceId, transferId, opts.kind, sent, total))
-    opts.broadcast.done(opts.deviceId, transferId, opts.kind, true, undefined, result)
+    const result = await opts.op(transferId, (sent, total) => opts.broadcast.progress(opts.deviceId, transferId, opts.kind, sent, total, origin))
+    opts.broadcast.done(opts.deviceId, transferId, opts.kind, true, undefined, result, origin)
     return result
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    opts.broadcast.done(opts.deviceId, transferId, opts.kind, false, message)
+    opts.broadcast.done(opts.deviceId, transferId, opts.kind, false, message, undefined, origin)
     throw err
   } finally {
     if (opts.signal) opts.signal.removeEventListener('abort', onAbort)

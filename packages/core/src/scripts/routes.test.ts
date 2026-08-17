@@ -2,8 +2,9 @@ import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { scripts } from '../db/schema'
+import { plugins, scripts } from '../db/schema'
 import type { Logger } from '../util/logger'
 import { createScriptRoutes } from './routes'
 
@@ -37,7 +38,7 @@ function seed(db: Db, n: number) {
     const id = `script-${String(n2).padStart(4, '0')}`
     ids.push(id)
     db.insert(scripts)
-      .values({ id, name: `script-${n2}`, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date((base + i) * 1000) })
+      .values({ pluginId: 'p-fixture', exportId: 'main', id, name: `script-${n2}`, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date((base + i) * 1000) })
       .run()
   }
   return ids
@@ -104,7 +105,7 @@ describe('GET /api/scripts keyset pagination', () => {
 })
 
 describe('requirePermission on /api/scripts mutations (plan 34 §4.4, §4.5, acceptance #7)', () => {
-  const publishBody = { name: 'my-script', version: '1.0.0', bundle: 'export {}' }
+  const publishBody = { name: 'demo/my-script', version: '1.0.0', bundle: 'export {}' }
 
   test('POST / (script.publish) is refused with no authenticated user', async () => {
     const db = setUp()
@@ -167,7 +168,7 @@ describe('requirePermission on /api/scripts mutations (plan 34 §4.4, §4.5, acc
  * two permissions and DO audit every mutation.
  */
 describe('audit trail on /api/scripts mutations (security-sweep finding)', () => {
-  const publishBody = { name: 'my-script', version: '1.0.0', bundle: 'export {}' }
+  const publishBody = { name: 'demo/my-script', version: '1.0.0', bundle: 'export {}' }
 
   test('POST / records script.publish with the new script\'s id, name, and version', async () => {
     const db = setUp()
@@ -176,7 +177,10 @@ describe('audit trail on /api/scripts mutations (security-sweep finding)', () =>
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publishBody) })
     expect(res.status).toBe(201)
     const { script } = (await res.json()) as { script: { id: string } }
-    expect(calls).toEqual([{ userId: 'u1', action: 'script.publish', target: script.id, meta: { name: 'my-script', version: '1.0.0' } }])
+    expect(calls).toEqual([
+      // Plan 110 §3.2 — the audit line also names the owning plugin the member landed under.
+      { userId: 'u1', action: 'script.publish', target: script.id, meta: { name: 'demo/my-script', version: '1.0.0', plugin: 'demo' } },
+    ])
   })
 
   test('PATCH /:id records script.toggle with the new enabled value', async () => {
@@ -217,6 +221,8 @@ function publish(db: Db, name: string, version: string, opts: { enabled?: boolea
   const id = `${name}-${version}-${crypto.randomUUID().slice(0, 8)}`
   db.insert(scripts)
     .values({
+      pluginId: 'p-fixture',
+      exportId: 'main',
       id,
       name,
       version,
@@ -259,6 +265,59 @@ describe('GET /api/scripts?group=name (plan 62 §4.4, acceptance #10)', () => {
   })
 })
 
+/**
+ * Plan 110 §3.2, §5 step 110.1 — the route is one of the four callers, and it
+ * lands under the rule rather than carrying a copy of it: `POST /api/scripts`
+ * never publishes a script outside a plugin, because the writer it calls will
+ * not write one.
+ */
+describe('POST / lands under the owning-plugin rule (plan 110 §3.2)', () => {
+  test('a plugin-less name is refused with E_SCRIPT_NEEDS_PLUGIN (400), naming the rule, and writes nothing', async () => {
+    const db = setUp()
+    const app = withUser('operator', createScriptRoutes({ db }))
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'no-plugin', version: '1.0.0', bundle: 'export {}' }),
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('E_SCRIPT_NEEDS_PLUGIN')
+    expect(body.error.message).toContain('definePlugin')
+    expect(db.select().from(scripts).all()).toHaveLength(0)
+    expect(db.select().from(plugins).all()).toHaveLength(0)
+  })
+
+  test('a <plugin>/<script> name publishes as a member, and the row names its owner', async () => {
+    const db = setUp()
+    const app = withUser('operator', createScriptRoutes({ db }))
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'demo/checkout', version: '1.0.0', bundle: 'export {}' }),
+    })
+    expect(res.status).toBe(201)
+    const { script } = (await res.json()) as { script: { id: string } }
+    const row = db.select().from(scripts).where(eq(scripts.id, script.id)).get()
+    const owner = db.select().from(plugins).where(eq(plugins.name, 'demo')).get()
+    expect(row?.pluginId).toBe(owner?.id as string)
+    expect(row?.exportId).toBe('checkout')
+  })
+
+  test('the reserved `recordings` owner cannot be published into from here either', async () => {
+    const db = setUp()
+    const app = withUser('operator', createScriptRoutes({ db }))
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'recordings/sneaky', version: '1.0.0', bundle: 'export {}' }),
+    })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_PLUGIN_RESERVED_NAME')
+  })
+})
+
 describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)', () => {
   test('a schema with a non-identifier field name is refused with E_PARAMS_SCHEMA_INVALID, naming the field', async () => {
     const db = setUp()
@@ -292,7 +351,7 @@ describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)',
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'deep', version: '1.0.0', bundle: 'export {}', paramsSchema: node }),
+      body: JSON.stringify({ name: 'demo/deep', version: '1.0.0', bundle: 'export {}', paramsSchema: node }),
     })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { code: string } }
@@ -311,7 +370,7 @@ describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)',
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'cyclic', version: '1.0.0', bundle: 'export {}', paramsSchema }),
+      body: JSON.stringify({ name: 'demo/cyclic', version: '1.0.0', bundle: 'export {}', paramsSchema }),
     })
     expect(performance.now() - start).toBeLessThan(1000)
     expect(res.status).toBe(400)
@@ -333,7 +392,7 @@ describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)',
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'warned-only', version: '1.0.0', bundle: 'export {}', paramsSchema }),
+      body: JSON.stringify({ name: 'demo/warned-only', version: '1.0.0', bundle: 'export {}', paramsSchema }),
     })
     expect(res.status).toBe(201)
   })
@@ -345,7 +404,7 @@ describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)',
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'clean', version: '1.0.0', bundle: 'export {}', paramsSchema }),
+      body: JSON.stringify({ name: 'demo/clean', version: '1.0.0', bundle: 'export {}', paramsSchema }),
     })
     expect(res.status).toBe(201)
   })
@@ -356,7 +415,7 @@ describe('POST / rejects a hostile paramsSchema (plan 95 §4.9, §5 step 95.5)',
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'no-params', version: '1.0.0', bundle: 'export {}' }),
+      body: JSON.stringify({ name: 'demo/no-params', version: '1.0.0', bundle: 'export {}' }),
     })
     expect(res.status).toBe(201)
   })
@@ -370,7 +429,7 @@ describe('GET /api/scripts/:id returns paramsSchema through typedJson (plan 95 �
     const publishRes = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'roundtrip', version: '1.0.0', bundle: 'export {}', paramsSchema }),
+      body: JSON.stringify({ name: 'demo/roundtrip', version: '1.0.0', bundle: 'export {}', paramsSchema }),
     })
     const { script } = (await publishRes.json()) as { script: { id: string } }
 
@@ -387,7 +446,7 @@ describe('GET /api/scripts/:id returns paramsSchema through typedJson (plan 95 �
     const publishRes = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'bare', version: '1.0.0', bundle: 'export {}' }),
+      body: JSON.stringify({ name: 'demo/bare', version: '1.0.0', bundle: 'export {}' }),
     })
     const { script } = (await publishRes.json()) as { script: { id: string } }
     const res = await app.request(`/${script.id}`)
@@ -409,7 +468,7 @@ describe('POST / persists runtime, GET /api/scripts/:id returns it (plan 98 §5 
     const publishRes = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'with-runtime', version: '1.0.0', bundle: 'export {}', runtime }),
+      body: JSON.stringify({ name: 'demo/with-runtime', version: '1.0.0', bundle: 'export {}', runtime }),
     })
     expect(publishRes.status).toBe(201)
     const { script } = (await publishRes.json()) as { script: { id: string } }
@@ -426,7 +485,7 @@ describe('POST / persists runtime, GET /api/scripts/:id returns it (plan 98 §5 
     const publishRes = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'no-runtime', version: '1.0.0', bundle: 'export {}' }),
+      body: JSON.stringify({ name: 'demo/no-runtime', version: '1.0.0', bundle: 'export {}' }),
     })
     const { script } = (await publishRes.json()) as { script: { id: string } }
     const res = await app.request(`/${script.id}`)
@@ -440,7 +499,7 @@ describe('POST / persists runtime, GET /api/scripts/:id returns it (plan 98 §5 
     const publishRes = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'explicit-null', version: '1.0.0', bundle: 'export {}', runtime: null }),
+      body: JSON.stringify({ name: 'demo/explicit-null', version: '1.0.0', bundle: 'export {}', runtime: null }),
     })
     const { script } = (await publishRes.json()) as { script: { id: string } }
     const res = await app.request(`/${script.id}`)
@@ -455,7 +514,7 @@ describe('POST / persists runtime, GET /api/scripts/:id returns it (plan 98 §5 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // Below the 1s floor `RuntimeEnvelopeSchema` declares.
-      body: JSON.stringify({ name: 'bad-runtime', version: '1.0.0', bundle: 'export {}', runtime: { timeoutMs: 500 } }),
+      body: JSON.stringify({ name: 'demo/bad-runtime', version: '1.0.0', bundle: 'export {}', runtime: { timeoutMs: 500 } }),
     })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { code: string } }
@@ -475,7 +534,7 @@ describe('POST / persists runtime, GET /api/scripts/:id returns it (plan 98 §5 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        name: 'future-field',
+        name: 'demo/future-field',
         version: '1.0.0',
         bundle: 'export {}',
         runtime: { timeoutMs: 30_000, futureField: 'ignore me' },

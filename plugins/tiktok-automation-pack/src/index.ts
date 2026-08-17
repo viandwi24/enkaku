@@ -5,6 +5,9 @@ import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
 import { clearBlockingDialog, nextDialogAction } from './dialogs'
 import switchAccount from './switch-account'
 import searchFollow from './search-follow'
+import listAccounts from './list-accounts'
+import postVideo from './post-video'
+import { ACCOUNTS_KEY } from './accounts'
 
 /**
  * TikTok automation pack.
@@ -378,7 +381,7 @@ const resultSchema = z.object({
 // §3.2, §5 step 97.8) — see `paramsSchema`'s own doc comment above for why:
 // `definePlugin`'s array-position inference cannot carry this member's own
 // `result` generic, so H1 is proven HERE instead, at the declaration.
-const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
+export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'auto-scroll',
   title: 'Auto-scroll the feed',
   description:
@@ -627,8 +630,99 @@ const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof resultSch
 
 export default definePlugin({
   id: 'tiktok',
-  version: '1.4.0',
+  version: '1.7.0',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
-  scripts: [switchAccount, searchFollow, autoScrollScript],
+  scripts: [switchAccount, searchFollow, listAccounts, postVideo, autoScrollScript],
+
+  /**
+   * The screen this plugin contributes to Studio — plan 108 §4.3, the plan's own worked example,
+   * built here because 108.11 is where the vocabulary is proved against a real case before it is
+   * frozen (§8's first risk).
+   *
+   * Nothing below names a control, and nothing below is code: the two columns that need formatting
+   * state an ordinary JSON Schema node and are drawn by Studio's one `planField`/`formatValue`
+   * resolver (§3.3), and the two actions read the row through the closed `Binding` language (§3.4)
+   * rather than through any expression an author could invent.
+   *
+   * The KV namespace is deliberately absent — a data source can only ever read this plugin's own,
+   * taken from the URL path server-side (§3.7). `key` is `ACCOUNTS_KEY`, the same constant
+   * `list-accounts` writes and `switch-account` reads, so the screen and the scripts cannot drift
+   * onto two different keys.
+   */
+  surface: {
+    nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+    views: {
+      accounts: {
+        title: 'TikTok accounts',
+        description: 'Which accounts are signed in on each device, as last read from the switch-account sheet.',
+        // One row per ACCOUNT, not per device: `rows: 'items'` flattens the stored value's
+        // `accounts` array, and `includeMissing` keeps a device that has never been synced visible
+        // as a row rather than silently absent (§4.2).
+        data: { kind: 'kv.scan', key: ACCOUNTS_KEY, rows: 'items', itemsAt: 'accounts', includeMissing: true },
+        table: {
+          rowKey: 'username',
+          selectable: true,
+          columns: [
+            // The three ways an operator identifies a phone, in the order they narrow it down: the
+            // unique id, the number printed on it, and the name it was given. `stableId` is the
+            // identity the whole farm keys on (`ro.serialno` → ANDROID_ID) and the one an operator
+            // can match to hardware — never the internal uuid, which means nothing to a human.
+            { field: '$device.stableId', header: 'Device ID' },
+            // `device_numbers`, LEFT JOINed by the scan — empty for a device with no reservation.
+            { field: '$device.number', header: 'Device #', width: 'narrow' },
+            { field: '$device.label', header: 'Device' },
+            { field: 'username', header: 'Account' },
+            { field: 'position', header: 'Slot', width: 'narrow' },
+            { field: 'current', header: 'Signed in', schema: { type: 'boolean' }, width: 'narrow' },
+            // `$entry.updatedAt` is unix seconds. `kind: 'timestamp'` was added to `PARAM_KINDS`
+            // in step 108.7 precisely because this column found the hole: the vocabulary had
+            // `duration` for a span and nothing for an instant. Studio renders it through
+            // `relativeTime`; the server-side formatter writes an absolute UTC stamp, since a
+            // result summary is frozen at settle and must not say "2 minutes ago" forever.
+            { field: '$entry.updatedAt', header: 'Last synced', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+          ],
+        },
+        toolbar: ['sync'],
+        rowActions: ['switchTo', 'syncOne'],
+        empty: { title: 'No accounts read yet', hint: 'Run “Sync accounts” to read the switch-account sheet on each device.' },
+      },
+    },
+    actions: {
+      // A BATCH, because syncing is a per-device read that an operator wants across a fleet at once
+      // — `name@latest` is resolved to a concrete script id server-side (§4.5, finding G7).
+      sync: { kind: 'batch', label: 'Sync accounts', script: 'tiktok/list-accounts@latest', target: 'picker' },
+      // The SAME read as `sync`, on one device, as a job rather than a batch —
+      // and the difference is not convenience. Plan 82 §3.5 refuses a dev-slot
+      // script as the target of a batch (a batch pins a reference and must
+      // survive the laptop closing; a dev slot expires after 30 idle minutes,
+      // so a paced batch can outlive the entry it was enqueued against and die
+      // mid-run with `unknown_script`). A job takes `allowDev: true` — the
+      // "explicit ad-hoc run" the registry's own `script_is_dev` message names.
+      // So this row is what makes `enkaku dev` on this pack a working loop, and
+      // it is a better per-device affordance regardless.
+      syncOne: {
+        kind: 'job',
+        label: 'Sync this device',
+        script: 'tiktok/list-accounts@latest',
+        device: 'row',
+      },
+      // A JOB on the row's own device, with the row's username bound as the target — which is
+      // exactly the string `switch-account`'s `parseTarget` treats as a username, and which it then
+      // resolves through the very entry `sync` wrote (§4.7's last hop).
+      switchTo: {
+        kind: 'job',
+        label: 'Switch to this account',
+        script: 'tiktok/switch-account@latest',
+        device: 'row',
+        params: { target: { $row: 'username' } },
+        // A plain sentence, never a template: plan 108 §3.4 makes bindings the
+        // ONLY way a declared value reaches an action, and adding interpolation
+        // to this one field would be a second, weaker path to the same place.
+        // Which account and which device are named by the dialog itself, from
+        // the view's own `rowKey` (plan 108 §5 step 108.7).
+        confirm: 'Switch this device to the selected account?',
+      },
+    },
+  },
 })

@@ -28,6 +28,7 @@ import {
   normaliseTag,
   validateEngineSelection,
   type DeviceSettings,
+  type FarmDeviceDefaults,
   type LeaseHolder,
   type Readiness,
   type ReconcileReport,
@@ -329,7 +330,8 @@ export function createDeviceRoutes(deps: {
    * optionality pattern as `connection` above.
    */
   cutover?: () => CutoverManager | null
-  deviceDefaults?: () => DeviceSettings
+  /** `FarmDeviceDefaults` (`DeviceSettings` minus `identity`) — see `admission.ts`'s `defaultsForNewDevice` (docs/settings-audit.md #1) for why a farm-wide default can no longer carry an `identity` block. */
+  deviceDefaults?: () => FarmDeviceDefaults
   /** `readiness.defaultDesired` (plan 43 §4.4) — a separate accessor for the same reason it is one in the registry. */
   defaultDesiredReadiness?: () => Readiness
   lifecycle: DeviceLifecycle

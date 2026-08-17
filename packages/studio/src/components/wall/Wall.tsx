@@ -9,9 +9,6 @@ import { TileSkeleton } from './TileSkeleton'
 import { useLiveSet } from './useLiveSet'
 import { EmptyState } from '@/components/states'
 import { api } from '@/lib/actions'
-import { cn } from '@/lib/utils'
-import { useAdbVideoStatsPoll } from '@/components/video/useAdbVideoStatsPoll'
-import { formatMbps } from '@/components/video/video-quality'
 
 /**
  * `wall.rampConcurrency`'s schema default (plan 92 §5 step 92.1,
@@ -68,9 +65,9 @@ export function Wall({
   devices,
   jobs,
   groups,
-  selectable = false,
   selectedIds,
   onToggleSelect,
+  onDeviceContextMenu,
   focusId = null,
   onFocus,
   minTileWidthPx = 180,
@@ -87,13 +84,25 @@ export function Wall({
    */
   groups?: Array<[string, DeviceInfo[]]> | null
   /**
-   * Group selection (plan 91 §3.11/§5 step 91.8, F11/F12) — the SAME
-   * `useBulkSelection` instance the parent already drives the List view
-   * with, so selecting on one and switching to the other never loses it.
+   * Group selection (plan 91 §3.11/§5 step 91.8, F11/F12; no more `selectable`
+   * gate as of plan 101 §5 step 101.7 — a `WallTile` click always toggles
+   * when `onToggleSelect` is supplied, which this component always does) —
+   * the SAME `useBulkSelection` instance the parent already drives the List
+   * view with, so selecting on one and switching to the other never loses it.
    */
-  selectable?: boolean
   selectedIds?: readonly string[]
   onToggleSelect?: (id: string) => void
+  /**
+   * The right-click context menu (plan 101 §3.9, §5 step 101.5, G15) — the
+   * SAME handler `app/page.tsx` wires onto the List view's own `DeviceCard`
+   * wrapper, so right-clicking a wall tile and right-clicking a list row
+   * open the identical menu, built from the identical toolbar actions.
+   * Wall.tsx only wraps each `WallTile` in a plain `data-device-id` div
+   * carrying this handler — `WallTile.tsx` itself is untouched, both
+   * because its video/live-set wiring sits outside this step's remit and
+   * because a wrapper that adds no box styling cannot disturb it.
+   */
+  onDeviceContextMenu?: (id: string, e: React.MouseEvent) => void
   /** `?focus=` (plan 91 §3.11) — the one tile currently in the focus overlay. */
   focusId?: string | null
   onFocus?: (id: string) => void
@@ -134,39 +143,6 @@ export function Wall({
       .catch(() => undefined)
   }, [])
 
-  // The status strip's video-rate figure (§3.9, §5 step 92.9 — the piece
-  // 92.6 deferred here explicitly and 92.8 could not pick up because this
-  // directory sat outside its own file-ownership boundary). Polled every
-  // 10s while the tab is visible, mirroring the settings page's own
-  // `MeasuredBlock` (`FarmVideoFields.tsx`, `useAdbVideoStatsPoll`) — same
-  // hook, same cadence, same endpoint, so the two readers of "what is the
-  // farm actually spending right now" can never disagree with each other.
-  // Deliberately a SEPARATE poll from the one-shot `maxTiles` fetch above:
-  // the live-tile budget only has to be known once before the first tile
-  // decides whether to stream (F14); the spend figure is worth refreshing
-  // continuously for as long as an operator is looking at it.
-  //
-  // Honesty note: `transport.videoBytesPerSec` is farm-wide across EVERY
-  // open session, wall and control quality alike — the two share one WS
-  // transport (plan 85's own H1) and the wire carries no per-quality
-  // split — so this is labelled "across the farm", never implied to be
-  // this wall's own spend alone.
-  //
-  // What this does NOT include, and why it is not faked here: §4.7's own
-  // status-strip mockup also shows an average fps and the real (as-
-  // negotiated) resolution — e.g. "4.8 fps · 480×1040". Producing either
-  // needs each live tile's own `stream.started` event plus a running frame
-  // counter, and the only place those numbers exist today is inside
-  // `LiveView` (`packages/studio/src/components/LiveView.tsx`), which sits
-  // outside `packages/studio/src/components/wall/**` — this step's own
-  // file-ownership boundary, the identical reason 92.8's own status note
-  // gives for leaving this exact gap open. Closing it needs an additive
-  // `LiveView` stats callback plus `WallTile` forwarding it: real feature
-  // work, not something to smuggle into a documentation step by editing a
-  // file outside its remit. Left open for a follow-up step — see
-  // `docs/plans/92-m57-wall-first-and-video-quality.md`'s step 92.9 entry.
-  const { stats: videoStats } = useAdbVideoStatsPoll(10_000)
-
   // The live-set policy itself (plan 92 §3.2, §4.6) — ordering, eligibility
   // (fixes F12), the viewport/dwell gate, and the ramp counter all live in
   // this one hook so they are provable by `useLiveSet.test.ts` without a
@@ -179,22 +155,6 @@ export function Wall({
 
   const jobByDevice = useMemo(() => new Map(jobs.map((j) => [j.deviceId, j])), [jobs])
   const selectedSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds])
-
-  // The status strip's blocked/budgeted breakdown (Plan 92 §4.7, §3.9): a
-  // wall showing 12 of 100 live must say what the other 88 are doing, or the
-  // 88 read as unexplained blanks even though every one of their tiles
-  // already explains itself individually (`WallTile`'s own placeholders).
-  const blockedCounts = useMemo(() => {
-    const counts = { asleep: 0, offline: 0, quarantined: 0 }
-    for (const reason of liveSet.blocked.values()) counts[reason]++
-    return counts
-  }, [liveSet.blocked])
-  const budgetedCount = liveSet.budgeted.size
-  const breakdownParts: string[] = []
-  if (budgetedCount > 0) breakdownParts.push(`${budgetedCount} outside the live budget`)
-  if (blockedCounts.asleep > 0) breakdownParts.push(`${blockedCounts.asleep} asleep`)
-  if (blockedCounts.offline > 0) breakdownParts.push(`${blockedCounts.offline} offline`)
-  if (blockedCounts.quarantined > 0) breakdownParts.push(`${blockedCounts.quarantined} quarantined`)
 
   // Loading (Plan 92 §4.7, two rows sharing one skeleton): devices not yet
   // known, or devices known but the real live-tile budget is not — showing
@@ -216,50 +176,60 @@ export function Wall({
   const sections = groups ?? [[null, devices] as [string | null, DeviceInfo[]]]
 
   return (
-    <div className="space-y-2">
-      <p className="text-[11.5px] text-fg-muted">
-        <span
-          className={cn(breakdownParts.length > 0 && 'cursor-help border-b border-dotted border-fg-subtle')}
-          title={breakdownParts.length > 0 ? breakdownParts.join(' · ') : undefined}
-        >
-          {Math.min(liveSet.live.size, devices.length)} of {devices.length} device{devices.length === 1 ? '' : 's'} live
-        </span>{' '}
-        · capped at {maxTiles} at once
-        {videoStats && (
-          <>
-            {' '}
-            · <span className="readout">{formatMbps(videoStats.transport.videoBytesPerSec * 8)}</span> across the farm
-          </>
-        )}
-      </p>
-      <div className="space-y-5">
-        {sections.map(([title, list]) => (
-          <div key={title ?? '__all__'}>
-            {title !== null && (
-              <h3 className="rack-label mb-2">
-                {title} <span className="text-fg-subtle">· {list.length}</span>
-              </h3>
-            )}
-            <TileGrid minTileWidthPx={minTileWidthPx}>
-              {list.map((d) => (
+    // Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the farm-wide
+    // status strip that used to sit above this grid ("N of M devices live ·
+    // capped at X at once · Y Mbit/s across the farm") is gone — the
+    // owner's own instruction was explicit ("gausah ada bilah shortcut kaya
+    // '2 total' atau '0 ready'"), and `refs/ui`'s own Devices screen has no
+    // farm-wide count anywhere near the grid either. `maxTiles`/`liveSet`
+    // still gate which tiles actually stream (unchanged); only the TEXT
+    // reporting those numbers is removed. A device that is not live still
+    // explains itself individually via its own tile placeholder (offline/
+    // quarantined/asleep/"Show live"), so nothing here goes unexplained —
+    // it is just no longer summarised in a sentence above the grid.
+    <div className="space-y-5">
+      {sections.map(([title, list]) => (
+        <div key={title ?? '__all__'}>
+          {title !== null && (
+            <h3 className="rack-label mb-2">
+              {title} <span className="text-fg-subtle">· {list.length}</span>
+            </h3>
+          )}
+          <TileGrid minTileWidthPx={minTileWidthPx}>
+            {list.map((d) => (
+              // The drag-select/context-menu wrapper (plan 101 §3.9, §5
+              // step 101.5, G15) — `data-device-id` is what the parent's
+              // `useDragSelect` intersection test looks for, wherever it
+              // is nested; `onContextMenu` opens the SAME menu the List
+              // view does. A plain, unstyled `div`: CSS Grid's own default
+              // `stretch` fills it to the tile's cell exactly as
+              // `WallTile` filled that cell directly before, and it adds
+              // no box between `WallTile`'s own `rootRef` (the live-set
+              // viewport observer) and the anchor that ref actually
+              // watches — that wiring is untouched.
+              <div key={d.id} data-device-id={d.id} onContextMenu={(e) => onDeviceContextMenu?.(d.id, e)}>
                 <WallTile
-                  key={d.id}
                   device={d}
                   runningJob={jobByDevice.get(d.id) ?? null}
                   live={liveSet.live.has(d.id)}
                   onShowLive={() => liveSet.showLive(d.id)}
-                  selectable={selectable}
                   selected={selectedSet.has(d.id)}
-                  onToggleSelect={() => onToggleSelect?.(d.id)}
+                  // Only passed through when the CALLER actually supplied
+                  // one (plan 101 §5 step 101.7) — `WallTile` reads
+                  // `onToggleSelect`'s own presence to decide whether a
+                  // click toggles or navigates, so an always-present
+                  // wrapper function here would make every click toggle
+                  // even for a future caller with no selection concept.
+                  onToggleSelect={onToggleSelect ? () => onToggleSelect(d.id) : undefined}
                   focused={d.id === focusId}
                   onFocus={() => onFocus?.(d.id)}
                   rootRef={liveSet.tileRef(d.id)}
                 />
-              ))}
-            </TileGrid>
-          </div>
-        ))}
-      </div>
+              </div>
+            ))}
+          </TileGrid>
+        </div>
+      ))}
     </div>
   )
 }

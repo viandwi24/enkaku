@@ -15,6 +15,7 @@ import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/l
 import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { duration } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
 import { newId, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
@@ -47,6 +48,17 @@ const WAKE_OFFER_AFTER_SEC = 30
 const AUTO_RECOVER_COOLDOWN_MS = 60_000
 /** A phase running longer than this looks slow, not merely in progress. */
 const SLOW_PHASE_AFTER_SEC = 10
+/**
+ * A floor on the `fitContainer` panel's computed width (plan 103 step
+ * 103.9) — guards against a feedback loop, not a design choice about how
+ * narrow a phone panel should look: at a very short popup height, a narrow
+ * device's ratio-derived width can be small enough that the status/footer
+ * rows (both `flex-wrap`) wrap onto an extra line, which shrinks the video
+ * area's own remaining height, which shrinks the computed width further
+ * still. This floor breaks that spiral rather than chasing it with more
+ * measurement.
+ */
+const MIN_FIT_CONTAINER_WIDTH_PX = 240
 
 /** The static step list shown while a session wakes up (Plan 17 §4.7). No fake percentage — just where we are. */
 const PHASE_STEPS: { key: SessionPhase; label: string }[] = [
@@ -92,8 +104,11 @@ export function LiveView({
   active = true,
   quality = 'control',
   compact = false,
+  rail = true,
+  fitContainer = false,
   mirror,
   configuredDisplay,
+  provisioning,
 }: {
   deviceId: string
   inputEnabled?: boolean
@@ -119,6 +134,40 @@ export function LiveView({
    * chrome around it.
    */
   compact?: boolean
+  /**
+   * Suppresses this view's OWN case-button rail, bottom nav/power row, AND
+   * clipboard button (plan 103 §4.1, §5 step 103.2, extended by the layout
+   * restructure step) — the status line, the canvas (full pointer/keyboard
+   * input), the wake panel and the hint line are all unaffected. `false`
+   * only from the device popup's own screen panel, which renders
+   * `HardwareRail` as its own independent left-hand panel per §4.1's
+   * composition — `HardwareRail` draws Back/Home/Recents/Sleep/Wake AND the
+   * clipboard button itself, so none of them may also be drawn a second
+   * time inside this component (the "appears exactly once" rule). Every
+   * other caller (the device page, the Wall's compact tiles) leaves this at
+   * its default and is pixel-identical to before this prop existed.
+   */
+  rail?: boolean
+  /**
+   * Fits the canvas to whatever box its PARENT gives it, in both axes,
+   * preserving the device's aspect ratio via `object-contain` letterboxing
+   * — the same sizing mechanism `compact` (a Wall tile) already uses for
+   * exactly this reason, reused here rather than inventing a second one
+   * (plan 103's layout restructure, owner-specified: "the casting panel is
+   * responsive in both axes … it is the panel that gives way when the
+   * popup is resized"). `false` (default): the canvas sizes itself against
+   * the VIEWPORT (`max-h-[70dvh]`, a `min-h-[18rem]` floor) — correct for
+   * the device page, which has a whole scrollable page to grow into, but
+   * wrong for a fixed, user-resizable popup panel, which has no viewport
+   * relationship to size against at all. Deliberately independent of
+   * `compact`: `compact` ALSO strips the toolbar, the footer, and all
+   * pointer/keyboard handling (a read-only Wall tile) — this prop changes
+   * only how the canvas is SIZED, so the device popup keeps its status
+   * line, its footer hint, and full interactivity while still shrinking
+   * and growing to fit its own panel. Every other caller leaves this at its
+   * default and is pixel-identical to before this prop existed.
+   */
+  fitContainer?: boolean
   /**
    * Fan-out mode (plan 91 §3.8, §3.9, §5 step 91.9) — set only by the focus
    * overlay, and only while its own Mirror toggle is on. When present, every
@@ -147,8 +196,30 @@ export function LiveView({
    * wording rather than guessing degraded when it might not be.
    */
   configuredDisplay?: string
+  /**
+   * Plan 106 §5 step 106.7 — the owner's own ask: *"bisa ngga kalau
+   * preparation lagi diinstall itu ada loadingnya di screen castingnya?"*
+   * Set ONLY by `DevicePopup.tsx`'s screen panel, never by a Wall tile or
+   * `DeviceCard` — a per-tile version would be exactly the per-device
+   * fan-out `docs/design.md`'s "nothing that scales with device count" rule
+   * forbids, and this component has no way to enforce that itself beyond
+   * the fact that no other caller passes it. `null`/`undefined` means "no
+   * component on this device is currently installing" — the overlay below
+   * renders nothing in that case. This is DELIBERATELY NON-BLOCKING (plan
+   * 106 §2: preparation is a readiness signal, never a gate) — unlike
+   * `showWakePanel` below, it never covers the picture opaquely, never
+   * disables the canvas, and is `pointer-events-none` throughout, so an
+   * operator watching the phone for exactly this reason keeps watching it.
+   */
+  provisioning?: { componentId: string; label: string; startedAt: number } | null
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  /** `fitContainer` only (plan 103 step 103.9) — this component's own outer
+   * element, so the sizing effect below can set an explicit pixel width on
+   * it directly, and its own video-area row, so that effect can measure the
+   * height actually available to the picture. */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const videoAreaRef = useRef<HTMLDivElement>(null)
   const streamIdRef = useRef<number | null>(null)
   const lastSeqRef = useRef(-1)
   const pointerDownRef = useRef<{ x: number; y: number; t: number } | null>(null)
@@ -188,6 +259,20 @@ export function LiveView({
   const [codec, setCodec] = useState<'png' | 'h264'>('png')
   const [transport, setTransport] = useState<'ws' | 'webrtc'>('ws')
   const [degradedReason, setDegradedReason] = useState<string | null>(null)
+  /**
+   * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set when a `control`
+   * request's dedicated second scrcpy session could not be built and the
+   * server substituted the device's already-open `wall` entry instead
+   * (`stream.started.degradedReason`/`degradedDetail`,
+   * `packages/protocol/src/messages/stream.ts`). Rendered with §4.4's exact
+   * wording and a Retry action — never silently shown under the ordinary
+   * Control label (§3.7's "two tiers, no silent fallback" rule). Holds the
+   * underlying reason text (or `''` when the server sent no detail), `null`
+   * when not in this state. A SEPARATE state from `degradedReason` above,
+   * which is specifically about the WebRTC transport falling back to WS —
+   * a different degrade, a different banner.
+   */
+  const [controlUnavailable, setControlUnavailable] = useState<string | null>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [fps, setFps] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -216,6 +301,10 @@ export function LiveView({
   const paintedRef = useRef(false)
   const phaseChangedAtRef = useRef(Date.now())
   const now = useNow(1000)
+  /** `fitContainer` only (plan 103 step 103.9) — the panel's own computed
+   * width, in pixels, or `null` before the first measurement. See the
+   * sizing effect below for how it is derived. */
+  const [idealWidthPx, setIdealWidthPx] = useState<number | null>(null)
 
   const markPainted = () => {
     if (paintedRef.current) return
@@ -234,6 +323,10 @@ export function LiveView({
     setPhase(null)
     setPhaseDetail(null)
     phaseChangedAtRef.current = Date.now()
+    // A fresh attempt starts with a clean slate on the fast-path banner too
+    // — carrying a stale one across a retry would say "still unavailable"
+    // before the new `stream.start` has even answered.
+    setControlUnavailable(null)
 
     async function startStream() {
       try {
@@ -251,6 +344,11 @@ export function LiveView({
           if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m))
         }
         if (res.payload.width > 0) setSize({ width: res.payload.width, height: res.payload.height })
+        // Plan 100 §3.2, §3.7 item 2, §4.4 — a `control` request that got the
+        // wall entry's own frames instead, honestly labelled. `''` (not
+        // `null`) when the server sent no `degradedDetail`, so the banner
+        // below can tell "not degraded" from "degraded, no detail given".
+        setControlUnavailable(res.payload.degradedReason === 'control_session_unavailable' ? (res.payload.degradedDetail ?? '') : null)
         setError(null)
         setStopped(null)
         setStreaming(true)
@@ -288,7 +386,7 @@ export function LiveView({
         // (`InputMirrorResultMessage`'s own doc comment) — this canvas does
         // not track which `seq` is "its own" beyond the groupId match,
         // since every dispatch here belongs to the SAME operator's own
-        // mirror session; the rail (`FocusOverlay`) is what actually reads
+        // mirror session; the popup (`DevicePopup`) is what actually reads
         // `seq` if it ever needs to.
         mirrorRef.current.onResult?.(msg.payload.results)
       }
@@ -384,6 +482,74 @@ export function LiveView({
     }
     wasActiveRef.current = active
   }, [active])
+
+  /**
+   * Plan 103 step 103.9 — the `fitContainer` panel takes the PICTURE's own
+   * aspect ratio instead of whatever leftover width `flex-1` used to hand
+   * it (owner-reported, with a before/after screenshot: a 736x1600 phone
+   * inside a `flex-1` centre panel left wide black bars on both sides,
+   * because the panel's WIDTH was authoritative and the canvas merely
+   * `object-contain`ed inside it). This effect inverts that: the picture's
+   * own aspect ratio and the height this panel is actually given decide its
+   * WIDTH, computed here and applied as an explicit pixel style on this
+   * component's own root below. `DevicePopup.tsx`'s centre wrapper and outer
+   * container both dropped their own `flex-1` for exactly this reason — with
+   * nothing forcing this panel wider, the popup's total width becomes
+   * rail + this panel's own width + the actions panel, the same way a phone
+   * emulator window behaves.
+   *
+   * **The aspect ratio comes from the live stream, never a stored column**
+   * (§9's own requirement): `ratio` below is `size.width / size.height` —
+   * the SAME `size` state `stream.started`/`stream.meta` already maintain
+   * for the canvas's own `aspectRatio` style — never `DeviceDetailInfo`'s
+   * `screenW`/`screenH`, which goes stale on rotation. Because it is the
+   * identical state, **a rotation re-derives this within the same render as
+   * the picture itself**, not a follow-up one: `stream.meta` fires whenever
+   * the reported width/height changes (`ws-handlers.ts`), which is exactly
+   * what a rotation does.
+   *
+   * **Measured, not hardcoded**: `videoArea` (the row holding the canvas,
+   * `p-4` padded) and `canvas` (unpadded) are measured via
+   * `getBoundingClientRect` at the same instant, so `videoArea.width -
+   * canvas.width` IS this component's own padding, whatever it is today or
+   * becomes later — no Tailwind spacing value is duplicated here. Likewise
+   * `root.width - videoArea.width` is this component's own border. Neither
+   * quantity depends on WIDTH (padding/border are fixed regardless of the
+   * box they are on), so they stay correct across every later recompute,
+   * including the ones this effect's own width changes trigger.
+   *
+   * A `ResizeObserver` on `videoArea` (rather than polling, or trusting only
+   * the `size`-change dependency) is what makes this react to the operator
+   * resizing the popup's HEIGHT (the native CSS `resize` handle mutates the
+   * DOM directly — React never sees it) — the one input this effect cannot
+   * discover any other way.
+   */
+  useEffect(() => {
+    if (!fitContainer || compact) return
+    const videoArea = videoAreaRef.current
+    if (!videoArea) return
+
+    function recompute() {
+      const root = rootRef.current
+      const canvas = canvasRef.current
+      if (!root || !videoArea || !canvas) return
+      const rootRect = root.getBoundingClientRect()
+      const videoAreaRect = videoArea.getBoundingClientRect()
+      const canvasRect = canvas.getBoundingClientRect()
+      if (videoAreaRect.height <= 0) return
+      const borderPx = Math.max(0, rootRect.width - videoAreaRect.width)
+      const paddingPx = Math.max(0, videoAreaRect.width - canvasRect.width)
+      const canvasHeight = Math.max(0, videoAreaRect.height - paddingPx)
+      const ratio = size.width > 0 ? size.width / size.height : 9 / 16
+      const next = Math.max(MIN_FIT_CONTAINER_WIDTH_PX, Math.round(canvasHeight * ratio + paddingPx + borderPx))
+      setIdealWidthPx((prev) => (prev !== null && Math.abs(prev - next) < 1 ? prev : next))
+    }
+
+    recompute()
+    const observer = new ResizeObserver(recompute)
+    observer.observe(videoArea)
+    return () => observer.disconnect()
+  }, [fitContainer, compact, size.width, size.height])
 
   /** Normalised against the element's DISPLAYED size — CSS scaling never leaks to the server. */
   function normalize(e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
@@ -667,12 +833,39 @@ export function LiveView({
   const phaseElapsedSec = phase ? Math.max(0, Math.round((now - phaseChangedAtRef.current) / 1000)) : 0
 
   return (
-    <div className={cn('overflow-hidden rounded-lg border bg-surface', compact && 'h-full')}>
+    <div
+      ref={rootRef}
+      // Plan 103 step 103.9 — purely a hook for `LiveView.test.tsx` to find
+      // this element and its video-area sibling without a fragile selector;
+      // no production code reads either attribute.
+      data-testid="live-view-root"
+      className={cn(
+        'overflow-hidden rounded-lg border bg-surface',
+        compact && 'h-full',
+        // `fitContainer` (never combined with `compact`, see that prop's own
+        // doc comment): this wrapper becomes a flex COLUMN that (a) fills
+        // whatever HEIGHT its own parent gives it (`flex-1 min-h-0` — the
+        // device popup's centre panel is a plain `flex flex-col`, so this
+        // is still the child that grows to fill it vertically) and (b) lays
+        // out its own status line / video area / footer rows as fixed-height
+        // siblings around the one row that is allowed to shrink (the video
+        // area, below). Its WIDTH, unlike its height, is no longer handed
+        // down by a `flex-1` in the parent's own main axis — the sizing
+        // effect above sets an explicit pixel `width` below instead (plan
+        // 103 step 103.9), and `flex-1` here stays purely a HEIGHT
+        // instruction once that inline style is present (an explicit width
+        // always wins over a flex-basis's own width contribution).
+        fitContainer && !compact && 'flex flex-1 min-h-0 flex-col',
+      )}
+      style={fitContainer && !compact && idealWidthPx !== null ? { width: idealWidthPx } : undefined}
+    >
       {/* Stream readouts: the numbers that describe the picture being watched.
           Skipped in compact (Wall tile) mode — a tile has room for a status
-          dot, not a toolbar (Plan 42 §4.6). */}
+          dot, not a toolbar (Plan 42 §4.6). `shrink-0`: harmless outside a
+          flex-column parent, and load-bearing inside one (`fitContainer`) —
+          this row must never be the one that shrinks. */}
       {!compact && (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-[11.5px] text-fg-muted">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-[11.5px] text-fg-muted">
         <span className="flex items-center gap-1.5">
           <span
             className={cn(
@@ -746,30 +939,72 @@ export function LiveView({
                 </Tooltip>
               )
             })()}
-            <span className="rack-label ml-auto">{transport === 'webrtc' ? 'webrtc' : 'websocket'}</span>
+            {/* Only when it is NOT the default (owner's call, 2026-08-17).
+                This read `websocket` on every ordinary session — the path
+                every device takes unless WebRTC is configured — so it spent
+                a slot in a status line beside fps, resolution and codec to
+                restate the expected. `webrtc` is the notable one, and it
+                still says so.
+                Same rule the cursor badge (two-or-more) and the "Input
+                reaches" panel (more than one device) already follow: show it
+                when the answer is not already obvious, never always and
+                never not at all. Dropping it in BOTH cases would have hidden
+                the one transport worth naming. */}
+            {transport === 'webrtc' && <span className="rack-label ml-auto">webrtc</span>}
           </>
         )}
       </div>
       )}
 
       {!compact && error && (
-        <p className="border-b border-led-danger/30 bg-led-danger/5 px-3 py-2 text-[12px] text-led-danger">
+        <p className="shrink-0 border-b border-led-danger/30 bg-led-danger/5 px-3 py-2 text-[12px] text-led-danger">
           {error}
         </p>
       )}
       {!compact && degradedReason && (
-        <p className="border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="shrink-0 border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
           The WebRTC path is not in use ({degradedReason}). Video still runs over WebSocket, but it can stutter when
           the network drops packets.
         </p>
       )}
+      {/* Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — a `control`
+          request whose OWN dedicated second scrcpy session could not be
+          built; this viewer is showing the wall entry's own frames instead.
+          Never worded as ordinary Control (§3.7's "two tiers, no silent
+          fallback"), and never merged with `degradedReason` above — that
+          one is about the WebRTC transport, this is about video QUALITY. */}
+      {!compact && controlUnavailable !== null && (
+        <p className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-led-warn/30 bg-led-warn/5 px-3 py-2 text-[11.5px] leading-relaxed text-led-warn">
+          <span>
+            A dedicated full-quality view could not be started for this device
+            {controlUnavailable ? ` (${controlUnavailable})` : ''}. Showing the wall&rsquo;s own picture instead —
+            lower resolution, lower frame rate.
+          </span>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[10.5px]" onClick={() => setRetryTick((n) => n + 1)}>
+            Retry
+          </Button>
+        </p>
+      )}
       {!compact && textInputNotice && (
-        <p className="border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">{textInputNotice}</p>
+        <p className="shrink-0 border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">{textInputNotice}</p>
       )}
 
-      <div className={cn('relative flex items-start justify-center gap-2 bg-bg', compact ? 'h-full p-0' : 'p-4')}>
-        {/* Mirrors the button rail so the screen itself stays centred — omitted in compact mode, which has no rail. */}
-        {!compact && <div className="w-10 shrink-0" aria-hidden />}
+      {/* The video area — the ONE row `fitContainer` allows to shrink
+          (`min-h-0 flex-1`, replacing the default `items-start` with
+          `items-center` so the letterboxed picture centres in whatever
+          space is left, rather than pinning to the top). Never scrolls
+          either way: `overflow` is never set here, and the canvas itself
+          shrinks via `object-contain` instead of clipping. */}
+      <div
+        ref={videoAreaRef}
+        data-testid="live-view-video-area"
+        className={cn(
+          'relative flex justify-center gap-2 bg-bg',
+          compact ? 'h-full items-start p-0' : fitContainer ? 'min-h-0 flex-1 items-center p-4' : 'items-start p-4',
+        )}
+      >
+        {/* Mirrors the button rail so the screen itself stays centred — omitted in compact mode and whenever `rail` is suppressed, since there is then nothing to mirror. */}
+        {!compact && rail && <div className="w-10 shrink-0" aria-hidden />}
         <canvas
           ref={canvasRef}
           tabIndex={compact ? -1 : 0}
@@ -779,12 +1014,22 @@ export function LiveView({
           onKeyDown={compact ? undefined : onKeyDown}
           aria-label="Device screen"
           className={cn(
+            compact || fitContainer
+              ? // Fits whatever box the flex parent above gives it, in both
+                // axes, preserving the device's aspect ratio via
+                // `object-contain` letterboxing rather than a CSS
+                // `aspect-ratio` box (which only affects a dimension left
+                // `auto` — both are pinned to 100% here, so it is
+                // `object-contain`, not `aspect-ratio`, doing the work).
+                'h-full max-h-full w-full max-w-full rounded-md bg-black object-contain'
+              : // A plain viewport fraction (plan 73 §3.1), not an arithmetic guess at the
+                // header/toolbar's own height subtracted from the full viewport — it does not need
+                // to know that number, and does not go stale the moment it changes. Only reachable
+                // when neither `compact` nor `fitContainer` is set (the device page).
+                'max-h-[70dvh] min-h-[18rem] rounded-md bg-black',
             compact
-              ? 'h-full w-full rounded-md bg-black object-contain pointer-events-none'
-              // A plain viewport fraction (plan 73 §3.1), not an arithmetic guess at the
-              // header/toolbar's own height subtracted from the full viewport — it does not need
-              // to know that number, and does not go stale the moment it changes.
-              : 'max-h-[70dvh] min-h-[18rem] rounded-md bg-black shadow-[0_0_0_1px_var(--color-border)] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
+              ? 'pointer-events-none'
+              : 'shadow-[0_0_0_1px_var(--color-border)] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-led-active)]',
             stopped && 'opacity-40',
           )}
           style={{
@@ -811,8 +1056,8 @@ export function LiveView({
           </span>
         )}
 
-        {/* The case buttons, on the case — omitted in compact mode: a Wall tile is read-only, no controls to place. */}
-        {!compact && <div className="flex w-10 shrink-0 flex-col items-center gap-1 pt-10">{hardware.map(keyButton)}</div>}
+        {/* The case buttons, on the case — omitted in compact mode (a Wall tile is read-only, no controls to place) and whenever `rail` is suppressed (the device popup draws these itself, in `HardwareRail`, plan 103 §4.1). */}
+        {!compact && rail && <div className="flex w-10 shrink-0 flex-col items-center gap-1 pt-10">{hardware.map(keyButton)}</div>}
 
         {stopped &&
           (compact ? (
@@ -880,20 +1125,55 @@ export function LiveView({
               </div>
             </div>
           ))}
+
+        {/* Plan 106 §5 step 106.7 — a component is installing on this
+            device right now. Deliberately NOT the wake panel's treatment
+            above: no `bg-bg/95` cover, no centring over the whole area,
+            `pointer-events-none` throughout — the picture stays fully
+            visible and fully interactive, because the phone streams fine
+            while this runs (plan 106 §2, "a readiness signal, never a
+            gate") and an operator may be watching for exactly this
+            reason. Suppressed while `stopped` or `showWakePanel` already
+            own the area — a component installing on a device with no
+            picture yet is a fact for the Preparation section, not a
+            second overlay stacked on the wake panel's own. */}
+        {!compact && provisioning && !stopped && !showWakePanel && (
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2"
+            data-testid="live-view-provisioning-overlay"
+          >
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-led-active/35 bg-bg/85 px-2.5 py-1 text-[11px] font-medium leading-none text-fg shadow-lg">
+              <Loader2 className="size-3 shrink-0 animate-spin text-led-active" aria-hidden />
+              Installing {provisioning.label}
+              <span className="readout text-fg-subtle">{duration(provisioning.startedAt, null, now)}</span>
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Nav buttons below the canvas — the same place as the Android nav bar.
-          Omitted in compact mode: a Wall tile is read-only, there is nothing here to press. */}
+          Omitted in compact mode: a Wall tile is read-only, there is nothing here to press.
+          The nav/power icons AND the clipboard button are suppressed
+          whenever `rail` is — `HardwareRail` already draws Back/Home/
+          Recents/Sleep/Wake/Clipboard for the device popup (plan 103 §4.1,
+          §5 step 103's layout restructure), so this row would otherwise
+          duplicate them (the "appears exactly once" rule that restructure
+          names explicitly). The hint line stays either way — it is
+          information, not a control. */}
       {!compact && (
-        <div className="flex flex-wrap items-center gap-1 border-t px-3 py-2">
-          {nav.map(keyButton)}
-          <span className="mx-1 h-5 w-px bg-line" aria-hidden />
-          {power.map(keyButton)}
-          <span className="mx-1 h-5 w-px bg-line" aria-hidden />
-          {/* The clipboard is an action on the device, not a fact about it
-              (plan 57 §3.4) — so it belongs with the other things you press,
-              not in a panel beside the screen. */}
-          <ClipboardButton deviceId={deviceId} canSend={inputEnabled} />
+        <div className="flex shrink-0 flex-wrap items-center gap-1 border-t px-3 py-2">
+          {rail && (
+            <>
+              {nav.map(keyButton)}
+              <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+              {power.map(keyButton)}
+              <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+              {/* The clipboard is an action on the device, not a fact about it
+                  (plan 57 §3.4) — so it belongs with the other things you press,
+                  not in a panel beside the screen. */}
+              <ClipboardButton deviceId={deviceId} canSend={inputEnabled} />
+            </>
+          )}
           <p className="ml-2 text-[11.5px] text-fg-subtle">
             {inputEnabled
               ? 'Click to tap, drag to swipe, type while the canvas is focused. Esc sends Back.'

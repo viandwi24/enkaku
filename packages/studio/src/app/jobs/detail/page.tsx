@@ -1,33 +1,28 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+// `useRef` stays imported for `jobRef` below (the ws handler's own
+// terminal-status refresh needs the LATEST `job`, not a stale closure).
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft, ChevronDown, ChevronRight, Download, Hourglass, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Hourglass, RotateCcw } from 'lucide-react'
 import { z } from 'zod'
 import {
   JobAssistsResponseSchema,
   JobCancelResponseSchema,
   JobCreateResponseSchema,
-  JobLogsResponseSchema,
+  JobNodesResponseSchema,
   JobResponseSchema,
-  RESULT_LIMITS,
   resolveRuntime,
-  RuntimeEnvelopeSchema,
   SettingsResponseSchema,
-  WorkflowDocSchema,
   type ArtifactInfo,
   type DeviceEvent,
   type GateOutcome,
   type JobInfo,
   type JobNodeStatus,
   type JobSettings,
-  type JsonSchemaNode as ProtocolJsonSchemaNode,
   type LeaseHolder,
-  type ParamIssue,
   type Predicate,
-  type ResultStatus,
-  type RuntimeEnvelope,
   type ValueExpr,
   type WorkflowDoc,
   type WorkflowNode,
@@ -36,8 +31,10 @@ import { JobStatusBadge } from '@/components/StatusBadge'
 import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { ResultView } from '@/components/result-view/ResultView'
-import type { JsonSchemaNode } from '@/components/schema-form/types'
+import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
+import { JobFailureDetail } from '@/components/jobs/JobFailureDetail'
+import { JobLogsPanel } from '@/components/jobs/JobLogsPanel'
+import { JobResultSection } from '@/components/jobs/JobResultSection'
 import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import {
   AlertDialog,
@@ -51,45 +48,18 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { api, useAction } from '@/lib/actions'
-import { deviceRefLabel, fetchAllPages, fetchDeviceRefs, JobNodesEnvelopeSchema, type DeviceRef, type JobNodeInfo } from '@/lib/api'
+import { deviceRefLabel, fetchAllPages, type JobNodeInfo } from '@/lib/api'
 import { duration, fileSize, relativeTime } from '@/lib/format'
-import { formatResult, isRunnerLog, outcomeLine, producedArtifacts, type JobWithPhase } from '@/lib/jobs'
 import { descendantsOf } from '@/lib/job-lineage'
+import type { JobWithPhase } from '@/lib/jobs'
+import { useJobDetail, type JobWithNode } from '@/lib/use-job-detail'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 
-interface LogLine {
-  ts: number
-  level: string
-  source: string
-  msg: string
-}
-
 /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
 const PHASES = ['reset', 'prepare', 'run', 'finish'] as const
-
-/**
- * `GET /api/scripts/:id` returns a full `ScriptRowSchema`, but this screen
- * only reads `.script.source`, `.script.workflow` (plan 99 §3.5, §3.7, §4.9,
- * step 99.10 — the parsed `WorkflowDoc`, present only for a `kind:
- * 'workflow'` row) and — plan 98 §3.9 item 4, §5 step 98.8 — `.script.runtime`
- * (the script's own declared envelope, needed to compute the SAME resolved
- * memory ceiling the runner armed this job's first attempt with, F5's own
- * defect closed by step 98.4): a narrower ad-hoc schema, as plan 72's brief
- * for this file allows, rather than importing the wider `ScriptResponseSchema`
- * for three fields. Fetched once per job, off the SAME `job.scriptId` the
- * source fetch below already uses — no second round trip.
- */
-const ScriptSourceResponseSchema = z.object({
-  script: z.object({
-    source: z.string().nullable().optional(),
-    workflow: WorkflowDocSchema.nullable().optional(),
-    runtime: RuntimeEnvelopeSchema.nullable().optional(),
-  }),
-})
 
 /**
  * `job_nodes.verdict` (plan 99 §3.7, §4.4, §4.9) — a gate's `PredicateTrace`,
@@ -120,35 +90,6 @@ const PredicateTraceSchema: z.ZodType<{
   }),
 )
 type PredicateTraceLike = z.infer<typeof PredicateTraceSchema>
-
-/** `job.status`'s live `node` block (plan 99 §4.9) — present only once a `kind: 'workflow'` job has pushed at least one live update, kept local (not added to `JobWithPhase`, `lib/jobs.ts`, outside this step's file list) since only this page reads it. */
-interface JobNodeLive {
-  id: string
-  seq: number
-  total: number
-  kind: 'script' | 'gate'
-  script: string | null
-  status: JobNodeStatus
-}
-/**
- * Plan 97 §4.6, step 97.5 — `JobDetailSchema` does not carry these five
- * fields yet: 97.5 (the read paths — `rowToJobDetail`, `GET /api/jobs/:id`)
- * is a SEPARATE, not-yet-landed step of the same plan, owned by a different
- * worker and outside `packages/protocol/**`'s reach for this one (97.6's own
- * brief). Declared locally, all optional, so this file compiles and degrades
- * exactly like today (`resultSchema` reads `undefined`, the `<pre>` fallback
- * below fires) against the CURRENT wire shape, and starts rendering through
- * `ResultView` with no further edit here the moment 97.5 adds the matching
- * keys to `JobDetailSchema` — the field names below are copied verbatim from
- * §4.6's own draft.
- */
-type JobWithResultInfo = {
-  resultStatus?: ResultStatus | null
-  resultBytes?: number | null
-  resultIssues?: ParamIssue[] | null
-  resultSchema?: ProtocolJsonSchemaNode | null
-}
-type JobWithNode = JobWithPhase & JobWithResultInfo & { node?: JobNodeLive | null }
 
 /** A human word for a value expression's SOURCE (plan 99 §3.6) — what the gate verdict sentence's "scroll1.videos" half comes from. Never evaluates anything; purely descriptive. */
 function describeValueExpr(expr: ValueExpr): string {
@@ -558,76 +499,53 @@ function JobDetail() {
   const jobId = params.get('id')
   const tab = params.get('tab') ?? 'summary'
 
-  const [job, setJob] = useState<JobWithNode | null>(null)
-  // The device a job ran on may have been forgotten since (plan 47 §3.4) —
-  // resolved once the job itself loads, live or deleted either way.
-  const [deviceRef, setDeviceRef] = useState<DeviceRef | undefined>(undefined)
-  const [liveLogs, setLiveLogs] = useState<LogLine[]>([])
-  const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
-  // What the job logged BEFORE this page subscribed (`GET /api/jobs/:id/logs`).
-  // The third source, and the one that makes a mid-run page useful at all.
-  //
-  // `null` until the fetch settles, NOT `[]`: the panel's loading state has to
-  // distinguish "not asked yet" from "asked, and this job has logged nothing".
-  // With `[]` it could not, and a running job sat on "Loading…" forever —
-  // `savedLogs` stays null until the job ends, so nothing ever cleared it.
-  const [backfillLogs, setBackfillLogs] = useState<LogLine[] | null>(null)
-  const [logsTruncated, setLogsTruncated] = useState(false)
-  const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
+  // The four surfaces plan 103 step 103.11's audit named (result, params,
+  // logs, artifacts) — plus script source and device ref — now live in ONE
+  // hook shared with the device popup's own in-place Jobs tab
+  // (`components/device-popup/JobDetailPanel.tsx`), so neither renders a
+  // thinner copy of the other's fetch/merge logic (`lib/use-job-detail.ts`'s
+  // own file header has the full reasoning, including the log-merge
+  // algorithm's own history).
+  const { job, deviceRef, source, workflowDoc, scriptRuntime, artifacts, produced, images, files, crashTraceArtifact, logs, logsTruncated, logsPhase, error, load } =
+    useJobDetail(jobId)
   // Lineage (plan 81 §4.5) — `chainNodes` is every OTHER member of this
   // job's trigger chain (`GET /api/jobs?rootJobId=...` excludes the root's
   // own row by design); `rootInfo` is that root's own detail, fetched
   // separately and only when this job is not itself the root. Both start
   // empty/null so a job with no lineage — the common case — renders with
-  // nothing extra rather than a loading flicker.
+  // nothing extra rather than a loading flicker. Page-only: not one of the
+  // four surfaces the popup's Jobs tab reuses (`use-job-detail.ts`'s own
+  // file header names exactly what stayed here and why).
   const [chainNodes, setChainNodes] = useState<JobInfo[]>([])
   const [rootInfo, setRootInfo] = useState<JobInfo | null>(null)
   // Plan 91 §3.5, §4.9 — every non-job input action recorded against this
-  // job's device while it ran. Fetched unconditionally, the same "cheap and
-  // always fetched" reasoning `chainNodes` above already uses: an
-  // un-assisted job (the common case) just gets back an empty array and the
-  // "Assisted by" card below stays hidden.
+  // job's device while it ran. Page-only, same reasoning as `chainNodes`.
   const [assists, setAssists] = useState<DeviceEvent[]>([])
-  const [source, setSource] = useState<string | null | undefined>(undefined)
   // Plan 98 §3.9 item 4, §5 step 98.8 — the Summary tab's "Peak memory" row
-  // gains a "/ N limit" half. `scriptRuntime` comes off the SAME `GET
-  // /api/scripts/:id` call `source`/`workflowDoc` already make (see
-  // `ScriptSourceResponseSchema`'s own doc comment); `farmJobSettings` is
-  // fetched once, independently — a job page has no other reason to load
-  // farm settings, so this is its own small round trip rather than piggy-
-  // backing on an unrelated fetch.
-  const [scriptRuntime, setScriptRuntime] = useState<RuntimeEnvelope | null>(null)
+  // gains a "/ N limit" half. `farmJobSettings` is fetched once,
+  // independently — a job page has no other reason to load farm settings,
+  // so this is its own small round trip rather than piggy-backing on an
+  // unrelated fetch. Page-only: the popup's Jobs tab has no memory-limit row.
   const [farmJobSettings, setFarmJobSettings] = useState<JobSettings | null>(null)
-  const [followLog, setFollowLog] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  // The crash trace disclosure (plan 37 §4.5) — collapsed by default, fetched lazily on first open.
-  const [traceOpen, setTraceOpen] = useState(false)
-  const [traceText, setTraceText] = useState<string | null>(null)
   // Waiting for the device to go quiet before claiming it (plan 71 §3.7), OR
   // (plan 94 §3.7, §4.9, F25, step 94.10) waiting on the PACER for its next
   // repetition's drawn delay to elapse — visible, not silent: a wait nobody
   // can see is indistinguishable from a hang. `null` means "not currently
   // waiting" (never started, or already claimed/expired past the cap).
-  // `reason` was on the wire since step 94.6 and dropped here until now —
-  // named explicitly in this plan's own brief as the gap this step closes.
   const [waiting, setWaiting] = useState<{ heldBy: LeaseHolder | null; remainingSec: number; reason: 'quiet' | 'paced' } | null>(
     null,
   )
   // The node timeline (plan 99 §3.5, §4.9, step 99.10) — `[]`/`false` for
   // every non-workflow job, the same "empty, not missing" convention
-  // `assists` above already uses. `workflowDoc` is the parsed pipeline
-  // (fetched off the SAME `GET /api/scripts/:id` call `source` already
-  // makes), read for the gate verdict sentence's `when`/`then`/`else` and
-  // the resume dialog's "what will be skipped" preview — `null` for a
-  // non-workflow job, or while it has not resolved yet.
+  // `assists` above already uses. `workflowDoc` (from the hook) is the
+  // parsed pipeline, read for the gate verdict sentence's `when`/`then`/
+  // `else` and the resume dialog's "what will be skipped" preview.
   const [nodes, setNodes] = useState<JobNodeInfo[]>([])
   const [nodesFinalized, setNodesFinalized] = useState(false)
-  const [workflowDoc, setWorkflowDoc] = useState<WorkflowDoc | null>(null)
   // "Resume from here" (plan 99 §3.5, §4.9) — the node the operator picked,
   // or null when the dialog is closed. A node id rather than a boolean:
   // several rows can each offer their own "Resume from here" button.
   const [resumeFrom, setResumeFrom] = useState<string | null>(null)
-  const logRef = useRef<HTMLPreElement>(null)
   const { run, isPending } = useAction()
   const router = useRouter()
   // Run time and total-time tick without a refresh while a job is running.
@@ -644,12 +562,12 @@ function JobDetail() {
     [farmJobSettings, scriptRuntime],
   )
 
-  // Split out of `load()` so the live `job.status` handler below can refresh
-  // JUST the timeline on every node transition, without re-fetching the
-  // whole job (plan 99 §4.11: "watching the node counter advance live").
+  // Split out so the live `job.status` handler below can refresh JUST the
+  // timeline on every node transition, without re-fetching the whole job
+  // (plan 99 §4.11: "watching the node counter advance live").
   const refreshNodes = () => {
     if (!jobId) return
-    void api(`/api/jobs/${jobId}/nodes`, JobNodesEnvelopeSchema)
+    void api(`/api/jobs/${jobId}/nodes`, JobNodesResponseSchema)
       .then((r) => {
         setNodes(r.items)
         setNodesFinalized(r.finalized)
@@ -657,48 +575,29 @@ function JobDetail() {
       .catch(() => undefined)
   }
 
-  const load = () => {
-    if (!jobId) return
-    setError(null)
-    void api(`/api/jobs/${jobId}`, JobResponseSchema)
-      .then((b) => {
-        setJob(b.job)
-        // The script row is version-specific, so its source (and, for a
-        // workflow, its document) is exactly what ran.
-        void api(`/api/scripts/${b.job.scriptId}`, ScriptSourceResponseSchema)
-          .then((s) => {
-            setSource(s.script.source ?? null)
-            setWorkflowDoc(s.script.workflow ?? null)
-            setScriptRuntime(s.script.runtime ?? null)
-          })
-          .catch(() => {
-            setSource(null)
-            setWorkflowDoc(null)
-            setScriptRuntime(null)
-          })
-        void fetchDeviceRefs([b.job.deviceId])
-          .then((refs) => setDeviceRef(refs[b.job.deviceId]))
-          .catch(() => undefined)
-        // Every other member of this job's trigger chain (plan 81 §4.5) —
-        // cheap and always fetched: most jobs are not triggered, so this
-        // simply returns an empty page, and the lineage panel below stays
-        // hidden. `effectiveRootId` is this job's own id when it IS the
-        // root (`rootJobId` is null on the origin's own row by design).
-        const effectiveRootId = b.job.rootJobId ?? b.job.jobId
-        void fetchAllPages<JobInfo>('/api/jobs', { rootJobId: effectiveRootId })
-          .then(setChainNodes)
-          .catch(() => setChainNodes([]))
-        // The root's OWN detail is only fetched when this job is not it —
-        // the root's row never appears in the `rootJobId` list above.
-        if (b.job.depth > 0) {
-          void api(`/api/jobs/${effectiveRootId}`, JobResponseSchema)
-            .then((r) => setRootInfo(r.job))
-            .catch(() => setRootInfo(null))
-        } else {
-          setRootInfo(null)
-        }
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  // `loadExtras` needs the CURRENT job (for `rootJobId`/`depth`) at the
+  // moment it is called, including from the long-lived ws listener below —
+  // a plain closure over `job` there would see whatever `job` was at the
+  // time that effect last ran (`[jobId]`, not `[job]`), not the freshest
+  // value. `jobRef` avoids re-subscribing the listener on every `job` update
+  // just to keep it fresh.
+  const jobRef = useRef(job)
+  jobRef.current = job
+
+  function loadExtras(): void {
+    const j = jobRef.current
+    if (!jobId || !j) return
+    const effectiveRootId = j.rootJobId ?? j.jobId
+    void fetchAllPages<JobInfo>('/api/jobs', { rootJobId: effectiveRootId })
+      .then(setChainNodes)
+      .catch(() => setChainNodes([]))
+    if (j.depth > 0) {
+      void api(`/api/jobs/${effectiveRootId}`, JobResponseSchema)
+        .then((r) => setRootInfo(r.job))
+        .catch(() => setRootInfo(null))
+    } else {
+      setRootInfo(null)
+    }
     // Plan 91 §3.5, §4.9 — who touched this job's device while it ran, and
     // when. Failing quietly to an empty list (an old core without this
     // route, or a job with none) rather than surfacing a fetch error for
@@ -706,33 +605,18 @@ function JobDetail() {
     void api(`/api/jobs/${jobId}/assists`, JobAssistsResponseSchema)
       .then((r) => setAssists(r.items))
       .catch(() => setAssists([]))
-    // A job's artifacts are usually a handful, but a script producing many
-    // screenshots is not unbounded here — this walks every page rather than
-    // trusting the endpoint's default limit (plan 30 §4.2).
-    void fetchAllPages<ArtifactInfo>('/api/artifacts', { jobId })
-      .then(setArtifacts)
-      .catch(() => undefined)
-    // What the job has ALREADY logged. `/ws` has no snapshot replay, so
-    // without this a page opened mid-run showed nothing that had happened
-    // before it subscribed — and the `job.log` artifact does not exist until
-    // the job ends, so the whole story appeared at once on completion. This is
-    // the fetch half of fetch-then-subscribe; the `job.log` handler below is
-    // the other. A finished job answers with an empty list and the artifact
-    // takes over.
-    void api(`/api/jobs/${jobId}/logs`, JobLogsResponseSchema)
-      .then((r) => {
-        setBackfillLogs(r.lines)
-        setLogsTruncated(r.truncated)
-      })
-      .catch(() => setBackfillLogs([]))  // settled, just empty
-    // The node timeline (plan 99 §3.5, §4.9) — `[]`/`finalized: false` for
-    // every non-workflow job (`GET /api/jobs/:id/nodes` never 404s for that
-    // reason, matching `/assists`/`/logs` above), so the timeline card below
-    // simply stays hidden rather than erroring.
-    refreshNodes()
   }
 
-  useEffect(load, [jobId])
+  // The node timeline and the lineage/assists panels each need the job to
+  // exist first (`rootJobId`/`depth` for the latter) — both re-run once
+  // `job` first resolves for THIS jobId (not on every in-place `job.status`
+  // update, which would over-fetch on every progress tick).
+  useEffect(() => {
+    if (!job) return
+    refreshNodes()
+    loadExtras()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.jobId])
 
   // Plan 98 §3.9 item 4, §5 step 98.8 — fetched once, independent of `jobId`:
   // this page has no other reason to load farm settings, and the "/ N limit"
@@ -746,21 +630,21 @@ function JobDetail() {
       .catch(() => undefined)
   }, [])
 
+  // The page-only half of the live `job.status`/`job.waiting` broadcasts —
+  // the hook's OWN `ws.on` (inside `useJobDetail`) already merges `job`
+  // itself and reloads on a terminal status; this second, independent
+  // listener is what re-reads the node timeline on every node transition and
+  // re-reads lineage/assists once a job actually finishes, matching what the
+  // single combined handler on this page used to do before the extraction.
   useEffect(() => {
     if (!jobId) return
     const off = ws.on((m) => {
-      if (m.type === 'job.log' && m.payload.jobId === jobId) {
-        setLiveLogs((p) => [...p.slice(-2000), m.payload])
-      } else if (m.type === 'job.artifact' && m.payload.jobId === jobId) {
-        setArtifacts((p) => [...p.filter((a) => a.id !== m.payload.artifact.id), m.payload.artifact])
-      } else if (m.type === 'job.status' && m.payload.jobId === jobId) {
-        setJob((p) => ({ ...(p ?? {}), ...m.payload }) as JobWithNode)
-        // A workflow job's `node` block advances once per node execution
-        // (plan 99 §4.9) — re-reading the timeline here is what makes
-        // "watching the node counter advance live" (§4.11's verifiable
-        // result) true instead of only updating on the FINAL settle below.
+      if (m.type === 'job.status' && m.payload.jobId === jobId) {
         if (m.payload.node) refreshNodes()
-        if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) load()
+        if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) {
+          refreshNodes()
+          loadExtras()
+        }
       } else if (m.type === 'job.waiting' && m.payload.jobId === jobId) {
         setWaiting(
           m.payload.waiting
@@ -772,93 +656,6 @@ function JobDetail() {
     return off
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId])
-
-  // A finished job's log lives in its job.log artifact. Without loading it, an
-  // old job showed an empty panel even though every line had been kept.
-  // Matched by label, not merely by kind: a crash trace (plan 37) is a `log`
-  // artifact too, and picking that one would render a stack trace as the job's
-  // log.
-  const logArtifact = artifacts.find(isRunnerLog)
-  useEffect(() => {
-    if (!logArtifact || savedLogs !== null) return
-    void fetch(`${coreBase()}/api/artifacts/${logArtifact.id}/content`)
-      .then((r) => (r.ok ? r.text() : ''))
-      .then((text) =>
-        setSavedLogs(
-          text
-            .split('\n')
-            .filter(Boolean)
-            .flatMap((line) => {
-              try {
-                return [JSON.parse(line) as LogLine]
-              } catch {
-                return []
-              }
-            }),
-        ),
-      )
-      .catch(() => setSavedLogs([]))
-  }, [logArtifact, savedLogs])
-
-  /**
-   * The two sources are MERGED, not chosen between.
-   *
-   * This used to be `liveLogs.length > 0 ? liveLogs : savedLogs`, which lost lines in both
-   * directions and was reported as exactly that — "kadang ada log terlewat, kadang tidak realtime".
-   * `liveLogs` only ever holds what arrived over the WS *since this page subscribed*, so opening a
-   * job mid-run and then receiving a single new line discarded every earlier line at once; and
-   * before that first line arrived the panel showed the saved file, which lags. Neither source is
-   * complete on its own: the WS has no replay (`/ws` deliberately does not snapshot) and the
-   * artifact is written progressively.
-   *
-   * Deduped on `ts|level|msg` because a log line carries no id, and ordered by timestamp so the
-   * seams between the three are invisible.
-   *
-   * There are THREE sources, not two. `backfillLogs` (`GET /api/jobs/:id/logs`)
-   * is what a RUNNING job logged before this page subscribed — the case the
-   * other two cannot cover, and the one that was reported as "sometimes no
-   * logs, or you wait for it to finish and they all appear at once". The
-   * comment here used to claim the artifact "is written progressively"; it is
-   * not — `job-runner.ts` accumulates lines in memory and writes the file once,
-   * in its `finally`. That mistaken belief is why the gap survived a first fix.
-   */
-  const logs = useMemo(() => {
-    const byKey = new Map<string, LogLine>()
-    for (const line of [...(savedLogs ?? []), ...(backfillLogs ?? []), ...liveLogs]) {
-      byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
-    }
-    return [...byKey.values()].sort((a, b) => a.ts - b.ts)
-  }, [savedLogs, backfillLogs, liveLogs])
-
-  useEffect(() => {
-    if (followLog) logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
-  }, [logs, followLog])
-
-  /**
-   * What the RUN produced (plan 60 §3.5). The runner's own `job` log is
-   * filtered out here and here only: the API still returns it, because the
-   * Logs tab above downloads that exact artefact to render a finished job's
-   * log. Listing it as a script output as well is what made every job look
-   * like it had saved a file nobody asked for.
-   */
-  const produced = useMemo(() => producedArtifacts(artifacts), [artifacts])
-  const images = useMemo(() => produced.filter((a) => a.kind === 'screenshot'), [produced])
-  const files = useMemo(() => produced.filter((a) => a.kind !== 'screenshot'), [produced])
-  // `crash-<pkg>`/`anr-<pkg>` is the exact label `saveCrashTrace` in daemon.ts
-  // gives the artifact when a job lease was held (plan 37 §3.6) — found
-  // among the job's own artifacts, no separate device_events query needed.
-  const crashTraceArtifact = useMemo(
-    () => artifacts.find((a) => a.kind === 'log' && (a.label?.startsWith('crash-') || a.label?.startsWith('anr-'))),
-    [artifacts],
-  )
-
-  useEffect(() => {
-    if (!traceOpen || !crashTraceArtifact || traceText !== null) return
-    void fetch(`${coreBase()}/api/artifacts/${crashTraceArtifact.id}/content`)
-      .then((r) => (r.ok ? r.text() : 'Could not load the trace.'))
-      .then(setTraceText)
-      .catch(() => setTraceText('Could not load the trace.'))
-  }, [traceOpen, crashTraceArtifact, traceText])
 
   if (!jobId) return <div className="px-5 py-4"><ErrorState message="The address is missing an id parameter." /></div>
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={load} /></div>
@@ -889,53 +686,12 @@ function JobDetail() {
   const queuedDescendants = descendantsOf(chainNodes, job.jobId).filter((n) => n.status === 'queued')
   const hasLineage = job.triggeredByJobId !== null || job.depth > 0 || triggeredJobs.length > 0
 
-  /**
-   * Why it failed, with the failing line shown rather than described (plan 60
-   * §3.4). One definition, rendered in one place at a time: inside the
-   * Summary outcome card when that tab is open, above the tabs otherwise —
-   * so a failure is never more than a glance away and never printed twice.
-   */
-  const failureDetail =
-    job.status === 'failed' && job.error ? (
-      <div className="rounded-lg border border-led-danger/40 bg-led-danger/5 p-3.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="rack-label text-led-danger">
-            failure reason{job.errorPhase ? ` — during ${job.errorPhase}` : ''}
-          </p>
-          {/* Plan 36 §4.4 — infra vs script vs load, so "this suite is flaky" becomes an answerable question. */}
-          {job.failureClass && (
-            <span
-              className={cn(
-                'rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-                job.failureClass === 'infra' && 'border-led-warn/40 bg-led-warn/10 text-led-warn',
-                job.failureClass === 'load' && 'border-line bg-transparent text-fg-muted',
-                job.failureClass === 'script' && 'border-led-danger/40 bg-led-danger/10 text-led-danger',
-              )}
-            >
-              {job.failureClass}
-            </span>
-          )}
-        </div>
-        <p className="mt-1 break-words text-[13px]">{job.error}</p>
-        {crashTraceArtifact && (
-          <div className="mt-2.5 border-t border-led-danger/20 pt-2.5">
-            <button
-              type="button"
-              onClick={() => setTraceOpen((v) => !v)}
-              className="inline-flex items-center gap-1 text-[12px] font-medium text-led-danger hover:underline"
-            >
-              {traceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-              {traceOpen ? 'Hide crash trace' : 'Show crash trace'}
-            </button>
-            {traceOpen && (
-              <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/20 bg-surface p-2.5 text-[11px] leading-relaxed">
-                {traceText ?? 'Loading…'}
-              </pre>
-            )}
-          </div>
-        )}
-      </div>
-    ) : null
+  // "Why it failed" (plan 60 §3.4) is rendered in one place at a time —
+  // inside `JobResultSection`'s own outcome card when the Summary tab is
+  // open, or standalone above the other tabs — so a failure is never more
+  // than a glance away and never printed twice. `JobFailureDetail`
+  // (`components/jobs/`) is the ONE definition both places use.
+  const isFailed = job.status === 'failed' && Boolean(job.error)
 
   return (
     <>
@@ -1073,107 +829,20 @@ function JobDetail() {
       )}
 
       {/* On every tab but Summary, where it has a card of its own. */}
-      {tab !== 'summary' && failureDetail && <div className="mx-5 mt-4">{failureDetail}</div>}
+      {tab !== 'summary' && isFailed && (
+        <div className="mx-5 mt-4">
+          <JobFailureDetail job={job} crashTraceArtifact={crashTraceArtifact} />
+        </div>
+      )}
 
       {tab === 'summary' && (
         <div className="grid gap-4 px-5 py-4 xl:grid-cols-[1fr_20rem]">
           <div className="space-y-4">
             {/* What happened, and what the script reported (plan 60 §3.3, §3.4) —
-                the two things the person who ran it came here for. */}
-            <div className="rounded-lg border bg-surface p-4">
-              <h2 className="rack-label mb-3">outcome</h2>
-              <p
-                className={cn(
-                  'text-[13.5px]',
-                  job.status === 'success' && 'text-led-ok',
-                  job.status === 'failed' && 'text-led-danger',
-                  job.status === 'expired' && 'text-led-warn',
-                )}
-              >
-                {outcomeLine(job)}
-              </p>
-              {failureDetail && <div className="mt-3">{failureDetail}</div>}
-
-              <div className="mt-4 border-t pt-3">
-                <h3 className="rack-label mb-2">returned</h3>
-                {!finished ? (
-                  <p className="text-[12.5px] text-fg-subtle">A script reports its result when it finishes.</p>
-                ) : job.resultStatus === 'oversize' ? (
-                  /* §3.4 — the value never crossed IPC at all; `job.result`
-                     is NULL by construction (§3.3's own table), so this is
-                     the whole story for this job, not a banner above a
-                     (missing) value. */
-                  <div className="rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                    <p className="rack-label text-led-warn">result too large to store</p>
-                    <p className="mt-1 text-[12.5px] leading-relaxed">
-                      This run returned{' '}
-                      {typeof job.resultBytes === 'number' ? fileSize(job.resultBytes) : 'more than the limit'}. The
-                      farm's limit for a stored result is {fileSize(RESULT_LIMITS.defaultMaxResultBytes)}, so nothing
-                      was kept. Save large output as an artifact with{' '}
-                      <span className="readout">ctx.artifact.file('report', data)</span> and return a small summary
-                      that points at it.
-                    </p>
-                  </div>
-                ) : job.result === null || job.result === undefined ? (
-                  <p className="text-[12.5px] text-fg-subtle">
-                    This script returned nothing. A script that should report something — an exit IP, a version,
-                    whether an element was there — returns it from <span className="readout">run()</span>.
-                  </p>
-                ) : job.resultSchema ? (
-                  /* A typed result reads as values, not as JSON (§3.6, §4.8).
-                     `resultStatus` distinguishes THREE different messages an
-                     operator needs told apart — never blurred into one
-                     "something went wrong" banner (§4.8's own three
-                     banners): `invalid` (the value broke its own promise),
-                     `partial` (evidence salvaged from a failed run, never
-                     validated — §3.5), `valid`/`undeclared` show no banner
-                     at all. */
-                  <>
-                    {job.resultStatus === 'invalid' && (
-                      <div className="mb-2.5 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                        <p className="rack-label text-led-warn">result doesn't match its own schema</p>
-                        <p className="mt-1 text-[12.5px] leading-relaxed">
-                          {job.resultIssues && job.resultIssues.length > 0
-                            ? job.resultIssues.map((issue) => issue.path || '(the whole value)').join(', ')
-                            : 'The returned value did not satisfy the schema this script declared.'}
-                        </p>
-                      </div>
-                    )}
-                    {job.resultStatus === 'partial' && (
-                      <div className="mb-2.5 rounded-lg border bg-surface p-3">
-                        <p className="text-[12.5px] text-fg-muted">
-                          this run failed — these are the values it had reached
-                        </p>
-                      </div>
-                    )}
-                    <ResultView schema={job.resultSchema as JsonSchemaNode} value={job.result} />
-                  </>
-                ) : (
-                  <pre className="readout max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
-                    {formatResult(job.result)}
-                  </pre>
-                )}
-              </div>
-
-              {/* Inputs are reference material, so they sit BELOW the result and
-                  start closed (audit finding 2). Above it, they pushed the thing
-                  the run produced further down the page — and the params are
-                  read second, when the result raises a question about them. */}
-              <details className="mt-4 border-t pt-3">
-                <summary className="rack-label cursor-pointer list-none select-none marker:content-none">
-                  started with{job.params === null || job.params === undefined ? ' — nothing' : ''}
-                </summary>
-                {job.params === null || job.params === undefined ? (
-                  <p className="mt-2 text-[12.5px] text-fg-subtle">
-                    This script declares no parameters, or it was run with its defaults.
-                  </p>
-                ) : (
-                  <pre className="readout mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border bg-bg p-2.5 text-[11.5px] leading-relaxed">
-                    {formatResult(job.params)}
-                  </pre>
-                )}
-              </details>
-            </div>
+                the two things the person who ran it came here for. Reused,
+                not re-derived, by the device popup's own Jobs tab
+                (`JobResultSection`, `components/jobs/`). */}
+            <JobResultSection job={job} finished={finished} crashTraceArtifact={crashTraceArtifact} />
 
             {/* The node timeline (plan 99 §3.5, §3.7, §4.9, §4.11) — hidden
                 entirely for an ordinary (non-workflow) job, the same
@@ -1395,101 +1064,17 @@ function JobDetail() {
         </div>
       )}
 
+      {/* Reused, not re-derived, by the device popup's own Jobs tab (`JobLogsPanel`, `components/jobs/`). */}
       {tab === 'logs' && (
         <div className="px-5 py-4">
-          <div className="overflow-hidden rounded-lg border bg-surface">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
-              <h2 className="rack-label">
-                {liveLogs.length > 0 || (backfillLogs?.length ?? 0) > 0 ? 'live' : backfillLogs === null && savedLogs === null ? 'loading' : 'saved to job.log'}
-              </h2>
-              {/* A long-running job's oldest retained lines are dropped rather
-                  than growing without bound. Saying so beats quietly starting
-                  the story in the middle. */}
-              {logsTruncated && (
-                <span className="text-[11px] text-fg-subtle">earlier lines dropped — the full log is kept as an artifact</span>
-              )}
-              <label className="flex items-center gap-2 text-[11.5px] text-fg-muted">
-                Follow latest
-                <Switch checked={followLog} onCheckedChange={setFollowLog} aria-label="Follow latest lines" />
-              </label>
-            </div>
-            <pre
-              ref={logRef}
-              className="readout max-h-[32rem] overflow-auto whitespace-pre-wrap p-3 text-[11.5px] leading-relaxed"
-            >
-              {/* Loading means "nothing has answered yet" — not "there is no
-                  saved artifact". A RUNNING job never has one, so keying on
-                  `savedLogs` alone left the panel on "Loading…" until a new
-                  line happened to arrive, which is exactly the bug this
-                  backfill existed to fix. */}
-              {backfillLogs === null && savedLogs === null && liveLogs.length === 0
-                ? 'Loading…'
-                : logs.length === 0
-                  ? 'This job produced no log lines.'
-                  : logs
-                      .map(
-                        (l) =>
-                          `${new Date(l.ts).toLocaleTimeString()}  ${l.level.padEnd(5)} ${l.source.padEnd(6)} ${l.msg}`,
-                      )
-                      .join('\n')}
-            </pre>
-          </div>
-          <p className="mt-2 text-[11.5px] text-fg-subtle">
-            Logs stream live while a job runs and are kept afterwards as the <span className="readout">job.log</span>{' '}
-            artifact, so this panel works for old jobs too.
-          </p>
+          <JobLogsPanel logs={logs} truncated={logsTruncated} phase={logsPhase} />
         </div>
       )}
 
+      {/* Reused, not re-derived, by the device popup's own Jobs tab (`JobArtifactsPanel`, `components/jobs/`). */}
       {tab === 'artifacts' && (
         <div className="px-5 py-4">
-          {produced.length === 0 ? (
-            <EmptyState
-              title="No artifacts"
-              description="Screenshots and files a script saves with ctx.artifact appear here. The run's own log is on the Logs tab."
-            />
-          ) : (
-            <div className="space-y-4">
-              {images.length > 0 && (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-                  {images.map((a) => (
-                    <a
-                      key={a.id}
-                      href={`${coreBase()}/api/artifacts/${a.id}/content`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="group overflow-hidden rounded border hover:border-accent"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={`${coreBase()}/api/artifacts/${a.id}/content`}
-                        alt={a.label ?? 'screenshot'}
-                        className="aspect-[9/16] w-full object-cover"
-                      />
-                      <span className="block truncate px-1.5 py-1 text-[10.5px] text-fg-muted">{a.label}</span>
-                    </a>
-                  ))}
-                </div>
-              )}
-              {files.length > 0 && (
-                <div className="divide-y overflow-hidden rounded-lg border">
-                  {files.map((a) => (
-                    <a
-                      key={a.id}
-                      href={`${coreBase()}/api/artifacts/${a.id}/content`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-2 px-3 py-2 text-[12.5px] hover:bg-surface-2"
-                    >
-                      <Download className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate">{fileName(a)}</span>
-                      <span className="readout shrink-0 text-[11px] text-fg-subtle">{fileSize(a.sizeBytes)}</span>
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <JobArtifactsPanel images={images} files={files} />
         </div>
       )}
 
@@ -1549,16 +1134,6 @@ function Row({ label, value, note }: { label: string; value: string; note?: stri
       {note && <span className="w-full text-right text-[11px] text-fg-subtle">{note}</span>}
     </div>
   )
-}
-
-/**
- * The name the file actually downloads as, rather than its internal label —
- * "job.log" says what is inside, "job" does not.
- */
-function fileName(a: ArtifactInfo): string {
-  const base = a.path.split('/').pop() ?? ''
-  const stripped = base.replace(/^\d+-/, '')
-  return stripped || a.label || a.kind
 }
 
 export default function JobDetailPage() {

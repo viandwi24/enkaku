@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import type { LeaseHolder } from '@enkaku/protocol'
+import { humanTtl } from '@/components/device-popup/ControlState'
+import { SingleDeviceNotice } from '@/components/target/TargetPicker'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { newId, ws, WsRequestError } from '@/lib/ws'
@@ -31,6 +33,7 @@ export function AssistDialog({
   open,
   onOpenChange,
   onAssisted,
+  nonModal = false,
 }: {
   deviceId: string
   deviceLabel: string
@@ -42,6 +45,15 @@ export function AssistDialog({
   onOpenChange: (open: boolean) => void
   /** Called once the grant actually exists, with its expiry (ms epoch, matching every other lease-adjacent countdown on this page) and the primary holder the server resolved it against. */
   onAssisted: (expiresAtMs: number, primary: LeaseHolder) => void
+  /**
+   * The device popup's own path (plan 103 §3.2, §5 step 103.1) — opened over
+   * a live phone the operator is watching, so the ordinary modal backdrop
+   * (`ui/dialog.tsx`) is wrong here: it would dim and freeze the exact
+   * screen Assist exists to keep working on. `false` everywhere else
+   * (the device page), which is a real navigation and where a backdrop is
+   * correct.
+   */
+  nonModal?: boolean
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -75,8 +87,8 @@ export function AssistDialog({
   const isJob = primary.kind === 'job'
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
+      <DialogContent overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>Assist {deviceLabel} while {isJob ? 'its job' : primary.label} keeps control?</DialogTitle>
           <DialogDescription asChild>
@@ -97,6 +109,12 @@ export function AssistDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {/* Plan 104 (M69) §3.4 — a lease is one device by definition (plan
+            91 §3.2): stated explicitly rather than omitting a target picker
+            and leaving the operator to guess whether a live multi-selection
+            on the Wall behind this dialog applied here. */}
+        <SingleDeviceNotice deviceLabel={deviceLabel} />
+
         {error && (
           <div className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px] text-led-danger">{error}</div>
         )}
@@ -114,17 +132,11 @@ export function AssistDialog({
   )
 }
 
-/**
- * "5 minutes" for a round number of minutes — matches §3.12's own copy
- * example verbatim for the shipped default (`grantTtlSec: 300`) — else
- * `Xm Ys` / `Ns` for a farm that changed the setting to something that does
- * not divide evenly. Exported for its own unit test.
- */
-export function humanTtl(seconds: number): string {
-  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`
-  if (seconds % 60 === 0) {
-    const m = seconds / 60
-    return `${m} minute${m === 1 ? '' : 's'}`
-  }
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
+// `humanTtl` now lives in `../device-popup/ControlState.tsx` (plan 105 §5
+// step 105.1) — re-exported below so `AssistDialog.test.tsx`'s existing
+// import (`./AssistDialog`) keeps working unchanged. Moved rather than
+// duplicated because `ControlState.tsx`'s `assistEndCopy` needs the exact
+// same wording for the `ttl` ending reason (§3.4) — "no component invents
+// its own definition" applies to this phrase too, not only to the
+// activity/authorization split.
+export { humanTtl }

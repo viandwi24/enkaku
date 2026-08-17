@@ -94,12 +94,32 @@ export const AgentStateSchema = z.enum(['absent', 'provisioning', 'ready', 'outd
 export type AgentState = z.infer<typeof AgentStateSchema>
 
 /**
- * The provisioner's full persisted record for one device (`devices.agent`,
- * plan 90 §4.3) — Zod-validated on every read (CLAUDE.md: never trust a JSON
- * DB column). `reason` is always verbatim, never summarised (§3.8) —
- * `AgentProvisioner` callers show it directly to an operator. `attempts`/
- * `nextAttemptAt` mirror the bounded-retry shape network route recovery
- * already uses (plan 90 §3.7).
+ * The provisioner's COMBINED, in-memory view of one device's guest agent
+ * (plan 90 §4.3; split into two persisted sources by plan 106 §5 step
+ * 106.5 — see `GuestAgentIdentitySchema` below and
+ * `packages/core/src/device/preparation/guest-agent-status.ts`, the module
+ * that recombines them). `AgentProvisioner.ensure()`/`.status()` still
+ * return exactly this shape — no external caller changed — but it is no
+ * longer what is literally stored in any single DB column:
+ *
+ * - `state`/`reason`/`checkedAt`/`attempts`/`nextAttemptAt` are now
+ *   authoritative in `devices.preparation['guest-agent']`
+ *   (`PreparationComponentStatusSchema`, `device-preparation.ts`) — the
+ *   SAME state machine every other on-device component uses.
+ * - `appVersion`/`versionCode`/`androidSdkInt`/`capabilities` are identity
+ *   facts a live `hello()` handshake happens to learn, with no equivalent
+ *   in the generic per-component shape (every OTHER registered component
+ *   is a plain installed/verified artifact with no protocol handshake of
+ *   its own) — they still live in `devices.agent`, narrowed to exactly
+ *   these four fields (`GuestAgentIdentitySchema` below). `devices.agent`
+ *   no longer carries a `state` of its own to disagree with the
+ *   preparation record's — it simply does not claim to know one.
+ *
+ * `reason` is always verbatim, never summarised (§3.8) — `AgentProvisioner`
+ * callers show it directly to an operator. `attempts`/`nextAttemptAt`
+ * mirror the bounded-retry shape network route recovery already uses (plan
+ * 90 §3.7; `packages/core/src/device/bounded-retry.ts` since plan 106 §5
+ * step 106.2).
  */
 export const AgentStatusSchema = z.object({
   state: AgentStateSchema,
@@ -126,6 +146,39 @@ export const DEFAULT_AGENT_STATUS: AgentStatus = {
   checkedAt: null,
   attempts: 0,
   nextAttemptAt: null,
+}
+
+/**
+ * `devices.agent`'s ACTUAL persisted shape as of plan 106 §5 step 106.5 —
+ * the identity facts a live guest-agent `hello()` handshake learns, with no
+ * equivalent field in the generic `PreparationComponentStatusSchema` every
+ * OTHER on-device component uses. Deliberately narrower than the old
+ * `AgentStatusSchema` this column used to hold in full: it carries no
+ * `state`, `reason`, `attempts`, or `nextAttemptAt` any more, because
+ * `devices.preparation['guest-agent']` is now the ONLY place those facts
+ * are written — this column no longer has an opinion to disagree with it.
+ * Parsing an OLD, pre-106.5 row (which still has the full legacy
+ * `AgentStatusSchema` shape here, `state` included) against this narrower
+ * schema is safe and intended: Zod's default object parsing strips unknown
+ * keys rather than rejecting them, so exactly the four fields below survive
+ * unchanged and the rest is quietly ignored — `guest-agent-status.ts`'s own
+ * legacy fallback is what recovers `state`/`reason`/etc. from that same old
+ * row for `devices.preparation`, once, the first time a real pass writes it.
+ */
+export const GuestAgentIdentitySchema = z.object({
+  appVersion: z.string().nullable(),
+  versionCode: z.number().int().nullable(),
+  androidSdkInt: z.number().int().nullable(),
+  capabilities: z.array(GuestAgentCapabilitySchema),
+})
+export type GuestAgentIdentity = z.infer<typeof GuestAgentIdentitySchema>
+
+/** No guest-agent pass has ever populated identity facts for this device — the default for a brand-new row, and the safe fallback for a stored value that fails validation. */
+export const DEFAULT_GUEST_AGENT_IDENTITY: GuestAgentIdentity = {
+  appVersion: null,
+  versionCode: null,
+  androidSdkInt: null,
+  capabilities: [],
 }
 
 export const DeviceInfoSchema = z.object({

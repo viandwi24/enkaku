@@ -45,9 +45,28 @@ export function PairControl({
 
   const body = (
     <div className="flex items-center gap-2">
-      <NumberField id={bare ? undefined : id} ariaLabel={`${label} minimum`} value={lo} min={item.min} max={item.max} step={item.step} error={Boolean(error)} onChange={setLo} />
+      <NumberField
+        id={bare ? undefined : id}
+        ariaLabel={`${label} minimum`}
+        value={lo}
+        min={item.min}
+        max={item.max}
+        step={item.step}
+        increment={item.increment}
+        error={Boolean(error)}
+        onChange={setLo}
+      />
       <span className="text-[11px] text-fg-subtle">~</span>
-      <NumberField ariaLabel={`${label} maximum`} value={hi} min={item.min} max={item.max} step={item.step} error={Boolean(error)} onChange={setHi} />
+      <NumberField
+        ariaLabel={`${label} maximum`}
+        value={hi}
+        min={item.min}
+        max={item.max}
+        step={item.step}
+        increment={item.increment}
+        error={Boolean(error)}
+        onChange={setHi}
+      />
     </div>
   )
   if (bare) return body

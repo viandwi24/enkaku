@@ -67,3 +67,34 @@ describe('BulkForgetDialog', () => {
     await waitFor(() => expect(getByText('forgotten')).toBeTruthy())
   })
 })
+
+/**
+ * Plan 104 (M69) §3.4 — `devices` is a pre-filled default, not a lock: the
+ * picker lets the operator narrow or widen the set before confirming, and
+ * Forget keeps its fleet-wide typed confirmation (irreversible).
+ */
+describe('BulkForgetDialog — the target is a default, not a lock (plan 104 §3.4)', () => {
+  test('a two-device pre-fill can be narrowed to a single device via the picker', () => {
+    const devices = [makeDevice('d1', 'Phone A'), makeDevice('d2', 'Phone B')]
+    const { getByText, getByRole } = renderWithApi(
+      <BulkForgetDialog devices={devices} open={true} onOpenChange={() => {}} onDone={() => {}} />,
+      {},
+    )
+    expect(getByText('Forget 2 devices?')).toBeTruthy()
+    fireEvent.mouseDown(getByRole('tab', { name: 'Single device' }))
+    fireEvent.click(getByText('Phone A'))
+    expect(getByText('Forget 1 device?')).toBeTruthy()
+  })
+
+  test('picking every usable device in the fleet requires the typed confirmation before "Forget selected" is enabled', () => {
+    const devices = [makeDevice('d1', 'Phone A'), makeDevice('d2', 'Phone B')]
+    const { getByText, getByRole, getByLabelText } = renderWithApi(
+      <BulkForgetDialog devices={devices} allDevices={devices} open={true} onOpenChange={() => {}} onDone={() => {}} />,
+      {},
+    )
+    expect(getByText('This targets every usable device on the farm')).toBeTruthy()
+    expect((getByRole('button', { name: 'Forget selected' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(getByLabelText('Type the device count to confirm'), { target: { value: '2' } })
+    expect((getByRole('button', { name: 'Forget selected' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+})

@@ -8,6 +8,7 @@ import { PairControl } from './PairControl'
 import { TableControl } from './TableControl'
 import { TextControl } from './TextControl'
 import { ToggleControl } from './ToggleControl'
+import { WorkspacePathControl } from './WorkspacePathControl'
 import type { BaseControlProps } from './types'
 
 /**
@@ -44,6 +45,8 @@ export function renderControl(plan: FieldPlan, props: BaseControlProps) {
       return <PairControl {...props} plan={plan} />
     case 'text':
       return <TextControl {...props} plan={plan} />
+    case 'workspacePath':
+      return <WorkspacePathControl {...props} plan={plan} />
     case 'list':
       return <ListControl {...props} plan={plan} />
     case 'table':

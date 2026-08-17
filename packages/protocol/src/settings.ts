@@ -498,16 +498,30 @@ export const DeviceSettingsSchema = z
      * blob (F21), so an emptied field here genuinely clears the override —
      * unlike the farm-level version of this problem (F22), which is why
      * `FarmSettings.video` below has no optional field of its own.
+     *
+     * `controlPreset`/`wallPreset` below are the exception to the paragraph
+     * above (docs/settings-audit.md #5): `resolveVideoProfile` indexes
+     * `CONTROL_PRESETS`/`WALL_PRESETS` off the FARM argument only
+     * (`farm.controlPreset`/`farm.wallPreset`) — `device?.controlPreset`/
+     * `device?.wallPreset` are read nowhere in that file or anywhere else.
+     * Only the six numeric siblings (`controlMaxSize`/`controlMaxFps`/
+     * `controlBitRate`/`wallMaxSize`/`wallMaxFps`/`wallBitRate`) genuinely
+     * merge as this comment describes. Kept rather than deleted, since Studio
+     * already renders and saves them like any other field and deleting would
+     * be a schema/DB-shape change for no behavioural gain over just telling
+     * the truth here — but setting either preset here does nothing today.
      */
     video: z
       .object({
         controlPreset: ControlPresetSchema.optional()
-          .describe('Overrides the farm setting for this device only. Leave empty to follow the farm.')
-          .meta({ title: 'Device page picture' }),
+          .describe('Not yet read anywhere — resolveVideoProfile only consults the farm-wide preset. Setting this has no effect. Use the numeric fields below to override picture quality for this device.')
+          .meta({ title: 'Device page picture (not yet applied)' }),
         controlMaxSize: z.number().int().min(480).max(2560).optional().meta({ title: 'Device page size (px)' }),
         controlMaxFps: z.number().int().min(5).max(60).optional().meta({ title: 'Device page frame rate' }),
         controlBitRate: z.number().int().min(500_000).max(20_000_000).optional().meta({ title: 'Device page bitrate' }),
-        wallPreset: WallPresetSchema.optional().meta({ title: 'Wall tile picture' }),
+        wallPreset: WallPresetSchema.optional()
+          .describe('Not yet read anywhere — resolveVideoProfile only consults the farm-wide preset. Setting this has no effect. Use the numeric fields below to override picture quality for this device.')
+          .meta({ title: 'Wall tile picture (not yet applied)' }),
         wallMaxSize: z.number().int().min(160).max(1080).optional().meta({ title: 'Wall tile size (px)' }),
         wallMaxFps: z.number().int().min(1).max(30).optional().meta({ title: 'Wall tile frame rate' }),
         wallBitRate: z.number().int().min(100_000).max(8_000_000).optional().meta({ title: 'Wall tile bitrate' }),
@@ -728,12 +742,17 @@ export const JobSettingsSchema = z
      * neither and runs scripts that declare nothing sees no change at all.
      * `resolveRuntime` (`../runtime-envelope.ts`) is the one place these are
      * combined with a script's own `runtime.maxRssBytes` and a per-job
-     * override; nothing here enforces anything by itself — plan 98's own
-     * step 98.3 (`Measure before limiting`) is what wires a breach to a
-     * kill, and it has not landed yet. `enforcement: 'sampled'` on the two
-     * byte fields is not decoration: a memory breach is caught on the next
-     * sample interval, not prevented (§3.5), and Studio renders that badge
-     * next to the input once step 98.8 lands.
+     * override. LIVE, fully enforced end to end (plan 98, step 98.3
+     * "Measure before limiting" — status: implemented): the child
+     * self-reports RSS on every sample (`packages/session/src/runner/
+     * child-entry.ts`'s `rss` message), and `packages/session/src/runner/
+     * job-runner.ts`'s `checkMemoryBreach` compares it against the resolved
+     * `maxRssBytes` and calls `doAbort('memory', …)` once a sample reaches
+     * the limit under `enforce: 'kill'` (a `warn` fires first, at 80% of the
+     * limit, so a kill is never unexplained). `enforcement: 'sampled'` on the
+     * two byte fields is not decoration: a memory breach is caught on the
+     * NEXT sample interval, not prevented (§3.5) — the badge next to the
+     * input in Studio reflects that honestly, not "unenforced."
      */
     memory: z
       .object({
@@ -911,15 +930,45 @@ export function addressCount(cidr: string): number {
   return 2 ** (32 - prefix)
 }
 
+/**
+ * The per-device schema, minus `identity` — see the note on
+ * `FarmSettingsSchema.defaults` below for why. Named so `defaultsForNewDevice`
+ * (`packages/core/src/registry/admission.ts` and `device-registry.ts`) has a
+ * real type to declare its `deviceDefaults` accessor against, instead of the
+ * wider `DeviceSettings`.
+ */
+const FarmDeviceDefaultsSchema = DeviceSettingsSchema.omit({ identity: true })
+
 /** Farm-wide settings (a single row). */
 export const FarmSettingsSchema = z.object({
-  // Literally the per-device schema — see the note on DeviceSettingsSchema.
-  // A thunk: every inner field already carries a default, so parsing an empty
-  // object yields the canonical defaults without duplicating them here.
-  defaults: DeviceSettingsSchema.default(() => DeviceSettingsSchema.parse({})).meta({
+  /**
+   * The per-device schema, reused — see the note on `DeviceSettingsSchema` —
+   * MINUS `identity` (docs/settings-audit.md #1, the highest-severity
+   * finding; `docs/plans/96-m61-hotfixes.md`). A farm-wide default
+   * timezone/locale/GPS is not merely dead as an ONGOING setting (nothing
+   * ever reads `defaults.identity` for an already-enrolled device — device
+   * identity is per-device only, plan 58) — it is actively harmful as a
+   * ONE-SHOT enrollment stamp: `defaultsForNewDevice` used to spread the
+   * WHOLE `DeviceSettings` object onto every newly admitted device's row, so
+   * a farm-wide GPS set under Settings → Defaults placed every device
+   * admitted while it was set at byte-identical coordinates — a STRONGER
+   * fingerprinting signal than no identity spoofing at all, silently, with
+   * no audit entry and nothing in the admission response calling it out.
+   * `DeviceSettingsSchema.identity` itself, and every per-device identity
+   * route (`packages/core/src/api/device-identity.ts`, plan 58), are
+   * UNCHANGED by this — this only makes a FARM-WIDE default impossible to
+   * set. A thunk: every remaining inner field already carries a default, so
+   * parsing an empty object yields the canonical defaults without
+   * duplicating them here. Zod's own default "strip" mode (no `.strict()`
+   * anywhere in this file) means a stored row from before this change, whose
+   * `defaults` still carries an `identity` key, parses cleanly — that key is
+   * simply dropped, never an `E_BAD_CONFIG` boot failure (settings.test.ts
+   * has the explicit legacy-row case).
+   */
+  defaults: FarmDeviceDefaultsSchema.default(() => FarmDeviceDefaultsSchema.parse({})).meta({
     title: 'Defaults for new devices',
     description:
-      'Copied onto a device the first time it is enrolled. Devices already registered keep their own settings.',
+      'Copied onto a device the first time it is enrolled. Devices already registered keep their own settings. Device identity (timezone/locale/GPS) is deliberately excluded — it is per-device only (Settings → Devices → Identity). A farm-wide default here would stamp every device admitted while it was set with byte-identical coordinates, a stronger fingerprinting signal than no spoofing at all.',
   }),
   /**
    * Plan 89 §3.7, §4.3 — the only genuinely farm-wide labelling knob;
@@ -1041,6 +1090,15 @@ export const FarmSettingsSchema = z.object({
    * adb concurrency and per-command budgets (plan 23 §4.1). `maxConcurrent: 0`
    * means "scale automatically with fleet size" (§3.2 of the plan) — a
    * non-zero value pins the global semaphore and the autoscaler leaves it alone.
+   *
+   * `execTimeoutMs` and `maxQueueDepth` used to live here and were removed
+   * (docs/settings-audit.md #6, `docs/plans/96-m61-hotfixes.md`): every real
+   * adb exec deadline comes from `packages/adb/src/timeouts.ts`'s hardcoded
+   * `ADB_TIMEOUTS` table via `resolveExecTimeout()`, never this setting, and
+   * `AdbClient` is constructed at `daemon.ts` with no `maxQueueDepth` option
+   * at all, so it always fell back to the compiled-in `DEFAULT_MAX_QUEUE_DEPTH`.
+   * Neither field had a reader anywhere in the workspace. `shell.execTimeoutMs`
+   * is a different, correctly-wired field with the same name — unaffected.
    */
   adb: z
     .preprocess(
@@ -1054,22 +1112,6 @@ export const FarmSettingsSchema = z.object({
           .default(0)
           .describe('Total adb commands in flight across the farm. 0 = scale automatically with device count.')
           .meta(ui({ title: 'Max concurrent adb commands', kind: 'count' })),
-        execTimeoutMs: z
-          .number()
-          .int()
-          .min(1_000)
-          .max(120_000)
-          .default(15_000)
-          .describe('Default execution budget for a single adb command.')
-          .meta(ui({ title: 'adb command timeout (ms)', kind: 'duration', unit: 'ms' })),
-        maxQueueDepth: z
-          .number()
-          .int()
-          .min(4)
-          .max(256)
-          .default(32)
-          .describe('Pending adb commands allowed per device before new ones are rejected.')
-          .meta(ui({ title: 'Max queue depth per device', kind: 'count' })),
         /**
          * The streaming lane's own budget (plan 24 §3.2, §4.2) — completely
          * separate from `maxConcurrent` above: streams never draw from the
@@ -1123,7 +1165,7 @@ export const FarmSettingsSchema = z.object({
           .meta(ui({ title: 'Max concurrent installs', kind: 'count' })),
       }),
     )
-    .default({ maxConcurrent: 0, execTimeoutMs: 15_000, maxQueueDepth: 32, maxStreamsPerDevice: 4, maxStreams: 0, maxHostConcurrent: 4, maxInstallConcurrent: 2 })
+    .default({ maxConcurrent: 0, maxStreamsPerDevice: 4, maxStreams: 0, maxHostConcurrent: 4, maxInstallConcurrent: 2 })
     .meta({
       title: 'adb concurrency',
       description: 'How many adb commands the farm runs at once, and the budgets for a single command.',
@@ -1797,18 +1839,25 @@ export const FarmSettingsSchema = z.object({
    * coarse backstop; a node's own timeout (still `job.maxTimeoutMs`-clamped,
    * unchanged) is the fine-grained one that can say what is actually stuck.
    *
-   * Two consumers, both read fresh, never captured (matching every other
-   * farm-wide knob in this file): the workflow executor's own runtime clock
-   * (`packages/core/src/jobs/executors/workflow.ts`, `E_WORKFLOW_BUDGET_EXCEEDED`
-   * — still wired to the `DEFAULT_WORKFLOW_MAX_TOTAL_MS` constant that file
-   * exports, matching this field's own default exactly, until whoever owns
-   * `daemon.ts` swaps its `settings: () => ({ maxTotalMs: ... })` closure for
-   * `() => settingsStore.get().workflow`, a one-line follow-up recorded in
-   * that file's own doc comment) and `checkWorkflow`'s publish-time
+   * Two consumers, both LIVE, both read fresh, never captured (matching every
+   * other farm-wide knob in this file — docs/settings-audit.md #3,
+   * `docs/plans/96-m61-hotfixes.md`): the workflow executor's own runtime
+   * clock (`packages/core/src/jobs/executors/workflow.ts`,
+   * `E_WORKFLOW_BUDGET_EXCEEDED` — `daemon.ts` wires
+   * `settings: () => settingsStore.get().workflow`, guarded by
+   * `workflow-settings-wiring.test.ts`) and `checkWorkflow`'s publish-time
    * arithmetic (`packages/protocol/src/workflow-check.ts`,
-   * `E_WORKFLOW_BUDGET_IMPOSSIBLE`, plan 99 §4.3 check 7) — the publish route
-   * passes this value in explicitly, since `checkWorkflow` itself never
-   * reads a settings store (§4.3's own "stays pure" rule).
+   * `E_WORKFLOW_BUDGET_IMPOSSIBLE`, plan 99 §4.3 check 7) — `daemon.ts`'s
+   * `createWorkflowRoutes({...})` call also passes
+   * `settings: () => settingsStore.get().workflow`, guarded by
+   * `daemon-wiring.test.ts`'s own workflow-routes describe block;
+   * `checkWorkflow` itself never reads a settings store (§4.3's own "stays
+   * pure" rule), so the route resolves the value and hands it in. Until the
+   * routes half was wired, this comment (and `workflow.ts`'s own module doc
+   * comment) described the gap BACKWARDS — claiming the executor was the
+   * half still hardcoded and the publish check was already live, when the
+   * opposite was true. Both are correct now; if a future edit regresses
+   * either wiring, the two guard tests above fail by name.
    */
   workflow: z
     .object({
@@ -2453,6 +2502,15 @@ export const FarmSettingsSchema = z.object({
     }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>
+/**
+ * `DeviceSettings` minus `identity` — what `FarmSettings.defaults` actually
+ * is (docs/settings-audit.md #1). `defaultsForNewDevice`
+ * (`packages/core/src/registry/admission.ts` and `device-registry.ts`)
+ * declares its `deviceDefaults` accessor against this type, then fills a new
+ * device's `identity` from `DeviceIdentitySchema`'s own empty default —
+ * never from the farm-wide block, which cannot carry one anymore.
+ */
+export type FarmDeviceDefaults = FarmSettings['defaults']
 export type SessionSettings = FarmSettings['session']
 /** Plan 92 §3.5, §4.1 — read by `packages/session/src/video-profile.ts`'s `resolveVideoProfile`. */
 export type VideoSettings = FarmSettings['video']

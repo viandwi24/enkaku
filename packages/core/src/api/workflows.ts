@@ -115,22 +115,18 @@ function errorFindingsMessage(findings: readonly WorkflowFinding[]): string {
 }
 
 /**
- * `deps.settings` is OPTIONAL for the same reason `jobs/executors/workflow.ts`'s
- * own doc comment gives for `daemon.ts` not being wired yet: it is outside this step's file
- * list (a concurrent worker holds it), so `daemon.ts`'s existing
- * `createWorkflowRoutes({ db, registry: scriptRegistry, audit })` call site
- * cannot be updated here to pass one. When it is absent, `budgetFor` falls
- * back to `workflow.maxTotalMs`'s own SCHEMA default
- * (`defaultFarmSettings()`, `packages/protocol/src/settings.ts`) rather than
- * skipping check 7 outright — an operator who has never touched the setting
- * sees the exact same number either way, and check 7 stays USEFUL today
- * instead of silently inert until `daemon.ts`'s one-line follow-up lands
- * (see `jobs/executors/workflow.ts`'s own doc comment on that same gap). The
- * one honest cost: until that follow-up lands, a farm that HAS customised
- * `workflow.maxTotalMs` from Studio sees the publish-time check honour their
- * number (this route reads `deps.settings` once wired) while THIS fallback
- * only ever sees the schema default when `deps.settings` is never passed at
- * all — recorded here so the gap is exactly where a reader would look for it.
+ * `deps.settings` is OPTIONAL, but `daemon.ts`'s real `createWorkflowRoutes({...})`
+ * call now always passes `settings: () => settingsStore.get().workflow`
+ * (docs/settings-audit.md #3, `docs/plans/96-m61-hotfixes.md` — this used to
+ * be the one gap in an otherwise-live setting: the workflow executor's
+ * runtime clock read the live value while this route silently fell back to
+ * the hardcoded schema default, so the two could disagree). The fallback
+ * below stays for every OTHER caller — a test building routes directly, or
+ * any future host that constructs this router without wiring a settings
+ * accessor — so `budgetFor` still resolves to `workflow.maxTotalMs`'s own
+ * SCHEMA default (`defaultFarmSettings()`, `packages/protocol/src/settings.ts`)
+ * rather than skipping check 7 outright in that case, never a thrown error
+ * for an optional dependency.
  */
 function budgetFor(deps: { settings?: () => WorkflowBudget }): WorkflowBudget {
   return deps.settings ? deps.settings() : { maxTotalMs: defaultFarmSettings().workflow.maxTotalMs }

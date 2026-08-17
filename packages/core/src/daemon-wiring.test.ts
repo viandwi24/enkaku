@@ -6,9 +6,18 @@ import type { AdbClient } from '@enkaku/adb'
 import type { DisplaySource, InputSink, RecordingSettings, ServerMessage, Transport } from '@enkaku/protocol'
 import { createInputArbiter, createSessionManager, type DeviceSession, type DeviceSnapshot, type DeviceSnapshotSource, type Logger, type SessionManager } from '@enkaku/session'
 import { createBlobStore } from './agent/blob/store'
+import { createBatchDispatchDeps, type BatchDispatchHostDeps } from './api/batches'
+import { createPluginRoutes } from './api/plugins'
+import type { AuditLogger } from './auth/audit'
 import { openDb, runMigrations, type Db } from './db'
 import { devices } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
+import { ExecutorRegistry } from './jobs/executor'
+import type { KvStore } from './kv/store'
+import type { PluginRuntime } from './plugins/runtime'
+import type { ScriptRegistry } from './scripts/registry'
+import type { JobService } from './services/job-service'
+import type { WorkspaceStore } from './workspace/store'
 import { createJobStore } from './queue/job-store'
 import { createLeaseManager } from './lease/lease-manager'
 import { createLogger } from './util/logger'
@@ -137,6 +146,75 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     const call = extractCall(daemonSource, 'const deviceLifecycle = createDeviceLifecycle({')
     expect(call).toContain('clearLabel:')
     expect(call).toContain('labellingRef?.clear(deviceId')
+  })
+
+  test('device preparation: the runner is built and swept at boot, beside agentProvisioner (plan 106 §3.5, §96.25 fix 1)', () => {
+    expect(daemonSource).toContain('createPreparationRunner(')
+    expect(daemonSource).toContain('preparationRunnerRef = preparationRunner')
+    // The boot sweep call itself, and that it happens strictly AFTER the
+    // adb-ready log line — §96.25's own boot-ordering rule, carried over
+    // identically for this second runner. Anchored on the actual log call
+    // and the sweep's own unique catch message, not the bare string
+    // `adbState = 'ready'` — that also appears verbatim inside two EARLIER
+    // comments explaining why this ordering matters, which would otherwise
+    // make this assertion pass for the wrong reason.
+    const readyAt = daemonSource.indexOf('adb subsystem ready (devices registered:')
+    const sweepAt = daemonSource.indexOf('preparation-runner boot sweep failed')
+    expect(readyAt).toBeGreaterThan(-1)
+    expect(sweepAt).toBeGreaterThan(readyAt)
+  })
+
+  test('device preparation: the runner is wired into onDeviceReady — the SAME admission/reconnect hook agentProvisionerRef/labellingRef already use (plan 106 §3.5)', () => {
+    const onReadyStart = daemonSource.indexOf('onDeviceReady: (deviceId) => {')
+    expect(onReadyStart).toBeGreaterThan(-1)
+    const onReadyBlock = daemonSource.slice(onReadyStart, onReadyStart + 2500)
+    expect(onReadyBlock).toContain('preparationRunnerRef?.ensure(deviceId)')
+  })
+
+  test('device preparation: createDevicePreparationRoutes(...) is wired to the live runner and mounted into createApp (plan 106 §4)', () => {
+    expect(daemonSource).toContain('devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes')
+  })
+
+  test('device preparation: createDevicePreparationRoutes(...) is also wired to the live agentProvisioner — without it, guest agent has no working Retry button on the unified popup (plan 106 §5 step 106.5)', () => {
+    const call = extractCall(daemonSource, 'devicePreparationRoutes: createDevicePreparationRoutes({')
+    expect(call).toContain('agentProvisioner')
+  })
+
+  test('device preparation: ui-server installs are routed through the transfer machinery, not left as a declared-but-unreachable call site (plan 106 §5 step 106.8)', () => {
+    // `preparationInstallApk` itself calls `runTransfer` with the SAME
+    // `transferService`/`transferBroadcast`/`readinessHoldForTransfer`
+    // instances the script API and `internal:install` already share — no
+    // second transfer path — and marks the result `origin: 'preparation'`
+    // (plan 107 §3.5) so the tray can label it distinctly from an
+    // operator-initiated install.
+    const call = extractCall(
+      daemonSource,
+      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {",
+    )
+    expect(call).toContain('transfer: transferService,')
+    expect(call).toContain('broadcast: transferBroadcast,')
+    expect(call).toContain("kind: 'install',")
+    expect(call).toContain("origin: 'preparation',")
+    expect(call).toContain('holdFor: readinessHoldForTransfer,')
+    expect(call).toContain('transferService.installFromLocalApk(deviceId, localPath,')
+
+    // And that this function is actually handed to the registry, not just
+    // declared and left uncalled — this repo's own repeated defect class.
+    const registryCall = extractCall(daemonSource, 'registry: createPreparationRegistry({')
+    expect(registryCall).toContain('installApk: preparationInstallApk')
+  })
+
+  test('device preparation: ui-server installs are bounded by adb.maxInstallConcurrent, the SAME setting hostAdb\'s own install lane already reads — without it, the move off hostAdb (plan 106 §5 step 106.8) would silently drop the pre-existing "no install storm" guarantee on an unattended boot-sweep code path (H2 re-examined)', () => {
+    expect(daemonSource).toContain("import { AdbClient, createAdbdShim, Semaphore } from '@enkaku/adb'")
+    expect(daemonSource).toContain('const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))')
+    const call = extractCall(
+      daemonSource,
+      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {",
+    )
+    expect(call).toContain('settingsStore.get().adb.maxInstallConcurrent')
+    expect(call).toContain('preparationInstallSem.resize(wanted)')
+    expect(call).toContain('preparationInstallSem.acquire()')
+    expect(call).toContain('.finally(release)')
   })
 
   test('the `video:` adb-stats accessor resolves WallTransport and passes a transport-aware bandwidth bound — without this, a loopback/LAN farm stays bandwidth-bound at the pre-plan-100 20 Mbit/s constant forever (plan 100 §3.1, §4.1, step 100.3)', () => {
@@ -390,6 +468,31 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       expect(trackerAt).toBeGreaterThan(-1)
       expect(runnerAt).toBeGreaterThan(-1)
       expect(trackerAt).toBeLessThan(runnerAt)
+    })
+  })
+
+  describe('workflow routes (plan 99 §3.11, §4.5, §4.9, §5 step 99.6; docs/settings-audit.md #3, docs/plans/96-m61-hotfixes.md): createWorkflowRoutes(...) reads the LIVE farm setting, matching the workflow executor above', () => {
+    /**
+     * The matching guard to `jobs/executors/workflow-settings-wiring.test.ts`'s
+     * own describe block, for the OTHER of workflow.maxTotalMs's two
+     * consumers. Until this landed, `checkWorkflow`'s publish-time
+     * `E_WORKFLOW_BUDGET_IMPOSSIBLE` check (`packages/protocol/src/workflow-check.ts`)
+     * always fell back to the hardcoded schema default via `api/workflows.ts`'s
+     * `budgetFor` — `daemon.ts`'s `createWorkflowRoutes({ db, registry:
+     * scriptRegistry, audit })` call never passed a `settings` accessor at
+     * all, even though `HttpDeps`/`createWorkflowRoutes`'s own `deps.settings?`
+     * seam already existed for exactly this. The runtime executor's clock
+     * (guarded above by `createWorkflowExecutor(...)`'s own describe block)
+     * was fixed first and got its own regression test; this route was the
+     * one nothing guarded — exactly how it drifted, and exactly the shape
+     * `settings.ts`'s and `workflow.ts`'s own doc comments used to describe
+     * BACKWARDS before this fix (claiming the executor was still hardcoded
+     * and the route was already live).
+     */
+    test('createWorkflowRoutes(...) passes a live `settings` accessor reading settingsStore.get().workflow — without it, the publish-time budget check silently disagrees with the runtime executor\'s live clock', () => {
+      const call = extractCall(daemonSource, 'workflowRoutes: createWorkflowRoutes({')
+      expect(call).toContain('settings:')
+      expect(call).toContain('settingsStore.get().workflow')
     })
   })
 
@@ -703,6 +806,31 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       expect(daemonSource).toContain('let broadcastTransferEvent: ((deviceId: string, msg: ServerMessage) => void) | null = null')
       const attachBody = extractCall(daemonSource, 'const attachWsRouter = (localSessions: SessionManager | null) => {')
       expect(attachBody).toContain('broadcastTransferEvent = handler.broadcastTransfer')
+    })
+  })
+
+  describe('the transfer registry and GET /api/transfers (plan 107 §3.1, §3.4, §4, step 107.2)', () => {
+    test('transferRegistry is constructed unconditionally, beside transferService/transferBroadcast — not just imported and left uncalled', () => {
+      expect(daemonSource).toContain("import { createTransferRegistry } from './device/transfer-registry'")
+      expect(daemonSource).toContain('const transferRegistry = createTransferRegistry()')
+    })
+
+    test('transferBroadcast.progress AND .done both feed transferRegistry — the ONE seam that reaches every one of runTransfer\'s nine call sites without threading a new dependency through any of them (see transfer-registry.ts\'s own doc comment)', () => {
+      const call = extractCall(daemonSource, 'const transferBroadcast: TransferBroadcast = {')
+      const progressStart = call.indexOf('progress:')
+      const doneStart = call.indexOf('done:')
+      expect(progressStart).toBeGreaterThan(-1)
+      expect(doneStart).toBeGreaterThan(progressStart)
+      const progressBlock = call.slice(progressStart, doneStart)
+      const doneBlock = call.slice(doneStart)
+      expect(progressBlock).toContain('transferRegistry.progress(deviceId, transferId, kind, sent, total, origin)')
+      expect(doneBlock).toContain('transferRegistry.done(deviceId, transferId, kind, ok, error, origin)')
+    })
+
+    test("createApp({...}) passes a real transferRegistryRoutes built from the SAME transferRegistry — without it, GET /api/transfers 404s through the catch-all even though the registry itself is being kept up to date", () => {
+      expect(daemonSource).toContain("import { createTransferRegistryRoutes } from './api/transfers'")
+      const call = extractCall(daemonSource, 'const app = createApp({')
+      expect(call).toContain('transferRegistryRoutes: createTransferRegistryRoutes({ registry: transferRegistry })')
     })
   })
 
@@ -1041,6 +1169,158 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     test('createBatchRoutes(...) passes a live `archiveSettings` accessor — without it, `transfer.maxArchiveBytes` can be changed in Settings and the archive route never notices', () => {
       const call = extractCall(daemonSource, 'batchRoutes: createBatchRoutes({')
       expect(call).toContain('archiveSettings: () => settingsStore.get().transfer')
+    })
+  })
+
+  /**
+   * Plan 108 §4.5, §5 steps 108.4/108.5 — `PluginRoutesDeps.data` and
+   * `PluginRoutesDeps.actions` are OPTIONAL by construction: when either is
+   * absent its routes are not registered at all (`api/plugins.ts`'s own `if
+   * (deps.data)` / `if (deps.actions)` blocks), rather than registered and
+   * failing at request time. Both steps were written while `daemon.ts` was
+   * held by a concurrent builder, so both shipped fully implemented and
+   * fully tested — and structurally unreachable in a real boot, the exact
+   * shape of defect this whole file exists to catch. These tests pin the
+   * closing wiring: the two bags on the real call, the shared batch-dispatch
+   * factory behind `actions.batch`, and the fact that the routes genuinely
+   * appear only when the bags are passed.
+   */
+  describe("the plugin data and action routes (plan 108 §4.5, steps 108.4/108.5): two dependency bags that were declared, implemented, tested — and never passed", () => {
+    test('createPluginRoutes(...) passes `data: { db, kv: kvStore }` — without it, all five /:name/data/* routes are absent from a real boot', () => {
+      const call = extractCall(daemonSource, 'pluginRoutes: createPluginRoutes({')
+      expect(call).toContain('data: { db, kv: kvStore }')
+    })
+
+    test('createPluginRoutes(...) passes an `actions` bag reaching the real script registry, kv store, jobService and batch factory — without it, POST /:name/action/:actionId is absent and every plugin screen button 404s', () => {
+      const call = extractCall(daemonSource, 'pluginRoutes: createPluginRoutes({')
+      const actionsAt = call.indexOf('actions: {')
+      expect(actionsAt).toBeGreaterThan(-1)
+      const actions = call.slice(actionsAt)
+      expect(actions).toContain('registry: scriptRegistry')
+      expect(actions).toContain('kv: kvStore')
+      expect(actions).toContain('jobService,')
+      expect(actions).toContain('batch: (actor) =>')
+      expect(actions).toContain('createBatchDispatchDeps(')
+      expect(actions).toContain('getDeviceOwner')
+      expect(daemonSource).toContain("import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'")
+    })
+
+    /**
+     * The point of the extraction: `actions.batch` must not be a second,
+     * hand-rolled `BatchDispatchDeps` literal. It calls the SAME exported
+     * factory `POST /api/batches` itself calls, over the SAME live
+     * accessors, so a batch dispatched from a plugin screen and one
+     * dispatched from the Batches page are provably gated identically.
+     */
+    test("the `batch` host bag is the SAME set of live accessors createBatchRoutes gets — two copies of that literal are how the two dispatch paths would come to disagree", () => {
+      const pluginCall = extractCall(daemonSource, 'pluginRoutes: createPluginRoutes({')
+      const batchCall = extractCall(daemonSource, 'batchRoutes: createBatchRoutes({')
+      for (const accessor of [
+        'registry: executors',
+        'findScript,',
+        'scriptRegistry,',
+        'farmJobSettings: () => settingsStore.get().job',
+        'pacer,',
+        'shellMode: () => settingsStore.get().shell.mode',
+        'transferEnabled: () => settingsStore.get().transfer.enabled',
+      ]) {
+        expect(batchCall).toContain(accessor)
+        expect(pluginCall).toContain(accessor)
+      }
+    })
+
+    /**
+     * The static pins above only prove `daemon.ts`'s TEXT calls the factory —
+     * this proves what the factory actually hands back, against a real `Db`
+     * and a real `ExecutorRegistry`: both gates present, both live, and both
+     * reading the ACTOR rather than being baked in at construction time
+     * (which is the whole reason `PluginActionDeps.batch` is a per-actor
+     * factory and not a fixed bag).
+     */
+    test('createBatchDispatchDeps(...) produces deps carrying a REAL role-aware validateScript and a REAL identity-aware assertDeviceAllowed', () => {
+      const opened = openDb(':memory:')
+      runMigrations(opened.db)
+      const db: Db = opened.db
+      db.insert(devices).values({ id: 'dev-owned', stableId: 'stable-owned', serial: 'serial-owned', label: 'another operator phone', status: 'idle', ownerId: 'user-other' }).run()
+      db.insert(devices).values({ id: 'dev-free', stableId: 'stable-free', serial: 'serial-free', label: 'unowned phone', status: 'idle' }).run()
+
+      const registry = new ExecutorRegistry()
+      registry.register('internal:install', { validateParams: (p) => p, run: async () => undefined, requires: { gate: 'files' } })
+
+      const host: BatchDispatchHostDeps = {
+        db,
+        scheduler: {} as BatchDispatchHostDeps['scheduler'],
+        audit: { record: () => {}, list: () => [] } as unknown as AuditLogger,
+        registry,
+        findScript: () => null,
+        shellMode: () => 'admin',
+        transferEnabled: () => true,
+      }
+
+      // The role half (plan 93 §3.12's `JobExecutor.requires` gate): under
+      // `shell.mode: admin`, an operator may not run a `files` script — the
+      // same refusal `POST /api/batches` gives them.
+      const operator = createBatchDispatchDeps(host, { id: 'user-1', role: 'operator' })
+      expect(() => operator.validateScript?.('internal:install', {})).toThrow('device.files')
+      const admin = createBatchDispatchDeps(host, { id: 'user-2', role: 'admin' })
+      expect(admin.validateScript?.('internal:install', {})).toEqual({})
+
+      // The identity half (`canUseDevice`, plan 34 §3.5): a device owned by
+      // someone else refuses the WHOLE batch before a row is written.
+      expect(() => operator.assertDeviceAllowed?.('dev-owned')).toThrow('belongs to another user')
+      expect(() => operator.assertDeviceAllowed?.('dev-free')).not.toThrow()
+      expect(() => admin.assertDeviceAllowed?.('dev-owned')).not.toThrow()
+
+      // No interactive caller at all (`PluginActionActor` is `null` for a
+      // non-interactive dispatch, the same convention the cron-fired path
+      // in `schedules/runner.ts` has): neither gate applies.
+      const cron = createBatchDispatchDeps(host, null)
+      expect(() => cron.assertDeviceAllowed?.('dev-owned')).not.toThrow()
+      expect(cron.validateScript?.('internal:install', {})).toEqual({})
+    })
+
+    /**
+     * And the consequence of the two bags, on the real router: the six
+     * routes are registered when they are passed and genuinely missing when
+     * they are not — so the static pins above are pinning something that
+     * matters, not a decorative key.
+     */
+    test('the five /:name/data/* routes and POST /:name/action/:actionId are registered by createPluginRoutes ONLY when `data`/`actions` are passed', () => {
+      // Construction-time stubs: `createPluginRoutes` only stores these on
+      // closures (the surface registry and the action executor are both
+      // lazy), and this test never sends a request — it inspects Hono's own
+      // route table. The real behaviour of each route is covered by
+      // `api/plugins-data.test.ts` and `plugins/action-executor.test.ts`.
+      const base = {
+        runtime: {} as unknown as PluginRuntime,
+        audit: { record: () => {}, list: () => [] } as unknown as AuditLogger,
+        workspace: {} as unknown as WorkspaceStore,
+      }
+      const bags = {
+        data: { db: {} as unknown as Db, kv: {} as unknown as KvStore },
+        actions: {
+          registry: {} as unknown as ScriptRegistry,
+          kv: {} as unknown as KvStore,
+          jobService: { enqueue: () => { throw new Error('not used') } } as unknown as Pick<JobService, 'enqueue'>,
+          batch: () => createBatchDispatchDeps({ db: {} as unknown as Db, scheduler: {} as BatchDispatchHostDeps['scheduler'], audit: base.audit, registry: new ExecutorRegistry(), findScript: () => null }, null),
+        },
+      }
+      const pathsOf = (app: ReturnType<typeof createPluginRoutes>): Set<string> => new Set(app.routes.map((r) => `${r.method} ${r.path}`))
+
+      const without = pathsOf(createPluginRoutes(base))
+      const with_ = pathsOf(createPluginRoutes({ ...base, ...bags }))
+
+      for (const route of [
+        'GET /:name/data',
+        'PUT /:name/data/entry',
+        'DELETE /:name/data/entry',
+        'GET /:name/data/count',
+        'GET /:name/data/scan',
+        'POST /:name/action/:actionId',
+      ]) {
+        expect(without.has(route)).toBe(false)
+        expect(with_.has(route)).toBe(true)
+      }
     })
   })
 })

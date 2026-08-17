@@ -180,6 +180,8 @@ describe('POST /api/batches rejects invalid params before any job or device is t
   function makeAppWithRealValidation(db: Db, role: 'admin' | 'operator' | null) {
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout-1.0.0',
         name: 'checkout',
         version: '1.0.0',
@@ -285,6 +287,8 @@ describe('POST /:id/rerun-failed reconciles params before re-enqueuing (plan 95 
     db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout-1.0.0',
         name: 'checkout',
         version: '1.0.0',
@@ -313,6 +317,8 @@ describe('POST /:id/rerun-failed reconciles params before re-enqueuing (plan 95 
     db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout-1.0.0',
         name: 'checkout',
         version: '1.0.0',
@@ -338,6 +344,8 @@ describe('POST /:id/rerun-failed reconciles params before re-enqueuing (plan 95 
     db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout-1.0.0',
         name: 'checkout',
         version: '1.0.0',
@@ -1100,5 +1108,102 @@ describe('GET /api/batches/:id/artifacts and .../artifacts.zip (plan 93 §3.13, 
     const eocdSig = view.getUint32(buf.length - 22, true)
     expect(eocdSig).toBe(0x06054b50)
     rmSync(dataDir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * `docs/plans/96-m61-hotfixes.md` §96.30 — the owner's own stuck operation-
+ * tray entry, reproduced end to end. `clusters/dispatch.ts`'s `createBatch`
+ * is the only writer of a `batches` row and always inserts it together with
+ * at least one job row, in the same transaction — so a batch can only ever
+ * read `counts.total === 0` because its job rows were deleted AFTER
+ * creation (`device/lifecycle.ts`'s `forget({ deleteHistory: true })` is the
+ * one path found; simulated here by deleting the row directly, which has
+ * the identical effect on `jobStore.listByBatch`). Before this fix, such a
+ * batch could never leave `stopping` — `statusOf` (`rowToBatchInfo`, read
+ * time) held it there forever because `computeBatchStatus`'s own
+ * `total === 0 → 'queued'` default is not in `TERMINAL_BATCH_STATUSES`, and
+ * `recomputeBatchStatus` (write time, called by `stopBatch` below) silently
+ * did nothing for a batch with zero job rows.
+ */
+describe('a batch whose jobs are all gone (device forgotten with history) resolves to a terminal status, not held forever (§96.30)', () => {
+  test('GET /:id heals an already-stuck `stopping` row on read, with no DB write and no migration', async () => {
+    const db = setUp()
+    // The row exactly as the owner's own farm has it: `stopping`, and by the
+    // time this reads it, zero job rows — `statusOf` must derive a terminal
+    // status straight from the row + counts, never touching the DB itself.
+    db.insert(batches).values({ id: 'b1', scriptId: 'internal:sleep', concurrency: 0, order: 'as-listed', status: 'stopping', createdAt: new Date() }).run()
+    const app = makeApp(db, null)
+
+    const res = await app.request('/b1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { batch: { status: string; counts: { total: number } } }
+    expect(body.batch.status).toBe('cancelled')
+    expect(body.batch.counts.total).toBe(0)
+
+    // Read-time only — the underlying row is untouched (proves this heals
+    // the owner's tray without a migration or a backfill script).
+    const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+    expect(row?.status).toBe('stopping')
+  })
+
+  test('GET / (the list the tray/batches page reads) heals the same row', async () => {
+    const db = setUp()
+    db.insert(batches).values({ id: 'b1', scriptId: 'internal:sleep', concurrency: 0, order: 'as-listed', status: 'stopping', createdAt: new Date() }).run()
+    const app = makeApp(db, null)
+
+    const res = await app.request('/')
+    const body = (await res.json()) as { items: { id: string; status: string }[] }
+    expect(body.items.find((i) => i.id === 'b1')?.status).toBe('cancelled')
+  })
+
+  test('POST /:id/stop on a batch whose only device was already forgotten reaches a terminal status instead of getting stuck at `stopping`', async () => {
+    const db = setUp()
+    db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle', ownerId: null }).run()
+    const jobStore = createJobStore(db)
+    const audit = createAuditLogger(db)
+    const { service } = fakeJobServiceFor(db)
+    const registry = new ExecutorRegistry()
+    registry.register('internal:sleep', { validateParams: (p) => p, run: async () => undefined })
+    const deps: BatchRoutesDeps = {
+      db,
+      jobStore,
+      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+      audit,
+      broadcastBatchStatus: () => {},
+      scriptNames: () => new Map(),
+      registry,
+      findScript: () => null,
+      jobService: service,
+    }
+    const app = withUser('operator', createBatchRoutes(deps))
+
+    const createRes = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }),
+    })
+    const created = (await createRes.json()) as { batch: { id: string } }
+
+    // `device/lifecycle.ts`'s `forget({ deleteHistory: true })` — deleting
+    // the member job row directly reproduces its effect on this batch
+    // without pulling the whole lifecycle module (and its route/lease
+    // wiring) into this test.
+    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, created.batch.id)).all()
+    for (const j of memberJobs) db.delete(jobs).where(eq(jobs.id, j.id)).run()
+
+    const stopRes = await app.request(`/${created.batch.id}/stop`, { method: 'POST' })
+    expect(stopRes.status).toBe(200)
+    const stopBody = (await stopRes.json()) as { cancelled: number; aborted: number; refused: number; refusedDeviceIds: string[] }
+    // Nothing to cancel or abort — honest about doing zero work, not a false count.
+    expect(stopBody).toEqual({ cancelled: 0, aborted: 0, refused: 0, refusedDeviceIds: [] })
+
+    const row = db.select().from(batches).where(eq(batches.id, created.batch.id)).get()
+    expect(row?.status).toBe('cancelled')
+    expect(row?.finishedAt).not.toBeNull()
+
+    const getRes = await app.request(`/${created.batch.id}`)
+    const getBody = (await getRes.json()) as { batch: { status: string } }
+    expect(getBody.batch.status).toBe('cancelled')
   })
 })

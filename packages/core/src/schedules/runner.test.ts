@@ -18,7 +18,7 @@ import { fireOnce, pickJitterMs, runStartupCatchUp, type ScheduleAgentDispatch, 
  */
 
 function seedScript(db: Db, name = 'test-script', version = '1.0.0') {
-  db.insert(scripts).values({ id: `${name}-${version}`, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
+  db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: `${name}-${version}`, name, version, bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
 }
 
 function setUp() {
@@ -525,7 +525,7 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
     expect(db.select().from(batches).all()).toHaveLength(0) // never ran the unreviewed dev build
   })
 
-  test('plan 82 §3.3 — with a registry wired, a schedule targeting a PUBLISHED plugin script resolves and dispatches, same as a standalone script (one of the 8 call sites, criterion 14)', async () => {
+  test('plan 82 §3.3 — with a registry wired, a schedule targeting a PUBLISHED plugin script resolves and dispatches through the one registry path (one of the 8 call sites, criterion 14)', async () => {
     const { createScriptRegistry } = await import('../scripts/registry')
     const { createDevSlotStore } = await import('../plugins/dev-slots')
     const db = setUp()
@@ -578,6 +578,8 @@ describe('fireOnce — a scheduled batch member carries the SAME runtime.maxConc
     for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'capped-1.0.0',
         name: 'capped',
         version: '1.0.0',
@@ -635,6 +637,8 @@ describe('fireOnce — reconciliation against the resolved schema (plan 95 §4.4
     // 1.1.0 adds a REQUIRED `region` with no default — the exact scenario the plan names.
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'test-script-1.1.0',
         name: 'test-script',
         version: '1.1.0',

@@ -1,9 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import type { Selector } from '@enkaku/protocol'
+import type { ActionSpec, PluginSurface, Selector } from '@enkaku/protocol'
+import { PluginSurfaceSchema, validatePluginSurface } from '@enkaku/protocol'
 import type { z } from 'zod'
-import plugin, { matches, scoreContent } from './index'
+import plugin, { autoScrollScript, matches, scoreContent } from './index'
 import { makeRng, pickWatchMs, pngSize } from './human'
 import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
+import { ACCOUNTS_KEY } from './accounts'
+import switchAccount from './switch-account'
+import searchFollow from './search-follow'
+import listAccounts from './list-accounts'
+import postVideo from './post-video'
 
 /**
  * Plan 97 §3.2, §5 step 97.8's own verifiable result — every member's
@@ -53,6 +59,11 @@ describe('plan 97 — declared result schemas accept what each script actually r
     expect(result.safeParse(sample).success).toBe(true)
   })
 
+  test('list-accounts — the shape `run()` actually constructs (plan 108 step 108.11)', () => {
+    const sample = { accounts: ['alice', 'bob'], count: 2, current: 'alice', currentEvidence: 'confirmed', readAt: 1_776_000_000 }
+    expect(resultSchemaOf('list-accounts').safeParse(sample).success).toBe(true)
+  })
+
   test('search-follow — both branches `run()` can return (already-following, and freshly followed)', () => {
     const alreadyFollowing = {
       query: 'trading',
@@ -71,6 +82,148 @@ describe('plan 97 — declared result schemas accept what each script actually r
     const result = resultSchemaOf('search-follow')
     expect(result.safeParse(alreadyFollowing).success).toBe(true)
     expect(result.safeParse(freshlyFollowed).success).toBe(true)
+  })
+})
+
+/**
+ * Plan 108 §4.3, step 108.11 — the pack is this plan's proving vehicle, so the surface it declares
+ * is checked here against the same schema the farm re-validates it with (§3.9), plus the two
+ * cross-branch properties a schema structurally cannot see on its own.
+ *
+ * `definePlugin` has already run `validatePluginSurface` at import time, so a defect would have
+ * thrown before these tests began. They are still worth writing: they say WHICH properties this
+ * pack depends on, so a later edit that breaks one fails with a name rather than a stack trace out
+ * of an import.
+ */
+describe('plan 108 §4.3 — the declared surface', () => {
+  function surfaceOf(): PluginSurface {
+    const surface = plugin.surface
+    if (!surface) throw new Error('the pack declares no surface — plan 108 step 108.11 requires one')
+    return surface
+  }
+
+  test('parses through PluginSurfaceSchema, the schema the farm re-validates with', () => {
+    const parsed = PluginSurfaceSchema.safeParse(surfaceOf())
+    expect(parsed.success).toBe(true)
+  })
+
+  test('passes the full gate, cross-branch checks and caps included', () => {
+    const checked = validatePluginSurface(surfaceOf())
+    expect(checked.ok ? [] : checked.errors).toEqual([])
+  })
+
+  test('every nav entry names a view this surface declares', () => {
+    const surface = surfaceOf()
+    expect(surface.nav.length).toBeGreaterThan(0)
+    for (const entry of surface.nav) {
+      expect(Object.keys(surface.views)).toContain(entry.view)
+    }
+  })
+
+  test('every action id a view references exists in `actions`', () => {
+    const surface = surfaceOf()
+    const declared = Object.keys(surface.actions)
+    for (const [viewId, view] of Object.entries(surface.views)) {
+      for (const id of [...view.toolbar, ...view.rowActions]) {
+        expect({ viewId, id, declared: declared.includes(id) }).toEqual({ viewId, id, declared: true })
+      }
+    }
+  })
+
+  /**
+   * Existence of a referenced script is deliberately NOT checked by `validatePluginSurface` (§3.9 —
+   * a pack may reference a script published separately). Every ref this pack writes names one of
+   * its OWN members, though, and a typo there would only surface as `script_not_found` at click
+   * time on somebody's device.
+   */
+  test('every script an action names is a member of this very plugin', () => {
+    const memberIds = plugin.scripts.map((s) => s.id)
+    const withScript = (action: ActionSpec): action is Extract<ActionSpec, { kind: 'job' | 'batch' }> => action.kind === 'job' || action.kind === 'batch'
+    const refs = Object.values(surfaceOf().actions).filter(withScript).map((a) => a.script)
+    expect(refs.length).toBeGreaterThan(0)
+    for (const ref of refs) {
+      const [name = '', version = ''] = ref.split('@')
+      const [pluginId, scriptId] = name.split('/')
+      expect(pluginId).toBe(plugin.id)
+      expect(memberIds).toContain(scriptId ?? '')
+      expect(version).toBe('latest')
+    }
+  })
+
+  /**
+   * The screen and the scripts must read and write ONE key. `ACCOUNTS_KEY` is the single constant
+   * both sides import; this asserts the surface really used it rather than a string that happens to
+   * match today.
+   */
+  test('the accounts view scans the same KV key the scripts write', () => {
+    const view = surfaceOf().views.accounts
+    expect(view?.data).toEqual({ kind: 'kv.scan', key: ACCOUNTS_KEY, rows: 'items', itemsAt: 'accounts', includeMissing: true })
+  })
+
+  /**
+   * The owner's standard for identifying a device on any plugin screen: the unique id, the number
+   * that is easy to remember (and is printed on the phone), and the name. All three, in that order,
+   * before anything about the account.
+   *
+   * `Device ID` is bound to `$device.stableId`, NOT to `$device.id`: `stableId` is the identity the
+   * whole farm keys on and the one an operator can match to a physical phone, where the internal
+   * uuid means nothing to a human. That distinction is the reason this test names the field rather
+   * than only the header.
+   */
+  test('the accounts table opens with Device ID, Device # and Device, in that order', () => {
+    const columns = surfaceOf().views.accounts?.table?.columns ?? []
+    expect(columns.slice(0, 3).map((c) => [c.header, c.field])).toEqual([
+      ['Device ID', '$device.stableId'],
+      ['Device #', '$device.number'],
+      ['Device', '$device.label'],
+    ])
+    expect(columns[1]?.width).toBe('narrow')
+    // The account columns still follow, unchanged — this widened the row, it did not replace it.
+    expect(columns.map((c) => c.field)).toContain('username')
+  })
+
+  test('the row action binds the row field the table keys on, so a click cannot target a row it did not read', () => {
+    const surface = surfaceOf()
+    const view = surface.views.accounts
+    const action = surface.actions.switchTo
+    expect(view?.table?.rowKey).toBe('username')
+    expect(action?.kind).toBe('job')
+    if (action?.kind === 'job') {
+      expect(action.params).toEqual({ target: { $row: 'username' } })
+      expect(action.device).toBe('row')
+    }
+  })
+
+  test('the sync action is a batch — syncing is a per-device read an operator wants across a fleet', () => {
+    const action = surfaceOf().actions.sync
+    expect(action?.kind).toBe('batch')
+    if (action?.kind === 'batch') expect(action.target).toBe('picker')
+  })
+})
+
+/**
+ * Plan 108 P8 — a plugin's members finally get a human name in Studio, so every member of this pack
+ * must carry one. The list is spelled out rather than read off `plugin.scripts`, because
+ * `Plugin.scripts: ScriptDefinition[]` erases `title`/`description` from the static type (they
+ * survive at runtime); the first assertion is what keeps the two in step.
+ */
+describe('every member is presentable (plan 108 P8)', () => {
+  const members: Array<{ id: string; title?: string; description?: string }> = [switchAccount, searchFollow, listAccounts, postVideo, autoScrollScript]
+
+  test('the spelled-out list is exactly the plugin\'s own members', () => {
+    expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
+  })
+
+  test('every member declares a title and a description', () => {
+    for (const member of members) {
+      expect({ id: member.id, title: (member.title ?? '').length > 0 }).toEqual({ id: member.id, title: true })
+      expect({ id: member.id, description: (member.description ?? '').length > 0 }).toEqual({ id: member.id, description: true })
+    }
+  })
+
+  test('the plugin itself declares a title and a description too', () => {
+    expect((plugin.title ?? '').length).toBeGreaterThan(0)
+    expect((plugin.description ?? '').length).toBeGreaterThan(0)
   })
 })
 

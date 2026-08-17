@@ -88,12 +88,25 @@ export interface HttpDeps {
   /** `GET/POST/PATCH/DELETE /api/webhooks` (plan 68 §4.1, §4.5). */
   webhookRoutes: Hono<AuthEnv>
   deviceRoutes: Hono<AuthEnv>
+  /**
+   * `GET /api/transfers` (plan 107 §3.1, §3.4, §4, step 107.2) — its own
+   * top-level prefix, NOT `/api/devices` (this list is farm-wide, not
+   * scoped to one device's path). Reads the in-memory registry
+   * `daemon.ts`'s single `transferBroadcast` object keeps current; see
+   * `packages/core/src/device/transfer-registry.ts` and
+   * `packages/protocol/src/api/transfers.ts` for what that registry loses
+   * on a core restart and why the response shape is built to survive a
+   * later swap to a durable row unchanged.
+   */
+  transferRegistryRoutes: Hono<AuthEnv>
   /** `GET/POST/DELETE /:id/guest-agent` and `GET/PUT/DELETE /:id/network` (plan 44 §5.8) — mounted at the same `/api/devices` prefix as `deviceRoutes`, from its own Hono app so `packages/core/src/api/devices.ts` stays untouched beyond the registry fallout fix. */
   guestAgentRoutes: Hono<AuthEnv>
   /** `POST /api/guest-agent/provision`, `GET /api/guest-agent/summary` (plan 90 §3.8, §4.7) — the fleet-wide provisioning surface, at its OWN `/api/guest-agent` prefix (never `/api/devices` — this is not device-scoped). */
   agentProvisionerRoutes: Hono<AuthEnv>
   /** `GET/PUT/DELETE /:id/identity` and `POST /:id/identity/sync` (plan 58 §4.3, §5.3) — a third Hono app at the same `/api/devices` prefix, same reasoning as `guestAgentRoutes`. */
   deviceIdentityRoutes: Hono<AuthEnv>
+  /** `GET /:id/preparation`, `POST /:id/preparation`, `POST /:id/preparation/:componentId/retry` (plan 106 §3.3, §4) — a fourth Hono app at the same `/api/devices` prefix, same reasoning as `guestAgentRoutes`/`deviceIdentityRoutes`. */
+  devicePreparationRoutes: Hono<AuthEnv>
   tagRoutes: Hono
   clusterRoutes: Hono<AuthEnv>
   topologyRoutes: Hono
@@ -283,6 +296,16 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // route, not part of it (plan 58 §3.1), so it gets its own route file rather than growing
   // `guest-agent.ts` or `devices.ts` further.
   app.route('/api/devices', deps.deviceIdentityRoutes)
+
+  // Plan 106 §3.3, §4 — a fourth Hono app at the same base path, same
+  // reasoning as `guestAgentRoutes`/`deviceIdentityRoutes` above.
+  app.route('/api/devices', deps.devicePreparationRoutes)
+
+  // Plan 107 §3.1, §3.4, §4, step 107.2 — its OWN top-level prefix, not
+  // `/api/devices`: `GET /api/transfers` is farm-wide (every in-flight or
+  // recently-finished install/push/pull, across every device), not scoped
+  // to one device's path the way the four mounts above are.
+  app.route('/api/transfers', deps.transferRegistryRoutes)
 
   app.route('/api/tags', deps.tagRoutes)
 

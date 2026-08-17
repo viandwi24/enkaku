@@ -35,7 +35,7 @@ const silentLog = (): Logger => {
 function publishScript(db: Db, name: string, version: string, opts: { paramsSchema?: unknown; enabled?: boolean } = {}) {
   const id = `${name}-${version}`
   db.insert(scripts)
-    .values({ id, name, version, kind: 'script', bundle: 'export default { run: async () => null }', enabled: opts.enabled ?? true, paramsSchema: opts.paramsSchema ?? null, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, kind: 'script', bundle: 'export default { run: async () => null }', enabled: opts.enabled ?? true, paramsSchema: opts.paramsSchema ?? null, createdAt: new Date() })
     .run()
   return id
 }

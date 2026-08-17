@@ -90,7 +90,7 @@ describe('fireOnce (schedules/runner.ts) — the version gate is NOT reached (op
   }
 
   function seedScript(db: Db, id: string, name: string, runtime: unknown) {
-    db.insert(scripts).values({ id, name, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(), runtime }).run()
+    db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id, name, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(), runtime }).run()
   }
 
   function seedSchedule(db: Db, scriptRef: string): ScheduleRow {

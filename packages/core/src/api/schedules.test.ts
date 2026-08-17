@@ -20,7 +20,7 @@ function setUp() {
   // table before writing or reading a schedule row.
   opened.db
     .insert(scripts)
-    .values({ id: 'test-script-1.0.0', name: 'test-script', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id: 'test-script-1.0.0', name: 'test-script', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() })
     .run()
   return opened.db
 }
@@ -221,7 +221,7 @@ describe('scriptRef on POST/PATCH /api/schedules (plan 62 §4.4)', () => {
   test('stores the reference verbatim; the response echoes what it resolves to right now (acceptance #6)', async () => {
     const db = setUp()
     db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
-    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
     const app = makeApp(db, 'operator')
 
     const res = await app.request('/', {
@@ -255,7 +255,7 @@ describe('scriptRef on POST/PATCH /api/schedules (plan 62 §4.4)', () => {
 
   test('PATCH can re-pin an existing schedule to a different reference', async () => {
     const db = setUp()
-    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
     const [id] = seedSchedule(db, 1) // starts on test-script@1.0.0
     const app = makeApp(db, 'operator')
 
@@ -409,6 +409,8 @@ describe('paramsCompatible / paramsFindingCount on GET /api/schedules (plan 95 �
     // 1.1.0 adds a REQUIRED `region` with no default — the schedule was never touched.
     db.insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'test-script-1.1.0',
         name: 'test-script',
         version: '1.1.0',
@@ -547,7 +549,7 @@ describe('workTarget: agent on POST/PATCH /api/schedules (plan 68 §3.1, §4.1, 
 
   test('PATCH can switch an existing AGENT schedule back to a script target, removing the companion row', async () => {
     const db = setUp()
-    db.insert(scripts).values({ id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
+    db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'test-script-2.0.0', name: 'test-script', version: '2.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
     const app = makeApp(db, 'operator', { agentExists: () => true })
     const createdRes = await app.request('/', {
       method: 'POST',
@@ -631,6 +633,8 @@ describe('schedule routes validate params against the real paramsSchema (plan 95
     opened.db
       .insert(scripts)
       .values({
+        pluginId: 'p-fixture',
+        exportId: 'main',
         id: 'checkout-1.0.0',
         name: 'checkout',
         version: '1.0.0',
@@ -726,7 +730,7 @@ describe('POST/PATCH /api/schedules — JobExecutor.requires (plan 93 §3.12, §
     runMigrations(opened.db)
     opened.db
       .insert(scripts)
-      .values({ id: 'install-1.0.0', name: 'install', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() })
+      .values({ pluginId: 'p-fixture', exportId: 'main', id: 'install-1.0.0', name: 'install', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() })
       .run()
     return opened.db
   }

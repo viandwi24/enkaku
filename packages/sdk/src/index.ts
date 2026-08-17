@@ -1,4 +1,14 @@
-export { defineScript } from './define-script'
+/**
+ * There is no `defineScript` (plan 110 §3.1, §4.2, criterion 6). A script
+ * cannot exist outside a plugin, so the only authoring entry point is
+ * `definePlugin` below and the only script shape an author writes is a
+ * `PluginMemberScript`. `ScriptDefinition` is still exported as a TYPE — it is
+ * what a member BECOMES once `definePlugin` stamps the plugin's version onto
+ * it, and it is what the runner receives.
+ *
+ * `enkaku init <name>` scaffolds the whole thing; `enkaku publish` refuses an
+ * entry whose default export is not a `definePlugin()` result.
+ */
 export type {
   ScriptDefinition,
   ResultValue,

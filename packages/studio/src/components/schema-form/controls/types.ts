@@ -21,6 +21,15 @@ export interface BaseControlProps {
   help?: string
   error?: string
   value: unknown
+  /**
+   * Whether the schema lists this field in `required`. Only a control that
+   * can be EMPTIED needs it — `WorkspacePathControl` hides its "Clear" button
+   * on a required field, because offering to clear a value the form will
+   * immediately refuse is a dead end, not a choice. Every other control
+   * ignores it: a toggle, a number box and a text box all have a natural
+   * empty state the form already validates.
+   */
+  required?: boolean
   onChange(path: string, value: unknown): void
   /**
    * Set by `ListControl`/`TableControl` for an item/column control (plan 95

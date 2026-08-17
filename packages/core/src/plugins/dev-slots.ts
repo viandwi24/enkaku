@@ -9,7 +9,7 @@
  * Not a database-backed store; a plain in-memory map is the whole
  * implementation, and that absence of persistence is the feature.
  */
-import type { RuntimeEnvelope } from '@enkaku/protocol'
+import type { PluginSurface, RuntimeEnvelope } from '@enkaku/protocol'
 
 export interface DevSlotScript {
   /** The id inside the plugin bundle — `login`, not `tiktok/login`. */
@@ -41,6 +41,15 @@ export interface DevSlot {
   buildN: number
   bundlePath: string
   scripts: DevSlotScript[]
+  /**
+   * Plan 108 §5 step 108.6 — the screen this dev build contributes, already
+   * re-validated by the verify child (`VerifyReport.surface`). A dev slot is
+   * not a `plugins` row (this file's own doc comment above), so there is no
+   * `manifest` column for it to ride in and it lives here instead. `null` for
+   * a build that declares no surface — the ordinary case, and every build
+   * before this plan.
+   */
+  surface: PluginSurface | null
   owner: DevSessionOwner
   createdAt: number
   lastBuildAt: number
@@ -54,6 +63,8 @@ export interface PutDevSlotInput {
   declaredVersion: string
   bundlePath: string
   scripts: DevSlotScript[]
+  /** Optional so every caller written before plan 108 keeps compiling — omitted is `null`, "this build declares no screen". */
+  surface?: PluginSurface | null
   owner: DevSessionOwner
   /** Overrides the default TTL for this put (mainly for tests). */
   ttlSec?: number
@@ -94,6 +105,7 @@ export function createDevSlotStore(opts?: { ttlSec?: number; now?: () => number 
         buildN: n,
         bundlePath: input.bundlePath,
         scripts: input.scripts,
+        surface: input.surface ?? null,
         owner: input.owner,
         createdAt: existing?.createdAt ?? t,
         lastBuildAt: t,

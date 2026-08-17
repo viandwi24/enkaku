@@ -26,7 +26,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Role } from '../auth/service'
-import { createBatch } from '../clusters/dispatch'
+import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
 import type { BatchPacer } from '../clusters/pacer'
 import { computeBatchStatus, countJobs, recomputeBatchStatus, TERMINAL_BATCH_STATUSES } from '../clusters/status'
 import type { Db } from '../db'
@@ -254,6 +254,69 @@ export interface BatchRoutesDeps {
 }
 
 /**
+ * Exactly the members {@link createBatchDispatchDeps} reads — so a host that
+ * is not building this router at all (plan 108 §4.5, step 108.5's plugin
+ * action executor) can call the same factory without inventing a `jobStore`,
+ * a broadcaster or a `scriptNames` lookup it has no use for.
+ */
+export type BatchDispatchHostDeps = Pick<
+  BatchRoutesDeps,
+  'db' | 'scheduler' | 'audit' | 'registry' | 'findScript' | 'scriptRegistry' | 'farmJobSettings' | 'pacer' | 'shellMode' | 'transferEnabled'
+>
+
+/**
+ * The ONE construction of `clusters/dispatch.ts`'s `BatchDispatchDeps`. Every
+ * dispatch route in this file calls it, and so does `daemon.ts`'s
+ * `createPluginRoutes({ actions: { batch } })` wiring (plan 108 §4.5, step
+ * 108.5) — so a batch dispatched from a plugin screen and one dispatched from
+ * the Batches page are gated by literally the same closures, never by two
+ * copies of one object literal that drift.
+ *
+ * It absorbs the two per-request helpers this file used to build inline —
+ * `validateScriptFor` (plan 93 §3.12, §4.6, step 93.8: `validateScriptForRun`
+ * merged with the REQUESTING user's role, closing F10's `internal:install`
+ * escalation) and `assertDeviceAllowedFor` (`canUseDevice`, plan 34 §3.5,
+ * §4.4: an operator targeting a device they do not own refuses the WHOLE
+ * batch before a row is written) — plus the three farm-wide accessors
+ * (`scriptNameOf`, `farmJobSettings`, `pacer`) the same literal carried.
+ *
+ * `actor` is per REQUEST, not per router, which is why this is a function and
+ * not a field on `deps`: one gate needs the caller's role, the other their
+ * identity. `null`/`undefined` means there is no interactive caller — a
+ * schedule firing at cron time (`schedules/runner.ts`) — and then neither
+ * gate applies, exactly as before.
+ */
+export function createBatchDispatchDeps(
+  deps: BatchDispatchHostDeps,
+  actor: { id: string; role: Role } | null | undefined,
+): BatchDispatchDeps {
+  return {
+    db: deps.db,
+    scheduler: deps.scheduler,
+    audit: deps.audit,
+    onJobStatus: () => {},
+    validateScript: (scriptId, params) => validateScriptForRun({ ...deps, actorRole: () => actor?.role ?? null }, scriptId, params),
+    assertDeviceAllowed: (deviceId) => {
+      if (!actor) return
+      const row = deps.db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, deviceId)).get()
+      if (row && !canUseDevice(actor, row)) {
+        throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
+      }
+    },
+    // Plan 98 §3.7, §4.4, §4.6, step 98.5 — a batch member denormalises
+    // `scriptName`/`scriptVersion` and resolves `runtime.maxConcurrent`
+    // exactly the way a standalone enqueue does (`services/job-service.ts`'s
+    // own `scriptNameOf` wiring in `daemon.ts`).
+    scriptNameOf: (scriptId) => deps.scriptRegistry?.get(scriptId) ?? null,
+    // Plan 98 §3.7, §3.8, §4.1, §4.6, §4.7 — see `BatchRoutesDeps.
+    // farmJobSettings`'s own comment: without a LIVE accessor here a batch's
+    // `runtimeOverride` ceiling check can never refuse anything.
+    farmJobSettings: deps.farmJobSettings,
+    pacer: deps.pacer,
+  }
+}
+
+/**
  * The CURRENT params schema for a concrete `scripts.id` (plan 95 §5 step
  * 95.7) — read through `scriptRegistry` when wired (covers a dev-slot
  * script, whose schema can be redefined under the same stable id between a
@@ -305,8 +368,30 @@ function pacingOf(row: BatchRow): BatchInfo['pacing'] {
  * itself has already moved on (that recompute is the only thing that ever
  * writes it away), so this simply mirrors the row rather than re-deriving
  * anything.
+ *
+ * **`docs/plans/96-m61-hotfixes.md` §96.30 — `counts.total === 0` is handled
+ * FIRST, before the `stopping` hold above ever gets a chance to apply.**
+ * `clusters/dispatch.ts`'s `createBatch` is the only writer of a `batches`
+ * row and always inserts it together with >= 1 job row, in the same
+ * transaction (`E_NO_TARGETS` refuses before anything is persisted
+ * otherwise) — so an EXISTING row can only read `counts.total === 0` because
+ * every one of its job rows was deleted afterward (`device/lifecycle.ts`'s
+ * `forget({ deleteHistory: true })` is the one path found), never because it
+ * has not been dispatched yet — that shape cannot outlive `createBatch`'s
+ * own transaction. `computeBatchStatus`'s own `total === 0 → 'queued'`
+ * branch exists for a hypothetical batch-before-jobs-exist that this
+ * codebase never actually persists; applying it here would report a
+ * non-terminal status FOREVER for a row that will never settle again —
+ * exactly as immortal as the `stopping` hold two lines down, just silent
+ * about it (this is `recomputeBatchStatus`'s OWN write-time fix for the
+ * identical shape; this function is the READ-time half, so it heals a row
+ * that is stuck in the database RIGHT NOW, on the very next `GET`, with no
+ * migration and no backfill). It resolves to `cancelled` — terminal — since
+ * a batch with no jobs left has none to wait on, regardless of what status
+ * it was heading toward.
  */
 function statusOf(row: BatchRow, counts: BatchCounts): BatchStatusValue {
+  if (counts.total === 0) return 'cancelled'
   const computed = computeBatchStatus(counts)
   if (row.status === 'stopping' && !TERMINAL_BATCH_STATUSES.includes(computed)) return 'stopping'
   return computed
@@ -621,31 +706,12 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     return row
   }
 
-  // `canUseDevice` (plan 34 §3.5, §4.4) — an interactive request always has
-  // an acting user (`authMiddleware` guarantees one), so both dispatch
-  // routes below wire this; the schedule-fired path in `schedules/runner.ts`
-  // deliberately does not (no interactive "acting user" at cron time).
-  const assertDeviceAllowedFor = (user: { id: string; role: 'admin' | 'operator' } | undefined) => (deviceId: string): void => {
-    if (!user) return
-    const row = db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, deviceId)).get()
-    if (row && !canUseDevice(user, row)) {
-      throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
-    }
-  }
-
-  /**
-   * Plan 93 §3.12, §4.6, step 93.8 — `validateScriptForRun` merged with the
-   * REQUESTING user's role, per call: unlike `shellMode`/`transferEnabled`
-   * (farm-wide, live on `deps` itself), the actor varies per request, so it
-   * is folded in here rather than baked onto `deps` at route-construction
-   * time. Both dispatch routes below (`POST /`, `POST /:id/rerun-failed`,
-   * `POST /:id/rerun`) call this instead of `deps` directly, closing F10's
-   * `internal:install` escalation (§3.12): an operator without
-   * `device.files` now gets `auth.forbidden` from all three, the same way
-   * they already would from `POST /:id/install`.
-   */
-  const validateScriptFor = (user: { role: 'admin' | 'operator' } | undefined) => (scriptId: string, params: unknown) =>
-    validateScriptForRun({ ...deps, actorRole: () => user?.role ?? null }, scriptId, params)
+  // Every dispatch route below (`POST /`, `POST /:id/rerun-failed`, `POST
+  // /:id/rerun`) builds its `BatchDispatchDeps` through the ONE exported
+  // factory above, with the requesting user as the actor — an interactive
+  // request always has one (`authMiddleware` guarantees it); the
+  // schedule-fired path in `schedules/runner.ts` deliberately has none.
+  const dispatchDepsFor = (user: { id: string; role: Role } | undefined): BatchDispatchDeps => createBatchDispatchDeps(deps, user)
 
   // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
   // matrix; a batch (like a schedule in `api/schedules.ts`) is a way of
@@ -656,31 +722,11 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     if (!body.success) {
       throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
     }
-    const { batch } = createBatch(
-      {
-        db,
-        scheduler: deps.scheduler,
-        audit: deps.audit,
-        onJobStatus: () => {},
-        validateScript: validateScriptFor(c.get('user')),
-        assertDeviceAllowed: assertDeviceAllowedFor(c.get('user')),
-        // Plan 98 §3.7, §4.4, §4.6, step 98.5 (closed here) — reuses the
-        // SAME optional `scriptRegistry` this file already threads for
-        // `rerun-failed`'s params-schema lookup above; a batch member now
-        // denormalises `scriptName`/`scriptVersion` and resolves
-        // `runtime.maxConcurrent` exactly the way a standalone enqueue does
-        // (`services/job-service.ts`'s own `scriptNameOf` wiring in
-        // `daemon.ts`).
-        scriptNameOf: (scriptId) => deps.scriptRegistry?.get(scriptId) ?? null,
-        // Plan 98 §3.7, §3.8, §4.1, §4.6, §4.7 — see `BatchRoutesDeps.
-        // farmJobSettings`'s own comment: threaded through so a batch's
-        // `runtimeOverride` ceiling check can bind against a REAL farm once
-        // `daemon.ts` wires this key.
-        farmJobSettings: deps.farmJobSettings,
-        pacer: deps.pacer,
-      },
-      { ...body.data, pacing: body.data.pacing ?? null, createdBy: c.get('user')?.id ?? null },
-    )
+    const { batch } = createBatch(dispatchDepsFor(c.get('user')), {
+      ...body.data,
+      pacing: body.data.pacing ?? null,
+      createdBy: c.get('user')?.id ?? null,
+    })
     return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
   })
 
@@ -763,20 +809,10 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     const shape = carryForwardShape(row, jobRows, new Date())
 
     const { batch } = createBatch(
-      {
-        db,
-        scheduler: deps.scheduler,
-        audit: deps.audit,
-        onJobStatus: () => {},
-        validateScript: validateScriptFor(c.get('user')),
-        assertDeviceAllowed: assertDeviceAllowedFor(c.get('user')),
-        // Same reasoning as the plain create route above — a rerun-failed
-        // batch member is bound by the SAME farm-wide cap a freshly
-        // enqueued job would get.
-        scriptNameOf: (scriptId) => deps.scriptRegistry?.get(scriptId) ?? null,
-        farmJobSettings: deps.farmJobSettings,
-        pacer: deps.pacer,
-      },
+      // Same gates as the plain create route above — a rerun-failed batch
+      // member is bound by the SAME role/ownership checks and the SAME
+      // farm-wide cap a freshly dispatched one would get.
+      dispatchDepsFor(c.get('user')),
       {
         scriptId: row.scriptId,
         params: reconciliation.value,
@@ -846,17 +882,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     const shape = carryForwardShape(row, jobRows, new Date())
 
     const { batch } = createBatch(
-      {
-        db,
-        scheduler: deps.scheduler,
-        audit: deps.audit,
-        onJobStatus: () => {},
-        validateScript: validateScriptFor(c.get('user')),
-        assertDeviceAllowed: assertDeviceAllowedFor(c.get('user')),
-        scriptNameOf: (scriptId) => deps.scriptRegistry?.get(scriptId) ?? null,
-        farmJobSettings: deps.farmJobSettings,
-        pacer: deps.pacer,
-      },
+      dispatchDepsFor(c.get('user')),
       {
         scriptId: row.scriptId,
         params: reconciliation.value,

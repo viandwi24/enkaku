@@ -158,8 +158,6 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
     const parsed = FarmSettingsSchema.parse({})
     expect(parsed.adb).toEqual({
       maxConcurrent: 0,
-      execTimeoutMs: 15_000,
-      maxQueueDepth: 32,
       maxStreamsPerDevice: 4,
       maxStreams: 0,
       maxHostConcurrent: 4,
@@ -213,8 +211,6 @@ describe('FarmSettingsSchema.adb / .health — new in plan 23 §4.1', () => {
   test('defaultFarmSettings() carries adb and health with their documented defaults', () => {
     const s = defaultFarmSettings()
     expect(s.adb.maxConcurrent).toBe(0)
-    expect(s.adb.execTimeoutMs).toBe(15_000)
-    expect(s.adb.maxQueueDepth).toBe(32)
     expect(s.adb.maxStreamsPerDevice).toBe(4)
     expect(s.adb.maxStreams).toBe(0)
     expect(s.adb.maxHostConcurrent).toBe(4)
@@ -1298,5 +1294,44 @@ describe('DeviceLabellingSchema / DeviceSettings.labelling / FarmSettings.labell
     expect(FarmSettingsSchema.parse({ labelling: { maxConcurrent: 16 } }).labelling.maxConcurrent).toBe(16)
     expect(() => FarmSettingsSchema.parse({ labelling: { maxConcurrent: 0 } })).toThrow()
     expect(() => FarmSettingsSchema.parse({ labelling: { maxConcurrent: 17 } })).toThrow()
+  })
+})
+
+describe('FarmSettingsSchema.defaults — identity is excluded (docs/settings-audit.md #1, docs/plans/96-m61-hotfixes.md)', () => {
+  test('a brand new farm settings row has no identity key under defaults at all', () => {
+    const parsed = FarmSettingsSchema.parse({})
+    expect(parsed.defaults).not.toHaveProperty('identity')
+    expect(Object.keys(parsed.defaults)).not.toContain('identity')
+  })
+
+  test('the generated JSON Schema for FarmSettingsSchema.defaults has no identity property — the Settings → Defaults form can no longer render one', () => {
+    const jsonSchema = z.toJSONSchema(FarmSettingsSchema) as unknown as {
+      properties: { defaults: { properties: Record<string, unknown> } }
+    }
+    expect(Object.keys(jsonSchema.properties.defaults.properties)).not.toContain('identity')
+  })
+
+  test('DeviceSettingsSchema itself still has identity — only the farm-wide defaults block lost it, per-device identity is untouched', () => {
+    const jsonSchema = z.toJSONSchema(DeviceSettingsSchema) as unknown as {
+      properties: { identity: unknown }
+    }
+    expect(jsonSchema.properties.identity).toBeDefined()
+    expect(DeviceSettingsSchema.parse({})).toHaveProperty('identity')
+  })
+
+  test('a stored farm settings row from before this change, whose defaults still carries an identity key, still parses cleanly — the unknown key is stripped, never E_BAD_CONFIG', () => {
+    const legacyRow = {
+      defaults: {
+        ...defaultFarmSettings().defaults,
+        identity: { timezone: 'Asia/Jakarta', locale: 'id-ID', gps: { lat: -6.2, lng: 106.8, accuracy: 50 } },
+      },
+    }
+    const parsed = FarmSettingsSchema.safeParse(legacyRow)
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.defaults).not.toHaveProperty('identity')
+    // The rest of the legacy row's `defaults` block survives untouched —
+    // this is a stripped unknown key, not a fallback to unrelated defaults.
+    expect(parsed.data.defaults.autoReconnect).toBe(defaultFarmSettings().defaults.autoReconnect)
   })
 })

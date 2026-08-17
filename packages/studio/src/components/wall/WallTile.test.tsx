@@ -49,32 +49,96 @@ const device: DeviceInfo = {
   readiness: { desired: 'awake', actual: 'awake', blocked: null, since: 0 },
 }
 
-/** The guest-agent alert chip (plan 90 §5 step 90.6, fixes F10) — same quiet-by-default rule `DeviceCard.test.tsx` asserts, on the Wall's own tile. */
-describe('WallTile — the guest-agent alert chip (plan 90 §5 step 90.6, fixes F10)', () => {
-  test('no chip for a device that predates the field (reads as absent)', () => {
-    const { queryByText } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
-    expect(queryByText(/Agent /)).toBeNull()
+/**
+ * Plan 101 §5 step 101.7 — `AgentAlertChip` left the tile entirely (the
+ * owner's requirement 3: no status text or chips in the tile panel at all).
+ * The signal it used to carry did not vanish with it: it folds into
+ * `.status-rail`'s own colour instead, via `data-agent-alert`, so a device
+ * casting a perfectly good picture with a genuinely broken agent still does
+ * not read as healthy. Same quiet-by-default rule `AgentAlertChip.tsx` (and
+ * `DeviceCard.test.tsx`) assert — ready/absent/provisioning/unsupported stay
+ * quiet, only failed/outdated tint the rail — proven here against the rail's
+ * own attribute rather than chip text, because there is no chip left to find.
+ */
+describe('WallTile — the guest-agent alert folded into the status rail (plan 101 §5 step 101.7)', () => {
+  test('no rail tint for a device that predates the field (reads as absent)', () => {
+    const { container } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBeNull()
   })
 
-  test('no chip for ready', () => {
-    const { queryByText } = renderWithApi(
+  test('no rail tint for ready', () => {
+    const { container } = renderWithApi(
       <WallTile device={{ ...device, agent: 'ready' }} live={false} onShowLive={() => undefined} />,
     )
-    expect(queryByText(/Agent /)).toBeNull()
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBeNull()
   })
 
-  test('a chip for failed', () => {
-    const { getByText } = renderWithApi(
+  test('the rail carries data-agent-alert="failed" for a failed agent', () => {
+    const { container } = renderWithApi(
       <WallTile device={{ ...device, agent: 'failed' }} live={false} onShowLive={() => undefined} />,
     )
-    expect(getByText('Agent failed')).toBeTruthy()
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBe('failed')
   })
 
-  test('a chip for outdated', () => {
-    const { getByText } = renderWithApi(
+  test('the rail carries data-agent-alert="outdated" for an outdated agent', () => {
+    const { container } = renderWithApi(
       <WallTile device={{ ...device, agent: 'outdated' }} live={false} onShowLive={() => undefined} />,
     )
-    expect(getByText('Agent outdated')).toBeTruthy()
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBe('outdated')
+  })
+
+  /**
+   * The rail's two loudest existing colours (offline/quarantined) already
+   * say "something is wrong here," and there is nothing an operator can do
+   * about a device's agent while it is not even connected — so a failed/
+   * outdated agent does not override those two conditions.
+   */
+  test('no rail tint for a failed agent on an offline device — the device condition already dominates', () => {
+    const { container } = renderWithApi(
+      <WallTile device={{ ...device, status: 'offline', agent: 'failed' }} live={false} onShowLive={() => undefined} />,
+    )
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBeNull()
+  })
+
+  test('no rail tint for a failed agent on a quarantined device — same reason', () => {
+    const { container } = renderWithApi(
+      <WallTile device={{ ...device, status: 'quarantined', agent: 'failed' }} live={false} onShowLive={() => undefined} />,
+    )
+    expect(container.querySelector('.status-rail')?.getAttribute('data-agent-alert')).toBeNull()
+  })
+})
+
+/**
+ * `.status-rail` itself (plan 101 §5 step 101.7's own "the one thing to
+ * keep" — the tile's now-only ambient status signal, since the header/chips
+ * that used to say the same thing in words are gone). Mirrors the same
+ * `data-status`/`data-live` contract `DeviceCard.test.tsx` and
+ * `DeviceTile.test.tsx` already prove for their own rails, newly true here.
+ */
+describe('WallTile — the status rail (plan 101 §5 step 101.7, docs/design.md\'s "signature element")', () => {
+  test('carries data-status matching the device, and only pulses (data-live) while busy', () => {
+    const { container } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    const rail = container.querySelector('.status-rail')
+    expect(rail).toBeTruthy()
+    expect(rail?.getAttribute('data-status')).toBe('idle')
+    expect(rail?.getAttribute('data-live')).toBe('false')
+  })
+
+  test('a busy device pulses', () => {
+    const { container } = renderWithApi(<WallTile device={{ ...device, status: 'busy' }} live={false} onShowLive={() => undefined} />)
+    const rail = container.querySelector('.status-rail')
+    expect(rail?.getAttribute('data-status')).toBe('busy')
+    expect(rail?.getAttribute('data-live')).toBe('true')
+  })
+
+  test('a quarantined device\'s rail says so even though the tile carries no status TEXT anywhere', () => {
+    const quarantinedDevice = { ...device, status: 'quarantined' as const }
+    const { container, queryByText } = renderWithApi(<WallTile device={quarantinedDevice} live={false} onShowLive={() => undefined} />)
+    expect(container.querySelector('.status-rail')?.getAttribute('data-status')).toBe('quarantined')
+    // "Quarantined" DOES appear (the picture's own placeholder, requirement
+    // 3's "only when the cast is empty") — this asserts the rail is a SEPARATE
+    // signal from that text, not a replacement for it.
+    expect(queryByText('Quarantined')).toBeTruthy()
   })
 })
 
@@ -90,7 +154,9 @@ describe('WallTile — assistedBy (plan 91 §3.4 item 4, §4.4, F25)', () => {
       ...device,
       status: 'manual',
       heldBy: { kind: 'user', id: 'u2', label: 'Bob', runId: null, takeable: true, acquiredAt: 0, expiresAt: null },
-      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+      // Plan 105 §3.2 — a fresh `expiresAt` (just touched) so this reads
+      // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
     }
     const { getByTitle } = renderWithApi(<WallTile device={heldDevice} live={false} onShowLive={() => undefined} />)
     expect(getByTitle('Controlled by Bob')).toBeTruthy()
@@ -138,39 +204,56 @@ describe('WallTile — assistedBy (plan 91 §3.4 item 4, §4.4, F25)', () => {
 })
 
 /**
- * Group selection (plan 91 §3.11/§5 step 91.8, F11/F12) — the same
- * `selectable`/`selected`/`onToggleSelect` shape `DeviceCard.test.tsx`
- * already covers, proven here on the Wall's own tile.
+ * Group selection (plan 91 §3.11/§5 step 91.8, F11/F12) — rebuilt in plan
+ * 101 §5 step 101.7 (folded in mid-step, 2026-08-16) around a click on the
+ * tile itself instead of a checkbox (`refs/ui`'s own model: a click selects,
+ * a double-click opens remote control). No checkbox exists anywhere on this
+ * component any more, matched by `DeviceCard.test.tsx`'s own equivalent
+ * rewrite.
  */
-describe('WallTile — group selection (plan 91 §5 step 91.8, F11/F12)', () => {
-  test('no checkbox at all when not selectable', () => {
-    const { queryByRole } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+describe('WallTile — click-to-toggle selection (plan 91 §5 step 91.8, F11/F12; rebuilt plan 101 §5 step 101.7)', () => {
+  test('no checkbox anywhere on the tile', () => {
+    const { queryByRole } = renderWithApi(
+      <WallTile device={device} live={false} onShowLive={() => undefined} onToggleSelect={() => {}} />,
+    )
     expect(queryByRole('checkbox')).toBeNull()
   })
 
-  test('unselected by default, toggles on click, and does not navigate', () => {
+  test('a click toggles selection instead of navigating, once the double-click window elapses', async () => {
     let selected = false
     const onToggleSelect = () => {
       selected = true
     }
     const { getByRole } = renderWithApi(
-      <WallTile device={device} live={false} onShowLive={() => undefined} selectable selected={selected} onToggleSelect={onToggleSelect} />,
+      <WallTile device={device} live={false} onShowLive={() => undefined} onToggleSelect={onToggleSelect} />,
     )
-    const checkbox = getByRole('checkbox', { name: 'Select moto g06 for a batch action' }) as HTMLInputElement
-    expect(checkbox.checked).toBe(false)
-    fireEvent.click(checkbox)
-    expect(selected).toBe(true)
+    fireEvent.click(getByRole('link'))
+    await waitFor(() => expect(selected).toBe(true))
     expect(mockRouter.push).not.toHaveBeenCalled()
+  })
+
+  test('with no onToggleSelect at all, a click falls back to navigating (never a silent no-op)', async () => {
+    const { getByRole } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    fireEvent.click(getByRole('link'))
+    await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/device?id=dev-1'))
   })
 
   test('a selected tile carries the accent outline', () => {
     const { getByRole } = renderWithApi(
-      <WallTile device={device} live={false} onShowLive={() => undefined} selectable selected onToggleSelect={() => {}} />,
+      <WallTile device={device} live={false} onShowLive={() => undefined} selected onToggleSelect={() => {}} />,
     )
     const tile = getByRole('link')
     expect(tile.className).toContain('border-accent')
     expect(tile.className).toContain('ring-accent')
-    expect((getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
+  })
+
+  test('a modified click (ctrl/cmd/middle) is left alone — the browser\'s own "open in a new tab", never a toggle', () => {
+    let toggled = false
+    const { getByRole } = renderWithApi(
+      <WallTile device={device} live={false} onShowLive={() => undefined} onToggleSelect={() => (toggled = true)} />,
+    )
+    fireEvent.click(getByRole('link'), { metaKey: true })
+    expect(toggled).toBe(false)
   })
 })
 
@@ -317,14 +400,19 @@ describe('WallTile — the screen-off placeholder for asleep devices (plan 92 §
     expect(getByText('Screen off')).toBeTruthy()
   })
 
-  test('the Wake action on an asleep tile is shown persistently, not hover-revealed', () => {
-    const { getByRole } = renderWithApi(<WallTile device={asleepDevice} live={false} onShowLive={() => undefined} />)
-    const wake = getByRole('button', { name: 'Wake' })
-    // Persistent (plan 48 §3.3 rule 3, kept for device conditions by plan 92
-    // §3.4): the overlay wrapper carries `opacity-100`, not the hover-reveal
-    // `opacity-0` a live or budgeted tile's own overlay uses.
-    const wrapper = wake.closest('.pointer-events-auto.opacity-100')
-    expect(wrapper).toBeTruthy()
+  /**
+   * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the persistent
+   * `ReadinessControl` (Wake/Sleep) overlay this tile still carried after
+   * 101.7 is gone — `refs/ui`'s own tile has nothing on it but the picture,
+   * the centred name, and (when the picture is empty) a centred watermark.
+   * Waking a single asleep device is reached the same way waking a
+   * selection already was: right-click opens `DeviceContextMenu` ("Wake
+   * selected"), or select it and use the floating selection bar — both
+   * already routed through `wakeOrSleepSelected` before this step.
+   */
+  test('no Wake button anywhere on an asleep tile — the affordance moved to the context menu and the selection bar', () => {
+    const { queryByRole } = renderWithApi(<WallTile device={asleepDevice} live={false} onShowLive={() => undefined} />)
+    expect(queryByRole('button', { name: 'Wake' })).toBeNull()
   })
 })
 
@@ -354,85 +442,64 @@ describe('WallTile — the quiet budgeted state (plan 92 §3.4, §4.7)', () => {
     expect(mockRouter.push).not.toHaveBeenCalled()
   })
 
-  test('the bottom Wake/Sleep overlay on a budgeted tile is also hover-revealed, not persistent (matches a live tile)', () => {
-    const { getByRole } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
-    const sleep = getByRole('button', { name: 'Sleep' })
-    const wrapper = sleep.closest('.opacity-0')
-    expect(wrapper).toBeTruthy()
+  /** Plan 101 §5 step 101.8 — no Sleep button on a budgeted tile either; see the asleep-tile test above for where it went. */
+  test('no Sleep button on a budgeted tile', () => {
+    const { queryByRole } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    expect(queryByRole('button', { name: 'Sleep' })).toBeNull()
   })
 })
 
 /**
- * The tile layout for the fields plans 88 and 89 add (plan 92 §4.8): line 1
- * becomes number · label · connection glyph, the tile becomes a container
- * query context, and the holder chip moves off the header and onto the
- * picture. `tile-identity.test.ts` covers `tileIdentityOf` itself in
- * isolation; these tests cover what `WallTile` DOES with it.
+ * Plan 101 §5 step 101.7 — the tile shows the screencast and nothing else.
+ * The number, the connection glyph, and the battery/temperature/readiness/
+ * status chip row (plan 88/89/92 §4.8) all left the tile; the name is the
+ * one thing that survives, floated over the picture instead of sitting in a
+ * header line above it. `tile-identity.test.ts` still covers `tileIdentityOf`
+ * itself (`DeviceCard` reads it); these tests cover what `WallTile` no
+ * longer does with it, and what it does with the name instead.
  */
-describe('WallTile — line 1: number · label · connection glyph (plan 89 §3.3, plan 92 §4.8)', () => {
-  test('a device with no number (an explicitly released reservation) renders a dash', () => {
-    const { container } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
-    // Selected by its own fixed-width class rather than `getByText('—')`:
-    // `TileChips` renders the SAME dash glyph for a missing battery/
-    // temperature reading (`device.battery` is null on this fixture), so
-    // more than one dash is on the tile at once.
-    const numberSlot = container.querySelector('.w-8')
-    expect(numberSlot?.textContent).toBe('—')
-    // A fixed-width slot, not merely absent text (§4.8): the number occupies
-    // the SAME space whether it is one, two, or three digits, so a tile's
-    // layout never shifts as a fleet grows.
-    expect(numberSlot?.className).toContain('readout')
-  })
-
-  test('the number renders as `#42`, never bare `42`', () => {
+describe('WallTile — the screencast and nothing else (plan 101 §5 step 101.7, requirements 1-3)', () => {
+  test('no per-device number anywhere on the tile', () => {
     const numberedDevice = { ...device, number: 42 }
-    const { container } = renderWithApi(<WallTile device={numberedDevice} live={false} onShowLive={() => undefined} />)
-    expect(container.querySelector('.w-8')?.textContent).toBe('#42')
+    const { queryByText } = renderWithApi(<WallTile device={numberedDevice} live={false} onShowLive={() => undefined} />)
+    expect(queryByText('#42')).toBeNull()
   })
 
-  test('the connection glyph carries the same tooltip `ConnectionBadge` would show — a USB device by default (no `connection` field on this fixture)', () => {
-    const { getByTitle } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
-    expect(getByTitle('Connected by cable to this computer')).toBeTruthy()
+  test('no connection-glyph tooltip anywhere on the tile', () => {
+    const { queryByTitle } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    expect(queryByTitle('Connected by cable to this computer')).toBeNull()
   })
 
-  test('a Wi-Fi device shows the Wi-Fi tooltip with its address, never a text badge', () => {
-    const wifiDevice: DeviceInfo = {
-      ...device,
-      // `port: null` — `connectionTooltip` (`ConnectionBadge.tsx`) folds a
-      // present port into the address as `host:port`; this test wants the
-      // plain address for a simpler assertion, which is the tooltip's own
-      // established shape for a device with no separately-tracked port.
-      connection: { kind: 'tcp', medium: 'wireless', mediumSource: 'declared', address: '10.0.0.5', port: null, networkLabel: null },
-    }
-    const { getByTitle, queryByText } = renderWithApi(<WallTile device={wifiDevice} live={false} onShowLive={() => undefined} />)
-    expect(getByTitle('On the network over Wi-Fi · 10.0.0.5')).toBeTruthy()
-    // The IP itself is deliberately NOT printed on the tile (§4.8) — it is
-    // the glyph's tooltip/accessible name, searchable and filterable
-    // elsewhere (`page.tsx`) instead of spending permanent tile space.
-    expect(queryByText('10.0.0.5')).toBeNull()
+  test('the name floats over the picture, horizontally centred', () => {
+    const { getByText } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    const name = getByText('moto g06')
+    expect(name.className).toContain('text-center')
+    expect(name.className).toContain('top-2')
   })
 
-  test('the tile establishes a container query context (`@container`) for the chip row\'s drop order', () => {
-    const { getByRole } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
-    expect(getByRole('link').className).toContain('@container')
+  test('the name sits inside the aspect-ratio picture, not in a separate header above it', () => {
+    const { getByText, container } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
+    const name = getByText('moto g06')
+    const picture = container.querySelector('.aspect-\\[9\\/16\\]')
+    expect(picture).toBeTruthy()
+    expect(picture?.contains(name)).toBe(true)
   })
 })
 
 /**
- * The height-stability clause (plan 92 §4.8's own verifiable result): a
- * tile's height must be IDENTICAL whether or not the device is held. There
- * is no real CSS layout engine under happy-dom (`getBoundingClientRect`
- * always reads zero), so the mechanism that guarantees it is asserted
- * directly instead of a pixel measurement: the header block's own DOM
- * structure — the only part of the tile with a fixed, content-driven height
- * — has the SAME number of children whether or not `heldBy`/`assistedBy` is
- * present, because the holder chip now renders inside the picture
- * container (an absolutely positioned overlay, which does not participate
- * in the picture's own `aspect-[9/16]` sizing) rather than as a third line
- * in the header.
+ * The height-stability clause (plan 92 §4.8's own verifiable result, still
+ * true after plan 101 §5 step 101.7 deleted the header entirely): a tile's
+ * height must be IDENTICAL whether or not the device is held. There is no
+ * real CSS layout engine under happy-dom (`getBoundingClientRect` always
+ * reads zero), so the mechanism that guarantees it is asserted directly
+ * instead of a pixel measurement — with the header gone, the root `Link` has
+ * exactly two children now (the status rail, then the picture) regardless of
+ * `heldBy`/`assistedBy`, because the holder chip renders as an absolutely
+ * positioned overlay INSIDE the picture, never as a sibling that could add a
+ * third root child and change the tile's own box height.
  */
-describe('WallTile — height stability: the holder no longer changes the header (plan 92 §4.8, fixes F31)', () => {
-  test('the header block has the same number of children with vs without a holder', () => {
+describe('WallTile — height stability: no header left to grow (plan 92 §4.8 fixes F31, plan 101 §5 step 101.7)', () => {
+  test('the root Link has the same two children (rail, picture) with vs without a holder', () => {
     const heldDevice: DeviceInfo = {
       ...device,
       status: 'manual',
@@ -440,14 +507,13 @@ describe('WallTile — height stability: the holder no longer changes the header
     }
     const plain = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
     const held = renderWithApi(<WallTile device={heldDevice} live={false} onShowLive={() => undefined} />)
-    const plainHeader = plain.container.querySelector('a')?.children[0]
-    const heldHeader = held.container.querySelector('a')?.children[0]
-    expect(plainHeader).toBeTruthy()
-    expect(heldHeader).toBeTruthy()
-    expect(heldHeader?.children.length).toBe(plainHeader?.children.length)
+    const plainRoot = plain.container.querySelector('a')
+    const heldRoot = held.container.querySelector('a')
+    expect(plainRoot?.children.length).toBe(2)
+    expect(heldRoot?.children.length).toBe(plainRoot?.children.length)
   })
 
-  test('the holder badge itself renders inside the picture container, not the header', () => {
+  test('the holder badge itself renders inside the picture container, not as a sibling of the rail', () => {
     const heldDevice: DeviceInfo = {
       ...device,
       status: 'manual',
@@ -455,10 +521,10 @@ describe('WallTile — height stability: the holder no longer changes the header
     }
     const { container, getByTitle } = renderWithApi(<WallTile device={heldDevice} live={false} onShowLive={() => undefined} />)
     const root = container.querySelector('a')
-    const header = root?.children[0]
+    const rail = root?.children[0]
     const picture = root?.children[1]
     const badge = getByTitle('Controlled by Bob')
-    expect(header?.contains(badge)).toBe(false)
+    expect(rail?.contains(badge)).toBe(false)
     expect(picture?.contains(badge)).toBe(true)
   })
 

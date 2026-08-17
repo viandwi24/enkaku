@@ -331,7 +331,7 @@ export function createNodeHosts(deps: {
             const bundlePath = `${deps.dataDir}/cache/job-${jobId}.mjs`
             await Bun.write(bundlePath, bundle)
             // `scriptExportId` (plan 82 §3.2) selects which member of a plugin
-            // bundle to run — undefined for a standalone bundle, exactly the
+            // bundle to run — undefined for a bundle with no `scripts` array, exactly the
             // same optional field the local executor threads through.
             const result = await runner.execute({ id: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
             send({

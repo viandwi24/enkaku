@@ -41,12 +41,15 @@ export function CutoverDialog({
   open,
   onOpenChange,
   onDone,
+  nonModal = false,
 }: {
   device: DeviceInfo | null
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Called once the phone answers on the network — the caller reloads the device (its badge, address and mediumSource all just changed). */
   onDone: () => void
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  nonModal?: boolean
 }) {
   const [medium, setMedium] = useState<ConnectionMedium>('wired')
   const [port, setPort] = useState('')
@@ -131,8 +134,8 @@ export function CutoverDialog({
   const connectedPort = state?.connectedAddress ? Number(state.connectedAddress.split(':').pop()) : null
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
+      <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
         <DialogHeader>
           <DialogTitle>Move {device.label} to the network</DialogTitle>
           {step === 'check' && (

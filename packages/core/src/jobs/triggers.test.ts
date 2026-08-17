@@ -30,7 +30,7 @@ function seedDevice(db: Db, id: string, status = 'idle') {
 }
 
 function seedScript(db: Db, id: string, name: string, version = '1.0.0', runtime: unknown = null) {
-  db.insert(scripts).values({ id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date(), runtime }).run()
+  db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, bundle: 'export {}', enabled: true, createdAt: new Date(), runtime }).run()
 }
 
 let seq = 0

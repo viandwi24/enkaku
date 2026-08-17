@@ -246,10 +246,42 @@ describe('DeviceCard — assistedBy (plan 91 §3.4 item 4, §4.4, F25)', () => {
       ...BASE_DEVICE,
       status: 'busy',
       heldBy: { kind: 'job', id: 'job-1', label: 'checkout@1.4.2', runId: null, takeable: false, acquiredAt: 0, expiresAt: null },
-      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }],
+      // Plan 105 §3.2 — a fresh `expiresAt` (just touched) so this reads
+      // "Assisting", not "May assist" (`HolderBadge`'s activity split).
+      assistedBy: [{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: false, acquiredAt: 0, expiresAt: Math.floor(Date.now() / 1000) + 300 }],
     }
     const { getByTitle } = renderWithApi(<DeviceCard device={device} />)
     expect(getByTitle('Running checkout@1.4.2 — open the job')).toBeTruthy()
     expect(getByTitle('Assisting — Alice')).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 101 §5 step 101.7 (folded in mid-step, 2026-08-16): no more checkbox
+ * — `selected` only ever drives the accent tint/border now (`refs/ui`'s own
+ * rule, "selection is the card's own background tint and accent border,
+ * never a badge"). The click that actually TOGGLES selection lives on the
+ * `[data-device-id]` wrapper `app/page.tsx` puts around every card, proven
+ * end-to-end in `app/page.test.tsx` rather than here — this file only owns
+ * what `DeviceCard` itself renders for a given `selected` value.
+ */
+describe('DeviceCard — selection is a tint + accent border, never a checkbox (plan 101 §5 step 101.7)', () => {
+  test('no checkbox anywhere on the card, selected or not', () => {
+    const { queryByRole, rerender } = renderWithApi(<DeviceCard device={BASE_DEVICE} />)
+    expect(queryByRole('checkbox')).toBeNull()
+    rerender(<DeviceCard device={BASE_DEVICE} selected />)
+    expect(queryByRole('checkbox')).toBeNull()
+  })
+
+  test('selected carries the accent border/ring; unselected (or omitted) does not', () => {
+    const { container: plain } = renderWithApi(<DeviceCard device={BASE_DEVICE} />)
+    expect(plain.firstElementChild?.className).not.toContain('border-accent')
+
+    const { container: unselected } = renderWithApi(<DeviceCard device={BASE_DEVICE} selected={false} />)
+    expect(unselected.firstElementChild?.className).not.toContain('border-accent')
+
+    const { container: selected } = renderWithApi(<DeviceCard device={BASE_DEVICE} selected />)
+    expect(selected.firstElementChild?.className).toContain('border-accent')
+    expect(selected.firstElementChild?.className).toContain('ring-accent')
   })
 })

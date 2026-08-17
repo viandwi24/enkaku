@@ -123,7 +123,7 @@ describe('defineRecording — the document drives the interpreter', () => {
     expect(def.params.safeParse({}).success).toBe(true)
   })
 
-  test('rejects a document that fails schema validation (e.g. bad version) — the SAME validation `defineScript` would reject', () => {
+  test('rejects a document that fails schema validation (e.g. bad version) — `RecordingDocSchema` is the gate, and it is stricter than any hand check', () => {
     expect(() => defineRecording(baseDoc({ version: 'v1' }))).toThrow()
   })
 })

@@ -2,7 +2,7 @@ import { hostname, tmpdir, userInfo } from 'node:os'
 import { mkdtempSync, rmSync, watch } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { isPlugin } from '../plugin'
-import { buildEntry } from './publish'
+import { buildEntry, NOT_A_PLUGIN_MESSAGE } from './publish'
 
 export interface DevOptions {
   entry: string
@@ -35,7 +35,7 @@ export async function devCommand(opts: DevOptions): Promise<void> {
     try {
       const built = await buildEntry(opts.entry, tmp)
       if (!isPlugin(built.default)) {
-        throw new Error('enkaku dev is for a plugin entry (definePlugin) — a standalone script (defineScript) uses `enkaku publish` instead')
+        throw new Error(NOT_A_PLUGIN_MESSAGE)
       }
       const def = built.default as { id: string; version: string; scripts: { id: string }[] }
       const name = opts.name ?? def.id
@@ -72,11 +72,11 @@ export async function devCommand(opts: DevOptions): Promise<void> {
   // a file half-written must not crash the whole watch loop (§3.5's own
   // spirit: the CLI's local build is a fast feedback loop, not something
   // that punishes an in-progress edit). The VERY FIRST build is different:
-  // an entry that is not a plugin at all (`defineScript`, not
-  // `definePlugin`) is a usage error, not a transient one — it should stop
-  // the command and exit non-zero, pointing the author at `enkaku publish`
-  // instead, rather than silently sitting there "watching" something it can
-  // never push.
+  // an entry whose default export is not a `definePlugin()` result is a usage
+  // error, not a transient one — it stops the command and exits non-zero
+  // carrying the same wrapper `enkaku publish` shows
+  // (`NOT_A_PLUGIN_MESSAGE`), rather than silently sitting there "watching"
+  // something it can never push.
   const rebuildSoft = async () => {
     if (building) {
       pending = true

@@ -17,33 +17,69 @@
  * makes one red dot among a dozen devices catch the eye immediately.
  */
 @theme {
-  /* Surfaces: graphite with a blue cast, like anodised aluminium. */
+  /*
+   * Plan 101 (M66) step 101.1 — values moved from `refs/ui/Enkaku
+   * Dashboard.dc.html`, converted to OKLCH (never pasted as hex, so this
+   * file does not drift into two notations). Every value below is a VALUE
+   * change only — no token was added or removed except where noted, so the
+   * 125 component files that already name these tokens pick up the new
+   * palette with zero edits (plan 101 §3.1).
+   *
+   * `--color-bg` is the one deliberate exception: plan 101 H3 (owner-run,
+   * §7) decides whether the reference's near-black `#0a0a0a` replaces this
+   * cool-graphite value or whether `docs/design.md`'s "pure black makes
+   * status colours shout" argument stands. Left at its pre-refresh value
+   * until that judgement is recorded — see `docs/design.md` §Direction for
+   * the same note.
+   */
   --color-bg: oklch(0.185 0.012 245);
-  --color-surface: oklch(0.225 0.014 245);
-  --color-surface-2: oklch(0.265 0.015 245);
-  --color-surface-3: oklch(0.31 0.016 245);
-  --color-line: oklch(0.32 0.014 245);
-  --color-line-strong: oklch(0.42 0.016 245);
+  --color-surface: oklch(0.209 0.004 245); /* #181818 */
+  /* Repurposed by plan 101: the reference's "surface-2" is a RECESSED panel
+     (#0d0d0d, darker than --color-surface), not the elevated one this token
+     meant before the refresh — the mapping plan 101 §4.1 states explicitly. */
+  --color-surface-2: oklch(0.159 0.004 245); /* #0d0d0d */
+  /* No reference counterpart (the mockup never needed a third surface
+     step) — kept as the ELEVATED surface existing components (dialogs,
+     popovers, skeletons) already rely on, continuing the pre-refresh
+     progression above --color-surface rather than guessing a new role. */
+  --color-surface-3: oklch(0.27 0.006 245);
+  --color-line: oklch(0.325 0.002 245); /* rgba(255,255,255,0.12) composited on #181818 */
+  --color-line-strong: oklch(0.341 0.002 245); /* rgba(255,255,255,0.14) composited on #181818 */
 
-  --color-fg: oklch(0.94 0.004 245);
-  --color-fg-muted: oklch(0.72 0.012 245);
-  --color-fg-subtle: oklch(0.58 0.012 245);
+  --color-fg: oklch(0.961 0.002 245); /* #f2f2f2 */
+  /* The reference expresses muted/subtle text as alpha-white; converted to
+     solid tokens (composited over --color-surface) so opacity modifiers on
+     THESE tokens stay available for callers that genuinely want them,
+     rather than the tokens themselves being semi-transparent. */
+  --color-fg-muted: oklch(0.64 0.004 245); /* rgba(255,255,255,0.5) composited on #181818 */
+  --color-fg-subtle: oklch(0.52 0.004 245); /* rgba(255,255,255,0.35) composited on #181818 */
 
-  /* Interactive: a muted blue-cyan, like a backlit button. Deliberately not
-     the "acid" accent that dark themes default to. */
-  --color-accent: oklch(0.70 0.11 225);
-  --color-accent-strong: oklch(0.78 0.13 225);
+  /* Interactive: the reference's backlit blue. */
+  --color-accent: oklch(0.756 0.130 250.5); /* #6db5ff */
+  --color-accent-strong: oklch(0.82 0.14 250.5);
   --color-accent-fg: oklch(0.16 0.02 245);
 
-  /* Status = an equipment indicator LED. Brightness is matched perceptually
-     so no status "shouts" without cause. */
-  --color-led-ok: oklch(0.74 0.15 152);
-  --color-led-active: oklch(0.72 0.13 245);
-  --color-led-warn: oklch(0.80 0.14 72);
-  --color-led-danger: oklch(0.64 0.19 25);
-  --color-led-off: oklch(0.48 0.010 245);
+  /* Status = an equipment indicator LED. `led-ok`/`led-warn`/`led-danger`
+     map 1:1 onto the reference's three status colours (plan 101 G6).
+     `led-active`/`led-off` have NO reference counterpart — the mockup never
+     had to render an idle rack — so they are RE-DERIVED against the new
+     palette, never dropped (plan 101 §3.2): `led-active`'s hue now matches
+     the new accent (250.5, was 245) so "streaming" still reads as an
+     extension of the interactive colour; `led-off`'s lightness is nudged
+     down slightly to keep it legible against the still-fairly-dark
+     `--color-surface` above. */
+  --color-led-ok: oklch(0.800 0.182 151.7); /* #4ade80 */
+  --color-led-active: oklch(0.72 0.13 250.5);
+  /* The reference's warn (#fefa3d) converts to oklch(0.958 0.192 108.3) —
+     markedly brighter than anything else in this palette, exactly the
+     contrast risk plan 101 §4.1/§8 flagged. Landed a step down in both L
+     and C (still clearly brighter than the pre-refresh warn) rather than
+     adopted verbatim. */
+  --color-led-warn: oklch(0.88 0.17 108);
+  --color-led-danger: oklch(0.691 0.199 23.9); /* #ff5c5c */
+  --color-led-off: oklch(0.46 0.006 245);
 
-  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
 
   --radius-card: 0.5rem;
@@ -98,7 +134,15 @@
   }
 
   body {
-    background: var(--color-bg);
+    /*
+     * Plan 101 (M66) step 101.3 — the reference's dot-grid page background
+     * (`refs/ui`): a repeating `radial-gradient`, not a filter, so it costs
+     * one GPU texture regardless of page size (plan 101 §3.7) — cheap enough
+     * to apply everywhere, unlike blur (§3.6, kept off the body).
+     */
+    background-color: var(--color-bg);
+    background-image: radial-gradient(color-mix(in oklch, var(--color-fg) 7%, transparent) 1px, transparent 1px);
+    background-size: 26px 26px;
     color: var(--color-fg);
     font-family: var(--font-sans);
     font-size: 14px;
@@ -151,6 +195,26 @@
   }
   .status-rail[data-status='offline'] {
     background: var(--color-led-off);
+  }
+
+  /*
+   * Plan 101 §5 step 101.7 — the Wall tile's `AgentAlertChip` left the
+   * tile, but the fact it flagged (a guest agent that failed, or one
+   * pinned to an outdated build) must not vanish along with it: a device
+   * casting a perfectly good picture with a genuinely broken agent would
+   * otherwise read as healthy. `WallTile` sets this attribute only for
+   * `failed`/`outdated` (quiet for ready/absent/provisioning/unsupported,
+   * the same rule `AgentAlertChip` itself used) and only when the
+   * device's own status is not already offline/quarantined. Declared
+   * AFTER the `data-status` rules above so it wins on equal specificity
+   * (both are single-attribute selectors on `.status-rail`) without
+   * needing `!important`.
+   */
+  .status-rail[data-agent-alert='failed'] {
+    background: var(--color-led-danger);
+  }
+  .status-rail[data-agent-alert='outdated'] {
+    background: var(--color-led-warn);
   }
 
   /* Only a device that is actually working pulses — motion marks real

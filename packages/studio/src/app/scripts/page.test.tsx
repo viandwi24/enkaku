@@ -1,108 +1,39 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import '@/lib/test/nav'
-import { setSearchParams } from '@/lib/test/nav'
+import { mockRouter, setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import ScriptsPage from './page'
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
+beforeEach(() => {
+  mockRouter.replace.mockClear()
+})
 afterEach(cleanup)
 
-const scriptGroup = {
-  id: 'script-1',
-  name: 'checkout',
-  latestVersion: '1.0.0',
-  versionCount: 1,
-  lastPublishedAt: 0,
-  enabled: true,
-  kind: 'script',
-}
-
-const script = {
-  id: 'script-1',
-  name: 'checkout',
-  version: '1.0.0',
-  kind: 'script',
-  paramsSchema: null,
-  enabled: true,
-  createdBy: null,
-  source: null,
-  createdAt: 0,
-}
-
-describe('ScriptsPage — smoke render', () => {
-  test('loaded: shows the script row', async () => {
+/**
+ * `/scripts` is a redirect since the Scripts list was merged into `/plugins`
+ * (owner's own ask, 2026-08-17). It fetches nothing of its own, so the smoke
+ * render plan 72 §4.5 requires is exactly this: mount it and confirm it
+ * redirects rather than throwing — the same shape `/topology` has carried
+ * since plan 47 §3.6.
+ */
+describe('ScriptsPage — redirect into the merged Plugins & scripts screen', () => {
+  test('replaces into /plugins', () => {
     setSearchParams({})
-    renderWithApi(<ScriptsPage />, {
-      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
-      '/api/scripts?group=name': { body: { items: [scriptGroup], nextCursor: null, total: 1 } },
-      '/api/scripts/script-1': { body: { script } },
-    })
-    await waitFor(() => expect(screen.getByText('checkout')).toBeTruthy())
+    expect(() => renderWithApi(<ScriptsPage />, {})).not.toThrow()
+    expect(mockRouter.replace).toHaveBeenCalledWith('/plugins')
   })
 
-  test('loaded: empty list shows the empty state', async () => {
-    setSearchParams({})
-    renderWithApi(<ScriptsPage />, {
-      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
-      '/api/scripts?group=name': { body: { items: [], nextCursor: null, total: 0 } },
-    })
-    await waitFor(() => expect(screen.getByText('No scripts yet')).toBeTruthy())
+  test('carries the query over — `?device=` is what makes the Run flow open its dialog on arrival', () => {
+    setSearchParams({ device: 'dev-1' })
+    renderWithApi(<ScriptsPage />, {})
+    expect(mockRouter.replace).toHaveBeenCalledWith('/plugins?device=dev-1')
   })
 
-  test('loading: shows a busy skeleton before the script list loads', () => {
-    setSearchParams({})
-    renderWithApi(<ScriptsPage />, {}, { unmatched: 'pending' })
-    expect(document.querySelector('[aria-busy="true"]')).toBeTruthy()
-  })
-
-  test('error: a failed /api/scripts fetch shows a named error', async () => {
-    setSearchParams({})
-    renderWithApi(<ScriptsPage />, {
-      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
-      '/api/scripts?group=name': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'scripts boom' } } },
-    })
-    await waitFor(() => expect(screen.getByText('scripts boom')).toBeTruthy())
-  })
-})
-
-const pluginScriptGroup = {
-  id: 'script-2',
-  name: 'tiktok/login',
-  latestVersion: '1.0.0',
-  versionCount: 1,
-  lastPublishedAt: 0,
-  enabled: true,
-  kind: 'script',
-}
-
-describe('ScriptsPage — Plugin column and origin filter (plan 82 §4.6, step 13)', () => {
-  test('a plugin member shows its owning plugin in the Plugin column; a standalone script shows a dash', async () => {
-    setSearchParams({})
-    renderWithApi(<ScriptsPage />, {
-      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
-      '/api/scripts?group=name': { body: { items: [scriptGroup, pluginScriptGroup], nextCursor: null, total: 2 } },
-      '/api/scripts/script-1': { body: { script } },
-    })
-    await waitFor(() => expect(screen.getByText('tiktok/login')).toBeTruthy())
-    expect(screen.getByText('tiktok')).toBeTruthy() // the Plugin column cell for tiktok/login
-    expect(screen.getByText('checkout')).toBeTruthy()
-  })
-
-  test('the origin filter narrows the list to plugin-owned scripts only', async () => {
-    setSearchParams({})
-    renderWithApi(<ScriptsPage />, {
-      '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
-      '/api/scripts?group=name': { body: { items: [scriptGroup, pluginScriptGroup], nextCursor: null, total: 2 } },
-      '/api/scripts/script-1': { body: { script } },
-    })
-    await waitFor(() => expect(screen.getByText('checkout')).toBeTruthy())
-
-    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by origin' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Plugin' }))
-
-    await waitFor(() => expect(screen.queryByText('checkout')).toBeNull())
-    expect(screen.getByText('tiktok/login')).toBeTruthy()
+  test('carries `?cluster=` over too', () => {
+    setSearchParams({ cluster: 'cl-1' })
+    renderWithApi(<ScriptsPage />, {})
+    expect(mockRouter.replace).toHaveBeenCalledWith('/plugins?cluster=cl-1')
   })
 })

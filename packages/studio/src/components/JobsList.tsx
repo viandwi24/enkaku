@@ -100,6 +100,30 @@ export interface JobsListProps {
   /** The server's total on the FIRST page — a tab badge, a count in a heading. Null when the endpoint does not count. */
   onTotal?: (total: number | null) => void
   /**
+   * Plan 103 §5 step 103.4 — `false` only from the device popup's own Jobs
+   * read popup, whose own verifiable result is "a job row does not navigate
+   * away from the Wall": the popup floats OVER the Wall (plan 103 §3.2's
+   * whole point), and `/jobs/detail` is a different route entirely — a
+   * `next/link` there would unmount the Wall (and this popup along with
+   * it), which is exactly what a read popup must not do (§3.3: "you read
+   * this, nothing needs touching on the phone meanwhile"). `true`
+   * (default) everywhere else — the Jobs page, a script's run history, a
+   * batch's members — is unchanged: the script name still links out.
+   */
+  linkToDetail?: boolean
+  /**
+   * Plan 103 §9 Q2 (answered 2026-08-16, closing step 103.11's audit row
+   * 4) — the device popup's own Jobs tab renders a job's detail IN PLACE
+   * (`JobDetailPanel`, `components/device-popup/`) rather than linking out,
+   * so the row still needs to be a real control even with `linkToDetail`
+   * `false`. Called with the job's id when the script-name cell is
+   * activated; ignored unless `linkToDetail` is also `false` (a caller that
+   * still links out has no use for this). Omitted everywhere else — the
+   * Jobs page, a script's run history, a batch's members all keep linking
+   * out.
+   */
+  onOpenDetail?: (jobId: string) => void
+  /**
    * Plan 94 §4.9, §4.10, step 94.10 — the live `job.waiting` push (94.6's
    * own wire addition), keyed by jobId. `reason: 'paced'` is a job the
    * pacer is holding back for its next repetition (F25 — this plan's whole
@@ -152,6 +176,8 @@ export function JobsList({
   onTotal,
   fetchPage,
   waiting,
+  linkToDetail = true,
+  onOpenDetail,
 }: JobsListProps) {
   const now = useNow()
   const { run, isPending } = useAction()
@@ -213,9 +239,17 @@ export function JobsList({
             {columns.script && (
               <TableCell>
                 <span className="inline-flex items-center gap-1.5">
-                  <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
-                    {scriptLabel(j)}
-                  </Link>
+                  {linkToDetail ? (
+                    <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                      {scriptLabel(j)}
+                    </Link>
+                  ) : onOpenDetail ? (
+                    <button type="button" className="font-medium hover:text-accent hover:underline" onClick={() => onOpenDetail(j.jobId)}>
+                      {scriptLabel(j)}
+                    </button>
+                  ) : (
+                    <span className="font-medium">{scriptLabel(j)}</span>
+                  )}
                   {j.assistCount > 0 && (
                     <Tooltip>
                       <TooltipTrigger asChild>

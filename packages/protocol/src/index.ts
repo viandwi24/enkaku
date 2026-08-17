@@ -269,6 +269,8 @@ export {
   AgentStateSchema,
   AgentStatusSchema,
   DEFAULT_AGENT_STATUS,
+  GuestAgentIdentitySchema,
+  DEFAULT_GUEST_AGENT_IDENTITY,
   type DeviceStatus,
   type DeviceInfo,
   type DeviceAdded,
@@ -283,7 +285,18 @@ export {
   type DeviceConnection,
   type AgentState,
   type AgentStatus,
+  type GuestAgentIdentity,
 } from './device'
+export {
+  PreparationStateSchema,
+  PreparationComponentStatusSchema,
+  DEFAULT_PREPARATION_COMPONENT_STATUS,
+  DevicePreparationSchema,
+  DEFAULT_DEVICE_PREPARATION,
+  type PreparationState,
+  type PreparationComponentStatus,
+  type DevicePreparation,
+} from './device-preparation'
 export {
   ReadinessSchema,
   ReadinessBlockedReasonSchema,
@@ -342,6 +355,7 @@ export {
   type DeviceInstrumentation,
   type DeviceSettings,
   type FarmSettings,
+  type FarmDeviceDefaults,
   type JobSettings,
   type SessionSettings,
   type WallSettings,
@@ -465,10 +479,7 @@ export {
   JobWaitingMessage,
   /** Plan 99 §4.6, §4.9 — `job_nodes.status`'s domain, shared by `job.status`'s `node` block. */
   JobNodeStatusSchema,
-  /** Plan 99 §4.9, step 99.8 — the node timeline and resume. */
-  JobNodeErrorSchema,
-  JobNodeSchema,
-  JobNodesResponseSchema,
+  /** Plan 99 §3.5, §4.9, step 99.8 — resume. The node timeline's own schemas come from `./api/jobs` via `export * from './api'` above. */
   JobResumeRequestSchema,
   JobResumeResponseSchema,
   type JobStatus,
@@ -478,9 +489,6 @@ export {
   type ArtifactInfo,
   type SleepJobParams,
   type JobNodeStatus,
-  type JobNodeError,
-  type JobNode,
-  type JobNodesResponse,
   type JobResumeRequest,
   type JobResumeResponse,
 } from './messages/job'
@@ -1392,3 +1400,62 @@ export {
   DeviceLabelsApplyResponseSchema,
   type DeviceLabelsApplyResult,
 } from './api/device-label'
+
+// Plan 107 (M72 — long-running operations), step 107.2, §3.1, §3.4, §4.
+// `GET /api/transfers` — the in-memory transfer registry's response shape
+// (see `./api/transfers.ts`'s own doc comment for the full reasoning: what
+// an in-memory registry loses on restart, and why it is shaped to survive a
+// later swap to a durable row unchanged). Its own new file, not folded into
+// `./api/transfer.ts` (singular — `InstallResponseSchema`/`PushResponseSchema`/
+// `PullResponseSchema`, the per-call responses) or `./messages/transfer.ts`
+// (the WS wire messages) above, because this is a THIRD, distinct thing: a
+// list snapshot, never a per-call response or a WS message.
+export {
+  TransferStateSchema,
+  TransferOriginSchema,
+  TransferRecordSchema,
+  TransfersResponseSchema,
+  type TransferState,
+  type TransferOrigin,
+  type TransferRecord,
+} from './api/transfers'
+
+// Plan 108 (M73 — plugin surface), step 108.1, §4.2.
+// The declarative screen a plugin contributes to Studio: the LAYOUT
+// vocabulary (nav entries, views, tables, actions) plus the closed,
+// non-Turing `Binding` language an action reads a row or a form value with
+// (§3.4). Its own new file, `./plugin-surface.ts`, rather than an addition
+// to `./schema/vocabulary.ts` — that module is the FIELD vocabulary
+// (`x-enkaku`, what a value MEANS) and this one names layout, which is a
+// different thing with a different review discipline (§3.3). It reuses
+// `JsonSchemaNodeSchema` and `ScriptRefSchema` rather than restating
+// either, so a plugin's columns and forms go through the one resolver
+// Studio already has and a plugin's script references through the one
+// reference grammar the farm already resolves.
+export {
+  SURFACE_LIMITS,
+  ICON_NAMES,
+  IconNameSchema,
+  SurfaceIdSchema,
+  DataSourceSchema,
+  BINDING_DEVICE_FIELDS,
+  BINDING_ENTRY_FIELDS,
+  BindingSchema,
+  ActionSpecSchema,
+  ViewSpecSchema,
+  NavEntrySchema,
+  PluginSurfaceSchema,
+  validatePluginSurface,
+  type IconName,
+  type DataSource,
+  type BindingDeviceField,
+  type BindingEntryField,
+  type Binding,
+  type ActionSpec,
+  type ActionSpecInput,
+  type ViewSpec,
+  type NavEntry,
+  type PluginSurface,
+  type PluginSurfaceInput,
+  type PluginSurfaceValidation,
+} from './plugin-surface'

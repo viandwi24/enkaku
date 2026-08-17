@@ -3,56 +3,71 @@
 The SDK for writing Enkaku automation scripts. Write them in your own editor (with full autocomplete), then publish to a farm.
 
 ```bash
-bun add @enkaku/sdk zod
+bunx enkaku init my-pack     # scaffolds ./my-pack — publishes with no edits
+cd my-pack && bun install
 ```
 
-## Script shape
+## A script cannot exist outside a plugin
+
+**There is no `defineScript`.** A **plugin** is the one thing the farm publishes, versions, activates, and rolls back; a script is a *member* of one. One member is a perfectly ordinary plugin — that is what `enkaku init` writes — and adding a second script later is one more entry in `scripts`, not a new project.
+
+This is a hard rule, not a convention: `enkaku publish` refuses an entry whose default export is not a `definePlugin()` result, and the refusal prints the wrapper so you can fix it from the error text.
 
 ```ts
-import { defineScript } from '@enkaku/sdk'
+import { definePlugin } from '@enkaku/sdk'
 import { z } from 'zod'
 
-export default defineScript({
-  id: 'post-content',
-  version: '2.0.0',
-  params: z.object({ caption: z.string() }),
-  timeout: 180_000,   // per attempt, defaults to 300_000
-  retries: 1,         // extra attempts after a failure, defaults to 0
+export default definePlugin({
+  id: 'my-pack',                // [a-z0-9-] — the KV namespace, and half of every `plugin/script` ref
+  version: '2.0.0',             // semver, stamped onto every member below
+  title: 'My pack',
+  description: 'What this pack is for.',
+  scripts: [
+    {
+      id: 'post-content',       // referenced as `my-pack/post-content`
+      title: 'Post content',    // shown wherever the farm names this script
+      description: 'Opens the composer and posts a caption.',
+      params: z.object({ caption: z.string() }),
+      timeout: 180_000,         // per attempt, defaults to 300_000
+      retries: 1,               // extra attempts after a failure, defaults to 0
 
-  async prepare(ctx) {          // get the device ready — may fail and retry
-    await ctx.device.app.forceStop('com.myapp')
-    await ctx.device.app.launch('com.myapp')
-  },
+      async prepare(ctx) {          // get the device ready — may fail and retry
+        await ctx.device.app.forceStop('com.myapp')
+        await ctx.device.app.launch('com.myapp')
+      },
 
-  async run(ctx) {              // the real work; the return value lands in jobs.result
-    await ctx.device.tap({ desc: 'New post' })
-    await ctx.device.waitFor({ id: 'caption_input' })
-    await ctx.device.type(ctx.params.caption)
-    await ctx.artifact.screenshot('before-post')
-    return { ok: true }
-  },
+      async run(ctx) {              // the real work; the return value lands in jobs.result
+        await ctx.device.tap({ desc: 'New post' })
+        await ctx.device.waitFor({ id: 'caption_input' })
+        await ctx.device.type(ctx.params.caption)
+        await ctx.artifact.screenshot('before-post')
+        return { ok: true }
+      },
 
-  async finish(ctx) {           // ALWAYS runs — clean up state
-    if (ctx.error) await ctx.artifact.screenshot('failed')
-    await ctx.device.app.forceStop('com.myapp')
-  },
+      async finish(ctx) {           // ALWAYS runs — clean up state
+        if (ctx.error) await ctx.artifact.screenshot('failed')
+        await ctx.device.app.forceStop('com.myapp')
+      },
+    },
+  ],
 })
 ```
+
+**A member never carries its own `version`.** Every member of a bundle shares the plugin's — the bytes, the instant, and the source tree are the same, so two members cannot honestly claim different versions. Declaring one that disagrees with the plugin's throws at import time.
+
+Everything below is written as a member. `ctx`, the phases, `params`, `result`, `runtime`, `timing` and the rules are identical to what a script has always had; only the wrapper changed.
 
 ## Declaring a result
 
 `run`'s return value has always landed in `jobs.result` — as `unknown`, unvalidated, unmeasured, rendered as raw `JSON.stringify`. `result` is the optional, second half of the same idea `params` already gives the input side: declare a shape, and the farm checks it, stores it, sizes it, and renders it as values instead of a wall of JSON — with no per-script UI written anywhere.
 
 ```ts
-import { defineScript, ui } from '@enkaku/sdk'
+import { ui, type PluginMemberScript } from '@enkaku/sdk'
 import { z } from 'zod'
 
-export default defineScript({
-  id: 'auto-scroll',
-  version: '2.1.0',
-  params: z.object({ videos: z.number().int().min(1).max(2_000).default(30) }),
+const params = z.object({ videos: z.number().int().min(1).max(2_000).default(30) })
 
-  result: z.object({
+const result = z.object({
     videos: z.number().int()
       .describe('How many videos were actually watched.')
       .meta(ui({ title: 'Videos watched', kind: 'count', summary: true })),
@@ -63,18 +78,28 @@ export default defineScript({
       .describe('How many videos fell into each watch-length bucket.')
       .meta(ui({ title: 'Watch-length buckets' })),
     endedOnStall: z.boolean().default(false),
-  }),
+})
+
+// Declared as a `const` carrying BOTH generics — that is the inference site
+// that makes a wrong `run` return value a compile error. Then drop it into
+// `definePlugin({ ..., scripts: [autoScroll] })`.
+export const autoScroll: PluginMemberScript<typeof params, typeof result> = {
+  id: 'auto-scroll',
+  title: 'Auto-scroll the feed',
+  description: 'Watches videos until the target count is reached.',
+  params,
+  result,
 
   async run(ctx) {
     // ... returns the shape above; a wrong shape is a compile error right here, in your editor
     return { videos: 15, watchSeconds: 812, byLabel: { skim: 4, full: 11 }, endedOnStall: false }
   },
-})
+}
 ```
 
 **Optional, always — declaring nothing is not a lesser choice.** A definition with no `result` keeps `run` returning `Promise<unknown>` exactly as before, `scripts.result_schema` stays `NULL`, and the job renders exactly as it always has, plus one extra fact recorded on the row: `resultStatus: 'undeclared'`. There is no nag and no deprecation path for the scripts that genuinely have nothing structured to say.
 
-**The payoff for declaring one is a compile error in your own editor, not a runtime surprise.** `defineScript`'s second generic makes a `run` that returns the wrong shape fail `tsc` before you ever publish — the same trick `ui()` already plays on a misspelled `kind`.
+**The payoff for declaring one is a compile error in your own editor, not a runtime surprise.** `PluginMemberScript`'s second generic makes a `run` that returns the wrong shape fail `tsc` before you ever publish — the same trick `ui()` already plays on a misspelled `kind`. It has to be written at the member's own `const` declaration, as above: TypeScript cannot reverse-infer a second, independent generic per element of the `scripts` array, so a member written inline gets typed `params` (`ctx.params` is inferred) but a wide `result`.
 
 **Why the JSON Schema `enkaku publish` sends for `result` is `io: 'output'`, and `params`'s is `io: 'input'`, at two separate call sites.** A `params` schema describes what a person is about to type, so a field with a `.default()` must stay optional in the form — that is `io: 'input'`. A `result` schema describes a value that has already been produced, and by the time `run()` returns, every default has already been applied — so in `io: 'output'` mode a defaulted field is correctly published as `required`. Sharing one conversion helper between the two would get one of them wrong; the SDK gives each its own named call site with the reason written above it, and you never have to think about `io` yourself unless you are reading the generated schema.
 
@@ -138,9 +163,9 @@ Your live Zod schema — `.refine()`/`.superRefine()` included — is real, and 
 `timeout`/`retries` above are the oldest, narrowest slice of a bigger idea: a script can declare what it needs to run, as a sibling of `params`, and the farm either honours it or refuses it by name.
 
 ```ts
-export default defineScript({
+// One member of a plugin — `version` belongs to the plugin, not to a member.
+{
   id: 'post-content',
-  version: '2.0.0',
   params: z.object({ caption: z.string() }),
   runtime: {
     sdk: 1,                          // the SDK contract major this bundle was built against
@@ -150,10 +175,10 @@ export default defineScript({
     maxConcurrent: 1,                // at most one copy of THIS script running farm-wide at once
   },
   // ...
-})
+}
 ```
 
-`timeout`/`retries` are kept forever (a published script already used them) and are marked `@deprecated` rather than removed. `defineScript`/`definePlugin` fold both shapes into one `runtime` at **import time**: if you set `timeout: 30_000` *and* `runtime.timeoutMs: 60_000` with disagreeing values, publishing throws immediately, naming both numbers — a silent pick would be a bug you could never see by reading your own script back. Setting only one form, either form, is fine.
+`timeout`/`retries` are kept forever (a published script already used them) and are marked `@deprecated` rather than removed. `definePlugin` folds both shapes into one `runtime` at **import time**, per member: if you set `timeout: 30_000` *and* `runtime.timeoutMs: 60_000` with disagreeing values, publishing throws immediately, naming both numbers — a silent pick would be a bug you could never see by reading your own script back. Setting only one form, either form, is fine.
 
 **Read this paragraph twice before you set `maxRssBytes` or `maxConcurrent`: every field here is a restriction your script places on *itself* — never a permission it is requesting.** Declaring `maxRssBytes: 4_000_000_000` does **not** grant your script four gigabytes of memory. It states a ceiling *you* promise to stay under. The farm's own administrator-set ceiling still wins regardless of what you declare, and if you (or whoever runs your job) supply a per-job override that asks for more than the farm allows, the farm refuses the job outright — `E_RUNTIME_OVER_CEILING`, naming the ceiling it exceeded — it does **not** quietly clamp your number down and run anyway. If you take this envelope for an allowance, you will publish a script that runs fine on your own farm and then fails confusingly, at enqueue, on a farm you do not administer and whose ceiling you cannot see from here. The fix when that happens is never "ask for less by trial and error" — it is to ask whoever runs that farm what its ceiling actually is.
 
@@ -232,15 +257,14 @@ export default defineRecording({ /* the recording document, verbatim */ })
 ```
 
 `defineRecording(doc: RecordingDoc): ScriptDefinition` validates the document,
-derives `id`/`version`/`params`/`reset`/`timing` from it, and hands the result
-to `defineScript` itself — a recording-derived script goes through exactly the
-same validation, fold and freeze as one you wrote by hand. You will not
-normally call `defineRecording` yourself; it exists so the *interpreter* that
-walks a recording's steps lives in one place (the SDK), not duplicated between
-the core and Studio. **Detach** (Studio, the recording's review panel) turns a
-recording into a plain `defineScript` you own outright, with every step
-expanded as a literal `await` call — a one-way door, and the honest way to
-graduate a macro into a script with real branching.
+derives `id`/`version`/`params`/`reset`/`timing` from it, and returns an
+ordinary frozen script definition — indistinguishable from one you wrote by
+hand. You will not normally call `defineRecording` yourself; it exists so the
+*interpreter* that walks a recording's steps lives in one place (the SDK), not
+duplicated between the core and Studio. **Detach** (Studio, the recording's
+review panel) turns a recording into a plain script you own outright, with
+every step expanded as a literal `await` call — a one-way door, and the honest
+way to graduate a macro into a script with real branching.
 
 ### `device.gesture` and `device.longPress`
 
@@ -338,12 +362,14 @@ repetitions being pixel-identical), not a bug.
 `params` is not just a validator — it is what Studio's run dialog, schedule editor, and (soon) the agent's tool surface render *from*, with no per-script React anywhere. A plain `z.object({...})` already works: every field gets a box, a checkbox, or a dropdown, in declaration order, with a sensible fallback label. `ui()` is how you make that box the *right* box, and how you write down what a value means rather than leaving Studio to guess.
 
 ```ts
-import { defineScript, ui } from '@enkaku/sdk'
+import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 
-export default defineScript({
+// One member of a plugin's `scripts` array.
+{
   id: 'auto-scroll',
-  version: '1.0.0',
+  title: 'Auto-scroll the feed',
+  description: 'Watches videos until the target count is reached.',
   params: z.object({
     videos: z.number().int().min(1).max(2_000).default(30)
       .describe('How many videos to watch before stopping. The real count varies ±30%.')
@@ -356,12 +382,12 @@ export default defineScript({
       .meta(ui({ title: 'Like chance', kind: 'chance', group: 'Interaction' })),
   }),
   // ...
-})
+}
 ```
 
 That renders a stepper, an ordered range reading `5 s ~ 20 s`, and a slider reading `35%` — no control name appears anywhere in the code above, because `ui()` never lets you name one. A schema says what a value *means*; Studio decides how it looks, so the form can be restyled without a single script being republished.
 
-### `ui()` and the nine kinds
+### `ui()` and the kinds
 
 `ui({ title, description?, kind?, unit?, ...})` is a typed identity function — it returns a plain object for `.meta()`, but its real job happens at your own call site: a misspelled `kind`, a `unit` on a non-duration `kind`, or a `labels` map that doesn't belong are all **compile errors in your editor**, not a surprise when you publish.
 
@@ -376,6 +402,12 @@ That renders a stepper, an ordered range reading `5 s ~ 20 s`, and a slider read
 | `temperature` | number | degrees Celsius | `tempThresholdC` |
 | `text` | string | free text | a caption, a search query |
 | `packageName` | string | an Android package id | `reset.packages` |
+| `workspaceFolder` | string | a folder in the workspace | `/videos` — where a run writes its clips |
+| `workspaceFile` | string | a file in the workspace | `/captions.txt` |
+
+**The two workspace kinds are a path inside the workspace, never a host filesystem path** — `/videos`, `/captions.txt`, the same absolute-within-the-workspace string `ctx.fs`/`fs.list` take. Studio renders a browser over the workspace instead of a text box, so an operator picks a real folder or file rather than typing one from memory. A folder is stored **without** a trailing slash (`/videos`), because that is the only form the workspace's own path rules accept; the workspace root is `/`.
+
+`workspaceFile` takes an optional `extensions` (`ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })`), scoped to that one kind the way `unit` is scoped to `duration` — on any other kind it does not compile. It narrows what the browser **offers**, never what is accepted: a value stored before you added the filter still reads back and is still shown.
 
 `unit` is `'ms' | 's' | 'min' | 'h'`, and is **required by, and valid only for, `kind: 'duration'`** — `ui({ kind: 'duration' })` with no unit, or `unit` on any other kind, does not compile.
 
@@ -411,7 +443,7 @@ What changes is what the **form** can see. Converting your schema to JSON Schema
 `enkaku publish` tells you when this applies to you:
 
 ```
-warning: params carries 1 refinement that the run form cannot evaluate (intervalMs). Operators will see it as a job failure, not a form error. Consider an ordered range, showWhen, or a per-field bound.
+warning: script "auto-scroll": params carries 1 refinement that the run form cannot evaluate (intervalMs). Operators will see it as a job failure, not a form error. Consider an ordered range, showWhen, or a per-field bound.
 ```
 
 The one cross-field case that comes up in practice — "the low end of a range must not exceed the high end" — does not need a `.refine()` at all: declare the pair as an ordered tuple (`z.tuple([z.number(), z.number()])` with `ui({ kind: 'duration', unit: 'ms' })`, `ordered` defaults to `true`) and the form, the enqueue-time check, and the child all enforce `a ≤ b` from that one declaration. Save `.refine()` for genuine cross-field logic the form's vocabulary has no other way to express, and expect the warning above when you do.
@@ -441,7 +473,7 @@ This is **not a security sandbox**. A script bundle has full filesystem and netw
 
 ## Your script can be a workflow node
 
-A **workflow** (plan 99, M64) is a pipeline of published scripts, run as one job on one device under one lease — see `packages/protocol/README.md` and `packages/core/README.md` for the document shape and the executor. Nothing in `defineScript` changes to make a script usable as a node: any published script can be one, referenced by `name@version` (or `name@latest`), and it runs exactly the way it runs standalone — its own child process, its own `timeout`/`retries`/`params`/`finish()`. A workflow author cannot see your source, only your `paramsSchema` and, if you declare one, your output shape; they wire your script's parameters to a constant, a workflow parameter, or an earlier node's output through a closed binding grammar that never evaluates code (see `packages/protocol/README.md`'s "the rule that matters most").
+A **workflow** (plan 99, M64) is a pipeline of published scripts, run as one job on one device under one lease — see `packages/protocol/README.md` and `packages/core/README.md` for the document shape and the executor. Nothing about how you write a script changes to make it usable as a node: any published script can be one, referenced by `name@version` (or `name@latest`), and it runs exactly the way it runs on its own — its own child process, its own `timeout`/`retries`/`params`/`finish()`. A workflow author cannot see your source, only your `paramsSchema` and, if you declare one, your output shape; they wire your script's parameters to a constant, a workflow parameter, or an earlier node's output through a closed binding grammar that never evaluates code (see `packages/protocol/README.md`'s "the rule that matters most").
 
 Three things make a script a *good* node, and none of them are enforced — they are what makes the pipeline around your script trustworthy rather than merely runnable:
 
@@ -449,16 +481,144 @@ Three things make a script a *good* node, and none of them are enforced — they
 
 **An idempotent `finish()` — the same rule as always, now exercised harder.** A node's failed attempt is retried in place, same job, same device, same lease, a fresh child — which is nothing new (`finish` already runs in a fresh process after a killed attempt, see "Rules that matter" above). What is new is **resume**: an operator can restart a *later* job at this node, on a device your script has no memory of touching since. `finish()` must not assume anything about what ran immediately before it beyond what `ctx` itself tells you — no closure state, no "I know I just launched the app because the previous line did," because on a resumed run that previous line may not have executed in this process at all.
 
-**A `reset` declaration that is honest.** A workflow node defaults to `reset: 'farm'` if it is first in the pipeline, `reset: 'none'` for every node after — meaning by default your script's `prepare()` runs on whatever state the *previous* node left the device in, not a freshly reset one. If your script assumes it always starts from a clean launcher (force-stops nothing itself, expects no other app in the foreground), say so by declaring `reset: 'farm'` on that node in the workflow document rather than letting `prepare()` silently misbehave the one time it runs second in a pipeline. Conversely, if your script is a warm-up step whose entire purpose is to leave the device somewhere useful for the next node (the owner's own example: scroll the feed, then search from there), do not force-stop your own target app in `finish()` unless the workflow is actually ending — a cleanup written for standalone use can quietly undo the one thing the pipeline exists to preserve.
+**A `reset` declaration that is honest.** A workflow node defaults to `reset: 'farm'` if it is first in the pipeline, `reset: 'none'` for every node after — meaning by default your script's `prepare()` runs on whatever state the *previous* node left the device in, not a freshly reset one. If your script assumes it always starts from a clean launcher (force-stops nothing itself, expects no other app in the foreground), say so by declaring `reset: 'farm'` on that node in the workflow document rather than letting `prepare()` silently misbehave the one time it runs second in a pipeline. Conversely, if your script is a warm-up step whose entire purpose is to leave the device somewhere useful for the next node (the owner's own example: scroll the feed, then search from there), do not force-stop your own target app in `finish()` unless the workflow is actually ending — a cleanup written for a solo run can quietly undo the one thing the pipeline exists to preserve.
+
+## A plugin can own a screen — `surface`
+
+A **plugin** is one project (an `index.ts` calling `definePlugin`) that publishes several scripts sharing helpers, types, and constants as a single bundle. `definePlugin` also takes an optional `surface`: the screens the plugin contributes to Studio — a sidebar entry, a page, a table, forms, and actions. A plugin that omits `surface` is unaffected in every way.
+
+**The screen is data, not code.** There is no JavaScript of yours in the operator's session on the default path, no expression language, and no string interpolation. You declare *what the screen holds*; Studio draws it with the same components every other screen uses.
+
+```ts
+import { definePlugin } from '@enkaku/sdk'
+
+export default definePlugin({
+  id: 'tiktok',
+  version: '1.5.0',
+  title: 'TikTok automation pack',
+  description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
+  scripts: [switchAccount, searchFollow, listAccounts, autoScrollScript],
+
+  surface: {
+    nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+    views: {
+      accounts: {
+        title: 'TikTok accounts',
+        description: 'Which accounts are signed in on each device, as last read from the switch-account sheet.',
+        // One row per ACCOUNT, not per device: `rows: 'items'` flattens the stored value's
+        // `accounts` array, and `includeMissing` keeps a never-synced device visible as a row.
+        data: { kind: 'kv.scan', key: ACCOUNTS_KEY, rows: 'items', itemsAt: 'accounts', includeMissing: true },
+        table: {
+          rowKey: 'username',
+          selectable: true,
+          columns: [
+            { field: '$device.label', header: 'Device' },
+            { field: 'username', header: 'Account' },
+            { field: 'position', header: 'Slot', width: 'narrow' },
+            { field: 'current', header: 'Signed in', schema: { type: 'boolean' }, width: 'narrow' },
+            { field: '$entry.updatedAt', header: 'Last synced', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+          ],
+        },
+        toolbar: ['sync'],
+        rowActions: ['switchTo', 'syncOne'],
+        empty: { title: 'No accounts read yet', hint: 'Run “Sync accounts” to read the switch-account sheet on each device.' },
+      },
+    },
+    actions: {
+      sync:    { kind: 'batch', label: 'Sync accounts',      script: 'tiktok/list-accounts@latest', target: 'picker' },
+      syncOne: { kind: 'job',   label: 'Sync this device',   script: 'tiktok/list-accounts@latest', device: 'row' },
+      switchTo: {
+        kind: 'job',
+        label: 'Switch to this account',
+        script: 'tiktok/switch-account@latest',
+        device: 'row',
+        params: { target: { $row: 'username' } },
+        confirm: 'Switch this device to the selected account?',
+      },
+    },
+  },
+})
+```
+
+That is the real surface from `plugins/tiktok-automation-pack/src/index.ts`, not a sketch. Read it alongside this section — it is the reference implementation and it is kept working.
+
+### Columns and forms are JSON Schema — there is no field vocabulary here
+
+A column's optional `schema` is an ordinary JSON Schema node, and it is drawn by the **same resolver** a script's parameter form and a job's result view use (`docs/design.md`'s "Schema-driven forms"). `{ type: 'boolean' }` is a truth mark; `{ type: 'number', 'x-enkaku': { kind: 'timestamp' } }` is a unix-seconds instant rendered as a relative time. Everything the `ui()` vocabulary can say about a parameter it can say about a column, and the surface adds **nothing** of its own at field level — no `widget`, no `render`, no `format`. A column with no `schema` is plain text.
+
+The same is true of an action's form: a `form` action states a `schema` and Studio opens the run dialog's own `SchemaForm` on it, so you get enums with labels, ordered ranges, durations, and `showWhen` for free.
+
+### Where the rows come from
+
+Two data sources, and **neither one names a namespace** — a source can only ever read your own plugin's KV namespace, which is your plugin's `id`. The farm takes it from the URL path, never from anything you or the browser send, so there is no field to spell another plugin's name with.
+
+| `data.kind` | one row is | notes |
+| --- | --- | --- |
+| `kv.scan` | one device, or one element of `itemsAt` inside that device's entry | `includeMissing: true` (the default) keeps a device with no entry as a visible row, so "never synced" is a state rather than an absence |
+| `kv.list` | one entry in your `global` namespace | `scope` is `'global'` only; a device-scoped list with no device to scope it to is a `kv.scan` |
+
+Your scripts write what the screen reads: `ctx.kv.device.set(...)` from a job, read back by the view; a `kv.set` action writes what the next job reads. One store, two writers — which is why the screen and the scripts should share a key **constant** rather than two copies of a string.
+
+### Bindings — the only way a value reaches an action
+
+An action names a value it needs with a closed, non-Turing binding: a literal (`{ $literal: 'x' }`), `{ $row: 'dot.path' }`, `{ $form: 'dot.path' }`, `{ $device: 'label' }` (one of `id`, `stableId`, `label`, `status`, `clusterId`), `{ $entry: 'updatedAt' }` (one of `key`, `version`, `updatedAt`), or an object or array whose leaves are bindings. No operators, no interpolation, no calls, no regular expressions. A bare `'username'` is **not** a binding — a plain string is a literal value, so "read from the row" and "written by the author" can never be confused.
+
+`confirm` is a plain sentence and never a template. Studio names the target itself, from the view's own `rowKey`.
+
+### Actions, and who is allowed to run them
+
+Four kinds — `job`, `batch`, `kv.set`, `kv.delete` — plus `form`, which opens a `SchemaForm` and then runs one of them. Every one executes **server-side**, so a `batch`'s `name@latest` is resolved to a concrete script id by the same registry `POST /api/batches` uses, and every execution writes an audit row naming your plugin and the action. Permission comes from the action, not from the screen: `job`/`batch` need `job.run`, `kv.set`/`kv.delete` need `plugin.data`.
+
+One asymmetry worth knowing before you design a toolbar: **a batch cannot target a dev-slot script.** A batch pins a reference and must survive the laptop closing; a dev slot expires after 30 idle minutes, so a paced batch could outlive the entry it was enqueued against. A `job` action takes the explicit ad-hoc path and works against a dev slot. That is why the pack above has both `sync` (a fleet batch) and `syncOne` (the same read, one device, a job) — the second is what makes `enkaku dev` on this pack a working loop.
+
+### What `definePlugin` refuses on your machine
+
+The surface is validated at import time, before any network call, by `validatePluginSurface` — the same function the farm's verify child and its parent re-check both run, so a defect cannot pass here and fail there. It throws for: a nav entry naming a view that does not exist; a toolbar or row action naming an action that does not exist; a duplicate nav id; an icon outside the allowlist; a view declaring both `table` and `frame`, or neither; a `table` with no `data`; and any cap exceeded — 8 nav entries, 16 views, 32 actions, 12 columns, 256 KiB for the whole serialised `surface`, 8 MiB for a tier-B `ui/` directory. Each refusal quotes the limit it hit. Every defect is reported at once, not one per run.
+
+Two checks happen on the farm rather than here. Every JSON Schema a surface embeds is put through **`checkDeclaredSchema`** — the same gate a `params` schema passes — at verify, so a column schema that is too deep or too wide fails there. And the *existence* of a `script` a `job`/`batch` action names is deliberately never checked, at either end: a pack may reference a script published separately, so the action reports `script_not_found` at click time, the same failure the run dialog already gives. Either way the failure is `E_PLUGIN_SURFACE_INVALID`: the plugin is recorded `failed`, registers **zero** scripts, and changes nothing about any other plugin.
+
+### Tier B — the iframe, and when not to reach for it
+
+A view may state `frame: { entry: 'index.html' }` instead of `table`, and Studio renders a sandboxed iframe over assets shipped inside your package's `ui/` directory, with its design tokens injected as CSS custom properties. You inherit colours, spacing, radius, and typography. You inherit **no components** — `Table` and `SchemaForm` are React in the parent document and do not cross a frame boundary — so a tier-B screen will not pick up the next change to any of them, and its empty state, error state, and focus behaviour are yours to get right.
+
+The frame has no same-origin access, no cookie, and no token, and `connect-src` is `'none'`: it talks to the host only through a typed `postMessage` RPC that maps onto the same declared `data` source and the same declared actions a tier-A view would use. A frame view **may** declare `data` — that is what gives it something to read — and it can reach nothing you did not write down.
+
+The rule (`docs/design.md`): **tier A unless the layout genuinely cannot be a table or a form.**
+
+### Shipping a surface: the `.enkaku` package
+
+A plugin with tier-B assets ships as a `.enkaku` archive — a plain `tar.gz` holding `plugin.json`, `scripts.mjs`, and `ui/`. Any entry outside that allowlist is refused at verify. `POST /api/plugins` accepts the archive raw, or the original JSON body for a plugin with no assets.
+
+**A tier-B screen cannot be iterated with `enkaku dev` today.** A dev slot is built from a bundle, and `enkaku dev` pushes `scripts.mjs` only — never an archive — so a dev slot carries no `ui/` payload, and the asset route reads the active published row. A tier-A view iterates fine under `enkaku dev`; a `frame` view has to be exercised against a published package (`plan 108 §9 Q3`).
 
 ## Publishing
 
 ```bash
-bunx enkaku publish ./scripts/post-content.ts --farm http://localhost:7700
+bunx enkaku init my-pack                                  # scaffold — publishes with no edits
+bunx enkaku publish ./src/index.ts --farm http://localhost:7700
+bunx enkaku dev     ./src/index.ts --farm http://localhost:7700   # push on every save, 30-min dev slot
 ```
 
-The CLI bundles the script and all of its dependencies into a single ESM file (the farm never installs dependencies), imports it to validate, converts the Zod `params` into a JSON Schema (which Studio uses to generate the parameter form), then POSTs it to `/api/scripts`.
+The CLI bundles the entry and all of its dependencies into a single ESM file (the farm never installs dependencies), imports it to read the default export, checks every member's declared schemas against the published limits locally, then POSTs the bundle to `/api/plugins` — which stages it, verifies it in a child process, and reports what it found. `--stage-only` skips the verify half so you can trigger it separately.
 
-Every publish creates a new row; the `(name, version)` pair is unique — bump `version` to publish again. A job records the specific row's `scriptId`, so older runs stay reproducible after a new version ships.
+**An entry whose default export is not a `definePlugin()` result is refused, and nothing is sent.** The message carries the wrapper itself:
+
+```
+✗ publish failed: the entry's default export is not a plugin — and a script cannot be published on its own.
+
+Wrap what you have in a plugin — four lines:
+
+  import { definePlugin } from '@enkaku/sdk'
+
+  export default definePlugin({
+    id: 'my-plugin',
+    version: '1.0.0',
+    scripts: [{ id: 'my-script', title: 'My script', description: 'What it does', params, run }],
+  })
+
+Or scaffold a project that already publishes: enkaku init my-plugin
+```
+
+Every publish creates a new row per member; the `(name, version)` pair is unique — bump the plugin's `version` to publish again. A job records the specific row's `scriptId`, so older runs stay reproducible after a new version ships.
 
 A token is optional, via `--token` or the `ENKAKU_TOKEN` env var (required when the core runs with `ENKAKU_PUBLISH_TOKEN` set).

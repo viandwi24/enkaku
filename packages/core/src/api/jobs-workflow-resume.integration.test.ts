@@ -52,7 +52,7 @@ const silentLog = (): Logger => {
 function publishScript(db: Db, name: string, version: string) {
   const id = `${name}-${version}`
   db.insert(scripts)
-    .values({ id, name, version, kind: 'script', bundle: 'export default { run: async () => null }', enabled: true, createdAt: new Date() })
+    .values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, kind: 'script', bundle: 'export default { run: async () => null }', enabled: true, createdAt: new Date() })
     .run()
   return id
 }

@@ -1,10 +1,15 @@
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
+import { PluginManifestSchema } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
-import { scripts } from '../db/schema'
+import { plugins, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { createKvStore } from '../kv/store'
 import { createScriptRegistry } from '../scripts/registry'
 import { createWorkspaceStore } from '../workspace/store'
+import { createPluginAssetStore } from './asset-store'
 import { createDevSlotStore } from './dev-slots'
 import { createPluginRuntime, type PluginRuntime } from './runtime'
 import type { VerifyReport } from './verify-child'
@@ -37,7 +42,7 @@ function setUp(opts?: { verify?: (bundlePath: string, o?: { expectedVersion?: st
     kv,
     verify: opts?.verify ?? (async () => healthyReport()),
   })
-  return { db, runtime, registry, kv }
+  return { db, runtime, registry, kv, dataDir }
 }
 
 async function stageAndVerify(runtime: PluginRuntime, opts: { name?: string; version?: string; bundle?: string } = {}) {
@@ -140,6 +145,89 @@ describe('PluginRuntime — the runtime envelope persists through activation (pl
     expect(report.ok).toBe(true)
     const entry = registry.get('dev:tiktok/login')
     expect(entry?.runtime).toEqual(declared)
+  })
+})
+
+// Plan 108 §5 step 108.3 — a minimal but complete surface, in the PARSED
+// shape a `VerifyReport` carries (every default already applied by
+// `validatePluginSurface` in `verify-child.ts`), because that is what
+// `runtime.verify` is handed.
+const SURFACE: NonNullable<VerifyReport['surface']> = {
+  nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+  views: {
+    accounts: {
+      title: 'TikTok accounts',
+      data: { kind: 'kv.list', scope: 'global', prefix: '' },
+      table: { rowKey: 'username', columns: [{ field: 'username', header: 'Account', width: 'auto' }], selectable: false },
+      toolbar: ['sync'],
+      rowActions: [],
+    },
+  },
+  actions: { sync: { kind: 'batch', label: 'Sync accounts', script: 'tiktok/login@latest', target: 'picker' } },
+}
+
+describe('PluginRuntime — the surface persists through activation (plan 108 §5 step 108.3)', () => {
+  test('a verified surface survives verify → activate and reads back through surface(name)', async () => {
+    const { runtime } = setUp({ verify: async () => healthyReport({ surface: SURFACE }) })
+    const staged = await stageAndVerify(runtime)
+    // Stored in the manifest at VERIFY time, alongside the script list.
+    expect(runtime.get('tiktok', '1.0.0')?.manifest).toMatchObject({ surface: { nav: SURFACE.nav } })
+    runtime.activate(staged.id)
+    const surface = runtime.surface('tiktok')
+    expect(surface).toEqual(SURFACE)
+  })
+
+  test('surface(name) answers null for a plugin that is not active, and for one that never declared a surface', async () => {
+    const { runtime } = setUp({ verify: async () => healthyReport({ surface: SURFACE }) })
+    const staged = await stageAndVerify(runtime)
+    expect(runtime.surface('tiktok')).toBeNull() // verified but not yet activated
+    runtime.activate(staged.id)
+    expect(runtime.surface('tiktok')).not.toBeNull()
+    runtime.disable('tiktok')
+    expect(runtime.surface('tiktok')).toBeNull()
+    expect(runtime.surface('no-such-plugin')).toBeNull()
+  })
+
+  test('a plugin declaring NO surface writes the manifest it wrote before this plan, key for key (acceptance criterion 1)', async () => {
+    const { runtime } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    const manifest = runtime.get('tiktok', '1.0.0')?.manifest
+    expect(Object.keys(manifest as Record<string, unknown>)).toEqual(['scripts'])
+    expect(runtime.surface('tiktok')).toBeNull()
+  })
+
+  test('a manifest written BEFORE this step reads back null rather than throwing', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    // Exactly what plan 82 wrote: a `scripts` array and nothing else.
+    db.update(plugins).set({ manifest: { scripts: [{ id: 'login', paramsSchema: { type: 'object' } }] } }).where(eq(plugins.id, staged.id)).run()
+    expect(runtime.surface('tiktok')).toBeNull()
+  })
+
+  test('a manifest whose stored surface no longer parses degrades to null, never a throw (the parseScriptRuntime discipline)', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    db.update(plugins)
+      .set({ manifest: { scripts: [], surface: { nav: [{ id: 'x', label: 'X', icon: 'not-a-lucide-icon', view: 'gone' }], views: {}, actions: {} } } })
+      .where(eq(plugins.id, staged.id))
+      .run()
+    expect(runtime.surface('tiktok')).toBeNull()
+  })
+
+  test('a member\'s title and description reach the manifest and are readable (plan 108 §0.2 P8)', async () => {
+    const { runtime } = setUp({
+      verify: async () =>
+        healthyReport({
+          scripts: [{ id: 'login', paramsSchema: { type: 'object' }, runtime: null, title: 'Log in', description: 'Signs the device in.' }],
+        }),
+    })
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    const manifest = PluginManifestSchema.parse(runtime.get('tiktok', '1.0.0')?.manifest)
+    expect(manifest?.scripts[0]).toMatchObject({ id: 'login', title: 'Log in', description: 'Signs the device in.' })
   })
 })
 
@@ -258,12 +346,14 @@ describe('PluginRuntime — fault isolation (§3.8, criteria 20, 22, 23)', () =>
     expect(registry.resolve('tiktok/login@latest').version).toBe('1.1.0')
   })
 
-  test('E_PLUGIN_NAME_CONFLICT — a plugin cannot claim a name already owned by a standalone script, naming both, without disturbing the standalone script (criterion 23)', async () => {
+  test('E_PLUGIN_NAME_CONFLICT — a plugin cannot claim a name an unowned row already occupies, naming both, and nothing about that row changes (criterion 23)', async () => {
     const { runtime, registry, db } = setUp()
-    // A standalone script published (by coincidence, or by an unrelated author) under the
-    // exact literal name a plugin's own naming scheme would also produce.
+    // A row published before a script had to belong to a plugin (plan 110 §3.2), under the
+    // exact literal name a plugin's own naming scheme would also produce. The farm no longer
+    // resolves it — but it still occupies that `(name, version)`, so a plugin claiming the
+    // name has to be refused HERE rather than colliding on the unique index later.
     db.insert(scripts)
-      .values({ id: 'standalone-1', name: 'tiktok/login', version: '1.0.0', bundle: 'standalone bundle', enabled: true, createdAt: new Date() })
+      .values({ id: 'unowned-1', name: 'tiktok/login', version: '1.0.0', bundle: 'a bundle', enabled: true, createdAt: new Date() })
       .run()
 
     const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'plugin bundle' })
@@ -271,10 +361,11 @@ describe('PluginRuntime — fault isolation (§3.8, criteria 20, 22, 23)', () =>
     expect(report.ok).toBe(false)
     expect(report.errorCode).toBe('E_PLUGIN_NAME_CONFLICT')
     expect(report.error).toContain('tiktok/login')
-    expect(report.error).toContain('standalone')
+    expect(report.error).toContain('before a script had to belong to a plugin')
     expect(runtime.get('tiktok', '1.0.0')?.status).toBe('failed')
-    // The standalone script is completely undisturbed and still resolves.
-    expect(registry.resolve('tiktok/login@1.0.0').id).toBe('standalone-1')
+    // The row is untouched — still on disk, and still not something the farm will resolve.
+    expect(db.select().from(scripts).where(eq(scripts.id, 'unowned-1')).get()).toBeTruthy()
+    expect(() => registry.resolve('tiktok/login@1.0.0')).toThrow(EnkakuError)
   })
 })
 
@@ -324,6 +415,110 @@ describe('PluginRuntime — disable/remove (criteria 24-ish, 28)', () => {
     }
     const rows = db.select().from(scripts).all()
     expect(rows.every((r) => r.enabled === false)).toBe(true)
+  })
+
+  test('enable is the way back: disable → enable restores the row AND every member scripts row', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    runtime.disable('tiktok')
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('disabled')
+    expect(db.select().from(scripts).all().every((r) => r.enabled === false)).toBe(true)
+
+    const enabled = runtime.enable('tiktok')
+    expect(enabled.status).toBe('active')
+    expect(runtime.active('tiktok')?.id).toBe(staged.id)
+    // The half that is easy to forget — `writeScriptRows` skips existing rows,
+    // so nothing else would ever switch these back on.
+    const rows = db.select().from(scripts).all()
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.enabled === true)).toBe(true)
+  })
+
+  test('a script that stopped resolving while disabled resolves again after enable (through the registry, not the table)', async () => {
+    const { runtime, registry } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    runtime.disable('tiktok')
+    expect(() => registry.resolve('tiktok/login@1.0.0')).toThrow(EnkakuError)
+
+    runtime.enable('tiktok')
+    expect(registry.resolve('tiktok/login@1.0.0').version).toBe('1.0.0')
+    expect(registry.resolve('tiktok/login@latest').version).toBe('1.0.0')
+    // The surface comes back with it, since `surface()` reads the active row.
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('active')
+  })
+
+  test('enable on a plugin with no disabled row is plugin_not_found, naming what it looked for', async () => {
+    const { runtime } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+
+    for (const name of ['tiktok', 'no-such-plugin']) {
+      try {
+        runtime.enable(name)
+        throw new Error(`expected enable("${name}") to throw`)
+      } catch (err) {
+        expect(err).toBeInstanceOf(EnkakuError)
+        expect((err as EnkakuError).code).toBe('plugin_not_found')
+        expect((err as EnkakuError).message).toContain(name)
+        expect((err as EnkakuError).message).toContain('disabled')
+      }
+    }
+  })
+
+  test('enable is refused when ANOTHER version is active, naming that version and pointing at rollback', async () => {
+    const { runtime } = setUp()
+    const v1 = await stageAndVerify(runtime)
+    runtime.activate(v1.id)
+    runtime.disable('tiktok')
+    const v2 = await stageAndVerify(runtime, { version: '2.0.0', bundle: 'v2-bundle' })
+    runtime.activate(v2.id)
+
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('disabled')
+    expect(runtime.active('tiktok')?.version).toBe('2.0.0')
+
+    try {
+      runtime.enable('tiktok')
+      throw new Error('expected enable to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(EnkakuError)
+      expect((err as EnkakuError).code).toBe('plugin_enable_conflict')
+      expect((err as EnkakuError).message).toContain('2.0.0') // the version that is now active
+      expect((err as EnkakuError).message).toContain('roll back')
+    }
+    // Nothing moved: still exactly one active version, and the disabled row is untouched.
+    expect(runtime.active('tiktok')?.version).toBe('2.0.0')
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('disabled')
+  })
+
+  test('two concurrent enables: exactly one wins, and no plugin ends up active twice', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    runtime.disable('tiktok')
+
+    let succeeded = 0
+    let refused = 0
+    for (const _ of [0, 1]) {
+      try {
+        runtime.enable('tiktok')
+        succeeded++
+      } catch (err) {
+        expect(err).toBeInstanceOf(EnkakuError)
+        // The loser is refused because the row it needed is no longer
+        // `disabled` — inside one process the lookup catches it before the CAS
+        // does (bun:sqlite is a single synchronous connection), which is why
+        // the code is `plugin_not_found` rather than the CAS's own conflict.
+        expect((err as EnkakuError).code).toBe('plugin_not_found')
+        expect((err as EnkakuError).message).toContain('already active')
+        refused++
+      }
+    }
+    expect(succeeded).toBe(1)
+    expect(refused).toBe(1)
+    expect(db.select().from(plugins).all().filter((r) => r.status === 'active')).toHaveLength(1)
+    expect(db.select().from(scripts).all()).toHaveLength(2)
   })
 
   test('removing a plugin with deleteKv: false leaves its KV values; with true, deletes them and reports the count (criterion 28)', async () => {
@@ -446,4 +641,199 @@ export default definePlugin({
     expect(bundleText).toContain('v2-edited')
     expect(bundleText).not.toContain("'v1'")
   }, 20_000)
+})
+
+/**
+ * Plan 108 §4.4, §5 step 108.10 — the `.enkaku` package's `ui/` payload was
+ * validated and then discarded until this step, because nothing had a place
+ * for it. These pin the three things the serving half depends on: it survives
+ * `stage`, it is readable off the ACTIVE version only, and it goes when the
+ * version does.
+ */
+const UI_ENC = new TextEncoder()
+
+function uiAssets(over: Record<string, string> = {}) {
+  const files = { 'index.html': '<!doctype html>', 'app.js': 'export {}', 'assets/logo.png': 'PNG', ...over }
+  return Object.entries(files).map(([path, text]) => ({ path, data: UI_ENC.encode(text) }))
+}
+
+describe('PluginRuntime — a package’s `ui/` payload (step 108.10)', () => {
+  test('assets staged with a plugin are readable once it is active', async () => {
+    const { runtime } = setUp()
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}', ui: uiAssets() })
+    await runtime.verify(staged.id)
+    runtime.activate(staged.id)
+
+    const entry = await runtime.uiAsset('tiktok', 'index.html')
+    expect(entry).not.toBeNull()
+    expect(new TextDecoder().decode(entry?.data)).toBe('<!doctype html>')
+    expect(entry?.contentType).toBe('text/html; charset=utf-8')
+    expect(entry?.bytes).toBe(15)
+
+    expect(new TextDecoder().decode((await runtime.uiAsset('tiktok', 'assets/logo.png'))?.data)).toBe('PNG')
+  })
+
+  test('the assets exist on disk BEFORE activation — staging is what materialises them', async () => {
+    const { runtime, dataDir } = setUp()
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}', ui: uiAssets() })
+
+    const index = createPluginAssetStore(dataDir).index(staged.id)
+    expect(index).not.toBeNull()
+    expect(Object.keys(index ?? {}).sort()).toEqual(['app.js', 'assets/logo.png', 'index.html'])
+
+    // …but they are not SERVED until the version is active: `uiAsset` reads the
+    // active row, and a staged version is not one.
+    expect(await runtime.uiAsset('tiktok', 'index.html')).toBeNull()
+  })
+
+  test('a plugin that shipped no `ui/` answers null rather than throwing', async () => {
+    const { runtime } = setUp()
+    const staged = await runtime.stage({ name: 'plain', version: '1.0.0', bundle: 'export {}' })
+    await runtime.verify(staged.id)
+    runtime.activate(staged.id)
+    expect(await runtime.uiAsset('plain', 'index.html')).toBeNull()
+  })
+
+  test('a path the package never declared is null — nothing is joined onto a filesystem path', async () => {
+    const { runtime } = setUp()
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}', ui: uiAssets() })
+    await runtime.verify(staged.id)
+    runtime.activate(staged.id)
+
+    for (const path of ['../plugin.json', '../../etc/passwd', '/etc/passwd', 'assets/../../x', 'nope.html', '', 'assets']) {
+      expect(await runtime.uiAsset('tiktok', path)).toBeNull()
+    }
+  })
+
+  test('two versions keep separate assets, and rollback serves the older screen', async () => {
+    const { runtime } = setUp()
+    const v1 = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}', ui: uiAssets({ 'index.html': 'v1' }) })
+    await runtime.verify(v1.id)
+    runtime.activate(v1.id)
+    const v2 = await runtime.stage({ name: 'tiktok', version: '2.0.0', bundle: 'export {} // 2', ui: uiAssets({ 'index.html': 'v2' }) })
+    await runtime.verify(v2.id)
+    runtime.activate(v2.id)
+
+    expect(new TextDecoder().decode((await runtime.uiAsset('tiktok', 'index.html'))?.data)).toBe('v2')
+    runtime.rollback('tiktok', '1.0.0')
+    expect(new TextDecoder().decode((await runtime.uiAsset('tiktok', 'index.html'))?.data)).toBe('v1')
+  })
+
+  test('removing a version deletes its index, and sweeps the bytes nothing else references', async () => {
+    const { runtime, dataDir } = setUp()
+    const v1 = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}', ui: uiAssets({ 'index.html': 'v1' }) })
+    await runtime.verify(v1.id)
+    runtime.activate(v1.id)
+    const v2 = await runtime.stage({ name: 'tiktok', version: '2.0.0', bundle: 'export {} // 2', ui: uiAssets({ 'index.html': 'v2' }) })
+    await runtime.verify(v2.id)
+    runtime.activate(v2.id)
+
+    const store = createPluginAssetStore(dataDir)
+    const blobs = () => (existsSync(join(dataDir, 'plugins', 'assets')) ? readdirSync(join(dataDir, 'plugins', 'assets')) : [])
+    // `app.js` and `assets/logo.png` are byte-identical across the two
+    // versions, so they are stored ONCE: 4 blobs, not 6.
+    expect(blobs().length).toBe(4)
+
+    runtime.remove('tiktok', '1.0.0', { deleteKv: false })
+    expect(store.index(v1.id)).toBeNull()
+    // v1's own `index.html` is gone; the two shared blobs survive because v2
+    // still references them.
+    expect(blobs().length).toBe(3)
+    expect(store.index(v2.id)).not.toBeNull()
+
+    runtime.remove('tiktok', '2.0.0', { deleteKv: false })
+    expect(blobs().length).toBe(0)
+  })
+
+  test('removing a version with no assets at all is a no-op, not a throw', async () => {
+    const { runtime } = setUp()
+    const staged = await runtime.stage({ name: 'plain', version: '1.0.0', bundle: 'export {}' })
+    await runtime.verify(staged.id)
+    runtime.activate(staged.id)
+    expect(runtime.remove('plain', '1.0.0', { deleteKv: false }).removed).toBe(true)
+  })
+})
+
+/**
+ * The synthetic `recordings` owner (plan 110 §3.4, §4.3, §5 step 110.2,
+ * criteria 4 and 5) — reserved against a real plugin, and immune to every
+ * lifecycle verb. Enforced HERE, in the runtime, not by omitting a button:
+ * `api/plugins.ts`, the dev-slot path and `restart` all come through these
+ * same functions.
+ */
+describe('PluginRuntime — the reserved, synthetic `recordings` owner (plan 110 §3.4)', () => {
+  test('a real definePlugin({ id: "recordings" }) is refused at STAGE, before any row exists', async () => {
+    const { runtime, db } = setUp()
+    await expect(runtime.stage({ name: 'recordings', version: '1.0.0', bundle: 'export {}' })).rejects.toThrow(/reserved plugin name/)
+    expect(db.select().from(plugins).all()).toHaveLength(0)
+  })
+
+  test('and at VERIFY (criterion 5) — a row of that name that somehow exists is never verified, and never marked failed', async () => {
+    const { runtime, db } = setUp()
+    // The row a pre-plan-110 farm could hold, or the farm's own owner: written
+    // directly, because `stage` now refuses to create one.
+    db.insert(plugins)
+      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
+      .run()
+    await expect(runtime.verify('p-rec')).rejects.toThrow(/reserved plugin name/)
+    // Untouched: marking it `failed` would take every published recording offline.
+    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.status).toBe('active')
+  })
+
+  test('a dev slot cannot claim the name either — it would shadow every recording', async () => {
+    const { runtime } = setUp()
+    await expect(
+      runtime.putDevSlot({ name: 'recordings', owner: { kind: 'cli', label: 'dev' }, source: { kind: 'bundle', bundle: 'export {}' } }),
+    ).rejects.toThrow(/reserved plugin name/)
+  })
+
+  test('activate, rollback, disable, enable, remove and reload all refuse it, pointing at the recordings themselves', async () => {
+    const { runtime, db } = setUp()
+    db.insert(plugins)
+      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
+      .run()
+    const verbs: Array<[string, () => unknown]> = [
+      ['activate', () => runtime.activate('p-rec')],
+      ['rollback', () => runtime.rollback('recordings', '0.0.0')],
+      ['disable', () => runtime.disable('recordings')],
+      ['enable', () => runtime.enable('recordings')],
+      ['remove', () => runtime.remove('recordings', '0.0.0', { deleteKv: true })],
+    ]
+    for (const [verb, call] of verbs) {
+      let error: unknown
+      try {
+        call()
+      } catch (err) {
+        error = err
+      }
+      expect(error).toBeInstanceOf(EnkakuError)
+      expect((error as EnkakuError).code).toBe('E_PLUGIN_SYNTHETIC')
+      expect((error as EnkakuError).message).toContain('/api/recordings')
+      expect(verb).toBeTruthy()
+    }
+    await expect(runtime.reload('recordings')).rejects.toThrow(/not an installable plugin/)
+    // Still there, still active, and its KV namespace untouched.
+    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.status).toBe('active')
+  })
+
+  test('restart never re-verifies a row that was never verified — the synthetic owner has no bundle to run', async () => {
+    let verifyCalls = 0
+    const { runtime, db } = setUp({
+      verify: async () => {
+        verifyCalls++
+        return healthyReport()
+      },
+    })
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    db.insert(plugins)
+      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
+      .run()
+    verifyCalls = 0
+    const result = await runtime.restart()
+    // The real plugin, and only the real plugin.
+    expect(verifyCalls).toBe(1)
+    expect(result).toEqual({ ok: 1, failed: 0 })
+    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.verifyError).toBeNull()
+  })
 })

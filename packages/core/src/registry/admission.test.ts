@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { defaultDeviceSettings, type DeviceSettings, type FarmDeviceDefaults } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
 import { blockedDevices, devices, discoveredDevices } from '../db/schema'
-import { admitDevice, classify, recordSighting } from './admission'
+import { admitDevice, classify, defaultsForNewDevice, recordSighting } from './admission'
 
 /**
  * The admission decision (plan 56 §4.2). Every branch the registry can take
@@ -110,6 +111,51 @@ describe('admitDevice (plan 56 §4.3)', () => {
     const db = setUpDb()
     recordSighting(db, { stableId: 'PENDING', serial: 's', label: null, androidVersion: null })
     expect(admitDevice(db, 'PENDING')?.status).toBe('offline')
+  })
+})
+
+/**
+ * `defaults.identity` no longer exists (docs/settings-audit.md #1,
+ * `docs/plans/96-m61-hotfixes.md`) — `deviceDefaults` is now typed
+ * `FarmDeviceDefaults` (`DeviceSettings` minus `identity`), so a farm-wide
+ * default can no longer carry an identity block at all. This proves
+ * `defaultsForNewDevice` still hands a new device a VALID, EMPTY identity
+ * (every field absent — "leave the device's own value alone"), never
+ * `undefined`, whether or not a `deviceDefaults` accessor is supplied.
+ */
+describe('defaultsForNewDevice — identity is always filled fresh, never from the farm-wide block (docs/settings-audit.md #1)', () => {
+  test('with no deviceDefaults accessor at all, the new device gets defaultDeviceSettings()\'s own empty identity', () => {
+    const result = defaultsForNewDevice({})
+    expect(result.settings.identity).toEqual(defaultDeviceSettings().identity)
+    expect(result.settings.identity).not.toBeUndefined()
+    expect(result.settings.identity).toEqual({})
+  })
+
+  test('with a deviceDefaults accessor (the FarmDeviceDefaults shape — no identity field to give), identity is STILL a valid empty object, not undefined', () => {
+    const farmDefaults: FarmDeviceDefaults = { ...defaultDeviceSettings(), autoReconnect: false }
+    // FarmDeviceDefaults has no `identity` key — TypeScript already proves
+    // this at the call site above (the object literal has no `identity` in
+    // its inferred type once destructured through the accessor below).
+    const result = defaultsForNewDevice({ deviceDefaults: () => farmDefaults })
+    expect(result.settings.identity).toEqual({})
+    expect(result.settings.identity).not.toBeUndefined()
+    // Every OTHER field the farm default set (unrelated to identity) still
+    // came through — this is a targeted override, not a full fallback.
+    expect(result.settings.autoReconnect).toBe(false)
+  })
+
+  test('a deviceDefaults accessor built by spreading a full DeviceSettings (as daemon.ts\'s own settingsStore.get().defaults now is) never leaks an identity through even if the closure captured one some other way', () => {
+    // Simulates the shape a careless future edit could produce: a real
+    // DeviceSettings with a non-empty identity, handed in as if it were a
+    // FarmDeviceDefaults (structurally compatible — extra properties are not
+    // rejected). `defaultsForNewDevice` must still overwrite `identity`
+    // itself, never trust whatever the accessor returned for that one field.
+    const withLeakedIdentity: DeviceSettings = {
+      ...defaultDeviceSettings(),
+      identity: { timezone: 'Asia/Jakarta', locale: 'id-ID', gps: { lat: -6.2, lng: 106.8, accuracy: 50 } },
+    }
+    const result = defaultsForNewDevice({ deviceDefaults: () => withLeakedIdentity })
+    expect(result.settings.identity).toEqual({})
   })
 })
 

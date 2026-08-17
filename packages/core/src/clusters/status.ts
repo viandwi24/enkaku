@@ -100,11 +100,44 @@ export function recomputeBatchStatus(
   settledDeviceId?: string,
 ): BatchStatusEvent['payload'] | null {
   const rows = deps.jobStore.listByBatch(batchId)
-  if (rows.length === 0) return null
-  const counts = countJobs(rows)
-  const status = computeBatchStatus(counts)
   const batch = deps.db.select().from(batches).where(eq(batches.id, batchId)).get()
   if (!batch) return null
+
+  if (rows.length === 0) {
+    // `clusters/dispatch.ts`'s `createBatch` is the ONLY writer of a
+    // `batches` row, and it always inserts it together with >= 1 job row in
+    // the SAME transaction (`E_NO_TARGETS` refuses before anything is
+    // persisted when no device matches). So reaching this branch — an
+    // EXISTING row whose own jobs list comes back empty — can only mean
+    // every one of its job rows was deleted after the fact; the one path
+    // found is `device/lifecycle.ts`'s `forget({ deleteHistory: true })`,
+    // which deletes `jobs` rows by `deviceId` but never touches `batches`.
+    // It is never "not dispatched yet" — that shape cannot outlive
+    // `createBatch`'s own transaction.
+    //
+    // This is reachable in production, not just in theory: `stopBatch`
+    // (`api/batches.ts`) calls this function unconditionally as its own
+    // step 4 ("recompute the batch status once, at the end", plan 94 §3.9),
+    // including when the batch's only device was already forgotten before
+    // the operator hit Stop. Before this branch existed, the pre-existing
+    // early `return null` here made that call a silent no-op — the row
+    // stayed `stopping` forever, which is the owner's own stuck tray entry
+    // (this pass's bug report). A batch with no jobs left has none to wait
+    // on, so it resolves straight to `cancelled` — terminal — regardless of
+    // what it was heading toward (`stopping`, a stale `queued`/`running`
+    // nothing will ever settle again). Skipped once the row is ALREADY
+    // terminal, so a batch that finished normally long before its history
+    // was deleted is never re-broadcast or have its `finishedAt` disturbed.
+    if (TERMINAL.includes(batch.status as BatchStatusValue)) return null
+    const finishedAt = batch.finishedAt ?? new Date()
+    deps.db.update(batches).set({ status: 'cancelled', finishedAt }).where(eq(batches.id, batchId)).run()
+    const payload = { batchId, status: 'cancelled' as BatchStatusValue, counts: countJobs(rows) }
+    deps.broadcast({ type: 'batch.status', payload })
+    return payload
+  }
+
+  const counts = countJobs(rows)
+  const status = computeBatchStatus(counts)
 
   // `stopping` (plan 94 §3.9, step 94.8) is a state written directly by the
   // stop endpoint, never derived from job counts — `computeBatchStatus`

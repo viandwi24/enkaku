@@ -19,6 +19,11 @@ export function emptyItem(plan: FieldPlan): unknown {
       return plan.options[0]?.value ?? ''
     case 'text':
       return ''
+    // Nothing picked yet. There is no "first path" to seed — a workspace
+    // path has to name something that exists, and this control's own empty
+    // readout ("Nothing selected") is already the legible version of that.
+    case 'workspacePath':
+      return ''
     case 'list':
       return []
     case 'table':

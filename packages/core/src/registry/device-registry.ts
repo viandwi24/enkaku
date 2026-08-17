@@ -1,7 +1,6 @@
 import type { AdbClient, TrackerEvent } from '@enkaku/adb'
 import {
-  AgentStatusSchema,
-  DEFAULT_AGENT_STATUS,
+  DeviceIdentitySchema,
   DeviceInfoSchema,
   defaultDeviceSettings,
   type AgentState,
@@ -10,6 +9,7 @@ import {
   type DeviceInfo,
   type DeviceReadiness,
   type DeviceSettings,
+  type FarmDeviceDefaults,
   type LeaseHolder,
   type Readiness,
 } from '@enkaku/protocol'
@@ -18,6 +18,7 @@ import type { Db } from '../db'
 import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import { staticReadinessFallback } from '../device/readiness'
+import { deriveGuestAgentPreparation } from '../device/preparation/guest-agent-status'
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
@@ -48,8 +49,11 @@ export interface DeviceRegistryDeps {
    * Farm defaults, applied to a device the first time it is enrolled.
    * Without this the Settings page would be decorative: the defaults were
    * never read, and new devices silently took the DB column defaults instead.
+   * Typed `FarmDeviceDefaults` (`DeviceSettings` minus `identity`) — see the
+   * comment on `defaultsForNewDevice` in `admission.ts` for why a farm-wide
+   * default can no longer carry an `identity` block (docs/settings-audit.md #1).
    */
-  deviceDefaults?: () => DeviceSettings
+  deviceDefaults?: () => FarmDeviceDefaults
   /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below for why this is a separate accessor from `deviceDefaults`. */
   defaultDesiredReadiness?: () => Readiness
   /**
@@ -248,26 +252,26 @@ export function deriveConnection(
 
 /**
  * The chip-only agent state for `DeviceInfoSchema.agent` (plan 90 §3.8, §4.3,
- * §4.7; docs/plans/96-m61-hotfixes.md's Gap 1 fix) — Zod-validated straight
- * off `row.agent` (CLAUDE.md: never trust a JSON DB column with an
- * `as`-cast), the SAME `AgentStatusSchema` `agent-provisioner.ts`'s own
- * `readCached` validates the identical column with. Deliberately NOT a
- * `rowToDeviceInfo` parameter threaded by each caller (unlike
- * `readiness`/`heldBy`/`networks`, which come from managers external to the
- * row): `agent` is a column on `devices`, already present on every
- * `DeviceRow` this file's callers select in full (`db.select().from(devices)`,
- * never a partial projection) — so reading it here, once, inside the one
- * function every list/broadcast/detail response already funnels through,
- * reaches every caller automatically and removes the "one call site was
- * missed" failure mode entirely, rather than adding a fourth accessor a
- * future caller could forget to pass. A corrupt or pre-migration value reads
- * as `'absent'` (never a 500), the same fallback `readCached` gives an
- * invalid `devices.agent` row.
+ * §4.7; docs/plans/96-m61-hotfixes.md's Gap 1 fix; repointed by plan 106 §5
+ * step 106.5) — reads `devices.preparation['guest-agent']`, the authoritative
+ * store since 106.5, via `deriveGuestAgentPreparation` (`device/preparation/
+ * guest-agent-status.ts`) — the SAME function `agent-provisioner.ts`'s own
+ * `readCached` uses, so there is exactly one place that knows how to read
+ * this fact (including its legacy `devices.agent` fallback for a
+ * pre-migration row). Deliberately NOT a `rowToDeviceInfo` parameter
+ * threaded by each caller (unlike `readiness`/`heldBy`/`networks`, which
+ * come from managers external to the row): `preparation`/`agent` are
+ * columns on `devices`, already present on every `DeviceRow` this file's
+ * callers select in full (`db.select().from(devices)`, never a partial
+ * projection) — so reading them here, once, inside the one function every
+ * list/broadcast/detail response already funnels through, reaches every
+ * caller automatically and removes the "one call site was missed" failure
+ * mode entirely, rather than adding a fourth accessor a future caller could
+ * forget to pass. A corrupt or never-provisioned value reads as `'absent'`
+ * (never a 500), the same fallback `readCached` gives.
  */
-export function deriveAgentState(row: Pick<DeviceRow, 'agent'>): AgentState {
-  if (row.agent === null || row.agent === undefined) return DEFAULT_AGENT_STATUS.state
-  const parsed = AgentStatusSchema.safeParse(row.agent)
-  return parsed.success ? parsed.data.state : DEFAULT_AGENT_STATUS.state
+export function deriveAgentState(row: Pick<DeviceRow, 'agent' | 'preparation'>): AgentState {
+  return deriveGuestAgentPreparation(row).state
 }
 
 /**
@@ -450,9 +454,17 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   /**
    * Farm defaults → the columns the session builder reads, plus the settings
    * JSON. Both are written from ONE source so they cannot disagree.
+   *
+   * `identity` is always filled from `DeviceIdentitySchema`'s own empty
+   * default, never from `deps.deviceDefaults` (which cannot carry one — see
+   * `admission.ts`'s `defaultsForNewDevice` for the full reasoning,
+   * docs/settings-audit.md #1) — so a device enrolled through THIS path
+   * (the live adb tracker, distinct from the admission-tray `admitDevice`
+   * path `admission.ts` itself covers) gets a valid, empty identity too.
    */
   const defaultsForNewDevice = () => {
-    const s = deps.deviceDefaults?.() ?? defaultDeviceSettings()
+    const base = deps.deviceDefaults?.() ?? defaultDeviceSettings()
+    const s: DeviceSettings = { ...base, identity: DeviceIdentitySchema.parse({}) }
     return {
       transport: s.engines.transport,
       display: s.engines.display,

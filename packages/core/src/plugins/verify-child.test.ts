@@ -59,7 +59,7 @@ export default {
 
 // Plan 95 §4.9, §5 step 95.5 — publish path 2 of 3: a plugin member with a
 // hostile params schema (here, a non-identifier field name) must be refused
-// the same way a standalone script's `POST /api/scripts` would be.
+// the same way a direct `POST /api/scripts` publish would be.
 const HOSTILE_PARAMS = `
 import { z } from 'zod'
 export default {
@@ -100,6 +100,140 @@ export default {
     // bundle never calls it.
     { id: 'hostile', params: z.object({}), run: async () => {}, runtime: { timeoutMs: 500 } },
   ],
+}
+`
+
+// Plan 108 §3.9, §5 step 108.3. Every fixture below is a RAW object literal
+// default export, never `definePlugin()` — which is the whole point: the SDK's
+// author-time `validatePluginSurface` cannot have run, so what these prove is
+// the PARENT's independent re-validation in `finalizeReport`.
+const SURFACE = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [
+    { id: 'list-accounts', params: z.object({}), run: async () => {}, title: 'Sync accounts', description: 'Reads the switch-account sheet.' },
+  ],
+  surface: {
+    nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+    views: {
+      accounts: {
+        title: 'TikTok accounts',
+        data: { kind: 'kv.scan', key: 'accounts', rows: 'items', itemsAt: 'accounts' },
+        table: {
+          rowKey: 'username',
+          columns: [
+            { field: 'username', header: 'Account' },
+            { field: 'current', header: 'Signed in', schema: { type: 'boolean' }, width: 'narrow' },
+          ],
+        },
+        toolbar: ['sync'],
+        rowActions: ['rename'],
+      },
+    },
+    actions: {
+      sync: { kind: 'batch', label: 'Sync accounts', script: 'tiktok/list-accounts@latest' },
+      rename: {
+        kind: 'form',
+        label: 'Rename',
+        schema: { type: 'object', properties: { label: { type: 'string' } } },
+        then: { kind: 'kv.set', label: 'Save', scope: 'device', key: { $literal: 'label' }, value: { $form: 'label' } },
+      },
+    },
+  },
+}
+`
+
+/** Malformed 1 of 4 — a cross-reference no schema can catch: the nav entry names a view this surface does not declare. */
+const SURFACE_BAD_REFERENCE = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface: {
+    nav: [{ id: 'accounts', label: 'Accounts', icon: 'users', view: 'missing-view' }],
+    views: {},
+    actions: {},
+  },
+}
+`
+
+/** Malformed 2 of 4 — an EMBEDDED JSON Schema over `checkDeclaredSchema`'s own limits, in a table column (criterion 4). */
+const SURFACE_OVERSIZED_SCHEMA = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface: {
+    nav: [],
+    views: {
+      accounts: {
+        title: 'Accounts',
+        data: { kind: 'kv.list', scope: 'global' },
+        table: { rowKey: 'username', columns: [{ field: 'username', header: 'Account', schema: { type: 'string', description: 'x'.repeat(70_000) } }] },
+      },
+    },
+    actions: {},
+  },
+}
+`
+
+/** Malformed 3 of 4 — an action kind the closed union does not have. */
+const SURFACE_UNKNOWN_ACTION_KIND = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface: {
+    nav: [],
+    views: {
+      accounts: {
+        title: 'Accounts',
+        data: { kind: 'kv.list', scope: 'global' },
+        table: { rowKey: 'k', columns: [{ field: 'k', header: 'Key' }] },
+        toolbar: ['shell'],
+      },
+    },
+    actions: { shell: { kind: 'exec', label: 'Run a command', command: 'rm -rf /' } },
+  },
+}
+`
+
+/** Malformed 4 of 4 — a named cap exceeded (nine nav entries against `maxNav`'s eight). */
+const SURFACE_CAP_EXCEEDED = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface: {
+    nav: Array.from({ length: 9 }, (_, i) => ({ id: 'nav' + i, label: 'Nav ' + i, icon: 'users', view: 'accounts' })),
+    views: {
+      accounts: {
+        title: 'Accounts',
+        data: { kind: 'kv.list', scope: 'global' },
+        table: { rowKey: 'k', columns: [{ field: 'k', header: 'Key' }] },
+      },
+    },
+    actions: {},
+  },
+}
+`
+
+/** A surface JSON cannot express at all — refused by the CHILD, before the parent ever sees it, and still reported under this plan's own code. */
+const SURFACE_UNSERIALISABLE = `
+import { z } from 'zod'
+const surface = { nav: [], views: {}, actions: {} }
+surface.self = surface
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface,
 }
 `
 
@@ -179,5 +313,80 @@ describe('verifyPluginBundle', () => {
     expect(report.ok).toBe(false)
     expect(report.error).toContain('E_RUNTIME_ENVELOPE_INVALID')
     expect(report.error).toContain('hostile')
+  }, 10_000)
+})
+
+describe('verifyPluginBundle — the surface (plan 108 §3.9, §5 step 108.3)', () => {
+  test('a bundle declaring NO surface verifies exactly as it did before this plan (acceptance criterion 1)', async () => {
+    const path = writeBundle(HEALTHY)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.surface).toBeUndefined()
+    // Not merely absent from the report — absent from every member too, so a
+    // manifest written from this report is key-for-key what it always was.
+    expect(report.scripts.map((s) => s.title)).toEqual([undefined, undefined])
+    expect(report.scripts.map((s) => s.description)).toEqual([undefined, undefined])
+  }, 10_000)
+
+  test('a valid surface verifies and is reported PARSED, with every default applied', async () => {
+    const path = writeBundle(SURFACE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.surface?.nav).toEqual([{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }])
+    // Defaults the bundle never wrote — proof the report carries the parsed form, not the raw one.
+    expect(report.surface?.views.accounts?.table?.selectable).toBe(false)
+    expect(report.surface?.views.accounts?.table?.columns[0]?.width).toBe('auto')
+    expect(report.surface?.views.accounts?.data).toEqual({ kind: 'kv.scan', key: 'accounts', rows: 'items', itemsAt: 'accounts', includeMissing: true })
+    expect(report.surface?.actions.sync).toMatchObject({ kind: 'batch', target: 'picker' })
+    expect(report.surface?.actions.rename).toMatchObject({ kind: 'form', submitLabel: 'Save' })
+  }, 10_000)
+
+  test('a member\'s title and description reach the report (plan 108 §0.2 P8)', async () => {
+    const path = writeBundle(SURFACE)
+    const report = await verifyPluginBundle(path)
+    expect(report.scripts[0]?.title).toBe('Sync accounts')
+    expect(report.scripts[0]?.description).toBe('Reads the switch-account sheet.')
+  }, 10_000)
+
+  test('malformed 1/4 — a nav entry naming a view the surface does not declare fails with E_PLUGIN_SURFACE_INVALID, naming both', async () => {
+    const path = writeBundle(SURFACE_BAD_REFERENCE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
+    expect(report.error).toContain('"accounts"')
+    expect(report.error).toContain('"missing-view"')
+    expect(report.scripts).toEqual([])
+  }, 10_000)
+
+  test('malformed 2/4 — an embedded JSON Schema over checkDeclaredSchema\'s limits fails, naming the column and the limit (criterion 4)', async () => {
+    const path = writeBundle(SURFACE_OVERSIZED_SCHEMA)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
+    expect(report.error).toContain('view "accounts" column "username"')
+  }, 10_000)
+
+  test('malformed 3/4 — an action kind outside the closed union fails, naming the action', async () => {
+    const path = writeBundle(SURFACE_UNKNOWN_ACTION_KIND)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
+    expect(report.error).toContain('shell')
+  }, 10_000)
+
+  test('malformed 4/4 — a cap exceeded fails, naming the limit it hit', async () => {
+    const path = writeBundle(SURFACE_CAP_EXCEEDED)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
+    expect(report.error).toContain('maxNav')
+  }, 10_000)
+
+  test('a surface JSON cannot express is refused by the child and still reported under this plan\'s code', async () => {
+    const path = writeBundle(SURFACE_UNSERIALISABLE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
+    expect(report.error).toContain('serialised to JSON')
   }, 10_000)
 })

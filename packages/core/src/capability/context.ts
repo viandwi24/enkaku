@@ -13,6 +13,7 @@ import type { DeviceStateMachine } from '../device/state-machine'
 import type { ReadinessManager } from '../device/readiness'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
+import { resolveDirectPublishOwner } from '../plugins/owner'
 import { getScriptDetail, listScriptGroups, publishScript, type PublishScriptInput, type ScriptDetail, type ScriptGroupInfo } from '../scripts/service'
 import type { JobService } from '../services/job-service'
 import { clusterRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
@@ -29,10 +30,24 @@ export interface CapabilityActor {
   role: Role
 }
 
+/**
+ * What `script.publish` may ask for (plan 110 §3.2, §5 step 110.3) — a
+ * PublishScriptInput minus the three fields the capability is not allowed to
+ * choose:
+ *
+ * - `pluginId`/`exportId`: ownership is DERIVED from the name, never asserted
+ *   by the caller, or an agent could publish a member into someone else's
+ *   plugin;
+ * - `kind`: this capability publishes scripts. A workflow is published through
+ *   `POST /api/workflows`, which is where its document is validated.
+ */
+export type PublishScriptCapabilityInput = Omit<PublishScriptInput, 'pluginId' | 'exportId' | 'kind'>
+
 export interface ScriptCapabilityService {
   listGroups(): ScriptGroupInfo[]
   get(id: string): ScriptDetail | null
-  publish(input: PublishScriptInput): { id: string; name: string; version: string }
+  /** Publishes a PLUGIN member (plan 110 §3.2): `input.name` is `<plugin>/<script>`, and the owning plugin row is resolved or created here. */
+  publish(input: PublishScriptCapabilityInput): { id: string; name: string; version: string }
 }
 
 /**
@@ -230,8 +245,8 @@ export interface CapabilityContextDeps {
   notify?: NotifyService
   /**
    * Plan 82 §3.3 — replaces the raw `resolveScriptRef(deps.db, ref)` call
-   * below with the registry's merge of persisted scripts (standalone AND
-   * plugin members — an ordinary `scripts` row either way) plus dev slots.
+   * below with the registry's merge of persisted scripts (plugin members
+   * and workflows — an ordinary `scripts` row either way) plus dev slots.
    * Optional, like `notify`/`workspace` before it were introduced: every
    * pre-plan-82 test that hand-builds a `CapabilityContextDeps` literal
    * keeps compiling unedited, and falls back to the exact old behaviour.
@@ -271,11 +286,34 @@ export interface CapabilityContextDeps {
   assistedByOf?: (deviceId: string) => LeaseHolder[]
 }
 
-function buildScriptService(db: Db): ScriptCapabilityService {
+/**
+ * Exported (plan 110 §5 step 110.3) so a test builds the SAME service the real
+ * context does. A hand-rolled `{ publish: (input) => publishScript(db, input) }`
+ * in a fixture would be a second answer to "what does publishing mean", and it
+ * is exactly the answer that would miss the owning-plugin rule.
+ */
+export function buildScriptService(db: Db): ScriptCapabilityService {
   return {
     listGroups: () => listScriptGroups(db),
     get: (id) => getScriptDetail(db, id),
-    publish: (input) => publishScript(db, input),
+    /**
+     * Plan 110 §3.2, §5 step 110.3 — `script.publish` publishes a PLUGIN. The
+     * bundle is built exactly as it was (the `{ path }` form still goes
+     * through `buildScriptFromWorkspace` in `capability/script.ts`); what
+     * changed is only what gets written: a member row owned by the plugin
+     * named in `<plugin>/<script>`, resolved or created by the same helper
+     * `POST /api/scripts` uses, so the REST route and the capability still
+     * cannot disagree about what publishing means (plan 63 §6.9).
+     */
+    publish: (input) => {
+      const owner = resolveDirectPublishOwner(db, {
+        name: input.name,
+        version: input.version,
+        bundle: input.bundle,
+        source: input.source ?? null,
+      })
+      return publishScript(db, { ...input, pluginId: owner.pluginId, exportId: owner.exportId })
+    },
   }
 }
 
@@ -395,8 +433,8 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     // `invoke`'s parse step (step 1), before this is ever called. Plan 82
     // §3.3 — goes through the registry when one is wired (`daemon.ts`
     // always wires it), so a capability caller (e.g. `job.enqueue`'s
-    // `scriptRef` form, `capability/job.ts`) resolves a plugin member the
-    // same as a standalone script; a test with no registry keeps the exact
+    // `scriptRef` form, `capability/job.ts`) resolves a plugin member and a
+    // dev build through one path; a test with no registry keeps the exact
     // pre-plan-82 behaviour.
     resolveScriptRef: (ref) => (deps.registry ? deps.registry.resolve(ref) : resolveScriptRef(deps.db, ref)),
 

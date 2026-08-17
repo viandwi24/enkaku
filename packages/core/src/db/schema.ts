@@ -67,13 +67,53 @@ export const devices = sqliteTable(
      */
     networkRoute: text('network_route', { mode: 'json' }),
     /**
-     * The guest agent's persisted provisioning record (plan 90 §3.8, §4.3,
-     * `AgentStatusSchema` in `@enkaku/protocol`) — null when never
-     * provisioned. Kept off `settings` for the same reason `networkRoute`
-     * is: queryable on its own, no schema collision. Always Zod-validated on
-     * read (CLAUDE.md) — `agent-provisioner.ts` never trusts this column raw.
+     * The guest agent's IDENTITY cache (plan 90 §3.8, §4.3; narrowed by plan
+     * 106 §5 step 106.5 — `GuestAgentIdentitySchema` in `@enkaku/protocol`,
+     * NOT `AgentStatusSchema` any more) — `appVersion`/`versionCode`/
+     * `androidSdkInt`/`capabilities` only, the facts a live `hello()`
+     * handshake happens to learn that have no equivalent field in the
+     * generic per-component shape every OTHER registered component uses.
+     * Null when never provisioned. Kept off `settings` for the same reason
+     * `networkRoute` is: queryable on its own, no schema collision. Always
+     * Zod-validated on read (CLAUDE.md) — `agent-provisioner.ts` never
+     * trusts this column raw.
+     *
+     * Deliberately carries no `state`, `reason`, `attempts`, or
+     * `nextAttemptAt` any more — `devices.preparation['guest-agent']` below
+     * is the ONLY place those are written since step 106.5, so this column
+     * has nothing left to disagree with it about. A PRE-106.5 row still has
+     * the old full `AgentStatusSchema` shape here (state included); reading
+     * it against the narrower schema above is safe (Zod strips the unknown
+     * extra keys rather than rejecting them) — see
+     * `device/preparation/guest-agent-status.ts`'s `deriveGuestAgentIdentity`/
+     * `deriveGuestAgentPreparation`, the one place both columns are combined
+     * or, for a pre-migration row, bridged.
      */
     agent: text('agent', { mode: 'json' }),
+    /**
+     * Per-component provisioning state (plan 106 §3.1, §4, `DevicePreparation`
+     * in `@enkaku/protocol`) — null/absent keys default to `absent` on read.
+     * Kept off `settings` for the same reason `networkRoute`/`agent` are:
+     * queryable on its own, no schema collision. Always Zod-validated on
+     * read (CLAUDE.md) — never trusted raw.
+     *
+     * `devices.preparation['guest-agent']` is AUTHORITATIVE for the guest
+     * agent's state/reason/attempts/nextAttemptAt/checkedAt as of plan 106
+     * §5 step 106.5 (superseding 106.1/106.2's interim decision, §9 Q2,
+     * which kept `devices.agent` authoritative until this step). `devices.agent`
+     * above is now a derived/compat read for that same information — it no
+     * longer stores it at all, and every reader (`agent-provisioner.ts`'s
+     * `readCached`, `registry/device-registry.ts`'s `deriveAgentState`) goes
+     * through `device/preparation/guest-agent-status.ts` rather than reading
+     * either column directly, so there is exactly one place that combines
+     * them (or, for a row written before this migration, falls back to the
+     * legacy `devices.agent` shape once, until the next real pass writes a
+     * real entry here). This mirrors how `DeviceInfo.agent`, the
+     * protocol-level chip, was already a derived read of `devices.agent` via
+     * `deriveAgentState` before this step — the same seam, now pointed at
+     * the new authoritative column instead of the old one.
+     */
+    preparation: text('preparation', { mode: 'json' }),
     /**
      * The label fingerprint this device is believed to be displaying (plan
      * 89 §4.4), or null when nothing has been applied. Compared against the

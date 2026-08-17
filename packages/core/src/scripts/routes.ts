@@ -30,10 +30,18 @@ import { EnkakuError } from '../util/errors'
 import { createLogger, type Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from '../api/pagination'
 import { typedJson } from '../api/typed-json'
+import { resolveDirectPublishOwner } from '../plugins/owner'
 import { createParamSet, deleteParamSet, listParamSets, updateParamSet } from './param-sets'
-import { listScriptGroups, parseScriptRuntime, publishScript } from './service'
+import { listScriptGroups, ownedScriptsWhere, parseScriptRuntime, publishScript } from './service'
 
 const PublishBody = z.object({
+  /**
+   * `<plugin>/<script>` since plan 110 §3.2 — a script cannot be published
+   * outside a plugin. Deliberately still `z.string()` rather than a regex: a
+   * bare name is refused by `resolveDirectPublishOwner`/`publishScript` with
+   * the message that NAMES the rule and shows the `definePlugin` wrapper,
+   * which a generic Zod "invalid format" would replace with nothing useful.
+   */
   name: z.string().min(1),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/),
   bundle: z.string().min(1),
@@ -91,6 +99,15 @@ const ERROR_STATUS: Record<string, number> = {
   param_set_name_exists: 409,
   unauthorized: 401,
   E_BAD_REQUEST: 400,
+  // Plan 110 §3.2, §5 step 110.1 — a publish that named no owning plugin. A
+  // 400: the request is not something the farm will ever accept, and the
+  // message says what to send instead.
+  E_SCRIPT_NEEDS_PLUGIN: 400,
+  // The named plugin exists as a verified package, so a member cannot be
+  // bolted onto it from here (`plugins/owner.ts`) — a conflict with the state
+  // of the farm rather than a malformed request.
+  E_PLUGIN_VERIFIED_OWNER: 409,
+  E_PLUGIN_RESERVED_NAME: 409,
 }
 
 /**
@@ -216,10 +233,14 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
     }
     const { cursor: cursorParam, limit } = parsePageQuery(c)
     const cursor = decodeCursor(cursorParam)
-    const keyset = keysetWhere(
-      cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
-      scripts.createdAt,
-      scripts.id,
+    // Same rule the grouped branch above applies through `listScriptGroups`,
+    // and the same one `ScriptRegistry` applies: a row with no owning plugin
+    // is not part of what this farm can run, so it is not part of the list a
+    // run/schedule picker is built from (`isUnownedScriptRow`).
+    const owned = ownedScriptsWhere()
+    const keyset = and(
+      keysetWhere(cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null, scripts.createdAt, scripts.id),
+      owned,
     )
     const page = db
       .select({
@@ -251,7 +272,7 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
     const total = db
       .select()
       .from(scripts)
-      .where(kind ? eq(scripts.kind, kind) : undefined)
+      .where(kind ? and(eq(scripts.kind, kind), owned) : owned)
       .all().length
 
     const items = rows.map(({ resultSchema, ...r }) => ({
@@ -394,8 +415,25 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
     if (unknownKeys.length > 0) {
       log.warn(`publish ${body.data.name}@${body.data.version}: unknown runtime envelope key(s) dropped: ${unknownKeys.join(', ')}`)
     }
-    const script = publishScript(db, { ...body.data, runtime: runtimeParse.data })
-    deps.audit?.record({ userId: actorId(c), action: 'script.publish', target: script.id, meta: { name: script.name, version: script.version } })
+    // Plan 110 §3.2, §5 step 110.1 — this route never publishes a script
+    // outside a plugin, because there is no such thing to publish: `name` is
+    // `<plugin>/<script>` and the owning plugin row is resolved (or created,
+    // as a one-member plugin) by the SAME helper the `script.publish`
+    // capability uses, so the two cannot disagree about what publishing means
+    // — the property `capability/script.ts` has claimed since plan 63.
+    //
+    // Note what is NOT accepted here: a caller-supplied `pluginId`. Ownership
+    // is derived from the name, never asserted by the request, or any client
+    // could publish a member into a plugin it does not own.
+    const owner = resolveDirectPublishOwner(db, {
+      name: body.data.name,
+      version: body.data.version,
+      bundle: body.data.bundle,
+      source: body.data.source ?? null,
+      createdBy: actorId(c),
+    })
+    const script = publishScript(db, { ...body.data, runtime: runtimeParse.data, pluginId: owner.pluginId, exportId: owner.exportId })
+    deps.audit?.record({ userId: actorId(c), action: 'script.publish', target: script.id, meta: { name: script.name, version: script.version, plugin: owner.pluginName } })
     return c.json({ script }, 201)
   })
 

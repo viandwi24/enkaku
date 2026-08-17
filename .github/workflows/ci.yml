@@ -43,6 +43,7 @@ jobs:
       # moved out of `examples/` for exactly that reason — an example that
       # breaks costs an afternoon, a shipped pack that breaks costs a release.
       - run: bun run --cwd plugins/networking test
+      - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
       - run: bun run --cwd examples test
       # A plan can typecheck and pass every test while its own `> Status:`
@@ -102,6 +103,7 @@ jobs:
       # criterion 10 — see CLAUDE.md's Commands section).
       - run: bun run --cwd packages/studio test
       - run: bun run --cwd plugins/networking test
+      - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
       - run: bun run --cwd examples test
       # `scripts/spec-check.ts` parses filesystem paths into spec-divergence

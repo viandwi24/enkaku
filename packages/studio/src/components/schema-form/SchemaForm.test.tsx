@@ -398,3 +398,113 @@ describe('SchemaForm — the enforcement badge (plan 98 §3.5, §3.9)', () => {
     expect(timeoutRow?.textContent).not.toContain('sampled')
   })
 })
+
+/**
+ * 96.31 — "Settings unsavable": the DOM-level half of the fix. `plan.test.ts`
+ * already proves `planField` computes the right `step`/`increment` values;
+ * this proves those values actually REACH the `<input>` (the failure mode
+ * this register calls out repeatedly — a correct value computed and never
+ * threaded to its call site) and that the trap named in the fix — one prop
+ * used for two jobs — did not reappear: the +/- buttons still work once
+ * `step` can be the non-numeric `'any'`.
+ */
+const curvatureSchema = z.object({
+  gestureCurvature: z
+    .number()
+    .min(0)
+    .max(0.5)
+    .default(0.08)
+    .describe('How far a swipe bows away from a straight line, as a fraction of its length.')
+    .meta({ title: 'Gesture curvature' }),
+  videos: z.number().int().min(0).max(2_000).default(30).meta(ui({ title: 'Videos', kind: 'count' })),
+})
+const curvatureJsonSchema = toJsonSchema(curvatureSchema)
+
+function CurvatureHarness() {
+  const [value, setValue] = useState<unknown>(curvatureSchema.parse({}))
+  return <SchemaForm schema={curvatureJsonSchema} value={value} onChange={setValue} />
+}
+
+describe('SchemaForm — the reported Settings-unsavable bug, end to end through the real DOM (96.31)', () => {
+  test('a curvature-shaped float field renders step="any", not the implicit step="1" that rejected its own 0.08 default', async () => {
+    renderWithApi(<CurvatureHarness />)
+    await waitFor(() => expect(screen.getByText('Gesture curvature')).toBeTruthy())
+    const input = screen.getByLabelText('Gesture curvature') as HTMLInputElement
+    expect(input.value).toBe('0.08')
+    // The exact attribute the browser's own native validation reads. Before
+    // the fix this was absent, and an ABSENT step attribute means the HTML
+    // spec's own implicit default of `step="1"` — which, combined with
+    // `min="0"`, made every non-integer stored value (including this field's
+    // own 0.08 default) fail `reportValidity()` with "The nearest valid
+    // value is 0."
+    expect(input.getAttribute('step')).toBe('any')
+    expect(input.getAttribute('min')).toBe('0')
+  })
+
+  test('an integer field still renders step="1", not "any" — the fix does not blur the two apart', async () => {
+    renderWithApi(<CurvatureHarness />)
+    await waitFor(() => expect(screen.getByText('Videos')).toBeTruthy())
+    const input = screen.getByLabelText('Videos') as HTMLInputElement
+    expect(input.getAttribute('step')).toBe('1')
+  })
+
+  test('the trap: step="any" must not break the +/- buttons (the button delta is a SEPARATE prop, never Number(step))', async () => {
+    renderWithApi(<CurvatureHarness />)
+    await waitFor(() => expect(screen.getByText('Gesture curvature')).toBeTruthy())
+    const input = screen.getByLabelText('Gesture curvature') as HTMLInputElement
+    expect(input.value).toBe('0.08')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Gesture curvature' }))
+    await waitFor(() => expect(input.value).toBe('0.09'))
+    // Had the button delta been derived from `step` directly (`Number('any')
+    // === NaN`), this click would have produced "NaN" or left the value
+    // unchanged — not a real, one-hundredth increment.
+
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease Gesture curvature' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease Gesture curvature' }))
+    await waitFor(() => expect(input.value).toBe('0.07'))
+  })
+})
+
+/**
+ * The two workspace path kinds, end to end: `planForm` → `renderControl` →
+ * `WorkspacePathControl`. The control's own behaviour is covered by
+ * `controls/WorkspacePathControl.test.tsx`; what only this file can show is
+ * that the FORM reaches it at all, and that `required` — which no other
+ * control reads — arrives from the schema rather than being guessed.
+ */
+const workspaceSchema = z.object({
+  outDir: z.string().default('/videos').meta(ui({ title: 'Output folder', kind: 'workspaceFolder' })),
+  captions: z.string().optional().meta(ui({ title: 'Captions', kind: 'workspaceFile', extensions: ['.txt'] })),
+})
+
+const workspaceJsonSchema = toJsonSchema(workspaceSchema)
+
+function WorkspaceHarness() {
+  const [value, setValue] = useState<unknown>({ outDir: '/videos', captions: '/captions.txt' })
+  return <SchemaForm schema={workspaceJsonSchema} value={value} onChange={setValue} />
+}
+
+describe('SchemaForm — the workspace path kinds reach their browser through the ordinary walk', () => {
+  test('both fields render as a browser showing the current value, not as a path typed from memory', async () => {
+    renderWithApi(<WorkspaceHarness />, {
+      '/api/v1/cap/fs.list': { body: { ok: true, output: { entries: [{ path: '/videos/', kind: 'dir', size: null, hash: null, updatedAt: null }] } } },
+    })
+    await waitFor(() => expect(screen.getByText('Output folder')).toBeTruthy())
+    expect(screen.getByText('/videos')).toBeTruthy()
+    expect(screen.getByText('Captions')).toBeTruthy()
+    expect(screen.getByText('/captions.txt')).toBeTruthy()
+  })
+
+  test('required comes from the schema: the required folder offers no clear, the optional file would', async () => {
+    renderWithApi(<WorkspaceHarness />, {
+      '/api/v1/cap/fs.list': { body: { ok: true, output: { entries: [] } } },
+    })
+    await waitFor(() => expect(screen.getByText('Output folder')).toBeTruthy())
+    // `outDir` has a default and is therefore in the schema's `required`
+    // list; `captions` is `.optional()` and is not. Both hold a value, so
+    // the only thing separating them is where `required` came from.
+    expect(screen.queryByRole('button', { name: 'Clear Output folder' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear Captions' })).toBeTruthy()
+  })
+})

@@ -39,7 +39,7 @@ function asSchemaNode(value: unknown): Record<string, unknown> | undefined {
  *
  * Plan 82 §3.3: reads the script through the `ScriptRegistry` rather than the
  * `scripts` table directly — `job.scriptId` can be a persisted row's id
- * (standalone or a published plugin member) OR a dev entry's id
+ * (a published plugin member) OR a dev entry's id
  * (`dev:<plugin>/<script>`, which has no row at all). The registry is also
  * what supplies `exportId` — the plugin bundle's own member id — which is
  * what actually lets `child-entry.ts` select the right script out of a
@@ -97,8 +97,8 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
         deviceId: job.deviceId,
         bundlePath,
         params: job.params ?? {},
-        // Undefined for a standalone script (no `scripts` array in its
-        // bundle, `exportId` is null) — `child-entry.ts` then takes the
+        // Undefined only for a bundle with no `scripts` array of its own
+        // (`exportId` is null) — `child-entry.ts` then takes the
         // pre-plan-82 branch unchanged (criterion 27).
         ...(entry.exportId ? { scriptExportId: entry.exportId } : {}),
         // Plan 98 §3.1, §4.4, §5 step 98.4 — the script's own declared

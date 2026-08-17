@@ -10,6 +10,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { api, useAction } from '@/lib/actions'
 
 const OPTIONS: readonly { value: RotationMode; label: string; icon: typeof Lock }[] = [
@@ -45,11 +46,24 @@ export function RotationQuickAction({
   deviceId,
   settings,
   onSaved,
+  iconOnly = false,
 }: {
   deviceId: string
   /** `DeviceDetailInfo.settings` — `unknown` at this layer, same as every other reader of it on this page. */
   settings: unknown
   onSaved: (settings: unknown) => void
+  /**
+   * Drops `SHORT_LABEL` from the trigger and keeps only the icon (plan 103's
+   * layout restructure, owner-reported: a text-bearing button was the one
+   * child in `HardwareRail`'s icon-only column with no explicit width, so it
+   * stretched the whole rail to its own width). `false` by default — the
+   * device page's Control tab and every other existing caller renders
+   * exactly as it always has and needs no edit. The label survives as the
+   * `aria-label` (already present either way) and, in icon-only mode, as a
+   * `Tooltip` — the same convention `HardwareRail`'s own icon buttons use,
+   * so this control does not invent a second one on the same strip.
+   */
+  iconOnly?: boolean
 }) {
   const { run, isPending } = useAction()
   const current = ((settings as { prep?: { rotation?: RotationMode } } | null)?.prep?.rotation ?? 'device') as RotationMode
@@ -79,14 +93,31 @@ export function RotationQuickAction({
 
   const TriggerIcon = current === 'device' ? RotateCcw : Lock
 
+  const trigger = (
+    <DropdownMenuTrigger asChild>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        className={iconOnly ? 'h-8 w-10' : 'gap-1.5'}
+        aria-label="Screen rotation"
+      >
+        <TriggerIcon className="size-3.5" aria-hidden />
+        {!iconOnly && SHORT_LABEL[current]}
+      </Button>
+    </DropdownMenuTrigger>
+  )
+
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={busy} className="gap-1.5" aria-label="Screen rotation">
-          <TriggerIcon className="size-3.5" aria-hidden />
-          {SHORT_LABEL[current]}
-        </Button>
-      </DropdownMenuTrigger>
+      {iconOnly ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent side="right">Screen rotation — {SHORT_LABEL[current]}</TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuRadioGroup value={current} onValueChange={(v) => choose(v as RotationMode)}>
           {OPTIONS.map(({ value, label, icon: Icon }) => (
