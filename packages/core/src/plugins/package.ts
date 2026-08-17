@@ -5,13 +5,13 @@ import { EnkakuError } from '../util/errors'
 
 /**
  * The `.enkaku` package (plan 108 §3.8, step 108.2) — one file that carries a
- * plugin's manifest, its script bundle, and (tier B) its `ui/` assets.
+ * plugin's manifest, its script bundle, and its `ui/` assets.
  *
  * ```
  * <plugin>.enkaku   (tar.gz)
  *   plugin.json        the manifest
  *   scripts.mjs        the script bundle
- *   ui/                iframe assets (tier B only)
+ *   ui/                the view's own assets — a React module and whatever it ships beside it
  * ```
  *
  * gzipped USTAR, written and read through `../backup/tar.ts` — the
@@ -88,7 +88,7 @@ export const PluginPackageManifestSchema = z
   .strict()
 export type PluginPackageManifest = z.infer<typeof PluginPackageManifestSchema>
 
-/** One file under `ui/`, its path RELATIVE to `ui/` — `ui/app/index.html` is `{ path: 'app/index.html' }`, which is exactly what a view's `frame.entry` names (§4.2). */
+/** One file under `ui/`, its path RELATIVE to `ui/` — `ui/app/index.js` is `{ path: 'app/index.js' }`, which is exactly what a view's `react.entry` names (plan 108 §4.2, plan 111 §4.1). */
 export interface PluginPackageAsset {
   path: string
   data: Bytes
@@ -152,7 +152,7 @@ function checkEntryName(name: string): void {
 
 /**
  * True when `path` — a `ui/` path RELATIVE to `ui/`, the shape
- * `PluginPackageAsset.path` and a view's `frame.entry` both use — is one this
+ * `PluginPackageAsset.path` and a view's `react.entry` both use — is one this
  * format permits. Exactly the grammar `classifyEntry` below enforces, exported
  * rather than duplicated so `asset-store.ts` can re-check a path it read back
  * off disk (plan 108 §5 step 108.10) against the SAME rule the archive reader

@@ -117,55 +117,48 @@ export function contentTypeFor(path: string): string {
 }
 
 /**
- * The response policy for **every** `GET /api/plugins/:name/ui/*` response
- * (plan 108 §4.4: "a strict CSP … no external hosts, no `allow-same-origin`").
- * One constant, applied uniformly, because a header that is right on the
- * document and missing on the script it loads is not a policy.
+ * `PLUGIN_UI_CSP` — the strict policy plan 108 §4.4 put on every
+ * `GET /api/plugins/:name/ui/*` response — was DELETED by plan 111 step
+ * 111.4, and the reasoning is kept here rather than in a commit message
+ * because "why is there no CSP on the one route that serves third-party
+ * bytes?" is a question a reviewer will ask again.
  *
- * Directive by directive, and why:
+ * **It had stopped doing anything on the path that matters.** Under tier B a
+ * `ui/` asset was fetched as a DOCUMENT, into an `<iframe>`, and a CSP
+ * response header binds to the global object created from that response —
+ * so it was the whole enforcement. Under tier C (plan 111 §3.1) Studio loads
+ * the same asset as a `<script type="module">` SUBRESOURCE of its own page.
+ * A subresource response creates no global, so its `Content-Security-Policy`
+ * header is never consulted; the only policy that governs that load is the
+ * *requesting document's*, and plan 111 §0.2 T1 records — re-checked at
+ * removal time, `git grep -i content-security-policy` over `packages/core/src`
+ * and `packages/studio` finds nothing else — that Studio's pages carry no CSP
+ * header at all.
  *
- * - `default-src 'none'` — nothing is reachable unless a directive below says so.
- * - `script-src 'self'` — the plugin's OWN files, served by this route, and
- *   nothing else. Deliberately without `'unsafe-inline'`: that keyword would
- *   also re-enable inline event handlers (`onclick="…"`), which this policy is
- *   required to forbid. A tier-B plugin ships `app.js`, not `<script>…</script>`.
- * - `style-src 'self' 'unsafe-inline'` — inline CSS is not a script vector under
- *   `script-src` above, and the host's design-token block is injected by the
- *   frame's own bootstrap as a `<style>` element (§4.4, "design tokens … as CSS
- *   custom properties"), which counts as inline style.
- * - `connect-src 'none'` — **the load-bearing one.** No `fetch`, no `XMLHttpRequest`,
- *   no `WebSocket`, no `EventSource`, no `sendBeacon`, to ANY host including this
- *   one. A tier-B frame therefore cannot call the farm's API even if it somehow
- *   held a credential, which is what makes criterion 16 structural rather than
- *   a promise: its only channel to the host is the `postMessage` RPC, and that
- *   maps onto declared actions and data sources only.
- * - `form-action 'none'`, `base-uri 'none'`, `object-src 'none'` — the three
- *   classic ways a document exfiltrates or re-points itself without `connect-src`.
- * - `frame-ancestors` — Studio, and Studio's dev server. `'self'` alone would
- *   break `bun run dev:studio`, where Studio is on :3001 and the core on :7700
- *   (two origins to a browser); the loopback entries mirror the CORS grant
- *   `server/http.ts` already makes for exactly that setup, and admit only a page
- *   already running on the operator's own machine.
- * - `sandbox allow-scripts` — the same sandbox `FrameView`'s `<iframe>`
- *   attribute applies, re-applied by the SERVER so it holds even when the URL is
- *   opened directly in a tab rather than through Studio. `allow-same-origin` is
- *   absent, so the document has an opaque origin and can read no cookie, no
- *   storage, and nothing of the operator's session.
+ * The header was also self-contradictory once tier C landed: had it been
+ * enforced, `sandbox allow-scripts` (opaque origin) and `connect-src 'none'`
+ * would have made a React plugin unable to reach the farm at all, which is
+ * the exact opposite of §3.4. Step 111.0's probe loading a module through
+ * this route and calling `fetch` from it is the empirical half of the same
+ * point.
+ *
+ * **The one case where it would still apply, and why it is not worth
+ * keeping:** the allowlist permits `ui/*.html`, so an operator who navigates
+ * straight to such an asset gets a real document, and the header would have
+ * governed it. That protection belonged to a threat model plan 111 §2
+ * abandoned on purpose — plugin code is fully trusted, runs server-side with
+ * the core's OS authority already, and now runs in Studio's own page with the
+ * operator's session (§0.1). A header that constrains a plugin's HTML while
+ * its JavaScript has the run of the page is not a boundary; it only reads
+ * like one.
+ *
+ * `x-content-type-options: nosniff`, `referrer-policy: no-referrer` and
+ * `cache-control: no-store` stay on the route. Those three are enforced on a
+ * subresource: `nosniff` is what makes the browser refuse a module whose
+ * content type is not a JavaScript MIME rather than sniff its way into
+ * running it, and `no-store` is what makes a dev-slot rebuild serve the new
+ * component instead of the browser's copy of the old one (criterion 8).
  */
-export const PLUGIN_UI_CSP = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "media-src 'self' data: blob:",
-  "connect-src 'none'",
-  "form-action 'none'",
-  "base-uri 'none'",
-  "object-src 'none'",
-  "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
-  'sandbox allow-scripts',
-].join('; ')
 
 /** One asset, ready to be a response body. */
 export interface StoredAsset {

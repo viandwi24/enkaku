@@ -15,7 +15,7 @@ export {
 } from './video-profile'
 export { createSessionManager, type SessionManager, type SessionManagerDeps } from './manager'
 export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
-export { PortAllocator, parsePortRange } from './port-allocator'
+export { PortAllocator, parsePortRange, isPortFree } from './port-allocator'
 export { createDeviceExecutor, DEFAULT_TIMING, type TimingSettings } from './device-executor'
 export {
   createInputArbiter,
@@ -34,6 +34,7 @@ export {
   type AbortReason,
   type KvRunnerDeps,
   type JobsRunnerDeps,
+  type FarmRunnerDeps,
 } from './runner/job-runner'
 export { resetDevice, parseForegroundPackages, type ResetPolicy, type ResetPlan, type ResetOutcome } from './reset'
 export { createJobLogger, type JobLogger, type JobLogEntry } from './runner/job-logger'
@@ -44,14 +45,30 @@ export {
   KvCallSchema,
   KvScopeSchema,
   JobsCallSchema,
+  FarmCallSchema,
   type ChildToParent,
   type ParentToChild,
   type DeviceCall,
   type KvCall,
   type KvScopeKind,
   type JobsCall,
+  type FarmCall,
 } from './runner/ipc'
 export { createKvApiFor, type KvApiClient, type KvListItem, type KvListResult, type KvSetResult } from './runner/kv-client'
+/**
+ * Plan 109 (M74) step 109.1 — the ONE `PluginContext` builder, shared by the
+ * job child and the core. See `plugin-context.ts`'s header for why it lives
+ * in this package rather than in `@enkaku/sdk` or `packages/core`.
+ */
+export {
+  buildPluginContext,
+  createChildPluginContext,
+  noDeviceScopeError,
+  foreignDeviceScopeError,
+  type PluginContextPorts,
+  type PluginStorageTarget,
+  type ChildPluginContextDeps,
+} from './plugin-context'
 export { createJobsApiFor, type JobsApiClient, type JobsListResult } from './runner/jobs-client'
 export {
   resolveIsolation,

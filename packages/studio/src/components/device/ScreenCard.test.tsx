@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { act, screen, waitFor } from '@testing-library/react'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 
 /**

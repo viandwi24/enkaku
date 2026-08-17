@@ -16,17 +16,11 @@ import {
 } from '@enkaku/protocol'
 import { ConfirmFanout } from '@/components/command/ConfirmFanout'
 import { RunReport, type RunReportRun } from '@/components/command/RunReport'
-import { EmptyState } from '@/components/states'
+import { EmptyState, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, Switch, api, useAction } from '@enkaku/ui'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { api, useAction } from '@/lib/actions'
 import { coreBase, ws } from '@/lib/ws'
 
 const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']

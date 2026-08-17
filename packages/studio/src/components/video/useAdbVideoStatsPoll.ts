@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { z } from 'zod'
 import { AdbStatsResponseSchema } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api } from '@enkaku/ui'
 
 /** No `AdbStatsResponse` type is exported from `@enkaku/protocol` (every existing caller — `AdbServerCard.tsx`, `Wall.tsx`, `settings/page.tsx` — reads straight off the schema too), so this is inferred locally rather than added to that contested barrel. */
 export type AdbStatsResponse = z.infer<typeof AdbStatsResponseSchema>

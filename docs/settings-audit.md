@@ -22,23 +22,57 @@ anything read it back," never "does it appear in the UI." That is why the Studio
 rows below is just "the generic schema form," and why a bespoke UI (a dedicated component) is
 called out specifically where one exists.
 
+**Resolution status, added 2026-08-17 so this report does not go stale the day it was written.**
+Five of the findings below have been acted on, recorded in
+`docs/plans/96-m61-hotfixes.md` §96.32–§96.36 — this file's own text below is
+left as originally written (a point-in-time audit), with a `RESOLVED` marker
+at each affected row/section pointing at the entry that closed it:
+
+- **#1** `defaults.identity` (highest severity) — **RESOLVED, §96.33.** The
+  farm-wide block was deleted (`FarmSettingsSchema.defaults` now uses
+  `DeviceSettingsSchema.omit({ identity: true })`); per-device identity
+  (plan 58, `DeviceSettingsSchema.identity`, `api/device-identity.ts`) is
+  untouched.
+- **#5** `video.controlPreset`/`wallPreset` (per-device) — **RESOLVED,
+  §96.34.** The audit's own two honest options were correct-the-text or
+  delete; this pass corrected the text (both fields' descriptions now say
+  plainly that nothing reads them yet) rather than restructuring the shared
+  six-field `video` object for the two dead fields alone.
+- **#6** `adb.execTimeoutMs`/`adb.maxQueueDepth` — **RESOLVED, §96.32.** Both
+  deleted from `AdbSettingsSchema`; a stored row carrying either key still
+  parses cleanly (Zod's default strip mode), no compatibility-window
+  preprocessor needed.
+- **#8** `job.memory.*`'s stale comment — **RESOLVED, §96.35.** The schema
+  comment now names the enforcing call site (`job-runner.ts`'s
+  `checkMemoryBreach`) instead of claiming enforcement "has not landed yet."
+- **#3** `workflow.maxTotalMs` (PARTIAL) — **RESOLVED, §96.36.** `daemon.ts`'s
+  `createWorkflowRoutes({...})` call now passes the same live `settings`
+  accessor the runtime executor already used; both doc comments (which had
+  the gap backwards) were corrected, and a routes-half regression guard was
+  added to `daemon-wiring.test.ts` alongside the executor's pre-existing one.
+
+Not addressed by this pass, deliberately out of scope: **#2** `timing.*`
+(SHADOWED), **#4** `prep.disableAnimations` (DEAD), **#7**
+`shell.commandRunsPerUser` (DEAD), and **#9** `shell.fanoutConfirmThreshold`
+(client-side only) all remain open findings, unchanged from the text below.
+
 ---
 
 ## Summary table
 
 | Field(s) | Scope | Verdict | Consequence |
 |---|---|---|---|
-| `defaults.identity.timezone/locale/gps.*` (5 fields) | farm-wide, duplicated (per-device instance also exists) | **DEAD, ACTIVELY HARMFUL** | See detail — not inert, it stamps identical GPS onto every device admitted while it's set |
+| `defaults.identity.timezone/locale/gps.*` (5 fields) | farm-wide, duplicated (per-device instance also exists) | **DEAD, ACTIVELY HARMFUL** — **RESOLVED §96.33** | See detail — not inert, it stamps identical GPS onto every device admitted while it's set. Deleted from `FarmSettingsSchema.defaults` 2026-08-17; per-device instance untouched |
 | `timing.*` (7 fields: tapJitterMs, betweenActionMs, coordJitterPx, profile, gestureCurvature, gestureSampleIntervalMs, perCharMs) | per-device instance | **SHADOWED** | Per-device customization is silently ignored; the farm default always wins for every job on every device |
-| `workflow.maxTotalMs` | farm-wide | **PARTIAL** | Live for the runtime kill switch, hardcoded for the publish-time preflight check — the two can disagree |
+| `workflow.maxTotalMs` | farm-wide | **PARTIAL** — **RESOLVED §96.36** | Live for the runtime kill switch, hardcoded for the publish-time preflight check — the two can disagree. `daemon.ts` now passes a live `settings` accessor to `createWorkflowRoutes` too, as of 2026-08-17 |
 | `prep.disableAnimations` | per-device (+ farm default) | **DEAD** | No applier exists anywhere; turning it off does nothing, sits beside three siblings that DO work |
-| `video.controlPreset`, `video.wallPreset` | per-device override | **DEAD** | Schema text says "overrides the farm setting for this device only" — false. Only the four numeric siblings actually override |
-| `adb.execTimeoutMs` | farm-wide | **DEAD** | Every real adb timeout comes from a hardcoded per-call-site table (`packages/adb/src/timeouts.ts`), never this setting |
-| `adb.maxQueueDepth` | farm-wide | **DEAD** | `AdbClient` is constructed without this option; no setter exists at all, unlike its four live siblings |
+| `video.controlPreset`, `video.wallPreset` | per-device override | **DEAD** — **RESOLVED §96.34** | Schema text says "overrides the farm setting for this device only" — false. Only the four numeric siblings actually override. Description corrected 2026-08-17 to say so plainly; fields kept, not deleted |
+| `adb.execTimeoutMs` | farm-wide | **DEAD** — **RESOLVED §96.32** | Every real adb timeout comes from a hardcoded per-call-site table (`packages/adb/src/timeouts.ts`), never this setting. Deleted 2026-08-17 |
+| `adb.maxQueueDepth` | farm-wide | **DEAD** — **RESOLVED §96.32** | `AdbClient` is constructed without this option; no setter exists at all, unlike its four live siblings. Deleted 2026-08-17 |
 | `shell.commandRunsPerUser` | farm-wide | **DEAD** | `trimForUser()` is implemented and unit-tested but never called from any production code path |
 | `engines.*` (4), `input.preferredMode`, `prep.keepAwake/standbyScreenOff/rotation/textInput`, `autoReconnect`, `logInputText`, `instrumentation.tagTraffic`, `labelling.mode/showName` (13 fields) | per-device | LIVE | — |
 | `video.controlMaxSize/MaxFps/BitRate`, `video.wallMaxSize/MaxFps/BitRate` (6 fields) | per-device override, farm-wide | LIVE | — |
-| `job.*` — all 23 leaf fields (resetPolicy/resetTimeoutMs/resetStrict, retry.\*, crashPolicy, quietPeriodSec/maxWaitSec, defaultTimeoutMs/startupTimeoutMs/maxTimeoutMs, memory.\*, trigger.\*, maxResultBytes, progressIntervalMs) | farm-wide | LIVE | `job.memory.*`'s doc comment in settings.ts is stale (says enforcement "has not landed yet"); plan 98 is marked fully implemented and the kill path traces end to end — documentation bug only |
+| `job.*` — all 23 leaf fields (resetPolicy/resetTimeoutMs/resetStrict, retry.\*, crashPolicy, quietPeriodSec/maxWaitSec, defaultTimeoutMs/startupTimeoutMs/maxTimeoutMs, memory.\*, trigger.\*, maxResultBytes, progressIntervalMs) | farm-wide | LIVE — **doc bug RESOLVED §96.35** | `job.memory.*`'s doc comment in settings.ts was stale (said enforcement "has not landed yet"); plan 98 is marked fully implemented and the kill path traces end to end — documentation bug only. Comment corrected 2026-08-17, names `job-runner.ts`'s `checkMemoryBreach` |
 | `adb.maxConcurrent/maxStreamsPerDevice/maxStreams/maxHostConcurrent/maxInstallConcurrent` (5) | farm-wide | LIVE | — |
 | `discovery.*` — all 14 leaf fields including `networks[]`, `scan.*`, `cutover.*` | farm-wide | LIVE | — |
 | `guestAgent.*` (3), `monitor.crashWatch`, `health.*` (3), `adbControl.*` (4), `labelling.maxConcurrent` | farm-wide | LIVE | — |
@@ -57,6 +91,8 @@ called out specifically where one exists.
 ## Detail — DEAD, SHADOWED, PARTIAL, and other consequential findings, ranked by real consequence
 
 ### 1. `defaults.identity` (timezone, locale, gps.lat/lng/accuracy) — DEAD as an ongoing setting, ACTIVELY HARMFUL as a one-shot enrollment stamp
+
+> **RESOLVED 2026-08-17 — `docs/plans/96-m61-hotfixes.md` §96.33.** The farm-wide `defaults.identity` block described below was deleted (`FarmSettingsSchema.defaults` now parses `DeviceSettingsSchema.omit({ identity: true })`); `defaultsForNewDevice` (both `admission.ts` and `device-registry.ts`) now always fills a new device's identity from `DeviceIdentitySchema`'s own empty default instead. Per-device identity (plan 58) is untouched. The findings below are left as originally written.
 
 **Highest-severity finding.** Scope: **duplicated** — the same shape exists per-device
 (`DeviceSettingsSchema.identity`, live) and farm-wide (`FarmSettingsSchema.defaults.identity`,
@@ -129,6 +165,8 @@ row) vs. farm-wide `FarmSettingsSchema.defaults.timing` (the half that actually 
 
 ### 3. `workflow.maxTotalMs` — PARTIAL, and both this file's and `workflow.ts`'s own doc comments are stale in the opposite direction
 
+> **RESOLVED 2026-08-17 — `docs/plans/96-m61-hotfixes.md` §96.36.** `daemon.ts:2469`'s `createWorkflowRoutes({...})` call now passes `settings: () => settingsStore.get().workflow`, the identical accessor the runtime executor already used — the two consumers can no longer disagree. Both `settings.ts`'s and `workflow.ts`'s doc comments (described below as backwards) were corrected, and `daemon-wiring.test.ts` gained a routes-half regression guard matching the executor's pre-existing one. The findings below are left as originally written.
+
 Scope: farm-wide, single field, no per-device analog.
 
 - **Studio surface**: Settings → Jobs tab (`farmSections.ts:117`, `keys: ['job', 'workflow']`).
@@ -180,6 +218,8 @@ Scope: per-device (and its farm-default template instance, same non-effect eithe
 
 ### 5. `video.controlPreset`, `video.wallPreset` (per-device override) — DEAD, with misleading UI copy
 
+> **RESOLVED 2026-08-17 — `docs/plans/96-m61-hotfixes.md` §96.34.** Of the two honest options named below, the description was corrected (not the fields deleted): both now read "Not yet read anywhere... Setting this has no effect," with matching `(not yet applied)` titles. The farm-level `controlPreset`/`wallPreset` (a separate, live block) were not touched. The findings below are left as originally written.
+
 Scope: per-device override of a farm-wide default.
 
 - **Studio surface**: device Settings → Video tab (group `Video`), described in the schema itself
@@ -197,6 +237,8 @@ Scope: per-device override of a farm-wide default.
   false claim rather than just omitting a warning.
 
 ### 6. `adb.execTimeoutMs`, `adb.maxQueueDepth` — DEAD
+
+> **RESOLVED 2026-08-17 — `docs/plans/96-m61-hotfixes.md` §96.32.** Both fields deleted from `AdbSettingsSchema`, after independently re-verifying both claims below. Not a compatibility window: a stored row carrying either key parses cleanly (Zod's default strip mode), the key silently dropped. The findings below are left as originally written.
 
 Scope: farm-wide, both in the same `adb.*` block as five siblings that are genuinely live
 (`maxConcurrent`, `maxStreamsPerDevice`, `maxStreams`, `maxHostConcurrent`, `maxInstallConcurrent`,
@@ -237,6 +279,8 @@ are all live.
   configured value.
 
 ### 8. `job.memory.*` — LIVE, but the schema's own doc comment is stale and could mislead an operator
+
+> **RESOLVED 2026-08-17 — `docs/plans/96-m61-hotfixes.md` §96.35.** The comment now names the enforcing call site (`job-runner.ts`'s `checkMemoryBreach`) instead of claiming enforcement "has not landed yet." Documentation-only fix; no behavior changed. The findings below are left as originally written.
 
 Scope: farm-wide, all four leaf fields (`defaultMaxRssBytes`, `maxRssBytes`, `enforce`,
 `sampleIntervalMs`).

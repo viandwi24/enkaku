@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { screen, waitFor, within } from '@testing-library/react'
 import { setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 
 /**
  * The device page mounts almost everything it renders unconditionally —

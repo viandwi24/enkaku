@@ -3,14 +3,9 @@
 import { useRef } from 'react'
 import Link from 'next/link'
 import { Film } from 'lucide-react'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog, Badge, Button, TableCell, TableHead, useAction, relativeTime } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { useAction } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
 import { deleteRecording, listRecordings, type RecordingListItem } from '@/components/recording/recording-api'
 
 /**

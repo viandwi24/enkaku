@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * The one responsive tile grid (Plan 42 §4.6): the fleet Wall and the

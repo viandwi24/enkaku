@@ -3,8 +3,7 @@
 import { useState } from 'react'
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn } from '@enkaku/ui'
 import { computeTargetPreview } from './target-preview'
 
 /**

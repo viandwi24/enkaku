@@ -4,9 +4,7 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { normaliseTag, DeviceTagsResponseSchema, TagSuggestionSchema, TagsResponseSchema } from '@enkaku/protocol'
 import type { z } from 'zod'
-import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { api, useAction } from '@/lib/actions'
+import { Badge, Input, api, useAction } from '@enkaku/ui'
 
 type TagSuggestion = z.infer<typeof TagSuggestionSchema>
 

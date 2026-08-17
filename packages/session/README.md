@@ -5,6 +5,18 @@ display, input, inspector, and — when configured — network; spec §7.9),
 shared and refcounted across every viewer, plus the per-job subprocess
 runner (`runner/`) that turns a published script into a running job.
 
+## `plugin-context.ts` — the one `PluginContext` builder (plan 109 §3.1, step 109.1)
+
+A surprising thing to find in this package, so the reason is written on the file itself and repeated here: `buildPluginContext` is the single function that assembles the context **every** plugin entry point receives — a script handler, and (once the host lands in 109.2) an HTTP, WebSocket, event or query handler. Two builders would agree today and disagree in three months, which is why plan 109's acceptance criterion 2 is a fixture called from both ends rather than a promise.
+
+It lives here because this is the only package both hosts can reach:
+
+- the job **child** process is `runner/child-entry.ts`, in this package;
+- the **core** depends on `@enkaku/session`, and `@enkaku/session` must never depend on `@enkaku/core` — so a builder in `packages/core` (where plan 109 §4.8 first put it) is unreachable from the child;
+- `@enkaku/sdk` cannot host it either: `ctx.storage`'s client (`createKvApiFor`) and the `KvCall` wire schema are both here, and moving them would split a Zod schema from the type it generates.
+
+`packages/core/src/plugins/plugin-context.ts` is the core's port bindings and its single door onto this function — not a second builder. Each host supplies three primitive ports (emit one log line, make one KV round trip, invoke one capability) and this file owns the shape, the scoping rules and the coded refusals. Passing only functions is also what makes plan 109's criterion 11 — *no `Db`, `KvStore` or capability registry reachable from `ctx`* — true by construction: there is nothing here to leak.
+
 ## The input arbiter: three lanes, not one mutex (plan 91 §3.3, §4.1)
 
 `createInputArbiter` (`src/input-arbiter.ts`) sits between every caller of a

@@ -7,17 +7,28 @@ import {
   ICON_NAMES,
   IconNameSchema,
   NavEntrySchema,
+  PLUGIN_UI_API_VERSION,
   PluginSurfaceSchema,
   SURFACE_LIMITS,
   SurfaceIdSchema,
   ViewSpecSchema,
+  handlerViewsWithoutServiceMessage,
   validatePluginSurface,
   type Binding,
   type PluginSurfaceInput,
 } from './plugin-surface'
 
+/**
+ * `actions` became optional on the AUTHOR-facing input type in step 111.4 (a
+ * tier-C plugin may declare none). This fixture always writes all three keys,
+ * so it narrows the field back to required — every cross-reference test below
+ * reaches into `surface.actions` directly, and threading an `undefined` check
+ * through each one would assert nothing about the code under test.
+ */
+type SurfaceFixture = PluginSurfaceInput & { actions: NonNullable<PluginSurfaceInput['actions']> }
+
 /** The plan's own worked example (108 §4.3), the fixture every cross-reference test bends out of shape. */
-function tiktokSurface(): PluginSurfaceInput {
+function tiktokSurface(): SurfaceFixture {
   return {
     nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
     views: {
@@ -248,14 +259,64 @@ describe('ViewSpecSchema', () => {
     expect(parsed.table?.columns[0]?.width).toBe('auto')
   })
 
-  test('a frame view defaults its height', () => {
-    const parsed = ViewSpecSchema.parse({ title: 'Dashboard', frame: { entry: 'index.html' } })
-    expect(parsed.frame).toEqual({ entry: 'index.html', height: 'fill' })
-  })
-
   test('refuses an empty column list and an undeclared field', () => {
     expect(ViewSpecSchema.safeParse({ title: 'x', table: { rowKey: 'k', columns: [] } }).success).toBe(false)
     expect(ViewSpecSchema.safeParse({ title: 'x', chart: { kind: 'bar' } }).success).toBe(false)
+  })
+})
+
+/**
+ * Tier C (plan 111 §4.1, §5 step 111.4). `react` replaced plan 108's `frame`
+ * outright — 00-overview §4.3, removed and not deprecated — so the last test
+ * here is as load-bearing as the others: it is what would fail if a
+ * compatibility alias were ever quietly added back.
+ */
+describe('ViewSpecSchema — the `react` renderer', () => {
+  test('a react view parses, keeping both fields exactly as written', () => {
+    const parsed = ViewSpecSchema.parse({ title: 'Catalogue', react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION } })
+    expect(parsed.react).toEqual({ entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION })
+    expect(parsed.table).toBeUndefined()
+    // The two list defaults still apply to a React view — a plugin may put its
+    // own component beside a declared toolbar action.
+    expect(parsed.toolbar).toEqual([])
+    expect(parsed.rowActions).toEqual([])
+  })
+
+  test('`apiVersion` is required, and is an integer in range — no default guesses it', () => {
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js' } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: 0 } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: 1.5 } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: 1000 } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: '1' } }).success).toBe(false)
+  })
+
+  test('`entry` must be a non-empty path, and nothing else may ride along', () => {
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: '', apiVersion: 1 } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: 1, height: 'fill' } }).success).toBe(false)
+  })
+
+  /**
+   * The exact shape `enkaku init` scaffolds (`packages/sdk/src/cli/init.ts`)
+   * and the exact shape `publish.test.ts`'s `REACT_SURFACE_SUPPORTED` probe
+   * asks about: one nav entry, one React view, and NO `actions` key at all. A
+   * tier-C plugin calls `fetch` itself, so it may legitimately declare none.
+   */
+  test('a whole surface may be one React view with no actions declared', () => {
+    const result = validatePluginSurface({
+      nav: [{ id: 'main', label: 'Main', icon: 'puzzle', view: 'main' }],
+      views: { main: { title: 'Main', react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION } } },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.errors.join('; '))
+    // Defaulted at PARSE, so every consumer still reads a present record.
+    expect(result.value.actions).toEqual({})
+  })
+
+  test('`frame` no longer parses at all — tier B was removed, not aliased', () => {
+    expect(ViewSpecSchema.safeParse({ title: 'Dashboard', frame: { entry: 'index.html' } }).success).toBe(false)
+    // And a view naming BOTH the old and the new member is still refused by the
+    // same `.strict()`, so no manifest can straddle the two.
+    expect(ViewSpecSchema.safeParse({ title: 'x', react: { entry: 'index.js', apiVersion: 1 }, frame: { entry: 'index.html' } }).success).toBe(false)
   })
 })
 
@@ -402,35 +463,34 @@ describe('validatePluginSurface — the four cross-reference failures', () => {
     expect(errorsOf(surface)).toEqual(['duplicate nav id "accounts" — nav ids must be unique within one surface'])
   })
 
-  test('a view declaring both a table and a frame', () => {
+  test('a view declaring both a table and a react module', () => {
     const surface = tiktokSurface()
     const view = surface.views.accounts
     if (view === undefined) throw new Error('fixture lost its view')
-    view.frame = { entry: 'index.html' }
+    view.react = { entry: 'index.js', apiVersion: 1 }
     const errors = errorsOf(surface)
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain('view "accounts" declares both `table` and `frame`')
+    expect(errors[0]).toBe('view "accounts" declares both `table` and `react` — a view has one renderer, never two')
   })
 
   /**
-   * `data` beside a `frame` is LEGAL, and deliberately so: a frame with no
-   * declared source can read nothing at all (its `data.query` RPC has nothing
-   * to answer from, and its CSP gives it no fetch of its own), which would
-   * leave tier B able to hold only static markup. See `validatePluginSurface`'s
-   * own comment for the full reasoning.
+   * `data` beside `react` is LEGAL, and deliberately so — plan 108 §9 Q4's
+   * correction, carried over verbatim by plan 111 §3.4: a React view may
+   * declare a source and read it through `/api/plugins/:name/data/*`, exactly
+   * as a table does. See `validatePluginSurface`'s own comment.
    */
-  test('a frame view may declare a data source', () => {
+  test('a react view may declare a data source', () => {
     const surface = tiktokSurface()
     const view = surface.views.accounts
     if (view === undefined) throw new Error('fixture lost its view')
     delete view.table
-    view.frame = { entry: 'index.html' }
+    view.react = { entry: 'index.js', apiVersion: 1 }
     expect(errorsOf(surface)).toEqual([])
   })
 
-  test('a frame view needs no data source', () => {
+  test('a react view needs no data source', () => {
     const surface = tiktokSurface()
-    surface.views.accounts = { title: 'Accounts', frame: { entry: 'index.html' } }
+    surface.views.accounts = { title: 'Accounts', react: { entry: 'index.js', apiVersion: 1 } }
     expect(errorsOf(surface)).toEqual([])
   })
 
@@ -439,7 +499,7 @@ describe('validatePluginSurface — the four cross-reference failures', () => {
     surface.views.accounts = { title: 'Accounts' }
     const errors = errorsOf(surface)
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain('declares neither `table` nor `frame`')
+    expect(errors[0]).toBe('view "accounts" declares neither `table` nor `react` — a view needs one renderer')
   })
 
   test('a table view missing only its data source', () => {
@@ -452,9 +512,24 @@ describe('validatePluginSurface — the four cross-reference failures', () => {
     ])
   })
 
-  test('a frame view passes with no data or table', () => {
+  test('a react view passes with no data and no table', () => {
     const surface = tiktokSurface()
-    surface.views.accounts = { title: 'Accounts', frame: { entry: 'index.html' } }
+    surface.views.accounts = { title: 'Accounts', react: { entry: 'index.js', apiVersion: 1 } }
+    surface.actions = {}
+    expect(validatePluginSurface(surface).ok).toBe(true)
+  })
+
+  /**
+   * The compatibility half of `react.apiVersion` is NOT checked here — a
+   * surface built against a different `@enkaku/ui` major is well formed, and
+   * whether this build can run it is the verify parent's question
+   * (`packages/core/src/plugins/verify-child.ts`, which is where the refusal
+   * and its test live). Asserting that here is what keeps the two halves from
+   * drifting into checking it twice, differently.
+   */
+  test('a react view built against another @enkaku/ui major is still a VALID surface', () => {
+    const surface = tiktokSurface()
+    surface.views.accounts = { title: 'Accounts', react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION + 1 } }
     surface.actions = {}
     expect(validatePluginSurface(surface).ok).toBe(true)
   })
@@ -478,5 +553,44 @@ describe('validatePluginSurface — the four cross-reference failures', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(result.errors.join('; '))
     expect(result.value.views.accounts?.table?.columns[0]?.width).toBe('auto')
+  })
+})
+
+/**
+ * Plan 109 §4.6, step 109.6 — the third data source, and the one cross-check
+ * between a surface and a service.
+ */
+describe('{ kind: "handler" } — rows the plugin`s own code assembles (plan 109 §4.6)', () => {
+  test('parses, and carries no `input` member for a caller to smuggle one through', () => {
+    expect(DataSourceSchema.parse({ kind: 'handler', name: 'status' })).toEqual({ kind: 'handler', name: 'status' })
+    // `.strict()`: a declarative view has nowhere to get an input FROM, so a
+    // field for one would only ever hold a literal the handler could write.
+    expect(DataSourceSchema.safeParse({ kind: 'handler', name: 'status', input: { a: 1 } }).success).toBe(false)
+    // The id shape is `SurfaceIdSchema`'s, so a path segment cannot be smuggled
+    // into the handler name either.
+    expect(DataSourceSchema.safeParse({ kind: 'handler', name: 'a/b' }).success).toBe(false)
+  })
+
+  test('a surface that names a handler source with NO service is refused, naming the views', () => {
+    const surface = tiktokSurface()
+    surface.views.accounts!.data = { kind: 'handler', name: 'status' }
+    const parsed = PluginSurfaceSchema.parse(surface)
+
+    const message = handlerViewsWithoutServiceMessage(parsed, false)
+    expect(message).toContain('"accounts"')
+    expect(message).toContain('ctx.onQuery')
+    expect(message).toContain('service')
+
+    // Control 1: the SAME surface with a service is accepted — so the refusal
+    // is about the missing service and not about the data source itself.
+    expect(handlerViewsWithoutServiceMessage(parsed, true)).toBeNull()
+  })
+
+  test('control: a surface with no handler source is never refused, service or not', () => {
+    // The fixture's own `kv.scan` view. Without this, the check above could be
+    // refusing every serviceless plugin on the farm and still look correct.
+    const parsed = PluginSurfaceSchema.parse(tiktokSurface())
+    expect(handlerViewsWithoutServiceMessage(parsed, false)).toBeNull()
+    expect(handlerViewsWithoutServiceMessage(parsed, true)).toBeNull()
   })
 })

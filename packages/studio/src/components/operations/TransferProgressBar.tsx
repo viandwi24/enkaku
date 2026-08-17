@@ -1,7 +1,6 @@
 'use client'
 
-import { Progress } from '@/components/ui/progress'
-import { fileSize } from '@/lib/format'
+import { Progress, fileSize } from '@enkaku/ui'
 import type { OperationTransfer } from '@/lib/operations'
 
 /**

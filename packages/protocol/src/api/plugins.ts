@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ActionSpecSchema, NavEntrySchema, PluginSurfaceSchema, SurfaceIdSchema, ViewSpecSchema } from '../plugin-surface'
+import { PluginServiceStatusSchema } from '../plugin-service'
 import { RuntimeEnvelopeSchema } from '../runtime-envelope'
 import { KvEntrySchema } from './kv'
 
@@ -221,6 +222,87 @@ export const PluginDataScanResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 })
 export type PluginDataScanResponse = z.infer<typeof PluginDataScanResponseSchema>
+
+/**
+ * Plan 109 §4.6, step 109.6 — one row from a `ctx.onQuery` handler, and the
+ * wire shape of `GET /api/plugins/:name/query/:queryId`.
+ *
+ * **The same row a `kv.scan` produces**, deliberately: `value` is the row's own
+ * data, `device`/`entry` are the two context objects `ViewRenderer` reads
+ * `$device.*`/`$entry.*` from. One shape means a handler-backed table goes
+ * through the SAME `readRowField`/`planColumn` path a `kv.scan` table does —
+ * no second renderer, no second field vocabulary, and `POST /:name/action/:id`
+ * lifts `$device` out of a handler row exactly as it does out of a scanned one.
+ *
+ * The device fields are the plan 108 §3.6 allowlist and nothing else. A handler
+ * FILLS them rather than the core joining them, which changes nothing about
+ * what a caller may then do with them: `action-executor.ts` already re-parses
+ * `$device` out of the POSTed row (`RowDeviceSchema`) precisely because the row
+ * crossed a wire, and re-resolves the device itself before dispatching.
+ */
+export const PluginQueryDeviceSchema = z.object({
+  id: z.string(),
+  stableId: z.string(),
+  label: z.string().nullable().default(null),
+  status: z.string().nullable().default(null),
+  clusterId: z.string().nullable().default(null),
+  number: z.number().int().nullable().default(null),
+})
+
+export const PluginQueryEntrySchema = z.object({
+  key: z.string(),
+  version: z.number().int(),
+  /** Unix seconds, the same unit every other timestamp on this surface uses. */
+  updatedAt: z.number().int(),
+})
+
+export const PluginQueryRowSchema = z.object({
+  /**
+   * The React key and the selection key. Optional: the route fills in the row's
+   * index when a handler does not supply one, which is right for a read-only
+   * table and wrong the moment rows can be selected across a refetch — so a
+   * handler feeding a `selectable` table should supply a stable id of its own.
+   */
+  id: z.string().min(1).max(200).optional(),
+  value: z.unknown(),
+  device: PluginQueryDeviceSchema.nullish(),
+  entry: PluginQueryEntrySchema.nullish(),
+})
+export type PluginQueryRow = z.infer<typeof PluginQueryRowSchema>
+
+/**
+ * What a `ctx.onQuery` handler returns. Validated by the core before it is
+ * serialised — a plugin's output crosses the same wire a browser reads, so it
+ * is external input like any other, and a handler that answers a string gets a
+ * coded failure naming its own plugin rather than a Studio parse error naming
+ * nothing.
+ *
+ * `PLUGIN_QUERY_MAX_ROWS` is a page, not a total: a handler that has more says
+ * so with `nextCursor`, and Studio walks the pages the same capped way
+ * `fetchPluginRows` already does for `kv.scan`.
+ */
+export const PLUGIN_QUERY_MAX_ROWS = 1000
+export const PluginQueryResultSchema = z.object({
+  rows: z.array(PluginQueryRowSchema).max(PLUGIN_QUERY_MAX_ROWS),
+  nextCursor: z.string().max(500).nullish(),
+})
+export type PluginQueryResult = z.infer<typeof PluginQueryResultSchema>
+
+/** `GET /api/plugins/:name/query/:queryId`. `items`/`nextCursor` to match the two `data/*` list shapes above, so Studio pages all three identically. */
+export const PluginQueryResponseSchema = z.object({
+  plugin: z.string(),
+  queryId: z.string(),
+  items: z.array(PluginQueryRowSchema),
+  nextCursor: z.string().nullable(),
+})
+export type PluginQueryResponse = z.infer<typeof PluginQueryResponseSchema>
+
+/** `POST /api/plugins/:name/runtime/restart` — the status the service landed in, never a bare `{ ok: true }`: `starting` is not `running` and the caller must be able to tell. */
+export const PluginServiceRestartResponseSchema = z.object({
+  plugin: z.string(),
+  status: PluginServiceStatusSchema,
+})
+export type PluginServiceRestartResponse = z.infer<typeof PluginServiceRestartResponseSchema>
 
 /**
  * Where a live surface came from (plan 108 §3.5, §5 step 108.6). `'plugin'`

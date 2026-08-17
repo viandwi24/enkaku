@@ -18,7 +18,13 @@ next-env.d.ts
 *.tsbuildinfo
 
 # rust / tauri
-target/
+# Anchored to the crates that actually build, NOT a bare `target/`: a bare
+# pattern matches at ANY depth, and it was silently swallowing
+# `packages/studio/src/components/target/` — four real source files
+# (`TargetPicker.tsx`, `useTargetSelection.ts` and their tests, plan 104) that
+# `git ls-files` reported as untracked. A fresh clone would not have built.
+/apps/desktop/src-tauri/target/
+/refs/tikmatrix-desktop/src-tauri/target/
 apps/desktop/src-tauri/binaries/
 apps/desktop/src-tauri/gen/schemas/
 

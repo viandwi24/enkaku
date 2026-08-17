@@ -2,8 +2,7 @@
 
 import type { AgentApproval } from '@enkaku/protocol'
 import { AgentAvatar } from './AgentAvatar'
-import { Button } from '@/components/ui/button'
-import { relativeTime } from '@/lib/format'
+import { Button, relativeTime } from '@enkaku/ui'
 
 export interface ApprovalCardContext {
   agentName: string

@@ -1,13 +1,23 @@
 'use client'
 
 import { ServerMessageSchema, type ClientMessage, type ServerMessage } from '@enkaku/protocol'
+import { coreBase } from '@enkaku/ui'
 
-export function coreBase(): string {
-  const env = process.env.NEXT_PUBLIC_ENKAKU_CORE_URL
-  if (env) return env.replace(/\/$/, '')
-  if (typeof location !== 'undefined') return location.origin
-  return 'http://localhost:7700'
-}
+/**
+ * `coreBase()` now lives in `@enkaku/ui` (plan 111 §3.3) and is re-exported
+ * from here so that the ~23 `import { coreBase } from '@/lib/ws'` call sites
+ * keep working unchanged — this is one definition, not a copy.
+ *
+ * It moved because a plugin needs the same answer and cannot reach Studio's
+ * build configuration: it is a separate bundle. The resolution order is
+ * unchanged from what shipped here (`NEXT_PUBLIC_ENKAKU_CORE_URL`, else the
+ * page's origin, else :7700) — what changed is who can call it. `@enkaku/ui`
+ * is external to a plugin's build, so a plugin gets THIS answer through the
+ * import map rather than deriving its own, and `api()` now sends
+ * `credentials: 'include'` so the `dev:studio` split origin still carries the
+ * session. See `packages/ui/src/lib/core-base.ts`.
+ */
+export { coreBase }
 
 type MessageHandler = (msg: ServerMessage) => void
 type BinaryHandler = (buf: Uint8Array) => void

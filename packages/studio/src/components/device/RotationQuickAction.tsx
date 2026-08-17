@@ -2,16 +2,19 @@
 
 import { Lock, RotateCcw, RotateCw, Smartphone, TabletSmartphone } from 'lucide-react'
 import { DeviceResponseSchema, type RotationMode } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
 import {
+  Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { api, useAction } from '@/lib/actions'
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  api,
+  useAction,
+} from '@enkaku/ui'
 
 const OPTIONS: readonly { value: RotationMode; label: string; icon: typeof Lock }[] = [
   { value: 'device', label: 'Auto-rotate (device default)', icon: RotateCcw },

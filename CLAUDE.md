@@ -38,6 +38,7 @@ bun run probe-server        # the self-hosted egress/geo/DNS probe endpoint (pla
 bun test <path>             # ONLY the file or directory you changed. An agent must never run the bare, full-suite form — see "NEVER run a full test suite" below
 bun test                    # OWNER AND CI ONLY. Every package EXCEPT studio (which bun test cannot see — read below); device-dependent tests are gated behind ENKAKU_TEST_DEVICE=1
 bun run --cwd packages/studio test   # OWNER AND CI ONLY. Studio's own tests — a SEPARATE command, because a bare `bun test` does not cover Studio; ~170 isolated processes, ~80s
+bun run --cwd packages/ui test       # `@enkaku/ui`'s component tests — excluded from the root `bun test` for the same DOM-preload reason as Studio (plan 111 step 111.1)
 ```
 
 Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anything needing a physical device is gated behind `ENKAKU_TEST_DEVICE=1`. `packages/studio` and `examples` sit outside `bunfig.toml`'s `[test] root = "packages"` and each run as their own invocation (`bun run --cwd packages/studio test`, `bun run --cwd examples test`) — CI runs all three. There is still no linter or formatter — the observed code style is no semicolons, single quotes, two-space indent.

@@ -1,6 +1,6 @@
 import { TriangleAlert } from 'lucide-react'
 import type { AgentState } from '@enkaku/protocol'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * A fleet-card/wall-tile chip for the guest agent's coarse state

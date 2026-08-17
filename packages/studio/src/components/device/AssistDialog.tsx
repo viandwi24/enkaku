@@ -4,8 +4,7 @@ import { useEffect, useState } from 'react'
 import type { LeaseHolder } from '@enkaku/protocol'
 import { humanTtl } from '@/components/device-popup/ControlState'
 import { SingleDeviceNotice } from '@/components/target/TargetPicker'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button } from '@enkaku/ui'
 import { newId, ws, WsRequestError } from '@/lib/ws'
 
 /**

@@ -3,16 +3,24 @@
 import Link from 'next/link'
 import { Battery, Bug, MoreVertical, Play, RefreshCw, ScreenShare, Thermometer, Trash2, Unplug } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  cn,
+} from '@enkaku/ui'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReadinessControl } from '@/components/ReadinessControl'
 import { HolderBadge } from '@/components/HolderBadge'
 import { tileIdentityOf } from '@/components/wall/tile-identity'
-import { cn } from '@/lib/utils'
 
 /**
  * The device card as a "rack unit": status rail down the left edge, identity

@@ -11,7 +11,14 @@ process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 // see a failure toast at all, since `Toaster` is mounted by the app shell.
 const toastSuccess = mock(() => {})
 const toastError = mock((_message: string, _opts?: { description?: string }) => {})
-mock.module('sonner', () => ({ toast: { success: toastSuccess, error: toastError, warning: () => {} } }))
+// `Toaster` is part of the stub because `@enkaku/ui` is a single barrel (plan
+// 111 step 111.1): importing ANY component from it evaluates `sonner.tsx`, the
+// wrapper that re-exports sonner's own `Toaster`. A `toast`-only stub made the
+// whole module graph fail to link, not just this file's assertions.
+mock.module('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError, warning: () => {} },
+  Toaster: () => null,
+}))
 
 const { ActionRunner } = await import('./ActionRunner')
 

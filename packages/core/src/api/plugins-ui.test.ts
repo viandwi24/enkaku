@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -127,26 +127,39 @@ describe('GET /:name/ui/* — serving a published package’s assets', () => {
     expect(unknown.headers.get('content-type')).toBe('application/octet-stream')
   })
 
-  test('every response carries the strict CSP, nosniff, and no-store', async () => {
+  /**
+   * Plan 111 §5 step 111.4 replaced plan 108's assertion here. The strict CSP
+   * this used to check is GONE, and its absence is asserted rather than merely
+   * left untested, because re-adding it would silently break tier C: under
+   * plan 111 a `ui/` asset is loaded as a `<script type="module">` subresource
+   * of Studio's own page, and had that header ever been enforced,
+   * `sandbox allow-scripts` (an opaque origin) and `connect-src 'none'` (no
+   * `fetch` at all) would have contradicted §3.4 outright.
+   *
+   * It was not enforced — a CSP response header binds to the global object
+   * created from that response, and a subresource creates none — which is why
+   * the header was protection in appearance only, and why it is now deleted
+   * rather than relaxed. `plugins/asset-store.ts` keeps the full reasoning
+   * where the constant used to be.
+   *
+   * The three that STAY are the three a subresource load actually honours.
+   */
+  test('every response carries nosniff, no-referrer and no-store — and no CSP at all', async () => {
     const { app, runtime } = setUp()
     await publishPackage(app, runtime)
 
     for (const path of ['index.html', 'app.js', 'assets/logo.png']) {
       const res = await app.request(`/tiktok/ui/${path}`)
       expect(res.status).toBe(200)
-      const csp = res.headers.get('content-security-policy') ?? ''
-      expect(csp).toContain("default-src 'none'")
-      // The sandbox is re-applied by the SERVER, and never with `allow-same-origin`.
-      expect(csp).toContain('sandbox allow-scripts')
-      expect(csp).not.toContain('allow-same-origin')
-      // No fetch/XHR/WebSocket at all — criterion 16's structural half.
-      expect(csp).toContain("connect-src 'none'")
-      expect(csp).toContain("form-action 'none'")
-      expect(csp).toContain("base-uri 'none'")
-      // No external host anywhere in the policy except the loopback dev-server
-      // grant on `frame-ancestors`, which admits a framer, never a source.
-      expect(csp).not.toMatch(/(script|style|img|font|media|connect)-src[^;]*https?:\/\/(?!localhost|127)/)
+      expect(res.headers.get('content-security-policy')).toBeNull()
+      // `nosniff` is enforced on a subresource, and is what makes the browser
+      // refuse a module whose content type is not a JavaScript MIME rather
+      // than sniff its way into running it.
       expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      // `no-store` does double duty: the route is permission-gated, so a
+      // cached asset is one an operator who has since lost `script.view` could
+      // still be served by their own browser — and it is what makes an
+      // `enkaku dev` rebuild serve the NEW component (plan 111 criterion 8).
       expect(res.headers.get('cache-control')).toBe('no-store')
       expect(res.headers.get('referrer-policy')).toBe('no-referrer')
     }
@@ -298,5 +311,113 @@ describe('GET /:name/ui/* — route ordering', () => {
     expect(await (await app.request('/tiktok/ui/index.html')).text()).toBe('v2')
     runtime.rollback('tiktok', '1.0.0')
     expect(await (await app.request('/tiktok/ui/index.html')).text()).toBe('v1')
+  })
+})
+
+/**
+ * Plan 111 §4.4, §5 step 111.6 — a DEV SLOT carries `ui/` too.
+ *
+ * Plan 108 §9 Q3 recorded the opposite as a known gap: `enkaku dev` posted a
+ * bare bundle, so a slot structurally had no assets and `runtime.uiAsset`
+ * resolved only the ACTIVE row. A React view was therefore impossible to
+ * iterate — every asset it asked for answered 404 until it was published.
+ * These tests are that gap closed, from the route inwards.
+ */
+describe('POST /dev — a dev slot carries and serves its own ui/ assets', () => {
+  /** Pushes a `.enkaku` package through the real `POST /dev` package branch. */
+  async function pushDevPackage(app: Hono<AuthEnv>, opts: { name?: string; ui?: Array<{ path: string; data: Uint8Array<ArrayBuffer> }> } = {}) {
+    const bytes = writePluginPackage({
+      manifest: { name: opts.name ?? 'tiktok', version: '1.0.0' },
+      scripts: 'export {}',
+      ui: opts.ui ?? [{ path: 'index.js', data: enc.encode('dev-one') }],
+      mtimeSec: 1_700_000_000,
+    })
+    const res = await app.request('/dev', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes })
+    expect(res.status).toBe(200)
+    return (await res.json()) as { ok: boolean }
+  }
+
+  test('a slot with no published version at all still serves its screen', async () => {
+    const { app } = setUp('admin')
+    const report = await pushDevPackage(app)
+    expect(report.ok).toBe(true)
+
+    const res = await app.request('/tiktok/ui/index.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
+    expect(await res.text()).toBe('dev-one')
+  })
+
+  test('a rebuild REPLACES the slot’s assets — criterion 8, never a cached old one', async () => {
+    const { app } = setUp('admin')
+    await pushDevPackage(app)
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('dev-one')
+
+    await pushDevPackage(app, { ui: [{ path: 'index.js', data: enc.encode('dev-two') }] })
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('dev-two')
+  })
+
+  test('a rebuild that DROPS a file stops serving it, rather than leaving it behind', async () => {
+    const { app } = setUp('admin')
+    await pushDevPackage(app, {
+      ui: [
+        { path: 'index.js', data: enc.encode('dev-one') },
+        { path: 'extra.css', data: enc.encode('.a{}') },
+      ],
+    })
+    expect((await app.request('/tiktok/ui/extra.css')).status).toBe(200)
+
+    await pushDevPackage(app, { ui: [{ path: 'index.js', data: enc.encode('dev-two') }] })
+    expect((await app.request('/tiktok/ui/extra.css')).status).toBe(404)
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('dev-two')
+  })
+
+  test('a rebuild with NO ui/ at all clears what the previous build stored', async () => {
+    const { app } = setUp('admin')
+    await pushDevPackage(app)
+    expect((await app.request('/tiktok/ui/index.js')).status).toBe(200)
+
+    // The JSON transport carries no assets — the same shape a script-only
+    // `enkaku dev` posts.
+    const res = await app.request('/dev', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'tiktok', bundle: 'export {}' }) })
+    expect(res.status).toBe(200)
+    expect((await app.request('/tiktok/ui/index.js')).status).toBe(404)
+  })
+
+  test('a dev slot SHADOWS the active published version’s assets, the way it already shadows its scripts', async () => {
+    const { app, runtime } = setUp('admin')
+    await publishPackage(app, runtime, { ui: [{ path: 'index.js', data: enc.encode('published') }] })
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('published')
+
+    await pushDevPackage(app)
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('dev-one')
+
+    // ...and the published screen comes back the moment the slot is dropped.
+    expect((await app.request('/dev/tiktok', { method: 'DELETE' })).status).toBe(200)
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('published')
+  })
+
+  test('dropping a slot deletes its bytes — a dev slot’s assets never outlive it', async () => {
+    const { app } = setUp('admin')
+    await pushDevPackage(app)
+    expect((await app.request('/tiktok/ui/index.js')).status).toBe(200)
+    // One index file (the slot's) and one blob.
+    expect(readdirSync(join(dataDir, 'plugins/index'))).toHaveLength(1)
+    expect(readdirSync(join(dataDir, 'plugins/assets'))).toHaveLength(1)
+
+    expect((await app.request('/dev/tiktok', { method: 'DELETE' })).status).toBe(200)
+    expect((await app.request('/tiktok/ui/index.js')).status).toBe(404)
+    expect(readdirSync(join(dataDir, 'plugins/index'))).toHaveLength(0)
+    // The blob is swept too — the surviving indexes ARE the reference count.
+    expect(readdirSync(join(dataDir, 'plugins/assets'))).toHaveLength(0)
+  })
+
+  test('dropping a slot leaves a published version’s assets alone — the sweep is by reachability, not by name', async () => {
+    const { app, runtime } = setUp('admin')
+    await publishPackage(app, runtime, { ui: [{ path: 'index.js', data: enc.encode('published') }] })
+    await pushDevPackage(app, { name: 'scratch' })
+
+    expect((await app.request('/dev/scratch', { method: 'DELETE' })).status).toBe(200)
+    expect(await (await app.request('/tiktok/ui/index.js')).text()).toBe('published')
   })
 })

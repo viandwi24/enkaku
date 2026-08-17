@@ -31,6 +31,48 @@ export type {
 } from './types'
 export { definePlugin, isPlugin } from './plugin'
 export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
+/**
+ * Plan 109 (M74 — the plugin runtime), steps 109.1–109.2. One context, many
+ * entry points: `PluginContext` is what a script handler AND a core-side
+ * handler both receive, so a plugin's own helper works from either unchanged.
+ * `ScriptContext` extends it, so that is checked by the compiler rather than
+ * held by convention.
+ *
+ * `defineService` (step 109.2, renamed from 109.1's `defineRuntime` — plan 109
+ * §9 Q7, settled by the owner) declares the plugin's long-lived half. It is
+ * `service` and not `runtime` because a plugin MEMBER's `runtime` is already
+ * plan 98's `RuntimeEnvelope`, and two keys one level apart sharing a word
+ * while meaning unrelated things is a permanent trap in a published type.
+ */
+export { defineService, isService, isFarmEventOfType } from './runtime'
+export type {
+  PluginContext,
+  PluginServiceContext,
+  PluginStorage,
+  PluginKv,
+  FarmApi,
+  PluginService,
+  PluginServiceInput,
+  PluginServiceDeclaration,
+  ServiceSetup,
+  FarmEvent,
+  FarmEventType,
+  // Step 109.6 — the three handler families a service registers.
+  PluginRequest,
+  PluginResponse,
+  PluginRequestHandler,
+  PluginSocket,
+  PluginSocketHandlers,
+  PluginSocketHandler,
+  PluginQueryRequest,
+  PluginQueryHandler,
+  // Step 109.7 — the inbound webhook family, and `ctx.webhooks`.
+  PluginWebhookRequest,
+  PluginWebhookHandler,
+  PluginWebhookApi,
+  // Step 109.8 — a plugin reading its own service log.
+  PluginLogApi,
+} from './runtime'
 export {
   KEYCODES,
   type Selector,

@@ -180,7 +180,11 @@ export default definePlugin({
 interface CapturedRequest {
   method: string
   path: string
+  query: string
+  contentType: string
   body: unknown
+  /** The raw bytes, always — the only way to see a `.enkaku` package (plan 111 §5 step 111.6), which is posted as `application/octet-stream` and never parses as JSON. */
+  raw: Uint8Array
 }
 
 function fakeFarm(respond: (req: CapturedRequest) => { status: number; body: unknown }): { url: string; server: Server<undefined>; requests: CapturedRequest[] } {
@@ -189,8 +193,14 @@ function fakeFarm(respond: (req: CapturedRequest) => { status: number; body: unk
     port: 0,
     async fetch(req) {
       const url = new URL(req.url)
-      const body = req.method === 'POST' ? await req.json().catch(() => null) : null
-      const captured = { method: req.method, path: url.pathname, body }
+      const raw = req.method === 'POST' ? new Uint8Array(await req.arrayBuffer()) : new Uint8Array(0)
+      let body: unknown = null
+      try {
+        body = JSON.parse(new TextDecoder().decode(raw)) as unknown
+      } catch {
+        body = null
+      }
+      const captured = { method: req.method, path: url.pathname, query: url.search, contentType: req.headers.get('content-type') ?? '', body, raw }
       requests.push(captured)
       const res = respond(captured)
       return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } })
@@ -198,6 +208,94 @@ function fakeFarm(respond: (req: CapturedRequest) => { status: number; body: unk
   })
   return { url: `http://localhost:${server.port}`, server, requests }
 }
+
+/**
+ * Reads back a `.enkaku` archive — gzip over the USTAR subset
+ * `enkaku-package.ts` writes. Hand-rolled here rather than imported from the
+ * core's `backup/tar.ts` because `enkaku-core` depends on `@enkaku/sdk` and
+ * this package must not import it back; the FORMAT's real compatibility is
+ * asserted the other way round, in `packages/core/src/plugins/package.test.ts`,
+ * where the farm's own reader consumes this writer's output.
+ */
+function readArchive(bytes: Uint8Array): Record<string, Uint8Array> {
+  const tar = Bun.gunzipSync(bytes as Uint8Array<ArrayBuffer>)
+  const dec = new TextDecoder()
+  const out: Record<string, Uint8Array> = {}
+  let offset = 0
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512)
+    if (header.every((b) => b === 0)) break
+    const name = dec.decode(header.subarray(0, 100)).replace(/\0[\s\S]*$/, '')
+    const size = Number.parseInt(dec.decode(header.subarray(124, 136)).replace(/\0[\s\S]*$/, '').trim() || '0', 8)
+    offset += 512
+    out[name] = tar.slice(offset, offset + size)
+    offset += size + ((512 - (size % 512)) % 512)
+  }
+  return out
+}
+
+function textOf(archive: Record<string, Uint8Array>, entry: string): string {
+  const bytes = archive[entry]
+  if (!bytes) throw new Error(`the archive has no "${entry}" — it holds ${Object.keys(archive).join(', ')}`)
+  return new TextDecoder().decode(bytes)
+}
+
+/**
+ * A plugin project with a React half but NO declared surface, written by hand.
+ *
+ * The surface is the one thing it cannot declare yet: `react` as a view
+ * renderer is step 111.4's change to `packages/protocol/src/plugin-surface.ts`,
+ * and `definePlugin` validates the surface at import time through the very
+ * same `validatePluginSurface` the farm runs — so a fixture declaring one
+ * would fail to build for a reason that has nothing to do with what these
+ * tests are about (the transport, the build flags, and the JSX transform).
+ * `REACT_SURFACE_SUPPORTED` below guards the tests that DO need it.
+ */
+function uiProject(entryBody?: string): string {
+  const dir = fixtureDir()
+  mkdirSync(join(dir, 'src', 'ui'), { recursive: true })
+  writeFileSync(
+    join(dir, 'src', 'index.ts'),
+    `import { definePlugin } from '@enkaku/sdk'
+import { z } from 'zod'
+
+export default definePlugin({
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => 'ok' }],
+})
+`,
+  )
+  writeFileSync(
+    join(dir, 'src', 'ui', 'index.tsx'),
+    entryBody ??
+      `import { useState } from 'react'
+
+function View() {
+  const [n, setN] = useState(0)
+  return <button type="button" onClick={() => setN(n + 1)}>ORIGINAL {n}</button>
+}
+
+;(window as unknown as { __enkaku__: { register(id: string, c: unknown): void } }).__enkaku__.register('main', View)
+`,
+  )
+  return join(dir, 'src', 'index.ts')
+}
+
+/**
+ * Is `react` a legal view renderer yet? That is step 111.4's change to the
+ * protocol, and this step (111.6) is deliberately allowed to land beside it:
+ * the scaffold is written for the finished vocabulary, and the two tests that
+ * need `definePlugin` to ACCEPT it are skipped until it does, rather than
+ * being written against a shape that will be wrong next week.
+ */
+const REACT_SURFACE_SUPPORTED = await (async () => {
+  const { validatePluginSurface } = (await import('@enkaku/protocol')) as { validatePluginSurface: (v: unknown) => { ok: boolean } }
+  return validatePluginSurface({
+    nav: [{ id: 'x', label: 'X', icon: 'puzzle', view: 'main' }],
+    views: { main: { title: 'X', react: { entry: 'index.js', apiVersion: 1 } } },
+  }).ok
+})()
 
 /** Spawns the real CLI as a child process and waits for it to exit. */
 async function runCli(args: string[], cwd?: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -222,9 +320,22 @@ async function runCli(args: string[], cwd?: string): Promise<{ exitCode: number;
 function installWorkspaceDeps(dir: string): void {
   const nm = join(dir, 'node_modules')
   mkdirSync(join(nm, '@enkaku'), { recursive: true })
+  mkdirSync(join(nm, '@types'), { recursive: true })
   symlinkSync(join(REPO_ROOT, 'packages/sdk'), join(nm, '@enkaku/sdk'), 'dir')
   symlinkSync(join(REPO_ROOT, 'packages/protocol'), join(nm, '@enkaku/protocol'), 'dir')
   symlinkSync(join(REPO_ROOT, 'packages/sdk/node_modules/zod'), join(nm, 'zod'), 'dir')
+  // The React half's two devDependencies (plan 111 §5 step 111.6). They are
+  // needed by `tsc` only — the UI build marks `react` external and Studio
+  // supplies its own instance at runtime — and they come from Studio's
+  // node_modules because that is where this workspace's React 19 lives.
+  symlinkSync(join(REPO_ROOT, 'packages/studio/node_modules/react'), join(nm, 'react'), 'dir')
+  symlinkSync(join(REPO_ROOT, 'packages/studio/node_modules/@types/react'), join(nm, '@types/react'), 'dir')
+  // `@enkaku/ui` is external at runtime too, but the scaffold's
+  // `src/ui/index.css` imports `@enkaku/ui/theme.css` (plan 111 step 111.9) —
+  // so without this the scaffolded project no longer compiles its stylesheet.
+  // `@tailwindcss/cli` and `tailwindcss` are ROOT devDependencies and resolve
+  // by walking up from a fixture that lives inside this repo.
+  symlinkSync(join(REPO_ROOT, 'packages/ui'), join(nm, '@enkaku/ui'), 'dir')
 }
 
 describe('enkaku publish — a plugin is the only thing that publishes (plan 82 §5 step 12, plan 110 §5 step 110.4)', () => {
@@ -394,6 +505,81 @@ describe('enkaku publish — a plugin is the only thing that publishes (plan 82 
   }, 30000)
 })
 
+describe('enkaku publish — a project with a ui/ directory ships a .enkaku package (plan 111 §5 step 111.6)', () => {
+  test('posts a raw archive as application/octet-stream, carrying plugin.json, scripts.mjs and ui/index.js', async () => {
+    const entry = uiProject()
+    const { url, server, requests } = fakeFarm(() => ({
+      status: 201,
+      body: { plugin: { id: 'p1', status: 'active' }, verify: { ok: true, scripts: [{ id: 'login' }], resetPackages: [] } },
+    }))
+    try {
+      const result = await runCli(['publish', entry, '--farm', url])
+      expect(result.exitCode).toBe(0)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.path).toBe('/api/plugins')
+      expect(requests[0]?.contentType).toBe('application/octet-stream')
+      // Not JSON at all — the point of the archive is that 8 MiB of assets
+      // never pay base64's +33%.
+      expect(requests[0]?.body).toBeNull()
+
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      expect(Object.keys(archive).sort()).toEqual(['plugin.json', 'scripts.mjs', 'ui/index.js'])
+      const manifest = JSON.parse(textOf(archive, 'plugin.json')) as { name: string; version: string; source?: string }
+      expect(manifest.name).toBe('tiktok')
+      expect(manifest.version).toBe('1.0.0')
+      expect(textOf(archive, 'scripts.mjs').length).toBeGreaterThan(0)
+      expect(textOf(archive, 'ui/index.js')).toContain('ORIGINAL')
+      expect(result.stdout).toContain('sent as a .enkaku package')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  test('--stage-only moves onto the query string, since an archive has no room for a body flag', async () => {
+    const entry = uiProject()
+    const { url, server, requests } = fakeFarm(() => ({ status: 201, body: { plugin: { id: 'p1', status: 'staged' } } }))
+    try {
+      const result = await runCli(['publish', entry, '--farm', url, '--stage-only'])
+      expect(result.exitCode).toBe(0)
+      expect(requests[0]?.query).toBe('?stageOnly=1')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  test('a project with NO ui/ directory keeps the JSON transport untouched', async () => {
+    const entry = writeFixture(PLUGIN_ENTRY)
+    const { url, server, requests } = fakeFarm(() => ({ status: 201, body: { plugin: { id: 'p1', status: 'staged' } } }))
+    try {
+      const result = await runCli(['publish', entry, '--farm', url])
+      expect(result.exitCode).toBe(0)
+      expect(requests[0]?.contentType).toBe('application/json')
+      expect((requests[0]?.body as { bundle: string }).bundle.length).toBeGreaterThan(0)
+      expect(result.stdout).not.toContain('.enkaku package')
+    } finally {
+      server.stop(true)
+    }
+  }, 30000)
+
+  test('static files under ui/ ride along verbatim, and nested .tsx sources do NOT (the bundler already inlined them)', async () => {
+    const entry = uiProject()
+    const uiDir = join(entry, '..', 'ui')
+    mkdirSync(join(uiDir, 'parts'), { recursive: true })
+    writeFileSync(join(uiDir, 'styles.css'), '.plugin { color: red }')
+    writeFileSync(join(uiDir, 'parts', 'Badge.tsx'), 'export function Badge() { return null }\n')
+    const { url, server, requests } = fakeFarm(() => ({ status: 201, body: { plugin: { id: 'p1', status: 'staged' } } }))
+    try {
+      const result = await runCli(['publish', entry, '--farm', url])
+      expect(result.exitCode).toBe(0)
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      expect(Object.keys(archive).sort()).toEqual(['plugin.json', 'scripts.mjs', 'ui/index.js', 'ui/styles.css'])
+      expect(textOf(archive, 'ui/styles.css')).toBe('.plugin { color: red }')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+})
+
 describe('defineScript is gone from the public surface (plan 110 §4.2, criterion 6)', () => {
   test('`@enkaku/sdk` exports definePlugin but no defineScript', async () => {
     const sdk = (await import('../index')) as Record<string, unknown>
@@ -447,7 +633,7 @@ describe('enkaku init — scaffolds a plugin project that publishes with no edit
     expect(src).toContain('definePlugin({')
   }, 30000)
 
-  test('the scaffolded project typechecks with its own tsconfig, with no edits', async () => {
+  test.skipIf(!REACT_SURFACE_SUPPORTED)('the scaffolded project typechecks with its own tsconfig, with no edits', async () => {
     const cwd = fixtureDir()
     await runCli(['init', 'my-pack'], cwd)
     const dir = join(cwd, 'my-pack')
@@ -459,7 +645,7 @@ describe('enkaku init — scaffolds a plugin project that publishes with no edit
     expect(exitCode).toBe(0)
   }, 120000)
 
-  test('the scaffolded entry publishes as a plugin, with no edits (criterion 6)', async () => {
+  test.skipIf(!REACT_SURFACE_SUPPORTED)('the scaffolded entry publishes as a plugin, with no edits (criterion 6)', async () => {
     const cwd = fixtureDir()
     await runCli(['init', 'my-pack'], cwd)
     const dir = join(cwd, 'my-pack')
@@ -472,13 +658,120 @@ describe('enkaku init — scaffolds a plugin project that publishes with no edit
       const result = await runCli(['publish', join(dir, 'src/index.ts'), '--farm', url])
       expect(result.exitCode).toBe(0)
       expect(requests[0]?.path).toBe('/api/plugins')
-      const body = requests[0]?.body as { name: string; version: string }
-      expect(body.name).toBe('my-pack')
-      expect(body.version).toBe('1.0.0')
+      // The React scaffold ships assets, so it goes out as a package — its
+      // `name`/`version` are in `plugin.json`, not in a JSON body.
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      const manifest = JSON.parse(textOf(archive, 'plugin.json')) as { name: string; version: string }
+      expect(manifest.name).toBe('my-pack')
+      expect(manifest.version).toBe('1.0.0')
+      expect(textOf(archive, 'ui/index.js')).not.toContain('jsx-dev-runtime')
+      // The scaffold's stylesheet compiles and ships beside the module (plan
+      // 111 step 111.9), carrying the classes its own component uses and
+      // NOT Tailwind's global reset — `build-ui.test.ts` is where that
+      // contract is pinned down in detail.
+      const css = textOf(archive, 'ui/index.css')
+      expect(css).toContain('.text-fg-muted')
+      expect(css).not.toContain('-webkit-text-size-adjust')
     } finally {
       server.stop(true)
     }
   }, 60000)
+
+  test('--script-only still writes the three-file project, with no ui/ and no react dependency', async () => {
+    const cwd = fixtureDir()
+    const result = await runCli(['init', 'my-pack', '--script-only'], cwd)
+    expect(result.exitCode).toBe(0)
+    expect(existsSync(join(cwd, 'my-pack/src/index.ts'))).toBe(true)
+    expect(existsSync(join(cwd, 'my-pack/src/ui/index.tsx'))).toBe(false)
+    const pkg = JSON.parse(readFileSync(join(cwd, 'my-pack/package.json'), 'utf8')) as { devDependencies: Record<string, string> }
+    expect(pkg.devDependencies['react']).toBeUndefined()
+    expect(readFileSync(join(cwd, 'my-pack/src/index.ts'), 'utf8')).not.toContain('surface:')
+  }, 30000)
+
+  test('a --script-only project publishes through the JSON transport, exactly as before this step', async () => {
+    const cwd = fixtureDir()
+    await runCli(['init', 'my-pack', '--script-only'], cwd)
+    const dir = join(cwd, 'my-pack')
+    installWorkspaceDeps(dir)
+    const { url, server, requests } = fakeFarm(() => ({
+      status: 201,
+      body: { plugin: { id: 'p1', status: 'active' }, verify: { ok: true, scripts: [{ id: 'main' }], resetPackages: [] } },
+    }))
+    try {
+      const result = await runCli(['publish', join(dir, 'src/index.ts'), '--farm', url])
+      expect(result.exitCode).toBe(0)
+      expect(requests[0]?.contentType).toBe('application/json')
+      const body = requests[0]?.body as { name: string; version: string; bundle: string }
+      expect(body.name).toBe('my-pack')
+      expect(body.bundle.length).toBeGreaterThan(0)
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  /**
+   * The scaffold's OWN React component and its OWN build config, exercised
+   * today: the surface is the only thing 111.4 still owes, so this test keeps
+   * the scaffolded `src/ui/index.tsx` verbatim and swaps only `src/index.ts`
+   * for a surface-less plugin. If the scaffold's JSX, its import of `react`,
+   * or the CLI's build flags were wrong, this fails — and it fails on the
+   * exact bytes an author would ship.
+   */
+  test("the scaffold's React entry builds with the PRODUCTION JSX transform — no react/jsx-dev-runtime anywhere in the output", async () => {
+    const cwd = fixtureDir()
+    await runCli(['init', 'my-pack'], cwd)
+    const dir = join(cwd, 'my-pack')
+    installWorkspaceDeps(dir)
+    writeFileSync(
+      join(dir, 'src/index.ts'),
+      `import { definePlugin } from '@enkaku/sdk'
+import { z } from 'zod'
+export default definePlugin({ id: 'my-pack', version: '1.0.0', scripts: [{ id: 'main', params: z.object({}), run: async () => 'ok' }] })
+`,
+    )
+    const { url, server, requests } = fakeFarm(() => ({ status: 201, body: { plugin: { id: 'p1', status: 'staged' } } }))
+    try {
+      const result = await runCli(['publish', join(dir, 'src/index.ts'), '--farm', url])
+      expect(result.exitCode).toBe(0)
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      const built = textOf(archive, 'ui/index.js')
+      expect(built).not.toContain('jsx-dev-runtime')
+      expect(built).toContain('react/jsx-runtime')
+      // React is the HOST's instance — it must be left as a bare specifier,
+      // never inlined (two Reacts in one page throw `Invalid hook call`).
+      expect(built).toContain('"react"')
+      expect(built).toContain('useState')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  /**
+   * The scaffold's tsconfig and its `src/enkaku-host.d.ts`, checked today —
+   * same swap as the test above, for the same reason. `jsx: 'react-jsx'` in
+   * the tsconfig governs `tsc` ONLY (Bun's bundler ignores it entirely, which
+   * is the whole reason `build-ui.ts` passes `--production` on the command
+   * line); both halves have to be right and neither implies the other, so
+   * both are tested.
+   */
+  test("the scaffold's tsconfig typechecks its React half, with no edits beyond the pending 111.4 surface", async () => {
+    const cwd = fixtureDir()
+    await runCli(['init', 'my-pack'], cwd)
+    const dir = join(cwd, 'my-pack')
+    installWorkspaceDeps(dir)
+    writeFileSync(
+      join(dir, 'src/index.ts'),
+      `import { definePlugin } from '@enkaku/sdk'
+import { z } from 'zod'
+export default definePlugin({ id: 'my-pack', version: '1.0.0', scripts: [{ id: 'main', params: z.object({}), run: async () => 'ok' }] })
+`,
+    )
+    const tsc = join(REPO_ROOT, 'node_modules/.bin/tsc')
+    const proc = Bun.spawn([tsc, '--noEmit', '-p', dir], { stdout: 'pipe', stderr: 'pipe' })
+    const [out, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
+    expect(out).toBe('')
+    expect(exitCode).toBe(0)
+  }, 120000)
 
   test('refuses an existing NON-EMPTY directory rather than overwriting it', async () => {
     const cwd = fixtureDir()
@@ -541,6 +834,87 @@ describe('enkaku dev — pushes a plugin bundle to POST /api/plugins/dev (plan 8
       expect(result.stderr).toContain('a script cannot be published on its own')
       expect(result.stderr).toContain('export default definePlugin({')
       expect(result.stderr).toContain('enkaku init my-plugin')
+    } finally {
+      server.stop(true)
+    }
+  }, 30000)
+
+  /**
+   * Plan 111 §4.4 — the gap plan 108 §9 Q3 named. A dev slot used to be built
+   * from a bare bundle, so a React view could not be iterated at all.
+   */
+  test('a project with a ui/ directory posts a PACKAGE to /api/plugins/dev, with the dev-owner header still set', async () => {
+    const entry = uiProject()
+    const { url, server, requests } = fakeFarm(() => ({ status: 200, body: { ok: true, scripts: [{ id: 'login' }], resetPackages: [] } }))
+    try {
+      const result = await runCli(['dev', entry, '--farm', url, '--no-watch'])
+      expect(result.exitCode).toBe(0)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.path).toBe('/api/plugins/dev')
+      expect(requests[0]?.contentType).toBe('application/octet-stream')
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      expect(Object.keys(archive).sort()).toEqual(['plugin.json', 'scripts.mjs', 'ui/index.js'])
+      // The slot is named by the manifest, not by a query parameter — one
+      // place for both transports.
+      expect((JSON.parse(textOf(archive, 'plugin.json')) as { name: string }).name).toBe('tiktok')
+      expect(result.stdout).toContain('1 ui file')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  test('--name renames the slot through the package manifest', async () => {
+    const entry = uiProject()
+    const { url, server, requests } = fakeFarm(() => ({ status: 200, body: { ok: true, scripts: [{ id: 'login' }], resetPackages: [] } }))
+    try {
+      const result = await runCli(['dev', entry, '--farm', url, '--no-watch', '--name', 'scratch'])
+      expect(result.exitCode).toBe(0)
+      const archive = readArchive(requests[0]?.raw as Uint8Array)
+      expect((JSON.parse(textOf(archive, 'plugin.json')) as { name: string }).name).toBe('scratch')
+    } finally {
+      server.stop(true)
+    }
+  }, 60000)
+
+  test('a rebuild after editing the React source pushes the NEW assets — the whole point of the loop', async () => {
+    const entry = uiProject()
+    const { url, server, requests } = fakeFarm(() => ({ status: 200, body: { ok: true, scripts: [{ id: 'login' }], resetPackages: [] } }))
+    try {
+      expect((await runCli(['dev', entry, '--farm', url, '--no-watch'])).exitCode).toBe(0)
+      writeFileSync(
+        join(entry, '..', 'ui', 'index.tsx'),
+        `import { useState } from 'react'
+
+function View() {
+  const [n, setN] = useState(0)
+  return <button type="button" onClick={() => setN(n + 1)}>REBUILT {n}</button>
+}
+
+;(window as unknown as { __enkaku__: { register(id: string, c: unknown): void } }).__enkaku__.register('main', View)
+`,
+      )
+      expect((await runCli(['dev', entry, '--farm', url, '--no-watch'])).exitCode).toBe(0)
+
+      expect(requests).toHaveLength(2)
+      const first = textOf(readArchive(requests[0]?.raw as Uint8Array), 'ui/index.js')
+      const second = textOf(readArchive(requests[1]?.raw as Uint8Array), 'ui/index.js')
+      expect(first).toContain('ORIGINAL')
+      expect(second).toContain('REBUILT')
+      expect(second).not.toContain('ORIGINAL')
+      expect(second).not.toContain('jsx-dev-runtime')
+    } finally {
+      server.stop(true)
+    }
+  }, 90000)
+
+  test('a project with no ui/ still posts { name, bundle } as JSON — the bundle transport is untouched', async () => {
+    const entry = writeFixture(PLUGIN_ENTRY)
+    const { url, server, requests } = fakeFarm(() => ({ status: 200, body: { ok: true, scripts: [{ id: 'login' }], resetPackages: [] } }))
+    try {
+      const result = await runCli(['dev', entry, '--farm', url, '--no-watch'])
+      expect(result.exitCode).toBe(0)
+      expect(requests[0]?.contentType).toBe('application/json')
+      expect((requests[0]?.body as { name: string }).name).toBe('tiktok')
     } finally {
       server.stop(true)
     }

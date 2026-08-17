@@ -16,6 +16,16 @@ export interface EmbeddedPack {
   version: string
   /** Embedded path, readable with `Bun.file` — the bundle TEXT, not a module to import here. */
   path: string
+  /**
+   * The pack's `ui/` payload, for a tier-C pack (plan 111 step 111.7).
+   *
+   * `name` is the path INSIDE the package's `ui/` directory — `index.js`, the
+   * string a view's `react.entry` names — and `path` is where the embedded
+   * bytes are. Absent for a script-only or tier-A pack, which is what every
+   * embedded pack was before Proxy Manager's screen became a React module.
+   * Without this, a staged tier-C pack has a view whose module 404s.
+   */
+  ui?: { name: string; path: string }[]
 }
 
 export interface EmbeddedAssets {

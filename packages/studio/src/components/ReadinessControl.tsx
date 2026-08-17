@@ -2,10 +2,8 @@
 
 import { Loader2, Moon, Sun } from 'lucide-react'
 import type { DeviceInfo, DeviceReadiness, Readiness } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { useAction } from '@/lib/actions'
+import { Button, cn, useAction } from '@enkaku/ui'
 import { setDeviceReadiness } from '@/lib/readiness'
-import { cn } from '@/lib/utils'
 
 /**
  * The label is derived from `actual`, never `desired` (plan 49 §3.2, §4.2):

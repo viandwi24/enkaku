@@ -37,7 +37,22 @@ the +/- stepper's button delta, because `step: 'any'` is a valid HTML
 attribute but not a number `NumberField` could keep doing arithmetic with.
 See §96.31 for the full blast radius (`lat`/`lng`, `accuracy`, and every
 script author's own float parameters, since script forms share this same
-planner) and the exact fix.
+planner) and the exact fix. **96.32–96.36 were added and fixed 2026-08-17**,
+from `docs/settings-audit.md` (a workspace-wide dead-settings audit written
+the same session): 96.32 deletes two farm-wide `adb.*` fields
+(`execTimeoutMs`, `maxQueueDepth`) with no reader anywhere; 96.33 — the
+audit's highest-severity finding — deletes the farm-wide `defaults.identity`
+block, which did not merely sit inert but silently stamped byte-identical
+fake GPS/timezone/locale onto every device admitted while it was set,
+leaving per-device identity (plan 58) untouched; 96.34 and 96.35 correct two
+stale schema doc comments (`video.controlPreset`/`wallPreset` falsely
+claimed to override the farm setting; `job.memory.*` falsely claimed
+enforcement had not landed) to match the code as it actually behaves; 96.36
+fixes `workflow.maxTotalMs`'s publish-time preflight, which silently used
+the hardcoded 6h default while the runtime executor enforced an operator's
+real setting — the two doc comments describing this gap had it BACKWARDS,
+and a routes-half regression guard was added alongside the executor's
+pre-existing one. See §96.32–§96.36 for the full accounts.
 >
 
 > Two of the four widened once someone looked properly, which is the argument for writing them down rather than fixing them in passing. **96.3** was reported as "a `kind` hint is inert on a nullable field"; the real defect is that a nullable's `anyOf` wrapper carries no `type`/`enum`/`prefixItems`/`format`, so precedence rows 3–13 could never match it on **any** hint — `labels`, `source`, `ordered` and `multiline` were dead there too. **96.4** was reported as seven unreachable `FarmSettingsSchema` blocks; the guard test written to stop a recurrence found an **eighth** (`readiness`) the moment it ran.
@@ -3199,6 +3214,320 @@ getting the JSON-Schema-to-HTML `step` mapping wrong for EVERY numeric field
 without an explicit `.multipleOf()` — which, by that plan's own design,
 means every Settings float, every farm-settings float, and every script
 author's own float parameter, indefinitely into the future, until this fix.
+
+### 96.32 — `adb.execTimeoutMs`/`adb.maxQueueDepth` (farm settings) had no reader anywhere in the workspace. DELETED.
+
+`docs/settings-audit.md`'s workspace-wide field audit (findings #6) found
+both DEAD, and this pass verified each claim independently before deleting
+anything, per that audit's own instruction. `execTimeoutMs`: every real adb
+exec deadline comes from `packages/adb/src/timeouts.ts`'s hardcoded
+`ADB_TIMEOUTS` per-call-site table via `resolveExecTimeout()`
+(`packages/adb/src/client.ts:445`, `const execTimeoutMs =
+resolveExecTimeout(opts)` — never consults farm settings); grepping
+`adb.execTimeoutMs`/`settings().adb` across `packages/core/src` and
+`packages/adb/src` found no settings-store read for the `adb.*` block
+specifically. `shell.execTimeoutMs` is a different, correctly-wired field
+that happens to share the name — confirmed live (dozens of `ws-handlers-*.test.ts`
+fixtures construct `shellSettings: () => ({ mode: 'admin', execTimeoutMs:
+15_000, ... })`, all untouched by this entry). `maxQueueDepth`: `AdbClient`
+is constructed at `packages/core/src/daemon.ts:2887` (`adb = new
+AdbClient({ adbPath, onLog, onMetric })`) with no `maxQueueDepth` key at
+all, so `packages/adb/src/client.ts:286` always fell back to the
+compiled-in `DEFAULT_MAX_QUEUE_DEPTH` (32) — unlike `maxConcurrent`/
+`maxStreams`/`maxStreamsPerDevice`, which all have live resize-style
+wiring at `daemon.ts:514-515,534-535` and `device/host-adb.ts:169-170`.
+
+Both fields removed from `AdbSettingsSchema` (`packages/protocol/src/settings.ts`,
+inside the `adb: z.preprocess(normaliseLegacyAdb, z.object({...}))` block)
+and from its `.default({...})` literal. Not a compatibility window (00-overview.md
+§9): Zod's default "strip" mode (no `.strict()`/`.passthrough()` anywhere in
+`settings.ts`, confirmed by grep) means a stored farm-settings row still
+carrying either key parses cleanly with the key silently dropped — no
+`normaliseLegacyAdb`-style preprocess needed, and no `E_BAD_CONFIG`. A short
+doc comment was added above the `adb:` block explaining the removal and
+citing the audit, so a future reader who remembers these fields finds the
+reason immediately instead of re-discovering it. `settings.test.ts`'s two
+affected assertions (the "predates these fields" empty-object parse, and
+`defaultFarmSettings()`'s own field-by-field check) were updated to match
+the narrower shape — no new test needed beyond that, since "a field that no
+longer exists has no reader" is proven by its absence from the schema, not
+by a runtime assertion.
+
+**Verified:** `bash scripts/typecheck.sh` — every package OK. `bun test` —
+5247 pass / 0 fail. No Studio change needed — Settings → adb renders
+whatever the schema declares (docs/settings-audit.md's own framing: "every
+field in both schemas is rendered and savable somewhere in Studio," so
+removing a field from the schema removes its form control for free).
+
+### 96.33 — `defaults.identity` (farm-wide timezone/locale/GPS) was not merely dead — it silently stamped byte-identical fake coordinates onto every device admitted while it was set. DELETED (the farm-wide block only; per-device identity, plan 58, is untouched).
+
+`docs/settings-audit.md`'s highest-severity finding (#1). `packages/core/src/registry/admission.ts`'s
+`defaultsForNewDevice` did `const s = opts.deviceDefaults?.() ??
+defaultDeviceSettings()` and returned `settings: s` — the **entire**
+`DeviceSettings` object, `identity` included, no field-level exclusion —
+onto every newly admitted device's row. `opts.deviceDefaults` was wired at
+`daemon.ts:2121` and `:3341` as `() => settingsStore.get().defaults`, a live
+read of the real store, and the SAME whole-object-spread pattern is
+duplicated inline inside `packages/core/src/registry/device-registry.ts`'s
+`createDeviceRegistry` (the live-tracker enrollment path, distinct from
+`admission.ts`'s tray-based `admitDevice`). An operator who set a "sensible
+default" GPS before onboarding a batch of phones — a natural thing to try —
+placed every device admitted in that window at identical coordinates: a
+**stronger** fingerprinting signal than no identity spoofing at all, with no
+audit entry, no warning, and nothing in the admission response calling out
+that identity had been seeded. `docs/settings-audit.md` also confirmed the
+field was separately DEAD as an ongoing setting for an already-enrolled
+device — `api/device-identity.ts`'s `readSettings` never reads
+`settingsStore.get().defaults.identity` — so this control could only ever
+do harm, never the good its own label implied.
+
+**The fix makes a farm-wide identity default impossible to set, while
+leaving everything per-device untouched.** `packages/protocol/src/settings.ts`:
+a new `FarmDeviceDefaultsSchema = DeviceSettingsSchema.omit({ identity: true })`
+backs `FarmSettingsSchema.defaults` (previously `DeviceSettingsSchema`
+directly, reused verbatim) — `DeviceSettingsSchema.identity` itself is
+completely unchanged, so every per-device identity route
+(`packages/core/src/api/device-identity.ts`, plan 58) and the device
+Settings tab's own Identity group keep working exactly as before. A new
+exported type, `FarmDeviceDefaults` (`FarmSettings['defaults']`), lets
+`deviceDefaults` accessors declare the narrower shape at their type instead
+of the wider `DeviceSettings`: `admission.ts`'s `defaultsForNewDevice`/
+`AdmitOptions`, `device-registry.ts`'s `DeviceRegistryDeps`, and
+`api/devices.ts`'s `AdmitDeviceDeps`-equivalent inline type all changed from
+`() => DeviceSettings` to `() => FarmDeviceDefaults`. `daemon.ts`'s two call
+sites (`:2121`, `:3341`, unchanged text — `() => settingsStore.get().defaults`)
+now type-check against the narrower shape automatically, since
+`FarmSettings['defaults']` follows the schema.
+
+**The part the task brief specifically warned would bite, handled
+deliberately rather than left to chance.** Both `defaultsForNewDevice`
+implementations (`admission.ts`'s exported function, and
+`device-registry.ts`'s inline closure of the same name) now ALWAYS overwrite
+`identity` with a fresh `DeviceIdentitySchema.parse({})` after spreading
+whatever `deviceDefaults` accessor returned — never trusting the accessor
+for that one field, and never leaving it `undefined`. This is unconditional,
+not merely "when the accessor is absent": a hand-built test
+(`admission.test.ts`) proves that even an accessor which structurally
+returns a full `DeviceSettings` with a non-empty `identity` (a plausible
+future mistake, since `DeviceSettings` is structurally assignable to the
+narrower `FarmDeviceDefaults`) still results in an empty `{}` identity on
+the new device — the merge point, not the type system, is what actually
+enforces the exclusion.
+
+**Existing stored rows, handled deliberately.** No `.strict()`/`.passthrough()`
+anywhere in `settings.ts` means Zod's own default "strip" mode already does
+the right thing: a farm whose stored `defaults` blob still carries an
+`identity` key (written before this change) parses cleanly through
+`FarmDeviceDefaultsSchema`, the unknown key silently dropped — never
+`E_BAD_CONFIG`, never a fallback to unrelated defaults for the rest of the
+row. Proven directly, not assumed: `settings.test.ts` parses a legacy
+`defaults` blob with an `identity` key and asserts the parse succeeds with
+the key gone; `packages/core/src/settings/farm-settings.test.ts` goes one
+level deeper and writes a raw legacy row straight into the `farm_settings`
+table (bypassing the store entirely, the way an on-disk SQLite file from
+before this change would be found), then boots a real
+`createFarmSettingsStore` against it and asserts every OTHER field of that
+row survived untouched (`battery.pollIntervalSec: 77`,
+`defaults.autoReconnect: false`) — proof this is a genuine parse of the
+stored row, not `createFarmSettingsStore`'s own `safeParse`-failure branch
+silently replacing the whole thing with `defaultFarmSettings()`.
+
+**Studio.** No component change needed: Settings → Defaults
+(`packages/studio/src/components/settings/farmSections.ts`'s `{ id:
+'defaults', keys: ['defaults', 'labelling'] }`) is fully schema-driven — it
+renders whatever `FarmSettingsSchema.shape.defaults`'s own JSON Schema
+declares, with no bespoke "Identity" component of its own (confirmed by
+grep: no file under `packages/studio/src/components/settings` mentions
+`identity` at all). Once the schema stopped declaring the field, the
+"Identity" group under Settings → Defaults stopped rendering — no orphaned
+UI, nothing to clean up separately. The per-device `IdentityPanel.tsx`
+(plan 58's own bespoke component) is untouched and still reads/writes
+`DeviceSettingsSchema.identity` on one device at a time.
+
+**Verified:** three new describe blocks — `settings.test.ts`
+("`FarmSettingsSchema.defaults` — identity is excluded", 4 tests: no
+identity key on a fresh parse; the generated JSON Schema has no `identity`
+property under `defaults`; `DeviceSettingsSchema` itself still has it; a
+legacy row with a stored `identity` key parses cleanly); `farm-settings.test.ts`
+("a legacy stored `defaults.identity` key", 1 test, described above);
+`admission.test.ts` ("`defaultsForNewDevice` — identity is always filled
+fresh", 3 tests: no accessor at all; an accessor of the narrower
+`FarmDeviceDefaults` shape; an accessor that structurally leaks a full
+`DeviceSettings` with a non-empty identity). `device-registry.test.ts`
+gained one more test on the SAME live-tracker path `device-registry.ts`'s
+own inline closure covers, proving the fix there independently of
+`admission.ts`'s. `bash scripts/typecheck.sh` — every package OK. `bun test`
+— 5247 pass / 0 fail (up from a 5226 baseline recorded by §96.31, by more
+than this entry's own new tests alone — see this entry's note on shared-tree
+movement below). `bun run --cwd packages/studio test` — 1631 pass / 0 fail.
+`bun run build:studio` — succeeded cleanly, 35/35 static pages (port 3001
+was free at verification time, so the dev-server guard did not need to
+refuse). A peer session was concurrently adding plugin surfaces (plans
+108/109, `packages/core/src/plugin*`) throughout this pass — untouched by
+this entry, and the moving pass totals above are not attributed to this
+entry's own files.
+
+### 96.34 — `video.controlPreset`/`wallPreset` (per-device override) claimed to override the farm setting; nothing reads either field. Doc comment corrected, not deleted.
+
+`docs/settings-audit.md` finding #5: `packages/session/src/video-profile.ts`'s
+`resolveVideoProfile` indexes `CONTROL_PRESETS[farm.controlPreset]` (line 88)
+and `WALL_PRESETS[farm.wallPreset]` (line 105) off the FARM argument only;
+`device?.controlPreset`/`device?.wallPreset` are referenced nowhere in that
+file or anywhere else in the workspace (confirmed by grep). The schema's own
+description read "Overrides the farm setting for this device only. Leave
+empty to follow the farm." — an explicit, false claim, more misleading than
+a mere omission, since the four numeric siblings on the SAME object
+(`controlMaxSize`/`controlMaxFps`/`controlBitRate` and their `wall*`
+counterparts) genuinely DO merge (`device?.controlMaxSize ?? farm.controlMaxSize`,
+confirmed live) — so the false claim sits directly beside working fields
+that make it look trustworthy.
+
+**Chosen fix, and why, per the task brief's explicit either/or.** The audit
+named two honest options: correct the text, or delete the two dead fields.
+Deletion was rejected for this pass: the six-field `video` object on
+`DeviceSettingsSchema` mixes two dead fields with four live ones, so
+deleting only the presets would still leave a schema/DB-shape edit for a
+purely cosmetic gain (Studio already renders whatever the schema declares,
+so there is no "orphaned control" to clean up either way — a schema-driven
+form simply stops offering a control the moment its field is gone); the
+per-device panel's fate as a whole was also explicitly out of this pass's
+scope (unlike `defaults.identity` above, nothing here is ACTIVELY harmful —
+it is DEAD, and honestly labelling it costs less than restructuring the
+object). The schema's inline comment above `video:` and each field's own
+`describe()`/`title` were corrected instead: `controlPreset`/`wallPreset`
+now read "Not yet read anywhere — `resolveVideoProfile` only consults the
+farm-wide preset. Setting this has no effect. Use the numeric fields below
+to override picture quality for this device," with matching `(not yet
+applied)` titles so the distinction is visible in the rendered form, not
+just in source. The farm-level `controlPreset`/`wallPreset`
+(`FarmSettingsSchema.video`, a SEPARATE block, confirmed live and unchanged
+— `packages/studio/src/components/video/FarmVideoFields.tsx` and
+`video-quality.ts` both read `farm.controlPreset`/`farm.wallPreset`) were
+not touched at all.
+
+No Studio test needed updating: `packages/studio/src/app/device/page.test.tsx`'s
+own `controlPreset`/`wallPreset` assertions build a hand-mocked
+`deviceSchema` fixture independent of the real generated schema (confirmed
+by reading the test), so the title-string change is invisible to it; the
+tests that DO assert the string `'Device page picture'`/`'Wall tile picture'`
+(`packages/studio/src/app/settings/page.test.tsx`,
+`FarmVideoFields.test.tsx`) exercise the unrelated FARM-level fields, which
+kept their original titles.
+
+**Verified:** `bash scripts/typecheck.sh` and `bun run --cwd packages/studio
+test` both clean with no changes required on the Studio side — the doc
+comment and description/title edits are the entire fix.
+
+### 96.35 — `job.memory.*`'s own schema comment claimed enforcement "has not landed yet"; plan 98 shipped it in full. Comment corrected.
+
+`docs/settings-audit.md` finding #8. The comment directly above
+`JobSettingsSchema`'s `memory` block in `packages/protocol/src/settings.ts`
+read: "nothing here enforces anything by itself — plan 98's own step 98.3
+(Measure before limiting) is what wires a breach to a kill, and it has not
+landed yet." False as of this pass: `docs/plans/98-m63-script-runtime-envelope.md`
+line 3 reads "Status: implemented — every step 98.1–98.9 implemented and
+tested," naming 98.3 specifically. Traced end to end, not taken on the
+plan's word alone: `packages/session/src/runner/child-entry.ts:610-611`
+self-reports RSS on every sample tick; `packages/session/src/runner/job-runner.ts`'s
+`checkMemoryBreach` (~line 624) compares it against the resolved
+`maxRssBytes` and calls `doAbort('memory', ...)` the instant a sample
+reaches the limit under `enforce: 'kill'`, after one `warn` at 80% of the
+limit so a kill is never unexplained. The comment now names the enforcing
+call site directly (`job-runner.ts`'s `checkMemoryBreach`) and states
+`enforcement: 'sampled'` honestly — a breach is caught on the NEXT sample
+interval, not prevented, which is not the same claim as "unenforced."
+
+Documentation-only fix; no behavior changed and no test needed beyond the
+existing coverage that already exercises `checkMemoryBreach` end to end
+(`job-runner.test.ts`, unmodified — this entry did not touch enforcement
+code, only the comment describing it).
+
+### 96.36 — `workflow.maxTotalMs` had two consumers; the publish-time preflight silently used the hardcoded 6h default while the runtime executor enforced an operator's real setting. Wiring fixed; both doc comments (which described the gap BACKWARDS) corrected; a routes-half regression guard added alongside the executor's existing one.
+
+`docs/settings-audit.md` finding #3, the most interesting of the three
+PARTIAL findings because the code and its own comments actively disagreed
+about which half was broken. **The actual state before this pass:** the
+runtime executor's clock (`packages/core/src/jobs/executors/workflow.ts:414`,
+`E_WORKFLOW_BUDGET_EXCEEDED`) WAS live — `daemon.ts:3292` (unchanged by this
+pass) wires `settings: () => settingsStore.get().workflow`, read fresh on
+every check, guarded by the pre-existing `jobs/executors/workflow-settings-wiring.test.ts`.
+The publish-time preflight (`checkWorkflow`'s `E_WORKFLOW_BUDGET_IMPOSSIBLE`,
+`packages/protocol/src/workflow-check.ts`, reached via `packages/core/src/api/workflows.ts`'s
+`budgetFor(deps)`) was the one still hardcoded:
+`daemon.ts:2469` called `createWorkflowRoutes({ db, registry: scriptRegistry,
+audit })` with no `settings` key at all, even though
+`createWorkflowRoutes`'s own `deps.settings?: () => WorkflowBudget` seam
+already existed for exactly this. **Both `settings.ts`'s doc comment on the
+`workflow` block and `workflow.ts`'s own module doc comment described this
+backwards** — both claimed the executor was the half still hardcoded
+("wired to the `DEFAULT_WORKFLOW_MAX_TOTAL_MS` constant... until whoever
+owns `daemon.ts` swaps its closure") and the publish route already live,
+citing a stale note from when 99.7's own work was blocked on a concurrent
+`daemon.ts` diff. The consequence, if left as found: an operator who raised
+`workflow.maxTotalMs` above 6h got the longer budget correctly enforced at
+RUNTIME, but `POST /api/workflows/.../publish`'s preflight kept validating
+worst-case node timeouts against the stale 6h ceiling — a more confusing
+failure mode than the setting simply being ignored, since the two paths
+could actively disagree with each other.
+
+**Fixed the wiring, per the task brief's explicit instruction to fix code
+over prose here** — this is the repo's own named dominant defect class (a
+correct implementation whose production call site never threaded the
+value; `daemon-wiring.test.ts`'s own header comment counts this as its
+sixteenth-plus instance). `daemon.ts:2469`'s `createWorkflowRoutes({...})`
+call now also passes `settings: () => settingsStore.get().workflow` — the
+IDENTICAL accessor the executor already used, so `checkWorkflow` and the
+runtime clock can never again resolve two different numbers for the same
+farm setting. `packages/core/src/daemon-wiring.test.ts` gained a new
+describe block, `'workflow routes (plan 99 §3.11...; docs/settings-audit.md
+#3...)'`, matching the executor's own existing `workflow-settings-wiring.test.ts`
+guard: it reads `daemon.ts`'s real source text and asserts the
+`workflowRoutes: createWorkflowRoutes({...})` call contains both `settings:`
+and `settingsStore.get().workflow`, failing by name if a future edit
+regresses this back to an absent accessor — exactly the shape that let this
+gap sit unnoticed, since nothing previously guarded it (the executor half
+had a dedicated regression test from the moment IT was fixed; the routes
+half never got the matching one).
+
+**A near-miss caught before it shipped, worth recording.** The first draft
+of `daemon.ts:2469`'s new comment referenced the sibling call by writing
+`createWorkflowExecutor({...})` literally — which, being an earlier
+substring match for `daemonSource.indexOf('createWorkflowExecutor({')` than
+the REAL call three thousand lines later, made
+`workflow-settings-wiring.test.ts`'s own pre-existing guard extract the
+comment's fake `{...}` instead of the real call and fail
+(`Expected to contain: "settingsStore.get().workflow", Received: "{...}"`)
+— the exact disambiguation trap `daemon-wiring.test.ts`'s own header
+comment already warns about for a different marker. Reworded to avoid the
+literal call-shaped substring; both guard tests pass clean.
+
+**Both doc comments corrected to match the fixed code, not merely to stop
+lying passively.** `settings.ts`'s comment on the `workflow` block now
+states both consumers are live, names both guard tests, and explicitly
+notes it used to read backwards so a future reader is not left wondering
+whether an editing mistake introduced the correction. `workflow.ts`'s
+module doc comment gets the identical treatment from the executor's side.
+`api/workflows.ts`'s own `budgetFor` comment — not named in the task brief,
+but directly invalidated by this pass's own wiring fix (it asserted
+`daemon.ts`'s call site "cannot be updated here to pass one," which stopped
+being true the moment this entry updated exactly that call site) — was
+updated too, since leaving it would have introduced a NEW inaccuracy at the
+one place `budgetFor`'s own fallback branch is explained.
+
+**Verified:** a new describe block in `packages/core/src/api/workflows.test.ts`
+proves the ROUTE-level behavior, not just the wiring text: the identical
+two-node document (each node declaring `runtime.timeoutMs: 400_000`, summing
+to 800s) is flagged `E_WORKFLOW_BUDGET_IMPOSSIBLE` when
+`createWorkflowRoutes` is built with a custom `settings: () => ({ maxTotalMs:
+500_000 })` (well under both the 800s sum and the 6h schema default), and is
+NOT flagged when the identical document is checked with no `settings`
+accessor at all (the schema-default fallback, 21_600_000ms, comfortably
+above 800s) — proving the live setting, not the default, now drives the
+preflight. `bash scripts/typecheck.sh` — every package OK. `bun test` —
+5247 pass / 0 fail. `bun run --cwd packages/studio test` — 1631 pass / 0
+fail (Studio is unaffected by this entry; no Studio file was touched).
+`bun run spec:check` and `bash scripts/check-plan-status.sh` — both clean.
+`bun run build:studio` — succeeded, 35/35 static pages.
 
 ## Verify
 

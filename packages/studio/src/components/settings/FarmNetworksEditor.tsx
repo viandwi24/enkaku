@@ -3,14 +3,28 @@
 import { useEffect, useState } from 'react'
 import { Network, Plus, Trash2 } from 'lucide-react'
 import { addressCount, CidrSchema, SettingsResponseSchema, UpdateSettingsResponseSchema, type FarmSettings } from '@enkaku/protocol'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api, useAction } from '@/lib/actions'
-import { cn } from '@/lib/utils'
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  Input,
+  LoadingRows,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  api,
+  cn,
+  useAction,
+} from '@enkaku/ui'
 
 type FarmNetwork = FarmSettings['discovery']['networks'][number]
 

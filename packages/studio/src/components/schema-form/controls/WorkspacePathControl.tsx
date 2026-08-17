@@ -2,10 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { File, Folder, FolderOpen, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
+import { Button, Skeleton, cn } from '@enkaku/ui'
 import { listWorkspace, type WorkspaceListEntry } from '@/lib/workspace'
-import { cn } from '@/lib/utils'
 import type { FieldPlan } from '../plan'
 import { FieldRow } from './shell'
 import type { BaseControlProps } from './types'

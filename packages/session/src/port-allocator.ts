@@ -45,7 +45,35 @@ export class PortAllocator {
   }
 }
 
-async function isPortFree(port: number): Promise<boolean> {
+/**
+ * A bind test on loopback: bind the port, close it again, and report whether
+ * the bind succeeded (plan 06 §4.3; plan 109 §3.3, R5).
+ *
+ * **Exported because plan 109 lends it to a plugin** as `ctx.isPortFree`. The
+ * core does not allocate, reserve or arbitrate a plugin's port — §3.3 is the
+ * owner's ruling that collisions are the plugin's own problem — but a plugin
+ * should not have to write this badly, twelve times, so it borrows the one
+ * that already exists rather than getting a second implementation.
+ *
+ * **Read what it does and does not tell you.** It binds `127.0.0.1`, so:
+ *
+ * - a listener on `0.0.0.0` is detected (the loopback bind collides with it);
+ * - a listener bound only to some OTHER interface is **not**, and this answers
+ *   `true` for a port that is genuinely in use there;
+ * - the answer is a snapshot. Between `isPortFree(p)` and your own `listen(p)`
+ *   anything on the machine may take it, so a plugin still has to handle the
+ *   bind throwing. This is advice, never a reservation.
+ */
+export async function isPortFree(port: number, proto: 'tcp' | 'udp' = 'tcp'): Promise<boolean> {
+  if (proto === 'udp') {
+    try {
+      const socket = await Bun.udpSocket({ hostname: '127.0.0.1', port })
+      socket.close()
+      return true
+    } catch {
+      return false
+    }
+  }
   try {
     const server = Bun.listen({
       hostname: '127.0.0.1',

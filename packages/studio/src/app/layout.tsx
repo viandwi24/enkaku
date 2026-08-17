@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
-import { Toaster } from '@/components/ui/sonner'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Toaster, TooltipProvider } from '@enkaku/ui'
 import { AuthGate } from '@/components/layout/AuthGate'
 import { outfit, plexMono } from './fonts'
 import './globals.css'

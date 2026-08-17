@@ -9,13 +9,9 @@ import {
   type PreparationComponentStatus,
   type PreparationState,
 } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { api, useAction } from '@/lib/actions'
-import { duration, relativeTime } from '@/lib/format'
+import { Button, cn, ErrorState, LoadingRows, api, useAction, duration, relativeTime } from '@enkaku/ui'
 import { usePreparation } from '@/lib/use-preparation'
 import { useNow } from '@/lib/useNow'
-import { cn } from '@/lib/utils'
 
 /**
  * The device popup's Preparation section (plan 106 §3.3, §5 step 106.3) —

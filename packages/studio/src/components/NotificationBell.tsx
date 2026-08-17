@@ -5,12 +5,8 @@ import { useRouter } from 'next/navigation'
 import { Bell } from 'lucide-react'
 import { z } from 'zod'
 import { NotificationSchema, NotificationsResponseSchema, RunResponseSchema, ThreadResponseSchema, type Notification } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { relativeTime } from '@/lib/format'
-import { api } from '@/lib/actions'
+import { Button, Popover, PopoverContent, PopoverTrigger, cn, relativeTime, api } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 // `POST /api/notifications/:id/read` and `/read-all` (`packages/core/src/api/notifications.ts`)
 // have no shared envelope in `@enkaku/protocol` — nothing else reads either

@@ -3,12 +3,9 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
 import { DeviceEventsResponseSchema, type DeviceEvent } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api, relativeTime, EmptyState, ErrorState, LoadingRows, cn } from '@enkaku/ui'
 import { ws, coreBase } from '@/lib/ws'
-import { relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { cn } from '@/lib/utils'
 
 /** A bounded window, same reasoning as `DeviceLog` (plan 18 §8 risks). */
 const MAX_ROWS = 200

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 
 /**
  * `DevicePopup`'s `Esc` precedence (plan 91 §3.11; plan 103 §3.5's three-row

@@ -17,9 +17,9 @@
  * (`verify-child.ts`): it kills this process after its budget, and the kill
  * itself is what turns a hang into a `failed` plugin (criterion 21).
  */
-import { isPlugin } from '@enkaku/sdk'
+import { isPlugin, isService } from '@enkaku/sdk'
 import { z } from 'zod'
-import { checkDeclaredSchema, RuntimeEnvelopeSchema, type RuntimeEnvelope } from '@enkaku/protocol'
+import { checkDeclaredSchema, PluginServiceDeclarationSchema, RuntimeEnvelopeSchema, type RuntimeEnvelope } from '@enkaku/protocol'
 
 export type VerifyChildMessage =
   | {
@@ -50,6 +50,18 @@ export type VerifyChildMessage =
        * so the SDK's own author-time check cannot be the only one.
        */
       surface?: unknown
+      /**
+       * Plan 109 §4.1, step 109.2 — the plugin's SERVICE declaration
+       * (`permissions`, `isolation`), RAW, exactly as the bundle states it,
+       * and never the `setup` FUNCTION, which cannot cross an IPC boundary
+       * and must not: the parent decides whether to load this plugin's code
+       * into the core's own process, and it decides from the declaration
+       * alone.
+       *
+       * Absent when the bundle declares no service — the byte-identical case
+       * criterion 1 turns on.
+       */
+      service?: unknown
       resetPackages: string[]
     }
   | { ok: false; error: string; errorCode?: string }
@@ -167,6 +179,44 @@ async function main(): Promise<void> {
         )
       }
     }
+    // Plan 109 §4.1, §5 step 109.2 — the service declaration, checked here
+    // for the one thing only this side can see (is the default export's
+    // `service` a real `defineService()` result, brand and function and all?)
+    // and then reduced to plain JSON. The `setup` function is deliberately
+    // dropped: what crosses is a DECLARATION. The parent re-validates it
+    // independently and is what refuses `isolation: 'process'` (criterion 7),
+    // for the same reason it re-validates the surface — a hand-crafted bundle
+    // need never have called `defineService` at all.
+    let service: unknown
+    const declaredService: unknown = (def as { service?: unknown }).service
+    if (declaredService !== undefined) {
+      if (!isService(declaredService)) {
+        throw new VerifyChildError(
+          'E_PLUGIN_SERVICE_INVALID',
+          '`service` is present but is not a defineService({ setup }) result — a plain object with a `setup` function is not one',
+        )
+      }
+      const parsed = PluginServiceDeclarationSchema.safeParse({
+        permissions: declaredService.permissions,
+        isolation: declaredService.isolation,
+        // Steps 109.4/109.5. Listed field by field rather than spread, on
+        // purpose: what crosses the IPC boundary is the DECLARATION, and a
+        // spread would carry `setup` — a function — into a `JSON.stringify`
+        // that silently drops it, which is a shape disagreement waiting to
+        // happen rather than an error anybody would see.
+        listeners: declaredService.listeners,
+        events: declaredService.events,
+        // Step 109.7. Same field-by-field reasoning as above.
+        webhooks: declaredService.webhooks,
+      })
+      if (!parsed.success) {
+        throw new VerifyChildError(
+          'E_PLUGIN_SERVICE_INVALID',
+          `the declared service is invalid — ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+        )
+      }
+      service = parsed.data
+    }
     send({
       ok: true,
       pluginId: def.id,
@@ -175,6 +225,7 @@ async function main(): Promise<void> {
       ...(def.description ? { description: def.description } : {}),
       scripts,
       ...(surface !== undefined ? { surface } : {}),
+      ...(service !== undefined ? { service } : {}),
       resetPackages: def.reset?.packages ?? [],
     })
   } catch (err) {

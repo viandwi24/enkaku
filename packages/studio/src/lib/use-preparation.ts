@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { DevicePreparationSchema, type DevicePreparation, type PreparationComponentStatus } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 import { ws } from './ws'
 
 /**

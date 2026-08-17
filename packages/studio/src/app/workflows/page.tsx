@@ -6,10 +6,7 @@ import { Plus, Workflow as WorkflowIcon } from 'lucide-react'
 import { JobsPageResponseSchema, ScriptGroupsPageResponseSchema, ScriptResponseSchema, type JobInfo } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type Page } from '@/components/PaginatedTable'
-import { Button } from '@/components/ui/button'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { api } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
+import { Button, TableCell, TableHead, api, relativeTime } from '@enkaku/ui'
 
 /** One row per workflow NAME (`GET /api/scripts?group=name&kind=workflow`, plan 99 §4.11) — the same grouped shape the Scripts list already renders. */
 interface WorkflowGroupRow {

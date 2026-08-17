@@ -52,9 +52,7 @@ import { ChildRunCard } from './ChildRunCard'
 import { ModelCombobox } from './ModelCombobox'
 import { ToolCallCard } from './ToolCallCard'
 import { UsageBadge } from './UsageBadge'
-import { Button } from '@/components/ui/button'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { api, useAction } from '@/lib/actions'
+import { Button, cn, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
 import {
   historyToUIMessages,
   type AgentChatApprovalData,
@@ -65,7 +63,6 @@ import {
 } from '@/lib/agent-chat'
 import { resolveForDisplay, type Agent, type AgentDefaults, type ModelInfo } from '@/lib/agents'
 import { coreBase } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 /**
  * Plan 78 §4.2 — replaces `Transcript.tsx` + `Composer.tsx`. `chat-panel.tsx`'s

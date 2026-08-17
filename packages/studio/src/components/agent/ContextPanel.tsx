@@ -7,7 +7,7 @@ import { UsageSparkline } from './UsageSparkline'
 import type { Agent, CapabilityInfo } from '@/lib/agents'
 import { capabilityGroup } from '@/lib/agents'
 import { fetchAgentUsage, type DailyUsage } from '@/lib/agent-usage'
-import { formatUsd } from '@/lib/format'
+import { formatUsd } from '@enkaku/ui'
 
 /**
  * The right column (plan 69 §3.1, step 69.4) — what distinguishes a

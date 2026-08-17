@@ -5,9 +5,7 @@ import Link from 'next/link'
 import type { LeaseHolder } from '@enkaku/protocol'
 import { DeviceDetailResponseSchema, RunResponseSchema, ThreadResponseSchema } from '@enkaku/protocol'
 import { SingleDeviceNotice } from '@/components/target/TargetPicker'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { api } from '@/lib/actions'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, api } from '@enkaku/ui'
 import { newId, ws, WsRequestError } from '@/lib/ws'
 
 /**

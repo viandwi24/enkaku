@@ -1,5 +1,5 @@
 import { ListThreadsResponseSchema, RunResponseSchema, ThreadMessagesResponseSchema, type AgentRun } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 
 /**
  * Shared helpers for the client-side compositions in `agent-approvals.ts`,

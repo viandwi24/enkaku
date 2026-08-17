@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { RecordingDocSchema, RecordingStepSchema, type RecordingDoc, type RecordingStep } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api } from '@enkaku/ui'
 
 /**
  * The client half of `/api/recordings/*` (plan 94 §4.9, §5 step 94.5). The

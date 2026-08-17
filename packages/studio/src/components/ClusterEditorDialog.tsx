@@ -2,12 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ClusterResponseSchema, type ClusterInfo } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, Textarea, api, useAction } from '@enkaku/ui'
 
 export interface ClusterRow extends ClusterInfo {}
 

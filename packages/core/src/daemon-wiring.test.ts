@@ -1324,3 +1324,89 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
   })
 })
+
+/**
+ * Plan 109 (M74 — the plugin runtime) §4.2, step 109.2. The host loads a
+ * plugin's own code into THIS process, so where its two calls sit in `start()`
+ * is not a detail — it is the difference between "a broken plugin is a failed
+ * row on a page that works" and "the core never answers `/api/health` at all".
+ * Asserted against the file's own text, the same way every other rule about
+ * one production call site in this file is.
+ */
+describe('daemon.ts — the plugin runtime host (plan 109 §4.2, step 109.2)', () => {
+  test('createPluginRuntime(...) passes `onLifecycle`, so activating a plugin loads its service and disabling one unloads it', () => {
+    const call = extractCall(daemonSource, 'createPluginRuntime({')
+    expect(call).toContain('onLifecycle:')
+    expect(call).toContain('pluginHost?.handleLifecycle(event)')
+  })
+
+  test('createRuntimeHost(...) is given the plugin registry, the KV store and a stableId resolver — never a Db', () => {
+    const call = extractCall(daemonSource, 'pluginHost = createRuntimeHost({')
+    expect(call).toContain('plugins: pluginRuntime')
+    expect(call).toContain('store: kvStore')
+    expect(call).toContain('resolveStableId:')
+    // `plugin-context.ts`'s criterion-11 claim is "true by construction": the
+    // host never holds a database handle to leak into a plugin's context.
+    expect(call).not.toContain('db,')
+  })
+
+  test('loadActive() runs AFTER Bun.serve — a plugin whose setup hangs must not be able to stop the core from listening', () => {
+    const listen = daemonSource.indexOf('server = Bun.serve({')
+    const load = daemonSource.indexOf('pluginHost?.loadActive()')
+    expect(listen).toBeGreaterThan(-1)
+    expect(load).toBeGreaterThan(listen)
+    // And not awaited: `start()` returning must not wait on plugin code.
+    expect(daemonSource).toContain('void pluginHost?.loadActive()')
+  })
+
+  test('stop() unloads every service — running each plugin`s onStop disposers BEFORE the database they may write through is closed', () => {
+    const unload = daemonSource.indexOf("await pluginHost?.unloadAll('the core is shutting down')")
+    const closeDb = daemonSource.indexOf('opened?.sqlite.close()')
+    expect(unload).toBeGreaterThan(-1)
+    expect(closeDb).toBeGreaterThan(unload)
+    // And the process-level unhandledRejection handler the host installs is
+    // removed, so a stopped core leaves the runtime exactly as it found it.
+    expect(daemonSource).toContain('pluginHost?.dispose()')
+  })
+})
+
+/**
+ * Plan 109 §4.3, step 109.3 — the capability broker. The defect this guards
+ * against is the one this whole file exists for: `ctx.farm` is an OPTIONAL
+ * port on both hosts (`RuntimeHostDeps.farm`, `JobRunnerDeps.farm`), and each
+ * one fails closed with `E_FARM_UNAVAILABLE` when it is absent. So a build
+ * that simply never passed the broker would not crash, would not fail a unit
+ * test, and would refuse every plugin's every capability call forever, with a
+ * message that reads like a design decision.
+ */
+describe('daemon.ts — the capability broker (plan 109 §4.3, step 109.3)', () => {
+  test('createRuntimeHost(...) is given the broker, so a plugin SERVICE`s ctx.farm reaches it', () => {
+    const call = extractCall(daemonSource, 'pluginHost = createRuntimeHost({')
+    expect(call).toContain('farm:')
+    expect(call).toContain('farmBroker')
+  })
+
+  test('createJobRunner(...) is given the same broker, so a plugin MEMBER SCRIPT`s ctx.farm reaches it too', () => {
+    const call = extractCall(daemonSource, 'const runner = createJobRunner({')
+    expect(call).toContain('farm: farmRunnerPort')
+  })
+
+  test('the broker is built once, from the real registry, the real capability context deps, and the audit logger', () => {
+    const call = extractCall(daemonSource, 'farmBroker = createFarmBroker({')
+    expect(call).toContain('registry: capabilityRegistry')
+    expect(call).toContain('contextDeps: capContextDeps')
+    expect(call).toContain('plugins: pluginRuntime')
+    expect(call).toContain('audit,')
+    // The plugin principal's role follows its publisher, resolved live — a
+    // hardcoded role here would be an authority decision made in the wiring
+    // rather than by the ACL.
+    expect(call).toContain('roleOf:')
+  })
+
+  test('the broker is assigned before Bun.serve — plugin code only runs after listening, so the forward-ref refusal is unreachable in a booted farm', () => {
+    const assigned = daemonSource.indexOf('farmBroker = createFarmBroker({')
+    const listen = daemonSource.indexOf('server = Bun.serve({')
+    expect(assigned).toBeGreaterThan(-1)
+    expect(listen).toBeGreaterThan(assigned)
+  })
+})

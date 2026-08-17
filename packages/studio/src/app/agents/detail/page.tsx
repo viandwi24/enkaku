@@ -17,11 +17,6 @@ import {
   SettingsResponseSchema,
   ThreadResponseSchema,
 } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { EntityTabs } from '@/components/layout/EntityTabs'
-import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,18 +27,30 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  ErrorState,
+  Input,
+  Label,
+  LoadingRows,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Textarea,
+  api,
+  useAction,
+} from '@enkaku/ui'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { EntityTabs } from '@/components/layout/EntityTabs'
+import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { ThreadList } from '@/components/agent/ThreadList'
 import { Chat } from '@/components/agent/Chat'
 import { ContextPanel } from '@/components/agent/ContextPanel'
-import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 import { useBulkSelection } from '@/hooks/use-bulk-selection'
 import { subtreeOf } from '@/lib/agent-tree'

@@ -8,7 +8,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 // `ActionsList`'s own "Open full device page" `next/link` needs it too.
 import '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 
 /**
  * `DevicePopup` (plan 91 §3.11, §5 step 91.9; evolved by plan 103 §4.1, §5

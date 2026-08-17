@@ -1,20 +1,29 @@
 {
   "name": "@enkaku/plugin-proxy-manager",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
-  "description": "Proxy manager — a catalogue of proxy records, and a screen to keep it with. No proxy is ever contacted",
+  "description": "Proxy manager — a catalogue of proxy records, a React screen with tabs to keep it with, and a service that runs a loopback HTTP or SOCKS5 bridge per enabled record through the upstream proxy it names",
   "enkaku": {
     "plugin": "proxy-manager",
     "entry": "src/index.ts"
   },
   "scripts": {
     "test": "bun test",
+    "dev": "bun run ../../packages/sdk/src/cli/index.ts dev src/index.ts",
     "publish:farm": "bun run ../../packages/sdk/src/cli/index.ts publish src/index.ts"
   },
   "dependencies": {
     "@enkaku/protocol": "workspace:*",
     "@enkaku/sdk": "workspace:*",
+    "socks": "^2.8.9",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@enkaku/ui": "workspace:*",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/react": "^19",
+    "react": "^19.0.0",
+    "tailwindcss": "^4.3.3"
   }
 }

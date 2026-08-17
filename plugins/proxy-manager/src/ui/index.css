@@ -1,0 +1,46 @@
+/*
+ * proxy-manager's own Tailwind classes (plan 111 §9 Q1, step 111.9).
+ *
+ * Studio renders this plugin inside its own page, so every class Studio itself
+ * uses is already available — including everything `@enkaku/ui`'s components
+ * are built from. **A screen that only uses `@enkaku/ui` should delete this
+ * file** (and `@tailwindcss/cli`/`tailwindcss` from package.json): nothing here
+ * would be needed and nothing would be emitted for it.
+ *
+ * This pack keeps it because it writes two classes Studio never has:
+ *
+ *   bg-[repeating-linear-gradient(...)]   the honesty banner's hazard stripes
+ *   grid-cols-[max-content_1fr]           the edit dialog's label/field grid
+ *
+ * *(measured against the built export, 2026-08-17)* neither
+ * `repeating-linear-gradient` nor any arbitrary `grid-cols-[…]` appears
+ * anywhere in Studio's 100 KB stylesheet. A class Studio never used was never
+ * generated, so without this file both would render as nothing at all, with no
+ * error anywhere — which is the exact silent failure step 111.9 exists to kill,
+ * and why the two chosen here fail VISIBLY (a flat panel, stacked fields)
+ * rather than subtly.
+ *
+ * `enkaku publish` and `enkaku dev` run this project's own Tailwind over it.
+ * Do NOT import this file from index.tsx: it is compiled and linked for you,
+ * and importing it would hand the raw source to a bundler that does not know
+ * what Tailwind is.
+ */
+
+/*
+ * Utilities only, and a theme that RESOLVES but does not emit.
+ *
+ * Never `@import 'tailwindcss'` here. That pulls in preflight — a GLOBAL reset
+ * — and Studio's document already has one, so a second copy would restyle
+ * every other screen in the farm rather than this view. Publishing refuses a
+ * stylesheet that contains it.
+ *
+ * `theme(reference)` is the other half: it registers the tokens so
+ * `bg-surface` compiles, without writing a `:root` block. Studio's live values
+ * keep winning, and this plugin can never repaint the farm with a palette
+ * frozen on the day it was built.
+ */
+@import 'tailwindcss/theme.css' theme(reference);
+@import 'tailwindcss/utilities.css' layer(plugin);
+
+/* The farm's design tokens — bg-surface, text-fg-muted, border-led-warn, rounded-card. One definition, shared with Studio. */
+@import '@enkaku/ui/theme.css' theme(reference);

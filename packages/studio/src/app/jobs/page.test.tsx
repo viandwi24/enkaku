@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { screen, waitFor } from '@testing-library/react'
 import '@/lib/test/nav'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import JobsPage from './page'
 

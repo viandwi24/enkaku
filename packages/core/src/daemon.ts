@@ -6,6 +6,7 @@ import { ToolchainManager } from '@enkaku/toolchain'
 import {
   DEFAULT_AGENT_STATUS,
   DeviceSettingsSchema,
+  parsePluginSocketPath,
   type ArtifactInfo,
   type DeviceEvent,
   type DeviceStatus,
@@ -14,6 +15,7 @@ import {
   type Viewer,
 } from '@enkaku/protocol'
 import type { Server } from 'bun'
+
 import { createNodeRoutes } from './api/nodes'
 import { createNodeAuth } from './tunnel/node-auth'
 import { createTunnelRegistry } from './tunnel/registry'
@@ -64,9 +66,17 @@ import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
+import { createRuntimeHost, type RuntimeHost } from './plugins/runtime-host'
+// Plan 109 (M74) steps 109.7 and 109.8 — the inbound webhook secret store and
+// its rate limiter, and the per-plugin log ring.
+import { createPluginWebhookStore } from './plugins/webhook-secrets'
+import { createWebhookRateLimiter } from './plugins/webhook-routes'
+import { createPluginLogStore } from './plugins/runtime-logs'
+import { createPluginSocketRouter, type PluginSocketData } from './plugins/service-socket'
+import { createFarmBroker, createFarmRunnerPort, type FarmBroker } from './plugins/farm-broker'
 import { seedEmbeddedPacks } from './plugins/seed-embedded'
 import { embeddedAssets } from './embedded'
-import { createPluginRoutes } from './api/plugins'
+import { createPluginRoutes, pluginRouteErrorStatus } from './api/plugins'
 import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
@@ -178,6 +188,20 @@ import { findPortHolder } from './doctor/context'
 
 import pkg from '../package.json'
 
+/**
+ * What `srv.upgrade` attaches to a socket, for each of the THREE kinds the core
+ * accepts. Written down as one type rather than cast per branch because the
+ * `websocket` handlers below have to tell them apart three times each, and a
+ * fourth kind added with a per-branch cast is a fourth kind that silently falls
+ * through to the hub.
+ *
+ * - `nodeId` — a node's control tunnel (`/node/ws`).
+ * - `userId` — a browser on the farm's own broadcast (`/ws`, `WsHub`).
+ * - `pluginSocket` — one plugin's own `ctx.onSocket` handler (plan 109 §4.6).
+ *   Not the hub: no `ServerMessage` envelope, no broadcast, no observers.
+ */
+type WsConnectionData = { nodeId?: string; userId?: string | null; pluginSocket?: PluginSocketData; pluginSocketQuery?: Record<string, string> } | null
+
 export const CORE_VERSION = pkg.version
 
 export interface Daemon {
@@ -209,6 +233,14 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let retention: RetentionGc | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
+  /**
+   * The plugin runtime host (plan 109 §4.2, step 109.2) — the thing that loads
+   * a plugin's long-lived `service` into THIS process. Built in `start()`
+   * beside `createPluginRuntime` (which needs a reference to it for
+   * `onLifecycle`), fed after `Bun.serve` is listening, and torn down in
+   * `stop()` before the database closes under it.
+   */
+  let pluginHost: RuntimeHost | null = null
   let adbEndpointManager: AdbEndpointManager | null = null
   /** The one bounded adb CLI helper (plan 85 §3.4, §4.5) — `null` only before `start()` builds it and after `stop()` tears it down; `killAll()` is called from `stop()` below. */
   let hostAdb: HostAdb | null = null
@@ -1394,7 +1426,164 @@ let blobGc: BlobGc | null = null
       // reload/restart, plus the dev slot lifecycle. Built right here: it needs `kvStore`
       // (a plugin's KV namespace, §3.10) and `scriptRegistry` (built earlier, alongside
       // `executors`), and nothing else — well before the workspace/agent stores further down.
-      const pluginRuntime = createPluginRuntime({ db, dataDir: cfg.dataDir, registry: scriptRegistry, kv: kvStore, devSlots: pluginDevSlots })
+      // Plan 109 (M74) §4.2, step 109.2 — the runtime HOST, which loads a
+      // plugin's long-lived `service` into this process. Declared before the
+      // registry that notifies it so `onLifecycle` can be wired at
+      // construction; assigned below, once the host itself is built (it needs
+      // the registry). Nothing dereferences it until `start()` reaches the
+      // listen call, and `?.` keeps a lifecycle event arriving before that
+      // harmless.
+      const pluginRuntime = createPluginRuntime({
+        db,
+        dataDir: cfg.dataDir,
+        registry: scriptRegistry,
+        kv: kvStore,
+        devSlots: pluginDevSlots,
+        onLifecycle: (event) => pluginHost?.handleLifecycle(event),
+      })
+      // The capability broker (plan 109 §4.3, step 109.3) — declared here and
+      // built further down, once `capabilityRegistry` and `capContextDeps`
+      // exist (both of which need `workspaceStore`, which needs
+      // `pluginRuntime` above: the cycle is real, and this forward-ref is how
+      // every other one in this function is resolved). Assigned long before
+      // `Bun.serve` returns, and `loadActive()` — the only thing that runs
+      // plugin code — is called after that, so the refusal below is
+      // unreachable in a booted farm and is fail-closed rather than optimistic
+      // if boot order ever changes.
+      let farmBroker: FarmBroker | null = null
+      // §4.2's Load row — "on activate, and at boot for every already-active
+      // plugin, AFTER the HTTP server is listening, so a bad plugin can never
+      // block boot". Construction here is free (it opens nothing and imports
+      // nothing); `loadActive()` is what runs plugin code, and it is called
+      // after `Bun.serve` returns.
+      // Plan 109 §3.7, step 109.7 — where an inbound webhook's SECRET lives.
+      // Built before the host because `ctx.webhooks` reaches it, and before the
+      // log store because the log redactor needs to know those secrets in order
+      // to keep them out of a log line (they are not in KV, so the KV redactor
+      // cannot see them).
+      const pluginWebhookStore = createPluginWebhookStore({ db, dataDir: cfg.dataDir })
+      // ONE limiter for the process, not one per router: its whole purpose is a
+      // window that survives, and a limiter rebuilt with the router would reset
+      // every count.
+      const pluginWebhookLimiter = createWebhookRateLimiter()
+      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, the
+      // redactor, and the `plugin.log` broadcast. R3's shape (`jobs/log-buffer.ts`
+      // is the precedent), one ring per plugin with every line optionally
+      // tagged, so "logs for one thing this plugin manages" is a filter rather
+      // than a second stream.
+      const pluginLogs = createPluginLogStore({
+        dataDir: cfg.dataDir,
+        // The plugin's own KV namespace, scanned for secrets to redact — the
+        // SAME `buildSecretRedactor` the job logger reaches through
+        // `kv/runner-port.ts`, so a script's log line and a service's log line
+        // are redacted by one function.
+        store: kvStore,
+        // …plus the secrets the FARM generated for this plugin's webhooks,
+        // which live in `plugin_webhooks` and are therefore invisible to the KV
+        // redactor. Without this the one secret the farm minted itself would be
+        // the one secret a plugin could print.
+        extraSecrets: (pluginId) =>
+          pluginWebhookStore.list(pluginId).flatMap((info) => {
+            try {
+              return [{ key: `webhook:${info.id}`, plaintext: pluginWebhookStore.reveal(pluginId, info.id) }]
+            } catch {
+              // A row whose ciphertext will not decrypt (a replaced key file).
+              // Nothing to redact, and a log line is not the place to fail.
+              return []
+            }
+          }),
+        broadcast: (plugin, line) => hub.broadcast({ type: 'plugin.log', payload: { plugin, ...line } }),
+        log: log.child('plugin-logs'),
+      })
+      pluginHost = createRuntimeHost({
+        plugins: pluginRuntime,
+        dataDir: cfg.dataDir,
+        store: kvStore,
+        resolveStableId: (deviceId) =>
+          db.select({ stableId: devices.stableId }).from(devices).where(eq(devices.id, deviceId)).get()?.stableId ?? null,
+        // Every `ctx.log.*` from a plugin's service lands here (step 109.8)…
+        emitLog: (pluginId, level, msg, fields) => pluginLogs.append(pluginId, level, msg, fields),
+        // …and `ctx.logs.page()` reads it back, scoped to the asking plugin by
+        // the host rather than by an argument the plugin supplies. This is what
+        // lets a plugin's own screen show its own log through its own
+        // `ctx.onRequest` handler — behind the core's auth and audit — instead
+        // of the farm being the only place a plugin log can be read.
+        readLogs: (pluginId, opts) => pluginLogs.page(pluginId, opts),
+        // `ctx.webhooks` (step 109.7). This wrapper is where the AUDIT happens:
+        // the store itself has no opinion about who is asking, and a plugin
+        // reading or rotating its own secret is exactly the kind of thing that
+        // should be a row rather than an inference. `plugin:<name>` is the same
+        // principal `ctx.farm`'s own rows carry (§4.3, §9 Q14).
+        webhooks: {
+          list: async (pluginId) => pluginWebhookStore.list(pluginId),
+          reveal: async (pluginId, webhookId) => {
+            const secret = pluginWebhookStore.reveal(pluginId, webhookId)
+            // `reveal` MINTS on first call, so a secret can come into existence
+            // here. The log redactor memoises for a few seconds, and the one
+            // secret the farm created itself is the one it has no excuse for
+            // missing in the window right after creating it.
+            pluginLogs.invalidateRedactor(pluginId)
+            audit.record({
+              userId: `plugin:${pluginId}`,
+              action: 'plugin.webhook',
+              target: `${pluginId}/${webhookId}`,
+              meta: { plugin: pluginId, webhook: webhookId, verb: 'reveal' },
+            })
+            return secret
+          },
+          rotate: async (pluginId, webhookId, opts) => {
+            const result = pluginWebhookStore.rotate(pluginId, webhookId, opts)
+            pluginLogs.invalidateRedactor(pluginId)
+            audit.record({
+              userId: `plugin:${pluginId}`,
+              action: 'plugin.webhook',
+              target: `${pluginId}/${webhookId}`,
+              // The window is recorded because it is the operationally
+              // important half: a rotation with no overlap and one with a
+              // day's overlap are different events.
+              meta: { plugin: pluginId, webhook: webhookId, verb: 'rotate', previousValidUntil: result.previousValidUntil },
+            })
+            return result
+          },
+        },
+        // `ctx.farm` for a plugin's SERVICE — the same broker the job child's
+        // `ctx.farm` reaches through `farmRunnerPort` below, so a plugin helper
+        // called from either end is checked against one manifest and audited
+        // under one principal (criterion 2, criterion 10).
+        farm: (pluginId, capability, input) =>
+          farmBroker
+            ? farmBroker.call({ pluginId, capability, input, via: 'service' })
+            : Promise.reject(new EnkakuError('E_FARM_UNAVAILABLE', 'the capability broker is not built yet — the core is still booting')),
+        log: log.child('plugin-host'),
+      })
+      // The farm-event tap (plan 109 §3.5, step 109.5). `hub.broadcast` is the
+      // core's ONE broadcast point, so one observer is the whole subscription
+      // surface — no per-call-site wiring, and nothing to forget when a new
+      // message type is added.
+      //
+      // `addObserver`, never a `broadcast` wrapper: an observer runs AFTER
+      // every client has been written to and its return value is discarded, so
+      // a plugin cannot veto, modify or delay what the farm broadcast
+      // (criterion 12). The host detaches its own dispatch on top of that.
+      hub.addObserver((msg) => pluginHost?.observeEvent(msg))
+      /**
+       * `ctx.onSocket` (plan 109 §4.6, step 109.6) — a plugin's OWN WebSocket,
+       * at `/api/plugins/:name/socket/:id`.
+       *
+       * **Not the hub, and not an observer.** `hub` carries the farm's typed
+       * `ServerMessage` broadcast to every client; `hub.addObserver` above is
+       * the read-only tap a plugin hears it through. This is a separate,
+       * private connection between one browser and one plugin handler, with no
+       * envelope and no broadcast — see `plugins/service-socket.ts`. The two
+       * are wired one line apart precisely because conflating them is the easy
+       * mistake, and the consequence of conflating them (a plugin able to write
+       * into the farm's broadcast) is what criterion 12 forbids.
+       */
+      const pluginSocketRouter = createPluginSocketRouter({
+        plugins: pluginRuntime,
+        host: pluginHost,
+        log: log.child('plugin-socket'),
+      })
       const kvRunnerPort = createKvRunnerPort({ db, store: kvStore })
       // `ctx.jobs` (plan 80 §4.2, extended by plan 81 §4.2 with `trigger`) —
       // needs only `db` and `jobStore`, both already constructed above;
@@ -1956,6 +2145,28 @@ let blobGc: BlobGc | null = null
         assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
+
+      // Plan 109 §4.3, step 109.3 — the capability broker, resolving the
+      // forward-ref declared beside `createRuntimeHost` above. Both halves of a
+      // plugin reach it: the service (through `RuntimeHostDeps.farm`) and a
+      // member script (through `farmRunnerPort`, one of `createJobRunner`'s
+      // ports, far below). It checks the plugin's MANIFEST first and only then
+      // hands the call to `invoke()`, which re-checks the real ACL under the
+      // `plugin:<name>` principal and writes the one audit row.
+      farmBroker = createFarmBroker({
+        registry: capabilityRegistry,
+        contextDeps: capContextDeps,
+        plugins: pluginRuntime,
+        audit,
+        // The same role-resolution expression the WS router and the agent
+        // runner build for their own `roleOf` deps — resolved LIVE per call,
+        // against the plugin's PUBLISHER (`plugins.created_by`), so demoting
+        // them narrows their plugin immediately. Unknown publisher ⇒
+        // `'operator'`, the narrower answer, never the wider one.
+        roleOf: authMode === 'local' ? () => 'admin' : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
+        log: log.child('plugin-broker'),
+      })
+      const farmRunnerPort = createFarmRunnerPort(farmBroker)
 
       // The agent loop (plan 66 §4.3, §4.4) — threads/runs/messages, approvals, and the
       // orchestrator that runs them. Built once, here, right after the pieces it depends on
@@ -2532,6 +2743,18 @@ let blobGc: BlobGc | null = null
               ),
             getDeviceOwner,
           },
+          // Plan 109 §4.6, step 109.6 — `ctx.onRequest` under `/:name/http/*`,
+          // `ctx.onQuery` under `/:name/query/:queryId`, and the Restart the
+          // failed-service error state offers. The SAME host `hub.addObserver`
+          // above taps and `loadActive()` below loads, so a handler and an
+          // event handler in one plugin are the same instance of its module.
+          // Plan 109 §3.7, step 109.7 — `POST /:name/webhook/:id`, the one
+          // route in that router that runs with no session (exempted in
+          // `auth/middleware.ts` against the protocol's own matcher). The
+          // limiter is the process-wide one built beside the host, not a fresh
+          // one per router: a window that resets when the router is rebuilt
+          // bounds nothing.
+          ...(pluginHost ? { service: { host: pluginHost, webhooks: { store: pluginWebhookStore, limiter: pluginWebhookLimiter } } } : {}),
         }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
         // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
@@ -2593,6 +2816,57 @@ let blobGc: BlobGc | null = null
                 { status: 410 },
               )
             }
+            /**
+             * A plugin's own WebSocket (plan 109 §4.6, step 109.6).
+             *
+             * Matched BEFORE `/ws` and before Hono, because a WS upgrade cannot
+             * happen inside a Hono handler — `srv.upgrade` needs the raw
+             * `Request` and the server. The path shape comes from
+             * `@enkaku/protocol`'s `parsePluginSocketPath`, never a literal
+             * here, so the core and any client agree by importing the same
+             * function.
+             *
+             * Authenticated exactly as `/ws` is, then AUTHORISED before the
+             * upgrade: a caller who may not reach the handler gets a coded
+             * refusal on the handshake, never an open socket that closes a
+             * moment later — a browser cannot tell the second from a network
+             * blip and would retry it forever.
+             *
+             * The status of a refusal comes from `api/plugins.ts`'s own map, so
+             * the handshake and a REST call answer the same code the same way.
+             */
+            const pluginSocket = parsePluginSocketPath(url.pathname)
+            if (pluginSocket) {
+              let caller: { id: string; role: 'admin' | 'operator' } | null = null
+              if (authMode === 'server') {
+                const ticket = url.searchParams.get('ticket')
+                const cookie = req.headers.get('cookie')?.match(/enkaku_session=([^;]+)/)?.[1]
+                const user = ticket ? auth.consumeWsTicket(ticket) : cookie ? auth.validateSession(cookie) : null
+                if (!user) return new Response('unauthorized', { status: 401 })
+                caller = { id: user.id, role: user.role }
+              } else {
+                const admin = auth.ensureLocalAdmin()
+                caller = { id: admin.id, role: admin.role }
+              }
+              try {
+                const data = pluginSocketRouter.authorize({ plugin: pluginSocket.plugin, socketId: pluginSocket.socketId, caller })
+                const query: Record<string, string> = {}
+                for (const [key, value] of url.searchParams) {
+                  // The ticket is a single-use CREDENTIAL and has already been
+                  // consumed. It never reaches plugin code, for the same reason
+                  // the session cookie does not (`PLUGIN_REQUEST_HEADER_ALLOWLIST`).
+                  if (key === 'ticket') continue
+                  query[key] = value
+                }
+                if (srv.upgrade(req, { data: { pluginSocket: data, pluginSocketQuery: query } })) return undefined
+                return new Response('upgrade failed', { status: 400 })
+              } catch (err) {
+                if (err instanceof EnkakuError) {
+                  return Response.json(err.toJSON(), { status: pluginRouteErrorStatus(err.code) })
+                }
+                throw err
+              }
+            }
             if (url.pathname === '/ws') {
               // A WS handshake does not always carry cookies → support single-use tickets.
               // The resolved user rides along on `ws.data` (plan 18 §4.2, §18.4):
@@ -2624,26 +2898,38 @@ let blobGc: BlobGc | null = null
             idleTimeout: 120,
             sendPings: true,
             open: (ws) => {
-              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-              if (nodeId) {
-                tunnelRegistry.attach(nodeId, ws)
+              const data = ws.data as WsConnectionData
+              if (data?.nodeId) {
+                tunnelRegistry.attach(data.nodeId, ws)
+                return
+              }
+              if (data?.pluginSocket) {
+                pluginSocketRouter.open(ws, data.pluginSocket, data.pluginSocketQuery ?? {})
                 return
               }
               hub.handlers.open?.(ws)
             },
             close: (ws, code, reason) => {
-              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-              if (nodeId) {
+              const data = ws.data as WsConnectionData
+              if (data?.nodeId) {
                 tunnelRegistry.detach(ws)
+                return
+              }
+              if (data?.pluginSocket) {
+                pluginSocketRouter.close(ws, data.pluginSocket, code, reason)
                 return
               }
               hub.handlers.close?.(ws, code, reason)
             },
             message: (ws, message) => {
-              const nodeId = (ws.data as { nodeId?: string } | null)?.nodeId
-              if (nodeId) {
-                if (typeof message === 'string') tunnelRouter.handleNodeMessage(ws, nodeId, message)
-                else tunnelRouter.handleNodeFrame(nodeId, new Uint8Array(message))
+              const data = ws.data as WsConnectionData
+              if (data?.nodeId) {
+                if (typeof message === 'string') tunnelRouter.handleNodeMessage(ws, data.nodeId, message)
+                else tunnelRouter.handleNodeFrame(data.nodeId, new Uint8Array(message))
+                return
+              }
+              if (data?.pluginSocket) {
+                pluginSocketRouter.message(ws, data.pluginSocket, message)
                 return
               }
               hub.handlers.message?.(ws, message)
@@ -2686,6 +2972,17 @@ let blobGc: BlobGc | null = null
       // it spawns a verify child per pack, and nothing about serving requests
       // depends on the outcome. Running from source embeds nothing, so this is
       // a no-op there.
+      // Plan 109 (M74) §4.2's Load row, step 109.2 — **after `listen`, and
+      // deliberately not awaited.** A plugin's `service` is arbitrary code
+      // running in this process; if it were loaded before `Bun.serve` returned,
+      // a plugin whose `setup` hangs would mean the core never answers
+      // `/api/health` at all, and the operator would have no surface left to
+      // disable it from. Loading here inverts that: the farm is already
+      // serving, and a broken plugin is a `failed` row on a page that works
+      // (H2, and the honest half of §3.2 — a plugin that hangs the event loop
+      // SYNCHRONOUSLY still takes everything down, and no ordering fixes that).
+      void pluginHost?.loadActive().catch((err) => log.warn(`plugin services boot load failed, tolerated: ${String(err)}`))
+
       const embeddedPacks = embeddedAssets()?.packs ?? []
       if (embeddedPacks.length > 0) {
         void seedEmbeddedPacks({
@@ -3242,6 +3539,11 @@ let blobGc: BlobGc | null = null
           kv: kvRunnerPort,
           // `ctx.jobs` (plan 80 §4.2) — a running script's own view of the queue.
           jobs: jobsRunnerPort,
+          // `ctx.farm` (plan 109 §4.3, step 109.3) — the SAME broker a plugin's
+          // long-lived service reaches through `RuntimeHostDeps.farm` above.
+          // One manifest, one principal, one audit trail, whichever half of the
+          // plugin is running.
+          farm: farmRunnerPort,
           // Plan 97 §3.7, §4.3, §5 step 97.7 — forwarded VERBATIM to the
           // host, which owns the size check and the one-warn-per-job rule
           // (`ExecutorHost.progress`'s own doc comment); this runner does
@@ -3581,6 +3883,15 @@ let blobGc: BlobGc | null = null
       retention = null
       blobGc?.stop()
       blobGc = null
+      // Plan 109 §4.2's Unload row, step 109.2 — every `ctx.onStop` disposer
+      // runs (≤5 s each plugin) BEFORE the database and the KV store below are
+      // torn down, because a disposer may well write its last state through
+      // `ctx.storage`. `dispose()` then removes the process-level
+      // `unhandledRejection` handler the host installs, so a core that has
+      // stopped leaves the runtime's default behaviour exactly as it found it.
+      await pluginHost?.unloadAll('the core is shutting down')
+      pluginHost?.dispose()
+      pluginHost = null
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`

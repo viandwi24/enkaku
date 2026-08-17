@@ -5,10 +5,7 @@ import { toast } from 'sonner'
 import { z } from 'zod'
 import { DeviceResponseSchema } from '@enkaku/protocol'
 import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { api, describeApiError } from '@/lib/actions'
+import { Button, Input, Label, api, describeApiError } from '@enkaku/ui'
 
 /**
  * The device's short operator-facing number (plan 89 §3.1-§3.3, step 89.3).

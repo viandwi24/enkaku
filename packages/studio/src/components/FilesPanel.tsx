@@ -3,13 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Upload } from 'lucide-react'
 import { InstallResponseSchema, PullResponseSchema, PushResponseSchema, type InstallResult, type MediaScanResult } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Progress } from '@/components/ui/progress'
-import { api, useAction } from '@/lib/actions'
+import { Button, Input, Progress, cn, api, useAction, fileSize } from '@enkaku/ui'
 import { coreBase, ws } from '@/lib/ws'
-import { fileSize } from '@/lib/format'
-import { cn } from '@/lib/utils'
 
 /**
  * The device page's Files tab (plan 39 §4.7): install an APK in one flow

@@ -10,13 +10,8 @@ import {
   type MonitorEndReason,
   type MonitorKind,
 } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api, Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn, EmptyState, ErrorState, LoadingRows } from '@enkaku/ui'
 import { newId, ws } from '@/lib/ws'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { cn } from '@/lib/utils'
 
 /** A local cap on the visible pane — the server's own ring buffer is 2000 lines (plan 24 §3.5); this just bounds DOM growth for a tab left open a long time. */
 const MAX_VISIBLE_LINES = 5000

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 
 /**
  * `LiveView`'s Mirror routing (plan 91 §3.8, §3.9, §5 step 91.9) — the one

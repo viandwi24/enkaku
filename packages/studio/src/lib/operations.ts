@@ -13,7 +13,7 @@ import {
   type TransferKind,
   type TransferRecord,
 } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 import { fetchDevices } from './api'
 import { ws } from './ws'
 

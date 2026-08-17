@@ -52,7 +52,7 @@ describe('writePluginPackage / readPluginPackage — round trip', () => {
     expect(back.ui).toEqual([])
   })
 
-  test('`ui/` assets round-trip with paths RELATIVE to `ui/` — the same thing a view\'s `frame.entry` names', () => {
+  test('`ui/` assets round-trip with paths RELATIVE to `ui/` — the same thing a view\'s `react.entry` names', () => {
     const archive = writePluginPackage({
       manifest: { ...MANIFEST, source: 'export default {}' },
       scripts: BUNDLE,
@@ -236,5 +236,54 @@ describe('isUiAssetPath — the same grammar, reusable off the archive', () => {
     const ui = [{ path: 'index.html', data: enc.encode('x') }, { path: 'assets/logo.png', data: enc.encode('y') }]
     const pkg = readPluginPackage(writePluginPackage({ manifest: MANIFEST, scripts: BUNDLE, ui }))
     for (const asset of pkg.ui) expect(isUiAssetPath(asset.path)).toBe(true)
+  })
+})
+
+/**
+ * Plan 111 §5 step 111.6 — the CLI writes this format too, and cannot import
+ * this module to do it: `enkaku-core` depends on `@enkaku/sdk`, so the SDK
+ * importing core back would close a cycle. `packages/sdk/src/cli/enkaku-package.ts`
+ * therefore carries its own USTAR writer, and THIS is what keeps the two
+ * honest — the farm's real reader, fed the CLI's real output. A drift in
+ * either direction (a header field, the gzip wrapper, the entry names, the
+ * budget) fails here rather than in an author's terminal.
+ */
+describe('the SDK writes packages this reader accepts (plan 111 §5 step 111.6)', () => {
+  test('a CLI-written package with ui/ round-trips through readPluginPackage', async () => {
+    const { writeEnkakuPackage } = await import('@enkaku/sdk/package-format')
+    const bytes = writeEnkakuPackage({
+      name: 'tiktok',
+      version: '2.3.4',
+      source: 'export default 1',
+      scripts: 'export const x = 1',
+      ui: [
+        { path: 'index.js', data: enc.encode('import "react"') },
+        { path: 'assets/logo.png', data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+      ],
+    })
+
+    const pkg = readPluginPackage(bytes)
+    expect(pkg.manifest).toEqual({ name: 'tiktok', version: '2.3.4', source: 'export default 1' })
+    expect(pkg.scripts).toBe('export const x = 1')
+    expect(pkg.ui.map((a) => a.path).sort()).toEqual(['assets/logo.png', 'index.js'])
+    expect(new TextDecoder().decode(pkg.ui.find((a) => a.path === 'index.js')?.data)).toBe('import "react"')
+  })
+
+  test('a CLI-written package with NO ui/ round-trips too', async () => {
+    const { writeEnkakuPackage } = await import('@enkaku/sdk/package-format')
+    const pkg = readPluginPackage(writeEnkakuPackage({ name: 'plain', version: '1.0.0', scripts: 'export {}' }))
+    expect(pkg.manifest).toEqual({ name: 'plain', version: '1.0.0' })
+    expect(pkg.ui).toEqual([])
+  })
+
+  test('the CLI refuses a ui/ path this reader would refuse, in the author’s own terminal', async () => {
+    const { writeEnkakuPackage } = await import('@enkaku/sdk/package-format')
+    expect(() => writeEnkakuPackage({ name: 'p', version: '1.0.0', scripts: 'export {}', ui: [{ path: '../escape.js', data: enc.encode('x') }] })).toThrow(/unusable path segment/)
+  })
+
+  test('the CLI’s archive is byte-reproducible for identical input', async () => {
+    const { writeEnkakuPackage } = await import('@enkaku/sdk/package-format')
+    const input = { name: 'p', version: '1.0.0', scripts: 'export {}', ui: [{ path: 'index.js', data: enc.encode('x') }] }
+    expect(writeEnkakuPackage(input)).toEqual(writeEnkakuPackage(input))
   })
 })

@@ -4,13 +4,20 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { CommandCounts, CommandMember, CommandOutput, CommandRunStatus } from '@enkaku/protocol'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Progress } from '@/components/ui/progress'
-import { duration } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import {
+  Badge,
+  Button,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  Progress,
+  cn,
+  duration,
+} from '@enkaku/ui'
 import { groupMembers, type OutcomeGroup } from './run-grouping'
 
 /**

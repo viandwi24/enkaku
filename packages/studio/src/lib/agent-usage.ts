@@ -1,5 +1,5 @@
 import { ListAgentsResponseSchema, ListThreadsResponseSchema, RunResponseSchema, ThreadMessagesResponseSchema, type AgentThread, type AgentUsage } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 
 /**
  * Usage aggregation, composed client-side from endpoints Plans 65/66/68

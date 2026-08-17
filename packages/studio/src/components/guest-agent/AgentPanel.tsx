@@ -3,12 +3,8 @@
 import { useEffect, useState } from 'react'
 import { GuestAgentStatusResponseSchema } from '@enkaku/protocol'
 import { z } from 'zod'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog, Button, ErrorState, LoadingRows, api, useAction, relativeTime } from '@enkaku/ui'
 import { AgentStateBadge } from '@/components/guest-agent/AgentStateBadge'
-import { Button } from '@/components/ui/button'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { api, useAction } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
 import type { GuestAgentState } from '@/lib/api'
 
 /**

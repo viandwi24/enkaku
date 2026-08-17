@@ -5,8 +5,7 @@ import { ChevronLeft, Circle, MoonStar, Power, Square, Sun, Volume2, VolumeOff, 
 import { KEYCODES } from '@enkaku/protocol'
 import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { RotationQuickAction } from '@/components/device/RotationQuickAction'
-import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Button, Tooltip, TooltipContent, TooltipTrigger } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
 
 const AKEYCODE = KEYCODES

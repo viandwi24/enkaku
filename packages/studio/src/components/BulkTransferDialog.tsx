@@ -10,12 +10,23 @@ import { ReattachBanner } from '@/components/operations/ReattachBanner'
 import { TransferProgressBar } from '@/components/operations/TransferProgressBar'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useAction } from '@/lib/actions'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  useAction,
+} from '@enkaku/ui'
 import { findReattach, resolveTargetDeviceIds, useOperations, type OperationAction } from '@/lib/operations'
 import { coreBase } from '@/lib/ws'
 

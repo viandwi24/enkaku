@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { parsePluginWebhookPath } from '@enkaku/protocol'
 import type { AuthMode } from '../config'
 import { can, type Permission } from './acl'
 import type { AuthService, AuthUser } from './service'
@@ -17,6 +18,28 @@ const PUBLIC_PATHS = new Set([
   '/api/nodes/enroll',
 ])
 
+/**
+ * Whether a path is reachable with no session.
+ *
+ * A `Set` was enough until plan 109 step 109.7: a plugin's inbound webhook
+ * lives at `/api/plugins/<plugin>/webhook/<id>`, which is two variables and
+ * cannot be a literal. It is public for exactly the reason `/api/nodes/enroll`
+ * above is — **the credential is in the request rather than in a session**: an
+ * inbound webhook's caller is a third-party system with no farm account, and
+ * its per-webhook HMAC signature over the body is the authorisation, verified
+ * in constant time before any plugin code runs (`plugins/webhook-routes.ts`).
+ * A route that demanded a session here would make the feature impossible, and
+ * one that accepted a session INSTEAD of a signature would be a hole.
+ *
+ * The matcher comes from `@enkaku/protocol`, never a regex written twice: this
+ * function and the router must agree about which paths those are, and the way
+ * they come to disagree is two people typing the same pattern.
+ */
+export function isPublicPath(path: string): boolean {
+  if (PUBLIC_PATHS.has(path)) return true
+  return parsePluginWebhookPath(path) !== null
+}
+
 export function authMiddleware(deps: {
   auth: AuthService
   mode: AuthMode
@@ -29,7 +52,7 @@ export function authMiddleware(deps: {
     }
 
     const path = new URL(c.req.url).pathname
-    if (PUBLIC_PATHS.has(path)) return next()
+    if (isPublicPath(path)) return next()
 
     const token = getCookie(c, SESSION_COOKIE) ?? c.req.header('authorization')?.replace(/^Bearer /, '')
     const user = token ? deps.auth.validateSession(token) : null

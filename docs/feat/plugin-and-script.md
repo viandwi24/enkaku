@@ -558,6 +558,7 @@ absent).
 | `E_PLUGIN_DUPLICATE_SCRIPT_ID` | parent re-validation | two members share an id |
 | `E_PLUGIN_VERSION_MISMATCH` | parent re-validation | bundle version ≠ staged version |
 | `E_PLUGIN_NAME_CONFLICT` | `runtime.verify()` | another owner already holds `<plugin>/<member>` |
+| `E_PLUGIN_UI_UNSUPPORTED` | `verify-child.ts` (`finalizeReport`) | a tier-C view's `react.apiVersion` ≠ the farm's `PLUGIN_UI_API_VERSION`. Deliberately not `E_PLUGIN_SURFACE_INVALID` — the surface is well formed, this farm just does not ship that `@enkaku/ui` major. Exact equality, not a range: a stable component API is an explicit non-goal (plan 111 §2), so a range would be a promise nothing keeps. |
 | `E_PARAMS_SCHEMA_INVALID` / `E_RESULT_SCHEMA_INVALID` | verify child, `POST /api/scripts`, and the CLI | `checkDeclaredSchema` limits exceeded |
 | `E_RUNTIME_ENVELOPE_INVALID` | verify child, `POST /api/scripts` | the runtime envelope's shape is wrong |
 | `E_BUILD_FAILED` / `E_BUILD_TIMEOUT` | `scripts/build.ts` | disallowed import, unresolvable path, oversize, 30 s |

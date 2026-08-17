@@ -7,14 +7,25 @@ import { ArrowLeft } from 'lucide-react'
 import type { AgentRun } from '@enkaku/protocol'
 import { AgentResponseSchema } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api } from '@/lib/actions'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  ErrorState,
+  LoadingRows,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  api,
+  duration,
+  formatUsd,
+  relativeTime,
+} from '@enkaku/ui'
 import type { Agent } from '@/lib/agents'
 import { fetchRecentRuns } from '@/lib/agent-runs'
-import { duration, formatUsd, relativeTime } from '@/lib/format'
 
 /**
  * Run history for one agent (plan 69 §4.1: `/agents/runs?agent=` — status,

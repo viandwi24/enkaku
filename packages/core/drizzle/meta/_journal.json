@@ -414,6 +414,13 @@
       "when": 1786890977746,
       "tag": "0058_lame_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1786969009516,
+      "tag": "0059_aspiring_starfox",
+      "breakpoints": true
     }
   ]
 }

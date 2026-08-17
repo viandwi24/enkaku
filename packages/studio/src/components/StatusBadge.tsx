@@ -1,7 +1,6 @@
 import type { DeviceReadiness, DeviceStatus, JobStatus } from '@enkaku/protocol'
 import { READINESS_BLOCKED_REASON } from '@/lib/readiness'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, cn } from '@enkaku/ui'
 
 /**
  * The one place a status turns into a colour and a word.

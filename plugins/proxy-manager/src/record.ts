@@ -1,109 +1,139 @@
-import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
+import {
+  DEFAULT_BIND_HOST,
+  DEFAULT_DRAIN_MS,
+  DEFAULT_MAX_CONNECTIONS,
+  LISTEN_PROTOS,
+  PROXY_KEY_PREFIX,
+  PROXY_KINDS,
+  PROXY_SECRET_KEY_PREFIX,
+} from './shared'
 
 /**
- * What one proxy IS, as this plugin stores it — declared once, in Zod, and
- * then used three times over: as the JSON Schema the Add and Edit forms are
- * drawn from (`z.toJSONSchema`, exactly the call the farm makes on a script's
- * `params`), as the field list the table's columns read, and as the shape a
- * test parses a sample against.
+ * What one proxy IS, as this plugin stores it — the single authoritative
+ * declaration of the record shape, in Zod, with its bounds.
  *
- * One declaration rather than three literals is the whole point. A form that
- * writes `{ host }` into a table that reads `{ hostname }` is a screen that
- * looks finished and shows empty cells forever, and the failure is invisible
- * until an operator has already saved a row. Deriving both halves from this
- * object makes that drift a compile-and-test error instead
- * (`index.test.ts` asserts the three sets are identical).
+ * ## What changed when the screen became React (plan 111 step 111.7)
+ *
+ * On tier A this file did three jobs: `z.toJSONSchema(AddFormSchema)` drew the
+ * Add and Edit dialogs, its keys were the table's columns, and a test parsed a
+ * sample against it. The Add/Edit JSON Schemas are **gone** — the screen draws
+ * its own dialog now, and keeping a declared form beside a hand-written one
+ * would be exactly the weaker parallel path 00-overview §4.3 forbids.
+ *
+ * The drift risk they were guarding against did NOT go away, so the guard
+ * moved rather than being dropped. A screen that writes `{ hostname }` into a
+ * reader that looks for `{ host }` shows blank cells forever: the write
+ * succeeds, the schema is valid, and nothing reports a fault. The React half
+ * therefore funnels every write through one function (`writeProxy` in
+ * `src/ui/parts/api.ts`) and every read through its mirror (`readProxy`), and
+ * `index.test.ts` runs a value through both and parses the result **against
+ * this object**. Two halves compiled by two different bundlers are held to one
+ * shape by a test that actually executes both.
+ *
+ * ## What changed in plan 112 step 112.3
+ *
+ * Three things, and the third is the one to know about.
+ *
+ * 1. **The record grew a listen side, an upstream side, and an intent flag.**
+ *    `kind` became `upstream.proto` and keeps `PROXY_KINDS` unchanged as its
+ *    vocabulary, which is what lets every shipped row migrate without
+ *    interpretation (§4.3).
+ * 2. **`ui()` metadata is gone.** Nothing renders it: a tier-C screen draws its
+ *    own dialog, so a declared title/label set beside a hand-written form is a
+ *    second, weaker description of the same field. `.describe()` stays, because
+ *    it documents the field for a person reading this file.
+ * 3. **This module IS now bundled into the pack the core runs.** It used to be
+ *    a declaration and a test anchor only. The service parses what it reads out
+ *    of KV through `ProxyRecordSchema` before it opens a socket on the strength
+ *    of it, so the schema has to be in the bundle. The *logic* — the migration
+ *    and the coded refusals — deliberately is not here: it lives in
+ *    `shared.ts`, which imports nothing, so the browser half runs the same code
+ *    the service does instead of a second copy of it. This file re-exports both
+ *    so an existing reader of `./record` is unaffected.
  */
 
-/**
- * Every key this plugin writes into its own GLOBAL KV namespace starts with
- * this, and the view lists exactly this prefix (plan 108 §4.2's `kv.list`).
- *
- * Global, not device-scoped, on plan 108 §3.1's stated rule: *if forgetting
- * the device should forget the fact, it is device-scoped.* Forgetting a phone
- * must not delete the proxy catalogue — the proxy is a fact about the network,
- * not about any one handset, and the same record is meant to be usable from
- * every device in the farm.
- *
- * The prefix is not decoration: a plugin's namespace is shared by every member
- * (plan 108 §G2), so a later member storing something else of its own has a
- * key space that cannot collide with these rows by accident.
- */
-export const PROXY_KEY_PREFIX = 'proxy:'
+export { PROXY_KEY_PREFIX, PROXY_KINDS, PROXY_SECRET_KEY_PREFIX, PROXY_KEY_HINT, LISTEN_PROTOS } from './shared'
+export type { ProxyKind, ListenProto, ProxyRecord as ProxyRecordShape, ProxySecret, ProxyProblem, ProxyProblemCode } from './shared'
+export {
+  readProxyRecord,
+  writeProxyRecord,
+  validateProxyRecord,
+  isStartableRecord,
+  isStorableRecord,
+  proxyIdFromKey,
+  proxyKeyFor,
+  proxySecretKeyFor,
+  PROXY_PROBLEM_CODES,
+} from './shared'
 
-/**
- * The transports a record can name. Nothing reads this yet — it is stored,
- * shown in the table, and that is all — but it is an enum rather than free
- * text because the day something does read it, an operator who typed
- * "socks 5" would be the one holding the bug.
- */
-export const PROXY_KINDS = ['http', 'https', 'socks5'] as const
+export const ProxyListenSchema = z.object({
+  /** `https` is accepted by the enum and refused by `validateProxyRecord` — see plan 112 §3.4. */
+  proto: z.enum(LISTEN_PROTOS).default('http').describe('What this bridge speaks to whatever dials it. HTTPS is accepted here and refused at validation: terminating TLS needs a certificate the farm cannot issue for a plugin.'),
+  /** Loopback only in v1 (§3.9). Anything else → `E_PROXY_BIND_NOT_LOOPBACK`. */
+  bindHost: z.string().max(64).default(DEFAULT_BIND_HOST).describe('The address the listener binds. Loopback only: an unauthenticated proxy reachable off-host is an open relay billed to your upstream account.'),
+  /**
+   * **Nullable, and that is a state rather than a gap** (§4.3 property 3). A
+   * record migrated from the shipped shape named an upstream port and no local
+   * one. There is no correct guess, so the row says "needs a local port" and
+   * cannot start — a precondition, not an error.
+   */
+  port: z.number().int().min(1).max(65_535).nullable().default(null).describe('The local TCP port this bridge listens on. Null on a record migrated from the older shape, which named no local port.'),
+})
+
+export const ProxyUpstreamSchema = z.object({
+  /** Reuses `PROXY_KINDS` unchanged, so every shipped row migrates without interpretation. */
+  proto: z.enum(PROXY_KINDS).default('socks5').describe('The transport the upstream proxy speaks. HTTPS is accepted here and refused at validation.'),
+  host: z.string().max(200).default('').describe('Hostname or IP address of the upstream proxy, without a scheme and without a port.'),
+  port: z.number().int().min(0).max(65_535).default(0).describe('The upstream proxy’s TCP port. Zero means it was never filled in.'),
+  /** In the clear, deliberately, and questioned in plan 112 §9 Q1. The password is the other key. */
+  username: z.string().max(200).default('').describe('The account this bridge authenticates to the upstream as. Stored in the clear so the catalogue can say which account a proxy uses; the password is stored separately and encrypted.'),
+})
 
 export const ProxyRecordSchema = z.object({
-  label: z
-    .string()
-    .min(1)
-    .max(80)
-    .describe('What you call this proxy. Shown in the table and used to name the row in a confirmation.')
-    .meta(ui({ title: 'Name' })),
-  kind: z
-    .enum(PROXY_KINDS)
-    .default('socks5')
-    .describe('The transport this proxy speaks. Recorded only — nothing in this plugin dials it.')
-    .meta(ui({ title: 'Type', labels: { http: 'HTTP', https: 'HTTPS', socks5: 'SOCKS5' } })),
-  host: z
-    .string()
-    .min(1)
-    .max(200)
-    .describe('Hostname or IP address, without a scheme and without a port.')
-    .meta(ui({ title: 'Host' })),
-  port: z.number().int().min(1).max(65535).default(1080).describe('TCP port, 1–65535.').meta(ui({ title: 'Port' })),
-  notes: z
-    .string()
-    .max(300)
-    .default('')
-    .describe('Anything a person needs to know about this entry — who it belongs to, when it expires, where the credentials live.')
-    .meta(ui({ title: 'Notes' })),
+  label: z.string().max(80).default('').describe('What you call this proxy. Shown in the table and used to name the row in a confirmation.'),
+  // Spelled out rather than `.default({})`: Zod 4's `.default()` takes the
+  // schema's OUTPUT, so an empty object is a type error here even though every
+  // field inside has a default of its own (the same trap plan 109 §9 Q18
+  // records for `z.input` vs the inferred type).
+  listen: ProxyListenSchema.default({ proto: 'http', bindHost: DEFAULT_BIND_HOST, port: null }),
+  upstream: ProxyUpstreamSchema.default({ proto: 'socks5', host: '', port: 0, username: '' }),
+  /**
+   * INTENT, not observation (§3.5). The supervisor starts every enabled record
+   * when the plugin loads. Nothing about a RUNNING proxy — its state, uptime,
+   * connection count or last error — is ever written to storage: a persisted
+   * `running` that survived a crash is a lie the moment it is read.
+   */
+  enabled: z.boolean().default(false).describe('Whether this proxy SHOULD be listening. The farm starts every enabled record when the plugin loads. It is what the operator asked for, never what is observed.'),
+  logDestinations: z.boolean().default(false).describe('Whether a log line may name the host a connection was for. Off by default: a proxy that logs every destination becomes a browsing record of every device that used it.'),
+  maxConnections: z.number().int().min(1).max(10_000).default(DEFAULT_MAX_CONNECTIONS).describe('How many tunnels this one proxy may carry at once. A bridge shares the farm’s event loop, so an unbounded one can starve the rest of it.'),
+  drainMs: z.number().int().min(0).max(120_000).default(DEFAULT_DRAIN_MS).describe('How long a stop lets live tunnels finish before destroying them. The port is released immediately either way.'),
+  notes: z.string().max(300).default('').describe('Anything a person needs to know about this entry — who it belongs to, when it expires.'),
 })
 
 export type ProxyRecord = z.infer<typeof ProxyRecordSchema>
 
 /**
- * The Add form: the storage key first, then the record's own fields.
+ * The other key: `proxy-secret:<id>`, written with `secret: true`, read only
+ * in-process by the service (plan 112 §3.6, §3.10).
  *
- * The key is typed by the operator because the binding language has no string
- * concatenation and never will (plan 108 §3.4 — closed and non-Turing), so
- * there is no way for the surface to build `proxy:` + a name. Its default is
- * the prefix itself, so the ordinary path is "append a name and save".
- *
- * The prefix rule is stated in words rather than enforced, and that is not
- * laziness — it is the only truthful option here. `pattern` is refused at
- * publish outright (`checkDeclaredSchema`: no author-supplied regular
- * expression is ever compiled, in the browser or the core), and the form
- * renderer plans a field from its `type`/`enum`/`x-enkaku`, not from
- * `minLength` — so a length bound would be a constraint the operator never
- * sees fire. The description therefore says what actually happens to a key
- * without the prefix, which is the honest version of a rule nothing can
- * currently enforce.
+ * **An object with one field, and it must stay an object.** The store hints a
+ * secret row from the JSON when the value is not a string, so `{"password":…}`
+ * leaks the JSON's own punctuation and two or three characters of the
+ * password; a bare string would leak its first seven and last four. That is a
+ * mitigation of the gap step 112.2 closes, not a substitute for it — see
+ * `secretHintLeak` in `shared.ts` and the test that fails when 112.2 lands.
  */
-export const AddFormSchema = z.object({
-  key: z
-    .string()
-    .min(1)
-    .max(200)
-    .default(PROXY_KEY_PREFIX)
-    .describe('Where this record is stored. Keep the "proxy:" prefix — a key without it is still saved, but will not appear in this list. Saving over an existing key replaces that row.')
-    .meta(ui({ title: 'Storage key' })),
-  ...ProxyRecordSchema.shape,
+export const ProxySecretSchema = z.object({
+  password: z.string().max(400).describe('The upstream proxy’s password. Never logged, never returned to a browser, never interpolated into an error message.'),
 })
 
+export type ProxySecretRecord = z.infer<typeof ProxySecretSchema>
+
 /**
- * The Edit form: the record's fields and NOT the key.
- *
- * Editing writes back to the row's own `$entry.key`, so a rename is
- * structurally impossible here rather than merely discouraged — a key field
- * on this form would silently create a second row and leave the first one
- * behind, because `kv.set` upserts and cannot move an entry.
+ * `proxy-secret:` must never be picked up by a list of `proxy:` — a property
+ * of the two strings rather than of a filter someone has to remember to write.
+ * Asserted in `index.test.ts`; stated here so a future rename of either
+ * constant has to walk past it.
  */
-export const EditFormSchema = ProxyRecordSchema
+export const SECRET_PREFIX_IS_DISJOINT = !PROXY_SECRET_KEY_PREFIX.startsWith(PROXY_KEY_PREFIX)

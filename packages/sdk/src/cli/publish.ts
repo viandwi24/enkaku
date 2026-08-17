@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { z } from 'zod'
 import { checkDeclaredSchema } from '@enkaku/protocol'
 import { isPlugin } from '../plugin'
+import { buildUiAssets } from './build-ui'
+import { PACKAGE_CONTENT_TYPE, writeEnkakuPackage, type UiAsset } from './enkaku-package'
 
 export interface PublishOptions {
   entry: string
@@ -21,6 +23,12 @@ export interface BuiltEntry {
   bundle: string
   source: string
   default: unknown
+  /**
+   * The project's built `ui/` payload (plan 111 §4.4), empty for a project
+   * with no `ui/` directory — which is what decides whether this publish goes
+   * out as a `.enkaku` archive or as the original JSON body.
+   */
+  ui: UiAsset[]
 }
 
 /** Bundles EVERY dependency (`@enkaku/sdk` and `zod` included), nothing external — the farm only ever accepts a finished bundle, so the runner installs nothing. Exported for `dev.ts`, which does the identical local build on every change. */
@@ -61,7 +69,10 @@ export async function buildEntry(entry: string, tmp: string): Promise<BuiltEntry
   const mod = (await import(outfile)) as { default?: unknown }
   const bundle = await Bun.file(outfile).text()
   const source = await Bun.file(entry).text()
-  return { bundle, source, default: mod.default }
+  // The React half is built by the SAME function `dev` uses, in the same call,
+  // so a publish and a dev push can never ship different assets for one commit.
+  const ui = await buildUiAssets(entry, tmp)
+  return { bundle, source, default: mod.default, ui }
 }
 
 function authHeaders(token: string | undefined): Record<string, string> {
@@ -273,17 +284,31 @@ async function publishPlugin(built: BuiltEntry, opts: PublishOptions): Promise<v
   // Before any network call — a refusal here sends nothing at all.
   checkMemberSchemas(def.scripts)
 
-  const res = await fetch(`${opts.farmUrl.replace(/\/$/, '')}/api/plugins`, {
-    method: 'POST',
-    headers: authHeaders(opts.token),
-    body: JSON.stringify({
-      name: def.id,
-      version: def.version,
-      bundle: built.bundle,
-      source: built.source,
-      ...(opts.stageOnly ? { stageOnly: true } : {}),
-    }),
-  })
+  // TWO TRANSPORTS, ONE ROUTE (plan 108 §3.8, plan 111 §5 step 111.6). A
+  // project with a `ui/` directory ships as a raw `.enkaku` archive, because
+  // that is the only shape `POST /api/plugins` accepts assets in; a project
+  // without one keeps the original JSON body, byte for byte. The branch is on
+  // "did this build produce any assets", not on a flag, so an author never has
+  // to know which transport their project uses.
+  const base = opts.farmUrl.replace(/\/$/, '')
+  const res =
+    built.ui.length > 0
+      ? await fetch(`${base}/api/plugins${opts.stageOnly ? '?stageOnly=1' : ''}`, {
+          method: 'POST',
+          headers: { 'content-type': PACKAGE_CONTENT_TYPE, ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) },
+          body: writeEnkakuPackage({ name: def.id, version: def.version, source: built.source, scripts: built.bundle, ui: built.ui }),
+        })
+      : await fetch(`${base}/api/plugins`, {
+          method: 'POST',
+          headers: authHeaders(opts.token),
+          body: JSON.stringify({
+            name: def.id,
+            version: def.version,
+            bundle: built.bundle,
+            source: built.source,
+            ...(opts.stageOnly ? { stageOnly: true } : {}),
+          }),
+        })
   const body = (await res.json()) as {
     plugin?: { id: string; status: string }
     verify?: { ok: boolean; scripts: { id: string }[]; error?: string; errorCode?: string }
@@ -299,6 +324,10 @@ async function publishPlugin(built: BuiltEntry, opts: PublishOptions): Promise<v
   console.log(`✓ staged plugin ${def.id}@${def.version} (${def.scripts.length} script${def.scripts.length === 1 ? '' : 's'})`)
   console.log(`  id     : ${body.plugin?.id}`)
   console.log(`  bundle : ${(built.bundle.length / 1024).toFixed(1)} KB`)
+  if (built.ui.length > 0) {
+    const uiBytes = built.ui.reduce((n, a) => n + a.data.length, 0)
+    console.log(`  ui     : ${built.ui.length} file${built.ui.length === 1 ? '' : 's'}, ${(uiBytes / 1024).toFixed(1)} KB (sent as a .enkaku package)`)
+  }
   console.log(`  farm   : ${opts.farmUrl}`)
   if (opts.stageOnly) {
     console.log('  status : staged (--stage-only — verify and activate separately)')

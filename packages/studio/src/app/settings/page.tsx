@@ -3,7 +3,36 @@
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ChevronDown, ChevronRight, Plus, UserPlus } from 'lucide-react'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  ErrorState,
+  Input,
+  Label,
+  LoadingRows,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  api,
+  formatTokens,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 import { KvPanel } from '@/components/kv/KvPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
@@ -13,14 +42,6 @@ import { FarmNetworksEditor } from '@/components/settings/FarmNetworksEditor'
 import { FarmVideoFields } from '@/components/video/FarmVideoFields'
 import { FARM_SECTION_DEFS } from '@/components/settings/farmSections'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { z } from 'zod'
 import {
   AdbStatsResponseSchema,
@@ -39,10 +60,8 @@ import {
   WebhooksResponseSchema,
   type WebhookEndpoint,
 } from '@enkaku/protocol'
-import { api, useAction } from '@/lib/actions'
 import type { Connector, ConnectorKind } from '@/lib/agents'
 import { fetchScheduledSpendLast24h } from '@/lib/agent-usage'
-import { formatTokens, relativeTime } from '@/lib/format'
 
 interface User {
   id: string

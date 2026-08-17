@@ -31,33 +31,47 @@ import { BulkForgetDialog } from '@/components/BulkForgetDialog'
 import { BulkTransferDialog } from '@/components/BulkTransferDialog'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
+  Button,
+  ConfirmDialog,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+  EmptyState,
+  ErrorState,
+  Input,
+  LoadingRows,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  api,
+  cn,
+  describeApiError,
+  useAction,
+} from '@enkaku/ui'
 import { Wall } from '@/components/wall/Wall'
 import { DevicePopup } from '@/components/device-popup/DevicePopup'
 import { SelectionCursorBadge } from '@/components/wall/SelectionCursorBadge'
 import { DeviceContextMenu } from '@/components/wall/DeviceContextMenu'
 import { useDragSelect } from '@/components/wall/useDragSelect'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useBulkSelection } from '@/hooks/use-bulk-selection'
-import { api, describeApiError, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
 import { isAdmin, useAuth } from '@/lib/auth'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 type Filter = 'all' | 'ready' | 'inUse' | 'attention'
 /** 'all' = no filter, 'none' = the explicit "Unclustered" option (plan 22.0 §4.5), else a cluster id. */

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, watch } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { isPlugin } from '../plugin'
 import { buildEntry, NOT_A_PLUGIN_MESSAGE } from './publish'
+import { PACKAGE_CONTENT_TYPE, writeEnkakuPackage } from './enkaku-package'
 
 export interface DevOptions {
   entry: string
@@ -15,14 +16,17 @@ export interface DevOptions {
 }
 
 /**
- * `enkaku dev <entry.ts>` (plan 82 §3.5 front-end B, §5 step 12): bundles
- * locally with the SAME code `publish` uses, pushes to
+ * `enkaku dev <entry.ts>` (plan 82 §3.5 front-end B, §5 step 12; plan 111 §4.4,
+ * step 111.6): builds locally with the SAME code `publish` uses — BOTH halves,
+ * the script bundle and the React entries under `src/ui/` — pushes to
  * `POST /api/plugins/dev`, and re-pushes on every source change — a fast
  * feedback loop for a plugin author, never a trust boundary (the farm
  * verifies what it was given exactly as it does for a publish, §3.5's own
  * words). The session ends when this process exits or after the farm's own
  * idle TTL (default 30 min) — there is nothing for the CLI itself to clean
- * up, since a dev slot is never a database row (`plugins/dev-slots.ts`).
+ * up, since a dev slot is never a database row (`plugins/dev-slots.ts`) — its
+ * `ui/` assets are cleaned up by the farm when the slot is dropped or swept
+ * (`plugins/runtime.ts`), not by this process.
  */
 export async function devCommand(opts: DevOptions): Promise<void> {
   const owner = `${userInfo().username}@${hostname()}`
@@ -39,14 +43,25 @@ export async function devCommand(opts: DevOptions): Promise<void> {
       }
       const def = built.default as { id: string; version: string; scripts: { id: string }[] }
       const name = opts.name ?? def.id
+      // Plan 111 §4.4 — a dev slot carries `ui/` too, so a React view can be
+      // iterated at all. The transport branches exactly the way `publish` does:
+      // a project with built assets goes out as a raw `.enkaku` package, one
+      // without keeps the original `{ name, bundle }` JSON body.
+      //
+      // The name override rides in the PACKAGE MANIFEST rather than as a query
+      // parameter, so both transports name the slot in exactly one place and
+      // the farm reads it from exactly one place.
+      const hasUi = built.ui.length > 0
       const res = await fetch(`${opts.farmUrl.replace(/\/$/, '')}/api/plugins/dev`, {
         method: 'POST',
         headers: {
-          'content-type': 'application/json',
+          'content-type': hasUi ? PACKAGE_CONTENT_TYPE : 'application/json',
           'x-enkaku-dev-owner': owner,
           ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
         },
-        body: JSON.stringify({ name, bundle: built.bundle }),
+        body: hasUi
+          ? writeEnkakuPackage({ name, version: def.version, source: built.source, scripts: built.bundle, ui: built.ui })
+          : JSON.stringify({ name, bundle: built.bundle }),
       })
       // `POST /api/plugins/dev`'s success body is a `VerifyReport` (never an
       // `{error}` envelope on a 200 — a build that fails verification still
@@ -61,7 +76,8 @@ export async function devCommand(opts: DevOptions): Promise<void> {
         console.error(`✗ build rejected: ${body.errorCode ?? 'E_PLUGIN_VERIFY_FAILED'} — ${body.error ?? '(no message)'}`)
         return null
       }
-      console.log(`✓ pushed ${name}@${def.version}+dev — ${def.scripts.length} script${def.scripts.length === 1 ? '' : 's'} (${(built.bundle.length / 1024).toFixed(1)} KB)`)
+      const uiNote = hasUi ? `, ${built.ui.length} ui file${built.ui.length === 1 ? '' : 's'}` : ''
+      console.log(`✓ pushed ${name}@${def.version}+dev — ${def.scripts.length} script${def.scripts.length === 1 ? '' : 's'} (${(built.bundle.length / 1024).toFixed(1)} KB${uiNote})`)
       return name
     } finally {
       rmSync(tmp, { recursive: true, force: true })

@@ -46,6 +46,8 @@ const packs = JSON.parse(readFileSync(join(packsDir, 'index.json'), 'utf8')) as 
   name: string
   version: string
   file: string
+  /** A tier-C pack's compiled `ui/` payload — `path` is the name inside the package, `file` is where the bytes are under packs/. */
+  ui?: { path: string; file: string }[]
 }[]
 
 // Snapshots are drizzle-kit's input for generating the NEXT migration; the
@@ -76,7 +78,15 @@ for (const rel of drizzle) {
 const packIdents = packs.map((p) => {
   const ident = `p${i++}`
   lines.push(`import ${ident} from '../packs/${p.file}' with { type: 'file' }`)
-  return { ...p, ident }
+  // A tier-C pack's screen (plan 111 step 111.7). Embedded the same way the
+  // bundle is: without these the staged pack has a `react` view whose module
+  // 404s on a fresh install.
+  const ui = (p.ui ?? []).map((asset) => {
+    const assetIdent = `p${i++}`
+    lines.push(`import ${assetIdent} from '../packs/${toPosix(asset.file)}' with { type: 'file' }`)
+    return { name: asset.path, ident: assetIdent }
+  })
+  return { ...p, ident, uiIdents: ui }
 })
 
 lines.push('', 'registerEmbeddedAssets({')
@@ -87,12 +97,14 @@ for (const map of ['studio', 'drizzle'] as const) {
 }
 lines.push('  packs: [')
 for (const p of packIdents) {
-  lines.push(`    { name: ${JSON.stringify(p.name)}, version: ${JSON.stringify(p.version)}, path: ${p.ident} },`)
+  const ui = p.uiIdents.length > 0 ? `, ui: [${p.uiIdents.map((a) => `{ name: ${JSON.stringify(a.name)}, path: ${a.ident} }`).join(', ')}]` : ''
+  lines.push(`    { name: ${JSON.stringify(p.name)}, version: ${JSON.stringify(p.version)}, path: ${p.ident}${ui} },`)
 }
 lines.push('  ],')
 lines.push('})', '', "await import('./index')", '')
 
 writeFileSync(outFile, lines.join('\n'))
+const uiCount = packs.reduce((n, p) => n + (p.ui?.length ?? 0), 0)
 console.log(
-  `generated ${relative(root, outFile)} (${studio.length} studio files, ${drizzle.length} drizzle files, ${packs.length} packs)`,
+  `generated ${relative(root, outFile)} (${studio.length} studio files, ${drizzle.length} drizzle files, ${packs.length} packs, ${uiCount} pack ui asset(s))`,
 )

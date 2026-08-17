@@ -5,7 +5,7 @@ import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import type { TopologyActiveJob } from '@/lib/api'
 import { DeviceTile } from './DeviceTile'
 import { TileGrid } from '@/components/wall/TileGrid'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 const STATUS_ORDER: DeviceStatus[] = ['idle', 'busy', 'manual', 'quarantined', 'offline']
 const STATUS_WORD: Record<DeviceStatus, string> = {

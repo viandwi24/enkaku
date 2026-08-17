@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { fireEvent } from '@testing-library/react'
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 import { TargetPicker } from './TargetPicker'
 
 /**

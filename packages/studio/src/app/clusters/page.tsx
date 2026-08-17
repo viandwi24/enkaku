@@ -7,14 +7,10 @@ import { z } from 'zod'
 import { ClusterInfoSchema, pageSchema, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
 import { ClusterEditorDialog, type ClusterRow } from '@/components/ClusterEditorDialog'
 import { ClusterMembersDialog } from '@/components/ClusterMembersDialog'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog, Button, TableCell, TableHead, api, useAction, relativeTime } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button } from '@/components/ui/button'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
-import { relativeTime } from '@/lib/format'
 
 /**
  * `GET /api/clusters` (`packages/core/src/api/clusters.ts`) replies with the

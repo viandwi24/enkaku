@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { verifyPluginBundle } from './verify-child'
 
 const dirs: string[] = []
@@ -237,6 +238,34 @@ export default {
 }
 `
 
+/**
+ * Tier C (plan 111 §4.1, §5 step 111.4) — a view whose renderer is a React
+ * module the package ships.
+ *
+ * `apiVersion` is a parameter rather than a literal so both tests below read
+ * it off `PLUGIN_UI_API_VERSION` itself: a fixture that hard-coded `1` would
+ * start asserting the wrong thing the day that constant is bumped, and would
+ * do it silently — the "matches" test would begin exercising a mismatch.
+ *
+ * A plain object default export, NOT `definePlugin`, on purpose: this is the
+ * hand-crafted bundle the parent's independent re-validation exists for.
+ */
+function reactSurfaceBundle(apiVersion: number): string {
+  return `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [{ id: 'login', params: z.object({}), run: async () => {} }],
+  surface: {
+    nav: [{ id: 'main', label: 'Main', icon: 'puzzle', view: 'main' }],
+    views: { main: { title: 'Main', react: { entry: 'index.js', apiVersion: ${apiVersion} } } },
+    actions: {},
+  },
+}
+`
+}
+
 describe('verifyPluginBundle', () => {
   test('a healthy bundle reports the plugin id, version, every script id, and JSON-Schema params', async () => {
     const path = writeBundle(HEALTHY)
@@ -388,5 +417,177 @@ describe('verifyPluginBundle — the surface (plan 108 §3.9, §5 step 108.3)', 
     expect(report.ok).toBe(false)
     expect(report.errorCode).toBe('E_PLUGIN_SURFACE_INVALID')
     expect(report.error).toContain('serialised to JSON')
+  }, 10_000)
+})
+
+/**
+ * Plan 111 §3.5, §5 step 111.4, acceptance criterion 5 — the `@enkaku/ui`
+ * major a React view was built against, checked HERE and never at render.
+ *
+ * A mismatch that reaches the browser is a blank panel: the plugin's module
+ * throws somewhere inside a script tag Studio injected, and the operator has
+ * nothing to read. Refusing at verify turns that into a named refusal on the
+ * plugin row, before the plugin ever activates.
+ */
+describe('verifyPluginBundle — a React view\'s `@enkaku/ui` apiVersion', () => {
+  test('the major this build ships is accepted, and the view reaches the report parsed', async () => {
+    const path = writeBundle(reactSurfaceBundle(PLUGIN_UI_API_VERSION))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.surface?.views.main?.react).toEqual({ entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION })
+    expect(report.surface?.views.main?.table).toBeUndefined()
+    expect(report.scripts.map((s) => s.id)).toEqual(['login'])
+  }, 10_000)
+
+  test('any other major is refused, naming BOTH versions and the view, and registers zero scripts', async () => {
+    const built = PLUGIN_UI_API_VERSION + 1
+    const path = writeBundle(reactSurfaceBundle(built))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    // A code of its own: the surface itself is perfectly well formed, and
+    // `E_PLUGIN_SURFACE_INVALID` would send the author to look in the wrong place.
+    expect(report.errorCode).toBe('E_PLUGIN_UI_UNSUPPORTED')
+    expect(report.error).toContain('view "main"')
+    expect(report.error).toContain(`@enkaku/ui major ${built}`)
+    expect(report.error).toContain(`this farm ships major ${PLUGIN_UI_API_VERSION}`)
+    expect(report.scripts).toEqual([])
+    expect(report.surface).toBeUndefined()
+  }, 10_000)
+
+  test('a surface with no React view at all is never touched by the check', async () => {
+    // `SURFACE` is the tier-A fixture: a declared table, no `react` anywhere.
+    const path = writeBundle(SURFACE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.errorCode).toBeUndefined()
+  }, 10_000)
+})
+
+/**
+ * Plan 109 (M74 — the plugin runtime) §4.1, step 109.2, acceptance criterion 7.
+ *
+ * The bundles below are hand-written objects rather than `defineService()`
+ * results, deliberately and for this file's usual reason: a bundle need never
+ * have gone through the SDK at all, so the farm's own gate is what these
+ * assert. Note the brand — the child recognises `kind: 'enkaku.service'`, not
+ * "an object with a setup function".
+ */
+const serviceBundle = (service: string): string => `
+import { z } from 'zod'
+export default {
+  id: 'svc',
+  version: '1.0.0',
+  scripts: [{ id: 'a', params: z.object({}), run: async () => 'ok' }],
+  service: ${service},
+}
+`
+
+describe('verifyPluginBundle — a plugin`s service declaration (plan 109 §4.1, criterion 7)', () => {
+  test('a bundle declaring NO service verifies exactly as it did before plan 109 (criterion 1)', async () => {
+    const path = writeBundle(HEALTHY)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.service).toBeUndefined()
+  }, 10_000)
+
+  test('a declared service is reported PARSED, with `permissions` and `isolation` defaulted', async () => {
+    const path = writeBundle(serviceBundle(`{ kind: 'enkaku.service', setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.service).toEqual({ permissions: [], isolation: 'in-process', listeners: [], events: [], webhooks: [] })
+  }, 10_000)
+
+  test('declared permissions survive the round trip; the setup FUNCTION does not cross the boundary', async () => {
+    const path = writeBundle(serviceBundle(`{ kind: 'enkaku.service', permissions: ['device.list', 'job.run'], setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.service?.permissions).toEqual(['device.list', 'job.run'])
+    // What crosses is a DECLARATION. The code is reached by the host importing
+    // the same bundle into the core's own process, which is a separate decision.
+    expect((report.service as { setup?: unknown } | undefined)?.setup).toBeUndefined()
+  }, 10_000)
+
+  test('`isolation: "process"` is ACCEPTED by the schema and REFUSED by the farm, naming it unimplemented (criterion 7)', async () => {
+    const path = writeBundle(serviceBundle(`{ kind: 'enkaku.service', isolation: 'process', setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    // A code of its own, for the same reason `E_PLUGIN_UI_UNSUPPORTED` has
+    // one: nothing is wrong with what the author wrote — the FARM cannot do it.
+    expect(report.errorCode).toBe('E_PLUGIN_ISOLATION_UNSUPPORTED')
+    expect(report.error).toContain('reserved but not implemented')
+    expect(report.error).toContain('in-process')
+    // And the cost of the mode that IS implemented is named in the refusal
+    // itself, not left for the author to find later.
+    expect(report.error).toContain('takes the whole core down')
+    expect(report.scripts).toEqual([])
+  }, 10_000)
+
+  test('an unknown isolation mode is a schema refusal, not an unimplemented one', async () => {
+    const path = writeBundle(serviceBundle(`{ kind: 'enkaku.service', isolation: 'container', setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SERVICE_INVALID')
+  }, 10_000)
+
+  test('a `service` that is not a defineService() result is refused by the child, which is the only side that can see it', async () => {
+    const path = writeBundle(serviceBundle(`{ permissions: [], setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_SERVICE_INVALID')
+    expect(report.error).toContain('defineService')
+  }, 10_000)
+})
+
+/**
+ * Plan 109 step 109.6, §9 Q30 — the one cross-check between the two halves a
+ * bundle declares. `ctx.onQuery` is registered by `defineService({ setup })`
+ * and exists nowhere else, so a surface naming a `{ kind: 'handler' }` source
+ * on a plugin with no service could never have rendered.
+ *
+ * Refused HERE and not at render time so criterion 21's error state keeps
+ * meaning what it says: *the service is down, press Restart*. Showing that for
+ * a plugin with no service to start would send an operator to press a button
+ * that cannot help, for a mistake only the author can fix.
+ */
+describe('verifyPluginBundle — a handler data source needs a service (plan 109 §9 Q30)', () => {
+  const handlerSurfaceBundle = (service: string | null): string => `
+import { z } from 'zod'
+export default {
+  id: 'svc',
+  version: '1.0.0',
+  scripts: [{ id: 'a', params: z.object({}), run: async () => 'ok' }],
+  surface: {
+    nav: [{ id: 'status', label: 'Status', icon: 'activity', view: 'status' }],
+    views: {
+      status: {
+        title: 'Status',
+        data: { kind: 'handler', name: 'status' },
+        table: { rowKey: 'label', columns: [{ field: 'label', header: 'State' }] },
+      },
+    },
+  },
+  ${service ? `service: ${service},` : ''}
+}
+`
+
+  test('a handler view with NO service is refused, naming the view and the missing service', async () => {
+    const path = writeBundle(handlerSurfaceBundle(null))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_HANDLER_NO_SERVICE')
+    expect(report.error).toContain('"status"')
+    expect(report.error).toContain('ctx.onQuery')
+  }, 10_000)
+
+  test('control: the SAME surface WITH a service verifies — so the refusal is about the pair, not the data source', async () => {
+    const path = writeBundle(handlerSurfaceBundle(`{ kind: 'enkaku.service', setup: async () => {} }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.surface?.views.status?.data).toEqual({ kind: 'handler', name: 'status' })
+  }, 10_000)
+
+  test('control: a kv.scan surface with no service still verifies — the check is not refusing every serviceless plugin', async () => {
+    const path = writeBundle(handlerSurfaceBundle(null).replace(`{ kind: 'handler', name: 'status' }`, `{ kind: 'kv.list', scope: 'global' }`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
   }, 10_000)
 })

@@ -4,13 +4,8 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Bot } from 'lucide-react'
 import { ListAgentsResponseSchema, RunResponseSchema, ThreadResponseSchema } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
-import { EmptyState, LoadingRows } from '@/components/states'
-import { api, useAction } from '@/lib/actions'
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Textarea, cn, EmptyState, LoadingRows, api, useAction } from '@enkaku/ui'
 import type { Agent } from '@/lib/agents'
-import { cn } from '@/lib/utils'
 
 /**
  * "Ask an agent" from a device page (plan 73 §3.5, §4.6). Plan 69 gave the

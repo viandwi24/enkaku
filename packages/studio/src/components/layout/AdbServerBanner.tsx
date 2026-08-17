@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { AdbServerPhase } from '@enkaku/protocol'
 import { ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * The adb server's drain/stop/start/reattach cycle, made visible farm-wide

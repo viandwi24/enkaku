@@ -9,7 +9,7 @@ import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { LiveView } from '@/components/LiveView'
 import { explainQuarantine } from '@/components/DeviceCard'
 import { HolderBadge } from '@/components/HolderBadge'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * How long a single click waits before it commits (plan 91 §3.11, F13). The

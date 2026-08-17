@@ -1,5 +1,5 @@
 import { TileGrid } from './TileGrid'
-import { Skeleton } from '@/components/ui/skeleton'
+import { Skeleton } from '@enkaku/ui'
 
 /**
  * The Wall's loading state, for BOTH rows §4.7 names "loading" (Plan 92

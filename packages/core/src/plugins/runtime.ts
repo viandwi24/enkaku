@@ -1,6 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { validatePluginSurface, type PluginSurface } from '@enkaku/protocol'
+import {
+  PluginServiceDeclarationSchema,
+  unsupportedIsolationMessage,
+  validatePluginSurface,
+  type PluginServiceDeclaration,
+  type PluginSurface,
+} from '@enkaku/protocol'
 import type { Db } from '../db'
 import { devices, plugins, scripts, type PluginRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
@@ -27,6 +33,14 @@ const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
  * surface existed simply has no `surface` key and reads back as `undefined`.
  */
 const ManifestSurfaceEnvelopeSchema = z.object({ surface: z.unknown().optional() })
+
+/**
+ * The same discipline for plan 109's `service` block (§4.1, step 109.2): a
+ * manifest written before services existed simply has no `service` key and
+ * reads back as `undefined`, which is exactly "this plugin has no long-lived
+ * half" — never an error, and never a reason a Plugins page fails to render.
+ */
+const ManifestServiceEnvelopeSchema = z.object({ service: z.unknown().optional() })
 
 /**
  * Stage → verify → activate (plan 82 §3.7, §4.3) — everything that reads or
@@ -86,6 +100,35 @@ export interface PluginRuntimeDeps {
   devSlots?: DevSlotStore
   /** Verification is injected so tests can substitute a fast fake — the real one spawns a child (`verify-child.ts`), which is what production always uses. */
   verify?: (bundlePath: string, opts?: { expectedVersion?: string }) => Promise<VerifyReport>
+  /**
+   * Plan 109 §4.2's Load/Unload rows, step 109.2 — "on activate", "on disable,
+   * remove, reload". Called AFTER the transition has committed, never inside
+   * the transaction that made it: the listener loads plugin code into the
+   * core's process, and doing that with a write transaction open would hold a
+   * database lock across an arbitrary `setup()`.
+   *
+   * Fire-and-forget from this file's point of view. A listener that throws is
+   * swallowed here, because §3.8's one guarantee — operating on the plugin
+   * registry never throws because one plugin is broken — must not be weakened
+   * by the thing that exists to contain broken plugins.
+   *
+   * Optional: absent in every test and in orchestrator mode, where no host
+   * exists to load anything.
+   */
+  onLifecycle?: (event: PluginLifecycleEvent) => void
+}
+
+/**
+ * What `onLifecycle` reports. `activated` means "this name's active version is
+ * now `name@version`" — it covers a first activation, a rollback to an older
+ * version, a re-enable, and a reload that re-activated a fixed bundle, because
+ * the host's response to all four is identical: unload whatever is loaded
+ * under that name and load what is active now.
+ */
+export interface PluginLifecycleEvent {
+  kind: 'activated' | 'deactivated'
+  name: string
+  version: string
 }
 
 export interface PluginRuntime {
@@ -106,6 +149,18 @@ export interface PluginRuntime {
   surface(name: string): PluginSurface | null
 
   /**
+   * The ACTIVE version's verified SERVICE declaration (plan 109 §4.1, step
+   * 109.2), or `null` — for a plugin that is not active, one that declared no
+   * service, one whose stored declaration no longer parses today, and one that
+   * asks for an isolation mode this build cannot provide.
+   *
+   * `null` and never a throw, exactly as `surface` above: this is read on the
+   * way to deciding whether to load something, and every one of those four
+   * cases means the same thing to the caller — there is nothing here to load.
+   */
+  service(name: string): PluginServiceDeclaration | null
+
+  /**
    * One tier-B asset of the ACTIVE version of `name` (plan 108 §4.4, §5 step
    * 108.10), by its exact path relative to the package's `ui/` directory.
    *
@@ -114,10 +169,14 @@ export interface PluginRuntime {
    * did not declare. The caller turns all three into one 404, because telling
    * them apart would tell an unauthenticated prober which of the three it hit.
    *
-   * A DEV SLOT has no assets and is not consulted: a slot is built from a
-   * BUNDLE (`enkaku dev` pushes `scripts.mjs`, never an archive), so there is
-   * no `ui/` payload for it to carry. A tier-B screen is exercised against a
-   * published package.
+   * **A DEV SLOT SHADOWS THE ACTIVE ROW** (plan 111 §4.4, §5 step 111.6).
+   * Plan 108 §9 Q3 recorded the opposite — a slot was built from a bundle and
+   * structurally carried no assets, so a UI could not be iterated with
+   * `enkaku dev` at all. `enkaku dev` now pushes a `.enkaku` package, the slot
+   * stores its `ui/` under its own key, and this lookup consults the slot
+   * FIRST — the same shadowing `scripts/registry.ts` and the surface registry
+   * already apply, so a dev build's screen and its scripts never come from two
+   * different versions.
    */
   uiAsset(name: string, path: string): Promise<StoredAsset | null>
 
@@ -156,6 +215,15 @@ export interface PluginRuntime {
     name: string
     owner: DevSessionOwner
     source: { kind: 'workspace'; entryPath: string; workspace: WorkspaceStore } | { kind: 'bundle'; bundle: string }
+    /**
+     * The slot's `ui/` payload (plan 111 §4.4) — already allowlisted by
+     * `readPluginPackage` when it arrived as a `.enkaku` archive. Absent means
+     * "this build declares no assets", and an EMPTY array means the same
+     * thing: either way whatever the previous build stored is deleted, so a
+     * rebuild that removed the `ui/` directory cannot keep serving yesterday's
+     * screen.
+     */
+    ui?: readonly PluginPackageAsset[]
   }): Promise<VerifyReport & { slot?: DevSlot }>
   dropDevSlot(name: string): void
   devSlots(): DevSlotView[]
@@ -254,7 +322,29 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     return checked.ok ? checked.value : null
   }
 
+  const serviceImpl = (name: string): PluginServiceDeclaration | null => {
+    const row = activeImpl(name)
+    if (!row?.manifest) return null
+    const envelope = ManifestServiceEnvelopeSchema.safeParse(row.manifest)
+    if (!envelope.success || envelope.data.service === undefined) return null
+    // Re-validated on READ for the same reason `surfaceImpl` re-validates a
+    // surface, and with more at stake: this is the value that decides whether
+    // a bundle's code is imported into the CORE's own process. A row written
+    // by an older shape degrades to `null` — "this plugin contributes no
+    // service" — rather than to a throw on the way to rendering a page.
+    const parsed = PluginServiceDeclarationSchema.safeParse(envelope.data.service)
+    if (!parsed.success) return null
+    // And the reserved-mode refusal holds on READ too, not only at verify
+    // (criterion 7): a row could have been written by a build that had a
+    // process host, and this one does not.
+    if (unsupportedIsolationMessage(parsed.data.isolation)) return null
+    return parsed.data
+  }
+
   const uiAssetImpl = async (name: string, path: string): Promise<StoredAsset | null> => {
+    // The dev slot wins when there is one — see `PluginRuntime.uiAsset`.
+    const slot = devSlots.get(name)
+    if (slot) return assets.read(slot.assetKey, path)
     const row = activeImpl(name)
     if (!row) return null
     return assets.read(row.id, path)
@@ -372,7 +462,18 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
         // does, with no schema change (the column is already JSON). Spread
         // conditionally: a plugin that declared no surface writes the manifest
         // it wrote before this plan, key for key (acceptance criterion 1).
-        manifest: { scripts: report.scripts, ...(report.surface !== undefined ? { surface: report.surface } : {}) },
+        // Plan 109 §4.1, §5 step 109.2 — the SERVICE declaration rides in the
+        // same JSON column for the same reason `surface` does: the host must
+        // be able to decide, at boot, whether an already-active plugin has a
+        // service to load, WITHOUT importing its bundle into the core's
+        // process first. Deciding from the manifest is what keeps "a bad
+        // plugin can never block boot" (§4.2) true for the decision itself and
+        // not only for the load.
+        manifest: {
+          scripts: report.scripts,
+          ...(report.surface !== undefined ? { surface: report.surface } : {}),
+          ...(report.service !== undefined ? { service: report.service } : {}),
+        },
         resetPackages: report.resetPackages.length > 0 ? { packages: report.resetPackages } : null,
         title: report.title ?? p.title,
         description: report.description ?? p.description,
@@ -531,6 +632,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     name: string
     owner: DevSessionOwner
     source: { kind: 'workspace'; entryPath: string; workspace: WorkspaceStore } | { kind: 'bundle'; bundle: string }
+    ui?: readonly PluginPackageAsset[]
   }): Promise<VerifyReport & { slot?: DevSlot }> => {
     requireIdShape(input.name)
     // A dev slot shadows a published plugin by NAME (`scripts/registry.ts`), so
@@ -548,10 +650,19 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       registry.invalidate(input.name)
       return report
     }
+    // Assets before the slot, for the same reason `stage` writes them before
+    // the row: a slot that exists is a slot whose screen is already on disk.
+    // The key is read off the CURRENT slot so a rebuild replaces what it
+    // stored rather than accumulating one index file per keystroke.
+    const assetKey = devSlots.get(input.name)?.assetKey ?? crypto.randomUUID()
+    if (input.ui && input.ui.length > 0) await assets.put(assetKey, input.ui)
+    else assets.remove(assetKey)
+
     const slot = devSlots.put({
       pluginName: input.name,
       declaredVersion: report.version ?? '0.0.0',
       bundlePath,
+      assetKey,
       scripts: report.scripts.map((s) => ({ exportId: s.id, paramsSchema: s.paramsSchema, runtime: s.runtime })),
       // Plan 108 §5 step 108.6 — carried straight off the report the verify
       // child already re-validated (`verify-child.ts` runs the SAME
@@ -565,8 +676,33 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   }
 
   const dropDevSlotImpl = (name: string): void => {
+    // Read the key BEFORE dropping: once the slot is gone nothing else knows
+    // where its bytes live, and a dev slot's assets must not outlive it (plan
+    // 111 §5 step 111.6 — "make sure dropping or expiring a slot cleans up").
+    const slot = devSlots.get(name)
     devSlots.drop(name)
+    if (slot) assets.remove(slot.assetKey)
     registry.invalidate(name)
+  }
+
+  /**
+   * `devSlots.sweep()` plus the asset cleanup an expiry owes (step 111.6).
+   *
+   * The store is a plain in-memory map that knows nothing about the
+   * filesystem, and `daemon.ts` constructs it and passes it in — so there is
+   * no callback to hang this on. Instead the surviving keys are diffed against
+   * the ones held a moment ago, which needs no new store API and cannot drift
+   * the way a stored reference count could.
+   */
+  const sweepDevSlotAssets = (): number => {
+    const before = devSlots.list()
+    const dropped = devSlots.sweep()
+    if (dropped === 0) return 0
+    const alive = new Set(devSlots.list().map((s) => s.assetKey))
+    for (const slot of before) {
+      if (!alive.has(slot.assetKey)) assets.remove(slot.assetKey)
+    }
+    return dropped
   }
 
   const devSlotsImpl = (): DevSlotView[] => devSlots.list().map((s) => ({ ...s, kvNamespace: s.pluginName }))
@@ -580,11 +716,27 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     const report = await verifyImpl(target.id)
     // criterion 25 — a `failed` plugin whose bundle has since been fixed reaches `active`
     // automatically on reload, without a separate explicit `activate` call.
-    if (report.ok && target.status !== 'active') {
-      try {
-        activateImpl(target.id, 'staged')
-      } catch {
-        // Lost a race against a concurrent activation of the SAME row — fine, someone else did it.
+    //
+    // The condition must NOT test `target.status`. That value was read before
+    // `verifyImpl` ran, and `verifyImpl` sets EVERY row it verifies to `staged`
+    // — an `active` one included. So for the common case (reloading a healthy,
+    // active plugin) the stale value still said `active`, the branch was
+    // skipped, and the row was left sitting at `staged`: **reloading a working
+    // plugin turned it off.** Observed live on `proxy-manager@0.3.1` — one
+    // `POST /:name/reload` took its screen and its service down, with a 200 and
+    // an `ok: true` report, which is the worst possible way for it to fail.
+    //
+    // Re-reading after the verify is what makes this correct, and it keeps
+    // criterion 25 working unchanged: a `failed` row that now verifies is also
+    // `staged` by this point, so both paths take the same branch.
+    if (report.ok) {
+      const after = db.select().from(plugins).where(eq(plugins.id, target.id)).get()
+      if (after?.status === 'staged') {
+        try {
+          activateImpl(target.id, 'staged')
+        } catch {
+          // Lost a race against a concurrent activation of the SAME row — fine, someone else did it.
+        }
       }
     }
     return report
@@ -625,8 +777,28 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       if (report.ok) ok++
       else failed++
     }
-    devSlots.sweep()
+    sweepDevSlotAssets()
     return { ok, failed }
+  }
+
+  /**
+   * Plan 109 §4.2, step 109.2. Wrapped around the lifecycle verbs rather than
+   * fired from inside their `Impl` bodies, for two reasons: `activateImpl`
+   * runs inside `db.transaction`, and `reloadImpl`/`restartImpl` deliberately
+   * call `activateImpl` DIRECTLY (see this file's header) — so a notification
+   * placed inside would either hold a write lock across a `setup()` or fire
+   * twice for one reload.
+   *
+   * Never allowed to fail a lifecycle verb. An operator pressing Disable gets
+   * a disabled plugin whatever the host does with the news.
+   */
+  const notify = (event: PluginLifecycleEvent): void => {
+    if (!deps.onLifecycle) return
+    try {
+      deps.onLifecycle(event)
+    } catch {
+      // Deliberately swallowed — see `PluginRuntimeDeps.onLifecycle`.
+    }
   }
 
   return {
@@ -634,18 +806,52 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     get: getImpl,
     active: activeImpl,
     surface: surfaceImpl,
+    service: serviceImpl,
     uiAsset: uiAssetImpl,
     stage: stageImpl,
     verify: verifyImpl,
-    activate: activateImpl,
-    rollback: rollbackImpl,
-    disable: disableImpl,
-    enable: enableImpl,
-    remove: removeImpl,
+    activate: (pluginId, expectedStatus) => {
+      const row = activateImpl(pluginId, expectedStatus)
+      notify({ kind: 'activated', name: row.name, version: row.version })
+      return row
+    },
+    rollback: (name, toVersion) => {
+      const row = rollbackImpl(name, toVersion)
+      notify({ kind: 'activated', name: row.name, version: row.version })
+      return row
+    },
+    disable: (name) => {
+      // The version is read BEFORE the transition, since after it there is no
+      // active row left to read one from.
+      const version = activeImpl(name)?.version ?? ''
+      disableImpl(name)
+      notify({ kind: 'deactivated', name, version })
+    },
+    enable: (name) => {
+      const row = enableImpl(name)
+      notify({ kind: 'activated', name: row.name, version: row.version })
+      return row
+    },
+    remove: (name, version, opts) => {
+      // Only a removal that actually removed the ACTIVE row deactivates
+      // anything — deleting a superseded version leaves what is loaded alone,
+      // and telling the host otherwise would tear down a working service.
+      const wasActive = activeImpl(name)?.version === version
+      const summary = removeImpl(name, version, opts)
+      if (summary.removed && wasActive) notify({ kind: 'deactivated', name, version })
+      return summary
+    },
     putDevSlot: putDevSlotImpl,
     dropDevSlot: dropDevSlotImpl,
     devSlots: devSlotsImpl,
-    reload: reloadImpl,
+    reload: async (name) => {
+      const report = await reloadImpl(name)
+      // A reload always re-imports: the bundle may be byte-identical and the
+      // service still has to be restarted, because a reload is exactly the
+      // operation an author performs after changing code.
+      if (report.ok) notify({ kind: 'activated', name, version: report.version ?? '' })
+      return report
+    },
     restart: restartImpl,
   }
 }

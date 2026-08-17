@@ -1,7 +1,7 @@
 import { Battery, Thermometer } from 'lucide-react'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 export type TileChipKind = 'battery' | 'temperature' | 'readiness' | 'status'
 

@@ -6,7 +6,7 @@ import { mockRouter, setSearchParams } from '@/lib/test/nav'
 import { AuthContext, type AuthState } from '@/lib/auth'
 import { readLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 import type { DeviceInfo } from '@enkaku/protocol'
 
 /**

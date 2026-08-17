@@ -9,9 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableHeader, TableRow } from '@/components/ui/table'
+import { EmptyState, ErrorState, LoadingRows, Button, Table, TableBody, TableHeader, TableRow } from '@enkaku/ui'
 
 /**
  * The one keyset envelope every list endpoint returns (plan 30 §3.3, §4.1).

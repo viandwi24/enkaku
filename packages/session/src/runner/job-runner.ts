@@ -14,9 +14,11 @@ import type { ArtifactSink, TransferPort } from '../types'
 import {
   ChildToParentSchema,
   DeviceCallSchema,
+  FarmCallSchema,
   JobsCallSchema,
   KvCallSchema,
   type ChildToParent,
+  type FarmCall,
   type JobsCall,
   type KvCall,
   type ParentToChild,
@@ -198,6 +200,31 @@ export interface JobsRunnerDeps {
   call(ctx: { jobId: string; deviceId: string }, call: JobsCall): Promise<unknown>
 }
 
+/**
+ * `ctx.farm`'s parent-side port (plan 109 §3.1, §4.3, step 109.1) — kept
+ * local, like `KvRunnerDeps` and `JobsRunnerDeps` above, because
+ * `@enkaku/session` cannot depend on `@enkaku/core` (the capability registry
+ * and `invoke()` live in `packages/core/src/capability/`).
+ *
+ * `pluginId` is the owning plugin's id, from the `ready` message — because the
+ * broker's two checks are both keyed on the plugin: the manifest's declared
+ * permissions, and the `plugin:<name>` principal every call is audited under.
+ *
+ * **It is `pluginId`, not `namespace`, and the difference is load-bearing**
+ * (step 109.3). `kv.call` resolves its namespace as `pluginId ?? scriptId ??
+ * jobId`, because a standalone script legitimately owns a KV namespace of its
+ * own. A standalone script owns no MANIFEST, so that fallback has nothing to
+ * check a farm call against — and by the time the fallback has been applied,
+ * "plugin `foo`" and "standalone script `foo`" are the same string and the
+ * core side can no longer tell them apart. Step 109.1's comment here said the
+ * core would refuse those; it structurally could not. So the refusal happens
+ * at the call site below, where `meta.pluginId` is still distinguishable from
+ * absent, and this field can only ever be a real plugin id.
+ */
+export interface FarmRunnerDeps {
+  call(ctx: { jobId: string; deviceId: string; pluginId: string }, call: FarmCall): Promise<unknown>
+}
+
 export interface JobRunnerDeps {
   /** Execution isolation — a child process (local) or a container (cloud). */
   isolation?: IsolationProvider
@@ -267,6 +294,15 @@ export interface JobRunnerDeps {
   /** `ctx.jobs` (plan 80 §4.2) — undefined when the host has not wired one (`jobs.call` then
    * refuses cleanly with `E_JOBS_UNAVAILABLE`, the same pattern `kv`/`transfer` above already use). */
   jobs?: JobsRunnerDeps
+  /**
+   * `ctx.farm` (plan 109 §4.3) — undefined when the host has not wired the
+   * capability broker (`farm.call` then refuses cleanly with
+   * `E_FARM_UNAVAILABLE`, the same pattern `kv`/`jobs`/`transfer` above
+   * already use). Wired by the core as of step 109.3
+   * (`plugins/farm-broker.ts`'s `createFarmRunnerPort`); a host that has not
+   * wired one gets one coded refusal per call, never a silent success.
+   */
+  farm?: FarmRunnerDeps
   /**
    * `ctx.progress()` (plan 97 §3.7, §4.3) — one call per coalesced `progress`
    * message the child sends, forwarded VERBATIM: this runner does not
@@ -950,6 +986,55 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   ? (err as { code: string }).code
                   : 'JOBS_CALL_FAILED'
               send({ t: 'jobs.result', callId: msg.callId, ok: false, error: { code, message } })
+            })
+        } else if (msg.t === 'farm.call') {
+          // Plan 109 §4.3, step 109.1 — `ctx.farm`'s parent side, the same
+          // shape `kv.call`/`jobs.call` above already use.
+          const call = FarmCallSchema.safeParse(msg)
+          if (!call.success) {
+            send({ t: 'farm.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'invalid call' } })
+            return
+          }
+          if (!deps.farm) {
+            send({
+              t: 'farm.result',
+              callId: msg.callId,
+              ok: false,
+              error: { code: 'E_FARM_UNAVAILABLE', message: 'the farm capability broker is not available on this host' },
+            })
+            return
+          }
+          // A standalone script has no plugin, therefore no manifest, therefore
+          // nothing for the broker's declared-permission check to read and no
+          // `plugin:<name>` principal to audit under. It is refused HERE rather
+          // than passed on under `kv.call`'s `scriptId ?? jobId` fallback: once
+          // that fallback has been applied the core cannot tell "plugin foo"
+          // from "standalone script foo", and would check one against the
+          // other's manifest.
+          const pluginId = opts.meta?.pluginId
+          if (pluginId === undefined) {
+            send({
+              t: 'farm.result',
+              callId: msg.callId,
+              ok: false,
+              error: {
+                code: 'E_FARM_NO_PLUGIN',
+                message:
+                  'ctx.farm is only available to a plugin member: a standalone script has no manifest to declare capabilities in. Publish this script inside a plugin and declare what it needs in defineService({ permissions }).',
+              },
+            })
+            return
+          }
+          void deps.farm
+            .call({ jobId: job.id, deviceId: job.deviceId, pluginId }, call.data)
+            .then((value) => send({ t: 'farm.result', callId: msg.callId, ok: true, value }))
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err)
+              const code =
+                err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string'
+                  ? (err as { code: string }).code
+                  : 'FARM_CALL_FAILED'
+              send({ t: 'farm.result', callId: msg.callId, ok: false, error: { code, message } })
             })
         } else if (msg.t === 'artifact.save') {
           void (async () => {

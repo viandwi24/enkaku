@@ -4,12 +4,9 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Boxes, ChevronDown, ChevronUp, Download, FileTerminal, ListChecks, Upload, Wrench, type LucideIcon } from 'lucide-react'
 import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
-import { Badge } from '@/components/ui/badge'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { duration } from '@/lib/format'
+import { Badge, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, cn, duration } from '@enkaku/ui'
 import { useOperations, type Operation, type OperationKind } from '@/lib/operations'
 import { useNow } from '@/lib/useNow'
-import { cn } from '@/lib/utils'
 import { TransferProgressBar } from './TransferProgressBar'
 
 /**

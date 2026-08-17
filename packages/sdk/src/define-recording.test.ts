@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { RecordingDoc } from '@enkaku/protocol'
 import { defineRecording } from './define-recording'
 import type { ArtifactApi, DeviceApi, JobsApi, KvApi, ScriptContext, ScriptLogger } from './types'
+import type { FarmApi, PluginStorage } from './runtime'
 
 /**
  * plan 94 §5, step 94.1's verifiable result: "a hand-written `RecordingDoc`
@@ -70,7 +71,14 @@ function fakeCtx(params: Record<string, string>): { ctx: ScriptContext<Record<st
     artifact: unused as ArtifactApi,
     log,
     job: { id: 'job-1', attempt: 1, deviceId: 'device-1' },
+    // Plan 109 step 109.1 — `ScriptContext` extends `PluginContext`, so
+    // `storage` and `farm` are now part of every script's context. A compiled
+    // recording touches neither; both stay on the same throwing `unused`
+    // proxy the rest of this fixture uses, so a step that started reaching for
+    // one would fail loudly rather than silently read nothing.
     kv: { device: unused as KvApi, global: unused as KvApi },
+    storage: unused as PluginStorage,
+    farm: unused as FarmApi,
     jobs: unused as JobsApi,
     progress: () => {},
   }

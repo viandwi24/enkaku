@@ -3,17 +3,27 @@
 import { useState } from 'react'
 import { Eye, KeyRound, Search, Trash2 } from 'lucide-react'
 import { KvDeleteResponseSchema, KvEntryResponseSchema, KvListResponseSchema, type KvEntry } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  ErrorState,
+  Input,
+  Label,
+  LoadingRows,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+  api,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 
 export type KvPanelScope = { kind: 'global' } | { kind: 'device'; stableId: string }
 

@@ -5,9 +5,7 @@ import { Check, Search } from 'lucide-react'
 import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
 import { HolderBadge } from '@/components/HolderBadge'
-import { Input } from '@/components/ui/input'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
+import { Input, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 import { UNAVAILABLE_REASON } from '@/components/device-popup/ControlState'
 
 /**

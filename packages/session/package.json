@@ -12,6 +12,7 @@
     "@enkaku/drivers": "workspace:*",
     "@enkaku/protocol": "workspace:*",
     "@enkaku/scrcpy": "workspace:*",
+    "@enkaku/sdk": "workspace:*",
     "@enkaku/toolchain": "workspace:*",
     "zod": "^4.0.0"
   }

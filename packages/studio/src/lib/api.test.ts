@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { z } from 'zod'
 import { JobNodesResponseSchema, type WorkflowDoc } from '@enkaku/protocol'
-import { BadResponseError } from './actions'
+import { BadResponseError } from '@enkaku/ui'
 import { estimateWorkflowDuration, fetchAllPages } from './api'
 
 /**

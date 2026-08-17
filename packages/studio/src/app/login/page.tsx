@@ -2,9 +2,7 @@
 
 import { useState, type FormEvent } from 'react'
 import { AuthShell } from '@/components/layout/AuthShell'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Button, Input, Label } from '@enkaku/ui'
 import { AuthApiError, describeAuthError, login, useAuth } from '@/lib/auth'
 
 /**

@@ -1,7 +1,7 @@
 'use client'
 
 import { Plus, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Button } from '@enkaku/ui'
 import type { FieldPlan } from '../plan'
 import { emptyItem } from './empty'
 import { renderControl } from './index'

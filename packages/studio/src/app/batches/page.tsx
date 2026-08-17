@@ -6,11 +6,7 @@ import { Boxes } from 'lucide-react'
 import { BatchesPageResponseSchema, type BatchInfo } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { api } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
+import { Button, Progress, TableCell, TableHead, api, relativeTime } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
 
 const STATUS_TONE: Record<BatchInfo['status'], string> = {

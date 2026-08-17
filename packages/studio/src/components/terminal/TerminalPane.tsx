@@ -4,9 +4,6 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import Link from 'next/link'
 import { CommandRunsPageResponseSchema, isHighConsequence, type ServerMessage } from '@enkaku/protocol'
 import { newId, ws } from '@/lib/ws'
-import { api } from '@/lib/actions'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,9 +13,12 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { EmptyState } from '@/components/states'
-import { cn } from '@/lib/utils'
+  Button,
+  EmptyState,
+  Input,
+  api,
+  cn,
+} from '@enkaku/ui'
 
 /**
  * The interactive device terminal (plan 26 §4.5). Beside the Monitor pane:

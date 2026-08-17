@@ -24,7 +24,11 @@ Every device card — and, since plan 101 §5 step 101.7, every Wall tile too �
 
 ## Tokens
 
-Every token lives in `packages/studio/src/app/globals.css` inside `@theme` blocks. `globals.css` is the ONLY file whose colours change when the palette moves — the 125 component files that name these tokens (`bg-surface`, `text-fg-muted`, …) inherit a new palette without being edited, which is what made plan 101's whole refresh a one-file change rather than a 125-file one (§3.1 there).
+Every token lives in `packages/ui/src/theme.css` inside `@theme` blocks. That file is the ONLY one whose colours change when the palette moves — the 125 component files that name these tokens (`bg-surface`, `text-fg-muted`, …) inherit a new palette without being edited, which is what made plan 101's whole refresh a one-file change rather than a 125-file one (§3.1 there).
+
+It sits in `@enkaku/ui` rather than in Studio because **two compilers read it** (plan 111 §9 Q1, step 111.9). Studio's `globals.css` does `@import '@enkaku/ui/theme.css'` and emits the variables onto the document; a tier-C plugin's own stylesheet imports the same file with `theme(reference)` and emits nothing, so `bg-surface` in a plugin compiles to `var(--color-surface, …)` and resolves against the value Studio already published. A second copy would drift the first time the palette moved — and because a plugin's `<link>` is injected after Studio's, that stale copy would win the cascade and repaint every screen in the farm, not just the plugin's. `@custom-variant hover-none` lives there too: it names a device capability, not a component, and an unknown variant compiles to nothing with no error at all.
+
+What stays in `packages/studio/src/app/globals.css` is Studio's own page — the `@layer base` reset (including the dot-grid body background) and the `@layer components` classes (`.status-rail`, `.rack-label`, `.readout`). Those are not vocabulary a plugin could name.
 
 | Group | Tokens | Used for |
 | --- | --- | --- |
@@ -38,7 +42,7 @@ A second `@theme` block maps the shadcn tokens (`--color-background`, `--color-p
 
 ### The plan 101 refresh — values converted from `refs/ui`, never pasted as hex
 
-Every value below is expressed in OKLCH, converted from the reference's hex/rgba (never pasted as hex, so `globals.css` does not drift into two colour notations). See that file's own inline comments for the exact conversion and the reasoning behind each deviation from the reference.
+Every value below is expressed in OKLCH, converted from the reference's hex/rgba (never pasted as hex, so `theme.css` does not drift into two colour notations). See that file's own inline comments for the exact conversion and the reasoning behind each deviation from the reference.
 
 | Token | Source in `refs/ui` | Note |
 | --- | --- | --- |
@@ -248,15 +252,21 @@ A field-level request from a plugin author is therefore a request against `x-enk
 
 **Actions read their inputs through a closed binding language**, not through interpolation: a JSON literal, `$row.<path>`, `$form.<path>`, `$device.<field>`, `$entry.<field>`, or an object or array of those. A `confirm` string is a plain sentence and never a template — `"Switch this device to the selected account?"`, not `"Switch to @{{username}}?"`. Bindings are the one way a declared value reaches an action, and a second, weaker interpolation path for one string would undo that; the dialog names the target itself, from the view's own `rowKey`.
 
-### Tier A or tier B
+### Tier A or tier C
 
-Tier A is a declared table rendered by Studio's components. Tier B is a sandboxed iframe over assets the plugin ships, with Studio's design tokens injected as CSS custom properties.
+Tier A is a declared table rendered by Studio's components: no build step, no npm install, no bundler. Tier C is a React module the plugin ships, mounted into Studio's own component tree — it imports `@enkaku/ui` and receives the **host's live components**, so its `Table` is not a lookalike of Studio's `Table`, it is the same one. The same package carries the behaviour, not just the parts: `EmptyState`, `ErrorState`, `LoadingRows` and `ConfirmDialog`, plus `api()` and `relativeTime()`. That matters more than the buttons do — a plugin that draws its own empty panel and its own "could not load" wording is a screen that *looks* native and *reads* foreign, and it was what the first tier-C pack had to do before those moved into the package (plan 111 §3.3).
 
-> **Tier A unless the layout genuinely cannot be a table or a form.**
+> **Tier A when the screen is rows or fields. Tier C when it genuinely is not.**
 
-That is the rule, and it is written down because without it tier B becomes the default by convenience and Studio slowly stops looking like one product. What tier B actually costs is specific, not vague: a frame inherits **colours, spacing, radius, and typography** and inherits **no components at all** — `Table`, `Button`, `SchemaForm` are React in the parent document and do not cross a frame boundary. So a tier-B screen is a screen that will not pick up the next change to any of them, and whose empty state, error state, focus ring, and reduced-motion behaviour are the plugin author's to get right rather than the design system's to guarantee.
+The rule is softer than the one it replaces, because the thing that made the old rule strict is gone. Tier B was a sandboxed iframe, and a frame inherited colours and spacing but **no components at all** — every tier-B screen was a screen that would silently stop matching Studio at the next change to `Table` or `Button`. That drift is what the rule was defending against, and tier C does not have it: sharing the real components means a plugin screen picks up their next change the same day Studio does.
 
-Tier B is the right choice when the thing on screen is not rows and not fields — a diagram, a canvas, a bespoke visualisation. It is the wrong choice for a table the author would rather style differently, for a form with an unusual arrangement, or for anything reachable by declaring one more layout key. Tier B changes the rendering and never the authority: the frame has no same-origin access, no token, and no fetch of its own, and its RPC maps onto exactly the actions and data sources the view declared.
+What remains is a real cost, just a different one, and it is worth naming so the choice is made on it rather than on taste:
+
+- **A build step and a version coupling.** A tier-C plugin declares the `@enkaku/ui` major it was built against, and a mismatch is **refused at verify**, naming both numbers — never at render, in front of an operator. That is a known, checked incompatibility instead of a component that explodes mid-screen, but it does mean a tier-C plugin has to be rebuilt when that major moves. A tier-A plugin never does.
+- **No sandbox.** A tier-C module runs in Studio's page with the operator's session, and `fetch` reaches the farm exactly as Studio's own code does. There is no bridge to narrow what it can touch. The error boundary around it contains a *mistake* — a component that throws does not take the page down — and contains nothing else. Plugin code already runs server-side with the core's authority, so this grants no power the plugin did not have; it is stated plainly because "sandboxed" would be a lie.
+- **Its own stylesheet.** Tier C compiles its own Tailwind against the tokens `@enkaku/ui` exports, so a plugin can write classes Studio never used. Utilities only — the reset stays Studio's, because a second copy of it would restyle the whole page rather than the plugin's corner of it.
+
+So: a catalogue with CRUD, a form, a list of jobs — tier A, and requiring a frontend project for one table would be the worse product. Tabs over three unrelated panels, a diagram, a canvas, live output that is not a row — tier C, and the point of the tier is that nothing further is asked of the author. A tier-C view may still declare `data` sources and `actions` and call them; the action executor stays the only path that resolves a `ScriptRef` server-side and audits as `plugin.action`, whoever the caller is.
 
 ## Writing the words
 

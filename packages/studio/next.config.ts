@@ -6,7 +6,11 @@ const nextConfig: NextConfig = {
   output: 'export',
   reactStrictMode: true,
   // Workspace packages are exported as TypeScript source, so they need transpiling.
-  transpilePackages: ['@enkaku/protocol'],
+  // `@enkaku/ui` is Studio's own component library, extracted so plugins can
+  // import the same components (plan 111 §3.3). It is a ROOT-TypeScript
+  // package and crosses into Studio's TypeScript 5 exactly the way
+  // `@enkaku/protocol` already does — see CLAUDE.md's "two TypeScripts" rule.
+  transpilePackages: ['@enkaku/protocol', '@enkaku/ui'],
 }
 
 export default nextConfig

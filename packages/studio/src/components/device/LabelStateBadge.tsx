@@ -1,5 +1,5 @@
 import type { DeviceLabelState } from '@enkaku/protocol'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * The one place `DeviceLabelState.state` turns into a colour and a word

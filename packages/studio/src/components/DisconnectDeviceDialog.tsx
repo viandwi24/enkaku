@@ -3,9 +3,7 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { DisconnectOutcomeSchema, type DeviceInfo } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { api, type ApiError } from '@/lib/actions'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, type ApiError } from '@enkaku/ui'
 
 function isApiError(err: unknown): err is Error & ApiError {
   return err instanceof Error && 'code' in err

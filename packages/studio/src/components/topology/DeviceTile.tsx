@@ -6,8 +6,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import type { TopologyActiveJob } from '@/lib/api'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
 import { TileChips } from '@/components/TileChips'
-import { duration } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import { duration, cn } from '@enkaku/ui'
 
 /**
  * One device on the fleet map (plan 32 §3.4). Built entirely from the

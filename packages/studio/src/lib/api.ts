@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { DeviceInfo, JobNodeInfo, WorkflowDoc, WorkflowFinding } from '@enkaku/protocol'
-import { BadResponseError } from './actions'
+import { BadResponseError } from '@enkaku/ui'
 import { coreBase } from './ws'
 
 interface ItemsPage<T> {

@@ -17,7 +17,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { GitBranch, Workflow as WorkflowIcon } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 import { connectionToEdgeChange, type EdgeChange } from './canvas-edit'
 import { deriveGraph, type EdgeKind } from './derive-graph'
 import { computeLayout } from './compute-layout'

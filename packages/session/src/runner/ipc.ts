@@ -149,6 +149,25 @@ export const JobsCallSchema = z.discriminatedUnion('method', [
 ])
 export type JobsCall = z.infer<typeof JobsCallSchema>
 
+/**
+ * `ctx.farm`'s child⇄parent protocol (plan 109 §3.1, §4.3, step 109.1) — a
+ * `farm.call` / `farm.result` round trip, the SAME shape `kv.call` and
+ * `jobs.call` above already use.
+ *
+ * `input` is `z.unknown()` on purpose and is NOT validated here: the only
+ * thing that may decide whether an input is well formed is the capability's
+ * own `input` schema inside `invoke()` (plan 63 §3.4 step 1 — "`invoke` is
+ * the ONLY door"). A second, weaker check at this boundary would be a second
+ * definition of every capability's input, which is precisely the drift
+ * plan 63 §3.7 removed from `DeviceCallSchema`.
+ */
+export const FarmCallSchema = z.object({
+  /** A capability id — `device.list`, `job.run`. Refused by the broker unless the plugin's manifest declared it. */
+  capability: z.string().min(1),
+  input: z.unknown().optional(),
+})
+export type FarmCall = z.infer<typeof FarmCallSchema>
+
 const ScriptErrorSchema = z.object({
   code: z.string(),
   message: z.string(),
@@ -210,6 +229,7 @@ export const ChildToParentSchema = z.union([
   z.intersection(z.object({ t: z.literal('device.call'), callId: z.string() }), DeviceCallSchema),
   z.intersection(z.object({ t: z.literal('kv.call'), callId: z.string() }), KvCallSchema),
   z.intersection(z.object({ t: z.literal('jobs.call'), callId: z.string() }), JobsCallSchema),
+  z.intersection(z.object({ t: z.literal('farm.call'), callId: z.string() }), FarmCallSchema),
   z.object({
     t: z.literal('artifact.save'),
     callId: z.string(),
@@ -343,6 +363,13 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
   }),
   z.object({
     t: z.literal('jobs.result'),
+    callId: z.string(),
+    ok: z.boolean(),
+    value: z.unknown().optional(),
+    error: z.object({ code: z.string(), message: z.string() }).optional(),
+  }),
+  z.object({
+    t: z.literal('farm.result'),
     callId: z.string(),
     ok: z.boolean(),
     value: z.unknown().optional(),

@@ -5,16 +5,24 @@ import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ChevronsLeft, Menu, MonitorSmartphone, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, type LucideIcon } from 'lucide-react'
 import { z } from 'zod'
-import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  Button,
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  SheetTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+  cn,
+} from '@enkaku/ui'
 import { NotificationBell } from '@/components/NotificationBell'
 import { OperationTray } from '@/components/operations/OperationTray'
 import { ProvisioningBanner } from '@/components/ProvisioningBanner'
 import { AdbServerBanner } from '@/components/layout/AdbServerBanner'
 import { useAuth, type AuthUser } from '@/lib/auth'
 import { coreBase, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 import { pluginIcon } from '@/lib/plugin-icons'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 

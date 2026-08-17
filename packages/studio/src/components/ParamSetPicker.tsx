@@ -11,11 +11,7 @@ import {
   type JsonSchemaNode,
   type ParamSetInfo,
 } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, describeApiError } from '@/lib/actions'
+import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, api, describeApiError } from '@enkaku/ui'
 
 /**
  * The preset row above a params form (plan 95 §4.7, §4.8, §5 step 95.8) —

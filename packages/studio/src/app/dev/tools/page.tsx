@@ -4,11 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { JobCreateResponseSchema } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
+import { Button, Input, Label, Textarea, api, useAction } from '@enkaku/ui'
 
 /**
  * Development aid — deliberately absent from the menu.

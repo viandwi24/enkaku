@@ -4,8 +4,7 @@ import { useEffect, useState } from 'react'
 import { Copy } from 'lucide-react'
 import { AdbEndpointCreateResponseSchema, AdbEndpointResponseSchema, AdbEndpointStateSchema } from '@enkaku/protocol'
 import { z } from 'zod'
-import { Button } from '@/components/ui/button'
-import { api, useAction } from '@/lib/actions'
+import { Button, api, useAction } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**

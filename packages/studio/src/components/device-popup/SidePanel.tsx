@@ -6,7 +6,7 @@ import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
 import { InspectorPanel } from '@/components/InspectorPanel'
 import { RecordPanel } from '@/components/recording/RecordPanel'
 import { useRecording } from '@/components/recording/useRecording'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@enkaku/ui'
 import { ActionsList } from './ActionsList'
 
 /**

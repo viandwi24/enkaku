@@ -1,5 +1,5 @@
 import { formatValue, resolveRuntime, type JobSettings, type ResolvedRuntime, type RuntimeClamp, type RuntimeEnvelope } from '@enkaku/protocol'
-import { fileSize } from '@/lib/format'
+import { fileSize } from '@enkaku/ui'
 
 /**
  * Plan 98 §3.9 item 3, §5 step 98.8 — the Script-detail Runtime card's own

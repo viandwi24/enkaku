@@ -8,11 +8,27 @@
  * still re-verifies whatever it is given in a child process; nothing here is a
  * shortcut around that.
  *
- * Output (gitignored): packages/core/packs/<id>.mjs + index.json
+ * ## The `ui/` half (plan 111 step 111.7)
+ *
+ * An embedded pack used to be one `.mjs` and nothing else, which was true for
+ * as long as every shipped pack was tier A. Proxy Manager is tier C now: its
+ * screen is `ui/index.js` plus `ui/index.css`, and a staged pack without them
+ * has a `react` view whose module 404s — a named error panel on a fresh
+ * install, for a pack the release itself put there.
+ *
+ * So this runs the SDK's own `buildUiAssets` — the same function
+ * `enkaku publish` runs, not a second implementation of it — and writes what
+ * it produces beside the bundle. `seedEmbeddedPacks` passes them to
+ * `runtime.stage({ ui })`, which is the same door the `.enkaku` upload uses.
+ * A pack with no `src/ui/` directory produces `[]` and is embedded exactly as
+ * it was before.
+ *
+ * Output (gitignored): packages/core/packs/<id>.mjs, packages/core/packs/<id>-ui/**, index.json
  * Usage:  bun scripts/build-packs.ts
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
+import { buildUiAssets } from '../packages/sdk/src/cli/build-ui'
 
 const root = join(import.meta.dir, '..')
 const outDir = join(root, 'packages', 'core', 'packs')
@@ -33,6 +49,13 @@ export interface PackIndexEntry {
   version: string
   /** Filename inside packs/, e.g. `networking.mjs`. */
   file: string
+  /**
+   * The pack's `ui/` payload, if it has one. `path` is the name the package
+   * format uses (`index.js`, `index.css`) and is what a view's `react.entry`
+   * names; `file` is where the bytes sit under packs/, for the release
+   * entrypoint to embed. Absent for a script-only or tier-A pack.
+   */
+  ui?: { path: string; file: string }[]
 }
 
 rmSync(outDir, { recursive: true, force: true })
@@ -65,8 +88,22 @@ for (const entry of PACK_ENTRIES) {
 
   const file = `${def.id}.mjs`
   writeFileSync(join(outDir, file), code)
-  index.push({ name: def.id, version: def.version, file })
-  console.log(`  ${def.id}@${def.version} → packs/${file} (${(code.length / 1024).toFixed(0)} KB, ${def.scripts.length} script(s))`)
+
+  // The same builder `enkaku publish` uses, given a scratch directory it owns.
+  // `[]` for a pack with no `src/ui/`, which is every pack but one today.
+  const uiAssets = await buildUiAssets(entryPath, join(outDir, `.tmp-${def.id}`))
+  const ui: { path: string; file: string }[] = []
+  for (const asset of uiAssets) {
+    const dest = `${def.id}-ui/${asset.path}`
+    mkdirSync(dirname(join(outDir, dest)), { recursive: true })
+    writeFileSync(join(outDir, dest), asset.data)
+    ui.push({ path: asset.path, file: dest })
+  }
+  rmSync(join(outDir, `.tmp-${def.id}`), { recursive: true, force: true })
+
+  index.push({ name: def.id, version: def.version, file, ...(ui.length > 0 ? { ui } : {}) })
+  const uiNote = ui.length > 0 ? `, ${ui.length} ui asset(s)` : ''
+  console.log(`  ${def.id}@${def.version} → packs/${file} (${(code.length / 1024).toFixed(0)} KB, ${def.scripts.length} script(s)${uiNote})`)
 }
 
 writeFileSync(join(outDir, 'index.json'), `${JSON.stringify(index, null, 2)}\n`)

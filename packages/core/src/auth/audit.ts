@@ -189,6 +189,69 @@ export type AuditAction =
   // dispatch itself may also write: those say WHAT happened, this says which
   // screen's button asked for it.
   | 'plugin.action'
+  // A `ctx.farm` call the capability broker refused ITSELF, before `invoke()`
+  // was entered (plan 109 §4.3, step 109.3) — an undeclared capability, an
+  // unknown one, or a namespace that is not an active plugin at all. `userId`
+  // is the `plugin:<name>` principal, `target` the capability id, and `meta`
+  // carries what the manifest DID declare at that moment; the input is never
+  // recorded, the same rule `kv.set` and `command.run` state above.
+  //
+  // An ACCEPTED call is deliberately absent from this action: it reaches
+  // `invoke()`, which writes the one `capability.invoke` row it gets (criterion
+  // 10 — exactly one row per accepted call) under the same `plugin:<name>`
+  // principal. Filtering the log on that principal therefore returns both,
+  // and plan 63's acceptance #7 ("every capability invocation, refusals
+  // included") stays true of `capability.invoke` rather than acquiring a
+  // plugin-shaped hole.
+  | 'plugin.capability'
+  // One invocation of a plugin's own `ctx.onRequest` handler (plan 109 §4.6,
+  // step 109.6), and one WebSocket handshake accepted on a `ctx.onSocket` one.
+  // `userId` is the REAL caller — the human whose session reached the route —
+  // and `target` is `<plugin>/<handlerId>`.
+  //
+  // These exist because `plugin.capability`/`capability.invoke` name
+  // `plugin:<name>` and nothing else: a plugin's HTTP handler that enqueues a
+  // job is audited as the plugin, correctly (invoking a handler does not lend a
+  // plugin the caller's authority, §9 Q14), but with no row here there is
+  // nothing in the log tying that to the operator who pressed the button. One
+  // query on `target` answers "who set this off"; one on `user_id` answers
+  // "what did the plugin then do".
+  //
+  // Audited on EVERY method, GET included: the farm cannot know whether a
+  // plugin's handler mutates — `GET /http/wipe` is legal plugin code — so
+  // filtering by method would be a guess dressed as a policy. `meta` carries
+  // the method, the response status and the permission that gated it; never the
+  // body and never the query string, either of which can hold a secret (the
+  // rule `kv.set`, `command.run` and `plugin.capability` already state).
+  | 'plugin.http'
+  | 'plugin.socket'
+  // Start/stop/restart of a plugin's service (plan 109 §4.6, `plugin.runtime`).
+  // Kept apart from `plugin.reload`/`plugin.restart` above, which are plan 82's
+  // and re-VERIFY a bundle: this one changes nothing about which version is
+  // live. `meta` carries the verb and the status the service landed in — never
+  // "ok", because a restart that lands on `starting` has not started.
+  | 'plugin.runtime'
+  // An inbound webhook (plan 109 §3.7, step 109.7) — one row per request that
+  // got past the rate limiter, whatever became of it, plus a row whenever a
+  // plugin reads or rotates one of its own secrets.
+  //
+  // **`userId` is `webhook:<plugin>/<id>`, and that is a NAMED ABSENCE rather
+  // than a principal.** Every other plugin row has a real actor behind it:
+  // `plugin.http`/`plugin.socket` name the operator whose browser caused it,
+  // `plugin.capability`/`capability.invoke` name `plugin:<name>`. A webhook has
+  // neither — its caller is a third-party system with no farm account, and the
+  // only thing the farm knows about it is that it held this webhook's secret.
+  // `null` would have been the other option and it says less: it is the same
+  // value a core-internal action carries, so "which of these rows had no human
+  // behind them because they came in off the internet" would stop being a
+  // query. This string says there was no operator AND says what stood in for
+  // one.
+  //
+  // `meta` carries the outcome, which secret verified (`current`/`previous` —
+  // the signal that a sender has not been updated since a rotation), the
+  // response status and the body's size. Never the body, never the signature,
+  // and never the secret.
+  | 'plugin.webhook'
   // The command console (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
   // run, the same "create the run, audit it once" shape `createBatch`'s own
   // `job.run` row already has (`clusters/dispatch.ts`). `meta` carries the

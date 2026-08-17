@@ -12,12 +12,17 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  api,
+  useAction,
+} from '@enkaku/ui'
 import { DevicePicker } from '@/components/DevicePicker'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { api, useAction } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
 
 interface PendingMove {

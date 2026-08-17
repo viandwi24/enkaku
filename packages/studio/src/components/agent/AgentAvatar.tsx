@@ -1,5 +1,5 @@
 import { Bot } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * An agent's identity, rendered small and consistently everywhere one

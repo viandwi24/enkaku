@@ -232,12 +232,30 @@ describe('definePlugin — the surface (plan 108 §4.1)', () => {
     expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(/maxColumns/)
   })
 
-  test('a view declaring neither a table nor a frame throws', () => {
+  test('a view declaring neither a table nor a react module throws', () => {
     const bad = surface()
     bad.views.accounts = { title: 'Accounts' }
     expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: bad })).toThrow(
-      /view "accounts" declares neither `table` nor `frame`/,
+      /view "accounts" declares neither `table` nor `react`/,
     )
+  })
+
+  /**
+   * Plan 111 §5 step 111.4 — a React view is accepted by the SAME author-time
+   * gate a table is, so an author who scaffolds one (`enkaku init`) finds out
+   * at import time rather than at publish. `definePlugin` deliberately does
+   * NOT check `apiVersion` compatibility: that is a property of the farm doing
+   * the asking, and it is refused at verify (`verify-child.ts`).
+   */
+  test('a react view is accepted, with a data source beside it', () => {
+    const ok = surface()
+    ok.views.accounts = {
+      title: 'Accounts',
+      data: { kind: 'kv.list', scope: 'global' },
+      react: { entry: 'index.js', apiVersion: 1 },
+    }
+    ok.actions = {}
+    expect(() => definePlugin({ id: 'tiktok', version: '1.0.0', scripts: [member('a')], surface: ok })).not.toThrow()
   })
 
   test('every defect is reported in ONE throw, not one import cycle each', () => {

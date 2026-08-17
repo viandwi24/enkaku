@@ -4,9 +4,15 @@ import { DANGEROUS_FIELD_NAMES } from './schema/limits'
 import { ScriptRefSchema, type ScriptRef } from './script-ref'
 
 /**
- * The declarative screen a plugin contributes to Studio (plan 108 §3.2,
- * §4.2) — a sidebar entry, a table, a form, and a closed set of actions,
- * with no browser JavaScript of the plugin's own in the default path.
+ * The screen a plugin contributes to Studio (plan 108 §3.2, §4.2; plan 111
+ * §4.1) — a sidebar entry and a set of views, each drawn either by declaring
+ * a table (tier A: no build step, no JavaScript of the plugin's own) or by
+ * naming a React module the plugin ships (tier C), plus a closed set of
+ * actions either kind may invoke.
+ *
+ * Everything below describes tier A's vocabulary. A tier-C view states
+ * `react` and draws itself, so none of it constrains what a React view may
+ * render — deliberately, that is the whole point of plan 111.
  *
  * This module adds a LAYOUT vocabulary and deliberately **no field
  * vocabulary at all** (plan 108 §3.3, and `docs/design.md`'s one-resolver
@@ -43,9 +49,40 @@ export const SURFACE_LIMITS = {
   maxColumns: 12,
   /** The whole `surface` block, serialised. It is stored in `plugins.manifest` and shipped to every browser that opens the page. */
   maxSurfaceBytes: 256 * 1024,
-  /** The tier-B `ui/` directory inside a `.enkaku` package (plan 108 §3.8, enforced by step 108.2's reader — named here so both halves quote one number). */
+  /** The `ui/` directory inside a `.enkaku` package (plan 108 §3.8, enforced by step 108.2's reader — named here so both halves quote one number). */
   maxUiBytes: 8 * 1024 * 1024,
 } as const
+
+/**
+ * The `@enkaku/ui` contract major THIS build ships (plan 111 §3.5). A view
+ * that renders React states the major it was built against
+ * (`ViewSpec.react.apiVersion`), and verify refuses anything else with a
+ * message naming both numbers — the same shape `runtime.sdk` already has for
+ * a script bundle (`SCRIPT_RUNTIME_MAJOR`, plan 98 §3.3 S1), and for the same
+ * reason: a known, checked incompatibility beats a component that renders
+ * blank in an operator's face.
+ *
+ * The number lives HERE, in the protocol, and deliberately **not** in
+ * `packages/ui/package.json`. Three reasons, in order of weight:
+ *
+ * 1. `@enkaku/ui` is `private: true` at `0.0.1` — it is never published to a
+ *    registry, so its semver is a workspace placeholder rather than a release
+ *    identity anyone consumes. Deriving the contract from its major would make
+ *    every plugin declare `apiVersion: 0` and leave no way to signal a break
+ *    without first leaving 0.x for reasons that have nothing to do with the
+ *    component API.
+ * 2. The core could not read that file at runtime in any case: a release is a
+ *    `bun build --compile` binary and `packages/ui/package.json` is not inside
+ *    it. A check that only works from a source checkout is not a check.
+ * 3. Both halves must quote ONE number — the SDK scaffold that writes
+ *    `apiVersion` into a new plugin (`enkaku init`) and the farm that refuses a
+ *    mismatch at verify. `@enkaku/protocol` is the only package both already
+ *    depend on, and `@enkaku/ui` is not a dependency of either.
+ *
+ * Bumped by hand, as a protocol change with a review attached, when a breaking
+ * change lands in what `@enkaku/ui` exports.
+ */
+export const PLUGIN_UI_API_VERSION = 1
 
 /**
  * The icons a nav entry may name — lucide names in their kebab-case form,
@@ -153,8 +190,61 @@ export const DataSourceSchema = z.discriminatedUnion('kind', [
       prefix: z.string().max(200).default(''),
     })
     .strict(),
+  /**
+   * Plan 109 §3.1, §4.6, step 109.6 — rows assembled by the plugin's own code.
+   *
+   * The two `kv.*` members above read the plugin's stored data in the shape it
+   * was stored in. A table that joins that data with live farm state has no
+   * single place to read from, so something has to assemble it; `name` is a
+   * `ctx.onQuery` handler id, reached at `GET /api/plugins/:name/query/:name`.
+   *
+   * **This member is the only data source that can be DOWN.** A `kv.scan`
+   * fails only if the farm does; a handler source fails whenever the plugin's
+   * service is stopped, starting, failed, or disabled by the error budget — and
+   * a view that answers an empty table in that case is telling the operator
+   * their data is gone, which is a different and much worse thing. The route
+   * answers a coded refusal per state and Studio names the plugin and offers
+   * Restart (criterion 21).
+   *
+   * There is no `input` member. A declarative view has nowhere to get one from
+   * — no form, no row, nothing bound — so a field for it would only ever hold a
+   * literal the handler could just as well have written itself.
+   */
+  z
+    .object({
+      kind: z.literal('handler'),
+      name: SurfaceIdSchema,
+    })
+    .strict(),
 ])
 export type DataSource = z.infer<typeof DataSourceSchema>
+
+/**
+ * Plan 109 step 109.6 — a surface whose view reads `{ kind: 'handler' }` needs
+ * the plugin to declare a `service`, because `ctx.onQuery` exists nowhere else.
+ *
+ * Refused at VERIFY rather than left to fail at render, on the same reasoning
+ * `unsupportedIsolationMessage` and `unknownPluginEventTypesMessage` follow:
+ * criterion 21's error state exists for a service that is DOWN, which is an
+ * operational fact an operator can act on. A plugin that could never have
+ * served the view in the first place is an authoring mistake, and rendering it
+ * as "the service is not running, press Restart" would send the operator to
+ * press a button that cannot help.
+ *
+ * Returns the refusal message, or `null` when the surface is coherent.
+ */
+export function handlerViewsWithoutServiceMessage(surface: PluginSurface, hasService: boolean): string | null {
+  if (hasService) return null
+  const views = Object.entries(surface.views)
+    .filter(([, view]) => view?.data?.kind === 'handler')
+    .map(([id]) => id)
+  if (views.length === 0) return null
+  return (
+    `view${views.length === 1 ? '' : 's'} ${views.map((v) => `"${v}"`).join(', ')} read rows from a \`{ kind: 'handler' }\` data source, ` +
+    `but this plugin declares no \`service\` — \`ctx.onQuery\` is registered by \`defineService({ setup })\` and exists nowhere else, ` +
+    `so nothing would ever answer that view (docs/plans/109-m74-plugin-runtime.md §3.1, §4.6).`
+  )
+}
 
 /**
  * The device fields a binding may read — exactly the six-field allowlist of
@@ -338,12 +428,20 @@ export const ActionSpecSchema: z.ZodType<ActionSpec, ActionSpecInput> = z.discri
 
 /**
  * One screen. Tier A states `data` + `table` and is rendered by Studio's own
- * components; tier B states `frame` and is a sandboxed iframe over the
- * package's `ui/` directory (plan 108 §3.2, §4.4). The two are mutually
+ * components with no build step at all; tier C states `react` and is an ES
+ * module out of the package's `ui/` directory, loaded into Studio's own tree
+ * with Studio's own React (plan 111 §3.1, §3.2). The two are mutually
  * exclusive, and exactly one is required — checked by
  * `validatePluginSurface` below rather than here, so the refusal can name
  * the offending view id, which a schema-level refinement cannot see (the id
  * is the record KEY one level up).
+ *
+ * Plan 108's tier B — a sandboxed iframe, spelled `frame` — was REMOVED by
+ * plan 111 §3.6 rather than deprecated (00-overview §4.3): once React with
+ * full page access exists, nobody would choose a frame that cannot even
+ * `fetch`, and a weaker parallel path kept "for one release" is exactly what
+ * that rule forbids. There is no compatibility alias; a manifest still
+ * naming `frame` fails the `.strict()` parse.
  */
 export const ViewSpecSchema = z
   .object({
@@ -373,9 +471,28 @@ export const ViewSpecSchema = z
       })
       .strict()
       .optional(),
-    /** Tier B — an entry file inside the package's `ui/` directory. */
-    frame: z
-      .object({ entry: z.string().min(1).max(200), height: z.enum(['fill', 'auto']).default('fill') })
+    /**
+     * Tier C (plan 111 §3.1, §4.1) — an ES module inside the package's `ui/`
+     * directory, injected as a `<script type="module">` and expected to
+     * `window.__enkaku__.register(viewId, Component)`.
+     *
+     * `entry` is a path RELATIVE to `ui/`, exactly the shape
+     * `PluginPackageAsset.path` uses; what may legally be there is already
+     * governed by the `.enkaku` allowlist (`packages/core/src/plugins/package.ts`),
+     * so nothing is re-stated here. It is not resolved at parse time on
+     * purpose: a surface is validated by `definePlugin` on the author's own
+     * machine, where there is no package yet to look inside.
+     *
+     * `apiVersion` is the `@enkaku/ui` major the module was BUILT against.
+     * Required, not defaulted: `react` is new in plan 111, so there is no
+     * older view for a default to be kind to, and a silent default would be a
+     * guess about the one fact the check exists to establish. Verify compares
+     * it against `PLUGIN_UI_API_VERSION` and refuses a mismatch naming both
+     * (§3.5) — the bound here is only the coarse shape check, so a plainly
+     * absurd number is a schema error rather than a version report.
+     */
+    react: z
+      .object({ entry: z.string().min(1).max(200), apiVersion: z.number().int().min(1).max(999) })
       .strict()
       .optional(),
     toolbar: z
@@ -408,7 +525,26 @@ const PluginSurfaceShapeSchema = z
       error: `a plugin contributes at most ${SURFACE_LIMITS.maxNav} nav entries (maxNav)`,
     }),
     views: z.record(SurfaceIdSchema, ViewSpecSchema),
-    actions: z.record(SurfaceIdSchema, ActionSpecSchema),
+    /**
+     * Defaulted to `{}` by plan 111 step 111.4, and this is a real consequence
+     * of tier C rather than a convenience.
+     *
+     * Under tier A the declared actions WERE the plugin's write path — a table
+     * mutates only through one, evaluated server-side against the verified
+     * surface — so requiring the key made an author state, even as `{}`, that
+     * their screen does nothing. A React view has no such gap to close: it runs
+     * in Studio's document with the operator's session and calls `fetch`
+     * directly (§3.4), so a perfectly complete tier-C plugin declares no
+     * actions at all. That is the shape `enkaku init` scaffolds, and demanding
+     * `actions: {}` from it would be exactly the ceremony `enkaku init` exists
+     * to remove.
+     *
+     * Nothing downstream changes: `.default({})` applies at PARSE, so every
+     * consumer of a `PluginSurface` — the registry, the executor, Studio —
+     * still reads a present record, and only the author-facing
+     * `PluginSurfaceInput` gains an optional key.
+     */
+    actions: z.record(SurfaceIdSchema, ActionSpecSchema).default({}),
   })
   .strict()
 
@@ -478,8 +614,13 @@ function serialisedBytes(surface: PluginSurface): number | null {
  * Runs the Zod parse first, then the checks a schema structurally cannot
  * make because they span two branches of the document: a nav entry naming a
  * view that does not exist, a toolbar or row action naming an action that
- * does not exist, a duplicate nav id, and the tier-A/tier-B exclusivity of
- * §3.2. Existence of a `script` a `job`/`batch` action names is NOT checked
+ * does not exist, a duplicate nav id, and the `table`/`react` renderer
+ * exclusivity (plan 111 §4.1). The `react.apiVersion` compatibility check is
+ * deliberately NOT here: this function answers "is this surface well
+ * formed?", which is the same answer everywhere, while whether a given
+ * `@enkaku/ui` major is supported is a property of the BUILD doing the
+ * asking — so it lives in the verify parent (`verify-child.ts`), which is the
+ * farm's own half. Existence of a `script` a `job`/`batch` action names is NOT checked
  * — a pack may reference a script published separately, and the action
  * reports `script_not_found` at click time, the same failure the run dialog
  * already gives (§3.9).
@@ -518,27 +659,29 @@ export function validatePluginSurface(surface: unknown): PluginSurfaceValidation
   }
 
   for (const [viewId, view] of Object.entries(value.views)) {
-    // Exactly one RENDERER — `table` (tier A) or `frame` (tier B) — but `data`
+    // Exactly one RENDERER — `table` (tier A) or `react` (tier C) — but `data`
     // belongs to either.
     //
     // An earlier reading made `data` part of the tier-A half and refused it
-    // beside a frame, which left a frame view with nothing it could legally
-    // read: `data.query` had no declared source and answered `no_data_source`
-    // forever, so tier B could only ever hold static markup. That defeats its
-    // whole purpose — tier B exists for a LAYOUT the vocabulary cannot draw
-    // (plan 108 §3.2), never for a plugin that has nothing to show.
+    // beside the other renderer, which left that view with nothing it could
+    // legally read: `data.query` had no declared source and answered
+    // `no_data_source` forever, so the tier could only ever hold static
+    // markup (plan 108 §9 Q4 corrected this). The correction stands verbatim
+    // for `react`, and plan 111 §3.4 restates it: a React view may declare a
+    // source and read it through `/api/plugins/:name/data/*`, exactly as a
+    // table does.
     //
-    // The authority story is unchanged, and is the reason `data` can be shared
-    // safely: a frame reads through the SAME declared source a table would, over
-    // the RPC, and can reach nothing else (its CSP sets `connect-src 'none'`, so
-    // it has no fetch of its own at all). Declaring a source widens what the
-    // frame may READ to exactly what the author wrote down — which is the whole
-    // contract.
-    if (view.frame !== undefined && view.table !== undefined) {
-      errors.push(`view "${viewId}" declares both \`table\` and \`frame\` — a view has one renderer, never two`)
+    // What HAS changed with tier C is that `data` is no longer the only thing
+    // the view can reach. A React view runs in Studio's own document with the
+    // operator's session and can `fetch` anything that session may reach —
+    // deliberately (plan 111 §0.1, §2: isolation is a non-goal). So declaring
+    // a source is now a convenience, not a boundary, and nothing here should
+    // be read as one.
+    if (view.react !== undefined && view.table !== undefined) {
+      errors.push(`view "${viewId}" declares both \`table\` and \`react\` — a view has one renderer, never two`)
     }
-    if (view.frame === undefined && view.table === undefined) {
-      errors.push(`view "${viewId}" declares neither \`table\` nor \`frame\` — a view needs one renderer`)
+    if (view.react === undefined && view.table === undefined) {
+      errors.push(`view "${viewId}" declares neither \`table\` nor \`react\` — a view needs one renderer`)
     }
     if (view.table !== undefined && view.data === undefined) {
       errors.push(`view "${viewId}" declares \`table\` but no \`data\` — a table view needs both`)
@@ -558,4 +701,62 @@ export function validatePluginSurface(surface: unknown): PluginSurfaceValidation
   }
 
   return errors.length === 0 ? { ok: true, value } : { ok: false, errors }
+}
+
+// ---------------------------------------------------------------------------
+// What a React view is HANDED (plan 111 §9 Q2; published here by the 111.7
+// follow-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything in the page's query string that Studio has NOT claimed.
+ *
+ * Studio claims exactly two keys — `name` and `view` — because those are what
+ * `/plugins/view?name=…&view=…` resolves the screen from. Every other key is
+ * the plugin's, handed over as-is with no interpretation.
+ */
+export type PluginViewParams = Readonly<Record<string, string>>
+
+/**
+ * Writes the unclaimed query keys back. **Patch semantics**: a key present in
+ * `patch` is set, a key mapped to `null` is removed, and a key absent from
+ * `patch` is left exactly as it was — so a plugin with two independent
+ * URL-backed controls never has to know about the other one's key.
+ *
+ * `name` and `view` are ignored if a plugin passes them: they address the
+ * screen, and a plugin rewriting them would navigate itself somewhere else
+ * mid-render.
+ */
+export type SetPluginViewParams = (patch: Readonly<Record<string, string | null>>) => void
+
+/**
+ * The props a plugin's view component receives. Deliberately minimal: a
+ * plugin owns its own screen and fetches its own data with the operator's
+ * session (§3.4), so there is nothing the host must hand it except which
+ * view of which plugin it is being asked to be — enough for one module to
+ * register one component under several view ids — plus the query passthrough
+ * of §9 Q2.
+ *
+ * **Why this lives in the protocol rather than in Studio.** It is a contract
+ * between two codebases that never link: Studio renders the component, an
+ * author writes it, and until this moved here the shape existed only in
+ * `packages/studio/src/lib/plugin-host.ts` — importable by nothing an author
+ * could reach. The first tier-C pack therefore hand-copied it into its own
+ * `enkaku-host.d.ts`, where nothing would ever have checked it against the
+ * host's (recorded in plan 111's status block).
+ *
+ * It carries **no React type**, which is what makes this package the right
+ * home: `PluginViewProps` is four strings and a function, and the only React
+ * type in the neighbourhood — `ComponentType<PluginViewProps>` — belongs to
+ * whoever renders or registers the component, not to the props themselves.
+ * `@enkaku/protocol` has zero React dependency and keeps it. `@enkaku/ui`
+ * re-exports these three names for the author's convenience, because that is
+ * the package a React plugin already has installed.
+ */
+export interface PluginViewProps {
+  plugin: string
+  version: string
+  viewId: string
+  params: PluginViewParams
+  setParams: SetPluginViewParams
 }

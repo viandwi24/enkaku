@@ -1,7 +1,7 @@
 'use client'
 
 import { DeviceReadinessResponseSchema, type DeviceReadiness, type Readiness } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 import { ws } from './ws'
 
 /**

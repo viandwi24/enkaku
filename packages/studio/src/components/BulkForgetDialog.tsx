@@ -6,9 +6,7 @@ import { z } from 'zod'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { api } from '@/lib/actions'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, api } from '@enkaku/ui'
 
 interface Outcome {
   ok: boolean

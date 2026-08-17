@@ -36,7 +36,16 @@ function collectSourceFiles(dir: string): string[] {
 }
 
 const root = import.meta.dir // packages/studio/src/
-const files = collectSourceFiles(root)
+/**
+ * Plan 111 step 111.1 moved Studio's 28 `ui/` primitives into `@enkaku/ui`.
+ * They are the same components, styled the same way, and they must stay under
+ * the same rules — a scan that silently stopped covering them the day they
+ * moved is exactly the "a rule nobody re-checked quietly ceased to be true"
+ * pattern hotfix §96.22/§96.25 already recorded. So the corpus is both trees,
+ * and `atLeastOneFrom` below proves the second one is genuinely being read.
+ */
+const uiRoot = join(root, '../../ui/src')
+const files = [...collectSourceFiles(root), ...collectSourceFiles(uiRoot)]
 
 describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73 §3.6, §7)', () => {
   test('at least one file was actually scanned (a passing test over zero files proves nothing — plan 69\'s own guard, kept)', () => {
@@ -44,6 +53,9 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
     // A sanity floor, not an exact count — this whole module tree has always had far more than a
     // handful of files; a number this low would mean `collectSourceFiles` walked the wrong root.
     expect(files.length).toBeGreaterThan(50)
+    // And BOTH roots are read — a `@enkaku/ui` that stopped being scanned
+    // would still leave this suite green on Studio's files alone.
+    expect(files.some((f) => f.startsWith(uiRoot))).toBe(true)
   })
 
   test('no Tailwind v3 bracket colour form — `bg-[--color-...]` compiles to nothing in v4, silently', () => {

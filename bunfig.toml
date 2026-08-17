@@ -25,4 +25,11 @@ root = "packages"
 # against the path from the repo root (where `bun test` is actually invoked),
 # not from `root = "packages"` above — that setting only changes where Bun
 # SCANS for test files, not the base `pathIgnorePatterns` matches against.
-pathIgnorePatterns = ["packages/studio/**"]
+#
+# `packages/ui` is excluded for the SAME reason and on the same terms: plan 111
+# step 111.1 moved Studio's 28 components (and three of their tests) out into
+# `@enkaku/ui` so plugins can import them, and those tests render through
+# `@testing-library/react` too. They run as `bun run --cwd packages/ui test`,
+# where `packages/ui/bunfig.toml`'s own preload of `happydom.ts` is the one
+# that gets read.
+pathIgnorePatterns = ["packages/studio/**", "packages/ui/**"]

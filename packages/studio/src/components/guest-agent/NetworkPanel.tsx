@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { ChevronRight } from 'lucide-react'
 import { AgentStateBadge } from '@/components/guest-agent/AgentStateBadge'
 import { NetworkRouteForm } from '@/components/guest-agent/NetworkRouteForm'
-import { ErrorState, LoadingRows } from '@/components/states'
+import { ErrorState, LoadingRows } from '@enkaku/ui'
 import { fetchGuestAgentStatus, type GuestAgentStatus } from '@/lib/api'
 
 /**

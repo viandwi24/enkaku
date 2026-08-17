@@ -7,11 +7,7 @@ import { LabelPreview } from '@/components/device/LabelPreview'
 import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { api, describeApiError } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
+import { Button, Switch, ConfirmDialog, api, describeApiError, relativeTime } from '@enkaku/ui'
 
 function readDraftLabelling(draft: Record<string, unknown>): { mode: DeviceLabelMode; showName: boolean } {
   const raw = (draft.labelling ?? {}) as { mode?: DeviceLabelMode; showName?: boolean }

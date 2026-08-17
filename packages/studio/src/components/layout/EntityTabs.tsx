@@ -1,8 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 
 export interface EntityTab {
   key: string

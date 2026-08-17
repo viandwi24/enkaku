@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { LoadingRows } from '@/components/states'
+import { LoadingRows } from '@enkaku/ui'
 
 /**
  * `/agents/thread` was Plan 66/67's minimal thread view. Plan 69 folds its

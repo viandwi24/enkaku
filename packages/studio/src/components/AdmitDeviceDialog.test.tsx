@@ -17,7 +17,13 @@ mock.module('@/lib/ws', () => ({
 // guessed. Spied here since nothing else in this workspace asserts toast
 // copy from a rendered DOM.
 const toastSuccess = mock(() => {})
-mock.module('sonner', () => ({ toast: { success: toastSuccess, error: () => {}, warning: () => {} } }))
+// `Toaster` is part of the stub because `@enkaku/ui` is a single barrel (plan
+// 111 step 111.1): importing ANY component from it evaluates `sonner.tsx`, the
+// wrapper that re-exports sonner's own `Toaster`.
+mock.module('sonner', () => ({
+  toast: { success: toastSuccess, error: () => {}, warning: () => {} },
+  Toaster: () => null,
+}))
 
 const { AdmitDeviceDialog } = await import('./AdmitDeviceDialog')
 

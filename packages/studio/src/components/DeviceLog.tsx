@@ -3,13 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Pause, Play } from 'lucide-react'
 import { DeviceEventsResponseSchema, type DeviceEvent, type DeviceEventStream } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api, relativeTime, Button, cn, EmptyState, ErrorState, LoadingRows } from '@enkaku/ui'
 import { newId, ws } from '@/lib/ws'
-import { relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
-import { Button } from '@/components/ui/button'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { cn } from '@/lib/utils'
 
 /**
  * A bounded window per stream (plan 18 §8 risks table): a tab left open for

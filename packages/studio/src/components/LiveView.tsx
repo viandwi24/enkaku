@@ -13,12 +13,9 @@ import {
 } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
 import { ClipboardButton } from '@/components/device/ClipboardButton'
-import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { duration } from '@/lib/format'
+import { Button, Tooltip, TooltipContent, TooltipTrigger, cn, duration } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 import { newId, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 /**
  * Keycodes come from the protocol package — the same table scripts use, so a

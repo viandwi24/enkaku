@@ -22,7 +22,21 @@ import {
   Unplug,
 } from 'lucide-react'
 import type { BatteryState, DeviceInfo, DeviceLabelState, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  cn,
+} from '@enkaku/ui'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
@@ -32,16 +46,6 @@ import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { AskAnAgentDialog } from '@/components/AskAnAgentDialog'
 import { HolderBadge } from '@/components/HolderBadge'
 import { TakeControlDialog } from '@/components/TakeControlDialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
 
 /**
  * The device page's header (plan 57 §4.1).

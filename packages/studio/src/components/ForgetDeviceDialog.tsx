@@ -3,10 +3,7 @@
 import { useEffect, useState } from 'react'
 import { DeviceHistoryCountsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import { z } from 'zod'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { api, type ApiError } from '@/lib/actions'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, Switch, api, type ApiError } from '@enkaku/ui'
 import { toast } from 'sonner'
 
 interface HistoryCounts {

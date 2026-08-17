@@ -1,12 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { useAction } from '@/lib/actions'
+import { ConfirmDialog, Button, Input, Label, ErrorState, LoadingRows, useAction } from '@enkaku/ui'
 import {
   applyDeviceIdentity,
   clearDeviceIdentity,

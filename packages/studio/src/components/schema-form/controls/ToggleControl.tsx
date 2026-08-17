@@ -1,6 +1,6 @@
 'use client'
 
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@enkaku/ui'
 import { FieldRow } from './shell'
 import type { BaseControlProps } from './types'
 

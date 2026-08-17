@@ -1,4 +1,4 @@
-import type { DataSource, KvEntry, PluginDataScanRow } from '@enkaku/protocol'
+import type { DataSource, KvEntry, PluginDataScanRow, PluginQueryRow } from '@enkaku/protocol'
 import { getAtPath } from '../schema-form/resolve'
 
 /**
@@ -127,4 +127,27 @@ export function rowsFromScan(items: PluginDataScanRow[], source: Extract<DataSou
 /** `kv.list` → rows. One global entry each; no device context exists to carry. */
 export function rowsFromList(items: KvEntry[]): PluginViewRow[] {
   return items.map((item) => ({ id: `global#${item.key}`, value: item.value, device: null, entry: entryOf(item) }))
+}
+
+/**
+ * `{ kind: 'handler' }` → rows (plan 109 §4.6, step 109.6).
+ *
+ * A near-identity, and that is the whole point of the wire shape. A query
+ * handler answers `{ value, device?, entry?, id? }` — the same three things a
+ * `kv.scan` row carries — so a handler-backed table goes through the SAME
+ * `readRowField`/`planColumn` path as a scanned one. `$device.label` means one
+ * thing on this screen whether the core joined the device row or the plugin
+ * filled it in, and `rowPayload` hands `POST /:name/action/:actionId` the same
+ * envelope either way.
+ *
+ * `id` is prefixed rather than used raw so a handler's own `"1"` cannot collide
+ * with a `kv.scan` row key if a view ever shows both.
+ */
+export function rowsFromQuery(items: PluginQueryRow[]): PluginViewRow[] {
+  return items.map((item, index) => ({
+    id: `handler#${item.id ?? index}`,
+    value: item.value,
+    device: item.device ?? null,
+    entry: item.entry ?? null,
+  }))
 }

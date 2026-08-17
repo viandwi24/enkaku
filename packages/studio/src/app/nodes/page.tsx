@@ -6,16 +6,24 @@ import { z } from 'zod'
 import { HealthResponseSchema, NodeCreateResponseSchema, pageSchema } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { api, useAction } from '@/lib/actions'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  TableCell,
+  TableHead,
+  api,
+  cn,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
-import { relativeTime } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
-import { cn } from '@/lib/utils'
 
 interface Node {
   id: string

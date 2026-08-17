@@ -5,12 +5,8 @@ import { Inbox, RefreshCw, X } from 'lucide-react'
 import { z } from 'zod'
 import { ReconcileReportSchema, type ClusterInfo, type DeviceLabelMode, type ReconcileReport } from '@enkaku/protocol'
 import { AdmitDeviceDialog } from '@/components/AdmitDeviceDialog'
-import { EmptyState } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { api, useAction } from '@/lib/actions'
+import { EmptyState, Button, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, api, useAction, relativeTime } from '@enkaku/ui'
 import type { DiscoveredDevice } from '@/lib/api'
-import { relativeTime } from '@/lib/format'
 
 /**
  * One line, matching the plan's own example verbatim: "Scanned 5 devices ·

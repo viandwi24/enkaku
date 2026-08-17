@@ -11,7 +11,7 @@ fail=0
 # The packs moved out of `examples/` once they became something a release
 # embeds: a broken example is a bad afternoon, a broken shipped pack is a bad
 # release, and the two do not deserve the same level of scrutiny by accident.
-for dir in packages/protocol packages/adb packages/toolchain packages/drivers packages/scrcpy packages/sdk \
+for dir in packages/protocol packages/ui packages/adb packages/toolchain packages/drivers packages/scrcpy packages/sdk \
            packages/session packages/harness packages/core packages/node packages/studio packages/probe-server \
            plugins/networking plugins/proxy-manager plugins/tiktok-automation-pack \
            examples; do

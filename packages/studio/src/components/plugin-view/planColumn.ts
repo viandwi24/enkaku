@@ -1,5 +1,5 @@
 import type { JsonSchemaNode as WireJsonSchemaNode } from '@enkaku/protocol'
-import { formatFieldValue } from '@/lib/format'
+import { formatFieldValue } from '@enkaku/ui'
 import { planField, type FieldPlan } from '../schema-form/plan'
 import type { JsonSchemaNode } from '../schema-form/types'
 

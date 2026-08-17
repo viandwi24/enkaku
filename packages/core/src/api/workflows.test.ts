@@ -31,10 +31,21 @@ function setUp(): { db: Db; registry: ScriptRegistry } {
 }
 
 /** Publishes an ordinary (kind: 'script') row directly, bypassing HTTP — a node's script reference must resolve to something real before a workflow document naming it can be checked at all. */
-function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean } = {}) {
+function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean; timeoutMs?: number } = {}) {
   const id = `${name.replace(/\//g, '-')}-${version}`
   db.insert(scripts)
-    .values({ pluginId: 'p-fixture', exportId: 'main', id, name, version, kind: 'script', bundle: 'export {}', enabled: opts.enabled ?? true, createdAt: new Date() })
+    .values({
+      pluginId: 'p-fixture',
+      exportId: 'main',
+      id,
+      name,
+      version,
+      kind: 'script',
+      bundle: 'export {}',
+      enabled: opts.enabled ?? true,
+      createdAt: new Date(),
+      ...(opts.timeoutMs !== undefined ? { runtime: { timeoutMs: opts.timeoutMs } } : {}),
+    })
     .run()
   return id
 }
@@ -274,6 +285,67 @@ describe('POST /api/workflows/validate', () => {
     const app = withUser('operator', createWorkflowRoutes({ db, registry }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(200)
+  })
+})
+
+/**
+ * `workflow.maxTotalMs` (docs/settings-audit.md #3, `docs/plans/
+ * 96-m61-hotfixes.md`) — `daemon.ts`'s `createWorkflowRoutes({...})` call now
+ * passes a live `settings` accessor; before that fix, `budgetFor` (`./workflows.ts`)
+ * always fell back to the hardcoded schema default (21_600_000ms, 6h)
+ * regardless of what an operator set from Studio, silently disagreeing with
+ * the workflow executor's own runtime clock (`workflow-settings-wiring.test.ts`
+ * proves that half). This proves the ROUTE half: the exact same two-node
+ * document is flagged when a small custom `maxTotalMs` is wired in, and NOT
+ * flagged when no accessor is passed at all (the schema-default fallback) —
+ * the live setting, not the default, is what the preflight actually checks.
+ */
+describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours a live, non-default setting (docs/settings-audit.md #3)', () => {
+  function twoNodeDoc() {
+    return {
+      schema: 1,
+      name: 'budget-preflight',
+      version: '1.0.0',
+      params: [],
+      nodes: [
+        { kind: 'script', id: 'a', script: 'node-a@1.0.0', params: {}, onFailure: { go: 'fail' } },
+        { kind: 'script', id: 'b', script: 'node-b@1.0.0', params: {}, onFailure: { go: 'fail' } },
+      ],
+    }
+  }
+
+  test('a custom, SMALL maxTotalMs (well under the 6h schema default) flags a document whose declared node timeouts sum past it', async () => {
+    const { db, registry } = setUp()
+    // 400s + 400s = 800s — comfortably under the 21_600_000ms (6h) schema
+    // default, so this document would pass a fallback-to-default check.
+    publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
+    publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
+
+    // The live accessor `daemon.ts` now wires — a custom 500s ceiling, far
+    // below both the 800s sum AND the 6h schema default.
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, settings: () => ({ maxTotalMs: 500_000 }) }))
+    const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
+    expect(res.status).toBe(200)
+    const findings = (await res.json()) as Array<{ code: string; message: string }>
+    const impossible = findings.find((f) => f.code === 'E_WORKFLOW_BUDGET_IMPOSSIBLE')
+    expect(impossible).toBeDefined()
+    expect(impossible?.message).toContain('800000ms')
+    expect(impossible?.message).toContain('500000ms')
+  })
+
+  test('the IDENTICAL document, with no settings accessor passed at all, falls back to the schema default and is NOT flagged', async () => {
+    const { db, registry } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
+    publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
+
+    // No `settings` key at all — `budgetFor`'s own fallback branch, exercised
+    // deliberately (a test harness, or any future host, that constructs this
+    // router without wiring one).
+    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
+    expect(res.status).toBe(200)
+    const findings = (await res.json()) as Array<{ code: string }>
+    expect(findings.some((f) => f.code === 'E_WORKFLOW_BUDGET_IMPOSSIBLE')).toBe(false)
   })
 })
 

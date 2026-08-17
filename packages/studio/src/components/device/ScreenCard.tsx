@@ -5,10 +5,8 @@ import { LiveView } from '@/components/LiveView'
 import { InspectorPanel } from '@/components/InspectorPanel'
 import { RecordPanel } from '@/components/recording/RecordPanel'
 import { useRecording } from '@/components/recording/useRecording'
-import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Button, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 import { mmss } from '@/components/device/DeviceHeader'
-import { cn } from '@/lib/utils'
 
 export type ScreenMode = 'live' | 'inspect' | 'record'
 

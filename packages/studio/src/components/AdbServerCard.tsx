@@ -3,10 +3,8 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { AdbStatsResponseSchema, type AdbServerHealth } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { api } from '@/lib/actions'
+import { Button, cn, api } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 import { AdbRestartDialog } from './AdbRestartDialog'
 
 /** Shown on the Restart button for a non-admin — the same string `tools/page.tsx` already uses for every other `tool.manage` control. */

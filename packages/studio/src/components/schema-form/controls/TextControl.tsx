@@ -1,8 +1,7 @@
 'use client'
 
 import type { ChangeEvent } from 'react'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { Input, Textarea } from '@enkaku/ui'
 import type { FieldPlan } from '../plan'
 import { FieldRow } from './shell'
 import type { BaseControlProps } from './types'

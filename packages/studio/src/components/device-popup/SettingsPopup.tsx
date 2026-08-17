@@ -23,9 +23,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { DeviceVideoFields } from '@/components/video/DeviceVideoFields'
 import { TagEditor } from '@/components/TagEditor'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { LoadingRows } from '@/components/states'
-import { api, useAction } from '@/lib/actions'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, LoadingRows, api, useAction } from '@enkaku/ui'
 
 /**
  * The device popup's one sectioned Settings popup (plan 103 §3.3, §4.2 row

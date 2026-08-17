@@ -297,9 +297,175 @@ describe('ViewRenderer — kv.list', () => {
 })
 
 describe('ViewRenderer — a view it cannot draw says so, rather than showing an empty table', () => {
-  test('a tier-B frame view is named as an embedded interface', async () => {
-    const frame = view({ title: 'Custom', frame: { entry: 'index.html' } })
-    renderWithApi(<ViewRenderer plugin="tiktok" view={frame} actions={{}} />, {})
-    await waitFor(() => expect(screen.getByText('This screen is not a table')).toBeTruthy())
+  test('a view with no table names the plugin and says what is missing', async () => {
+    // `validatePluginSurface` refuses this at verify (`plugin-surface.ts` —
+    // a view needs a renderer), so this is the direct-caller path, not one an
+    // operator reaches. Plan 111 §3.6 removed tier B, which used to be the
+    // other way into this branch.
+    const rendererless = view({ title: 'Custom' })
+    renderWithApi(<ViewRenderer plugin="tiktok" view={rendererless} actions={{}} />, {})
+    await waitFor(() => expect(screen.getByText(/declares this screen without both a data source and a table/)).toBeTruthy())
+  })
+})
+
+/**
+ * Plan 109 §4.6, step 109.6 — the `{ kind: 'handler' }` data source, and the
+ * failed-service path that is the part operators actually meet.
+ */
+const HANDLER_VIEW = view({
+  title: 'Bridge status',
+  data: { kind: 'handler', name: 'status' },
+  table: {
+    rowKey: 'label',
+    columns: [
+      { field: '$device.label', header: 'Device' },
+      { field: 'label', header: 'State' },
+    ],
+  },
+})
+
+const QUERY_PATH = '/api/plugins/bridge/query/status*'
+const RESTART_PATH = '/api/plugins/bridge/runtime/restart'
+
+/** The three refusals `service-routes.ts` raises for a service that is not serving. */
+function outage(code: string, message: string) {
+  return { status: 503, body: { error: { code, message } } }
+}
+
+describe('ViewRenderer — the { kind: "handler" } data source (plan 109 §4.6)', () => {
+  test('rows from a query handler go through the SAME renderer a kv.scan uses, $device included', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: {
+        body: {
+          plugin: 'bridge',
+          queryId: 'status',
+          items: [
+            { id: 'a', value: { label: 'listening' }, device: { id: 'dev-1', stableId: 'SER1', label: 'Pixel 7', status: 'online', clusterId: null, number: 12 } },
+            { id: 'b', value: { label: 'idle' } },
+          ],
+          nextCursor: null,
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('listening')).toBeTruthy())
+    // `$device.label` is a CONTEXT column: it renders from the handler's
+    // `device` object, exactly as it renders from the core's join for a scan.
+    expect(screen.getByText('Pixel 7')).toBeTruthy()
+    expect(screen.getByText('idle')).toBeTruthy()
+    expect(screen.getAllByRole('row')).toHaveLength(3)
+  })
+
+  test('the view calls the QUERY route and no kv route', async () => {
+    const { apiMock } = renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: { body: { plugin: 'bridge', queryId: 'status', items: [{ id: 'a', value: { label: 'listening' } }], nextCursor: null } },
+    })
+    await waitFor(() => expect(screen.getByText('listening')).toBeTruthy())
+    expect(apiMock.calls.map((c) => c.path)).toEqual(['/api/plugins/bridge/query/status'])
+  })
+})
+
+/**
+ * Criterion 21. **Never an empty table, never an unresolved spinner.**
+ *
+ * Each state below carries the two controls plan 109 §9 Q15 asks of an absence
+ * claim: control 1, the outage copy the operator is meant to read is really
+ * there; control 2 — the one that matters — the SAME assertions would fail if
+ * the view had rendered an empty table instead, which is proved by rendering
+ * exactly that in `the control that makes the four assertions above worth
+ * anything` and watching every one of them flip.
+ */
+describe('ViewRenderer — a view whose service is down (criterion 21)', () => {
+  test('stopped: names the plugin, says the service is not running, and offers Restart', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: outage('E_PLUGIN_RUNTIME_NOT_RUNNING', 'plugin "bridge"\'s service is "stopped", so it is serving nothing.'),
+    })
+    await waitFor(() => expect(screen.getByText(/its service is not running/)).toBeTruthy())
+    expect(screen.getByText(/“bridge”/)).toBeTruthy()
+    expect(screen.getByText('Restart bridge')).toBeTruthy()
+    // …and NOT the empty state, which would say the operator has no data.
+    expect(screen.queryByText('Nothing stored yet')).toBeNull()
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull()
+  })
+
+  test('starting is NOT broken: Try again, and deliberately no Restart', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: outage('E_PLUGIN_RUNTIME_STARTING', 'plugin "bridge"\'s service is still starting'),
+    })
+    await waitFor(() => expect(screen.getByText(/still starting/)).toBeTruthy())
+    expect(screen.getByText(/It is not broken/)).toBeTruthy()
+    expect(screen.getByText('Try again')).toBeTruthy()
+    // The distinction the host enforces (`E_PLUGIN_RUNTIME_STARTING` is its own
+    // code) survives into the UI: you do not kick a service that is coming up.
+    expect(screen.queryByText('Restart bridge')).toBeNull()
+  })
+
+  test('the error budget: says out loud that nothing will retry on its own', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: outage('E_PLUGIN_RUNTIME_DISABLED', 'disabled by the error budget — last error: boom'),
+    })
+    await waitFor(() => expect(screen.getByText(/will NOT retry on its own/)).toBeTruthy())
+    // The verbatim last error is kept, not summarised away.
+    expect(screen.getByText(/last error: boom/)).toBeTruthy()
+    expect(screen.getByText('Restart bridge')).toBeTruthy()
+  })
+
+  test('a dev slot gets the server`s own actionable message and NO Restart, because restarting cannot help', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: {
+        status: 409,
+        body: { error: { code: 'E_PLUGIN_DEV_SLOT_NO_SERVICE', message: '"bridge" is running from a DEV SLOT… Publish and activate the plugin to run its service.' } },
+      },
+    })
+    await waitFor(() => expect(screen.getByText(/Publish and activate/)).toBeTruthy())
+    expect(screen.queryByText('Restart bridge')).toBeNull()
+  })
+
+  test('Restart posts to the runtime route and re-fetches the rows', async () => {
+    let restarted = false
+    const { apiMock } = renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: () =>
+        restarted
+          ? { body: { plugin: 'bridge', queryId: 'status', items: [{ id: 'a', value: { label: 'listening' } }], nextCursor: null } }
+          : outage('E_PLUGIN_RUNTIME_NOT_RUNNING', 'plugin "bridge"\'s service is "stopped", so it is serving nothing.'),
+      [RESTART_PATH]: () => {
+        restarted = true
+        return { body: { plugin: 'bridge', status: 'running' } }
+      },
+    })
+    await waitFor(() => expect(screen.getByText('Restart bridge')).toBeTruthy())
+    fireEvent.click(screen.getByText('Restart bridge'))
+    await waitFor(() => expect(screen.getByText('listening')).toBeTruthy())
+    expect(apiMock.calls.filter((c) => c.path === RESTART_PATH && c.method === 'POST')).toHaveLength(1)
+  })
+
+  test('an ordinary fetch failure is still an ordinary error — no Restart appears for something Restart cannot fix', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: { status: 502, body: { error: { code: 'E_PLUGIN_HANDLER_FAILED', message: 'plugin "bridge": query:status failed — boom' } } },
+    })
+    await waitFor(() => expect(screen.getByText(/query:status failed — boom/)).toBeTruthy())
+    expect(screen.queryByText('Restart bridge')).toBeNull()
+    expect(screen.getByText('Try again')).toBeTruthy()
+  })
+
+  /**
+   * **The control that makes the four assertions above worth anything.**
+   *
+   * "The view shows an error" proves very little on its own — a test that
+   * asserted it would keep passing against a component that also rendered an
+   * empty table, or that showed the error and then resolved into one. So here
+   * the SAME view is given a handler that answers successfully with zero rows,
+   * and every assertion the outage tests rely on is checked to FLIP: no outage
+   * copy, no Restart, and the empty state present instead. If the failure path
+   * ever silently degraded into "no rows", this test is what fails.
+   */
+  test('control: a handler that genuinely returns zero rows renders the EMPTY state, and none of the outage assertions hold', async () => {
+    renderWithApi(<ViewRenderer plugin="bridge" view={HANDLER_VIEW} actions={{}} />, {
+      [QUERY_PATH]: { body: { plugin: 'bridge', queryId: 'status', items: [], nextCursor: null } },
+    })
+    await waitFor(() => expect(screen.getByText('Nothing stored yet')).toBeTruthy())
+    expect(screen.queryByText(/its service is not running/)).toBeNull()
+    expect(screen.queryByText(/still starting/)).toBeNull()
+    expect(screen.queryByText(/will NOT retry on its own/)).toBeNull()
+    expect(screen.queryByText('Restart bridge')).toBeNull()
   })
 })

@@ -9,7 +9,7 @@ import {
   type WorkspaceFileMeta,
   type WorkspaceListEntry,
 } from '@enkaku/protocol'
-import { api, BadResponseError } from './actions'
+import { api, BadResponseError } from '@enkaku/ui'
 
 /**
  * Thin client for the `fs.*` capabilities (plan 64 §4.2, §4.5) — Studio's

@@ -1,6 +1,6 @@
 import { EthernetPort, Network, Usb, Wifi } from 'lucide-react'
 import { connectionBadge, type DeviceConnection } from '@enkaku/protocol'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * USB | OTG | WI-FI | TCP — plan 88 §3.1, §4.1. `connectionBadge()` is the

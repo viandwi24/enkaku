@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { ArtifactInfo } from '@enkaku/protocol'
 import { coreBase } from '@/lib/ws'
 import type { JobWithNode } from '@/lib/use-job-detail'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * Why a job failed, with the failing line shown rather than described (plan

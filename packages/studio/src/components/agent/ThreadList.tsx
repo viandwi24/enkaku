@@ -5,13 +5,19 @@ import Link from 'next/link'
 import { MoreHorizontal, Trash2 } from 'lucide-react'
 import type { AgentThread } from '@enkaku/protocol'
 import { ThreadDeletePreviewResponseSchema, ThreadDeleteResponseSchema } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { api, useAction } from '@/lib/actions'
-import { relativeTime } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import {
+  Button,
+  ConfirmDialog,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  LoadingRows,
+  api,
+  cn,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 
 /**
  * The left column (plan 69 §3.1) — every thread for this agent, plus "New

@@ -2,13 +2,22 @@
 
 import { useEffect, useState } from 'react'
 import { Check, Usb, Wifi } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  cn,
+} from '@enkaku/ui'
 import { newId, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 /**
  * Device enrollment (spec §15.1).

@@ -11,7 +11,7 @@
 import { DANGEROUS_FIELD_NAMES, FindOutcomeSchema, RESULT_LIMITS, type ResultOutcome, type RuntimeEnvelope } from '@enkaku/protocol'
 import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type JobsCall, type KvCall, type ParentToChild } from './ipc'
 import { createJobsApiFor } from './jobs-client'
-import { createKvApiFor } from './kv-client'
+import { createChildPluginContext } from '../plugin-context'
 
 const HEARTBEAT_MS = 10_000
 
@@ -27,6 +27,7 @@ const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (
 const pendingArtifact = new Map<string, { resolve: () => void; reject: (e: unknown) => void }>()
 const pendingKv = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingJobs = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
+const pendingFarm = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const abortController = new AbortController()
 let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
 
@@ -63,7 +64,21 @@ function kvRequest<T>(call: KvCall): Promise<T> {
   })
 }
 
-const kvApi = { device: createKvApiFor('device', kvRequest), global: createKvApiFor('global', kvRequest) }
+/**
+ * `ctx.farm`'s child side (plan 109 §3.1, §4.3, step 109.1) — the same
+ * `callId` round trip `kvRequest` above already uses.
+ */
+function farmRequest(capability: string, input: unknown): Promise<unknown> {
+  const callId = crypto.randomUUID()
+  return new Promise<unknown>((resolve, reject) => {
+    if (aborted) {
+      reject(new Error(`job di-abort (${aborted})`))
+      return
+    }
+    pendingFarm.set(callId, { resolve, reject })
+    send({ t: 'farm.call', callId, capability, ...(input !== undefined ? { input } : {}) })
+  })
+}
 
 function jobsRequest<T>(call: JobsCall): Promise<T> {
   const callId = crypto.randomUUID()
@@ -77,10 +92,13 @@ function jobsRequest<T>(call: JobsCall): Promise<T> {
   })
 }
 
-// `jobsApi` is built inside `runScript`, once `init.job` is known — NOT here
-// at module scope like `kvApi` above — because `ctx.jobs.trigger()`'s
-// default idempotency key needs the caller's own `{ id, attempt }` (plan 81
-// §3.3, §4.2), which does not exist until the `init` message arrives.
+// `jobsApi` is built inside `runScript`, once `init.job` is known, because
+// `ctx.jobs.trigger()`'s default idempotency key needs the caller's own
+// `{ id, attempt }` (plan 81 §3.3, §4.2), which does not exist until the
+// `init` message arrives. The shared plugin context (`storage`/`log`/`farm`,
+// plan 109 step 109.1) is built there for the same reason — its
+// `storage.forDevice` has to know which device this job holds, so it can
+// refuse every other one (plan 108 §3.1 G4).
 
 function saveArtifact(kind: 'screenshot' | 'file', label: string, dataBase64?: string, ext?: string): Promise<void> {
   const callId = crypto.randomUUID()
@@ -215,6 +233,12 @@ process.on('message', (raw: unknown) => {
     pendingJobs.delete(msg.callId)
     if (msg.ok) waiter.resolve(msg.value)
     else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'jobs call failed'), { code: msg.error?.code }))
+  } else if (msg.t === 'farm.result') {
+    const waiter = pendingFarm.get(msg.callId)
+    if (!waiter) return
+    pendingFarm.delete(msg.callId)
+    if (msg.ok) waiter.resolve(msg.value)
+    else waiter.reject(Object.assign(new Error(msg.error?.message ?? 'farm call failed'), { code: msg.error?.code }))
   } else if (msg.t === 'abort') {
     aborted = msg.reason
     abortController.abort()
@@ -225,6 +249,8 @@ process.on('message', (raw: unknown) => {
     pendingKv.clear()
     for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job di-abort (${msg.reason})`))
     pendingJobs.clear()
+    for (const [, waiter] of pendingFarm) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    pendingFarm.clear()
   } else if (msg.t === 'assist') {
     // NOT an abort (plan 91 §3.6) — the job keeps running exactly as before;
     // a script that never called `ctx.onAssist` is unaffected. Delivered to
@@ -616,13 +642,32 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
     if (!bundle) return
     const { def } = bundle
 
+    // Plan 109 §3.1, step 109.1 — `storage`/`log`/`farm` come from the ONE
+    // context builder (`../plugin-context.ts`), the same function the core
+    // calls for an HTTP/WS/event/query handler. This is what makes a plugin's
+    // own helper callable from a script handler and a core handler unchanged
+    // (criterion 2); two builders would agree today and disagree in three
+    // months.
+    const plugin = createChildPluginContext({
+      deviceId: init.job.deviceId,
+      kvRequest,
+      farmRequest,
+      emitLog: (level, msg, fields) => log(level)(msg, fields),
+    })
+
     const ctx: Record<string, unknown> = {
       device: deviceApi,
       artifact: artifactApi,
-      log: { debug: log('debug'), info: log('info'), warn: log('warn'), error: log('error') },
+      ...plugin,
       job: init.job,
       params: undefined,
-      kv: kvApi,
+      // `ctx.kv` is plan 79's name for what plan 109 calls `ctx.storage`, and
+      // it is the SAME OBJECT, not a second one — a published bundle sitting
+      // in the `scripts` table (or embedded in the release binary) already
+      // compiled `ctx.kv` into its code, and there is no publish step that
+      // could rewrite it. Aliasing costs nothing and cannot drift; renaming
+      // would break every stored bundle that uses the store.
+      kv: plugin.storage,
       // Bound to THIS attempt (plan 81 §3.3, §4.2) — see the module-level
       // comment above `jobsRequest` for why this cannot be built earlier.
       // `nodeId` (plan 99 §3.2, §4.8) is undefined outside a workflow, which

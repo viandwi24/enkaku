@@ -3,10 +3,9 @@
 import { RESULT_LIMITS, type ArtifactInfo } from '@enkaku/protocol'
 import { ResultView } from '@/components/result-view/ResultView'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { fileSize } from '@/lib/format'
+import { fileSize, cn } from '@enkaku/ui'
 import { formatResult, outcomeLine } from '@/lib/jobs'
 import type { JobWithNode } from '@/lib/use-job-detail'
-import { cn } from '@/lib/utils'
 import { JobFailureDetail } from './JobFailureDetail'
 
 /**

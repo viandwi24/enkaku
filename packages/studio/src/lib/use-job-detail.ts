@@ -13,7 +13,7 @@ import {
   type RuntimeEnvelope,
   type WorkflowDoc,
 } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 import { fetchAllPages, fetchDeviceRefs, type DeviceRef } from './api'
 import { isRunnerLog, producedArtifacts, type JobWithPhase } from './jobs'
 import { coreBase, ws } from './ws'

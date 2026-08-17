@@ -34,10 +34,6 @@ import {
   type DeviceDetailInfo,
 } from '@/components/device/DeviceHeader'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
-import { LoadingRows } from '@/components/states'
-import { TakeControlDialog } from '@/components/TakeControlDialog'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,8 +43,13 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { api, useAction } from '@/lib/actions'
+  Button,
+  LoadingRows,
+  Switch,
+  api,
+  useAction,
+} from '@enkaku/ui'
+import { TakeControlDialog } from '@/components/TakeControlDialog'
 import { fetchGuestAgentStatus } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
 import { useNow } from '@/lib/useNow'

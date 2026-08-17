@@ -12,13 +12,9 @@ import {
   type SelectorCandidate,
   type UiNode,
 } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { relativeTime } from '@/lib/format'
+import { Button, Switch, cn, EmptyState, ErrorState, LoadingRows, relativeTime } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 import { newId, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 /**
  * The Inspect mode of the screen card (plan 56; relocated by plan 57 §3.1) —

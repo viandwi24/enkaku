@@ -21,20 +21,30 @@ import {
   type PluginDataCountResponse,
   type PluginRow,
 } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  ErrorState,
+  LoadingRows,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  api,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { PluginStatusBadge } from '@/components/StatusBadge'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
-import { relativeTime } from '@/lib/format'
 import { coreBase } from '@/lib/ws'
 
 /**

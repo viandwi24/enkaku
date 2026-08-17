@@ -1,7 +1,7 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import { Label } from '@/components/ui/label'
+import { Label } from '@enkaku/ui'
 
 /**
  * The label row every control shares (plan 95 §4.6 — the reference UI's

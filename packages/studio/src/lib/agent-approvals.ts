@@ -1,5 +1,5 @@
 import { ApprovalsResponseSchema, ListAgentsResponseSchema, ListThreadsResponseSchema, type AgentApproval, type AgentThread } from '@enkaku/protocol'
-import { api } from './actions'
+import { api } from '@enkaku/ui'
 import type { Agent } from './agents'
 import { latestRunId } from './agent-runs'
 

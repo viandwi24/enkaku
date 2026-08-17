@@ -30,10 +30,20 @@ import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
 import { deriveReadinessAction } from '@/components/ReadinessControl'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { api, describeApiError, useAction } from '@/lib/actions'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  api,
+  describeApiError,
+  useAction,
+} from '@enkaku/ui'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { fetchAllPages } from '@/lib/api'
 import { AdbCommandDialog } from './AdbCommandDialog'

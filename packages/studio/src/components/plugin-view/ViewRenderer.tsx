@@ -1,14 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ActionSpec, ViewSpec } from '@enkaku/protocol'
+import { PluginServiceRestartResponseSchema, type ActionSpec, type ViewSpec } from '@enkaku/protocol'
 import { ActionRunner, type ActionInvocation } from '@/components/plugin-view/ActionRunner'
 import { fetchPluginRows } from '@/components/plugin-view/data'
 import { planColumn } from '@/components/plugin-view/planColumn'
 import { readRowField, type PluginViewRow } from '@/components/plugin-view/rows'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { EmptyState, ErrorState, LoadingRows, Button, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, api } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**
@@ -42,6 +40,64 @@ import { useNow } from '@/lib/useNow'
  *  template literal (`docs/design.md`, and `TargetPicker`'s own note). */
 const WIDTH_CLASS: Record<'auto' | 'narrow' | 'wide', string> = { auto: '', narrow: 'w-24', wide: 'min-w-64' }
 
+/**
+ * Plan 109 §4.6, step 109.6, criterion 21 — **a view whose `{ kind: 'handler' }`
+ * data source has no service behind it.**
+ *
+ * This is the part of the plugin runtime an operator actually meets, and there
+ * are exactly two wrong answers, both of which a naive `catch` produces: an
+ * EMPTY TABLE, which says "you have no data" — a claim about the operator's own
+ * work, and a false one — and a spinner that never resolves, which says
+ * nothing at all. What it must say instead is which plugin, which state, and
+ * what to do.
+ *
+ * The four states are kept apart because they need different verbs, and the
+ * one that matters most is `starting`. `starting` is not `running` and it is
+ * not broken either (plan 109 §4.2 enforces the distinction in the host, with
+ * `E_PLUGIN_RUNTIME_STARTING` as its own code); the honest affordance for "not
+ * yet" is Try again, and offering Restart would invite an operator to kick a
+ * service that was about to come up.
+ *
+ * `null` means this is not a service outage at all — an ordinary fetch failure,
+ * rendered as it always was.
+ */
+function describeServiceOutage(plugin: string, code: string | null, detail: string): { message: string; restart: boolean } | null {
+  switch (code) {
+    case 'E_PLUGIN_RUNTIME_STARTING':
+      return {
+        message: `The plugin “${plugin}” is still starting, so this screen has nothing behind it yet. It is not broken — give it a moment and try again.`,
+        restart: false,
+      }
+    case 'E_PLUGIN_RUNTIME_NOT_RUNNING':
+    case 'E_PLUGIN_RUNTIME_NOT_LOADED':
+      return {
+        message: `The plugin “${plugin}” is installed, but its service is not running — so nothing is there to build this screen's rows. ${detail}`,
+        restart: true,
+      }
+    case 'E_PLUGIN_RUNTIME_DISABLED':
+      return {
+        // The budget is "loud and finite, never a silent loop" (§4.2) — so the
+        // copy has to say out loud that nothing will retry on its own, or an
+        // operator will wait for a recovery that is never coming.
+        message:
+          `The plugin “${plugin}” failed too many times in a row, so the farm stopped its service and will NOT retry on its own. ` +
+          `Fix the cause, then restart it. ${detail}`,
+        restart: true,
+      }
+    case 'E_PLUGIN_DEV_SLOT_NO_SERVICE':
+      // No Restart, deliberately: there is nothing loaded to restart, and a
+      // button that cannot help is worse than no button. The server's message
+      // is the actionable half (publish and activate), so it is kept verbatim.
+      return { message: detail, restart: false }
+    default:
+      return null
+  }
+}
+
+function errorCode(err: unknown): string | null {
+  return err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : null
+}
+
 export interface ViewRendererProps {
   plugin: string
   view: ViewSpec
@@ -51,7 +107,9 @@ export interface ViewRendererProps {
 
 export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
   const [rows, setRows] = useState<PluginViewRow[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  /** The `code` rides along with the message: it is what tells a service outage apart from an ordinary fetch failure. */
+  const [error, setError] = useState<{ message: string; code: string | null } | null>(null)
+  const [restarting, setRestarting] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [invocation, setInvocation] = useState<ActionInvocation | null>(null)
   // One interval for the whole table, so every `kind: 'timestamp'` cell ticks
@@ -72,10 +130,32 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
         // silently target a device that is no longer on screen.
         setSelected((prev) => new Set([...prev].filter((id) => next.some((row) => row.id === id))))
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError({ message: e instanceof Error ? e.message : String(e), code: errorCode(e) }))
   }, [plugin, source])
 
   useEffect(load, [load])
+
+  /**
+   * Criterion 21's Restart. `POST /:name/runtime/restart` (`plugin.runtime`),
+   * then reload the rows — a restart the operator cannot see the result of is
+   * a button that appears to do nothing.
+   *
+   * The response carries the STATUS the service landed in rather than an `ok`
+   * flag, and a restart that lands on `starting` is reported as exactly that:
+   * the reload below will then hit `E_PLUGIN_RUNTIME_STARTING` and the panel
+   * says "still starting", which is the truth rather than a success message
+   * followed by an empty table.
+   */
+  const restart = useCallback(() => {
+    setRestarting(true)
+    void api(`/api/plugins/${encodeURIComponent(plugin)}/runtime/restart`, PluginServiceRestartResponseSchema, { method: 'POST' })
+      .then(() => {
+        setError(null)
+        load()
+      })
+      .catch((e) => setError({ message: e instanceof Error ? e.message : String(e), code: errorCode(e) }))
+      .finally(() => setRestarting(false))
+  }, [plugin, load])
 
   const selectedRows = useMemo(() => (rows ?? []).filter((row) => selected.has(row.id)), [rows, selected])
   const selectedDeviceIds = useMemo(
@@ -83,21 +163,11 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
     [selectedRows],
   )
 
-  // A frame view has no table to draw. Since step 108.10 the PAGE routes one
-  // to `FrameView` before this component is ever reached, so this branch is
-  // defence in depth for a caller that renders `ViewRenderer` directly —
-  // saying so is better than an empty table that reads as a load failure.
-  if (view.frame) {
-    return (
-      <div className="px-5 py-4">
-        <EmptyState
-          title="This screen is not a table"
-          description="It declares its own embedded interface, which is drawn by the plugin view page rather than by the table renderer."
-        />
-      </div>
-    )
-  }
-
+  // A view this renderer cannot draw says so, rather than showing an empty
+  // table that reads as a load failure. `validatePluginSurface` already
+  // refuses a renderer-less view at verify and names the offending view id, so
+  // reaching here means a caller rendered `ViewRenderer` directly — defence in
+  // depth, not a path an operator normally sees.
   if (!source || !table) {
     return (
       <div className="px-5 py-4">
@@ -153,7 +223,26 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
       )}
 
       {error ? (
-        <ErrorState message={error} onRetry={load} />
+        (() => {
+          // A service outage is a different thing from a failed fetch, and the
+          // difference is the whole of criterion 21: never an empty table
+          // (which reads as "no data" — a lie), never a spinner that does not
+          // resolve. Named plugin, named state, and the one verb that helps.
+          const outage = describeServiceOutage(plugin, error.code, error.message)
+          if (!outage) return <ErrorState message={error.message} onRetry={load} />
+          return (
+            <div className="space-y-2">
+              <ErrorState message={outage.message} onRetry={load} />
+              {outage.restart && (
+                <div className="flex justify-end">
+                  <Button size="sm" variant="outline" onClick={restart} disabled={restarting}>
+                    {restarting ? 'Restarting…' : `Restart ${plugin}`}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )
+        })()
       ) : rows === null ? (
         <LoadingRows rows={4} />
       ) : rows.length === 0 ? (

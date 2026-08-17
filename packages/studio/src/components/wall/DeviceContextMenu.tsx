@@ -7,9 +7,7 @@ import { AssistDialog } from '@/components/device/AssistDialog'
 import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
 import { assistRowState, useControlState } from '@/components/device-popup/ControlState'
 import { SidePanel } from '@/components/device-popup/SidePanel'
-import { LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { api } from '@/lib/actions'
+import { LoadingRows, Button, api } from '@enkaku/ui'
 
 /** `w-72` (288px) plus the panel's own border — kept in sync with `SidePanel`'s wrapper below rather than measured, so the viewport clamp below never has to guess at a number the JSX also hardcodes. */
 const PANEL_WIDTH_PX = 290

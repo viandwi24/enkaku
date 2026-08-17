@@ -152,6 +152,12 @@ import {
 // `messages/command`'s own import blocks above already use).
 import { JobProgressEventMessage } from './messages/job'
 
+// Plan 109 (M74 — the plugin runtime), step 109.8. `plugin.log` — the live
+// half of a plugin service's log. Imported here, separately from the re-export
+// block further down, for the same reason `JobProgressEventMessage` above is:
+// `ServerMessageSchema` needs to reference it.
+import { PluginLogMessage } from './messages/plugin'
+
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
 export {
@@ -1061,8 +1067,121 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // appended last, for the same "never interleave, this file is contested"
   // reason noted on the Plan 93/94 entries above.
   JobProgressEventMessage,
+  // Plan 109 (M74 — the plugin runtime), step 109.8, §4.5 — appended last, for
+  // the same "never interleave, this file is contested" reason noted above.
+  //
+  // It also widens `SERVER_MESSAGE_TYPES`, which is the plugin event
+  // vocabulary — so this one addition would hand a plugin the ability to
+  // subscribe to its OWN log. `refusedPluginEventTypesMessage` below is what
+  // stops that, and its comment is where the reasoning lives.
+  PluginLogMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
+
+/**
+ * Every `type` string `ServerMessageSchema` above can carry, **derived from
+ * the union rather than restated beside it** (plan 109 §3.5, step 109.5).
+ *
+ * A hand-written second list would be wrong the first time anyone appends to
+ * the union — and this file's own comments say it is appended to often, by
+ * concurrent workers, precisely to avoid conflicts. So the list is read off
+ * the schema, and it is read through Zod rather than through a cast: the probe
+ * below is an ordinary `safeParse` against the union object's own shape, which
+ * is exactly the discipline every other boundary in this package follows.
+ *
+ * If a future Zod changes that shape the probe fails closed and this is empty,
+ * which is why `packages/core/src/plugins/runtime-service.test.ts` asserts it
+ * is populated and contains known members — an empty list would otherwise turn
+ * `unknownPluginEventTypesMessage` into a check that never fires, the exact
+ * failure plan 109 §9 Q15 records.
+ */
+const ServerMessageOptionProbe = z.object({ shape: z.object({ type: z.object({ value: z.string() }) }) })
+const ServerMessageUnionProbe = z.object({ options: z.array(ServerMessageOptionProbe) })
+const serverMessageUnion = ServerMessageUnionProbe.safeParse(ServerMessageSchema)
+export const SERVER_MESSAGE_TYPES: readonly string[] = serverMessageUnion.success
+  ? serverMessageUnion.data.options.map((option) => option.shape.type.value)
+  : []
+const SERVER_MESSAGE_TYPE_SET = new Set(SERVER_MESSAGE_TYPES)
+
+/** Whether `type` names a message the core can actually broadcast. */
+export function isServerMessageType(type: string): boolean {
+  return SERVER_MESSAGE_TYPE_SET.has(type)
+}
+
+/**
+ * The farm's half of the plugin event vocabulary check (plan 109 §3.5, step
+ * 109.5) — the same split `unsupportedIsolationMessage` uses: the manifest
+ * SCHEMA accepts any dotted lowercase token, and the FARM, at verify, refuses
+ * the ones this build cannot deliver.
+ *
+ * It lives here rather than in `plugin-service.ts` because the answer is
+ * `ServerMessageSchema` itself, which is declared in this file; importing this
+ * file from that one would be a cycle.
+ *
+ * **On `device.connected` / `device.disconnected`** — plan 109 §3.5's example
+ * declares both, and step 109.5's own condition is that they be added *"if the
+ * fan-out does not already carry them under another name"*. It does. A device
+ * connecting or disconnecting reaches `hub.broadcast` as **`device.status`**
+ * (`payload.status === 'offline'` is disconnected; anything else is connected)
+ * from the device state machine's `DEVICE_CONNECTED`/`DEVICE_DISCONNECTED`
+ * transitions, and a device entering or leaving the farm's registry reaches it
+ * as `device.added` / `device.removed`. Adding a third pair of names for the
+ * first of those would be inventing vocabulary for something real, which is
+ * what plan 109 §9 Q1 says not to do.
+ *
+ * Returns the refusal message, or `null` when every type is deliverable.
+ */
+export function unknownPluginEventTypesMessage(events: readonly string[]): string | null {
+  const unknown = events.filter((type) => !SERVER_MESSAGE_TYPE_SET.has(type))
+  if (unknown.length === 0) return null
+  const connectish = unknown.some((type) => type === 'device.connected' || type === 'device.disconnected')
+  return (
+    `this farm broadcasts no such event: ${unknown.join(', ')}. A plugin's \`events\` list names server→client message types ` +
+    `(docs/plans/109-m74-plugin-runtime.md §3.5)` +
+    (connectish
+      ? ' — and there is no `device.connected`/`device.disconnected`: a device connecting or disconnecting arrives as `device.status`' +
+        " (payload.status === 'offline' is disconnected), and joining or leaving the registry as `device.added`/`device.removed`."
+      : '.')
+  )
+}
+
+/**
+ * Farm events a plugin may **not** subscribe to, however real they are (plan
+ * 109 §3.5, step 109.8).
+ *
+ * There is exactly one entry and it was created by step 109.8 itself.
+ * `plugin.log` is a genuine broadcast, so `unknownPluginEventTypesMessage`
+ * above would happily accept it — and a plugin that subscribed to it would
+ * have every one of its own log lines delivered back to a handler, whose own
+ * `ctx.log` call broadcasts another line, which is delivered back. The loop is
+ * not hypothetical and it is not slow: one `ctx.log.info` inside a
+ * `plugin.log` handler is unbounded growth at the speed of the event loop, in
+ * the core's own process, and neither the per-handler deadline nor the error
+ * budget can see it because nothing is failing.
+ *
+ * Refused here rather than rate-limited later, because a subscription to your
+ * own output is never the thing an author meant. A plugin that wants to react
+ * to its own logging already has the call site.
+ *
+ * A denylist rather than a rule ("no event a plugin can cause") on purpose: a
+ * plugin can cause `job.status` too, and reacting to a job it started is a
+ * legitimate, terminating thing to do. What makes `plugin.log` different is
+ * that the reaction's own *observation* is what feeds the loop.
+ */
+export const PLUGIN_EVENT_TYPE_DENYLIST: readonly string[] = ['plugin.log']
+const PLUGIN_EVENT_TYPE_DENY_SET = new Set(PLUGIN_EVENT_TYPE_DENYLIST)
+
+/** Returns the refusal message, or `null` when no declared type is on the denylist. */
+export function refusedPluginEventTypesMessage(events: readonly string[]): string | null {
+  const refused = events.filter((type) => PLUGIN_EVENT_TYPE_DENY_SET.has(type))
+  if (refused.length === 0) return null
+  return (
+    `a plugin may not subscribe to ${refused.join(', ')}. \`plugin.log\` carries a plugin service's OWN log lines, so a handler for it ` +
+    `that logs anything — directly, or through any helper that does — is fed its own output back forever, inside the core's process, ` +
+    `with nothing failing for the error budget to notice (docs/plans/109-m74-plugin-runtime.md §3.5, step 109.8). ` +
+    `React at the call site instead.`
+  )
+}
 
 /** Every client→server message (M2: input, stream, pairing). */
 export const ClientMessageSchema = z.discriminatedUnion('type', [
@@ -1377,6 +1496,11 @@ export { JobProgressEventMessage } from './messages/job'
 // tidy an existing block).
 export { PushJobParamsSchema, PullJobParamsSchema, type PushJobParams, type PullJobParams } from './messages/transfer'
 
+// Plan 109 (M74 — the plugin runtime), step 109.8, §4.5. The `plugin.log`
+// broadcast and the shapes `GET /api/plugins/:name/runtime/logs` serves.
+// Appended as its own statement for the same append-only reason as above.
+export { PluginLogMessage, PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
+
 // Plan 89 (M54 — device identity and physical labelling), step 89.6. The
 // labelling settings block (`DeviceLabelModeSchema`/`DeviceLabellingSchema`,
 // §4.3) — added to `./settings.ts` alongside `DeviceInstrumentationSchema`,
@@ -1432,8 +1556,12 @@ export {
 // either, so a plugin's columns and forms go through the one resolver
 // Studio already has and a plugin's script references through the one
 // reference grammar the farm already resolves.
+// Plan 111 (M76 — a plugin's UI is React), step 111.4 adds
+// `PLUGIN_UI_API_VERSION` and `ViewSpec.react` here, and removes
+// `ViewSpec.frame` (§3.6 — removed, not deprecated).
 export {
   SURFACE_LIMITS,
+  PLUGIN_UI_API_VERSION,
   ICON_NAMES,
   IconNameSchema,
   SurfaceIdSchema,
@@ -1446,6 +1574,10 @@ export {
   NavEntrySchema,
   PluginSurfaceSchema,
   validatePluginSurface,
+  // Plan 109 step 109.6 — a surface that names a `{ kind: 'handler' }` source
+  // needs a service to answer it; verify refuses the pair rather than letting
+  // it render as a runtime outage nobody can fix.
+  handlerViewsWithoutServiceMessage,
   type IconName,
   type DataSource,
   type BindingDeviceField,
@@ -1458,4 +1590,69 @@ export {
   type PluginSurface,
   type PluginSurfaceInput,
   type PluginSurfaceValidation,
+  // The props Studio hands a React view (§9 Q2). Types only, no React — see
+  // `PluginViewProps`'s own note on why this package is their home and
+  // `@enkaku/ui` only re-exports them.
+  type PluginViewParams,
+  type SetPluginViewParams,
+  type PluginViewProps,
 } from './plugin-surface'
+
+// Plan 109 (M74 — the plugin runtime), step 109.2. A plugin's SERVICE — the
+// long-lived half — and the lifecycle vocabulary the host reports it under.
+// `service`, not `runtime`: a plugin MEMBER's `runtime` is plan 98's
+// `RuntimeEnvelope` and means something entirely different (plan 109 §9 Q7,
+// settled by the owner).
+export {
+  PLUGIN_SERVICE_ISOLATIONS,
+  PLUGIN_SERVICE_MAX_PERMISSIONS,
+  PLUGIN_SERVICE_MAX_LISTENERS,
+  PLUGIN_SERVICE_MAX_EVENTS,
+  PLUGIN_SERVICE_STATUSES,
+  PLUGIN_LISTENER_PROTOS,
+  PluginServiceDeclarationSchema,
+  PluginServiceStatusSchema,
+  PluginListenerSchema,
+  ReportedListenerSchema,
+  PluginEventTypeSchema,
+  unsupportedIsolationMessage,
+  listenerReachabilityMessage,
+  type PluginServiceIsolation,
+  type PluginServiceDeclaration,
+  type PluginServiceStatus,
+  type PluginListener,
+  type PluginListenerProto,
+  type ReportedListener,
+  // Step 109.6 — the three handler families: what a handler is addressed by,
+  // who it is told the caller is, and what a WS handler's path looks like.
+  PLUGIN_HANDLER_KINDS,
+  PLUGIN_HTTP_METHODS,
+  PLUGIN_HANDLER_DEFAULT_PERMISSION,
+  PLUGIN_REQUEST_HEADER_ALLOWLIST,
+  PLUGIN_RESPONSE_HEADER_ALLOWLIST,
+  PluginHandlerIdSchema,
+  PluginHandlerViewSchema,
+  PluginCallerSchema,
+  pluginSocketPath,
+  parsePluginSocketPath,
+  type PluginHandlerKind,
+  type PluginHttpMethod,
+  type PluginHandlerView,
+  type PluginCaller,
+  // Step 109.7 — inbound webhooks: the declaration, the address, the signature
+  // header, and what the farm reports about a secret it generated (never the
+  // secret, and deliberately never a hint of one).
+  PLUGIN_SERVICE_MAX_WEBHOOKS,
+  PLUGIN_WEBHOOK_MAX_BODY_BYTES,
+  PLUGIN_WEBHOOK_DEFAULT_BODY_BYTES,
+  PLUGIN_WEBHOOK_DEFAULT_RATE_PER_MIN,
+  PLUGIN_WEBHOOK_DEFAULT_TOLERANCE_SEC,
+  PLUGIN_WEBHOOK_SIGNATURE_HEADER,
+  PluginWebhookSchema,
+  PluginWebhookInfoSchema,
+  pluginWebhookPath,
+  parsePluginWebhookPath,
+  duplicateWebhookIdsMessage,
+  type PluginWebhook,
+  type PluginWebhookInfo,
+} from './plugin-service'

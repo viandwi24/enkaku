@@ -47,7 +47,14 @@ mock.module('@/lib/ws', () => ({
 }))
 
 let apiResponses: Record<string, unknown> = {}
-mock.module('@/lib/actions', () => ({
+/**
+ * `api()` moved to `@enkaku/ui` (plan 111 §3.3), so the mock follows it. The
+ * replacement module is `{ api }` and nothing else, which is safe **only**
+ * because the module under test is a lib: `operations.ts` imports exactly one
+ * name from `@enkaku/ui`. A component test must never stub the whole package
+ * this way — it would take all 30 components with it.
+ */
+mock.module('@enkaku/ui', () => ({
   api: (path: string) => {
     const body = apiResponses[path]
     if (body === undefined) return Promise.reject(new Error(`no mock for ${path}`))

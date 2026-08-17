@@ -4,8 +4,7 @@ import { useState } from 'react'
 import { ChevronRight, EyeOff, ImageOff } from 'lucide-react'
 import type { ToolResultContent } from '@enkaku/protocol'
 import { blobUrl, extractDeviceIdForDisplay, findImageBlock, textOfToolResult, wireNameToCapabilityId } from '@/lib/agent-chat'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { Badge, cn } from '@enkaku/ui'
 
 export interface ToolCallCardProps {
   /** The wire tool name OR the real capability id — either is accepted; the wire form is reversed for display. */

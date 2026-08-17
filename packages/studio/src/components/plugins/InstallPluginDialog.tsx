@@ -2,12 +2,21 @@
 
 import { useRef, useState, type ReactNode } from 'react'
 import { PluginActivateResponseSchema, PluginStageResponseSchema, type PluginRow, type VerifyReport } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { api, useAction } from '@/lib/actions'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  Input,
+  Label,
+  Textarea,
+  api,
+  useAction,
+} from '@enkaku/ui'
 
 /**
  * Install a plugin from Studio (plan 108 §0.2 P1, §3.10, §5 step 108.9).

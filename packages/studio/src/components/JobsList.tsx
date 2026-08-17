@@ -5,11 +5,7 @@ import { useMemo } from 'react'
 import { JobCancelResponseSchema, JobsPageResponseSchema, type JobInfo } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button } from '@/components/ui/button'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { api, useAction } from '@/lib/actions'
-import { duration, relativeTime } from '@/lib/format'
+import { Button, TableCell, TableHead, Tooltip, TooltipContent, TooltipTrigger, api, useAction, duration, relativeTime } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**

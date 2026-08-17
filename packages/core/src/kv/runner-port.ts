@@ -37,45 +37,67 @@ function resolveScope(db: Db, deviceId: string, kind: 'global' | 'device'): KvSc
   return { kind: 'device', stableId }
 }
 
+/**
+ * One `KvCall` applied to an already-resolved scope — **the single
+ * translation from the wire op to the store**, shared by the job child's IPC
+ * port below and by a plugin runtime handler's `ctx.storage`
+ * (`plugins/plugin-context.ts`, plan 109 step 109.1). A script handler and an
+ * HTTP handler therefore do not merely behave alike: they run this function.
+ *
+ * Scope resolution deliberately stays OUT of here — it is the one thing that
+ * genuinely differs between the two callers (a job resolves its own device,
+ * a plugin handler names one), and it is the boundary plan 108 §3.1 G4's
+ * "always its own device" guarantee is enforced at.
+ */
+export function applyKvCall(
+  store: KvStore,
+  scope: KvScope,
+  namespace: string,
+  call: KvCall,
+  opts?: { updatedByJobId?: string | null },
+): unknown {
+  switch (call.op) {
+    case 'get': {
+      const entry = store.get(scope, namespace, call.key)
+      return entry ? entry.value : null
+    }
+    case 'set': {
+      const entry = store.set(scope, namespace, call.key, call.value, {
+        secret: call.secret,
+        ttlSec: call.ttlSec,
+        updatedByJobId: opts?.updatedByJobId ?? null,
+      })
+      return { version: entry.version }
+    }
+    case 'setIfVersion': {
+      const entry = store.setIfVersion(scope, namespace, call.key, call.value, call.expectedVersion, {
+        secret: call.secret,
+        ttlSec: call.ttlSec,
+        updatedByJobId: opts?.updatedByJobId ?? null,
+      })
+      return entry ? { version: entry.version } : null
+    }
+    case 'increment':
+      return store.increment(scope, namespace, call.key, call.by ?? 1)
+    case 'delete':
+      return store.delete(scope, namespace, call.key, { ifVersion: call.ifVersion })
+    case 'list': {
+      const page = store.list(scope, namespace, { prefix: call.prefix, limit: call.limit ?? 50, cursor: call.cursor ?? null })
+      return { items: page.items, nextCursor: page.nextCursor }
+    }
+    default: {
+      const _exhaustive: never = call
+      throw new EnkakuError('E_BAD_REQUEST', `unknown kv op: ${JSON.stringify(_exhaustive)}`)
+    }
+  }
+}
+
 export function createKvRunnerPort(deps: KvRunnerPortDeps): KvRunnerPort {
   const { db, store } = deps
   return {
     async call(ctx, call) {
       const scope = resolveScope(db, ctx.deviceId, call.scope)
-      switch (call.op) {
-        case 'get': {
-          const entry = store.get(scope, ctx.namespace, call.key)
-          return entry ? entry.value : null
-        }
-        case 'set': {
-          const entry = store.set(scope, ctx.namespace, call.key, call.value, {
-            secret: call.secret,
-            ttlSec: call.ttlSec,
-            updatedByJobId: ctx.jobId,
-          })
-          return { version: entry.version }
-        }
-        case 'setIfVersion': {
-          const entry = store.setIfVersion(scope, ctx.namespace, call.key, call.value, call.expectedVersion, {
-            secret: call.secret,
-            ttlSec: call.ttlSec,
-            updatedByJobId: ctx.jobId,
-          })
-          return entry ? { version: entry.version } : null
-        }
-        case 'increment':
-          return store.increment(scope, ctx.namespace, call.key, call.by ?? 1)
-        case 'delete':
-          return store.delete(scope, ctx.namespace, call.key, { ifVersion: call.ifVersion })
-        case 'list': {
-          const page = store.list(scope, ctx.namespace, { prefix: call.prefix, limit: call.limit ?? 50, cursor: call.cursor ?? null })
-          return { items: page.items, nextCursor: page.nextCursor }
-        }
-        default: {
-          const _exhaustive: never = call
-          throw new EnkakuError('E_BAD_REQUEST', `unknown kv op: ${JSON.stringify(_exhaustive)}`)
-        }
-      }
+      return applyKvCall(store, scope, ctx.namespace, call, { updatedByJobId: ctx.jobId })
     },
 
     redact(ctx, text) {

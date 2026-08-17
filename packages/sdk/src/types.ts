@@ -14,6 +14,7 @@ import type {
   TimingSettings,
   UiNode,
 } from '@enkaku/protocol'
+import type { PluginContext } from './runtime'
 
 export interface WaitForOptions {
   /** Default 10_000 ms. */
@@ -384,16 +385,37 @@ export interface ScriptError {
   phase: 'prepare' | 'run' | 'finish' | 'timeout'
 }
 
-export interface ScriptContext<P = unknown> {
+/**
+ * What a script handler receives. Since plan 109 step 109.1 this **extends
+ * `PluginContext`** rather than re-declaring its own `log`/`kv`: `storage`,
+ * `log` and `farm` are the very same members, built by the very same function
+ * (`@enkaku/session`'s `buildPluginContext`), so a plugin helper typed
+ * `(ctx: PluginContext) => …` accepts a script's context by construction and
+ * not by anyone remembering to keep two interfaces in step (plan 109 §3.1,
+ * criterion 2).
+ *
+ * Everything declared below is the honest asymmetry §3.1 names: it needs a
+ * leased device and a job, and therefore exists in a script handler only.
+ */
+export interface ScriptContext<P = unknown> extends PluginContext {
   device: DeviceApi
   /** Already through params.parse(). */
   params: P
   artifact: ArtifactApi
-  log: ScriptLogger
   job: { id: string; attempt: number; deviceId: string }
   /** Only set when finish runs after a failure. */
   error?: ScriptError
-  /** The durable key/value store (plan 79) — `device` for this job's device, `global` for the farm. */
+  /**
+   * The durable key/value store (plan 79) — `device` for this job's device,
+   * `global` for the farm.
+   *
+   * **This is `ctx.storage` under plan 79's name, and it is literally the
+   * same object** (plan 109 §3.1, step 109.1) — never a second store, never a
+   * copy. Both names are kept because a bundle already published to a farm
+   * compiled `ctx.kv` into its code and there is no publish step that could
+   * rewrite it; the overview's §4.3 "replace, never version" exception for
+   * data already written to disk is exactly this case.
+   */
   kv: { device: KvApi; global: KvApi }
   /** A running script's own view of the queue on its own device (plan 80). */
   jobs: JobsApi

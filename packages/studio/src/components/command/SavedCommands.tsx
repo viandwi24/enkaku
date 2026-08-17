@@ -8,13 +8,8 @@ import {
   type CommandTarget,
   type SavedCommand,
 } from '@enkaku/protocol'
-import { api, useAction } from '@/lib/actions'
+import { api, useAction, ConfirmDialog, Button, Input, Textarea, EmptyState } from '@enkaku/ui'
 import { isAdmin, useAuth } from '@/lib/auth'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/states'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 
 /**
  * Plan 93 §3.10, step 93.7 — "saved commands are a farm asset, not a

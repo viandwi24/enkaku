@@ -383,6 +383,37 @@ describe('PluginRuntime — reload/restart (criteria 25, 26)', () => {
     expect(runtime.get('tiktok', '1.0.0')?.status).toBe('active')
   })
 
+  /**
+   * The regression this file was missing, and the shape of the bug is why:
+   * `reload` on a HEALTHY, ACTIVE plugin left it `staged` — off — while
+   * returning 200 and `ok: true`. Every existing test reloaded a `failed` row,
+   * which reaches `active` through the same branch, so the whole suite stayed
+   * green while the common case was broken.
+   *
+   * The cause was a stale read: `reloadImpl` captured the row (status `active`),
+   * `verifyImpl` then set it to `staged` as it does for every row it verifies,
+   * and the re-activate branch was guarded on the pre-verify value. Observed on
+   * a live farm — one reload took a plugin's screen and its service down.
+   *
+   * Asserted on the OUTCOME an operator cares about (still active, still
+   * resolving) rather than on the internals, so a future refactor of the
+   * transition cannot satisfy it vacuously.
+   */
+  test('reload(name) on a healthy ACTIVE plugin leaves it active — it must not be demoted to staged', async () => {
+    const { runtime } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('active')
+
+    const report = await runtime.reload('tiktok')
+
+    expect(report.ok).toBe(true)
+    expect(runtime.get('tiktok', '1.0.0')?.status).toBe('active')
+    // The point of the fix, stated separately: the plugin is still the one the
+    // farm resolves. A row parked at `staged` answers neither.
+    expect(runtime.active('tiktok')?.id).toBe(staged.id)
+  })
+
   test('restart() re-derives every active plugin and reports ok/failed counts without touching status on a re-verify failure', async () => {
     let fail = false
     const { runtime } = setUp({ verify: async () => (fail ? { ok: false, error: 'now broken', errorCode: 'E_X', scripts: [], resetPackages: [] } : healthyReport()) })

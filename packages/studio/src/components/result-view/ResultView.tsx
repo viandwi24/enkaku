@@ -1,5 +1,5 @@
 import { type ReactNode, useMemo } from 'react'
-import { formatFieldValue } from '@/lib/format'
+import { formatFieldValue } from '@enkaku/ui'
 import type { FieldPlan, PlannedField } from '../schema-form/plan'
 import type { JsonSchemaNode } from '../schema-form/types'
 import { planResult, type PlannedResultField } from './plan-result'

@@ -1,5 +1,5 @@
 import type { AgentUsage } from '@enkaku/protocol'
-import { formatTokens, formatUsd } from '@/lib/format'
+import { formatTokens, formatUsd } from '@enkaku/ui'
 
 /**
  * A run's token/cost footer (plan 69 §3.4, §4.2). Cache read tokens get

@@ -471,6 +471,78 @@ Every job runs in a **child process** with a hard timeout. The only guarantee is
 
 This is **not a security sandbox**. A script bundle has full filesystem and network access as the OS user running the core. In local and self-hosted mode, the script author is treated as a **trusted operator**. Real security isolation (a container or microVM per job) is multi-tenant cloud work.
 
+## One context, many entry points — `PluginContext` and `defineService`
+
+A plugin is not only a bag of scripts. It can also run code for as long as it is enabled (plan 109, M74), and the point of that design is that **there is one context, not a script API and a separate runtime API**:
+
+```ts
+import { definePlugin, defineService } from '@enkaku/sdk'
+
+export default definePlugin({
+  id: 'bridge',
+  version: '1.0.0',
+  scripts: [ /* … */ ],
+  service: defineService({
+    permissions: ['device.list'],          // exhaustive; shown to the operator at install
+    setup: async (ctx) => {
+      ctx.log.info('up')
+      await ctx.storage.global.set('startedAt', Date.now())
+      ctx.onStop(() => { /* close whatever you opened */ })
+    },
+  }),
+})
+```
+
+**It is `service`, not `runtime`, and the two words are not interchangeable
+here.** A plugin MEMBER's `runtime` is the envelope below — `timeoutMs`,
+`retries`, `maxRssBytes`, `maxConcurrent` — a restriction a script places on its
+own execution. `service` is the long-lived half. Two adjacent keys sharing one
+word would have meant reading the wrong doc comment forever.
+
+`ctx.storage`, `ctx.log` and `ctx.farm` are the same three members a script handler gets — the same types, built by the same function — so a helper you write once works from either end:
+
+```ts
+// helpers.ts — imported by your script AND by your runtime
+import type { PluginContext } from '@enkaku/sdk'
+
+export async function bump(ctx: PluginContext, deviceId: string) {
+  ctx.log.info('bumping', { deviceId })
+  return ctx.storage.forDevice(deviceId).increment('runs', 1)
+}
+```
+
+`ScriptContext` **extends** `PluginContext`, so that is checked by the compiler and not by anybody remembering.
+
+| member | script handler | service handler |
+|---|---|---|
+| `storage.global` | the farm's scope | the farm's scope |
+| `storage.device` | your job's device | **refuses `E_NO_DEVICE_SCOPE`** — an HTTP handler has no ambient device; name one |
+| `storage.forDevice(id)` | your job's device only — any other refuses `E_FOREIGN_DEVICE_SCOPE` | that device |
+| `log` | joins the job log | joins the plugin's runtime log |
+| `farm.call` / `farm.callRaw` | the capability broker | the capability broker |
+| `device`, `params`, `job`, `artifact`, `jobs` | yes | **absent** — they need a leased device and a job |
+
+`ctx.storage` is `ctx.kv` under plan 109's name, and it is literally the same object. Both names work and always will; `ctx.kv` is what every already-published bundle compiled against.
+
+### The service is in-process, and that has a price you must know
+
+A script runs in its own child process. **A service does not.** Your service code is loaded into the core process, alongside the queue, the device registry, and every live screencast. That buys immediacy and costs containment, and the honest list is short:
+
+**Caught, and charged to your plugin:** a handler that throws, a handler that rejects, a handler that overruns its deadline, a module that fails to import, and — where the farm can trace it back to you — a floating promise rejection. Each one is charged against an error budget: 20 failures in 60 seconds and your service is stopped, marked `failed` with your last error shown verbatim, and **not retried** until someone starts it again.
+
+A handler that overruns its deadline frees the CALLER; it does not stop your handler. A JavaScript promise cannot be cancelled. Your `setup` receives an `AbortSignal` on every guarded call and honouring it is the only way your code actually stops.
+
+**Not caught, by any amount of `try`/`catch` — each one takes the whole farm down:**
+
+- a synchronous infinite loop (`while (true) {}`) — the event loop stops, and every device with it;
+- running out of memory;
+- `process.exit()` anywhere in your code;
+- a native crash inside an npm dependency you imported.
+
+This is **not a sandbox**, and it is not called one. It is a deliberate choice for a farm whose plugins are written by its own operator: there is no marketplace, no third-party distribution, and no signing. `isolation: 'process'` is reserved in the manifest for the day that stops being true: you may write it, and the farm refuses it at verify with `E_PLUGIN_ISOLATION_UNSUPPORTED`, naming it as unimplemented rather than ignoring it.
+
+One more thing that is worth knowing before you read a status: **`starting` is not `running`.** Your service is `running` only once your `setup` has resolved. Until then it is `starting`, and every call into it is refused with `E_PLUGIN_RUNTIME_STARTING` rather than queued — so if your `setup` awaits something slow, nothing of yours is reachable yet, and the Plugins page will say exactly that.
+
 ## Your script can be a workflow node
 
 A **workflow** (plan 99, M64) is a pipeline of published scripts, run as one job on one device under one lease — see `packages/protocol/README.md` and `packages/core/README.md` for the document shape and the executor. Nothing about how you write a script changes to make it usable as a node: any published script can be one, referenced by `name@version` (or `name@latest`), and it runs exactly the way it runs on its own — its own child process, its own `timeout`/`retries`/`params`/`finish()`. A workflow author cannot see your source, only your `paramsSchema` and, if you declare one, your output shape; they wire your script's parameters to a constant, a workflow parameter, or an earlier node's output through a closed binding grammar that never evaluates code (see `packages/protocol/README.md`'s "the rule that matters most").
@@ -487,7 +559,7 @@ Three things make a script a *good* node, and none of them are enforced — they
 
 A **plugin** is one project (an `index.ts` calling `definePlugin`) that publishes several scripts sharing helpers, types, and constants as a single bundle. `definePlugin` also takes an optional `surface`: the screens the plugin contributes to Studio — a sidebar entry, a page, a table, forms, and actions. A plugin that omits `surface` is unaffected in every way.
 
-**The screen is data, not code.** There is no JavaScript of yours in the operator's session on the default path, no expression language, and no string interpolation. You declare *what the screen holds*; Studio draws it with the same components every other screen uses.
+**The screen is data, not code — on the default path.** A declared view has no JavaScript of yours in the operator's session, no expression language, and no string interpolation: you declare *what the screen holds*, and Studio draws it with the same components every other screen uses. When a table is the wrong shape for what you are building, you ship a React module instead and Studio mounts it in its own tree — that is tier C, below, and it is code, with everything that implies.
 
 ```ts
 import { definePlugin } from '@enkaku/sdk'
@@ -573,33 +645,79 @@ One asymmetry worth knowing before you design a toolbar: **a batch cannot target
 
 ### What `definePlugin` refuses on your machine
 
-The surface is validated at import time, before any network call, by `validatePluginSurface` — the same function the farm's verify child and its parent re-check both run, so a defect cannot pass here and fail there. It throws for: a nav entry naming a view that does not exist; a toolbar or row action naming an action that does not exist; a duplicate nav id; an icon outside the allowlist; a view declaring both `table` and `frame`, or neither; a `table` with no `data`; and any cap exceeded — 8 nav entries, 16 views, 32 actions, 12 columns, 256 KiB for the whole serialised `surface`, 8 MiB for a tier-B `ui/` directory. Each refusal quotes the limit it hit. Every defect is reported at once, not one per run.
+The surface is validated at import time, before any network call, by `validatePluginSurface` — the same function the farm's verify child and its parent re-check both run, so a defect cannot pass here and fail there. It throws for: a nav entry naming a view that does not exist; a toolbar or row action naming an action that does not exist; a duplicate nav id; an icon outside the allowlist; a view declaring both `table` and `react`, or neither; a `table` with no `data`; and any cap exceeded — 8 nav entries, 16 views, 32 actions, 12 columns, 256 KiB for the whole serialised `surface`, 8 MiB for the `ui/` directory. Each refusal quotes the limit it hit. Every defect is reported at once, not one per run.
 
 Two checks happen on the farm rather than here. Every JSON Schema a surface embeds is put through **`checkDeclaredSchema`** — the same gate a `params` schema passes — at verify, so a column schema that is too deep or too wide fails there. And the *existence* of a `script` a `job`/`batch` action names is deliberately never checked, at either end: a pack may reference a script published separately, so the action reports `script_not_found` at click time, the same failure the run dialog already gives. Either way the failure is `E_PLUGIN_SURFACE_INVALID`: the plugin is recorded `failed`, registers **zero** scripts, and changes nothing about any other plugin.
 
-### Tier B — the iframe, and when not to reach for it
+### Tier C — your own React, and what you are taking on with it
 
-A view may state `frame: { entry: 'index.html' }` instead of `table`, and Studio renders a sandboxed iframe over assets shipped inside your package's `ui/` directory, with its design tokens injected as CSS custom properties. You inherit colours, spacing, radius, and typography. You inherit **no components** — `Table` and `SchemaForm` are React in the parent document and do not cross a frame boundary — so a tier-B screen will not pick up the next change to any of them, and its empty state, error state, and focus behaviour are yours to get right.
+A view may state `react: { entry: 'index.js', apiVersion: 1 }` instead of `table`. Studio loads that module out of your package's `ui/` directory and mounts your component **inside its own React tree**, on its own React. You write ordinary React — hooks, your own components, tabs, a canvas, whatever the screen actually is — and there is no vocabulary in your way.
 
-The frame has no same-origin access, no cookie, and no token, and `connect-src` is `'none'`: it talks to the host only through a typed `postMessage` RPC that maps onto the same declared `data` source and the same declared actions a tier-A view would use. A frame view **may** declare `data` — that is what gives it something to read — and it can reach nothing you did not write down.
+You also get Studio's components for real. Import `@enkaku/ui` and you receive the **host's live instances**: your `Table` is not a lookalike of Studio's `Table`, it is the same one, so your screen picks up its next change on the day Studio does. `@enkaku/ui` also carries the pieces that make a screen *behave* like a Studio screen rather than merely look like one, which is the difference between borrowing Studio's buttons and matching it:
 
-The rule (`docs/design.md`): **tier A unless the layout genuinely cannot be a table or a form.**
+- `EmptyState`, `ErrorState`, `LoadingRows`, `ConfirmDialog` — the states every list has to handle, drawn the way the jobs list draws them.
+- `api(path, schema, init?)` — a `fetch` that resolves the core's origin for you, unwraps the farm's error envelope, and validates the response against a Zod schema instead of casting it. `useAction()` gives a button its pending state and its toast. `coreBase()` is the origin on its own if you want to build a URL yourself.
+- `z` — Zod itself, re-exported, so `api()`'s required schema costs your bundle nothing. `@enkaku/ui` is external; a `zod` of your own would be a second copy.
+- `relativeTime`, `duration`, `fileSize`, `formatFieldValue` — so a time on your screen reads the way every other time in the farm reads.
+
+**You do not have to find the core.** `fetch('/api/…')` is only correct when Studio is served BY the core, which is the normal deployment but not the only one — under `bun run dev:studio` the page is on :3001 and the core on :7700. `api()` handles it, and sends the session cookie cross-origin. If you would rather not use `@enkaku/ui` at all, the expression you want is `new URL(import.meta.url).origin`: your module was served by the core, so its own URL is the core's.
+
+What is deliberately **not** here: `PageHeader` (Studio already draws one above your view, from your manifest's `title` and `description` — a second is two stacked sticky bars) and `PaginatedTable` (its envelope is the farm's internal keyset contract, not one your own routes owe anybody).
+
+Use none of it and write plain HTML if you prefer; that is a supported choice.
+
+There is **no sandbox, and this document will not pretend otherwise.** Your module runs in Studio's page with the operator's session, and `fetch` reaches the farm exactly as Studio's own code does. Nothing narrows what you can touch. Studio wraps your component in an error boundary, which contains a *crash* — a component that throws renders an error instead of taking the page down — and contains nothing else. This is deliberate: your scripts already run in the core's own process with the core's full OS authority, so the browser half extends that trust to nobody new (`docs/spec.md` §11.3, §11.6). One consequence to know: an action your UI takes is attributed to the operator whose browser ran it, not to you.
+
+Three costs, so the choice is made on them rather than on taste:
+
+- **A build step and a version coupling.** `apiVersion` is the `@enkaku/ui` major you built against. It is required, and the farm checks it **at verify** with exact equality: a mismatch is refused as `E_PLUGIN_UI_UNSUPPORTED`, naming both numbers, before the plugin can be activated. That is a checked incompatibility instead of a component that explodes in front of an operator — but it does mean a rebuild when that major moves. A tier-A plugin never needs one. There is no promise of a stable component API; Studio's components are internal and change, which is exactly why the check is equality and not a range.
+- **Every state is yours to *decide*, even though you no longer have to draw them.** Tier A gets loading, empty and error from the renderer, for free and correct. Tier C hands you `LoadingRows`, `EmptyState` and `ErrorState` — the components Studio's own screens use — but nothing renders them unless you do, and nothing tells you when you forgot one. Focus and keyboard behaviour are yours outright.
+- **Styling — you may need your own stylesheet, and the scaffold ships one.** Your markup renders in Studio's document, so every class Studio itself compiles is already available to you, `@enkaku/ui`'s components included. **A class Studio never used was never generated** and will do nothing at all, with no error anywhere — so the moment you write a class of your own, you need `src/ui/index.css`. See "Your own Tailwind classes" below.
+
+`react` and `table` are mutually exclusive — exactly one renderer per view — but `data` is legal beside either, and so are `actions`. A React view may declare a `kv.scan` source and read it through the same route a table does, and may invoke a declared action, which is still the only path that resolves a script reference server-side and audits as `plugin.action`. It may equally declare neither and call `fetch` itself; `actions` may be omitted entirely.
+
+The rule (`docs/design.md`): **tier A when the screen is rows or fields, tier C when it genuinely is not.**
 
 ### Shipping a surface: the `.enkaku` package
 
-A plugin with tier-B assets ships as a `.enkaku` archive — a plain `tar.gz` holding `plugin.json`, `scripts.mjs`, and `ui/`. Any entry outside that allowlist is refused at verify. `POST /api/plugins` accepts the archive raw, or the original JSON body for a plugin with no assets.
+A plugin with a React view ships as a `.enkaku` archive — a plain `tar.gz` holding `plugin.json`, `scripts.mjs`, and `ui/`. Any entry outside that allowlist is refused at verify. `POST /api/plugins` accepts the archive raw, or the original JSON body for a plugin with no assets.
 
-**A tier-B screen cannot be iterated with `enkaku dev` today.** A dev slot is built from a bundle, and `enkaku dev` pushes `scripts.mjs` only — never an archive — so a dev slot carries no `ui/` payload, and the asset route reads the active published row. A tier-A view iterates fine under `enkaku dev`; a `frame` view has to be exercised against a published package (`plan 108 §9 Q3`).
+`enkaku init <name>` scaffolds the React shape by default — a script member, a view, `src/ui/index.tsx` with the registration line already written, `src/ui/index.css` with the three imports that are easy to get catastrophically wrong, and build flags that are already right — and `enkaku init <name> --script-only` scaffolds the pre-React three-file project. Every top-level file in `src/ui/` is built to `ui/<name>.js` inside the package, which is what `react.entry` names; `react` and `@enkaku/ui` are marked external, because two copies of React in one page throw `Invalid hook call`.
+
+**`enkaku dev` iterates a React view.** It builds both halves and pushes a whole package, so a dev slot carries its `ui/` payload, and the asset route answers from the dev slot ahead of the active published row — edit, save, reload, see the change.
+
+### Your own Tailwind classes
+
+**You may well need none.** Studio's stylesheet already contains every class Studio itself uses, and that includes everything `@enkaku/ui`'s components are built from. A screen drawn from those components needs no stylesheet at all — delete `src/ui/index.css` and the two Tailwind devDependencies with it, and nothing breaks.
+
+You need one the moment you write a class of your own. `grid-cols-[200px_1fr]`, `rotate-3`, a colour Studio never reached for: that class was never generated, so your markup renders with the attribute intact and not one matching rule. There is no error and no warning — this is the single most confusing thing about writing a plugin screen, which is why the scaffold ships the stylesheet rather than leaving you to discover it.
+
+The convention is a stylesheet **named after the entry it belongs to** — `src/ui/index.css` beside `src/ui/index.tsx` — compiled into `ui/index.css` in the package, which Studio links beside the module. There is no manifest field to set. `enkaku publish` and `enkaku dev` run **your project's own** `@tailwindcss/cli`; the SDK does not carry a CSS compiler, because it is bundled into your plugin and a compiler has no business in that bundle.
+
+What the scaffold writes, and what every line of it is for:
+
+```css
+@import 'tailwindcss/theme.css' theme(reference);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import '@enkaku/ui/theme.css' theme(reference);
+```
+
+- **Never `@import 'tailwindcss'` here.** That pulls in preflight, a *global* reset, and Studio's document already has one — a second copy restyles every other screen in the farm rather than your view. Publishing refuses a stylesheet that contains it, naming the declaration it found.
+- **`theme(reference)` on both theme imports.** It registers the tokens so `bg-surface` compiles, without writing a `:root` block. Your `<link>` is injected after Studio's, so a token you re-declared would win the cascade and repaint the whole farm with whatever the palette looked like the day you built. Referenced, `bg-surface` compiles to `background-color: var(--color-surface, <the value at build time>)`: Studio's live value wins, and the build-time value is only a fallback for a token Studio never emitted.
+- **`@enkaku/ui/theme.css` is the farm's design tokens** — `bg-surface`, `text-fg-muted`, `text-led-ok`, `rounded-card`, and the `hover-none:` variant — read from the same file Studio compiles against, so the two cannot drift.
+
+Hand-written CSS in that file is allowed and is entirely your own risk. It becomes a stylesheet in Studio's document, so a bare `button { … }` restyles Studio's buttons too. Scope what you add. Do not import the file from your `.tsx`: it is compiled and linked for you, and importing it hands the raw source to a bundler that does not know what Tailwind is.
 
 ## Publishing
 
 ```bash
-bunx enkaku init my-pack                                  # scaffold — publishes with no edits
+bunx enkaku init my-pack                                  # scaffold — a script and a React screen, publishes with no edits
+bunx enkaku init my-pack --script-only                    # scaffold — a script and no screen
 bunx enkaku publish ./src/index.ts --farm http://localhost:7700
 bunx enkaku dev     ./src/index.ts --farm http://localhost:7700   # push on every save, 30-min dev slot
 ```
 
-The CLI bundles the entry and all of its dependencies into a single ESM file (the farm never installs dependencies), imports it to read the default export, checks every member's declared schemas against the published limits locally, then POSTs the bundle to `/api/plugins` — which stages it, verifies it in a child process, and reports what it found. `--stage-only` skips the verify half so you can trigger it separately.
+The CLI bundles the entry and all of its dependencies into a single ESM file (the farm never installs dependencies), imports it to read the default export, checks every member's declared schemas against the published limits locally, then POSTs to `/api/plugins` — the bundle on its own as JSON, or a whole `.enkaku` package when the project has a `src/ui/` directory to build — which stages it, verifies it in a child process, and reports what it found. `--stage-only` skips the verify half so you can trigger it separately.
 
 **An entry whose default export is not a `definePlugin()` result is refused, and nothing is sent.** The message carries the wrapper itself:
 

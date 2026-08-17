@@ -35,7 +35,6 @@ import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
 import { JobFailureDetail } from '@/components/jobs/JobFailureDetail'
 import { JobLogsPanel } from '@/components/jobs/JobLogsPanel'
 import { JobResultSection } from '@/components/jobs/JobResultSection'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,17 +45,23 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
-import { api, useAction } from '@/lib/actions'
+  Button,
+  EmptyState,
+  ErrorState,
+  LoadingRows,
+  api,
+  cn,
+  duration,
+  fileSize,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 import { deviceRefLabel, fetchAllPages, type JobNodeInfo } from '@/lib/api'
-import { duration, fileSize, relativeTime } from '@/lib/format'
 import { descendantsOf } from '@/lib/job-lineage'
 import type { JobWithPhase } from '@/lib/jobs'
 import { useJobDetail, type JobWithNode } from '@/lib/use-job-detail'
 import { useNow } from '@/lib/useNow'
 import { coreBase, ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
 
 /** `reset` (plan 35 §3.5) is the pre-job device reset — it always runs before `prepare`. */
 const PHASES = ['reset', 'prepare', 'run', 'finish'] as const

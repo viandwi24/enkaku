@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { ChevronRight, SquareArrowOutUpRight } from 'lucide-react'
 import type { AgentTreeNode } from '@enkaku/protocol'
 import { AgentAvatar } from './AgentAvatar'
-import { Badge } from '@/components/ui/badge'
+import { Badge } from '@enkaku/ui'
 
 function elapsedLabel(node: AgentTreeNode): string {
   if (!node.startedAt) return '—'

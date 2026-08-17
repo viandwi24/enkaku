@@ -2,8 +2,7 @@
 
 import type { Viewer } from '@enkaku/protocol'
 import { Hand } from 'lucide-react'
-import { relativeTime } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import { relativeTime, cn } from '@enkaku/ui'
 
 /** A short, stable label for a viewer that has no resolved user name (plan 31 §3.3). */
 export function shortSessionLabel(sessionId: string): string {

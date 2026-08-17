@@ -1,6 +1,6 @@
 'use client'
 
-import { Progress } from '@/components/ui/progress'
+import { Progress } from '@enkaku/ui'
 
 /**
  * Plan 93 §3.15, §4.8, H3, step 93.11 — the one three-part summary line every

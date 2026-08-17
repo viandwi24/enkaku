@@ -2,8 +2,7 @@
 
 import { Plus, X } from 'lucide-react'
 import { GATE_OPS, WORKFLOW_LIMITS, type GateOp, type Predicate, type WorkflowParam } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@enkaku/ui'
 import { placeholderPredicate } from './model'
 import { type NodeOption, ValueExprEditor } from './ValueExprEditor'
 

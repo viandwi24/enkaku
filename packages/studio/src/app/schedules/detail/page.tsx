@@ -19,17 +19,12 @@ import {
   type ScheduleInfo,
   type ScheduleRunInfo,
 } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog, ErrorState, LoadingRows, Button, TableCell, TableHead, api, useAction, relativeTime } from '@enkaku/ui'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { TableCell, TableHead } from '@/components/ui/table'
-import { api, useAction } from '@/lib/actions'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
-import { relativeTime } from '@/lib/format'
 import { ws } from '@/lib/ws'
 
 /** Same "still active" test the core's own `isBatchActive` (`schedules/runner.ts`) uses, for the Overview tab's Stop control (plan 94 §3.9, §4.9, step 94.8). */

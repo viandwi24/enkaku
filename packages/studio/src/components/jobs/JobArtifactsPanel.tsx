@@ -2,8 +2,7 @@
 
 import { Download } from 'lucide-react'
 import type { ArtifactInfo } from '@enkaku/protocol'
-import { EmptyState } from '@/components/states'
-import { fileSize } from '@/lib/format'
+import { EmptyState, fileSize } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 
 /** The name the file actually downloads as, rather than its internal label — "job.log" says what is inside, "job" does not. */

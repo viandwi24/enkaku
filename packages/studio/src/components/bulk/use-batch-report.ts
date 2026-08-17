@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { BatchWithJobsResponseSchema, type BatchInfo, type BatchStatusValue, type JobInfo } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
+import { api } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
 import type { OutcomeCounts } from './OutcomeSummary'
 import type { NamedOutcome } from './SkippedGroups'

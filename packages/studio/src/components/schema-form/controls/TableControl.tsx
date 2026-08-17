@@ -1,8 +1,7 @@
 'use client'
 
 import { Plus, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@enkaku/ui'
 import type { FieldPlan } from '../plan'
 import { emptyRow } from './empty'
 import { renderControl } from './index'

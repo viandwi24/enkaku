@@ -2,11 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { CommandRunsPageResponseSchema, type ClusterInfo, type CommandRunSummary, type CommandTarget, type DeviceInfo } from '@enkaku/protocol'
-import { api } from '@/lib/actions'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/states'
-import { relativeTime } from '@/lib/format'
+import { api, Badge, Button, EmptyState, relativeTime } from '@enkaku/ui'
 import { describeCommandTarget } from './target-preview'
 
 /**

@@ -1,5 +1,5 @@
 import type { DailyUsage } from '@/lib/agent-usage'
-import { formatUsd } from '@/lib/format'
+import { formatUsd } from '@enkaku/ui'
 
 /**
  * A fourteen-day cost sparkline (plan 69 §3.4) — one bar per day, height

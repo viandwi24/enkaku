@@ -7,19 +7,22 @@ import { initCommand } from './init'
 const USAGE = `enkaku — CLI SDK Enkaku
 
 Usage:
-  enkaku init <name>
+  enkaku init <name> [--script-only]
   enkaku publish <entry.ts> [--farm <url>] [--token <token>] [--stage-only]
   enkaku dev <entry.ts> [--farm <url>] [--token <token>] [--name <name>] [--no-watch]
 
 A plugin is the only thing the farm publishes — a script cannot exist outside
-one. "enkaku init" scaffolds a plugin project that publishes with no edits.
+one. "enkaku init" scaffolds a plugin project that publishes with no edits: a
+script member and a React screen under src/ui/, built and shipped by both
+"publish" and "dev".
 
 Options:
-  --farm         Core URL (defaults to http://localhost:7700 or the ENKAKU_FARM_URL env var)
-  --token        token publish (default env ENKAKU_TOKEN)
-  --stage-only   publish only: stage a plugin without verifying it in the same call
-  --name         dev only: the plugin name to use on the farm (defaults to the bundle's own id)
-  --no-watch     dev only: push once and exit, instead of watching for changes
+  --farm          Core URL (defaults to http://localhost:7700 or the ENKAKU_FARM_URL env var)
+  --token         token publish (default env ENKAKU_TOKEN)
+  --script-only   init only: scaffold a plugin with a script member and no screen
+  --stage-only    publish only: stage a plugin without verifying it in the same call
+  --name          dev only: the plugin name to use on the farm (defaults to the bundle's own id)
+  --no-watch      dev only: push once and exit, instead of watching for changes
 `
 
 function flag(argv: string[], name: string): string | undefined {
@@ -51,7 +54,7 @@ const token = flag(argv, 'token') ?? process.env.ENKAKU_TOKEN
 
 try {
   if (command === 'init') {
-    initCommand({ name: target })
+    initCommand({ name: target, ...(hasFlag(argv, 'script-only') ? { scriptOnly: true } : {}) })
   } else if (command === 'publish') {
     await publish({
       entry: resolve(target),

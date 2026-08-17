@@ -1,9 +1,7 @@
 'use client'
 
 import type { ValueExpr, WorkflowParam } from '@enkaku/protocol'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
+import { Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch } from '@enkaku/ui'
 
 /**
  * The bindings sub-form (plan 99 §3.6, §4.11) — a `ValueExpr` is a closed,

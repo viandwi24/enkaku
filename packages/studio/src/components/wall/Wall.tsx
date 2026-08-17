@@ -7,8 +7,7 @@ import { WallTile } from './WallTile'
 import { TileGrid } from './TileGrid'
 import { TileSkeleton } from './TileSkeleton'
 import { useLiveSet } from './useLiveSet'
-import { EmptyState } from '@/components/states'
-import { api } from '@/lib/actions'
+import { EmptyState, api } from '@enkaku/ui'
 
 /**
  * `wall.rampConcurrency`'s schema default (plan 92 §5 step 92.1,

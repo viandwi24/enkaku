@@ -3,7 +3,7 @@
 import type { ToolProvisionProgress } from '@enkaku/protocol'
 import { useEffect, useState } from 'react'
 import { ws } from '@/lib/ws'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * First-run toolchain provisioning, made visible.

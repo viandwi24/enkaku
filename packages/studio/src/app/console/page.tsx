@@ -18,12 +18,7 @@ import {
   type ServerMessage,
 } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { api, useAction } from '@/lib/actions'
+import { EmptyState, LoadingRows, Button, Input, Label, Switch, api, useAction } from '@enkaku/ui'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
 import { coreBase, ws } from '@/lib/ws'
 import { CommandHistory } from '@/components/command/CommandHistory'

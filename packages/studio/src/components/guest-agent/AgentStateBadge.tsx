@@ -1,5 +1,5 @@
 import type { GuestAgentState } from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn } from '@enkaku/ui'
 
 /**
  * The one place a guest-agent state turns into a colour and a word — the

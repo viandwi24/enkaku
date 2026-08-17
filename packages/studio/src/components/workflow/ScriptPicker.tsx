@@ -1,7 +1,7 @@
 'use client'
 
 import { compareSemver } from '@enkaku/protocol'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@enkaku/ui'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 
 /** One published, ordinary (`kind: 'script'`) row — the shape `ScriptListItemSchema` already returns. */

@@ -2,14 +2,24 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { DeviceNetworkStatusResponseSchema } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { api, useAction } from '@/lib/actions'
+import {
+  Button,
+  ConfirmDialog,
+  ErrorState,
+  Input,
+  Label,
+  LoadingRows,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  api,
+  cn,
+  duration,
+  useAction,
+} from '@enkaku/ui'
 import {
   disableNetworkRoute,
   enableNetworkRoute,
@@ -24,9 +34,7 @@ import {
   type RouteCheckId,
   type RouteCheckState,
 } from '@/lib/api'
-import { duration } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
-import { cn } from '@/lib/utils'
 
 /**
  * A `socks5://user:pass@host:port` URL, parsed in the browser only — the raw

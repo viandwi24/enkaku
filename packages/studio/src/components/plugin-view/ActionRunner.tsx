@@ -8,15 +8,12 @@ import {
   type DeviceInfo,
   type JsonSchemaNode as WireJsonSchemaNode,
 } from '@enkaku/protocol'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, useAction } from '@enkaku/ui'
 import { readRowField, rowPayload, type PluginViewRow } from '@/components/plugin-view/rows'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection } from '@/components/target/useTargetSelection'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { api, useAction } from '@/lib/actions'
 import { fetchDevices } from '@/lib/api'
 
 /**

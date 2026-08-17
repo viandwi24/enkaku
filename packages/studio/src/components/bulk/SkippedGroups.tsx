@@ -2,9 +2,7 @@
 
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { cn } from '@/lib/utils'
+import { Badge, Collapsible, CollapsibleContent, CollapsibleTrigger, cn } from '@enkaku/ui'
 
 /**
  * Plan 93 §3.15, §4.8, F15, H3, step 93.11 — "no count without names".

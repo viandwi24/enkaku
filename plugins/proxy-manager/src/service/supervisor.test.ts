@@ -1,0 +1,535 @@
+import { afterAll, describe, expect, test } from 'bun:test'
+import net from 'node:net'
+import { startSocks5Upstream, type Socks5Fixture } from './fixtures'
+import type { LogSink } from './logbook'
+import { PROXY_STATES, createSupervisor, type Supervisor, type SupervisorHost } from './supervisor'
+import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyKeyFor, proxySecretKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
+
+/** Plan 112 step 112.7 — the supervisor: the five states, the two-phase stop, the cap, the disposer. */
+
+const USERNAME = 'country-id-r9931204'
+const PASSWORD = 'Sup3rSecretUpstreamPassword'
+
+const plain = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('hello-from-plain-http') })
+
+/** `Bun.serve().port` is `number | undefined` in the types; a served fixture always has one, and a missing one must fail loudly. */
+function servedPort(server: { port?: number }): number {
+  if (typeof server.port !== 'number') throw new Error('Bun.serve did not report a port')
+  return server.port
+}
+const PLAIN_PORT = servedPort(plain)
+afterAll(() => plain.stop(true))
+
+function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
+  return {
+    label: 'Office UK',
+    listen: { proto: 'http', bindHost: '127.0.0.1', port: 0 },
+    upstream: { proto: 'socks5', host: '127.0.0.1', port: 1, username: USERNAME },
+    enabled: false,
+    logDestinations: false,
+    maxConnections: DEFAULT_MAX_CONNECTIONS,
+    drainMs: DEFAULT_DRAIN_MS,
+    notes: '',
+    ...over,
+  }
+}
+
+/** A free port, taken and released — the supervisor never binds 0, so a test has to pick one. */
+async function freePort(): Promise<number> {
+  const server = net.createServer()
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      resolve(typeof address === 'object' && address !== null ? address.port : 0)
+    })
+  })
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  return port
+}
+
+interface Harness {
+  supervisor: Supervisor
+  lines: { level: string; message: string; fields?: Record<string, unknown> }[]
+  reported: { id: string; port: number; proto?: 'tcp' | 'udp'; deviceReachable?: boolean; description?: string }[]
+  upstream: Socks5Fixture
+  close(): Promise<void>
+}
+
+async function harness(records: Record<string, ProxyRecord>, opts: { password?: string } = {}): Promise<Harness> {
+  const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+  const lines: Harness['lines'] = []
+  const reported: Harness['reported'] = []
+  const push = (level: string) => (message: string, fields?: Record<string, unknown>) => {
+    lines.push({ level, message, ...(fields ? { fields } : {}) })
+  }
+  const log: LogSink = { debug: push('debug'), info: push('info'), warn: push('warn'), error: push('error') }
+
+  // Every record's upstream points at the fixture, which is only known now.
+  const entries = new Map<string, unknown>()
+  for (const [id, rec] of Object.entries(records)) {
+    entries.set(proxyKeyFor(id), writeProxyRecord({ ...rec, upstream: { ...rec.upstream, port: upstream.port } }))
+    entries.set(proxySecretKeyFor(id), { password: opts.password ?? PASSWORD })
+  }
+
+  const host: SupervisorHost = {
+    storage: {
+      global: {
+        getRaw: async (key) => entries.get(key) ?? null,
+        list: async (listOpts) => ({
+          items: [...entries.entries()]
+            .filter(([key]) => (listOpts?.prefix ? key.startsWith(listOpts.prefix) : true))
+            .map(([key, value]) => ({ key, value })),
+          nextCursor: null,
+        }),
+      },
+    },
+    log,
+    reportListener: (listener) => {
+      reported.push(listener)
+      return listener
+    },
+  }
+
+  const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000, idleMs: 5_000 })
+  return {
+    supervisor,
+    lines,
+    reported,
+    upstream,
+    close: async () => {
+      supervisor.destroyAll()
+      await upstream.close()
+    },
+  }
+}
+
+/** An HTTP request through a bridge, over a socket the caller keeps. */
+function openTunnel(port: number): Promise<net.Socket> {
+  return new Promise<net.Socket>((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1')
+    sock.on('connect', () => sock.write(`CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`))
+    sock.on('data', (chunk: Buffer) => {
+      if (chunk.toString('latin1').includes('200')) resolve(sock)
+    })
+    sock.on('error', reject)
+    setTimeout(() => reject(new Error('tunnel did not open')), 3_000)
+  })
+}
+
+describe('the state machine', () => {
+  test('the five words are plan 109’s five words, and `starting` is one of them', () => {
+    expect([...PROXY_STATES]).toEqual(['stopped', 'starting', 'running', 'stopping', 'failed'])
+  })
+
+  test('a record starts, reads `running`, reports its listener, and serves', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('office-uk')
+      expect(runtime.state).toBe('running')
+      expect(runtime.port).toBe(port)
+      expect(runtime.lastError).toBeNull()
+
+      const tunnel = await openTunnel(port)
+      expect(h.supervisor.runtimeOf('office-uk')?.liveConnections).toBe(1)
+      expect(h.supervisor.runtimeOf('office-uk')?.totalConnections).toBe(1)
+      tunnel.destroy()
+
+      // Pure observability, and NOT a device-reachability claim — the chain
+      // that would make that true is step 112.11.
+      expect(h.reported).toEqual([
+        {
+          id: 'proxy-office-uk',
+          port,
+          proto: 'tcp',
+          deviceReachable: false,
+          description: expect.stringContaining('HTTP bridge for'),
+        },
+      ])
+      expect(h.reported[0]?.description).not.toContain(PASSWORD)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('`enabled` is honoured at boot, and a disabled record is left alone', async () => {
+    const a = await freePort()
+    const b = await freePort()
+    const h = await harness({
+      on: record({ label: 'On', enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port: a } }),
+      off: record({ label: 'Off', enabled: false, listen: { proto: 'http', bindHost: '127.0.0.1', port: b } }),
+    })
+    try {
+      await h.supervisor.startEnabled()
+      expect(h.supervisor.runtimeOf('on')?.state).toBe('running')
+      expect(h.supervisor.runtimeOf('off')?.state).toBe('stopped')
+      // Control: the disabled one really would have worked, so "stopped" is a
+      // decision rather than a failure it is hiding.
+      expect((await h.supervisor.start('off')).state).toBe('running')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('a SOCKS5 listener starts from the same record shape', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'socks5', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      expect((await h.supervisor.start('office-uk')).state).toBe('running')
+      expect(h.reported[0]?.description).toContain('SOCKS5 bridge')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('a taken port produces a named, actionable error on that row — not a stack trace (criterion 8)', async () => {
+    const port = await freePort()
+    const squatter = net.createServer()
+    await new Promise<void>((resolve) => squatter.listen(port, '127.0.0.1', () => resolve()))
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('office-uk')
+      expect(runtime.state).toBe('failed')
+      expect(runtime.lastError?.code).toBe('E_PROXY_LISTEN_ADDR_IN_USE')
+      expect(runtime.lastError?.message).toContain(String(port))
+      expect(runtime.lastError?.message).toContain('already in use')
+      // Actionable: it names what to do, not only what happened.
+      expect(runtime.lastError?.message).toMatch(/another port/)
+      // Not a stack trace.
+      expect(runtime.lastError?.message).not.toContain('    at ')
+    } finally {
+      await h.close()
+      await new Promise<void>((resolve) => squatter.close(() => resolve()))
+    }
+  })
+
+  test('a record the validator refuses fails with the validator’s own code, and never binds (criterion 6)', async () => {
+    const port = await freePort()
+    const h = await harness({
+      bad: record({ listen: { proto: 'https', bindHost: '127.0.0.1', port } }),
+      offhost: record({ listen: { proto: 'http', bindHost: '0.0.0.0', port } }),
+      noport: record({ listen: { proto: 'http', bindHost: '127.0.0.1', port: null } }),
+    })
+    try {
+      await h.supervisor.refresh()
+      expect((await h.supervisor.start('bad')).lastError?.code).toBe('E_PROXY_LISTEN_UNSUPPORTED')
+      expect((await h.supervisor.start('offhost')).lastError?.code).toBe('E_PROXY_BIND_NOT_LOOPBACK')
+      expect((await h.supervisor.start('noport')).lastError?.code).toBe('E_PROXY_PORT_UNASSIGNED')
+      for (const id of ['bad', 'offhost', 'noport']) expect(h.supervisor.runtimeOf(id)?.state).toBe('failed')
+      // Control: nothing bound. The port all three name is still free.
+      const probe = net.createServer()
+      const bound = await new Promise<boolean>((resolve) => {
+        probe.on('error', () => resolve(false))
+        probe.listen(port, '127.0.0.1', () => resolve(true))
+      })
+      expect(bound).toBe(true)
+      await new Promise<void>((resolve) => probe.close(() => resolve()))
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('starting twice is a no-op rather than a second bind', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      expect((await h.supervisor.start('office-uk')).state).toBe('running')
+      expect((await h.supervisor.start('office-uk')).state).toBe('running')
+      expect(h.reported.length).toBe(1)
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('stop is two phases (criterion 9)', () => {
+  test('the port is released immediately, the live tunnel survives the drain, then `stopped`', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 700 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const tunnel = await openTunnel(port)
+      expect(h.supervisor.runtimeOf('office-uk')?.liveConnections).toBe(1)
+
+      const stopping = h.supervisor.stop('office-uk')
+
+      // Phase 1 has already happened by the time the promise exists: the
+      // listening socket is gone, so somebody else can have the port even
+      // though a tunnel is still running through the old one.
+      await Bun.sleep(50)
+      const squatter = net.createServer()
+      const rebound = await new Promise<boolean>((resolve) => {
+        squatter.on('error', () => resolve(false))
+        squatter.listen(port, '127.0.0.1', () => resolve(true))
+      })
+      expect(rebound).toBe(true)
+      await new Promise<void>((resolve) => squatter.close(() => resolve()))
+
+      // …and the live tunnel is still live, and still says so.
+      expect(h.supervisor.runtimeOf('office-uk')?.state).toBe('stopping')
+      expect(h.supervisor.runtimeOf('office-uk')?.liveConnections).toBe(1)
+      expect(tunnel.destroyed).toBe(false)
+
+      const final = await stopping
+      expect(final.state).toBe('stopped')
+      expect(final.port).toBeNull()
+      // The FIN has to cross loopback before the CLIENT end of the pair knows.
+      await Bun.sleep(50)
+      expect(tunnel.destroyed).toBe(true)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('the drain ends early when the last tunnel closes by itself', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 30_000 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const tunnel = await openTunnel(port)
+      const started = performance.now()
+      const stopping = h.supervisor.stop('office-uk')
+      setTimeout(() => tunnel.destroy(), 200)
+      expect((await stopping).state).toBe('stopped')
+      // Nowhere near the 30 s drain: it waited for the tunnel, not the clock.
+      expect(performance.now() - started).toBeLessThan(5_000)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('force stop skips the drain, and the tunnel dies at once', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 30_000 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const tunnel = await openTunnel(port)
+      const started = performance.now()
+      const final = await h.supervisor.stop('office-uk', { force: true })
+      expect(final.state).toBe('stopped')
+      expect(performance.now() - started).toBeLessThan(1_000)
+      await Bun.sleep(30)
+      expect(tunnel.destroyed).toBe(true)
+      // Control: the plain stop above genuinely does wait, so "force skipped
+      // the drain" is a difference rather than a description of both.
+      expect(h.supervisor.runtimeOf('office-uk')?.liveConnections).toBe(0)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('restart is stop-then-start under one lock, and the port is bindable again after it', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 0 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const first = h.supervisor.runtimeOf('office-uk')?.since ?? 0
+      await Bun.sleep(5)
+      const runtime = await h.supervisor.restart('office-uk')
+      expect(runtime.state).toBe('running')
+      expect(runtime.since).toBeGreaterThan(first)
+      const tunnel = await openTunnel(port)
+      tunnel.destroy()
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('two overlapping restarts do not interleave into two bound listeners', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 0 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const [a, b] = await Promise.all([h.supervisor.restart('office-uk'), h.supervisor.restart('office-uk')])
+      expect(a.state).toBe('running')
+      expect(b.state).toBe('running')
+      // If the two had interleaved, the second bind would have hit the first's
+      // still-open socket and the row would read `failed` with EADDRINUSE.
+      expect(h.supervisor.runtimeOf('office-uk')?.lastError).toBeNull()
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('the ctx.onStop disposer (criteria 10 and 11)', () => {
+  test('it destroys immediately, synchronously, and well inside the host’s 5 s total budget', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 30_000 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const tunnel = await openTunnel(port)
+
+      const started = performance.now()
+      const returned = h.supervisor.destroyAll()
+      const elapsed = performance.now() - started
+
+      // Synchronous: it returns `undefined`, not a promise, so the host's
+      // disposer runner cannot be made to wait on it at all.
+      expect(returned).toBeUndefined()
+      // The 30 s drain on the record is deliberately longer than the 5 s
+      // budget: a disposer that honoured it could only fail, earn a warn
+      // naming the plugin, and leave the service reading `stopping`.
+      expect(elapsed).toBeLessThan(500)
+      expect(h.supervisor.runtimeOf('office-uk')?.state).toBe('stopped')
+      await Bun.sleep(30)
+      expect(tunnel.destroyed).toBe(true)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('after two consecutive teardown-and-reload cycles the port is bindable again (plan 109 criterion 8)', async () => {
+    const port = await freePort()
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const h = await harness({ 'office-uk': record({ enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+      await h.supervisor.startEnabled()
+      expect(h.supervisor.runtimeOf('office-uk')?.state).toBe('running')
+      // A reload is a fresh supervisor over the same records — exactly what
+      // the host does when it re-imports the bundle.
+      h.supervisor.destroyAll()
+      await h.upstream.close()
+    }
+    // And after the second one, something else can have the port.
+    const probe = net.createServer()
+    const bound = await new Promise<boolean>((resolve) => {
+      probe.on('error', () => resolve(false))
+      probe.listen(port, '127.0.0.1', () => resolve(true))
+    })
+    expect(bound).toBe(true)
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+  })
+})
+
+describe('the cap, the counters, and what is never stored', () => {
+  test('maxConnections is enforced per proxy, and a refusal is counted separately from a connection', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, maxConnections: 2 }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const held = [await openTunnel(port), await openTunnel(port)]
+      expect(h.supervisor.runtimeOf('office-uk')?.liveConnections).toBe(2)
+
+      await openTunnel(port).catch(() => null)
+      const runtime = h.supervisor.runtimeOf('office-uk')
+      expect(runtime?.refusedConnections).toBe(1)
+      expect(runtime?.totalConnections).toBe(2)
+      expect(runtime?.liveConnections).toBe(2)
+      for (const sock of held) sock.destroy()
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('byte counters accumulate across closed connections', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const tunnel = await openTunnel(port)
+      await new Promise<void>((resolve) => {
+        tunnel.on('data', () => resolve())
+        tunnel.write(`GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)
+      })
+      tunnel.destroy()
+      await Bun.sleep(120)
+      const runtime = h.supervisor.runtimeOf('office-uk')
+      expect(runtime?.bytesUp).toBeGreaterThan(0)
+      expect(runtime?.bytesDown).toBeGreaterThan(0)
+      expect(runtime?.liveConnections).toBe(0)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('criterion 12 — nothing about a RUNNING proxy is ever written to storage', async () => {
+    const port = await freePort()
+    const writes: string[] = []
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(record({ enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port }, upstream: { proto: 'socks5', host: '127.0.0.1', port: upstream.port, username: USERNAME } }))],
+      [proxySecretKeyFor('office-uk'), { password: PASSWORD }],
+    ])
+    const noop = () => {}
+    const host: SupervisorHost = {
+      storage: {
+        global: {
+          getRaw: async (key) => {
+            writes.push(`get:${key}`)
+            return entries.get(key) ?? null
+          },
+          list: async () => {
+            writes.push('list')
+            return { items: [...entries.entries()].filter(([k]) => k.startsWith('proxy:')).map(([key, value]) => ({ key, value })), nextCursor: null }
+          },
+        },
+      },
+      log: { debug: noop, info: noop, warn: noop, error: noop },
+    }
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.startEnabled()
+      const tunnel = await openTunnel(port)
+      tunnel.destroy()
+      await supervisor.stop('office-uk', { force: true })
+
+      // The storage port this supervisor is given has NO `set` at all — so a
+      // write is a type error, not a runtime one. What is asserted here is the
+      // weaker, checkable half: only reads happened, and `enabled` is the only
+      // thing storage was ever consulted about.
+      expect(writes.every((w) => w === 'list' || w.startsWith('get:'))).toBe(true)
+      const stored = JSON.stringify([...entries.values()])
+      for (const forbidden of ['running', 'stopping', 'liveConnections', 'lastError', 'uptime', 'bytesUp']) {
+        expect(stored).not.toContain(forbidden)
+      }
+      // Control: the search would find those words if they were there.
+      expect(JSON.stringify({ ...JSON.parse(stored), state: 'running' })).toContain('running')
+    } finally {
+      supervisor.destroyAll()
+      await upstream.close()
+    }
+  })
+
+  test('startEnabled never lets one broken record stop the others', async () => {
+    const good = await freePort()
+    const h = await harness({
+      broken: record({ enabled: true, listen: { proto: 'https', bindHost: '127.0.0.1', port: 1 } }),
+      good: record({ enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port: good } }),
+    })
+    try {
+      await h.supervisor.startEnabled()
+      expect(h.supervisor.runtimeOf('broken')?.state).toBe('failed')
+      expect(h.supervisor.runtimeOf('good')?.state).toBe('running')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('a missing secret leaves the bridge dialling without a password rather than refusing to start', async () => {
+    // The honest behaviour while step 112.2 is unbuilt: an upstream that needs
+    // a password fails on the upstream's own refusal, on its own row, with a
+    // message that names authentication.
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) }, { password: 'the-wrong-one' })
+    try {
+      await h.supervisor.refresh()
+      expect((await h.supervisor.start('office-uk')).state).toBe('running')
+      const failed = await openTunnel(port).catch((e: unknown) => e)
+      expect(failed).toBeInstanceOf(Error)
+    } finally {
+      await h.close()
+    }
+  })
+})

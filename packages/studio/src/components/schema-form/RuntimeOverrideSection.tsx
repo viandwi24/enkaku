@@ -2,8 +2,7 @@
 
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { cn } from '@/lib/utils'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger, cn } from '@enkaku/ui'
 import { SchemaForm } from './SchemaForm'
 import { RUNTIME_OVERRIDE_SCHEMA } from './runtime-override-schema'
 

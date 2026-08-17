@@ -21,13 +21,16 @@ const silent: Logger = {
 function fakeRuntime(opts: { failVerify?: boolean } = {}) {
   const staged: string[] = []
   const verified: string[] = []
+  /** Per staged key, the `ui/` payload the seeder handed over — `path` plus the bytes, decoded. */
+  const stagedUi = new Map<string, { path: string; text: string }[]>()
   const rows = new Map<string, { id: string }>()
   const runtime = {
     get: (name: string, version: string) => (rows.get(`${name}@${version}`) ?? null) as never,
-    stage: async (input: { name: string; version: string; bundle: string }) => {
+    stage: async (input: { name: string; version: string; bundle: string; ui?: readonly { path: string; data: Uint8Array }[] }) => {
       const key = `${input.name}@${input.version}`
       if (rows.has(key)) throw new Error(`${key} already exists`)
       staged.push(key)
+      stagedUi.set(key, (input.ui ?? []).map((a) => ({ path: a.path, text: new TextDecoder().decode(a.data) })))
       const row = { id: `id-${key}` }
       rows.set(key, row)
       return row as never
@@ -37,7 +40,7 @@ function fakeRuntime(opts: { failVerify?: boolean } = {}) {
       return (opts.failVerify ? { ok: false, error: 'boom' } : { ok: true, scripts: [] }) as never
     },
   } as unknown as PluginRuntime
-  return { runtime, staged, verified, rows }
+  return { runtime, staged, stagedUi, verified, rows }
 }
 
 async function withDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -118,6 +121,52 @@ describe('seedEmbeddedPacks', () => {
       const second = fakeRuntime({ failVerify: true })
       await seedEmbeddedPacks({ runtime: second.runtime, packs, dataDir: dir, log: silent })
       expect(second.staged).toEqual([])
+    })
+  })
+
+  /**
+   * Plan 111 step 111.7. An embedded pack used to be one `.mjs`, which was
+   * true while every shipped pack was tier A. Proxy Manager's screen is a
+   * React module now, so a pack seeded WITHOUT its `ui/` payload has a `react`
+   * view whose script 404s — an error panel on a fresh install, for a pack the
+   * release itself put there and the operator never chose.
+   */
+  test('a tier-C pack’s ui/ payload reaches stage(), with the package-relative name intact', async () => {
+    await withDataDir(async (dir) => {
+      const js = join(dir, 'ui-index.js')
+      const css = join(dir, 'ui-index.css')
+      await Bun.write(js, 'window.__enkaku__.register("main", () => null)')
+      await Bun.write(css, '.pm{color:red}')
+      const packs: EmbeddedPack[] = [
+        {
+          name: 'alpha',
+          version: '1.0.0',
+          path: join(dir, 'a.mjs'),
+          // `name` is what the package calls the asset (`react.entry` names
+          // it); `path` is where the embedded bytes are.
+          ui: [
+            { name: 'index.js', path: js },
+            { name: 'index.css', path: css },
+          ],
+        },
+      ]
+      await Bun.write(join(dir, 'a.mjs'), 'export default { id: "alpha" }')
+
+      const { runtime, stagedUi } = fakeRuntime()
+      await seedEmbeddedPacks({ runtime, packs, dataDir: dir, log: silent })
+
+      expect(stagedUi.get('alpha@1.0.0')).toEqual([
+        { path: 'index.js', text: 'window.__enkaku__.register("main", () => null)' },
+        { path: 'index.css', text: '.pm{color:red}' },
+      ])
+    })
+  })
+
+  test('a pack with no ui/ stages exactly as it always did', async () => {
+    await withDataDir(async (dir) => {
+      const { runtime, stagedUi } = fakeRuntime()
+      await seedEmbeddedPacks({ runtime, packs: await packsIn(dir), dataDir: dir, log: silent })
+      expect(stagedUi.get('alpha@1.0.0')).toEqual([])
     })
   })
 

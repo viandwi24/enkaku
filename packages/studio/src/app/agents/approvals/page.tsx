@@ -5,10 +5,8 @@ import Link from 'next/link'
 import { ArrowLeft, Inbox } from 'lucide-react'
 import { ApprovalResponseSchema } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, ErrorState, LoadingRows } from '@/components/states'
-import { Button } from '@/components/ui/button'
+import { EmptyState, ErrorState, LoadingRows, Button, api, useAction } from '@enkaku/ui'
 import { ApprovalCard } from '@/components/agent/ApprovalCard'
-import { api, useAction } from '@/lib/actions'
 import { fetchPendingApprovals, type ApprovalWithContext } from '@/lib/agent-approvals'
 
 /**

@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react'
 import { z } from 'zod'
 import { ArtifactInfoSchema, type ArtifactInfo } from '@enkaku/protocol'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { fileSize } from '@/lib/format'
+import { Tabs, TabsContent, TabsList, TabsTrigger, fileSize } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 
 /**

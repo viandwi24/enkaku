@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import { validatePluginSurface, type PluginSurface, type PluginSurfaceInput } from '@enkaku/protocol'
 import { foldRuntimeEnvelope } from './runtime-fold'
+import { isService, type PluginService } from './runtime'
 import type { ScriptDefinition } from './types'
 
 const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
@@ -59,7 +60,7 @@ export interface PluginDefinition {
   reset?: { packages?: string[] }
   /**
    * The screens this plugin contributes to Studio (plan 108 §4.1) — a
-   * sidebar entry, a table or a frame, and the actions they invoke. Wholly
+   * sidebar entry, a table or a React module, and the actions they invoke. Wholly
    * optional: a plugin omitting it is unaffected in every way, and nothing
    * downstream of `definePlugin` behaves differently for one.
    *
@@ -76,6 +77,26 @@ export interface PluginDefinition {
    * see `Plugin` below.
    */
   surface?: PluginSurfaceInput
+  /**
+   * The plugin's long-lived half (plan 109 §3.1, §4.1, step 109.2) — code that
+   * runs for as long as the plugin is enabled, not only inside a job. Written
+   * with `defineService({ permissions, setup })`. Wholly optional: a plugin
+   * that omits it behaves byte-identically to one published before plan 109
+   * (criterion 1) — nothing is loaded, nothing is registered, and the manifest
+   * carries no `service` key at all.
+   *
+   * **`service`, not `runtime`.** A MEMBER's `runtime` is plan 98's
+   * `RuntimeEnvelope` — `timeoutMs`, `retries`, `maxRssBytes`,
+   * `maxConcurrent`: a restriction a script places on its own execution. This
+   * is a long-lived entry point. Plan 109 §4.1 named both `runtime`; step
+   * 109.1 flagged the collision (§9 Q7) and the owner settled it here, before
+   * anything depended on the old name.
+   *
+   * It runs **in the core's own process** and is not a sandbox — see
+   * `defineService`'s own doc comment for the four failures no amount of
+   * `try`/`catch` catches.
+   */
+  service?: PluginService
 }
 
 /**
@@ -161,6 +182,17 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
       throw new Error(`definePlugin: surface — ${checked.errors.join('; ')}`)
     }
     surface = checked.value
+  }
+
+  // Plan 109 §4.1, step 109.2 — the author-time half of the same
+  // "re-validated independently on the farm" discipline `surface` follows
+  // above. `defineService` has already validated the declaration; what is
+  // checked HERE is that `service` is a `defineService()` result at all,
+  // because a hand-written object literal with a `setup` function would pass
+  // the type checker in a JS project and then be silently ignored by the host
+  // (which recognises the brand, not the shape).
+  if (def.service !== undefined && !isService(def.service)) {
+    throw new Error('definePlugin: `service`, when present, must be the result of defineService({ setup }) — a plain object is not one')
   }
 
   const seen = new Set<string>()

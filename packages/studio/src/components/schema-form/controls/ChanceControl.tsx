@@ -1,6 +1,6 @@
 'use client'
 
-import { Slider } from '@/components/ui/slider'
+import { Slider } from '@enkaku/ui'
 import { FieldRow } from './shell'
 import type { BaseControlProps } from './types'
 import { formatValue } from '@enkaku/protocol'

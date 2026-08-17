@@ -142,6 +142,24 @@ export type Permission =
    * plugin, which reaches the same rows).
    */
   | 'plugin.data'
+  /**
+   * Start, stop or restart a plugin's SERVICE — the long-lived half plan 109
+   * §4.2 loads into the core's own process. In the `OPERATOR` set below,
+   * exactly as §4.6 specifies, and deliberately NOT `script.publish`.
+   *
+   * The two answer different questions. `script.publish` decides which VERSION
+   * of a plugin is live, which is a change to what the farm runs; this decides
+   * whether the currently-active version's service is running right now, which
+   * is a change to nothing but its uptime. An operator looking at a plugin
+   * screen whose service is down needs the second — criterion 21's Restart —
+   * and making them hold the first would mean the only way to un-wedge a
+   * screen is a permission that can also replace the code behind it.
+   *
+   * It grants no new REACH: a service that starts does exactly what its
+   * already-consented manifest allows, checked by the same broker under the
+   * same `plugin:<name>` principal (§4.3).
+   */
+  | 'plugin.runtime'
 
 const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.view',
@@ -163,6 +181,7 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'tool.view',
   'settings.view',
   'plugin.data',
+  'plugin.runtime',
 ])
 // 'kv.manage' is deliberately NOT in OPERATOR (see its comment) — admin only.
 // 'plugin.data' IS, and does not widen it: see its own comment for why the two are different.
@@ -200,6 +219,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'audit.view',
   'kv.manage',
   'plugin.data',
+  'plugin.runtime',
 ]
 
 export function isPermission(value: string): value is Permission {

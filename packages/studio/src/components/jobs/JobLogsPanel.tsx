@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@enkaku/ui'
 import type { LogLine, LogsPhase } from '@/lib/use-job-detail'
 
 /**

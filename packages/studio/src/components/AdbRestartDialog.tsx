@@ -3,9 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { AdbRestartPreviewSchema, AdbRestartReportSchema } from '@enkaku/protocol'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { api, describeApiError } from '@/lib/actions'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, api, describeApiError } from '@enkaku/ui'
 
 /**
  * The adb restart confirmation (plan 88 §3.10, §4.8, §5 step 88.8).

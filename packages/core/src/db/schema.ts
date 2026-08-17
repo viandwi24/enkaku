@@ -1819,3 +1819,63 @@ export const plugins = sqliteTable(
 
 export type PluginRow = typeof plugins.$inferSelect
 export type PluginInsert = typeof plugins.$inferInsert
+
+/**
+ * One inbound webhook's SECRET, and its delivery counters (plan 109 §3.7,
+ * §4.6, step 109.7).
+ *
+ * **Why this is a table and not a KV entry.** The obvious home is the plugin's
+ * own `kv_entries` namespace with `secret: true`, and it is the wrong one for
+ * three reasons that are all about ownership. The farm generates this value,
+ * the farm verifies against it, and the operator rotates it — none of which is
+ * the plugin's data. It must also keep verifying while the plugin's service is
+ * stopped, reloading or `failed`, and it must not be swept away by
+ * `DELETE /api/plugins/:name/:version?deleteKv=1`, count against the plugin's
+ * entry quota, or be rewritable by the plugin as a side effect of an ordinary
+ * `set`. And `kv_entries` stores `secretHint` — `${first 7}…${last 4}` of the
+ * plaintext, in clear, on the row — which is fine for an API key with a public
+ * prefix and is eleven characters too many for 32 random bytes the farm minted
+ * (plan 112 §0.1 F12 filed exactly this; step 112.2 adds `hint: false` for the
+ * case where a PLUGIN stores a credential of its own). This table simply has
+ * no hint column: there is nothing to suppress.
+ *
+ * `secretRef` is `iv.tag.ciphertext`, AES-256-GCM under the `'webhook'`
+ * namespace of `../secrets/store.ts` — the SAME mechanism `webhook_endpoints`
+ * (outbound) and `connectors.credential` already use, not a fourth one. What
+ * that box claims is exactly what it claims there: not a KMS, the key sits
+ * beside `enkaku.db`, and the honest statement is "not readable by grepping
+ * the database".
+ */
+export const pluginWebhooks = sqliteTable(
+  'plugin_webhooks',
+  {
+    id: text('id').primaryKey(),
+    /** `plugins.name`, never a version — a secret survives publish, rollback and reload, which is the whole point of criterion 13. */
+    plugin: text('plugin').notNull(),
+    /** The declared `service.webhooks[].id`. */
+    webhookId: text('webhook_id').notNull(),
+    /** The secret a sender must sign with today. Never returned by any read path. */
+    secretRef: text('secret_ref').notNull(),
+    /**
+     * The secret rotated away from, kept only until `previousExpiresAt` so a
+     * third party that has not been updated yet does not go dark the instant
+     * an operator presses Rotate. At most ONE: rotating twice inside the
+     * window drops the older immediately.
+     */
+    previousSecretRef: text('previous_secret_ref'),
+    previousExpiresAt: integer('previous_expires_at', { mode: 'timestamp' }),
+    /** Deliveries whose signature verified. */
+    deliveries: integer('deliveries').notNull().default(0),
+    /** Requests refused for any reason — the counter that makes a stranger probing this URL visible. */
+    refusals: integer('refusals').notNull().default(0),
+    lastDeliveryAt: integer('last_delivery_at', { mode: 'timestamp' }),
+    /** `current` | `previous` | null — which secret the last ACCEPTED delivery used. `previous` means the sender is running on borrowed time. */
+    lastAcceptedKey: text('last_accepted_key'),
+    rotatedAt: integer('rotated_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [uniqueIndex('idx_plugin_webhooks_key').on(t.plugin, t.webhookId)],
+)
+
+export type PluginWebhookRow = typeof pluginWebhooks.$inferSelect
+export type PluginWebhookInsert = typeof pluginWebhooks.$inferInsert

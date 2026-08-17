@@ -48,7 +48,13 @@ export async function seedEmbeddedPacks(opts: {
 
     try {
       const bundle = await Bun.file(pack.path).text()
-      const row = await runtime.stage({ name: pack.name, version: pack.version, bundle, source: 'bundled' })
+      // A tier-C pack's screen rides along (plan 111 step 111.7). `stage`
+      // writes them through the same asset store a `.enkaku` upload uses, and
+      // it does so BEFORE inserting the row — so a version that exists is a
+      // version whose `ui/index.js` exists. Empty for every tier-A pack, which
+      // stages exactly as it did before.
+      const ui = await Promise.all((pack.ui ?? []).map(async (asset) => ({ path: asset.name, data: await Bun.file(asset.path).bytes() })))
+      const row = await runtime.stage({ name: pack.name, version: pack.version, bundle, source: 'bundled', ui })
       const report = await runtime.verify(row.id)
       if (report.ok) {
         log.info(`seeded ${key} (staged — activate it on the Plugins page)`)

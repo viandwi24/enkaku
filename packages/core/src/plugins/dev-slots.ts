@@ -51,6 +51,23 @@ export interface DevSlot {
    */
   surface: PluginSurface | null
   owner: DevSessionOwner
+  /**
+   * Plan 111 §5 step 111.6 — the key this slot's `ui/` assets are stored under
+   * in the content-addressed asset store (`plugins/asset-store.ts`), which
+   * keys everything else by a `plugins.id` UUID.
+   *
+   * A slot is deliberately never a database row (this file's own opening
+   * comment), so it has no `plugins.id` to borrow — and it cannot key on the
+   * plugin NAME either, because the store refuses anything that is not a UUID
+   * this process minted (a caller-chosen string as a filename is the one thing
+   * that module will not do). So the slot mints one, and keeps it across
+   * rebuilds: a re-push REPLACES the assets under the same key rather than
+   * leaking a new index file per keystroke.
+   *
+   * It is the runtime's job to delete what this key points at when the slot is
+   * dropped or swept — the store owns bytes, this module owns none.
+   */
+  assetKey: string
   createdAt: number
   lastBuildAt: number
   lastBuildOk: boolean
@@ -66,6 +83,12 @@ export interface PutDevSlotInput {
   /** Optional so every caller written before plan 108 keeps compiling — omitted is `null`, "this build declares no screen". */
   surface?: PluginSurface | null
   owner: DevSessionOwner
+  /**
+   * Reuses an existing asset key rather than minting a fresh one — how the
+   * runtime writes a rebuild's assets BEFORE replacing the slot (see
+   * `DevSlot.assetKey`). Omitted keeps the current slot's key, or mints one.
+   */
+  assetKey?: string
   /** Overrides the default TTL for this put (mainly for tests). */
   ttlSec?: number
 }
@@ -107,6 +130,9 @@ export function createDevSlotStore(opts?: { ttlSec?: number; now?: () => number 
         scripts: input.scripts,
         surface: input.surface ?? null,
         owner: input.owner,
+        // Stable across rebuilds, exactly like `createdAt` above — a re-push
+        // replaces what is stored under the key, it does not orphan it.
+        assetKey: input.assetKey ?? existing?.assetKey ?? crypto.randomUUID(),
         createdAt: existing?.createdAt ?? t,
         lastBuildAt: t,
         lastBuildOk: true,

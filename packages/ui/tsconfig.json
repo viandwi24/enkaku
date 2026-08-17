@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The components render in a browser, so this package needs the DOM libs
+    // and React's automatic JSX runtime on top of the base. Everything else —
+    // `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — comes
+    // from the base unchanged: this is a ROOT-TypeScript package (CLAUDE.md's
+    // "two TypeScripts" rule), consumed by Studio's own TypeScript 5 through
+    // `transpilePackages`, exactly as `@enkaku/protocol` already is.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}

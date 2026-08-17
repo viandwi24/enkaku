@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import type { DeviceInfo } from '@enkaku/protocol'
 import '@/lib/test/nav'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@enkaku/ui'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import { DeviceCard } from './DeviceCard'
 
