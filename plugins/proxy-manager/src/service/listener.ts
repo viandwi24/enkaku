@@ -1,9 +1,10 @@
 import net from 'node:net'
 import type { BridgeSocket } from './socket'
-import type { BridgeLogger } from './logbook'
+import type { ConnectionLogger } from './logbook'
 import { classifyBindError, classifyDialError, type ProxyError } from './errors'
 import { createRelay, type RelayCounters } from './relay'
 import type { Upstream, UpstreamTarget } from './upstream'
+import type { ListenerCredential } from './auth'
 
 /**
  * The half of a bridge that is the same whichever protocol it speaks: bind,
@@ -88,8 +89,15 @@ export interface NegotiationApi {
       leftover?: Buffer
     },
   ): void
-  /** Refuse this connection, log the reason, and close. The caller writes any protocol-level refusal first. */
-  refuse(reason: string, extra?: { code?: string; destPort?: number; destHost?: string }): void
+  /**
+   * Refuse this connection, log the reason, and close. The caller writes any
+   * protocol-level refusal first.
+   *
+   * `clientAddress` is for the one reason that needs it (plan 117 §4.4): a
+   * refused authentication attempt is logged with the address it came from,
+   * never with what it offered. Every other refusal reason leaves it unset.
+   */
+  refuse(reason: string, extra?: { code?: string; destPort?: number; destHost?: string; clientAddress?: string }): void
 }
 
 export type Negotiator = (client: BridgeSocket, api: NegotiationApi) => void
@@ -99,7 +107,14 @@ export interface ListenerOptions {
   port: number
   upstream: Upstream
   maxConnections: number
-  log: BridgeLogger
+  log: ConnectionLogger
+  /**
+   * The inbound credential a client must present to be served — absent means
+   * this listener authenticates nobody (plan 117 §3.5, §4.4). `supervisor.ts`
+   * is the only place that reads `proxy-auth:<id>` and fills this in;
+   * `listen-socks5.ts` and `listen-http.ts` are the only places that check it.
+   */
+  auth?: ListenerCredential
   /** No bytes either way for this long ⇒ the pair is destroyed. See `DEFAULT_IDLE_MS`. */
   idleMs?: number
   /** Called once per closed connection, so the supervisor can accumulate totals. */

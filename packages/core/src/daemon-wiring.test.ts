@@ -119,9 +119,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
   })
 
   test('the agent provisioner is wired into onDeviceReady — the reconnect/admission hook restoreNetworkRoute already uses', () => {
-    const onReadyStart = daemonSource.indexOf('onDeviceReady: (deviceId) => {')
-    expect(onReadyStart).toBeGreaterThan(-1)
-    const onReadyBlock = daemonSource.slice(onReadyStart, onReadyStart + 1500)
+    const onReadyBlock = extractCall(daemonSource, 'onDeviceReady: (deviceId) => {')
     expect(onReadyBlock).toContain('agentProvisionerRef?.ensure(deviceId)')
   })
 
@@ -131,9 +129,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     expect(call).toContain('maxConcurrent:')
     expect(daemonSource).toContain('labellingRef = labelling')
 
-    const onReadyStart = daemonSource.indexOf('onDeviceReady: (deviceId) => {')
-    expect(onReadyStart).toBeGreaterThan(-1)
-    const onReadyBlock = daemonSource.slice(onReadyStart, onReadyStart + 2000)
+    const onReadyBlock = extractCall(daemonSource, 'onDeviceReady: (deviceId) => {')
     expect(onReadyBlock).toContain('labellingRef?.reconcile(deviceId)')
   })
 
@@ -165,9 +161,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
   })
 
   test('device preparation: the runner is wired into onDeviceReady — the SAME admission/reconnect hook agentProvisionerRef/labellingRef already use (plan 106 §3.5)', () => {
-    const onReadyStart = daemonSource.indexOf('onDeviceReady: (deviceId) => {')
-    expect(onReadyStart).toBeGreaterThan(-1)
-    const onReadyBlock = daemonSource.slice(onReadyStart, onReadyStart + 2500)
+    const onReadyBlock = extractCall(daemonSource, 'onDeviceReady: (deviceId) => {')
     expect(onReadyBlock).toContain('preparationRunnerRef?.ensure(deviceId)')
   })
 
@@ -189,7 +183,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     // operator-initiated install.
     const call = extractCall(
       daemonSource,
-      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {",
+      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string): Promise<void> => {",
     )
     expect(call).toContain('transfer: transferService,')
     expect(call).toContain('broadcast: transferBroadcast,')
@@ -197,6 +191,11 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     expect(call).toContain("origin: 'preparation',")
     expect(call).toContain('holdFor: readinessHoldForTransfer,')
     expect(call).toContain('transferService.installFromLocalApk(deviceId, localPath,')
+    // The package name travels with the path: without it, a device that
+    // refuses the `-g` install flag (a Xiaomi HyperOS build does) can install
+    // the APK but has nothing to aim `pm grant` at, and the ui-server would
+    // land with its runtime permissions ungranted.
+    expect(call).toContain('packageName')
 
     // And that this function is actually handed to the registry, not just
     // declared and left uncalled — this repo's own repeated defect class.
@@ -205,11 +204,16 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
   })
 
   test('device preparation: ui-server installs are bounded by adb.maxInstallConcurrent, the SAME setting hostAdb\'s own install lane already reads — without it, the move off hostAdb (plan 106 §5 step 106.8) would silently drop the pre-existing "no install storm" guarantee on an unattended boot-sweep code path (H2 re-examined)', () => {
-    expect(daemonSource).toContain("import { AdbClient, createAdbdShim, Semaphore } from '@enkaku/adb'")
+    // Matches the ONE binding this test is about (`new Semaphore(...)` below)
+    // rather than the whole import line. Spelling out every binding made this
+    // assertion fail the moment an unrelated type was added to that import —
+    // a test that breaks on changes it does not care about teaches people to
+    // edit tests to make them pass, which is the opposite of what it is for.
+    expect(daemonSource).toMatch(/import \{[^}]*\bSemaphore\b[^}]*\} from '@enkaku\/adb'/)
     expect(daemonSource).toContain('const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))')
     const call = extractCall(
       daemonSource,
-      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {",
+      "const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string): Promise<void> => {",
     )
     expect(call).toContain('settingsStore.get().adb.maxInstallConcurrent')
     expect(call).toContain('preparationInstallSem.resize(wanted)')

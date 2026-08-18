@@ -8,11 +8,20 @@ import type { GuestAgentLauncher } from './launcher'
  * `InputSink`/`Inspector` in `packages/protocol/src/driver.ts` — but it has not landed there
  * yet. Defined locally, matching the plan's shape exactly, so moving it into `driver.ts` later
  * is a pure cut-paste with no shape change. Do NOT edit `packages/protocol` from this file.
+ *
+ * `TConfig` (plan 114 §4.2) is what lets a second engine join this layer without either engine
+ * widening its own `apply` to a union it does not understand: `adb-proxy` is a
+ * `NetworkRoute<HttpProxyRouteConfig>`, `vpn-helper` below is the default `Socks5RouteConfig` one.
+ * The default parameter is why every existing `NetworkRoute` reference — in this package, in
+ * `packages/core/src/api/guest-agent.ts`, in the barrels — keeps meaning exactly what it meant
+ * before. A caller that holds engines of both kinds types them as `NetworkRoute<NetworkRouteConfig>`
+ * (step 114.3's `buildEngine` switch): `apply` is declared with method syntax, so it is bivariant
+ * and an engine accepting one arm is assignable to a route accepting the union.
  */
-export interface NetworkRoute {
+export interface NetworkRoute<TConfig = Socks5RouteConfig> {
   id: string
   capabilities: NetworkCapabilities
-  apply(config: Socks5RouteConfig): Promise<void>
+  apply(config: TConfig): Promise<void>
   observe(): Promise<NetworkObservation>
   /**
    * Plan 51 §4.2, §5.4. Optional (spec §7.9) in principle, but `vpn-helper` now always defines it
@@ -278,6 +287,13 @@ export interface CreateGuestAgentSessionOptions {
  * `GuestAgentSession`'s doc comment for why this exists. Exported so `guest-agent.ts` (the only
  * other file with call sites that used to mint their own token) can build one instance per device
  * and share it across the guest-agent status probe, the network route, and the heartbeat alike.
+ *
+ * **This copy is the driver layer's reference, not the wired one.** `route-service.ts` builds its
+ * session through `deps.makeSession`, which is `packages/core/src/api/guest-agent.ts`'s own
+ * `createDeviceSession` — and that copy has since grown the bounded re-pair loop this one does not
+ * have (the token handover via `am start` is asynchronous, so a first `hello()` can legitimately
+ * be answered `E_UNAUTHORISED` by an agent still holding the previous session's token). If this
+ * one is ever wired up, port that loop across with it.
  */
 export function createGuestAgentSession(deps: CreateGuestAgentSessionOptions): GuestAgentSession {
   let port: number | null = null

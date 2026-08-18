@@ -138,6 +138,74 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
     configSchema: {},
   },
   {
+    id: 'adb-proxy',
+    // Plan 114 §3.2, §4.2: the display name states the advisory property rather
+    // than being a neutral label, because `GET /api/registry` serves this string
+    // straight to Studio — a flattering descriptor here is visible in the
+    // product, which is the mistake DIV-068 caught on `vpn-helper` below. Every
+    // capability is `false` and every one of them is a fact worth publishing:
+    // no credential (Android's value is `host:port`, world-readable on-device),
+    // no enforcement (an app with its own networking ignores the setting), no
+    // UDP, no egress probe. `locks: ['network-route']` is what makes "a VPN and
+    // an http_proxy at once" structurally impossible rather than merely
+    // discouraged.
+    displayName: 'HTTP proxy over adb (advisory — apps can ignore it)',
+    kind: 'network',
+    capabilities: [],
+    locks: ['network-route'],
+    configSchema: {
+      type: 'object',
+      properties: {
+        host: { type: 'string', description: 'Host of a proxy the phone itself can reach' },
+        port: { type: 'integer', minimum: 1, maximum: 65535, description: 'Port of a proxy the phone itself can reach' },
+        exclusions: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Hosts the phone should reach directly, bypassing the proxy',
+        },
+      },
+      required: ['host', 'port'],
+    },
+  },
+  {
+    id: 'adb-reverse-proxy',
+    // Plan 114 §3.2, §3.8, §4.2, step 114.5. Same advisory setting as
+    // `adb-proxy` above, so the same warning belongs in the name a farm
+    // operator reads — the difference this rung buys is WHERE the proxy runs,
+    // not whether an app can ignore it. `capabilities: []` including `auth`,
+    // deliberately: this is the rung on which an authenticated upstream becomes
+    // possible at all, and the engine still supports no authentication itself.
+    // The account lives in the listener on this machine, and claiming a
+    // capability that belongs to another process is exactly what
+    // `NetworkCapabilitiesSchema` exists to prevent.
+    //
+    // No `devicePort` in the schema, and that is the contract, not an omission:
+    // the operator says where the proxy listens on THIS machine, and the
+    // device-side port is allocated by the reverse registry and persisted on
+    // `devices.network_route.reverse` (plan 114 §4.3).
+    displayName: 'HTTP proxy on this machine, over adb reverse (advisory — apps can ignore it)',
+    kind: 'network',
+    capabilities: [],
+    locks: ['network-route'],
+    configSchema: {
+      type: 'object',
+      properties: {
+        hostPort: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 65535,
+          description: 'Port the proxy listens on, on this farm’s own machine — the phone reaches it over the adb connection',
+        },
+        exclusions: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Hosts the phone should reach directly, bypassing the proxy',
+        },
+      },
+      required: ['hostPort'],
+    },
+  },
+  {
     id: 'vpn-helper',
     displayName: 'Guest agent VPN route (SOCKS5)',
     kind: 'network',

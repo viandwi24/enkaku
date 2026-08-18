@@ -1,4 +1,5 @@
 import type { FieldPlan } from '../plan'
+import { ArtifactControl } from './ArtifactControl'
 import { ChanceControl } from './ChanceControl'
 import { ChoiceControl } from './ChoiceControl'
 import { JsonControl } from './JsonControl'
@@ -47,6 +48,8 @@ export function renderControl(plan: FieldPlan, props: BaseControlProps) {
       return <TextControl {...props} plan={plan} />
     case 'workspacePath':
       return <WorkspacePathControl {...props} plan={plan} />
+    case 'artifact':
+      return <ArtifactControl {...props} />
     case 'list':
       return <ListControl {...props} plan={plan} />
     case 'table':

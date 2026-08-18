@@ -90,7 +90,7 @@ describe('a real job records a real peakRssBytes end to end (plan 98 §4.4, §4.
         idleSessions: () => [],
         closeAll: async () => 0,
       },
-      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
       onLog: () => {},
       onArtifact: () => {},

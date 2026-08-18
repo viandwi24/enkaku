@@ -1,7 +1,8 @@
 import type { AdbClient } from '@enkaku/adb'
-import type { FrameMeta, Quality, SessionPhase } from '@enkaku/protocol'
+import type { FrameMeta, Quality, RotationMode, SessionPhase } from '@enkaku/protocol'
 import { SessionError } from './errors'
 import type { Logger } from './logger'
+import type { RotationOutcome } from './orientation'
 import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
 import type { DeviceSnapshotSource } from './types'
 import { sameVideoNumbers, type VideoProfile } from './video-profile'
@@ -37,6 +38,19 @@ interface Entry {
    * actually reached `makeScrcpy`.
    */
   videoProfile: VideoProfile | null
+  /**
+   * Whether THIS entry ran the full device-prep sequence (plan 100 §4.2) —
+   * false only for a fast-path `control` build, which skipped it because an
+   * open `wall` entry had already done it.
+   *
+   * `setRotation` below needs it: the prep-owning entry is the one holding
+   * the capture of what the device's rotation looked like before the farm
+   * touched it, so a live re-lock must be applied through THAT entry's lock
+   * whenever both are open. Applying it through the fast-path entry instead
+   * would make that entry capture the wall entry's already-applied lock as
+   * "the device's original state".
+   */
+  ownsDevicePrep: boolean
 }
 
 export interface SessionManager {
@@ -107,6 +121,31 @@ export interface SessionManager {
    * reads it through the same `?.` an absent method already gets.
    */
   restartAt?(deviceId: string, quality: Quality, detail?: string): Promise<void>
+  /**
+   * Re-lock a device's screen orientation on the session it is running RIGHT
+   * NOW (plan 85 §3.7) — the fix for the setting being apply-once.
+   *
+   * `DeviceSettings.prep.rotation` used to reach a device only at session
+   * creation, so an operator watching a wall tile could set "Lock portrait",
+   * get a success toast, and watch nothing happen: the tile's session was
+   * already open, and nothing ever re-read the setting. On a wall that stays
+   * up for hours there is no "next session" to wait for. `PATCH
+   * /api/devices/:id` calls this the moment the setting changes.
+   *
+   * Applied through ONE entry even when a device holds both a `wall` and a
+   * `control` entry — there is one physical screen, and the two entries would
+   * write identical values. The `wall` entry (the one that ran device prep,
+   * `Entry.ownsDevicePrep`) is preferred, because it holds the capture of the
+   * device's pre-farm rotation that `close()` restores.
+   *
+   * Returns `null` when the device has no open session at all: nothing to
+   * change live, and the stored setting will be picked up by the next session
+   * exactly as it always was. That is deliberately NOT reported as a failure —
+   * the caller words the two differently.
+   *
+   * Optional for the same fixture-compatibility reason `restartAt` above is.
+   */
+  setRotation?(deviceId: string, mode: RotationMode): Promise<RotationOutcome | null>
   /**
    * Restart every OPEN session whose resolved profile no longer matches the
    * one it was built with (plan 92 §3.8) — the "saved but never read" fix
@@ -532,7 +571,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     created = session
     // No subscribers and refcount 0: every caller of `acquire` attaches
     // itself once this resolves, including the one that started the work.
-    const entry: Entry = { deviceId, quality, session, refcount: 0, frameSubscribers: new Set(), closeTimer: null, idleSince: null, videoProfile }
+    const entry: Entry = {
+      deviceId,
+      quality,
+      session,
+      refcount: 0,
+      frameSubscribers: new Set(),
+      closeTimer: null,
+      idleSince: null,
+      videoProfile,
+      ownsDevicePrep: !fastOpts?.skipDevicePrep,
+    }
     entries.set(key, entry)
     await session.display.start()
     // Sockets are up but no frame has arrived yet — the last phase before
@@ -546,6 +595,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       inspection: row.inspection ?? 'ui-server',
       quality: session.quality,
     })
+    // Plan 85 §3.7 — a rotation lock that was ASKED FOR and did not take is
+    // reported to the device's own event log, not left at `warn` in a log
+    // file nobody has open. The success case is deliberately silent: a wall
+    // of forty tiles rebuilding would otherwise write forty rows saying
+    // nothing happened. `session.rotation` is absent only on a fixture
+    // session (see `DeviceSession.rotation`).
+    const rotationOutcome = session.rotation?.outcome
+    if (rotationOutcome && !rotationOutcome.applied) {
+      deps.onEvent?.(deviceId, 'device.rotation', {
+        mode: rotationOutcome.mode,
+        applied: false,
+        reason: rotationOutcome.reason ?? 'the device did not accept the rotation lock',
+        quality,
+      })
+    }
     deps.log.info(`session opened: ${row.label} (${deviceId}) at ${quality}`)
     return entry
   }
@@ -747,6 +811,26 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     },
 
     restartAt,
+
+    // Plan 85 §3.7 — see `SessionManager.setRotation`'s own doc comment.
+    async setRotation(deviceId, mode) {
+      const open = [...entries.values()].filter((e) => e.deviceId === deviceId)
+      // One physical screen: the prep-owning entry first (it holds the
+      // capture that `close()` restores), otherwise whichever entry exists.
+      const entry = open.find((e) => e.ownsDevicePrep) ?? open[0]
+      const lock = entry?.session.rotation
+      if (!entry || !lock) return null
+      const outcome = await lock.set(mode)
+      if (!outcome.applied) {
+        deps.onEvent?.(deviceId, 'device.rotation', {
+          mode,
+          applied: false,
+          reason: outcome.reason ?? 'the device did not accept the rotation lock',
+          quality: entry.quality,
+        })
+      }
+      return outcome
+    },
 
     async reprofile(reason) {
       // Deduped by device id (plan 100 §4.2): a device can now have both a

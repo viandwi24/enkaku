@@ -433,7 +433,7 @@ describe('SessionManager — the fast-path control entry (plan 100 §3.2, §4.2,
     return (async (fn: (client: unknown) => unknown) => fn({ hello: async () => ({ capabilities: ['text-input'] }) })) as unknown as GuestAgentClientRunner
   }
 
-  test('the fast path issues ZERO wake/rotate/text-input/farm-tag commands — the wall entry is live proof they already ran', async () => {
+  test('the fast path issues ZERO wake/text-input/farm-tag commands — the wall entry is live proof they already ran — but DOES re-assert the rotation lock', async () => {
     const { client, calls } = trackingClient()
     let scrcpyBuilds = 0
     const manager = createSessionManager({
@@ -463,14 +463,60 @@ describe('SessionManager — the fast-path control entry (plan 100 §3.2, §4.2,
     expect(scrcpyBuilds).toBe(2) // two independent, concurrent scrcpy sessions (G12)
     expect(calls.some((c) => c.includes('KEYCODE_WAKEUP'))).toBe(false)
     expect(calls.some((c) => c.includes('stayon'))).toBe(false)
-    expect(calls.some((c) => c.includes('accelerometer_rotation') || c.includes('user_rotation'))).toBe(false)
     expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
     expect(calls.some((c) => c.includes('debug.enkaku.instrumented'))).toBe(false)
-    // No command at all was sent for the fast build — not merely none of
-    // the five above, nothing whatsoever (it went straight to makeScrcpy).
-    expect(calls).toEqual([])
+    // Rotation is the ONE member of §4.2's skip list that is NOT skipped, and
+    // the asymmetry is the point (plan 85 §3.7): waking a device that is
+    // already awake is genuinely redundant, but the wall entry may have been
+    // opened BEFORE the operator changed this setting, or with a different
+    // value, or its own write may have been declined. So the fast build
+    // re-asserts — two writes and their read-back confirmation, and NOTHING
+    // ELSE. Note what is absent from the front of this list: the two capture
+    // reads. The fast build captures nothing and reverts nothing; the still-
+    // open wall entry remains the sole owner of the device's pre-farm state.
+    expect(calls).toEqual([
+      'settings put system accelerometer_rotation 0',
+      'settings put system user_rotation 0',
+      'settings get system accelerometer_rotation',
+      'settings get system user_rotation',
+    ])
 
     await manager.closeAll()
+  })
+
+  /**
+   * Plan 85 §3.7 — the defect the farm owner reported: `prep.rotation` was
+   * apply-once at session creation, so changing it while a wall tile was
+   * streaming did nothing at all, and the UI said it had worked.
+   */
+  test('setRotation re-locks the session that is already running, through the entry that owns device prep', async () => {
+    const { client, calls } = trackingClient()
+    const manager = createSessionManager({
+      client,
+      devices: prepDevices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
+    calls.length = 0
+
+    const outcome = await manager.setRotation!(PREP_DEVICE_ID, 'lock-landscape')
+    expect(outcome?.mode).toBe('lock-landscape')
+    // Written ONCE, not once per open entry: there is one physical screen.
+    expect(calls.filter((c) => c === 'settings put system user_rotation 1').length).toBe(1)
+    // And no second capture — the wall entry's own capture, taken before it
+    // ever wrote anything, is what `close()` restores.
+    expect(calls.filter((c) => c.startsWith('settings get')).length).toBe(2) // the read-back pair only
+
+    await manager.closeAll()
+  })
+
+  test('setRotation on a device with no open session reports null rather than inventing a failure', async () => {
+    const { client } = trackingClient()
+    const manager = createSessionManager({ client, devices: prepDevices, log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+    expect(await manager.setRotation!(PREP_DEVICE_ID, 'lock-portrait')).toBeNull()
   })
 
   test('a device with no open wall entry still gets the full, unchanged control acquire — no regression for an operator who never uses the Wall', async () => {

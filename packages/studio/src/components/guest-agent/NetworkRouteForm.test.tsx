@@ -30,6 +30,57 @@ const status = {
   recovery: null,
 }
 
+// ---- plan 114 (M79) fixtures and helpers ----
+
+/**
+ * A `GET /:id/network` body that actually parses through
+ * `DeviceNetworkStatusResponseSchema` — `fetchNetworkStatus` parses rather
+ * than casts (step 114.6), so a fixture that skips a required field fails as
+ * an `ErrorState` rather than as the assertion the test meant to make.
+ */
+function makeStatus(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    engine: 'none',
+    config: null,
+    enabled: false,
+    observed: null,
+    drift: false,
+    sessionId: null,
+    failClosed: true,
+    health: 'unknown',
+    checks: [],
+    lastError: null,
+    exitHistory: [],
+    recovery: null,
+    setBy: null,
+    ...over,
+  }
+}
+
+const HTTP_CONFIG = { engine: 'adb-proxy', host: 'proxy.example.com', port: 8080 }
+const REVERSE_CONFIG = { engine: 'adb-reverse-proxy', hostPort: 9902, devicePort: 9902 }
+const VPN_CONFIG = { engine: 'vpn-helper', host: 'proxy.example.com', port: 1080, udpMode: 'udp', onGeoFail: 'report' }
+
+/** The `Row` component renders `<dt>label</dt><dd>value</dd>` — read the value the operator actually sees. */
+function rowValue(container: HTMLElement, label: string): string | null {
+  const dt = Array.from(container.querySelectorAll('dt')).find((d) => d.textContent === label)
+  return dt ? (dt.nextElementSibling?.textContent ?? null) : null
+}
+
+function radio(container: HTMLElement, id: string): HTMLInputElement {
+  const el = container.querySelector(`#${id}`)
+  if (!el) throw new Error(`no radio #${id}`)
+  return el as HTMLInputElement
+}
+
+// The two sentences of plan 114 §3.1 rule 1, written out rather than imported
+// from `proxy-copy` — acceptance criterion 2 asks for a literal-string test,
+// and a test that imports the constant it is checking would pass unchanged
+// through exactly the quiet softening it exists to catch.
+const HTTP_SENTENCE =
+  'Apps can ignore this. WebView and many HTTP libraries use it; an app with its own networking does not, and nothing on the phone stops it.'
+const VPN_SENTENCE = 'Apps cannot opt out of this. Needs the Enkaku guest agent installed on the phone.'
+
 describe('NetworkRouteForm', () => {
   test('renders the route status once GET /network resolves', async () => {
     const { getByText } = renderWithApi(<NetworkRouteForm deviceId="dev-1" canUse={true} />, {
@@ -86,5 +137,383 @@ describe('NetworkRouteForm', () => {
       await waitFor(() => expect(queryByText('Route on')).toBeTruthy())
       expect(queryByText('Retry now')).toBeNull()
     })
+  })
+})
+
+/**
+ * Plan 114 §3.1, §3.10, acceptance criteria 2 and 4.
+ *
+ * The whole feature turns on an operator NOT believing that HTTP proxy mode
+ * captures their traffic. Several assertions below are literal strings on
+ * purpose: the copy IS the feature, and a paraphrase that drifts is a
+ * regression, not a wording preference.
+ */
+describe('NetworkRouteForm — the mode selector (plan 114 §3.1, §3.10)', () => {
+  test('all three modes render on a device with no route at all, with both §3.1 sentences verbatim (criterion 2)', async () => {
+    const { getByText } = renderWithApi(<NetworkRouteForm deviceId="m-1" canUse={true} />, {
+      '/api/devices/m-1/network': { body: makeStatus() },
+    })
+    await waitFor(() => expect(getByText('Off')).toBeTruthy())
+    expect(getByText('HTTP proxy')).toBeTruthy()
+    expect(getByText('VPN')).toBeTruthy()
+    expect(getByText(HTTP_SENTENCE)).toBeTruthy()
+    expect(getByText(VPN_SENTENCE)).toBeTruthy()
+  })
+
+  test('the same three modes and the same two sentences render on a device that already has an HTTP route', async () => {
+    const { getByText } = renderWithApi(<NetworkRouteForm deviceId="m-2" canUse={true} />, {
+      '/api/devices/m-2/network': { body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) },
+    })
+    await waitFor(() => expect(getByText(HTTP_SENTENCE)).toBeTruthy())
+    expect(getByText(VPN_SENTENCE)).toBeTruthy()
+    expect(getByText('Off')).toBeTruthy()
+  })
+
+  /**
+   * Acceptance criterion 4, as a grep over the rendered DOM rather than over
+   * the source: `routed`, a bare `ok`/`success`, or an `enabled: yes` in HTTP
+   * mode would each say the farm knows something it structurally cannot know.
+   */
+  test('no forbidden word appears anywhere in the HTTP-mode DOM (criterion 4)', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="m-3" canUse={true} />, {
+      '/api/devices/m-3/network': {
+        body: makeStatus({
+          engine: 'adb-proxy',
+          config: HTTP_CONFIG,
+          enabled: true,
+          health: 'unverified',
+          checks: [
+            { id: 'setting', state: 'pass', detail: 'the device reads back proxy.example.com:8080', at: 1 },
+            { id: 'egress', state: 'skip', detail: 'this mode can never confirm egress', at: null },
+          ],
+        }),
+      },
+    })
+    await waitFor(() => expect(getByText('http proxy')).toBeTruthy())
+    const text = container.textContent ?? ''
+    expect(text).not.toMatch(/\brouted\b/i)
+    expect(text).not.toMatch(/\bok\b/i)
+    expect(text).not.toMatch(/\bsuccess\b/i)
+    // The `enabled` row itself, which is the one that would say `yes`.
+    expect(rowValue(container, 'enabled')).toBe('asked')
+  })
+
+  test('`enabled` reads `asked` for both HTTP engines and `yes` for the VPN', async () => {
+    const direct = renderWithApi(<NetworkRouteForm deviceId="m-4" canUse={true} />, {
+      '/api/devices/m-4/network': { body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) },
+    })
+    await waitFor(() => expect(rowValue(direct.container, 'enabled')).toBe('asked'))
+    cleanup()
+
+    const farm = renderWithApi(<NetworkRouteForm deviceId="m-5" canUse={true} />, {
+      '/api/devices/m-5/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: true }),
+      },
+    })
+    await waitFor(() => expect(rowValue(farm.container, 'enabled')).toBe('asked'))
+    cleanup()
+
+    const vpn = renderWithApi(<NetworkRouteForm deviceId="m-6" canUse={true} />, {
+      '/api/devices/m-6/network': { body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true }) },
+      '/api/devices/m-6/preparation': { body: {} },
+    })
+    await waitFor(() => expect(rowValue(vpn.container, 'enabled')).toBe('yes'))
+  })
+
+  test('the `mode` row names the rung, not just the family, for all four engine values', async () => {
+    const off = renderWithApi(<NetworkRouteForm deviceId="m-7" canUse={true} />, {
+      '/api/devices/m-7/network': { body: makeStatus() },
+    })
+    await waitFor(() => expect(rowValue(off.container, 'mode')).toBe('off'))
+    cleanup()
+
+    const direct = renderWithApi(<NetworkRouteForm deviceId="m-8" canUse={true} />, {
+      '/api/devices/m-8/network': { body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) },
+    })
+    await waitFor(() => expect(rowValue(direct.container, 'mode')).toBe('HTTP proxy · a proxy the phone can reach'))
+    cleanup()
+
+    const farm = renderWithApi(<NetworkRouteForm deviceId="m-9" canUse={true} />, {
+      '/api/devices/m-9/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: true }),
+      },
+    })
+    await waitFor(() => expect(rowValue(farm.container, 'mode')).toBe('HTTP proxy · a proxy on this machine'))
+    cleanup()
+
+    const vpn = renderWithApi(<NetworkRouteForm deviceId="m-10" canUse={true} />, {
+      '/api/devices/m-10/network': { body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true }) },
+      '/api/devices/m-10/preparation': { body: {} },
+    })
+    await waitFor(() => expect(rowValue(vpn.container, 'mode')).toBe('VPN'))
+  })
+
+  test('`setting confirmed on the device` maps every check state, and never claims more than the check state says', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['m-11', 'pass', 'yes'],
+      ['m-12', 'fail', 'no'],
+      ['m-13', 'skip', 'not checked'],
+      ['m-14', 'unknown', 'not checked yet'],
+    ]
+    for (const [id, state, expected] of cases) {
+      const r = renderWithApi(<NetworkRouteForm deviceId={id} canUse={true} />, {
+        [`/api/devices/${id}/network`]: {
+          body: makeStatus({
+            engine: 'adb-proxy',
+            config: HTTP_CONFIG,
+            enabled: true,
+            checks: [{ id: 'setting', state, at: null }],
+          }),
+        },
+      })
+      await waitFor(() => expect(rowValue(r.container, 'setting confirmed on the device')).toBe(expected))
+      cleanup()
+    }
+  })
+
+  test('`setting confirmed on the device` is absent in VPN mode — the VPN writes no setting', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="m-15" canUse={true} />, {
+      '/api/devices/m-15/network': { body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true }) },
+      '/api/devices/m-15/preparation': { body: {} },
+    })
+    await waitFor(() => expect(getByText('route status')).toBeTruthy())
+    expect(rowValue(container, 'setting confirmed on the device')).toBeNull()
+  })
+
+  /**
+   * `fail closed` is a property of a TUN that can be held shut. An advisory
+   * `settings put` has no tunnel to hold and an app that ignored the setting
+   * was never inside anything — so showing the row in HTTP mode would read as
+   * a promise this rung cannot make.
+   */
+  test('`fail closed` is absent in HTTP mode and present in VPN mode', async () => {
+    const http = renderWithApi(<NetworkRouteForm deviceId="m-16" canUse={true} />, {
+      '/api/devices/m-16/network': { body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) },
+    })
+    await waitFor(() => expect(rowValue(http.container, 'mode')).toBe('HTTP proxy · a proxy the phone can reach'))
+    expect(rowValue(http.container, 'fail closed')).toBeNull()
+    cleanup()
+
+    const vpn = renderWithApi(<NetworkRouteForm deviceId="m-17" canUse={true} />, {
+      '/api/devices/m-17/network': {
+        body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true, failClosed: true }),
+      },
+      '/api/devices/m-17/preparation': { body: {} },
+    })
+    await waitFor(() => expect(rowValue(vpn.container, 'fail closed')).toBe('yes'))
+  })
+
+  /**
+   * Plan 114 §4.1's read-time migration, from Studio's side: a core that
+   * predates the union answers with a `config` carrying no `engine` key at
+   * all. It is a `vpn-helper` config by construction — reading it as Off would
+   * show an operator "no proxy" on a phone that has one.
+   */
+  test('an untagged config from a pre-114 core renders as VPN mode, not Off', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="m-18" canUse={true} />, {
+      '/api/devices/m-18/network': {
+        body: makeStatus({
+          engine: 'vpn-helper',
+          // No `engine` key — exactly what a pre-114 core sends.
+          config: { host: 'proxy.example.com', port: 1080, udpMode: 'udp', onGeoFail: 'report' },
+          enabled: true,
+        }),
+      },
+      '/api/devices/m-18/preparation': { body: {} },
+    })
+    await waitFor(() => expect(rowValue(container, 'mode')).toBe('VPN'))
+    expect(radio(container, 'mode-m-18-vpn').checked).toBe(true)
+    expect(radio(container, 'mode-m-18-off').checked).toBe(false)
+    // The VPN body, not the Off body.
+    expect(getByText('socks5 upstream')).toBeTruthy()
+  })
+
+  test('picking a mode issues no PUT — only the body’s own button applies anything', async () => {
+    const { container, apiMock, getByText } = renderWithApi(<NetworkRouteForm deviceId="m-19" canUse={true} />, {
+      '/api/devices/m-19/network': { body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true }) },
+      '/api/devices/m-19/preparation': { body: { 'guest-agent': { state: 'ready', version: null, reason: null, checkedAt: null, attempts: 0, nextAttemptAt: null } } },
+    })
+    await waitFor(() => expect(getByText('socks5 upstream')).toBeTruthy())
+
+    fireEvent.click(radio(container, 'mode-m-19-http'))
+    await waitFor(() => expect(getByText('http proxy')).toBeTruthy())
+    fireEvent.click(radio(container, 'mode-m-19-off'))
+    await waitFor(() => expect(getByText('off')).toBeTruthy())
+
+    expect(apiMock.calls.filter((c) => c.method === 'PUT')).toHaveLength(0)
+    expect(apiMock.calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+  })
+})
+
+describe('NetworkRouteForm — Off (plan 114 §3.6)', () => {
+  test('Off with a saved route offers "Turn off and restore", and confirming issues a DELETE', async () => {
+    const { container, getByText, findByText, apiMock } = renderWithApi(
+      <NetworkRouteForm deviceId="m-20" canUse={true} />,
+      {
+        '/api/devices/m-20/network': (req) => {
+          if (req.method === 'DELETE') return { body: makeStatus() }
+          return { body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) }
+        },
+      },
+    )
+    await waitFor(() => expect(getByText('http proxy')).toBeTruthy())
+    fireEvent.click(radio(container, 'mode-m-20-off'))
+
+    const trigger = await findByText('Turn off and restore')
+    fireEvent.click(trigger)
+    const confirm = await findByText('Turn off')
+    fireEvent.click(confirm)
+
+    await waitFor(() =>
+      expect(apiMock.calls.some((c) => c.method === 'DELETE' && c.path === '/api/devices/m-20/network')).toBe(true),
+    )
+  })
+
+  test('Off with no saved route says so in a sentence and offers no button at all', async () => {
+    const { container, getByText, queryByText } = renderWithApi(<NetworkRouteForm deviceId="m-21" canUse={true} />, {
+      '/api/devices/m-21/network': { body: makeStatus() },
+    })
+    await waitFor(() =>
+      expect(getByText('No proxy is set on this phone. It reaches the network on its own address.')).toBeTruthy(),
+    )
+    expect(radio(container, 'mode-m-21-off').checked).toBe(true)
+    expect(queryByText('Turn off and restore')).toBeNull()
+  })
+})
+
+describe('NetworkRouteForm — the `unverified` note and `set by` (plan 114 §3.3, §3.5)', () => {
+  test('the unverified note names the missing fact differently per mode family', async () => {
+    const http = renderWithApi(<NetworkRouteForm deviceId="m-22" canUse={true} />, {
+      '/api/devices/m-22/network': {
+        body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true, health: 'unverified' }),
+      },
+    })
+    await waitFor(() =>
+      expect(
+        http.getByText(
+          'This is the normal, permanent state for an HTTP proxy: the setting is on the phone, and no check can confirm an app actually used it.',
+        ),
+      ).toBeTruthy(),
+    )
+    cleanup()
+
+    const vpn = renderWithApi(<NetworkRouteForm deviceId="m-23" canUse={true} />, {
+      '/api/devices/m-23/network': {
+        body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: true, health: 'unverified' }),
+      },
+      '/api/devices/m-23/preparation': { body: {} },
+    })
+    await waitFor(() =>
+      expect(
+        vpn.getByText(
+          'The route was applied and the device accepted it, but no egress check has confirmed traffic is actually leaving through this proxy yet.',
+        ),
+      ).toBeTruthy(),
+    )
+  })
+
+  test('a plugin-set route names the plugin; a route nobody claimed says so rather than showing a dash', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const plugin = renderWithApi(<NetworkRouteForm deviceId="m-24" canUse={true} />, {
+      '/api/devices/m-24/network': {
+        body: makeStatus({
+          engine: 'adb-proxy',
+          config: HTTP_CONFIG,
+          enabled: true,
+          setBy: { kind: 'plugin', id: 'proxy-manager', at: now },
+        }),
+      },
+    })
+    await waitFor(() => expect(rowValue(plugin.container, 'set by')).toContain('proxy-manager (plugin)'))
+    // The panel never claims a person it cannot identify (`setByReadout`).
+    expect(rowValue(plugin.container, 'set by')).not.toMatch(/\byou\b/i)
+    cleanup()
+
+    const user = renderWithApi(<NetworkRouteForm deviceId="m-25" canUse={true} />, {
+      '/api/devices/m-25/network': {
+        body: makeStatus({
+          engine: 'adb-proxy',
+          config: HTTP_CONFIG,
+          enabled: true,
+          setBy: { kind: 'user', id: 'operator@example.com', at: now },
+        }),
+      },
+    })
+    await waitFor(() => expect(rowValue(user.container, 'set by')).toContain('operator@example.com'))
+    expect(rowValue(user.container, 'set by')).not.toContain('(plugin)')
+    expect(rowValue(user.container, 'set by')).not.toMatch(/\byou\b/i)
+    cleanup()
+
+    const unclaimed = renderWithApi(<NetworkRouteForm deviceId="m-26" canUse={true} />, {
+      '/api/devices/m-26/network': {
+        body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true, setBy: null }),
+      },
+    })
+    await waitFor(() =>
+      expect(rowValue(unclaimed.container, 'set by')).toBe('the farm — no operator or plugin claimed this route'),
+    )
+    expect(rowValue(unclaimed.container, 'set by')).not.toBe('—')
+    expect(rowValue(unclaimed.container, 'set by')).not.toMatch(/\byou\b/i)
+  })
+
+  /**
+   * Acceptance criterion 6 / plan 114 §3.6 rule 4 — the assertion that could
+   * not be written until step 114.10's close-out, because the response schema
+   * did not declare `captured` and a plain `z.object` strips an undeclared key
+   * **silently**. The core had emitted it since 114.3; it vanished at the parse,
+   * and the panel hedged about both outcomes at once.
+   *
+   * Restoring a captured value and clearing the keys are different things to do
+   * to somebody's phone, and the operator is deciding whether to press the
+   * button. Each branch is asserted to say ONE of them and explicitly not the
+   * other, so a revert to the old both-cases prose fails here.
+   */
+  test('turning off says whether this phone will be RESTORED or CLEARED, never both', async () => {
+    const now = Math.floor(Date.now() / 1000)
+
+    const restores = renderWithApi(<NetworkRouteForm deviceId="m-40" canUse={true} />, {
+      '/api/devices/m-40/network': {
+        body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true, captured: { at: now } }),
+      },
+    })
+    await waitFor(() => expect(restores.container.querySelector('#mode-m-40-off')).toBeTruthy())
+    fireEvent.click(radio(restores.container, 'mode-m-40-off'))
+    await waitFor(() => expect(restores.container.textContent).toMatch(/back to what the farm found on it/i))
+    expect(restores.container.textContent).not.toMatch(/never captured an original value/i)
+    expect(restores.container.textContent).not.toMatch(/cannot be shown here/i)
+    cleanup()
+
+    const clears = renderWithApi(<NetworkRouteForm deviceId="m-41" canUse={true} />, {
+      '/api/devices/m-41/network': {
+        body: makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true, captured: null }),
+      },
+    })
+    await waitFor(() => expect(clears.container.querySelector('#mode-m-41-off')).toBeTruthy())
+    fireEvent.click(radio(clears.container, 'mode-m-41-off'))
+    await waitFor(() => expect(clears.container.textContent).toMatch(/never captured an original value/i))
+    expect(clears.container.textContent).toMatch(/not the same as restoring/i)
+    expect(clears.container.textContent).not.toMatch(/back to what the farm found on it/i)
+    cleanup()
+
+    // A core older than the field answers without it. "We cannot say" is a
+    // third answer and is worded as one — rounding it down to "cleared" would
+    // be a claim about the phone made from the absence of a key.
+    const older = makeStatus({ engine: 'adb-proxy', config: HTTP_CONFIG, enabled: true }) as Record<string, unknown>
+    delete older.captured
+    const unknown = renderWithApi(<NetworkRouteForm deviceId="m-42" canUse={true} />, {
+      '/api/devices/m-42/network': { body: older },
+    })
+    await waitFor(() => expect(unknown.container.querySelector('#mode-m-42-off')).toBeTruthy())
+    fireEvent.click(radio(unknown.container, 'mode-m-42-off'))
+    await waitFor(() => expect(unknown.container.textContent).toMatch(/cannot be shown here/i))
+    expect(unknown.container.textContent).not.toMatch(/never captured an original value/i)
+  })
+
+  test('the `set by` row is absent entirely when there is no route to attribute', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="m-27" canUse={true} />, {
+      '/api/devices/m-27/network': { body: makeStatus() },
+    })
+    await waitFor(() => expect(getByText('route status')).toBeTruthy())
+    expect(rowValue(container, 'set by')).toBeNull()
   })
 })

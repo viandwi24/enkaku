@@ -65,14 +65,24 @@ export interface DeviceSnapshotSource {
 }
 
 export interface SavedArtifact {
+  /**
+   * The artifact's own id (plan 115 §3.6) — required, never optional: this is
+   * what lets `ctx.artifact.file()` hand back something `ctx.device.push()`
+   * can accept. A host that mints the row locally (`createDbArtifactSink`)
+   * returns the real one; a host that only relays bytes elsewhere (the
+   * node's own sink — see `packages/node/src/hosts.ts`) still owes a real
+   * string here, since the child-side promise this eventually resolves is
+   * typed as `Promise<{ artifactId: string }>`, never `| undefined`.
+   */
+  id: string
   /** Path relative to the host's artifact root. */
   path: string
   sizeBytes: number
 }
 
 /**
- * Tujuan penyimpanan artifact. Core menulis ke disk + baris DB; node
- * uploads them to the control plane over the tunnel.
+ * Where an artifact is stored. Core writes it to disk plus a DB row; node
+ * uploads it to the control plane over the tunnel.
  */
 export interface ArtifactSink {
   save(input: {

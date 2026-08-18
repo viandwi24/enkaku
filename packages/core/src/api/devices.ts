@@ -11,6 +11,13 @@ import {
   DeviceLabelsApplyResponseSchema,
   type DeviceLabelsApplyResult,
   DeviceNumberCompactResponseSchema,
+  DEVICE_PREP_KEYS,
+  DevicePrepApplyBodySchema,
+  DevicePrepApplyResponseSchema,
+  type DevicePrepApplyResult,
+  type DevicePrepKey,
+  type DevicePrepPatch,
+  classifyDevicePrepApply,
   DeviceReadinessResponseSchema,
   DeviceResponseSchema,
   DeviceSettingsSchema,
@@ -23,6 +30,8 @@ import {
   ReadinessSchema,
   ReconcileReportSchema,
   ReconnectOutcomeSchema,
+  type RotationApplyResult,
+  type RotationMode,
   SweepReportSchema,
   defaultDeviceSettings,
   normaliseTag,
@@ -297,8 +306,16 @@ export function createDeviceRoutes(deps: {
      * quality with a freshly resolved profile so a per-device video override
      * takes effect immediately rather than only on the device's next
      * cold-start (F18's exact class).
+     *
+     * `setRotation` (plan 85 §3.7) is the same accessor widened again, for the
+     * same reason one step further: `prep.rotation` reached a device only at
+     * session creation, so an operator changing it on a device that was
+     * already streaming got a success toast and an unchanged screen. Unlike
+     * `video` this needs no restart — the lock is two `settings put`s on the
+     * session already open — so `PATCH /:id` awaits it and reports what the
+     * device actually did.
      */
-    sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get'> | null
+    sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation'> | null
   }
   /**
    * The address book (plan 88 §3.2, §4.3) — `declare` is `PATCH
@@ -581,6 +598,194 @@ export function createDeviceRoutes(deps: {
     deps.audit.record({ userId: actor.userId, action: 'device.labels.apply', meta: { total: results.length, ok } })
     return typedJson(c, DeviceLabelsApplyResponseSchema, { total: results.length, results })
   })
+
+  /**
+   * `POST /prep/apply` — one PREP setting (or several) across a selection,
+   * synchronously, in `POST /labels/apply`'s envelope and
+   * `POST /network/apply`'s per-device report.
+   *
+   * **Why it exists.** `FarmSettings.defaults` is copy-on-admission — its own
+   * doc says so: *"Devices already registered keep their own settings."* On a
+   * farm whose phones are all already enrolled, changing a farm default
+   * changes nothing, by design. That left `prep.rotation` and its four
+   * siblings settable one device at a time only, through `PATCH /:id`; twenty
+   * phones is twenty requests for one checkbox.
+   *
+   * **Partial by construction, in three places.** `DevicePrepPatchSchema` has
+   * every key optional; the merge below is five explicit `if (… !== undefined)`
+   * assignments onto the device's OWN current prep block; and the body schema
+   * refuses an empty patch. A spread of the patch would not do — an absent key
+   * arrives as `undefined`, `DeviceSettingsSchema` fills a default for it, and
+   * four settings the operator never touched would be silently reset on every
+   * selected device. That is the single most dangerous thing this route could
+   * do, and none of the three layers can do it alone.
+   *
+   * **It differs from `PATCH /:id` in one deliberate way.** `PATCH` re-locks a
+   * live screen only when `prep.rotation` actually CHANGES value, because
+   * Studio's settings form posts the whole settings object and an unrelated
+   * `keepAwake` edit must not rotate a phone. Here `rotation` is present only
+   * because the operator ticked it for this selection, so the live apply is
+   * attempted whenever it is present, changed or not. Without that, a retry
+   * would be a guaranteed no-op on exactly the devices that failed the first
+   * time — the value is already stored, so there would be nothing left to
+   * "change".
+   *
+   * **A busy device is not skipped.** Its settings are written like every
+   * other device's; only the live re-lock waits, and the row says so
+   * (`saved: true`, `rotation.state: 'busy'`). The alternative — skipping the
+   * whole device — would mean an operator who bulk-locked twenty phones came
+   * back an hour later to find the three that had been running jobs still
+   * unlocked, with nothing in the farm remembering the instruction. There is
+   * deliberately no force/override: nothing here pre-empts a running job.
+   *
+   * Serial, not concurrent, for the same reason `network/apply` is: this is
+   * one shell round trip per device against the one adb server this machine
+   * shares with everything else.
+   *
+   * `device.settings` — the same permission `PATCH /:id` and `/labels/apply`
+   * already require. Nothing looser: this writes device settings, so it is
+   * gated exactly as writing device settings is.
+   */
+  app.post('/prep/apply', requirePermission('device.settings'), async (c) => {
+    const body = DevicePrepApplyBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) {
+      throw new EnkakuError(
+        'E_BAD_REQUEST',
+        `a body of { deviceIds: string[], prep: {...} } is required — ${body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+      )
+    }
+    const patch = body.data.prep
+    // The keys the operator actually chose, in the protocol's own declared
+    // order — every loop below is driven by THIS list, never by
+    // `Object.keys(patch)` (which would carry a key explicitly sent as
+    // `undefined`) and never by the full prep block.
+    const keys = DEVICE_PREP_KEYS.filter((key) => patch[key] !== undefined)
+    const actor = c.get('user')?.id ?? null
+    // Deduped, same as `network/apply`: a selection naming a device twice is
+    // an operator mistake, not an instruction to write twice, and a duplicate
+    // row would inflate every count in the report.
+    const deviceIds = [...new Set(body.data.deviceIds)]
+    const results: DevicePrepApplyResult[] = []
+    for (const deviceId of deviceIds) results.push(await applyPrepToDevice(deviceId, patch, keys, actor))
+    const failed = results.filter((r) => classifyDevicePrepApply(r) === 'failed').length
+    const deferred = results.filter((r) => classifyDevicePrepApply(r) === 'deferred').length
+    deps.audit.record({ userId: actor, action: 'device.prep.apply', meta: { total: results.length, keys, failed, deferred } })
+    return typedJson(c, DevicePrepApplyResponseSchema, { total: results.length, keys, results })
+  })
+
+  /** `EnkakuError`'s code when it has one, the fallback otherwise — the small local half of `network/route-service.ts`'s `toCodedError`, kept here rather than imported so this router does not depend on the network subsystem for a settings write. */
+  const codedFailure = (err: unknown, fallback: string): { code: string; message: string } =>
+    err instanceof EnkakuError
+      ? { code: err.code, message: err.message }
+      : { code: fallback, message: err instanceof Error ? err.message : String(err) }
+
+  /**
+   * One device's half of `POST /prep/apply`. A function declaration, so the
+   * route above can call it before `mustGet` is declared further down — it is
+   * only ever invoked from inside a request.
+   */
+  async function applyPrepToDevice(
+    deviceId: string,
+    patch: DevicePrepPatch,
+    keys: readonly DevicePrepKey[],
+    actor: string | null,
+  ): Promise<DevicePrepApplyResult> {
+    let row: { id: string; status: string | null; settings: unknown }
+    try {
+      row = mustGet(deviceId)
+    } catch (err) {
+      return { deviceId, saved: false, changed: [], rotation: null, error: codedFailure(err, 'E_DEVICE_NOT_FOUND') }
+    }
+
+    let changed: DevicePrepKey[]
+    try {
+      // Normalised through the schema first (a legacy row's missing fields
+      // would otherwise read as spurious changes), then merged key by key.
+      //
+      // A row that does NOT parse is a per-device failure, deliberately, and
+      // NOT `defaultDeviceSettings()` as a base — falling back to the defaults
+      // here would merge the operator's one chosen key onto a blank slate and
+      // write THAT, silently resetting every other setting on the one device
+      // whose settings were already in a state nobody understood. Refusing
+      // names the device instead.
+      const current = DeviceSettingsSchema.safeParse(row.settings ?? {})
+      if (!current.success) {
+        throw new EnkakuError(
+          'E_SETTINGS_UNREADABLE',
+          `this device’s stored settings do not parse, so they cannot be merged into — fix them on the device’s own settings page first (${current.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')})`,
+        )
+      }
+      const settings = current.data
+      changed = keys.filter((key) => settings.prep[key] !== patch[key])
+      /**
+       * The merge, written out one key at a time ON PURPOSE. `{ ...prep,
+       * ...patch }` looks identical and is not: a key the operator did not
+       * choose is `undefined` in `patch`, a spread would write that
+       * `undefined` over the device's real value, and the re-parse below
+       * would then quietly substitute the schema default. Five lines that
+       * cannot do that beat one line that can.
+       */
+      const prep = { ...settings.prep }
+      if (patch.disableAnimations !== undefined) prep.disableAnimations = patch.disableAnimations
+      if (patch.keepAwake !== undefined) prep.keepAwake = patch.keepAwake
+      if (patch.standbyScreenOff !== undefined) prep.standbyScreenOff = patch.standbyScreenOff
+      if (patch.rotation !== undefined) prep.rotation = patch.rotation
+      if (patch.textInput !== undefined) prep.textInput = patch.textInput
+      if (changed.length > 0) {
+        // Re-parsed rather than trusted: the same one door `PATCH /:id` goes
+        // through, so a merge this route got wrong fails here instead of
+        // reaching the column.
+        const next = DeviceSettingsSchema.parse({ ...settings, prep })
+        db.update(devices).set({ settings: next }).where(eq(devices.id, row.id)).run()
+        deps.record?.({
+          deviceId: row.id,
+          stream: 'main',
+          kind: 'settings.changed',
+          actor,
+          meta: { keys: ['prep'], prep: changed, source: 'bulk' },
+        })
+      }
+    } catch (err) {
+      return { deviceId, saved: false, changed: [], rotation: null, error: codedFailure(err, 'E_PREP_SAVE_FAILED') }
+    }
+
+    // Only `rotation` has a live applier (plan 85 §3.7 — `SessionManager.
+    // setRotation`). The other four are read by `createSession`, so they
+    // genuinely take effect on the device's next session and this report says
+    // nothing more about them than that they were saved.
+    let rotation: RotationApplyResult | null = null
+    if (patch.rotation !== undefined) {
+      const mode = patch.rotation
+      if (row.status === 'busy') {
+        rotation = { mode, state: 'busy', reason: 'a job is running on this device — the setting is saved and the new rotation applies to the job’s next session' }
+      } else {
+        try {
+          const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
+          if (!outcome) rotation = { mode, state: 'no-session' }
+          else if (outcome.applied) rotation = { mode, state: 'applied' }
+          else rotation = { mode, state: 'failed', ...(outcome.reason ? { reason: outcome.reason } : {}) }
+        } catch (err) {
+          // The setting IS saved; only the live re-lock threw. Reported as a
+          // failure of the live half, never as a failure of the save.
+          rotation = { mode, state: 'failed', reason: codedFailure(err, 'E_ROTATION_FAILED').message }
+        }
+      }
+      // The same two outcomes `PATCH /:id` logs, for the same reason: a live
+      // re-lock that took, and one that did not. `no-session`/`busy` changed
+      // nothing on the device, and `settings.changed` above already recorded
+      // the save.
+      if (rotation.state === 'applied' || rotation.state === 'failed') {
+        deps.record?.({
+          deviceId: row.id,
+          stream: 'main',
+          kind: 'device.rotation',
+          actor,
+          meta: { to: mode, state: rotation.state, applied: rotation.state === 'applied', source: 'bulk', ...(rotation.reason ? { reason: rotation.reason } : {}) },
+        })
+      }
+    }
+    return { deviceId, saved: true, changed, rotation, error: null }
+  }
 
   /**
    * `DELETE /numbers/:stableId` (plan 89 §3.2 point 5, §4.2, §4.3) — the
@@ -931,6 +1136,14 @@ export function createDeviceRoutes(deps: {
     if (body.data.ownerId !== undefined) patch.ownerId = body.data.ownerId
     let changedKeys: string[] = []
     let logInputTextJustEnabled = false
+    /**
+     * Plan 85 §3.7 — the ROTATION transition specifically, not just "the
+     * `prep` block changed". `changedKeys` is a top-level diff, so a save
+     * that touched `keepAwake` and a save that touched `rotation` are
+     * indistinguishable in it; re-locking a screen on the strength of an
+     * unrelated `prep` edit would rotate a phone nobody asked to rotate.
+     */
+    let rotationChange: { from: RotationMode; to: RotationMode } | null = null
     if (body.data.settings !== undefined) {
       const parsed = DeviceSettingsSchema.safeParse(body.data.settings)
       if (!parsed.success) {
@@ -960,6 +1173,9 @@ export function createDeviceRoutes(deps: {
         (k) => JSON.stringify(beforeData[k]) !== JSON.stringify(parsed.data[k]),
       )
       logInputTextJustEnabled = !beforeData.logInputText && parsed.data.logInputText
+      if (beforeData.prep.rotation !== parsed.data.prep.rotation) {
+        rotationChange = { from: beforeData.prep.rotation, to: parsed.data.prep.rotation }
+      }
       patch.settings = parsed.data
       patch.transport = engines.transport
       patch.display = engines.display
@@ -982,6 +1198,47 @@ export function createDeviceRoutes(deps: {
       const current = sessionsApi?.get(row.id)
       if (current) void sessionsApi?.restartAt?.(row.id, current.quality, 'applying new video settings')
     }
+    /**
+     * Plan 85 §3.7 — the same "saved, validated, rendered, never read" class
+     * as the video override right above, and the one an operator actually
+     * hit: `prep.rotation` reached a device ONLY at session creation, so
+     * changing it while a wall tile was streaming did nothing at all and said
+     * nothing about it. On a wall that stays up all day there is no next cold
+     * start to wait for.
+     *
+     * Unlike video this needs no restart — the lock is two `settings put`s on
+     * the live session — so it is AWAITED rather than fired and forgotten:
+     * the whole point is that the operator who just clicked "Lock portrait"
+     * is told whether the screen they are looking at actually locked. Bounded
+     * by the transport's own `probe` budget (5s per call), and refused
+     * outright while a job is running, the same spec §10.1 rule the video
+     * restart above follows — a settings save must not rotate a screen out
+     * from under a running script.
+     */
+    let rotationResult: RotationApplyResult | undefined
+    if (rotationChange) {
+      const mode = rotationChange.to
+      if (row.status === 'busy') {
+        rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies to its next session' }
+      } else {
+        const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
+        if (!outcome) rotationResult = { mode, state: 'no-session' }
+        else if (outcome.applied) rotationResult = { mode, state: 'applied' }
+        else rotationResult = { mode, state: 'failed', ...(outcome.reason ? { reason: outcome.reason } : {}) }
+      }
+      // Only the outcomes worth a row in the device's own log: a live re-lock
+      // that took, and one that did not. `no-session`/`busy` changed nothing
+      // on the device, and `settings.changed` above already recorded the save.
+      if (rotationResult.state === 'applied' || rotationResult.state === 'failed') {
+        deps.record?.({
+          deviceId: row.id,
+          stream: 'main',
+          kind: 'device.rotation',
+          actor: user?.id ?? null,
+          meta: { from: rotationChange.from, to: mode, state: rotationResult.state, applied: rotationResult.state === 'applied', ...(rotationResult.reason ? { reason: rotationResult.reason } : {}) },
+        })
+      }
+    }
     if (logInputTextJustEnabled) {
       // Off by default and security-relevant to flip: naming the user here is
       // the whole point of the setting (plan 18 §3.4).
@@ -998,7 +1255,7 @@ export function createDeviceRoutes(deps: {
         meta: { from: row.ownerId, to: body.data.ownerId },
       })
     }
-    return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
+    return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id), ...(rotationResult ? { rotation: rotationResult } : {}) })
   })
 
   /**

@@ -67,9 +67,11 @@ function renderScalar(plan: FieldPlan, value: unknown): string {
     case 'pair':
       return formatFieldValue(plan.item.kind, plan.item.unit, value)
     case 'text':
-    // A workspace path IS its own best rendering — `/captions.txt`, not
-    // `"/captions.txt"` with the quotes a JSON fallback would add.
+    // A workspace path — and an artifact id — IS its own best rendering —
+    // `/captions.txt`, not `"/captions.txt"` with the quotes a JSON fallback
+    // would add.
     case 'workspacePath':
+    case 'artifact':
       return typeof value === 'string' && value.length > 0 ? value : '—'
     default:
       return jsonText(value)

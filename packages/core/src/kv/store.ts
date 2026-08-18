@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, gt, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { kvEntries, type KvEntryRow } from '../db/schema'
 import { decryptNamespacedSecret, encryptNamespacedSecret, secretHint } from '../secrets/store'
@@ -27,11 +27,15 @@ export type KvScope = { kind: 'global' } | { kind: 'device'; stableId: string }
 export interface KvEntry {
   key: string
   /** The decrypted plaintext for a secret, exactly like a plain value — `get()` is the ONLY thing
-   * that ever calls this decrypted; `list()` never does (see its own comment). Never surfaced by
-   * the HTTP API without the caller redacting it first (plan 79 §3.4, §4.4, criterion 4/10). */
+   * that ever calls this decrypted; `list()` never does (see its own comment). Surfaced by the
+   * HTTP API through exactly one route, `POST /api/kv/entry/reveal`, which is admin-only
+   * (`kv.manage`) and writes a `kv.reveal` audit row naming who read which key; every other
+   * response redacts it first (`redactEntry`, `api/kv.ts` — plan 79 §3.4, §4.4, criterion 4/10). */
   value: unknown
   secret: boolean
-  /** Set only when `secret`. */
+  /** Set only when `secret` — and `null` even then when the write passed `hint: false`
+   * (`KvSetOptions.hint`, plan 112 step 112.2). Every read path reads this column as-is, so a row
+   * written with `hint: false` answers `null` on all of them. */
   hint: string | null
   version: number
   expiresAt: number | null
@@ -40,6 +44,25 @@ export interface KvEntry {
 
 export interface KvSetOptions {
   secret?: boolean
+  /**
+   * Whether a SECRET write also stores `secretHint(plaintext)` on the row (plan 112 step 112.2,
+   * finding F12). Default `true` — every caller that existed before this option keeps the exact
+   * behaviour it had, and only a caller that asks opts out.
+   *
+   * `secretHint` is `${first 7}…${last 4}` of the plaintext, it is stored in the CLEAR on the row,
+   * and every read path returns it (`get`, `list`, `/api/kv`, `/api/plugins/:name/data*`). That is
+   * right for an API key with a public prefix, where the point is to tell two keys apart; it is
+   * wrong for a password, where eleven characters is a real disclosure to anyone holding
+   * `plugin.data`. Pass `hint: false` for a credential: the `hint` column stays `null`, so there is
+   * nothing for any read path to return.
+   *
+   * **Per write, not sticky.** It is not persisted as a property of the key: a later `set()` that
+   * omits it re-derives the hint from the new plaintext. A caller storing a credential must pass
+   * `hint: false` on EVERY write of that key, exactly as it must pass `secret: true` on every one.
+   *
+   * Ignored when `secret` is false — a non-secret row has never had a hint.
+   */
+  hint?: boolean
   ttlSec?: number
   /** Informational only — the job that made this write, if any. An addition beyond the plan's
    * own §4.1 `KvSetOptions` shape (which is otherwise unchanged), backing the `updated_by_job_id`
@@ -61,6 +84,25 @@ export interface KvListQuery {
 export interface Page<T> {
   items: T[]
   nextCursor: string | null
+}
+
+/**
+ * One row of the namespace index (`KvStore.namespaces`) — what a browsing surface needs to show
+ * a picker instead of a text box, and nothing more.
+ *
+ * `secrets` is the number of those entries written with `secret: true`. It is deliberately part of
+ * the index rather than left out: a count that silently folds secrets into the total tells an
+ * operator "12 entries" when three of them are things they cannot read here, and "12 entries,
+ * 3 secret" is the honest version. Counting them discloses nothing a `list()` of the same namespace
+ * would not already show (`KvEntry.secret` is on every listed row) — and this index carries no key,
+ * no value, and no `hint`, so it is strictly less than `list()` reveals, never more.
+ */
+export interface KvNamespaceSummary {
+  namespace: string
+  /** Live (non-expired) entries under this namespace in the queried scope. */
+  entries: number
+  /** How many of `entries` are secret rows. Never more than `entries`. */
+  secrets: number
 }
 
 export interface KvQuotas {
@@ -85,6 +127,23 @@ export interface KvStore {
    * regardless of caller (§3.4, criterion 10): listing is a browsing operation, never a way to
    * discover a secret's plaintext by accident. `get()` is the only path that decrypts. */
   list(scope: KvScope, namespace: string, q: KvListQuery): Page<KvEntry>
+  /**
+   * Every namespace that actually HAS live entries in `scope`, ascending, with its entry and
+   * secret counts — the index `list()` always needed and never had (plan 79 §3.2 reasoned that a
+   * script never types a namespace, which is true, and was silently read as "so nothing ever needs
+   * to enumerate them", which was not: an operator browsing the store has no runtime to inject one
+   * for them, and `KvPanel` shipped as a search box with no index because of it).
+   *
+   * One `GROUP BY` in SQLite over `idx_kv_scan`'s own `(scope, scope_id, namespace)` leading
+   * columns — never a full scan folded up in JS the way `list()`/`sweepExpired` do their filtering.
+   * `namespace` is a plugin id, so the result is bounded by how many plugins the farm has, not by
+   * how many entries they wrote.
+   *
+   * Expired-but-not-yet-swept rows are excluded, so a namespace whose every entry has aged out
+   * does not appear — the same "expired reads as absent regardless of whether `sweepExpired` has
+   * run" rule every other read path here follows (§4.5).
+   */
+  namespaces(scope: KvScope): KvNamespaceSummary[]
   deleteNamespace(scope: KvScope, namespace: string): number
   /** Every value belonging to this device, across every namespace — called by device lifecycle
    * teardown (plan 47 §4.3, plan 79 §3.3, §4.6) inside the SAME transaction that already deletes
@@ -216,7 +275,10 @@ export function createKvStore(db: Db, dataDir: string, quotas: () => KvQuotas): 
 
     const secret = opts?.secret ?? false
     const stored = secret ? encryptNamespacedSecret(dataDir, 'kv', json) : json
-    const hint = secret ? secretHint(typeof value === 'string' ? value : json) : null
+    // `opts.hint === false` is the ONLY thing that suppresses it (step 112.2): the default is
+    // `true`, so an omitted option is byte-for-byte the write this store has always done.
+    const wantsHint = opts?.hint ?? true
+    const hint = secret && wantsHint ? secretHint(typeof value === 'string' ? value : json) : null
     const now = new Date()
     const expiresAt = opts?.ttlSec !== undefined ? nowSeconds(now) + opts.ttlSec : null
     const version = (existing?.version ?? 0) + 1
@@ -314,6 +376,32 @@ export function createKvStore(db: Db, dataDir: string, quotas: () => KvQuotas): 
       const page = rows.slice(0, limit)
       const nextCursor = rows.length > limit ? (page[page.length - 1]?.key ?? null) : null
       return { items: page.map(rowToListEntry), nextCursor }
+    },
+
+    namespaces(scope) {
+      const now = nowSeconds()
+      const rows = db
+        .select({
+          namespace: kvEntries.namespace,
+          entries: sql<number>`count(*)`,
+          // `secret` is stored as SQLite 0/1 (Drizzle `mode: 'boolean'`), so this sums to the
+          // number of secret rows without a second query.
+          secrets: sql<number>`sum(case when ${kvEntries.secret} then 1 else 0 end)`,
+        })
+        .from(kvEntries)
+        .where(
+          and(
+            eq(kvEntries.scope, scopeKindOf(scope)),
+            eq(kvEntries.scopeId, scopeIdOf(scope)),
+            or(isNull(kvEntries.expiresAt), gt(kvEntries.expiresAt, now)),
+          ),
+        )
+        .groupBy(kvEntries.namespace)
+        .orderBy(kvEntries.namespace)
+        .all()
+      // `count(*)`/`sum(...)` come back as whatever bun:sqlite hands the driver; `Number()` is the
+      // one place that is normalised, so no caller has to wonder.
+      return rows.map((r) => ({ namespace: r.namespace, entries: Number(r.entries ?? 0), secrets: Number(r.secrets ?? 0) }))
     },
 
     deleteNamespace(scope, namespace) {

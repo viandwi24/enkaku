@@ -303,6 +303,93 @@ describe('kv store (plan 79 §3, §4.1, step 79.3)', () => {
   })
 })
 
+/**
+ * Plan 112 step 112.2 / finding F12 — `secretHint` is `${first 7}…${last 4}` of the plaintext,
+ * stored in the CLEAR on the row and returned by every read path. Right for an API key with a
+ * public prefix (an operator has to tell two of them apart); wrong for a password.
+ *
+ * `hint: false` is the opt-out. The tests below pin BOTH halves of the contract: that the flag
+ * works, and — the load-bearing half — that omitting it changes nothing at all.
+ */
+describe('KvSetOptions.hint (plan 112 step 112.2, finding F12)', () => {
+  const PASSWORD = 'Sup3rSecretUpstreamPassword'
+
+  test('a secret written with hint: false has hint === null on every in-process read path', () => {
+    const { store } = setUp()
+    const written = store.set(GLOBAL, 'proxy-manager', 'proxy-secret:a', { password: PASSWORD }, { secret: true, hint: false })
+    // 1. the return of the write itself
+    expect(written.secret).toBe(true)
+    expect(written.hint).toBeNull()
+    // 2. get() — the decrypting path a job/plugin uses
+    const got = store.get(GLOBAL, 'proxy-manager', 'proxy-secret:a')
+    expect(got?.value).toEqual({ password: PASSWORD })
+    expect(got?.hint).toBeNull()
+    // 3. list() — the browsing path every HTTP list is built on
+    const listed = store.list(GLOBAL, 'proxy-manager', { limit: 50 }).items.find((i) => i.key === 'proxy-secret:a')
+    expect(listed?.secret).toBe(true)
+    expect(listed?.hint).toBeNull()
+    // No fragment of the password is anywhere in what a BROWSING caller receives. (`written` and
+    // `got` legitimately carry the plaintext — both are in-process returns to the caller that
+    // supplied or asked for it; `api/kv.ts`'s `redactEntry` is what strips it at the HTTP edge,
+    // asserted in `api/plugins-data.test.ts`.)
+    expect(JSON.stringify(listed)).not.toContain(PASSWORD.slice(0, 7))
+    expect(JSON.stringify(listed)).not.toContain(PASSWORD.slice(-4))
+  })
+
+  test('the hint column itself is null on disk — nothing to leak, rather than something not shown', () => {
+    const { store, dbPath, checkpoint } = setUpFileBacked()
+    store.set(GLOBAL, 'ns', 'credential', { password: PASSWORD }, { secret: true, hint: false })
+    checkpoint()
+    const raw = readFileSync(dbPath, 'latin1')
+    expect(raw).not.toContain(PASSWORD)
+    // The object-shaped hint would have been `{"passw…rd"}` (plan 112 §9 Q7's measurement); the
+    // bare-string one would have been the eleven characters F12 names. Neither is on the row.
+    // (Only fragments long enough to be distinctive are searched: a four-character tail like
+    // `word` occurs in the migrations' own SQL text, and asserting on it would fail on noise.)
+    expect(raw).not.toContain('{"passw')
+    expect(raw).not.toContain(PASSWORD.slice(0, 7))
+  })
+
+  test('omitting the option is byte-for-byte the write this store has always done — the hint is still there', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'ns', 'api-key', 'sk-ant-api03-abcdefgh7Xq2', { secret: true })
+    expect(store.get(GLOBAL, 'ns', 'api-key')?.hint).toBe('sk-ant-…7Xq2')
+    expect(store.list(GLOBAL, 'ns', { limit: 50 }).items[0]?.hint).toBe('sk-ant-…7Xq2')
+  })
+
+  test('hint: true is explicitly the same as omitting it', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'ns', 'a', 'sk-ant-api03-abcdefgh7Xq2', { secret: true, hint: true })
+    store.set(GLOBAL, 'ns', 'b', 'sk-ant-api03-abcdefgh7Xq2', { secret: true })
+    expect(store.get(GLOBAL, 'ns', 'a')?.hint).toBe(store.get(GLOBAL, 'ns', 'b')?.hint)
+  })
+
+  test('hint: false on a NON-secret write changes nothing — a plain row never had a hint', () => {
+    const { store } = setUp()
+    const entry = store.set(GLOBAL, 'ns', 'plain', 'visible', { hint: false })
+    expect(entry.hint).toBeNull()
+    expect(store.get(GLOBAL, 'ns', 'plain')?.value).toBe('visible')
+  })
+
+  test('setIfVersion carries it too, so a credential can be updated without growing a hint', () => {
+    const { store } = setUp()
+    const first = store.set(GLOBAL, 'ns', 'credential', { password: PASSWORD }, { secret: true, hint: false })
+    const second = store.setIfVersion(GLOBAL, 'ns', 'credential', { password: `${PASSWORD}-2` }, first.version, { secret: true, hint: false })
+    expect(second?.hint).toBeNull()
+    expect(store.get(GLOBAL, 'ns', 'credential')?.hint).toBeNull()
+  })
+
+  test('it is per write, not sticky: a later set() that omits it re-derives the hint', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'ns', 'credential', 'sk-ant-api03-abcdefgh7Xq2', { secret: true, hint: false })
+    expect(store.get(GLOBAL, 'ns', 'credential')?.hint).toBeNull()
+    store.set(GLOBAL, 'ns', 'credential', 'sk-ant-api03-abcdefgh7Xq2', { secret: true })
+    // Documented behaviour, not an accident — `KvSetOptions.hint` says so, and a caller storing a
+    // credential must pass it on every write exactly as it passes `secret`.
+    expect(store.get(GLOBAL, 'ns', 'credential')?.hint).toBe('sk-ant-…7Xq2')
+  })
+})
+
 describe('buildSecretRedactor (plan 79 §4.7)', () => {
   test('redacts every secret readable in the given scopes, naming the key', () => {
     const { store } = setUp()
@@ -330,5 +417,58 @@ describe('buildSecretRedactor (plan 79 §4.7)', () => {
     store.set(GLOBAL, 'ns', 'short', 'abc123', { secret: true })
     const redact = buildSecretRedactor(store, [GLOBAL], 'ns')
     expect(redact('the value is abc123')).toBe('the value is abc123')
+  })
+})
+
+describe('namespaces() — the index the store shipped without', () => {
+  test('lists only namespaces that actually have entries in the queried scope, ascending, with counts', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'tiktok', 'a', 1)
+    store.set(GLOBAL, 'tiktok', 'b', 2)
+    store.set(GLOBAL, 'proxy-manager', 'a', 3)
+    store.set(deviceA, 'tiktok', 'a', 4)
+
+    expect(store.namespaces(GLOBAL)).toEqual([
+      { namespace: 'proxy-manager', entries: 1, secrets: 0 },
+      { namespace: 'tiktok', entries: 2, secrets: 0 },
+    ])
+    // The device scope sees ONLY its own rows — this is what stops a device panel advertising a
+    // plugin that has never written anything for that device.
+    expect(store.namespaces(deviceA)).toEqual([{ namespace: 'tiktok', entries: 1, secrets: 0 }])
+  })
+
+  test('a device scope with nothing stored is an empty list, not the global list', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'tiktok', 'a', 1)
+    expect(store.namespaces({ kind: 'device', stableId: 'stable-nothing' })).toEqual([])
+  })
+
+  test('counts secrets separately and never returns a value or a hint', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'ns', 'plain', 'visible')
+    store.set(GLOBAL, 'ns', 'token', 'sk-ant-api03-abcdefgh7Xq2', { secret: true })
+    store.set(GLOBAL, 'ns', 'other', 'sk-ant-api03-zyxwvuts1234', { secret: true })
+
+    const [row] = store.namespaces(GLOBAL)
+    expect(row).toEqual({ namespace: 'ns', entries: 3, secrets: 2 })
+    // The index is metadata only, by construction — widening it into a preview would turn an
+    // enumeration route into a disclosure route (`KvNamespaceSchema` says the same).
+    expect(JSON.stringify(row)).not.toContain('sk-ant')
+    expect(JSON.stringify(row)).not.toContain('…')
+  })
+
+  test('an expired row is excluded the instant it is past, without waiting for sweepExpired', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'lives', 'k', 1)
+    store.set(GLOBAL, 'dies', 'k', 1, { ttlSec: -1 })
+    expect(store.namespaces(GLOBAL)).toEqual([{ namespace: 'lives', entries: 1, secrets: 0 }])
+  })
+
+  test('a namespace disappears once its last entry is deleted — an index has nothing to index', () => {
+    const { store } = setUp()
+    store.set(GLOBAL, 'ns', 'only', 1)
+    expect(store.namespaces(GLOBAL).length).toBe(1)
+    store.delete(GLOBAL, 'ns', 'only')
+    expect(store.namespaces(GLOBAL)).toEqual([])
   })
 })

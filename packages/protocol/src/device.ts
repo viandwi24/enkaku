@@ -89,8 +89,23 @@ export type LeaseHolder = z.infer<typeof LeaseHolderSchema>
  *   takes input, runs jobs, and answers a shell.
  * `unsupported` — the device's API level is below the agent's floor
  *   (`MIN_SUPPORTED_SDK`), terminal by design, not a failure to retry.
+ * `consent-required` — installed, current, and answering `hello` with its full
+ *   capability list, but Android VPN consent (the `ACTIVATE_VPN` app op) is
+ *   NOT granted and this build refuses to grant it from adb. Added after two
+ *   OPPO/ColorOS phones in the reference farm turned out to refuse `appops
+ *   set` for every op ("uid 2000 does not have MANAGE_APP_OPS_MODES"), which
+ *   the provisioner had been reporting as a flat `failed` — losing text
+ *   input, screen labels, mock location and egress probes on a phone where
+ *   all four work. It is deliberately NEITHER `ready` (that would claim a
+ *   device can route traffic when it cannot) NOR `failed` (that would claim
+ *   nothing works when almost everything does): the one thing blocked is
+ *   `vpn-helper` routing, and `route-service.ts`'s `vpnPrecondition` refuses
+ *   a VPN route on this state by name. It clears itself — Android records the
+ *   consent dialog's answer as the very app op the provisioner reads back, so
+ *   the next pass after a human accepts it reports `ready` with no further
+ *   action.
  */
-export const AgentStateSchema = z.enum(['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported'])
+export const AgentStateSchema = z.enum(['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported', 'consent-required'])
 export type AgentState = z.infer<typeof AgentStateSchema>
 
 /**

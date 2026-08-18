@@ -51,9 +51,30 @@ import {
  *    `shared.ts`, which imports nothing, so the browser half runs the same code
  *    the service does instead of a second copy of it. This file re-exports both
  *    so an existing reader of `./record` is unaffected.
+ *
+ * ## What changed in plan 117 step 117.1
+ *
+ * `upstream` grew `bindAddress` and `resolveThroughEgress`, and the record
+ * itself grew `capacity`, `exclusive` and `listenerAuth` — five fields, all
+ * additive, all defaulted so a row written before this plan still parses to
+ * exactly what it parsed to before (`readProxyRecord` in `shared.ts` is where
+ * the defaulting actually happens; the schema here only bounds the shape).
+ * `PROXY_KINDS` grew a fourth value, `direct`, which is why `upstream.host`,
+ * `.port` and `.username` are now each documented as "ignored when proto is
+ * direct" rather than unconditionally required.
+ *
+ * ## What changed in plan 117 steps 117.7–117.8
+ *
+ * `bindHost`'s field comment and `listenerAuth`'s no longer say "nothing
+ * checks this yet" — `validateProxyRecord`'s loopback rule is now conditional
+ * on a saved listener credential rather than unconditional (§3.5), and
+ * `vpnRouteForRecord` (`shared.ts`) grew a `direct` branch that points VPN
+ * mode's route at this record's own `listen.bindHost`/`.port` instead of an
+ * upstream it does not have (§3.6). Nothing here in `record.ts` changed shape
+ * — both steps are logic in `shared.ts`, which this file only re-exports.
  */
 
-export { PROXY_KEY_PREFIX, PROXY_KINDS, PROXY_SECRET_KEY_PREFIX, PROXY_KEY_HINT, LISTEN_PROTOS } from './shared'
+export { PROXY_KEY_PREFIX, PROXY_KINDS, PROXY_SECRET_KEY_PREFIX, PROXY_AUTH_KEY_PREFIX, PROXY_KEY_HINT, LISTEN_PROTOS } from './shared'
 export type { ProxyKind, ListenProto, ProxyRecord as ProxyRecordShape, ProxySecret, ProxyProblem, ProxyProblemCode } from './shared'
 export {
   readProxyRecord,
@@ -64,14 +85,19 @@ export {
   proxyIdFromKey,
   proxyKeyFor,
   proxySecretKeyFor,
+  proxyAuthKeyFor,
   PROXY_PROBLEM_CODES,
 } from './shared'
 
 export const ProxyListenSchema = z.object({
   /** `https` is accepted by the enum and refused by `validateProxyRecord` — see plan 112 §3.4. */
   proto: z.enum(LISTEN_PROTOS).default('http').describe('What this bridge speaks to whatever dials it. HTTPS is accepted here and refused at validation: terminating TLS needs a certificate the farm cannot issue for a plugin.'),
-  /** Loopback only in v1 (§3.9). Anything else → `E_PROXY_BIND_NOT_LOOPBACK`. */
-  bindHost: z.string().max(64).default(DEFAULT_BIND_HOST).describe('The address the listener binds. Loopback only: an unauthenticated proxy reachable off-host is an open relay billed to your upstream account.'),
+  /**
+   * Loopback only, unless the record has a listener credential saved (plan
+   * 117 §3.5). Otherwise → `E_PROXY_LISTENER_AUTH_REQUIRED`; `listenerAuth`
+   * on with no saved credential → `E_PROXY_LISTENER_AUTH_MISSING`.
+   */
+  bindHost: z.string().max(64).default(DEFAULT_BIND_HOST).describe('The address the listener binds. Loopback unless a listener credential is saved for this record: an unauthenticated proxy reachable off-host is an open relay billed to your upstream account.'),
   /**
    * **Nullable, and that is a state rather than a gap** (§4.3 property 3). A
    * record migrated from the shipped shape named an upstream port and no local
@@ -82,12 +108,30 @@ export const ProxyListenSchema = z.object({
 })
 
 export const ProxyUpstreamSchema = z.object({
-  /** Reuses `PROXY_KINDS` unchanged, so every shipped row migrates without interpretation. */
-  proto: z.enum(PROXY_KINDS).default('socks5').describe('The transport the upstream proxy speaks. HTTPS is accepted here and refused at validation.'),
-  host: z.string().max(200).default('').describe('Hostname or IP address of the upstream proxy, without a scheme and without a port.'),
-  port: z.number().int().min(0).max(65_535).default(0).describe('The upstream proxy’s TCP port. Zero means it was never filled in.'),
+  /** Reuses `PROXY_KINDS` unchanged, so every shipped row migrates without interpretation. `direct` (plan 117 §3.1) names no remote proxy at all. */
+  proto: z.enum(PROXY_KINDS).default('socks5').describe('The transport the upstream proxy speaks. HTTPS is accepted here and refused at validation. "direct" dials the destination itself and ignores host, port and username.'),
+  host: z.string().max(200).default('').describe('Hostname or IP address of the upstream proxy, without a scheme and without a port. Ignored when proto is "direct".'),
+  port: z.number().int().min(0).max(65_535).default(0).describe('The upstream proxy’s TCP port. Zero means it was never filled in. Ignored when proto is "direct".'),
   /** In the clear, deliberately, and questioned in plan 112 §9 Q1. The password is the other key. */
-  username: z.string().max(200).default('').describe('The account this bridge authenticates to the upstream as. Stored in the clear so the catalogue can say which account a proxy uses; the password is stored separately and encrypted.'),
+  username: z
+    .string()
+    .max(200)
+    .default('')
+    .describe('The account this bridge authenticates to the upstream as. Stored in the clear so the catalogue can say which account a proxy uses; the password is stored separately and encrypted. Ignored when proto is "direct".'),
+  /**
+   * Plan 117 §3.1 — `net.connect`'s own `localAddress`, meaningful only for
+   * `proto: 'direct'`. Empty means "dial out however this host normally
+   * would", which is what makes `direct` useful with no proxy account at all.
+   */
+  bindAddress: z.string().max(64).default('').describe('The local address to bind outgoing connections to, for a "direct" upstream. Empty means the host’s normal default route. Ignored for every other proto.'),
+  /**
+   * Plan 117 §3.4 — default on. Meaningless with an empty `bindAddress`, and
+   * meaningless for every proto other than `direct`.
+   */
+  resolveThroughEgress: z
+    .boolean()
+    .default(true)
+    .describe('For a "direct" upstream with a bindAddress: whether DNS lookups are resolved through that same address rather than the host’s default resolver. A resolver failure never falls back to the default resolver.'),
 })
 
 export const ProxyRecordSchema = z.object({
@@ -97,7 +141,7 @@ export const ProxyRecordSchema = z.object({
   // field inside has a default of its own (the same trap plan 109 §9 Q18
   // records for `z.input` vs the inferred type).
   listen: ProxyListenSchema.default({ proto: 'http', bindHost: DEFAULT_BIND_HOST, port: null }),
-  upstream: ProxyUpstreamSchema.default({ proto: 'socks5', host: '', port: 0, username: '' }),
+  upstream: ProxyUpstreamSchema.default({ proto: 'socks5', host: '', port: 0, username: '', bindAddress: '', resolveThroughEgress: true }),
   /**
    * INTENT, not observation (§3.5). The supervisor starts every enabled record
    * when the plugin loads. Nothing about a RUNNING proxy — its state, uptime,
@@ -108,6 +152,17 @@ export const ProxyRecordSchema = z.object({
   logDestinations: z.boolean().default(false).describe('Whether a log line may name the host a connection was for. Off by default: a proxy that logs every destination becomes a browsing record of every device that used it.'),
   maxConnections: z.number().int().min(1).max(10_000).default(DEFAULT_MAX_CONNECTIONS).describe('How many tunnels this one proxy may carry at once. A bridge shares the farm’s event loop, so an unbounded one can starve the rest of it.'),
   drainMs: z.number().int().min(0).max(120_000).default(DEFAULT_DRAIN_MS).describe('How long a stop lets live tunnels finish before destroying them. The port is released immediately either way.'),
+  /** Plan 117 §3.8. `0` = unlimited. Enforced in `apply.ts` (step 117.10) rather than by this schema, which only bounds the number. */
+  capacity: z.number().int().min(0).max(1000).default(0).describe('How many devices may hold this record at once, counted through the device-scoped "assigned" key. Zero means unlimited.'),
+  /** Plan 117 §3.8, `capacity`’s stricter sibling — refused outright rather than counted. Enforced in `apply.ts`, as `capacity` is. */
+  exclusive: z.boolean().default(false).describe('Whether this record refuses a second concurrent assignment outright, rather than counting against capacity.'),
+  /**
+   * Plan 117 §3.5 — intent that a `proxy-auth:<id>` credential row exists.
+   * On with no such row → `E_PROXY_LISTENER_AUTH_MISSING`; off is also what
+   * keeps a non-loopback `bindHost` refused (`E_PROXY_LISTENER_AUTH_REQUIRED`,
+   * step 117.7).
+   */
+  listenerAuth: z.boolean().default(false).describe('Whether this bridge should require a listener credential. The credential itself is a separate, secret KV row — this only records the intent.'),
   notes: z.string().max(300).default('').describe('Anything a person needs to know about this entry — who it belongs to, when it expires.'),
 })
 

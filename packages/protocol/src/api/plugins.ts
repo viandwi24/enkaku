@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ActionSpecSchema, NavEntrySchema, PluginSurfaceSchema, SurfaceIdSchema, ViewSpecSchema } from '../plugin-surface'
-import { PluginServiceStatusSchema } from '../plugin-service'
+import { PluginServiceDeclarationSchema, PluginServiceStatusSchema } from '../plugin-service'
 import { RuntimeEnvelopeSchema } from '../runtime-envelope'
 import { KvEntrySchema } from './kv'
 
@@ -51,6 +51,21 @@ export const PluginManifestSchema = z
      * published before this plan.
      */
     surface: PluginSurfaceSchema.optional(),
+    /**
+     * Plan 109 §4.1, step 109.2 — the verified service declaration, stored in
+     * the same JSON column as `scripts` and `surface` and shipped on the wire
+     * with them. Absent for every plugin that declares no long-lived server
+     * half, which is most of them.
+     *
+     * Declared here late, and the reason is the same silent-strip hazard that
+     * cost `captured` a week: the core has been **sending** this since 109.2,
+     * but this schema predates that plan and a Zod object drops an undeclared
+     * key without a word — so the plugin detail page (step 112's sibling work)
+     * found the field on the wire and gone after the parse, and had to
+     * re-admit it locally to show an operator the permissions they consented
+     * to at install. That local re-admit can be deleted now.
+     */
+    service: PluginServiceDeclarationSchema.optional(),
   })
   .nullable()
 
@@ -164,6 +179,292 @@ export const PluginRemoveResponseSchema = z.object({ removed: z.boolean(), kvDel
 
 /** `POST /api/plugins/:name/disable` and `DELETE /api/plugins/dev/:name` — both answer a bare acknowledgement. */
 export const PluginOkResponseSchema = z.object({ ok: z.boolean() })
+
+/**
+ * ## Bulk version removal — `POST /api/plugins/:name/versions/remove`
+ *
+ * The farm owner's ask, verbatim: *"remove di plugins itu bisa remove specific
+ * versi, atau remove all version, atau remove all except latest version"*.
+ * The first of the three is `DELETE /:name/:version`, which already exists and
+ * is not duplicated here. These two are the other two.
+ *
+ * **Why version history needs pruning at all.** It accumulates per publish and
+ * nothing ever collects it: the farm this was written for carries 20+ `tiktok`
+ * rows and a dozen `networking` ones. "All except the latest" is the one an
+ * operator actually reaches for — routine housekeeping that must not touch what
+ * is live — which is why the keep set below is wider than the name suggests.
+ */
+export const PluginVersionRemovalScopeSchema = z.enum(['all', 'except-latest'])
+export type PluginVersionRemovalScope = z.infer<typeof PluginVersionRemovalScopeSchema>
+
+export const PluginBulkRemoveBodySchema = z.object({
+  scope: PluginVersionRemovalScopeSchema,
+  /**
+   * The same flag `DELETE /:name/:version?deleteKv=1` carries, and it means the
+   * same thing: the KV namespace is the plugin NAME, shared by every version, so
+   * this is a property of the whole request rather than of any one row. Honoured
+   * exactly once — on the last version this request actually removes — because
+   * running `deleteNamespace` eleven times would report eleven counts for one
+   * deletion and the operator would read the total as eleven times too large.
+   */
+  deleteKv: z.boolean().optional(),
+})
+export type PluginBulkRemoveBody = z.infer<typeof PluginBulkRemoveBodySchema>
+
+/**
+ * Why a version was NOT removed although the request covered its plugin.
+ *
+ * These are `skip` codes, never errors: nothing was attempted on the row, and
+ * that is the correct outcome rather than a failure to report. Each one is a
+ * separate code so the screen can say which rule saved which row — "the active
+ * one" and "the newest one" are usually the same row and sometimes are not, and
+ * collapsing them would hide exactly the divergence an operator needs to see.
+ */
+export const PLUGIN_VERSION_KEEP_LATEST = 'plugin_kept_latest'
+export const PLUGIN_VERSION_KEEP_ACTIVE = 'plugin_kept_active'
+export const PLUGIN_VERSION_KEEP_DISABLED = 'plugin_kept_disabled'
+export const PLUGIN_VERSION_KEEP_VERIFYING = 'plugin_kept_verifying'
+/** A status this build does not recognise — see `PLUGIN_VERSION_REMOVABLE_STATUSES`. */
+export const PLUGIN_VERSION_KEEP_UNRECOGNISED = 'plugin_kept_unrecognised_status'
+
+/**
+ * The ONLY statuses `except-latest` will prune, stated as an allowlist rather
+ * than as a list of statuses to protect.
+ *
+ * The difference is the whole safety property. `plugins.status` is a plain
+ * `text` column, so a value this build has never heard of is representable; with
+ * a denylist ("keep `active`, `disabled`, `verifying`") such a row would fall
+ * through into the delete list, which is the one direction this must never fail
+ * in. With an allowlist it is kept and NAMED
+ * (`PLUGIN_VERSION_KEEP_UNRECOGNISED`), so a farm whose schema has moved on
+ * prunes less than asked and says so, instead of deleting what it cannot read.
+ */
+export const PLUGIN_VERSION_REMOVABLE_STATUSES: readonly string[] = ['staged', 'superseded', 'failed']
+
+/**
+ * One version's outcome, following `DeviceNetworkApplyResultSchema`'s grain
+ * (plan 114 §3.9) rather than inventing a third bulk report format:
+ *
+ * - **removed** — `skip` and `error` both null. The row is gone.
+ * - **kept** — `skip` present. The row was deliberately not attempted; the code
+ *   is one of the four `PLUGIN_VERSION_KEEP_*` above and `message` says which
+ *   rule in the operator's own words.
+ * - **failed** — `error` present. Removal was attempted and refused; chiefly
+ *   `script_in_use`, which means a queued or running job still names one of this
+ *   version's scripts. That is the core protecting a live job, not a bug, and it
+ *   is reported per version rather than failing the whole request.
+ *
+ * `status` is the row's status as it stood when the request was planned, which
+ * is what makes a keep reason checkable after the fact.
+ */
+export const PluginVersionRemovalResultSchema = z.object({
+  id: z.string(),
+  version: z.string(),
+  /**
+   * The row's status verbatim, as it stood when the request was planned — which
+   * is what makes a keep reason checkable after the fact.
+   *
+   * `z.string()` and not `PluginStatusSchema`, deliberately: `plugins.status` is
+   * a `text` column, and a value this build does not recognise is exactly the
+   * case `PLUGIN_VERSION_KEEP_UNRECOGNISED` exists to report. A schema that
+   * refused to carry it would make the one row worth naming the one row the
+   * report could not describe.
+   */
+  status: z.string(),
+  /** Entries deleted from the plugin's KV namespace by THIS row's removal — non-zero on at most one result per request (see `deleteKv` above). */
+  kvDeleted: z.number().int(),
+  skip: z.object({ code: z.string(), message: z.string() }).nullable(),
+  error: z.object({ code: z.string(), message: z.string() }).nullable(),
+})
+export type PluginVersionRemovalResult = z.infer<typeof PluginVersionRemovalResultSchema>
+
+/**
+ * `POST /api/plugins/:name/versions/remove`.
+ *
+ * **Partial success is a 200.** Removing nine of eleven with two named refusals
+ * is what this route is FOR — the refusals are the report, not an error — so
+ * there is no `ok` member to misread and the caller classifies each row itself.
+ * `total` is every version the plugin had when the request was planned, so
+ * `results.length === total` always: a kept row is a result, not an omission.
+ *
+ * `webhooksDeleted` mirrors what the single-version route already does (plan 109
+ * step 109.7): a plugin's webhook secrets are dropped only when NOTHING named
+ * `name` is left, because a secret must survive a rollback. Non-zero here means
+ * the whole plugin is gone.
+ */
+export const PluginBulkRemoveResponseSchema = z.object({
+  plugin: z.string(),
+  scope: PluginVersionRemovalScopeSchema,
+  total: z.number().int(),
+  results: z.array(PluginVersionRemovalResultSchema),
+  webhooksDeleted: z.number().int(),
+})
+export type PluginBulkRemoveResponse = z.infer<typeof PluginBulkRemoveResponseSchema>
+
+export type PluginVersionRemovalOutcome = 'removed' | 'kept' | 'failed'
+
+/**
+ * The one rule that turns a result row into an outcome class, declared beside
+ * the schema and used by both sides — the same discipline
+ * `classifyDeviceNetworkApply` follows, and for the same reason: two copies of a
+ * classification drift, and the moment they do a count on screen stops matching
+ * the list underneath it.
+ */
+export function classifyPluginVersionRemoval(result: PluginVersionRemovalResult): PluginVersionRemovalOutcome {
+  if (result.skip !== null) return 'kept'
+  if (result.error !== null) return 'failed'
+  return 'removed'
+}
+
+/**
+ * Semver order over two plugin versions, `-1 | 0 | 1`.
+ *
+ * `StageBody` in the core admits `\d+\.\d+\.\d+(?:[-+].+)?`, so the numeric core
+ * always parses; a suffix may be a prerelease (`-rc.1`), build metadata
+ * (`+dev.3`), or absent. Semver's own rule is followed for the first — a
+ * prerelease sorts BELOW the release it precedes, so `1.2.0-rc.1 < 1.2.0` — and
+ * build metadata is ignored for ordering, which is why `1.2.0+dev.3` and
+ * `1.2.0` compare equal and fall through to the caller's tie-break.
+ *
+ * A version that does not parse at all sorts below every one that does, rather
+ * than throwing: this runs on the way to deciding what to DELETE, and a row the
+ * comparator cannot read must never be mistaken for the newest one.
+ */
+export function comparePluginVersions(a: string, b: string): number {
+  const parse = (v: string): { core: [number, number, number]; pre: string | null } | null => {
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:([-+]).+)?$/.exec(v)
+    if (!m) return null
+    const pre = m[4] === '-' ? v.slice(v.indexOf('-') + 1).split('+')[0]! : null
+    return { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (!pa && !pb) return a === b ? 0 : a < b ? -1 : 1
+  if (!pa) return -1
+  if (!pb) return 1
+  for (let i = 0; i < 3; i++) {
+    if (pa.core[i]! !== pb.core[i]!) return pa.core[i]! < pb.core[i]! ? -1 : 1
+  }
+  if (pa.pre === pb.pre) return 0
+  // A release outranks any prerelease of the same core (semver §11.3).
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  return pa.pre < pb.pre ? -1 : 1
+}
+
+/**
+ * The minimum a caller must know about a version for the plan below —
+ * structurally satisfied by a `PluginRow` from `GET /api/plugins` and by a
+ * `plugins` row read straight out of the core's database.
+ *
+ * `status` is `string`, matching the `text` column it comes from rather than
+ * narrowing it: see `PLUGIN_VERSION_REMOVABLE_STATUSES` on why a value this
+ * build cannot classify has to survive the trip rather than be parsed away.
+ */
+export interface PluginVersionCandidate {
+  id: string
+  version: string
+  status: string
+}
+
+export interface PluginVersionRemovalPlan<T extends PluginVersionCandidate> {
+  remove: T[]
+  keep: { candidate: T; code: string; message: string }[]
+}
+
+/**
+ * Which versions a bulk removal takes and which it leaves — **the single
+ * definition of both scopes, shared by the core and by Studio's confirm
+ * dialog.**
+ *
+ * Shared rather than restated, for the same reason `classifyDeviceNetworkApply`
+ * is: a destructive dialog that promises "these nine go, these two stay" and a
+ * server that then applies a slightly different rule is worse than no dialog at
+ * all. Studio calls this to WRITE the confirm; the core calls it to DO the work.
+ *
+ * ## `except-latest` keeps four things, not one
+ *
+ * **The latest version and the active version are not the same row.** They
+ * usually coincide; a rollback is precisely the case where they do not, leaving
+ * an older version `active` while a newer one sits `superseded`. A housekeeping
+ * action that silently deleted the row the farm is currently running would be
+ * the worst possible outcome of routine pruning, so `except-latest` keeps:
+ *
+ * 1. the highest version by semver (`PLUGIN_VERSION_KEEP_LATEST`) — what the
+ *    label on the button says;
+ * 2. the `active` row, whichever version that is (`..._KEEP_ACTIVE`) — what the
+ *    farm is running right now;
+ * 3. the `disabled` row (`..._KEEP_DISABLED`) — the version `POST /:name/enable`
+ *    puts back, and the ONLY row that verb can reach. Deleting it is deleting
+ *    the switched-off farm's way back on;
+ * 4. any `verifying` row (`..._KEEP_VERIFYING`) — a publish is mid-flight
+ *    against it right now;
+ * 5. any row whose status this build does not recognise at all
+ *    (`..._KEEP_UNRECOGNISED`) — see `PLUGIN_VERSION_REMOVABLE_STATUSES`.
+ *
+ * Each keep carries its own code, so a row kept for two reasons still reports
+ * the most specific one (active/disabled/verifying beat latest — the operator
+ * pruning history wants to be told "this one is live", not "this one is newest").
+ *
+ * ## `all` keeps nothing
+ *
+ * "Remove all versions" is the uninstall, and it means all — including the
+ * active row, exactly as `DELETE /:name/:version` already allows for a single
+ * one. What still protects the farm there is not a keep rule but the per-version
+ * refusal: a version a queued or running job still names is refused
+ * (`script_in_use`) and reported, never bulldozed.
+ */
+export function planPluginVersionRemoval<T extends PluginVersionCandidate>(
+  candidates: readonly T[],
+  scope: PluginVersionRemovalScope,
+): PluginVersionRemovalPlan<T> {
+  /**
+   * Oldest first, in both scopes. Both returned lists are in this order: it is
+   * the order the core deletes in and the order the dialog lists in, and a
+   * confirm that enumerated the versions in a different order from the one the
+   * server works through would be describing a different plan.
+   *
+   * Oldest first also fails in the right direction — if a removal is refused
+   * part-way (a queued job holding a version), what survives is the newest end
+   * of the history rather than a random middle.
+   *
+   * The id breaks a tie, so two rows carrying the same version string (a
+   * `+build` pair, or two the comparator cannot read) order the same way every
+   * time — and so the dialog and the server pick the same "latest".
+   */
+  const ordered = [...candidates].sort((a, b) => comparePluginVersions(a.version, b.version) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+
+  if (scope === 'all') return { remove: ordered, keep: [] }
+
+  const latest = ordered[ordered.length - 1]
+
+  const remove: T[] = []
+  const keep: PluginVersionRemovalPlan<T>['keep'] = []
+  for (const c of ordered) {
+    if (c.status === 'active') {
+      keep.push({ candidate: c, code: PLUGIN_VERSION_KEEP_ACTIVE, message: `${c.version} is the version this farm is running` })
+    } else if (c.status === 'disabled') {
+      keep.push({
+        candidate: c,
+        code: PLUGIN_VERSION_KEEP_DISABLED,
+        message: `${c.version} is disabled, and Enable puts back this exact version — removing it removes the way back`,
+      })
+    } else if (c.status === 'verifying') {
+      keep.push({ candidate: c, code: PLUGIN_VERSION_KEEP_VERIFYING, message: `${c.version} is being verified right now` })
+    } else if (!PLUGIN_VERSION_REMOVABLE_STATUSES.includes(c.status)) {
+      keep.push({
+        candidate: c,
+        code: PLUGIN_VERSION_KEEP_UNRECOGNISED,
+        message: `${c.version} is "${c.status}", which this farm cannot classify — it is kept rather than guessed at`,
+      })
+    } else if (latest && c.id === latest.id) {
+      keep.push({ candidate: c, code: PLUGIN_VERSION_KEEP_LATEST, message: `${c.version} is the latest version` })
+    } else {
+      remove.push(c)
+    }
+  }
+  return { remove, keep }
+}
 
 /**
  * The four `/api/plugins/:name/data/*` responses (plan 108 §4.5, step 108.4).

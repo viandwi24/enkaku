@@ -22,7 +22,11 @@ export interface BoundedRetryInput {
    * `'ready'`/`'outdated'` both reset the bound (`'outdated'` is a "repaired
    * once, still wrong" verdict, not a transient install failure, so it does
    * not accumulate attempts; agent-provisioner.ts's own documented
-   * reasoning, unchanged here). `'absent'`/`'provisioning'`/`'unsupported'`
+   * reasoning, unchanged here). `'consent-required'` resets it for the same
+   * reason and one more: retrying cannot clear it — only a human accepting a
+   * dialog on the phone can, and burning three automatic attempts against
+   * that would replace a standing, readable state with an exhausted-budget
+   * one that says less. `'absent'`/`'provisioning'`/`'unsupported'`
    * are accepted for typing convenience (a caller's settled-state type is
    * often the full `AgentState` enum) but are never actually produced by a
    * completed pass in this codebase — `'unsupported'` in particular is

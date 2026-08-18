@@ -421,6 +421,13 @@
       "when": 1786969009516,
       "tag": "0059_aspiring_starfox",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1786991587267,
+      "tag": "0060_fluffy_king_bedlam",
+      "breakpoints": true
     }
   ]
 }

@@ -17,7 +17,7 @@ import { SessionError } from './errors'
 import { applyFarmTag } from './farm-tag'
 import { createInputArbiter, type InputArbiter } from './input-arbiter'
 import type { Logger } from './logger'
-import { applyRotation } from './orientation'
+import { applyRotation, type RotationLock } from './orientation'
 import { applyTextInput } from './text-input'
 import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
@@ -171,6 +171,27 @@ export interface DeviceSession {
      */
     commitViaAgent(text: string, perCharMs?: [number, number]): Promise<{ committed: number; imeCurrent: boolean }>
   }
+  /**
+   * The screen-rotation lock in force on this session (plan 85 §3.7) — the
+   * live handle, not a snapshot: `rotation.set(mode)` re-locks a session that
+   * is ALREADY RUNNING, which is what `SessionManager.setRotation` (and, above
+   * it, `PATCH /api/devices/:id`) calls when an operator changes
+   * `DeviceSettings.prep.rotation` on a device whose screen is on a wall tile
+   * right now. Before this existed the setting was apply-once at session
+   * creation, so changing it mid-stream did nothing whatsoever and said
+   * nothing about it.
+   *
+   * `rotation.outcome.applied` is read back from the device, never inferred
+   * from a write's exit code, so "the lock is in force" and "we asked for the
+   * lock" are distinguishable — see `RotationOutcome`.
+   *
+   * Optional for the same fixture-compatibility reason `requestKeyframe` and
+   * `videoProfile` are: many tests across `packages/session`/`packages/core`
+   * build an ad-hoc object literal shaped like `DeviceSession` for scenarios
+   * that have nothing to do with rotation. `createSession` (the only
+   * production implementation) always sets it.
+   */
+  rotation?: RotationLock
   close(): Promise<void>
 }
 
@@ -431,12 +452,25 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * Rotation lock (Plan 85 §3.7, §4.1, step 85.8): the identical shape to
    * `wakeDevice` right above — a device-scoped preference applied here and
    * reverted in `close()` below. `applyRotation` reads the device's current
-   * `accelerometer_rotation` before touching anything, so the revert thunk it
+   * `accelerometer_rotation` before touching anything, so the revert it
    * returns can put it back exactly rather than to a hardcoded value.
-   * `'device'` (the default) touches nothing and the thunk is a no-op.
+   * `'device'` (the default) touches nothing and the revert is a no-op.
+   *
+   * Rotation is the ONE member of the fast path's skip list (§4.2:
+   * "skips wake/rotate/text-input/farm-tag") that this call does NOT skip,
+   * and the asymmetry is deliberate. Waking a device that is already awake is
+   * genuinely redundant — the wall entry holding the screen on is proof of the
+   * fact it would re-derive. A rotation lock is not the same kind of
+   * redundant: the wall entry may have been opened BEFORE the operator changed
+   * the setting, or with a different value, or its own write may have been
+   * declined by the device. So a fast-path build re-asserts the lock
+   * (`owned: false`) — it writes, but it captures nothing and reverts nothing,
+   * leaving the still-open wall entry as the sole owner of the device's true
+   * pre-farm state. Two extra shell calls; no way for them to be wrong.
    */
   const rotation: RotationMode = opts.rotation ?? 'device'
-  const revertRotation = skipDevicePrep ? async () => {} : await applyRotation(transport, { rotation, log })
+  const rotationLock = await applyRotation(transport, { rotation, log, owned: !skipDevicePrep })
+  const revertRotation = () => rotationLock.revert()
 
   /**
    * Text-input keyboard (plan 90 §3.2, §3.3, §4.5, §5 step 90.5): the identical shape to
@@ -653,6 +687,10 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
         return { committed: result.committed, imeCurrent: result.ime === 'current' }
       },
     },
+    // Plan 85 §3.7 — the LIVE handle (see `DeviceSession.rotation`), so a
+    // settings change reaches a session that is already streaming instead of
+    // waiting for a cold start that may never come on a wall tile.
+    rotation: rotationLock,
     async close() {
       // Plan 100 §4.3 step 100.6: stop arming further retries and cancel any
       // in-flight timer FIRST — a retry that fires after close() has already

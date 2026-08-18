@@ -28,7 +28,7 @@ import type { JsonSchemaNode } from './types'
  * |---|---|---|---|
  * | 1 | `$ref` present | resolve against the root **with a visited set**; a cycle → `json` ("this parameter refers to itself") | structural |
  * | 2 | node depth > `SCHEMA_LIMITS.maxDepth` | `json` ("too deeply nested to render") | safety |
- * | 3 | `x-enkaku.kind` present **and valid for this node's structural type** | the control for that kind, from `planDeclaredKind`'s single lookup — a number control, a text control, or a workspace path browser (`workspaceFolder`/`workspaceFile`, both string-only) | **declared** |
+ * | 3 | `x-enkaku.kind` present **and valid for this node's structural type** | the control for that kind, from `planDeclaredKind`'s single lookup — a number control, a text control, a workspace path browser (`workspaceFolder`/`workspaceFile`, both string-only), or an artifact picker (`artifact`, string-only) | **declared** |
  * | 4 | `enum` or `const` present | `choice` (decorated by `labels`, then by `source`) | structural |
  * | 5 | `type: 'boolean'` | `toggle` | structural |
  * | 6 | `prefixItems` of length 2, both numeric | `pair` — `ordered` from `x-enkaku`, default `true`; each half planned by rows 3/9 | structural |
@@ -205,6 +205,16 @@ export type FieldPlan =
        *  narrows what the browser OFFERS, never what it accepts. */
       extensions?: string[]
     }
+  | {
+      /**
+       * `kind: 'artifact'` — the value is an artifact ID (`@enkaku/protocol`'s
+       * own vocabulary comment), never a path, never a URL. Drawn by
+       * `ArtifactControl`, which wraps the same `ArtifactPicker` the
+       * bulk-transfer and install-batch dialogs already use (plan 93) rather
+       * than a second picker.
+       */
+      control: 'artifact'
+    }
   | { control: 'list'; item: FieldPlan }
   | { control: 'table'; columns: { key: string; label: string; plan: FieldPlan }[] }
   | { control: 'group'; heading?: string; children: PlannedField[] }
@@ -268,6 +278,10 @@ function isWorkspacePathKind(kind: ParamKind): kind is 'workspaceFolder' | 'work
   return kind === 'workspaceFolder' || kind === 'workspaceFile'
 }
 
+function isArtifactKind(kind: ParamKind): kind is 'artifact' {
+  return kind === 'artifact'
+}
+
 /**
  * Every kind whose value is a STRING — the ones row 3 checks against
  * `type: 'string'` rather than against a numeric type. Restated here rather
@@ -278,10 +292,10 @@ function isWorkspacePathKind(kind: ParamKind): kind is 'workspaceFolder' | 'work
  * its OWN string-kind list. Forget a kind here and that assignment stops
  * typechecking.
  */
-type StringKind = 'text' | 'packageName' | 'workspaceFolder' | 'workspaceFile'
+type StringKind = 'text' | 'packageName' | 'workspaceFolder' | 'workspaceFile' | 'artifact'
 
 function isStringKind(kind: ParamKind): kind is StringKind {
-  return isTextKind(kind) || isWorkspacePathKind(kind)
+  return isTextKind(kind) || isWorkspacePathKind(kind) || isArtifactKind(kind)
 }
 
 /**
@@ -382,6 +396,7 @@ function planWorkspacePath(kind: 'workspaceFolder' | 'workspaceFile', hints: Par
  */
 function planDeclaredKind(node: JsonSchemaNode, kind: ParamKind, hints: ParamHints): FieldPlan {
   if (isWorkspacePathKind(kind)) return planWorkspacePath(kind, hints)
+  if (isArtifactKind(kind)) return { control: 'artifact' }
   if (isTextKind(kind)) return planTextPlain(node, hints)
   return planKindNumber(node, kind, hints)
 }

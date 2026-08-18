@@ -25,6 +25,16 @@ import type { JsonSchemaNode } from '../api/json-schema'
  * nameable this way, which is the whole reason these are two kinds and not
  * one `kind: 'path'`. Both are valid only on `type: 'string'`.
  *
+ * `artifact` (plan 113 §4.1, added by step 113.9 to close gap G6) names a
+ * value that is an ARTIFACT ID — the same opaque id `POST /api/artifacts`
+ * returns and `device.push`/`resolveArtifact` already accept. It is its own
+ * kind rather than a third `workspace*` variant on purpose: the two kinds
+ * above name a place inside the WORKSPACE tree (`fs.list`/`fs.read`'s own
+ * path strings), while an artifact is a row in a completely different store
+ * (the artifact table, files on disk) addressable only by this id — never a
+ * path, and never a URL. Valid only on `type: 'string'`, like the two
+ * workspace kinds above.
+ *
  * `timestamp` (plan 108 §4.3, added by step 108.7 after 108.11 hit the gap)
  * is an INSTANT, always in unix **seconds** — the repo-wide storage
  * convention for every time value (`docs/plans/00-overview.md` §4.2, and
@@ -48,6 +58,7 @@ export const PARAM_KINDS = [
   'packageName',
   'workspaceFolder',
   'workspaceFile',
+  'artifact',
 ] as const
 export type ParamKind = (typeof PARAM_KINDS)[number]
 
@@ -59,7 +70,7 @@ export type ParamKind = (typeof PARAM_KINDS)[number]
  * `"NaN"`. Meaning, not presentation: "is this value a string" is a fact
  * about the value, the same category as `kind` itself.
  */
-export const STRING_PARAM_KINDS = ['text', 'packageName', 'workspaceFolder', 'workspaceFile'] as const
+export const STRING_PARAM_KINDS = ['text', 'packageName', 'workspaceFolder', 'workspaceFile', 'artifact'] as const
 export type StringParamKind = (typeof STRING_PARAM_KINDS)[number]
 
 /** Required by, and valid only for, `kind: 'duration'` (plan 95 §3.2). */

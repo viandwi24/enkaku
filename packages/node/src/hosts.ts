@@ -143,6 +143,20 @@ export function createNodeHosts(deps: {
   /** Artifacts are sent to the control plane, not stored on the node. */
   const artifactSink = (jobId: string): ArtifactSink => ({
     async save({ kind, label, data, ext }) {
+      // Plan 115 §3.6 — `SavedArtifact.id` is required (it is what
+      // `ctx.artifact.file()` hands back to the script), but the REAL row
+      // for a node-owned device is only minted once the control plane
+      // processes the `job.progress` artifact message below — there is no
+      // synchronous round trip here to learn that id. This local id keeps
+      // the contract type-honest (never `undefined`, never a cast) without
+      // pretending to be the control plane's own row: a script that then
+      // calls `ctx.device.push({ artifactId })` for a node-owned device gets
+      // an honest "not found" from the control plane rather than silently
+      // doing nothing. Giving a node-owned device job the SAME id the
+      // control plane assigns is a real gap this step does not close — it
+      // would need an acknowledgement round trip over the tunnel, which is
+      // out of scope here (plan 115 §3.6 only covers the local/core path).
+      const id = crypto.randomUUID()
       if (data.length > INLINE_ARTIFACT_LIMIT) {
         // Large artifacts take the binary channel so they do not clog the JSON.
         const channel = videoChannels.get(`artifact:${jobId}`)
@@ -167,7 +181,7 @@ export function createNodeHosts(deps: {
         })
       }
       // The real path is decided by the control plane when it stores the file.
-      return { path: `remote/${jobId}/${label}`, sizeBytes: data.length }
+      return { id, path: `remote/${jobId}/${label}`, sizeBytes: data.length }
     },
   })
 

@@ -115,7 +115,7 @@ function buildRunner(db: Db, isolation: IsolationProvider) {
     isolation,
     logDir: `/tmp/enkaku-trigger-runner-test-${crypto.randomUUID()}`,
     sessions: fakeSessions(),
-    artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+    artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
     log: silentLog(),
     onLog: () => {},
     onArtifact: () => {},

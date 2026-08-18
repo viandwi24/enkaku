@@ -64,6 +64,9 @@ export function applyKvCall(
     case 'set': {
       const entry = store.set(scope, namespace, call.key, call.value, {
         secret: call.secret,
+        // Undefined when the caller omitted it, which `KvSetOptions.hint` reads as `true` — the
+        // store's default, not a second one restated here (step 112.2).
+        hint: call.hint,
         ttlSec: call.ttlSec,
         updatedByJobId: opts?.updatedByJobId ?? null,
       })
@@ -72,6 +75,7 @@ export function applyKvCall(
     case 'setIfVersion': {
       const entry = store.setIfVersion(scope, namespace, call.key, call.value, call.expectedVersion, {
         secret: call.secret,
+        hint: call.hint,
         ttlSec: call.ttlSec,
         updatedByJobId: opts?.updatedByJobId ?? null,
       })

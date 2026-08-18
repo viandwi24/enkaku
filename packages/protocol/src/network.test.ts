@@ -5,16 +5,27 @@ import {
   GeoExpectationSchema,
   GeoObservationSchema,
   GeoProviderResponseSchema,
+  HttpProxyRouteConfigSchema,
   matchGeoExpectation,
+  NetworkEngineIdSchema,
   NetworkObservationSchema,
+  NetworkRouteConfigSchema,
   PersistedNetworkRouteSchema,
   pushExitHistory,
+  redactRouteConfig,
   renderStickyUsername,
+  ReverseProxyRouteConfigSchema,
+  RouteCheckIdSchema,
   RouteCheckSchema,
   RouteLifecycleStateSchema,
   Socks5RouteConfigSchema,
+  StoredNetworkRouteConfigSchema,
+  tagUntaggedRouteConfig,
   type GeoObservation,
+  type HttpProxyRouteConfig,
+  type ReverseProxyRouteConfig,
   type RouteCheck,
+  type Socks5RouteConfig,
 } from './network'
 
 function check(id: RouteCheck['id'], state: RouteCheck['state'], extra: Partial<RouteCheck> = {}): RouteCheck {
@@ -351,5 +362,337 @@ describe('pushExitHistory / EXIT_HISTORY_LIMIT (plan 55 §4.3, §5.5)', () => {
     expect(result[0]).toEqual(fresh)
     // The oldest entry (index EXIT_HISTORY_LIMIT - 1 of `full`) fell off the end.
     expect(result.some((o) => o.address === `1.1.1.${EXIT_HISTORY_LIMIT - 1}`)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Plan 114 §4.1 — the route config becomes a discriminated union.
+//
+// Everything below this line is the end-of-run test pass for plan 114's
+// protocol layer. The through-line of the whole block is that the union is a
+// WIDENING and not a break: every value written before plan 114 existed still
+// parses, and it parses as `vpn-helper` by construction rather than by guess.
+// ---------------------------------------------------------------------------
+
+describe('PersistedNetworkRouteSchema.config — a pre-plan-114 row still parses (plan 114 §4.1)', () => {
+  test('a raw pre-114 row with no engine key parses as vpn-helper, keeping credentialRef', () => {
+    const parsed = PersistedNetworkRouteSchema.parse({
+      config: { host: 'proxy.example', port: 1080, credentialRef: 'soax-jp', udpMode: 'tcp' },
+      enabled: true,
+      sessionId: 'sess-1',
+      failClosed: true,
+    })
+    expect(parsed.config.engine).toBe('vpn-helper')
+    // Narrow the way every downstream reader now has to.
+    if (parsed.config.engine !== 'vpn-helper') throw new Error('expected the vpn-helper arm')
+    expect(parsed.config.credentialRef).toBe('soax-jp')
+    expect(parsed.config.host).toBe('proxy.example')
+    expect(parsed.config.udpMode).toBe('tcp')
+    expect(parsed.enabled).toBe(true)
+    expect(parsed.sessionId).toBe('sess-1')
+    expect(parsed.failClosed).toBe(true)
+    // The two plan-114 fields are absent on a row that predates them — never defaulted.
+    expect(parsed.captured).toBeUndefined()
+    expect(parsed.setBy).toBeUndefined()
+  })
+
+  test('a pre-plan-52 row carrying INLINE username/password still parses, and is still vpn-helper', () => {
+    const parsed = PersistedNetworkRouteSchema.parse({
+      config: { host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2', udpMode: 'udp' },
+      enabled: true,
+    })
+    expect(parsed.config.engine).toBe('vpn-helper')
+    if (parsed.config.engine !== 'vpn-helper') throw new Error('expected the vpn-helper arm')
+    expect(parsed.config.username).toBe('sam')
+    expect(parsed.config.password).toBe('hunter2')
+  })
+
+  test('an adb-proxy row parses — what step 114.3 flipped this field for', () => {
+    const parsed = PersistedNetworkRouteSchema.parse({
+      config: { engine: 'adb-proxy', host: '10.0.0.2', port: 8899, exclusions: ['localhost'] },
+      enabled: true,
+    })
+    expect(parsed.config.engine).toBe('adb-proxy')
+  })
+
+  test('an adb-reverse-proxy row parses alongside its farm-side allocation', () => {
+    const parsed = PersistedNetworkRouteSchema.parse({
+      config: { engine: 'adb-reverse-proxy', hostPort: 8888 },
+      enabled: true,
+      reverse: { devicePort: 28100, hostPort: 8888, at: 1_700_000_000 },
+    })
+    expect(parsed.config.engine).toBe('adb-reverse-proxy')
+    expect(parsed.reverse).toEqual({ devicePort: 28100, hostPort: 8888, at: 1_700_000_000 })
+  })
+})
+
+describe('NetworkRouteConfigSchema — discriminated on engine (plan 114 §4.1)', () => {
+  test('all three tags parse to their own arm', () => {
+    expect(NetworkRouteConfigSchema.parse({ engine: 'adb-proxy', host: 'h', port: 8080 }).engine).toBe('adb-proxy')
+    expect(NetworkRouteConfigSchema.parse({ engine: 'adb-reverse-proxy', hostPort: 8888 }).engine).toBe('adb-reverse-proxy')
+    expect(NetworkRouteConfigSchema.parse({ engine: 'vpn-helper', host: 'h', port: 1080 }).engine).toBe('vpn-helper')
+  })
+
+  test('an UNTAGGED object is rejected — a Zod .default() on the literal does not make the union accept it', () => {
+    expect(NetworkRouteConfigSchema.safeParse({ host: 'proxy.example', port: 1080, udpMode: 'udp' }).success).toBe(false)
+  })
+
+  test('{ engine: "none" } is rejected — `none` is an engine id, never a config shape', () => {
+    expect(NetworkRouteConfigSchema.safeParse({ engine: 'none' }).success).toBe(false)
+  })
+
+  test('a cross-shape is rejected: the adb-proxy tag with the reverse rung’s fields', () => {
+    expect(NetworkRouteConfigSchema.safeParse({ engine: 'adb-proxy', hostPort: 9902 }).success).toBe(false)
+  })
+
+  test('an ARRAY of a valid config is rejected — plan 108 §4.2’s list-keyed-by-index failure cannot recur here', () => {
+    expect(NetworkRouteConfigSchema.safeParse([{ engine: 'adb-proxy', host: 'h', port: 8080 }]).success).toBe(false)
+  })
+
+  test('an unknown tag is rejected', () => {
+    expect(NetworkRouteConfigSchema.safeParse({ engine: 'wireguard', host: 'h', port: 51820 }).success).toBe(false)
+  })
+})
+
+describe('StoredNetworkRouteConfigSchema — the read-time migration (plan 114 §4.1)', () => {
+  test('an untagged object is tagged vpn-helper and parses', () => {
+    const parsed = StoredNetworkRouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp' })
+    expect((parsed as Socks5RouteConfig).engine).toBe('vpn-helper')
+  })
+
+  test('an already-tagged object is left alone', () => {
+    const parsed = StoredNetworkRouteConfigSchema.parse({ engine: 'adb-proxy', host: 'h', port: 8080 })
+    expect((parsed as HttpProxyRouteConfig).engine).toBe('adb-proxy')
+  })
+
+  test('an ARRAY is NOT tagged and is rejected — spreading one into an object literal is exactly plan 108 §4.2’s bug', () => {
+    expect(StoredNetworkRouteConfigSchema.safeParse([{ host: 'proxy.example', port: 1080, udpMode: 'udp' }]).success).toBe(false)
+  })
+
+  test('null is rejected rather than silently tagged — a device with no route carries config: null, and the nullability belongs OUTSIDE this schema', () => {
+    expect(StoredNetworkRouteConfigSchema.safeParse(null).success).toBe(false)
+  })
+
+  test('a primitive is rejected', () => {
+    expect(StoredNetworkRouteConfigSchema.safeParse('vpn-helper').success).toBe(false)
+    expect(StoredNetworkRouteConfigSchema.safeParse(7).success).toBe(false)
+  })
+})
+
+describe('tagUntaggedRouteConfig in isolation (plan 114 §4.1)', () => {
+  test('a plain untagged object gains engine: "vpn-helper" and the original is not mutated', () => {
+    const original = { host: 'proxy.example', port: 1080 }
+    const tagged = tagUntaggedRouteConfig(original) as Record<string, unknown>
+    expect(tagged.engine).toBe('vpn-helper')
+    expect(tagged.host).toBe('proxy.example')
+    expect(original).not.toHaveProperty('engine')
+  })
+
+  test('an ARRAY passes through untouched — by identity, not merely by value', () => {
+    const arr = [{ host: 'proxy.example', port: 1080 }]
+    expect(tagUntaggedRouteConfig(arr)).toBe(arr)
+  })
+
+  test('an already-tagged object passes through untouched, by identity', () => {
+    const tagged = { engine: 'adb-proxy', host: 'h', port: 8080 }
+    expect(tagUntaggedRouteConfig(tagged)).toBe(tagged)
+  })
+
+  test('an object whose engine is undefined still counts as tagged — `in` is the test, not truthiness', () => {
+    const weird = { engine: undefined, host: 'h' }
+    expect(tagUntaggedRouteConfig(weird)).toBe(weird)
+  })
+
+  test('null, undefined and primitives pass through untouched', () => {
+    expect(tagUntaggedRouteConfig(null)).toBeNull()
+    expect(tagUntaggedRouteConfig(undefined)).toBeUndefined()
+    expect(tagUntaggedRouteConfig('nope')).toBe('nope')
+    expect(tagUntaggedRouteConfig(7)).toBe(7)
+    expect(tagUntaggedRouteConfig(false)).toBe(false)
+  })
+})
+
+describe('Socks5RouteConfigSchema.engine — .default(), never a bare required literal (plan 114 §4.1)', () => {
+  test('a bare {host,port,udpMode} with NO engine key still parses — PUT /:id/network and scripts/smoke-guest-agent.ts both send exactly this', () => {
+    const parsed = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, udpMode: 'udp' })
+    expect(parsed.engine).toBe('vpn-helper')
+  })
+
+  test('the OUTPUT type is required, so a consumer switching on config.engine has no undefined arm', () => {
+    const parsed = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080 })
+    // Not `toBeDefined()`: the point is the concrete literal, not merely presence.
+    expect(parsed.engine).toBe('vpn-helper')
+    expect(parsed.udpMode).toBe('udp')
+  })
+
+  test('an explicit vpn-helper tag round-trips, and a wrong tag is refused', () => {
+    expect(Socks5RouteConfigSchema.parse({ engine: 'vpn-helper', host: 'h', port: 1080 }).engine).toBe('vpn-helper')
+    expect(Socks5RouteConfigSchema.safeParse({ engine: 'adb-proxy', host: 'h', port: 1080 }).success).toBe(false)
+  })
+})
+
+describe('deriveHealth is UNCHANGED by plan 114 (§3.5, §4.1) — its five classes, restated', () => {
+  test('1. nothing has run → unknown', () => {
+    expect(deriveHealth([])).toBe('unknown')
+    expect(deriveHealth([check('tunnel', 'unknown'), check('egress', 'unknown')])).toBe('unknown')
+  })
+
+  test('2. any genuine failure → degraded', () => {
+    expect(deriveHealth([check('setting', 'fail'), check('egress', 'skip')])).toBe('degraded')
+  })
+
+  test('3. a fail beats "egress has not run" → degraded, never unverified', () => {
+    expect(deriveHealth([check('tunnel', 'fail'), check('egress', 'unknown')])).toBe('degraded')
+  })
+
+  test('4. no failures but egress did not pass → unverified', () => {
+    expect(deriveHealth([check('setting', 'pass'), check('egress', 'skip')])).toBe('unverified')
+    expect(deriveHealth([check('setting', 'pass')])).toBe('unverified')
+  })
+
+  test('5. every non-skipped check passed, egress among them → ok', () => {
+    expect(deriveHealth([check('tunnel', 'pass'), check('egress', 'pass'), check('geo', 'skip')])).toBe('ok')
+  })
+})
+
+describe('deriveHealth can NEVER return "ok" for the HTTP rungs (plan 114 acceptance criterion 3)', () => {
+  /**
+   * Acceptance criterion 3 says it in those words: *"A test asserts `health` can
+   * never be `'ok'` for either HTTP engine, on any combination of check states."*
+   * So this is exhaustive rather than sampled — all 4^7 = 16384 assignments of
+   * the seven non-`egress` check ids, with `egress` pinned to `skip` (which is
+   * what both HTTP engines report, permanently, per §3.5).
+   */
+  const OTHER_IDS = ['tunnel', 'setting', 'reverse', 'upstream', 'geo', 'dns', 'leak'] as const
+  const STATES = ['pass', 'fail', 'skip', 'unknown'] as const
+
+  test(`all ${STATES.length ** OTHER_IDS.length} permutations with egress: skip → never ok`, () => {
+    const total = STATES.length ** OTHER_IDS.length
+    let seen = 0
+    const observed = new Set<string>()
+    for (let n = 0; n < total; n++) {
+      let rest = n
+      const checks: RouteCheck[] = []
+      for (const id of OTHER_IDS) {
+        checks.push(check(id, STATES[rest % STATES.length]!))
+        rest = Math.floor(rest / STATES.length)
+      }
+      checks.push(check('egress', 'skip'))
+      const health = deriveHealth(checks)
+      observed.add(health)
+      if (health === 'ok') throw new Error(`deriveHealth returned "ok" for ${JSON.stringify(checks)}`)
+      seen++
+    }
+    expect(seen).toBe(total)
+    expect(seen).toBe(16384)
+    // The only two answers reachable with egress pinned to skip. `unknown` is not among them:
+    // the skipped egress check itself is not `unknown`, so the all-unknown branch never fires.
+    expect([...observed].sort()).toEqual(['degraded', 'unverified'])
+  })
+
+  test('the same holds for the exact check set an HTTP rung actually reports', () => {
+    // §3.5's table, rung 1: tunnel/reverse/geo/dns/leak skip, egress skip permanently, setting and
+    // upstream the only two that can say anything.
+    for (const setting of ['pass', 'fail', 'skip', 'unknown'] as const) {
+      for (const upstream of ['pass', 'fail', 'skip', 'unknown'] as const) {
+        const checks = [
+          check('tunnel', 'skip'),
+          check('setting', setting),
+          check('reverse', 'skip'),
+          check('upstream', upstream),
+          check('egress', 'skip'),
+          check('geo', 'skip'),
+          check('dns', 'skip'),
+          check('leak', 'skip'),
+        ]
+        expect(deriveHealth(checks)).not.toBe('ok')
+      }
+    }
+  })
+})
+
+describe('the two vocabularies plan 114 widened (§3.5, §4.1)', () => {
+  test('RouteCheckIdSchema.options is exactly the eight ids, in order — `setting` and `reverse` are additions, not replacements', () => {
+    expect(RouteCheckIdSchema.options).toEqual(['tunnel', 'setting', 'reverse', 'upstream', 'egress', 'geo', 'dns', 'leak'])
+  })
+
+  test('NetworkEngineIdSchema.options is exactly the four engine ids, in order', () => {
+    expect(NetworkEngineIdSchema.options).toEqual(['none', 'adb-proxy', 'adb-reverse-proxy', 'vpn-helper'])
+  })
+})
+
+describe('redactRouteConfig across the union (plan 114 §4.1, plan 44 §4.5)', () => {
+  test('a vpn-helper password is masked and the input object is not mutated', () => {
+    const config = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, username: 'sam', password: 'hunter2' })
+    const redacted = redactRouteConfig(config)
+    expect(redacted.password).not.toBe('hunter2')
+    expect(redacted.password).toBe('••••••••')
+    expect(redacted.username).toBe('sam')
+    expect(config.password).toBe('hunter2')
+  })
+
+  test('a vpn-helper config with no password passes through by identity — nothing to mask', () => {
+    const config = Socks5RouteConfigSchema.parse({ host: 'proxy.example', port: 1080, credentialRef: 'soax-jp' })
+    expect(redactRouteConfig(config)).toBe(config)
+  })
+
+  test('an adb-proxy config is returned BY IDENTITY — §3.8: it carries no secret to redact', () => {
+    const config = HttpProxyRouteConfigSchema.parse({ engine: 'adb-proxy', host: '10.0.0.2', port: 8899 })
+    expect(redactRouteConfig(config)).toBe(config)
+  })
+
+  test('an adb-reverse-proxy config is returned by identity too', () => {
+    const config = ReverseProxyRouteConfigSchema.parse({ engine: 'adb-reverse-proxy', hostPort: 8888 })
+    expect(redactRouteConfig(config)).toBe(config)
+  })
+
+  test('the caller’s NARROW type survives the call — the generic, not a plain union parameter', () => {
+    const socks: Socks5RouteConfig = Socks5RouteConfigSchema.parse({ host: 'h', port: 1080, password: 'p' })
+    // These three annotations are the assertion: if `redactRouteConfig` returned the union,
+    // none of them would compile, and `bash scripts/typecheck.sh` is part of this test's verdict.
+    const redactedSocks: Socks5RouteConfig = redactRouteConfig(socks)
+    const http: HttpProxyRouteConfig = HttpProxyRouteConfigSchema.parse({ engine: 'adb-proxy', host: 'h', port: 8080 })
+    const redactedHttp: HttpProxyRouteConfig = redactRouteConfig(http)
+    const rev: ReverseProxyRouteConfig = ReverseProxyRouteConfigSchema.parse({ engine: 'adb-reverse-proxy', hostPort: 8888 })
+    const redactedRev: ReverseProxyRouteConfig = redactRouteConfig(rev)
+    // Reading a field that only exists on the narrow type is the run-time half of the same point.
+    expect(redactedSocks.udpMode).toBe('udp')
+    expect(redactedHttp.host).toBe('h')
+    expect(redactedRev.hostPort).toBe(8888)
+  })
+})
+
+describe('PersistedNetworkRouteSchema.captured / .setBy (plan 114 §3.3, §3.6, §4.1)', () => {
+  const base = { config: { engine: 'adb-proxy' as const, host: '10.0.0.2', port: 8899 }, enabled: true }
+
+  test('a capture round-trips, empty strings included — an EMPTY capture is a real capture, not a missing one', () => {
+    const captured = { httpProxy: '', host: '', port: '', exclusionList: '', at: 1_700_000_000 }
+    expect(PersistedNetworkRouteSchema.parse({ ...base, captured }).captured).toEqual(captured)
+  })
+
+  test('a non-empty capture round-trips verbatim', () => {
+    const captured = { httpProxy: '10.9.9.9:3128', host: '10.9.9.9', port: '3128', exclusionList: 'localhost,127.0.0.1', at: 5 }
+    expect(PersistedNetworkRouteSchema.parse({ ...base, captured }).captured).toEqual(captured)
+  })
+
+  test('a partial capture is rejected — all four keys are required together', () => {
+    expect(PersistedNetworkRouteSchema.safeParse({ ...base, captured: { httpProxy: '', at: 1 } }).success).toBe(false)
+  })
+
+  test('setBy parses for both kinds', () => {
+    for (const kind of ['user', 'plugin'] as const) {
+      const setBy = { kind, id: 'someone', at: 1_700_000_000 }
+      expect(PersistedNetworkRouteSchema.parse({ ...base, setBy }).setBy).toEqual(setBy)
+    }
+  })
+
+  test('setBy.kind rejects anything outside user|plugin', () => {
+    for (const kind of ['system', 'farm', 'admin', '']) {
+      expect(PersistedNetworkRouteSchema.safeParse({ ...base, setBy: { kind, id: 'x', at: 1 } }).success).toBe(false)
+    }
+  })
+
+  test('an absent setBy stays undefined on the PERSISTED shape — never defaulted to a fabricated actor', () => {
+    expect(PersistedNetworkRouteSchema.parse(base).setBy).toBeUndefined()
   })
 })

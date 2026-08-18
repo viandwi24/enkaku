@@ -74,12 +74,16 @@ export function createDbArtifactSink(deps: {
   onSaved: (info: ArtifactInfo) => void
   /** Plan 99 §3.2, §4.6, §4.7 — forwarded straight to `createArtifactStore`; see its own doc comment. */
   nodeId?: () => string | null
+  /** Plan 115 §3.6 — forwarded straight to `createArtifactStore`; see its own doc comment. */
+  maxFileBytes: () => number
 }): ArtifactSink {
   const store = createArtifactStore(deps)
   return {
     async save(input) {
       const info = await store.save(input)
-      return { path: info.path, sizeBytes: info.sizeBytes ?? 0 }
+      // Plan 115 §3.6 — `id` is what `ctx.artifact.file()` hands back to the
+      // script, all the way through `job-runner.ts`'s `artifact.result`.
+      return { id: info.id, path: info.path, sizeBytes: info.sizeBytes ?? 0 }
     },
   }
 }

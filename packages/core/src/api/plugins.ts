@@ -1,7 +1,14 @@
 import { and, asc, eq, gt, isNull, or, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { PLUGIN_HTTP_METHODS, PLUGIN_WEBHOOK_SIGNATURE_HEADER, type PluginHttpMethod, PluginActionBodySchema } from '@enkaku/protocol'
+import {
+  classifyPluginVersionRemoval,
+  PLUGIN_HTTP_METHODS,
+  PLUGIN_WEBHOOK_SIGNATURE_HEADER,
+  type PluginHttpMethod,
+  PluginActionBodySchema,
+  PluginBulkRemoveBodySchema,
+} from '@enkaku/protocol'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -94,6 +101,12 @@ const ERROR_STATUS: Record<string, number> = {
   script_not_found: 404,
   script_version_not_found: 404,
   script_ref_unresolved: 409,
+  // A removal refused because a queued or running job still names one of the
+  // version's scripts (`plugins/runtime.ts`'s `removeImpl`). The SAME status
+  // `scripts/routes.ts` gives the identical refusal on `DELETE /api/scripts/:id`
+  // — an operator must not get a different answer for the same reason depending
+  // on which route they reached it through.
+  script_in_use: 409,
   script_disabled: 409,
   script_is_dev: 409,
   unknown_script: 400,
@@ -193,6 +206,15 @@ const DataWriteBody = z.object({
   key: z.string().min(1),
   value: z.unknown(),
   secret: z.boolean().optional(),
+  /**
+   * Whether a `secret` write also stores its display hint (plan 112 step 112.2, F12). Absent means
+   * `true` — the store's own default (`kv/store.ts`'s `KvSetOptions.hint`), so a body written
+   * before this field existed produces the identical row. `false` is what a caller storing a
+   * CREDENTIAL sends: the hint is `${first 7}…${last 4}` of the plaintext, stored in the clear and
+   * returned by `GET /:name/data`, `GET /:name/data/scan` and this route's own response, so
+   * suppressing it at the write is the only thing that keeps it off every read.
+   */
+  hint: z.boolean().optional(),
   ttlSec: z.number().int().positive().optional(),
   ifVersion: z.number().int().optional(),
 })
@@ -483,7 +505,7 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
       }
       const body = parsed.data
       const scope = parseScope(body.scope, body.stableId)
-      const opts = { secret: body.secret, ttlSec: body.ttlSec }
+      const opts = { secret: body.secret, hint: body.hint, ttlSec: body.ttlSec }
 
       let entry: KvEntry | null
       if (body.ifVersion !== undefined) {
@@ -1032,6 +1054,103 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
     runtime.dropDevSlot(name)
     audit.record({ userId: actorId(c), action: 'plugin.dev', target: name, meta: { dropped: true } })
     return c.json({ ok: true })
+  })
+
+  /**
+   * `POST /:name/versions/remove` — bulk version removal (the farm owner's
+   * *"remove all version"* and *"remove all except latest version"*; the third
+   * variant, one specific version, is `DELETE /:name/:version` below and is not
+   * duplicated here).
+   *
+   * **POST, not DELETE, and a body rather than a query string.** The scope is a
+   * choice with real consequences and it is Zod-validated as one; a DELETE with
+   * a body is awkward for enough clients that `/:name/data/entry` had to accept
+   * both forms, and encoding `scope` in the query would make the two most
+   * destructive calls on this surface differ by one character
+   * (`?scope=all` vs `?scope=except-latest`). The shape follows plan 114 §3.9's
+   * `POST /api/devices/network/apply`, which is this codebase's existing answer
+   * to "one operation across a selection, reported per item".
+   *
+   * Three segments, so `/:name/:version` (two) can never shadow it; registered
+   * before it regardless, on the same discipline the `/dev` and `/:name/data/*`
+   * comments above explain.
+   *
+   * `script.delete`, the same permission the single-version route carries.
+   * Removing eleven versions is eleven removals, not a different privilege.
+   *
+   * **Always 200, including a request where every version was refused.** Partial
+   * success is the normal case and the per-version report IS the answer — a
+   * non-2xx would tell a caller that nothing happened when nine rows are gone.
+   * The one exception is a request-level refusal (unknown name, synthetic
+   * owner), which `runtime.removeVersions` throws and `onError` maps as usual.
+   */
+  app.post('/:name/versions/remove', requirePermission('script.delete'), async (c) => {
+    const name = c.req.param('name')
+    const parsed = PluginBulkRemoveBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) {
+      throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
+    }
+    const { scope, deleteKv } = parsed.data
+    const report = runtime.removeVersions(name, { scope, deleteKv: deleteKv === true })
+
+    // Same rule as the single-version route: webhook secrets are dropped only
+    // when NOTHING named `name` is left, because a secret has to survive a
+    // rollback. A bulk remove that refused one version has not emptied the
+    // plugin, so the check is on what actually remains, not on what was asked.
+    let webhooksDeleted = 0
+    if (runtime.list({ name }).length === 0) webhooksDeleted = deps.service?.webhooks?.store.forget(name) ?? 0
+
+    /**
+     * **One audit row per version, plus one for the request.**
+     *
+     * The per-version rows are the `plugin.delete` rows the single-version route
+     * already writes, with the identical `target` (`name@version`), so
+     * "when did 1.4.2 go, and who took it" has one answer whichever route was
+     * used — and a `grep` for a version finds it either way. Writing one row for
+     * eleven deletions would lose exactly that.
+     *
+     * A REFUSED version gets a row too (`ok: false` with the code): an attempted
+     * and refused deletion is a thing an operator wants in the log, on the same
+     * reasoning the webhook route writes a row on every path. A KEPT version
+     * does not — nothing was attempted on it, and eleven "did nothing" rows per
+     * prune would bury the ten real ones. The envelope row below carries the
+     * keep counts instead.
+     */
+    for (const r of report.results) {
+      const outcome = classifyPluginVersionRemoval(r)
+      if (outcome === 'kept') continue
+      audit.record({
+        userId: actorId(c),
+        action: 'plugin.delete',
+        target: `${name}@${r.version}`,
+        meta:
+          outcome === 'removed'
+            ? { removed: true, kvDeleted: r.kvDeleted, status: r.status, bulk: scope }
+            : { removed: false, error: r.error, status: r.status, bulk: scope },
+      })
+    }
+    const counts = { removed: 0, kept: 0, failed: 0 }
+    for (const r of report.results) counts[classifyPluginVersionRemoval(r)]++
+    audit.record({
+      userId: actorId(c),
+      action: 'plugin.delete.bulk',
+      target: name,
+      meta: {
+        scope,
+        deleteKv: deleteKv === true,
+        total: report.total,
+        ...counts,
+        kvDeleted: report.results.reduce((n, r) => n + r.kvDeleted, 0),
+        webhooksDeleted,
+        // The version STRINGS, so the envelope row alone answers "what did this
+        // one request do" without joining it back to the per-version rows.
+        removedVersions: report.results.filter((r) => classifyPluginVersionRemoval(r) === 'removed').map((r) => r.version),
+        keptVersions: report.results.filter((r) => classifyPluginVersionRemoval(r) === 'kept').map((r) => r.version),
+        failedVersions: report.results.filter((r) => classifyPluginVersionRemoval(r) === 'failed').map((r) => r.version),
+      },
+    })
+
+    return c.json({ ...report, webhooksDeleted })
   })
 
   app.delete('/:name/:version', requirePermission('script.delete'), (c) => {

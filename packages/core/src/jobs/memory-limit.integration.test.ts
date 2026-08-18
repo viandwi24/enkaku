@@ -138,7 +138,7 @@ async function runOneMemoryHogJob(opts: {
       idleSessions: () => [],
       closeAll: async () => 0,
     },
-    artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+    artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
     log: silentLog() as never,
     onLog: (e) => opts.onLog?.(e),
     onArtifact: () => {},

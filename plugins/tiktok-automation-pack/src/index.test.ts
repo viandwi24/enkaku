@@ -10,6 +10,7 @@ import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
 import postVideo from './post-video'
+import enqueueVideo from './enqueue-video'
 
 /**
  * Plan 97 §3.2, §5 step 97.8's own verifiable result — every member's
@@ -208,7 +209,14 @@ describe('plan 108 §4.3 — the declared surface', () => {
  * survive at runtime); the first assertion is what keeps the two in step.
  */
 describe('every member is presentable (plan 108 P8)', () => {
-  const members: Array<{ id: string; title?: string; description?: string }> = [switchAccount, searchFollow, listAccounts, postVideo, autoScrollScript]
+  const members: Array<{ id: string; title?: string; description?: string }> = [
+    switchAccount,
+    searchFollow,
+    listAccounts,
+    postVideo,
+    enqueueVideo,
+    autoScrollScript,
+  ]
 
   test('the spelled-out list is exactly the plugin\'s own members', () => {
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())

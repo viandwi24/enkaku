@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Download, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, Search, SlidersHorizontal, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
+import { Download, Globe, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, RotateCcwSquare, Search, SlidersHorizontal, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   connectionBadge,
@@ -29,6 +29,8 @@ import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
 import { BulkTransferDialog } from '@/components/BulkTransferDialog'
+import { BulkProxyDialog } from '@/components/network/BulkProxyDialog'
+import { BulkPrepDialog } from '@/components/BulkPrepDialog'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import {
@@ -238,6 +240,19 @@ function DashboardView() {
   const [forgetTarget, setForgetTarget] = useState<DeviceInfo | null>(null)
   const [forgetOpen, setForgetOpen] = useState(false)
   const [bulkForgetOpen, setBulkForgetOpen] = useState(false)
+  // "Set proxy…" (plan 114 §3.9, step 114.8) — the owner asked for a bulk proxy
+  // set twice. `POST /api/devices/network/apply` answers synchronously with a
+  // per-device report, so the dialog holds its own result the way
+  // `BulkTransferDialog` holds a batch's; there is no tray entry, deliberately
+  // (plan 114 F20 — a sub-second settings write is not a tray operation).
+  const [bulkProxyOpen, setBulkProxyOpen] = useState(false)
+  // "Prep settings…" — `FarmSettings.defaults` is copy-on-admission, so a farm
+  // default cannot reach a phone that is already enrolled ("Devices already
+  // registered keep their own settings"). This is the only way to set
+  // `prep.rotation` and its siblings across a farm that is already running,
+  // and `POST /api/devices/prep/apply` answers synchronously with a per-device
+  // report the dialog holds, exactly as `BulkProxyDialog` above does.
+  const [bulkPrepOpen, setBulkPrepOpen] = useState(false)
   // Per-device disconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4) — same
   // target/open pair as `forgetTarget`/`forgetOpen` above. Reconnect fires
   // directly (§3.8: it is not destructive), no dialog of its own.
@@ -1397,6 +1412,22 @@ function DashboardView() {
                 <Download className="size-3.5" aria-hidden />
                 Pull file…
               </Button>
+              {/* Set proxy on the selection (plan 114 §3.9, step 114.8). One
+                  route, every selected phone, through each device's own
+                  Network → Proxy setting — the same one door a single device's
+                  panel uses, never a second write path. */}
+              <Button size="sm" variant="outline" onClick={() => setBulkProxyOpen(true)}>
+                <Globe className="size-3.5" aria-hidden />
+                Set proxy…
+              </Button>
+              {/* Prep settings on the selection — rotation lock, keep-awake,
+                  animations, screen-off, text input. The farm default only
+                  reaches a phone at admission, so this is the only way to
+                  change one of these on phones that are already enrolled. */}
+              <Button size="sm" variant="outline" onClick={() => setBulkPrepOpen(true)}>
+                <RotateCcwSquare className="size-3.5" aria-hidden />
+                Prep settings…
+              </Button>
               {/* Bulk Forget (plan 47 §4.5, acceptance #9) — the operation
                   this farm needs today for its permanently-offline rows. */}
               <Button size="sm" variant="outline" className="text-led-danger" onClick={() => setBulkForgetOpen(true)}>
@@ -1479,6 +1510,30 @@ function DashboardView() {
           setInstallBatchOpen(o)
           if (!o) clearSelection()
         }}
+        devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+        allDevices={devices ?? []}
+        clusters={clusters}
+      />
+      {/* Plan 114 §3.9, step 114.8 — same `devices`/`allDevices`/`clusters`
+          triple every other bulk dialog on this page takes: the selection is
+          the pre-filled DEFAULT, the whole fleet is the pool the picker can
+          still switch to. The selection is deliberately NOT cleared on close:
+          a partial failure leaves the operator with devices to go and fix, and
+          clearing what they had picked is how they lose the list. */}
+      <BulkProxyDialog
+        open={bulkProxyOpen}
+        onOpenChange={setBulkProxyOpen}
+        devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
+        allDevices={devices ?? []}
+        clusters={clusters}
+      />
+      {/* Same triple, and the selection is deliberately NOT cleared on close
+          for the same reason: a partial result leaves the operator with
+          devices to go and look at, and clearing the list is how they lose
+          them. */}
+      <BulkPrepDialog
+        open={bulkPrepOpen}
+        onOpenChange={setBulkPrepOpen}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
         clusters={clusters}

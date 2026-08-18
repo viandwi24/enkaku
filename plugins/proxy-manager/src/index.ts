@@ -1,8 +1,10 @@
 import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { definePlugin, defineService, ui, type PluginMemberScript } from '@enkaku/sdk'
 import { z } from 'zod'
+import { applyAssignment } from './service/apply'
+import { registerProxyRoutes } from './service/handlers'
 import { createSupervisor } from './service/supervisor'
-import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXY_KEY_PREFIX, VIEW_NOT_BUILT } from './shared'
+import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXY_KEY_PREFIX, VIEW_NOT_BUILT, type ProxyApplyMode } from './shared'
 
 /**
  * Proxy manager — a plugin that owns a screen and, deliberately, nothing else.
@@ -46,19 +48,62 @@ import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXY_KEY_PREFIX, VIEW_NOT_BUILT } f
  * `gost -L "http://:9902" -F "socks5://…"`, folded into the farm, with no
  * binary downloaded and no second process supervised.
  *
- * ## What this is NOT
+ * ## What it does as of plan 114 step 114.9 — and what it still does not
  *
- * It does not route any device's traffic, and a proxy an app *can be pointed
- * at* is not a route an app *cannot escape*. Routing already has an owner
- * elsewhere in the product: the `network` driver layer (spec §7.9), whose only
- * non-bypassable engine is `vpn-helper`, and nothing a plugin can reach
- * touches it.
+ * It can **ask the farm to point a device at one of these bridges**, from the
+ * Assignments tab, one device at a time, when somebody presses Apply. It does
+ * that through `ctx.farm.call('device.network.set', …)` — the same
+ * `PUT /api/devices/:id/network` an operator's own click goes through — under a
+ * `plugin:proxy-manager` principal, checked against the manifest below before
+ * the capability runs and audited afterwards. The device's own Network panel
+ * then reports *set by proxy-manager*.
  *
- * The screen also cannot yet start, stop or restart a bridge, or show its
- * logs — those need `ctx.onRequest`, which is plan 109 step 109.6 and does not
- * exist. And an upstream **password cannot be stored at all** until plan 112
- * step 112.2 stops the key/value store leaking a fragment of every secret onto
- * its own row.
+ * There is deliberately no second path. This pack has no adb, no shell, and
+ * writes no device setting; `service/apply.ts` is the only file that reaches a
+ * phone at all, and it does so by asking.
+ *
+ * ## Two modes on that Apply, as of 0.6.0
+ *
+ * The owner's ask: *"apply di setting proxy manager juga harusnya ada 2 pilihan
+ * dong, apply sebagai vpn mode atau sebagai http proxy mode."* Both come from
+ * ONE catalogue entry, and they are not two names for the same thing:
+ *
+ * - **HTTP proxy** points the phone at the record's own BRIDGE
+ *   (`adb-reverse-proxy`). The phone dials its own loopback over the adb
+ *   connection, the upstream account never leaves this machine, and an app with
+ *   its own networking can ignore the whole arrangement.
+ * - **VPN** hands the phone the record's own UPSTREAM (`vpn-helper`). The guest
+ *   agent dials that SOCKS5 proxy itself, so the bridge is not involved and does
+ *   not even need to be running — and an app cannot opt out. The price, said at
+ *   the point of choice rather than buried here: the upstream password is sent
+ *   to the phone, which is exactly what the reverse rung exists to avoid.
+ *
+ * This is what corrected `shared.ts`'s standing claim that the enforcing rung
+ * was structurally out of reach. It was right that a loopback BRIDGE cannot be a
+ * SOCKS5 upstream for the guest agent, and wrong that the RECORD has nothing
+ * else to offer — a record holds both addresses.
+ *
+ * A VPN that cannot be applied — no guest agent, a non-SOCKS5 upstream, no saved
+ * password — is refused by name. It is never quietly replaced with an HTTP
+ * proxy, which would leave the operator believing traffic is captured when it is
+ * not (plan 114 §3.1, §3.4 rule 4). See `APPLY_RUNG_SENTENCE` and
+ * `APPLY_VPN_SENTENCE`.
+ *
+ * ## What it does as of plan 112 steps 112.8 and 112.9
+ *
+ * A bridge can be **started, stopped and restarted one at a time**, and every
+ * bridge's lines go to **one log the farm filters per proxy**. Both arrive as
+ * `ctx.onRequest` handlers (plan 109 step 109.6) rather than as anything this
+ * pack opens itself, so they inherit the core's auth, TLS, CORS, rate limiting
+ * and audit unchanged — plan 109 §3.7 names the alternative, a raw port serving
+ * a UI, as the trap, and it would bypass all five.
+ *
+ * `service/handlers.ts` owns none of that behaviour: it is a door onto the
+ * supervisor, which is the one owner of a bridge's state.
+ *
+ * An upstream **password still cannot be stored at all** until plan 112 step
+ * 112.2 stops the key/value store leaking a fragment of every secret onto its
+ * own row.
  *
  * Every word an operator can read says so — see `shared.ts`, where those
  * sentences are declared once and used by both halves so that the plugin list
@@ -123,28 +168,74 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'proxy-manager',
-  version: '0.3.1',
+  /**
+   * Bumped by step 114.9, and the reason is the manifest rather than the code:
+   * `service.permissions` went from `[]` to two capabilities, and that list is
+   * what an operator is SHOWN and consents to at install (plan 109 §4.1). A
+   * pack that quietly gained the ability to change a phone's networking under
+   * the version somebody already approved would make the consent screen a
+   * formality. A minor bump, not a patch, for the same reason.
+   *
+   * **Bumped again to 0.5.0 for the same class of reason.** The pack now STORES
+   * an upstream password — the first credential this repo puts in KV — on a
+   * second key per record, and the description an operator reads in the plugin
+   * list says so (`PLUGIN_NOT_BUILT`, narrowed from *"an upstream password
+   * still cannot be saved"*). A pack that started holding credentials under a
+   * version somebody had already approved is the same consent problem as one
+   * that quietly gained a capability, even though `service.permissions` is
+   * unchanged: what the operator is agreeing to is not only the capability
+   * list.
+   *
+   * 0.5.1 is a patch on top of it and nothing more: the derived key rendered
+   * `proxy:untitled` over an empty Name field, which advertised the
+   * slugs-to-nothing fallback as the plan. Caught by rendering the dialog, not
+   * by a test.
+   *
+   * **0.6.0 — Apply grew a second mode, and it is a consent change for the
+   * third time and the same reason.** `service.permissions` is UNCHANGED
+   * (`device.network.set` already covered both engines), but a pack that can now
+   * send a stored upstream password TO A PHONE is not doing what the operator
+   * approved at 0.5.x, where the whole point of the reverse rung was that the
+   * account never left the farm. The description they read says so
+   * (`PLUGIN_NOT_BUILT`), and a minor bump is what puts it in front of them.
+   */
+  version: '0.7.0',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],
 
   /**
-   * The long-lived half (plan 109 §3.1, §3.3; plan 112 §4.5).
+   * The long-lived half (plan 109 §3.1, §3.3; plan 112 §4.5; plan 114 step
+   * 114.9).
    *
-   * **`permissions: []` is deliberate**, and it is what removes plan 109 step
-   * 109.3's capability broker from this plan's critical path. The screen reads
-   * devices through `GET /api/plugins/:name/data/scan` from the browser with
-   * the operator's own session — which is what the Assignments tab already
-   * does — so the service never needs `ctx.farm.call('device.list')`. The one
-   * place that changes is step 112.11, where resolving a device to expose a
-   * bridge to it may need a capability; it is declared then, in the step that
-   * needs it, and shown at install.
+   * **`permissions` is no longer empty, and the list is exhaustive on
+   * purpose** — it is what an operator is shown and consents to at install, and
+   * plan 109 §4.3 refuses anything absent from it *before* the capability runs.
+   * Two entries, each earning its place:
    *
-   * **`events: []` likewise.** There is nothing to reconcile on a device
-   * event until the exposure chain exists.
+   * - `device.list` — the only way this pack learns a device exists. The
+   *   Assignments tab is keyed by `stableId` (that is what
+   *   `GET /api/plugins/:name/data/scan` answers with) and every device API is
+   *   keyed by the row id; this is the map between them. It is a read.
+   * - `device.network.set` — the one door onto a device's route. This is the
+   *   capability that makes the pack able to change a phone at all, and it is
+   *   the reason the other two halves of `shared.ts`'s honesty copy had to be
+   *   narrowed.
+   *
+   * `device.network.clear` is deliberately NOT declared. Turning a device's
+   * proxy off is the operator's own act on the device's own screen, where the
+   * §3.6 restore is explained; a plugin that could silently un-route forty
+   * phones is a bigger authority than anything on this screen asks for. It is
+   * one line to add the day a case for it is named.
+   *
+   * **`events: []` still.** There is nothing to reconcile on a device event:
+   * an assignment is intent, and applying it is a deliberate press (plan 114 §9
+   * Q6). A device coming online must not silently re-apply a proxy nobody asked
+   * for on that occasion — the farm's own reconcile already restores a route it
+   * was actually asked to apply.
    */
   service: defineService({
-    permissions: [],
+    permissions: ['device.list', 'device.network.set'],
     events: [],
     /**
      * Declared so the operator learns at install that this plugin opens ports
@@ -178,14 +269,87 @@ export default definePlugin({
 
       await supervisor.startEnabled()
 
-      // [112.9, gated on plan 109 step 109.6]
-      //   ctx.onRequest('proxies', …) — list, start, stop, restart, logs.
-      // Until that exists the screen has no door to drive this through, and
-      // the shortcut — polling this plugin's own KV namespace every couple of
-      // seconds for an `enabled` flag the screen flipped — is refused rather
-      // than built: it is a weaker parallel path that would have to be deleted
-      // the week 109.6 lands, and a `list()` per tick is a real cost in the
-      // core's event loop (plan 112 §4.6).
+      /**
+       * `POST /api/plugins/proxy-manager/http/apply` (plan 114 step 114.9) —
+       * the Assignments tab's Apply button, and the ONLY thing in this pack
+       * that reaches a phone.
+       *
+       * It is a handler rather than a `fetch` straight to
+       * `PUT /api/devices/:id/network` from the screen, and the difference is
+       * the attribution: a browser call would run as the OPERATOR, and the
+       * device would report that a person set the route when a plugin did.
+       * Going through the service means the call runs as
+       * `plugin:proxy-manager`, is checked against the manifest above before it
+       * runs at all, is audited under that principal, and lands on the device's
+       * own panel as *set by proxy-manager*.
+       *
+       * `permission: 'device.network'` — the same permission the built-in
+       * endpoint requires of a person. Both gates apply and neither is
+       * redundant: this one is about the operator who pressed the button, and
+       * the broker's is about the plugin. An operator who may not change a
+       * device's networking must not be able to do it by pressing a plugin's
+       * button, and a plugin that did not declare the capability must not be
+       * able to do it on behalf of an operator who may.
+       *
+       * A refusal answers `200` with `{ ok: false, … }` rather than a 4xx: the
+       * cases are ordinary product outcomes (no note yet, the record is not
+       * enabled, its listener speaks SOCKS5, this phone has no guest agent) and
+       * the screen renders each one differently.
+       *
+       * **As of 0.6.0 the farm's OWN refusals join them** rather than escaping
+       * as a `502` naming this plugin as faulty — see `service/apply.ts`'s
+       * `catch`. Somebody else driving the phone is `admitMember` working
+       * exactly as designed, and an operator has to be able to read that
+       * sentence; a real fault (a bug in this file, a host that is not there at
+       * all) still throws and still becomes the `502` where it belongs.
+       */
+      ctx.onRequest(
+        'apply',
+        async (request) => {
+          const body = request.body
+          const fields = typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as { stableId?: unknown; mode?: unknown }) : {}
+          if (typeof fields.stableId !== 'string' || fields.stableId.length === 0) {
+            return { status: 400, body: { ok: false, code: 'E_BAD_REQUEST', kind: 'refusal', message: 'Apply needs a stableId naming which device to point at its noted proxy.' } }
+          }
+          /**
+           * `mode` is passed through as it arrived, INCLUDING a value this
+           * build does not know — `applyAssignment` refuses that by name
+           * (`E_PROXY_BAD_MODE`) rather than this handler quietly dropping it
+           * and applying the default. A dropped mode is a silent downgrade, and
+           * a silent downgrade from the enforcing route to the advisory one is
+           * the exact failure plan 114 §3.4 rule 4 exists to prevent.
+           */
+          const mode = fields.mode === undefined ? undefined : (fields.mode as ProxyApplyMode)
+          return { body: await applyAssignment(ctx, { stableId: fields.stableId, ...(mode === undefined ? {} : { mode }) }) }
+        },
+        {
+          methods: ['POST'],
+          permission: 'device.network',
+          // The advisory mode waits on `adb reverse`, a settings write and a
+          // read-back; the VPN mode waits on the guest agent's whole
+          // install/grant/bootstrap/forward/handshake chain, on a phone that may
+          // be on the far side of a slow wireless link. The farm's own
+          // capability deadline (120 s for `device.network.set`) is the real
+          // bound; this one only has to be wider than it is not.
+          timeoutMs: 180_000,
+          description:
+            'Ask the farm to point one device at the proxy noted against it, either as an HTTP proxy the phone is asked to use or as a VPN the guest agent dials the record’s upstream through. Explicit, one device at a time — saving a note applies nothing, and a VPN that cannot be applied is never replaced with an HTTP proxy.',
+        },
+      )
+
+      /**
+       * The five routes the screen drives a bridge through (plan 112 §4.6,
+       * step 112.9) — `proxies`, `start`, `stop`, `restart`, `logs`.
+       *
+       * They are a door onto the supervisor above, never a second lifecycle:
+       * `service/handlers.ts` holds no state, binds nothing and keeps no timer.
+       * The shortcut this replaced was refused rather than built — the screen
+       * writing `enabled: true` into KV and the service polling its own
+       * namespace every couple of seconds — because it is a weaker parallel
+       * path (00-overview §4.3) and a `list()` per tick is a real cost in the
+       * core's own event loop (plan 112 §4.6).
+       */
+      registerProxyRoutes(ctx, supervisor)
     },
   }),
 

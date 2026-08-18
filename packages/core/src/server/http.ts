@@ -62,6 +62,13 @@ export interface HttpDeps {
    * exact lines to add for as long as this gap is open.
    */
   recordingRoutes?: Hono<AuthEnv>
+  /**
+   * `POST /file` (plan 115 §4.3, §5 step 115.3) — mounted at
+   * `/api/workspace`. Optional for the SAME reason `recordingRoutes` above
+   * is: a build where `daemon.ts` has not been wired to construct one
+   * simply never mounts this route rather than failing to boot.
+   */
+  workspaceFileRoutes?: Hono<AuthEnv>
   /** Stage/verify/activate/rollback/disable/remove/reload/restart, and the dev slot lifecycle (plan 82 §4.6, step 11). */
   pluginRoutes: Hono<AuthEnv>
   /** `POST /api/v1/cap/:id` and `GET /api/v1/cap` (plan 63 §3.6, §4.5). */
@@ -239,7 +246,23 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // mode. Server mode never reaches this line at all, so its cookie keeps
   // exactly the protection it has today.
   if (deps.authMode === 'local') {
-    app.use('/api/*', cors({ origin: (origin) => (isLoopbackOrigin(origin) ? origin : null), credentials: true }))
+    app.use(
+      '/api/*',
+      cors({
+        origin: (origin) => (isLoopbackOrigin(origin) ? origin : null),
+        credentials: true,
+        // `GET`/`HEAD /api/workspace/file` (plan 116 §4.2, step 116.6) carry the
+        // file's metadata in response headers rather than a JSON body, so a
+        // cross-origin `fetch()` (Studio dev on :3001 against the core on
+        // :7700) needs these EXPOSED, not merely sent — without this list, only
+        // the CORS-safelisted headers (`Content-Type`, `Content-Length`, ...)
+        // are readable from `response.headers.get(...)` in the browser, and
+        // `ETag`/the `X-Enkaku-*` ones return `null` even though the response
+        // carried them, which is indistinguishable from the file having no
+        // hash or attribution at all.
+        exposeHeaders: ['ETag', 'X-Enkaku-Created-By', 'X-Enkaku-Updated-By', 'X-Enkaku-Created-At', 'X-Enkaku-Updated-At'],
+      }),
+    )
   }
 
   // Auth: local mode (loopback) injects an implicit admin; server mode requires login.
@@ -330,6 +353,11 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.route('/api/settings', deps.settingsRoutes)
 
   app.route('/api/artifacts', deps.artifactRoutes)
+
+  // A browser upload into the workspace (plan 115 §4.3, §5 step 115.3) —
+  // see `workspaceFileRoutes`'s own doc comment on `HttpDeps` for why this
+  // is conditional.
+  if (deps.workspaceFileRoutes) app.route('/api/workspace', deps.workspaceFileRoutes)
 
   // adb concurrency and health diagnostics (plan 23 §4.6).
   app.route('/api/adb/stats', deps.adbStatsRoutes)

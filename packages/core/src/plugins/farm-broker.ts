@@ -6,6 +6,7 @@ import { invoke } from '../capability/invoke'
 import type { CapabilityRegistry } from '../capability/registry'
 import { EnkakuError } from '../util/errors'
 import { createLogger, type Logger } from '../util/logger'
+import { pluginPrincipalId } from './principal'
 import type { PluginRuntime } from './runtime'
 
 /**
@@ -78,21 +79,14 @@ import type { PluginRuntime } from './runtime'
 const BROKER_AUDIT_ACTION = 'plugin.capability'
 
 /**
- * The principal a plugin's capability calls are made and audited under (plan
- * 109 §4.3). Deliberately prefixed rather than bare: `audit_log.user_id` also
- * carries human user ids and agent ids, and `plugin:` is what makes "every row
- * this plugin is responsible for" a single, unambiguous query.
+ * The `plugin:<name>` principal moved to `./principal.ts` in plan 114 step
+ * 114.9 and is re-exported here unchanged, so every existing importer keeps
+ * working. It moved because the network layer now reads it too, and importing
+ * this module for a `startsWith` would drag the capability registry, the
+ * capability context and the plugin runtime along with it — see that file's own
+ * header.
  */
-export const PLUGIN_PRINCIPAL_PREFIX = 'plugin:'
-
-export function pluginPrincipalId(pluginName: string): string {
-  return `${PLUGIN_PRINCIPAL_PREFIX}${pluginName}`
-}
-
-/** The inverse, for a reader of the audit log. `null` for any other principal. */
-export function pluginNameFromPrincipal(principal: string): string | null {
-  return principal.startsWith(PLUGIN_PRINCIPAL_PREFIX) ? principal.slice(PLUGIN_PRINCIPAL_PREFIX.length) : null
-}
+export { PLUGIN_PRINCIPAL_PREFIX, pluginNameFromPrincipal, pluginPrincipalId } from './principal'
 
 /**
  * The two `PluginRuntime` accessors the broker reads, and nothing else — it

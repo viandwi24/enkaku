@@ -1,5 +1,14 @@
 import { z } from 'zod'
-import type { DeviceInfo, JobNodeInfo, WorkflowDoc, WorkflowFinding } from '@enkaku/protocol'
+import { DeviceNetworkStatusResponseSchema, GuestAgentStatusResponseSchema } from '@enkaku/protocol'
+import type {
+  DeviceInfo,
+  DeviceNetworkConfig,
+  JobNodeInfo,
+  NetworkEngineId,
+  RouteCheckId,
+  WorkflowDoc,
+  WorkflowFinding,
+} from '@enkaku/protocol'
 import { BadResponseError } from '@enkaku/ui'
 import { coreBase } from './ws'
 
@@ -179,13 +188,20 @@ export async function fetchTopology(): Promise<TopologyResponse> {
  * report a broken device as healthy.
  *
  * `outdated`/`failed` (plan 90 §3.8, fixes F10/F11) are the states
- * `AgentProvisioner` computes and persists on `devices.agent` — mirrors
- * `GuestAgentStatusResponseSchema` (`@enkaku/protocol`) exactly, which is
- * the source of truth this type is kept in sync with by hand (this file
- * predates that schema and still reads the response with a raw cast rather
- * than `.parse()` — see `fetchGuestAgentStatus` below).
+ * `AgentProvisioner` computes and persists on `devices.agent`.
+ *
+ * DERIVED from `GuestAgentStatusResponseSchema` (`@enkaku/protocol`), not
+ * restated. This used to be a hand-written union kept "in sync by hand" with
+ * that schema, and it drifted the moment the provisioner grew a seventh
+ * state: `consent-required` reached the wire, every caller that narrowed on
+ * this type stopped compiling, and the mirror had to be corrected by hand
+ * again. A type that can only be wrong in one direction should not be a copy.
+ * Deriving it means the next state the provisioner invents is a compile error
+ * in the screens that must handle it, which is exactly where it belongs.
+ *
+ * `installed` and `ready` are still distinct here on purpose — see above.
  */
-export type GuestAgentState = 'not-installed' | 'installed' | 'ready' | 'unreachable' | 'unsupported' | 'outdated' | 'failed'
+export type GuestAgentState = z.infer<typeof GuestAgentStatusResponseSchema>['state']
 
 export interface GuestAgentStatus {
   state: GuestAgentState
@@ -217,12 +233,19 @@ export async function fetchGuestAgentStatus(deviceId: string): Promise<GuestAgen
 
 // ---- Network route (plan 44 §4.6, §5.8) ----
 
-export type NetworkEngineId = 'none' | 'vpn-helper'
+/**
+ * Plan 114 §4.6, step 114.6 — these were hand-written mirrors of
+ * `NetworkEngineIdSchema` and `RouteCheckIdSchema`, kept in sync by eye. They
+ * are re-exports now, so a fourth engine or a ninth check id can never be
+ * added to the protocol and silently missed here: `CHECK_LABEL`'s
+ * `Record<RouteCheckId, string>` in `NetworkRouteForm` fails to compile
+ * instead, which is the whole point of the exhaustive record.
+ */
+export type { NetworkEngineId, RouteCheckId }
+
 export type NetworkUdpMode = 'udp' | 'tcp'
 export type NetworkHealth = 'ok' | 'unverified' | 'degraded' | 'unknown'
 
-/** Mirrors `RouteCheckIdSchema` in `@enkaku/protocol` (plan 51 §4.1). */
-export type RouteCheckId = 'tunnel' | 'upstream' | 'egress' | 'geo' | 'dns' | 'leak'
 export type RouteCheckState = 'pass' | 'fail' | 'skip' | 'unknown'
 
 /** One named fact `health` was derived from — always present alongside `health`, even when every check is `unknown` (plan 51 §4.1, §5.8). */
@@ -261,23 +284,25 @@ export interface GeoObservation {
 /** What a failed `geo` check should do to the route (plan 55 §3.5, §4.1, §5.6). */
 export type OnGeoFail = 'report' | 'hold'
 
-/** What was saved. Never carries a password — the API never returns one (plan 44 §4.5, acceptance criterion 8). */
-export interface NetworkConfig {
-  host: string
-  port: number
-  /**
-   * Names the stored credential this route authenticates with (plan 52 §4.2). There is no
-   * `username` here and there never was one to read: the API returns only the name, so a form
-   * that seeds a username field off this config always seeded it BLANK, which then re-saved the
-   * route without a credential. Show the name; make replacing it a deliberate act.
-   */
-  credentialRef?: string
-  udpMode: NetworkUdpMode
-  /** Plan 55 §3.1, §4.1 — undefined means no expectation stated; `geo` stays `skip` forever. */
-  expect?: GeoExpectation
-  /** Plan 55 §3.5, §4.1 — always concrete, never absent, so the form never has to guess a default. */
-  onGeoFail: OnGeoFail
-}
+/**
+ * What was saved, discriminated on `engine` (plan 114 §4.1) — one of three
+ * shapes, not the SOCKS5 one with the other two bolted on:
+ *
+ * - `adb-proxy` → `host`/`port` of a proxy the phone itself can reach
+ * - `adb-reverse-proxy` → `hostPort` (where the proxy listens on this farm's
+ *   machine) and, once a reverse exists, the `devicePort` the phone dials on
+ *   its own loopback
+ * - `vpn-helper` → the SOCKS5 route, unchanged
+ *
+ * Never carries a password in any arm — the API never returns one (plan 44
+ * §4.5, acceptance criterion 8) — and the two HTTP arms have nowhere to put
+ * one at all (§3.8).
+ *
+ * Was a hand-written mirror of the VPN arm alone; step 114.6 replaced it with
+ * the protocol's own response-shaped union, which is where the "no
+ * `username`, only a `credentialRef`" narrowing is documented.
+ */
+export type NetworkConfig = DeviceNetworkConfig
 
 /**
  * The three states a route's TUN can actually be in (plan 54 §4.1) — `up` alone (a plain boolean)
@@ -341,12 +366,46 @@ export interface NetworkStatus {
    * `exitHistory` gives an unconfigured geo provider.
    */
   recovery: NetworkRecoveryStatus | null
+  /**
+   * Who set this route (plan 114 §3.3, step 114.9) — an operator, or a plugin
+   * such as the proxy manager, which reaches the very same
+   * `PUT /api/devices/:id/network` through the capability broker rather than
+   * writing a device setting itself.
+   *
+   * `null` is a real answer and not an absence to hide: the route either
+   * predates the attribution, or the farm re-applied it on its own after the
+   * phone came back. A device showing a proxy nobody remembers setting is the
+   * confusion this field exists to prevent, so the panel says "the farm applied
+   * this" rather than leaving the row out.
+   */
+  setBy: { kind: 'user' | 'plugin'; id: string; at: number } | null
+  /**
+   * Whether the farm holds this phone's own pre-farm proxy settings (plan 114
+   * §3.6 rule 4, step 114.10's close-out).
+   *
+   * Three answers, and the panel words all three: an object means turning the
+   * route off **restores** what was captured; `null` means it **clears** the
+   * keys because nothing was captured; `undefined` means a core older than the
+   * field is answering and this farm cannot say. The third is deliberately not
+   * folded into the second — "we did not capture one" and "we cannot tell you"
+   * are different claims, and only one of them is about the phone.
+   */
+  captured?: { at: number } | null
 }
 
+/**
+ * Parsed, not cast (plan 114 step 114.6). The cast that used to be here was
+ * load-bearing in the wrong direction: `config` is a discriminated union now,
+ * and a response from a core that predates plan 114 carries no `engine` key
+ * at all — `DeviceNetworkStatusResponseSchema` runs `tagUntaggedRouteConfig`
+ * over it, so the screen can switch on `config.engine` without every branch
+ * having to re-ask "or is this an old core". A cast would have handed it
+ * `undefined` and let the mode selector show the wrong mode.
+ */
 export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatus> {
   const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/network`)
   if (!res.ok) throw new Error(`GET /api/devices/${deviceId}/network → ${res.status}`)
-  return (await res.json()) as NetworkStatus
+  return DeviceNetworkStatusResponseSchema.parse(await res.json())
 }
 
 async function postNetworkAction(deviceId: string, action: 'enable' | 'disable' | 'retry'): Promise<NetworkStatus> {
@@ -363,7 +422,7 @@ async function postNetworkAction(deviceId: string, action: 'enable' | 'disable' 
       { code: body?.error?.code },
     )
   }
-  return (await res.json()) as NetworkStatus
+  return DeviceNetworkStatusResponseSchema.parse(await res.json())
 }
 
 /** Switch an already-saved route on, without retyping credentials. 409s with `E_NO_ROUTE_CONFIG` when nothing is saved. */

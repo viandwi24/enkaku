@@ -311,6 +311,39 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // appVersion/capabilities (criterion 4).
     try {
       const hello = await deps.hello(row.id)
+      // The agent is installed, current, and answering — everything the
+      // `ready` state has ever meant. One thing is still worth separating
+      // out before claiming it: Android VPN consent. On a build that refuses
+      // `appops set` from the shell (measured on two OPPO/ColorOS phones),
+      // the agent does text input, screen labels, mock location and egress
+      // probes perfectly and cannot route a single packet. `ready` would
+      // overstate that, and `failed` — what this used to report, because
+      // `ensurePreGranted()` threw before `hello()` was ever reached —
+      // understates it by four working facets. `consent-required` is the
+      // honest third answer; see `AgentStateSchema`'s own doc comment.
+      //
+      // Read-only (`vpnConsent`, not `ensurePreGranted`): the session that
+      // just answered `hello` already made this pass's one `appops set`
+      // attempt during its bootstrap, and a second write here would be a
+      // duplicate with no new information.
+      const consent = await launcher.vpnConsent().catch((consentErr: unknown) => {
+        // An unreadable answer is not a verdict (the same rule the artifact
+        // check follows for unreadable `dumpsys` output) — the agent is
+        // demonstrably reachable, so this stays `ready` rather than
+        // inventing a consent problem nobody observed.
+        deps.log.warn(`agent-provisioner: could not read VPN consent on device ${row.id}, reporting the agent as ready on the hello() evidence alone: ${String(consentErr)}`)
+        return { state: 'granted' as const, reason: null }
+      })
+      if (consent.state === 'pending') {
+        return {
+          state: 'consent-required',
+          appVersion: hello.appVersion,
+          versionCode,
+          androidSdkInt: hello.androidSdkInt,
+          capabilities: hello.capabilities,
+          reason: consent.reason,
+        }
+      }
       return { state: 'ready', appVersion: hello.appVersion, versionCode, androidSdkInt: hello.androidSdkInt, capabilities: hello.capabilities, reason: null }
     } catch (err) {
       // Same reasoning as the `ensureInstalled` catch above: a core-side

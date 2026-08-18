@@ -19,9 +19,11 @@ export {
 
 export {
   GUEST_AGENT_PACKAGE,
+  GUEST_AGENT_RUNTIME_PERMISSIONS,
   GUEST_AGENT_SOCKET,
   createGuestAgentLauncher,
   type GuestAgentLauncher,
   type GuestAgentLauncherDeps,
   type GuestAgentArtifactMismatch,
+  type GuestAgentVpnConsent,
 } from './launcher'

@@ -1,5 +1,6 @@
 import type { BridgeSocket } from './socket'
 import type { ProxyKind, ProxyRecord } from '../shared'
+import { createDirectUpstream } from './dial-direct'
 import { createHttpUpstream } from './dial-http'
 import { createSocks5Upstream } from './dial-socks5'
 import { ProxyError } from './errors'
@@ -7,12 +8,16 @@ import { ProxyError } from './errors'
 /**
  * What the listeners see of "the thing on the other side" (plan 112 §4.4).
  *
- * One interface, two implementations, and the split is where the plugin's own
- * behaviour actually lives (§3.2): the fiddly part worth a dependency is the
- * SOCKS5 handshake — greeting, method negotiation, RFC 1929 username/password
- * sub-negotiation, three address types, reply codes — which `socks` does. The
- * HTTP upstream is `CONNECT host:port` plus one status line, and a second
- * dependency for that would be worse than the twenty lines it costs.
+ * One interface, three implementations as of plan 117, and the split is where
+ * the plugin's own behaviour actually lives (§3.2): the fiddly part worth a
+ * dependency is the SOCKS5 handshake — greeting, method negotiation, RFC 1929
+ * username/password sub-negotiation, three address types, reply codes — which
+ * `socks` does. The HTTP upstream is `CONNECT host:port` plus one status
+ * line, and a second dependency for that would be worse than the twenty lines
+ * it costs. The `direct` upstream (plan 117 §3.1) needs no dependency at all
+ * — it is `net.connect({ localAddress })` and, optionally, a bound
+ * `node:dns/promises` resolver — because it dials no remote proxy and has no
+ * handshake of its own to speak.
  */
 
 export interface UpstreamTarget {
@@ -79,6 +84,11 @@ export const DEFAULT_IDLE_MS = 600_000
  * again at start, by name, before a socket is opened (§3.4). The throw below
  * is the belt to that braces — a record that arrived through some path neither
  * check covers fails loudly rather than dialling something unexpected.
+ *
+ * `direct` (plan 117 §3.1) is handed `bindAddress` and `resolveThroughEgress`
+ * instead of `common` — it names no remote host, port, username or password,
+ * so building it from the same object the other two share would carry three
+ * fields it ignores and hide the one it actually needs.
  */
 export function createUpstream(record: ProxyRecord, password: string, opts: { timeoutMs?: number } = {}): Upstream {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS
@@ -86,6 +96,7 @@ export function createUpstream(record: ProxyRecord, password: string, opts: { ti
   const proto: ProxyKind = record.upstream.proto
   if (proto === 'socks5') return createSocks5Upstream(common)
   if (proto === 'http') return createHttpUpstream(common)
+  if (proto === 'direct') return createDirectUpstream({ bindAddress: record.upstream.bindAddress, resolveThroughEgress: record.upstream.resolveThroughEgress, timeoutMs })
   throw new ProxyError(
     'E_PROXY_UPSTREAM_PROTOCOL',
     `upstream protocol "${proto}" is not implemented — validateProxyRecord refuses it at write and at start, so reaching this line means a record got past both`,
@@ -96,3 +107,12 @@ export function createUpstream(record: ProxyRecord, password: string, opts: { ti
 export function describeUpstream(scheme: string, host: string, port: number, username: string): string {
   return `${scheme}://${username ? `${username}@` : ''}${host}:${port}`
 }
+
+/**
+ * The `direct` upstream's own description (plan 117 §4.3 point 3, moved to
+ * `shared.ts` at step 117.9 so the browser half can read the same words —
+ * see that file's own comment on `describeDirectUpstream`). Re-exported here
+ * so `service/dial-direct.ts`'s existing `from './upstream'` import keeps
+ * working unchanged.
+ */
+export { describeDirectUpstream } from '../shared'

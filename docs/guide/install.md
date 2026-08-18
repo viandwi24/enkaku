@@ -187,6 +187,96 @@ automatic reconnect-from-last-known-address behaviour untouched — most
 farms that only ever add and remove devices by hand at the chassis do not
 need scanning turned on at all.
 
+## Egress binding: one proxy per way out
+
+This is a recipe, not a product feature description — it lives here because the mechanism it
+depends on is entirely at the operating-system level, and nothing in Enkaku or the
+`proxy-manager` plugin pack sets it up for you. If your host only ever reaches the internet one
+way, skip this section; it has nothing to offer you.
+
+**The idea.** Some hosts have more than one way out — a second NIC, a USB LTE dongle, several
+addresses on the same interface each policy-routed to a different upstream. If your host's own
+addresses are already wired to distinct physical or logical paths, `proxy-manager`'s `direct`
+upstream can bind a proxy to any one of them: create a record, set `Upstream protocol` to
+**Direct** (no vendor account, no upstream host or port), and fill in `Bind address` with one of
+your host's own addresses. Every connection that record's listener carries leaves the machine
+bound to that address (`net.connect({ localAddress })` and nothing more exotic), so if that
+address maps to link A, the connection goes out link A. Twenty such records, one per address, is
+what "one proxy per way out" means. The **range generator** on the Catalogue tab writes several of
+these at once from a label pattern, a starting port, and a starting address — with a preview of
+every row before anything is saved.
+
+**What Enkaku does and does not do here.** The plugin reads `os.networkInterfaces()` to check that
+an address you named actually exists on the host before it will start a listener on it
+(`E_PROXY_BIND_ADDRESS_UNAVAILABLE` if it does not) — that is the entire extent of its interest in
+your network. It never writes a route, a VLAN, an interface, or a firewall rule, on this host or on
+any router. Making a host address actually lead out a particular physical path is **entirely your
+job**, done once, in whatever your infrastructure already is: a second NIC with its own default
+gateway, IP aliases on one NIC paired with source-based routing rules, separate VRFs, or a router's
+own policy routing keyed on the host's source address. `proxy-manager` has no opinion on which of
+these you use and no code path that could — see "Why this stays generic" below.
+
+### Adding extra addresses to a host
+
+**Linux — an IP alias on an existing interface:**
+
+```bash
+sudo ip addr add 192.0.2.11/24 dev eth0        # add
+ip addr show dev eth0                          # confirm it is there
+sudo ip addr del 192.0.2.11/24 dev eth0        # remove
+```
+
+This survives until reboot; make it permanent with your distribution's normal interface
+configuration (`netplan`, `systemd-networkd`, `NetworkManager`, or a distro-specific
+`interfaces` file — whichever one already manages `eth0` on this host). If each address needs to
+leave by a different upstream, pair the alias with a source-based routing rule
+(`ip rule add from 192.0.2.11 table <n>`, `ip route add default via <gateway> table <n>`) or give
+it its own physical NIC instead — either is a normal Linux networking setup with nothing
+Enkaku-specific about it.
+
+**Windows — an additional IP on an existing adapter:**
+
+```powershell
+netsh interface ipv4 add address name="Ethernet" addr=192.0.2.11 mask=255.255.255.0
+netsh interface ipv4 show addresses name="Ethernet"   # confirm
+netsh interface ipv4 delete address name="Ethernet" addr=192.0.2.11
+```
+
+(Or Settings → Network & Internet → your adapter → Edit IP settings → add another manual address.)
+As on Linux, making a specific address route out a specific path beyond the default gateway needs
+your own routing configuration — Windows supports per-route metrics and `route add` with a source
+address, but the exact setup depends entirely on your topology.
+
+### Audit by counting, not by trusting a pasted block
+
+However you configure the host-to-link mapping, **verify it by counting afterward**, not by
+trusting that a pasted block of commands ran the way it looked like it would. A command block
+pasted into a router or shell terminal can silently drop its first line — this happened twice in
+one real farm build-out, caught only because every stage ended in a count that was supposed to
+match the number of links and didn't. See finding #2 in
+[`docs/tmp-try-arch-mikrotik.md`](../tmp-try-arch-mikrotik.md) for the incident. After any change,
+re-list the addresses/routes/rules you expect and count them — twenty links should show twenty
+entries in whatever list proves the mapping exists, every time, not just the first time you set it
+up.
+
+`docs/tmp-try-arch-mikrotik.md` is one operator's own worked log of doing exactly this for a farm
+of twenty LTE modems behind a MikroTik router and switch, including the bug that setup hit and how
+it was found and fixed — it is linked here as a real example to read, not as a config to copy. No
+first-party document, including this one, describes any particular router, VLAN scheme, or modem
+model; the recipe above is deliberately generic so it applies equally to two NICs on a workstation
+and to twenty modems on a rack.
+
+### Why this stays generic
+
+`proxy-manager` never reads a router and never writes one (no vendor client, no rule polling, no
+credential store for infrastructure that isn't a phone or a proxy). Two reasons, not one: writing
+router configuration is exactly where a silently-dropped line goes unnoticed, so it should be
+applied by a person who then audits it themselves; and the pack's own egress probe — the public
+address actually observed dialling out through a record — already answers the question that
+matters more than a router's route-health flag ever could, which is *which address does this path
+actually come out of*, not merely *does the gateway answer a ping*. A record that has not passed
+that probe reads `unverified` on the Catalogue tab, never as if it had.
+
 ## The guest agent
 
 Every device you admit gets a small first-party helper app (`enkaku-guest-agent`) installed automatically — not only devices you route through a proxy. It carries the enforcing network route, the physical screen label, the on-device keyboard for non-ASCII text, and mock GPS, in one package. You never install it by hand; the core does it at admission, re-checks it on every reconnect, and repairs it if it drifts.
@@ -307,6 +397,48 @@ batch-detail page's collected-files table are not shipped yet** — bulk
 install (Install on selected, described above under Mirror) is the one
 bulk operation with a finished Studio surface today.
 
+## Workspace: what opens how
+
+Opening a file in `/workspace` does not put every file through the same
+text box. Studio picks a **presenter** for the file from its content type,
+and that presenter decides what you can do with it:
+
+- **Text files** (scripts, JSON, config, anything `text/*`) open in an
+  editor and can be saved — the same compare-and-swap save the workspace
+  has always used, so a conflicting edit from someone else (or an agent)
+  is caught, never silently overwritten.
+- **Images and videos** open in a viewer, and **cannot be edited** — not
+  because the feature is missing, but because no image or video editor is
+  installed. The file's header states this in words when it's open, so it
+  is never a Save button that quietly isn't there.
+- **A video plays and seeks** like any other video on the web: the core
+  streams it in ranges rather than sending the whole file at once, which
+  is also what lets the browser start playback before the download
+  finishes.
+
+**A file type with no viewer is not an error.** It is named, sized, and
+offered as a download — the normal outcome for a type nobody has written a
+presenter for yet, not a broken page.
+
+**Large files fall back to metadata.** Each presenter has its own size
+ceiling (the text editor's is small, since a huge file in a `Textarea`
+would hang the tab; image and video are much larger, since the browser
+streams those rather than loading them into memory here). Past that
+ceiling, the page shows the file's details — type, size — and a download
+link, instead of trying to open it.
+
+**Uploaded content can never execute in Studio's own page.** Studio and
+the core share one origin, so a file the workspace serves back to your
+browser (`GET /api/workspace/file`) always carries `X-Content-Type-Options:
+nosniff` and a sandboxing `Content-Security-Policy`, and only a fixed
+allow-list of types (`text/*`, `image/*`, `video/*`, `audio/*`, JSON) is
+served inline at all — with `text/html`, `application/xhtml+xml`, and
+`image/svg+xml` carved back out of that list specifically because each can
+carry script. Everything outside the allow-list, and everything carved
+out of it, downloads instead of opening. This is about the browser tab a
+teammate's uploaded file renders in, not about protecting you from files
+you uploaded yourself.
+
 ## Backup and restore
 
 `enkaku backup` writes one `.tar.gz` containing a consistent snapshot of
@@ -328,6 +460,22 @@ decrypt every credential this farm has ever stored.** Treat it like the
 credentials themselves — restrict who can read it, never send it over chat
 or email unencrypted, encrypt it at rest if it leaves this machine, and
 delete copies you no longer need.
+
+### This backup does not include your workspace's video/media files
+
+`enkaku backup` archives `enkaku.db` and `secrets.key` — nothing else. Most
+workspace files (scripts, `captions.txt`, anything small and text) live
+*inside* `enkaku.db` and are covered. **A video, or anything else uploaded
+into the workspace above the inline-storage threshold, is not**: its bytes
+live on disk under `<data dir>/workspace-content/`, addressed by content
+hash, and this command never touches that directory. Restoring only
+`enkaku.db` after a disk loss brings back every workspace file's catalogue
+row — name, size, folder — pointing at bytes that are simply gone. If your
+workflow uploads video or other large media into the workspace, back up
+`workspace-content/` yourself (a plain recursive copy is fine — it is
+content-addressed, so a partial copy the format did not corrupt is a
+partial loss, never a wrong answer, but a copy taken while the core is
+actively writing new files can still miss ones written after you started).
 
 ### Why not `cp enkaku.db backup.db`
 

@@ -152,6 +152,10 @@ class FakeAdbBackend implements AdbBackend {
   execStreamCalls: string[] = []
   openRawCalls = 0
   pmInstall: { output: string; reason: AdbStreamEndReason } = { output: '12345\nSuccess\n', reason: 'closed' }
+  /** Overrides `pmInstall` per command — the `-g`-refused fallback needs the two attempts to answer differently. */
+  pmInstallFor: ((cmd: string) => { output: string; reason: AdbStreamEndReason } | null) | null = null
+  /** `dumpsys package <pkg>`'s `runtime permissions:` block, as the grant fallback reads it. `null` = an output the parser finds nothing in. */
+  runtimePermissions: Record<string, boolean> | null = null
   /** Media-scan exec results (plan 90 §4.6) — defaults model a device where `scan_file` succeeds outright. */
   scanFileResult: ShellResult | 'throw' = { stdout: '', stderr: '', exitCode: 0 }
   scanVolumeResult: ShellResult | 'throw' = { stdout: '', stderr: '', exitCode: 0 }
@@ -171,6 +175,14 @@ class FakeAdbBackend implements AdbBackend {
       if (this.scanVolumeResult === 'throw') throw new Error('adb exec failed (scan_volume)')
       return this.scanVolumeResult
     }
+    if (cmd.startsWith('dumpsys package') && this.runtimePermissions) {
+      const lines = Object.entries(this.runtimePermissions).map(([name, granted]) => `        ${name}: granted=${granted}, flags=[]`)
+      return { stdout: ['Packages:', '    runtime permissions:', ...lines, ''].join('\n'), stderr: '', exitCode: 0 }
+    }
+    if (cmd.startsWith('pm grant') && this.runtimePermissions) {
+      for (const name of Object.keys(this.runtimePermissions)) if (cmd.includes(name)) this.runtimePermissions[name] = true
+      return { stdout: '', stderr: '', exitCode: 0 }
+    }
     return { stdout: '', stderr: '', exitCode: null }
   }
 
@@ -186,10 +198,11 @@ class FakeAdbBackend implements AdbBackend {
       if (opts.signal.aborted) queueMicrotask(() => finish('stopped'))
       else opts.signal.addEventListener('abort', () => finish('stopped'), { once: true })
     }
+    const answer = this.pmInstallFor?.(cmd) ?? this.pmInstall
     queueMicrotask(() => {
       if (ended) return
-      opts.onData(te.encode(this.pmInstall.output))
-      finish(this.pmInstall.reason)
+      opts.onData(te.encode(answer.output))
+      finish(answer.reason)
     })
     return { pid: null, stop: async () => finish('stopped') }
   }
@@ -748,5 +761,88 @@ describe('TransferService — remote (node-owned) devices are out of scope for t
       code: 'E_UNSUPPORTED',
     })
     rmSync(dataDir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * A platform that refuses the `-g` flag itself (a Xiaomi 25128PC17G on
+ * HyperOS/Android 16 does, for every install: guest agent and both ui-server
+ * APKs). `-g` is a convenience; the permissions it would have granted can be
+ * granted by hand afterwards. What must NOT happen is a blind retry of every
+ * failed install, or a package installed without its permissions being
+ * reported as a success.
+ */
+describe('TransferService — a device that refuses the -g install flag', () => {
+  const G_REJECTION =
+    "Exception occurred while executing 'install':\n" +
+    'java.lang.SecurityException: You need the android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS permission to use the ' +
+    'PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS flag\n' +
+    '\tat com.android.server.pm.PackageInstallerService.createSessionInternal(PackageInstallerService.java:973)'
+
+  function writeLocalApk(h: TestHarness, name: string): string {
+    const abs = join(h.dataDir, name)
+    writeFileSync(abs, new Uint8Array(10))
+    return abs
+  }
+
+  test('retries without -g and grants the runtime permissions explicitly, naming what it did', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk')
+    h.backend.runtimePermissions = { 'android.permission.POST_NOTIFICATIONS': false, 'android.permission.READ_PHONE_STATE': false }
+    h.backend.pmInstallFor = (cmd) => (cmd.includes('-g') ? { output: G_REJECTION, reason: 'closed' } : { output: 'Success\n', reason: 'closed' })
+
+    const result = await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId(), packageName: 'com.github.uiautomator' })
+
+    expect(h.backend.execStreamCalls[0]).toContain('pm install -r -g ')
+    expect(h.backend.execStreamCalls[1]).toContain('pm install -r ')
+    expect(h.backend.execStreamCalls[1]).not.toContain('-g')
+    expect(h.backend.execCalls.filter((c) => c.startsWith('pm grant'))).toHaveLength(2)
+    expect(h.backend.runtimePermissions).toEqual({ 'android.permission.POST_NOTIFICATIONS': true, 'android.permission.READ_PHONE_STATE': true })
+    expect(result.output).toContain('refuses the -g install flag')
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('a grant that does not take fails the install — an app without its permissions is never reported as installed-and-fine', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk')
+    h.backend.runtimePermissions = { 'android.permission.POST_NOTIFICATIONS': false }
+    // `pm grant` answers 0 and changes nothing — the readback is what catches it.
+    h.backend.exec = async (_serial: string, cmd: string) => {
+      h.backend.execCalls.push(cmd)
+      if (cmd.startsWith('dumpsys package')) {
+        return { stdout: ['Packages:', '    runtime permissions:', '        android.permission.POST_NOTIFICATIONS: granted=false, flags=[]', ''].join('\n'), stderr: '', exitCode: 0 }
+      }
+      return { stdout: '', stderr: '', exitCode: 0 }
+    }
+    h.backend.pmInstallFor = (cmd) => (cmd.includes('-g') ? { output: G_REJECTION, reason: 'closed' } : { output: 'Success\n', reason: 'closed' })
+
+    await expect(
+      h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId(), packageName: 'com.github.uiautomator' }),
+    ).rejects.toThrow(/could not be granted/)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('an ordinary install failure is NOT retried — the fallback is aimed at one specific rejection', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'ui-server.apk')
+    h.backend.pmInstall = { output: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]\n', reason: 'closed' }
+
+    await expect(h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId(), packageName: 'x.y' })).rejects.toMatchObject({
+      code: 'E_INSTALL_FAILED',
+    })
+    expect(h.backend.execStreamCalls).toHaveLength(1)
+    rmSync(h.dataDir, { recursive: true, force: true })
+  })
+
+  test('without a package name the install still lands, and the result SAYS the permissions were not granted', async () => {
+    const h = harness()
+    const abs = writeLocalApk(h, 'operator-upload.apk')
+    h.backend.pmInstallFor = (cmd) => (cmd.includes('-g') ? { output: G_REJECTION, reason: 'closed' } : { output: 'Success\n', reason: 'closed' })
+
+    const result = await h.service.installFromLocalApk('dev1', abs, { transferId: nextTransferId() })
+
+    expect(result.output).toContain('runtime permissions were NOT granted')
+    expect(h.backend.execCalls.filter((c) => c.startsWith('pm grant'))).toHaveLength(0)
+    rmSync(h.dataDir, { recursive: true, force: true })
   })
 })

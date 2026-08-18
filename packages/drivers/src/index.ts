@@ -41,11 +41,21 @@ export {
 export { AppiumInspector, type AppiumInspectorOptions } from './inspector/appium'
 export { ScrcpyAoaInput } from './input/scrcpy-aoa'
 export {
+  grantRuntimePermissions,
+  installWithGrantFallback,
+  isGrantAllPermissionsRejection,
+  readRuntimePermissions,
+  type GrantExec,
+  type GrantRuntimePermissionsDeps,
+  type InstallWithGrantFallbackDeps,
+} from './install/grant-fallback'
+export {
   GuestAgentClientError,
   createGuestAgentClient,
   createGuestAgentLauncher,
   createVpnHelperRoute,
   GUEST_AGENT_PACKAGE,
+  GUEST_AGENT_RUNTIME_PERMISSIONS,
   GUEST_AGENT_SOCKET,
   GUEST_AGENT_REPAIRABLE_ERROR_CODES,
   type CreateVpnHelperRouteOptions,
@@ -57,10 +67,36 @@ export {
   type GuestAgentLauncher,
   type GuestAgentLauncherDeps,
   type GuestAgentArtifactMismatch,
+  type GuestAgentVpnConsent,
   type GuestAgentSocketHandle,
   type GuestAgentSocketHandlers,
   type NetworkRoute,
 } from './network/guest-agent/index'
+export {
+  HTTP_PROXY_EXCLUSION_LIST_KEY,
+  HTTP_PROXY_HOST_KEY,
+  HTTP_PROXY_KEY,
+  HTTP_PROXY_PORT_KEY,
+  HTTP_PROXY_RESET_VALUE,
+  HttpProxyError,
+  REVERSE_PROXY_DEVICE_HOST,
+  createHttpProxyRoute,
+  createReverseProxyRoute,
+  httpProxyExclusionList,
+  httpProxyValue,
+  readHttpProxySettings,
+  reverseProxyValue,
+  type CapturedHttpProxySettings,
+  type CreateHttpProxyRouteOptions,
+  type CreateReverseProxyRouteOptions,
+  type HttpProxyCaptureStore,
+  type HttpProxyErrorCode,
+  type HttpProxySettings,
+  type ReverseAllocation,
+  type ReverseAllocationStore,
+  type ReverseBinding,
+  type ReversePort,
+} from './network/adb-proxy/index'
 export {
   createMockLocationDriver,
   type GuestAgentClientRunner,

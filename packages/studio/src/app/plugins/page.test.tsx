@@ -557,3 +557,162 @@ describe('PluginsPage — the two sections load, empty and fail independently', 
     expect(document.querySelectorAll('[aria-busy="true"]').length).toBeGreaterThanOrEqual(2)
   })
 })
+
+/**
+ * The tabs (owner's own ask, 2026-08-18: *"di halaman plugins dan scripts
+ * keknya dibuatkan tab aja jadi tab Plugins dan Script"*). Both panels stay
+ * MOUNTED — the tab only chooses which is displayed — which is what keeps the
+ * two loads independent and keeps a failure behind a closed tab from being a
+ * silent one; the assertions in the two describes above are the ones that
+ * would break the moment a tab started unmounting its panel.
+ */
+describe('PluginsPage — tabs', () => {
+  test('both tabs are links carrying ?tab=, and Plugins is the default', async () => {
+    setSearchParams({})
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
+
+    const plugins = screen.getByRole('link', { name: /^Plugins/ })
+    const scripts = screen.getByRole('link', { name: /^Scripts/ })
+    expect(plugins.getAttribute('href')).toBe('/plugins?tab=plugins')
+    expect(scripts.getAttribute('href')).toBe('/plugins?tab=scripts')
+    expect(plugins.getAttribute('aria-current')).toBe('page')
+    expect(scripts.getAttribute('aria-current')).toBeNull()
+  })
+
+  test('?tab=scripts makes Scripts the current tab', async () => {
+    setSearchParams({ tab: 'scripts' })
+    renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('demo/checkout')).toBeTruthy())
+    expect(screen.getByRole('link', { name: /^Scripts/ }).getAttribute('aria-current')).toBe('page')
+  })
+
+  /**
+   * `?device=`/`?cluster=` mean "run a script on this thing" — a device card's
+   * Run button and `/scripts`'s own redirect both arrive carrying one. Landing
+   * on the Plugins tab would put the operator one click from where they asked
+   * to be.
+   */
+  test('arriving with ?device= selects the Scripts tab and keeps the parameter', async () => {
+    setSearchParams({ device: 'dev-1' })
+    const { container } = renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    // `?device=` also auto-opens the run dialog (that is the whole point of the
+    // parameter), and a modal marks the rest of the page `aria-hidden` — so the
+    // tab strip is read off the DOM here rather than through a role query.
+    const tab = (key: string) => container.querySelector(`a[href*="tab=${key}"]`)
+    await waitFor(() => expect(tab('scripts')).toBeTruthy())
+    expect(tab('scripts')?.getAttribute('aria-current')).toBe('page')
+    expect(tab('plugins')?.getAttribute('href')).toContain('device=dev-1')
+  })
+
+  test('the failed-plugin warning is above the tab strip, so it is on screen from the Scripts tab too', async () => {
+    setSearchParams({ tab: 'scripts' })
+    const { container } = renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [failedPlugin], dev: [] } },
+    })
+    const warning = await waitFor(() => screen.getByText(/1 plugin.*failed to register/))
+    const order = [...container.querySelectorAll('*')]
+    expect(order.indexOf(warning)).toBeLessThan(order.indexOf(screen.getByRole('link', { name: /^Plugins/ })))
+    // And the Plugins tab itself carries the marker, so the count is not only
+    // in a banner someone might dismiss visually.
+    expect(screen.getByLabelText('1 failed to register')).toBeTruthy()
+  })
+})
+
+describe('PluginsPage — search', () => {
+  test('the box says what it covers, and ?q= arrives applied', async () => {
+    setSearchParams({ q: 'tiktok' })
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin, disabledPlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
+    expect((screen.getByLabelText('Search plugins') as HTMLInputElement).value).toBe('tiktok')
+    expect(screen.queryByText('Legacy pack')).toBeNull()
+    expect(document.body.textContent).toContain('the scripts it registers')
+  })
+
+  /**
+   * The case worth having: "which plugin does `warmup` come from". The member
+   * list is `manifest.scripts`, already on the row, so it costs no fetch — and
+   * the row says WHY it is on screen, because otherwise a search for `warmup`
+   * returning a row labelled `tiktok` reads as a broken filter.
+   */
+  test('a plugin is findable by the name of a script it registers, and the row says so', async () => {
+    setSearchParams({ q: 'warmup' })
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin, disabledPlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
+    expect(screen.getByText('tiktok/warmup')).toBeTruthy()
+    expect(screen.queryByText('Legacy pack')).toBeNull()
+  })
+
+  test('a search with no hits is a DIFFERENT state from having no plugins at all', async () => {
+    setSearchParams({})
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('Search plugins'), { target: { value: 'nothing-like-this' } })
+    await waitFor(() => expect(screen.getByText('No plugin matches “nothing-like-this”')).toBeTruthy())
+    expect(screen.queryByText('No plugins yet')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all plugins' }))
+    await waitFor(() => expect(screen.getByText('TikTok pack')).toBeTruthy())
+  })
+
+  test('the Scripts tab searches the full plugin/script name and reports no match distinctly', async () => {
+    setSearchParams({ tab: 'scripts' })
+    renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript, pluginScript]),
+      '/api/plugins': { body: { items: [], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('demo/checkout')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('Search scripts'), { target: { value: 'shop/' } })
+    await waitFor(() => expect(screen.queryByText('demo/checkout')).toBeNull())
+    expect(screen.getByText('shop/login')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Search scripts'), { target: { value: 'zzz' } })
+    await waitFor(() => expect(screen.getByText('No script matches “zzz”')).toBeTruthy())
+    expect(screen.queryByText('No scripts yet')).toBeNull()
+  })
+
+  test('a failed plugin hidden by the search is named in the warning, with a way to clear it', async () => {
+    setSearchParams({ q: 'tiktok' })
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin, failedPlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText(/1 plugin.*failed to register/)).toBeTruthy())
+    const clear = screen.getByRole('button', { name: /hidden by the current search/ })
+    fireEvent.click(clear)
+    await waitFor(() => expect(screen.getByText('Broken pack')).toBeTruthy())
+  })
+})
+
+describe('PluginsPage — the row links into the plugin detail page', () => {
+  test('the plugin name is a link to /plugins/detail?name=…', async () => {
+    setSearchParams({})
+    renderWithApi(<PluginsPage />, {
+      ...noScripts,
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    const link = await waitFor(() => screen.getByRole('link', { name: 'TikTok pack' }))
+    expect(link.getAttribute('href')).toBe('/plugins/detail?name=tiktok')
+  })
+})

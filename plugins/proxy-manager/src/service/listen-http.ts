@@ -1,4 +1,5 @@
 import { createListener, type Listener, type ListenerOptions } from './listener'
+import { PROXY_AUTHENTICATE_HEADER, credentialMatches, parseBasicAuthHeader } from './auth'
 
 /**
  * The HTTP proxy listener — `gost -L "http://:9902"`, in about eighty lines.
@@ -41,6 +42,17 @@ import { createListener, type Listener, type ListenerOptions } from './listener'
  * mode. Making it correct means parsing every request on the connection and
  * re-dialling per host, which is a real HTTP proxy rather than a bridge, and
  * is not what this plan is.
+ *
+ * ## Authentication (plan 117 §4.4)
+ *
+ * For a record with a saved credential (`opts.auth`, read by `supervisor.ts`
+ * from `proxy-auth:<id>`), BOTH request forms are answered `407 Proxy
+ * Authentication Required` with `Proxy-Authenticate: Basic realm="proxy-manager"`
+ * unless the head already carries a matching `Proxy-Authorization: Basic
+ * <base64>`. The check runs after the request line parses — a request this
+ * listener does not serve at all still gets its `405`, not a `407` that would
+ * claim the one thing wrong with it was the missing credential. `opts.auth`
+ * absent ⇒ no header is ever looked at, unchanged from plan 112.
  */
 
 /** A head larger than this is refused rather than buffered — a client that never sends `\r\n\r\n` must not grow memory. */
@@ -86,6 +98,20 @@ export function toOriginForm(parsed: ParsedRequestLine, head: string): string {
   return `${parsed.method} ${parsed.target} HTTP/1.1${rest}`
 }
 
+/**
+ * One header's value out of the raw head text, or `null` when it is absent.
+ * Case-insensitive, as RFC 7230 §3.2 requires field names to be read. Exported
+ * for the same reason `parseProxyRequestLine` is: a hand-written parser
+ * deserves a test that does not need a socket.
+ */
+export function findHeaderValue(headText: string, name: string): string | null {
+  const line = new RegExp(`^${name}:[ \\t]*(.*)$`, 'im').exec(headText)
+  // `trim()` also strips the trailing `\r` a `\r\n`-terminated header line
+  // leaves in the capture — `\r` is ASCII whitespace, so no separate strip is
+  // needed for it.
+  return line && line[1] !== undefined ? line[1].trim() : null
+}
+
 export function createHttpListener(opts: Omit<ListenerOptions, 'writeOverflowRefusal'>): Promise<Listener> {
   return createListener(
     {
@@ -127,6 +153,22 @@ export function createHttpListener(opts: Omit<ListenerOptions, 'writeOverflowRef
           client.end('HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
           api.refuse('not-a-proxy-request', { code: 'E_PROXY_CLIENT_PROTOCOL' })
           return
+        }
+
+        if (opts.auth) {
+          const offered = findHeaderValue(headText, 'Proxy-Authorization')
+          const credential = offered ? parseBasicAuthHeader(offered) : null
+          if (!credential || !credentialMatches(credential, opts.auth)) {
+            client.end(
+              `HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: ${PROXY_AUTHENTICATE_HEADER}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+            )
+            const clientAddress = client.remoteAddress ? `${client.remoteAddress}:${client.remotePort ?? 0}` : undefined
+            api.refuse(offered ? 'listener-auth-failed' : 'listener-auth-required', {
+              code: offered ? 'E_PROXY_CLIENT_AUTH_FAILED' : 'E_PROXY_CLIENT_AUTH_REQUIRED',
+              clientAddress,
+            })
+            return
+          }
         }
 
         api.open(

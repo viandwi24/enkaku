@@ -40,7 +40,7 @@ export interface UiServerComponentDeps {
    * absent — e.g. a unit test that only fakes `hostAdb`, or a future caller
    * that has no `TransferService` to hand it.
    */
-  installApk?: (deviceId: string, localPath: string, label: 'app' | 'test') => Promise<void>
+  installApk?: (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string) => Promise<void>
   log: Logger
 }
 
@@ -83,7 +83,7 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
         hostAdb: deps.hostAdb,
         apkPaths: deps.apkPaths,
         expectedArtifact,
-        installApk: deps.installApk ? (localPath, label) => deps.installApk!(row.id, localPath, label) : undefined,
+        installApk: deps.installApk ? (localPath, label, packageName) => deps.installApk!(row.id, localPath, label, packageName) : undefined,
         onMismatch: (info) => {
           mismatch.current = info
         },

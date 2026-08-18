@@ -1,10 +1,12 @@
 package dev.enkaku.guestagent.route
 
+import android.os.SystemClock
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Socket
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLSocketFactory
 
 /**
@@ -47,14 +49,34 @@ object EgressProbe {
 
   data class Result(val tunnelled: Leg, val direct: Leg)
 
+  /**
+   * The last probe this device actually ran, kept so [dev.enkaku.guestagent.StatusActivity] can
+   * show it (plan 51 §3.2's whole point is that a route being `up` proves nothing about egress —
+   * the screen must be able to say "checked, and here is what came back" or "not checked", and
+   * never invent a third, cheerier answer).
+   *
+   * Only ever written here, by a probe the host asked for: this app never starts one on its own,
+   * because it has no probe URL of its own to start one against.
+   */
+  data class LastRun(val url: String, val atElapsedRealtime: Long, val result: Result)
+
+  private val lastRunRef = AtomicReference<LastRun?>(null)
+
+  /** Null until the host has run at least one `egress.probe` since this process started. */
+  fun lastRun(): LastRun? = lastRunRef.get()
+
   /** Truncates a probe response body — never assume the whole thing was read. */
   private const val MAX_BODY_CHARS = 4_096
 
-  fun run(url: String, timeoutMs: Int): Result =
-    Result(
-      tunnelled = measureLeg { fetchTunnelled(url, timeoutMs) },
-      direct = measureLeg { fetchDirect(url, timeoutMs) },
-    )
+  fun run(url: String, timeoutMs: Int): Result {
+    val result =
+      Result(
+        tunnelled = measureLeg { fetchTunnelled(url, timeoutMs) },
+        direct = measureLeg { fetchDirect(url, timeoutMs) },
+      )
+    lastRunRef.set(LastRun(url = url, atElapsedRealtime = SystemClock.elapsedRealtime(), result = result))
+    return result
+  }
 
   /** A stage-tagged failure — the only kind of throw `fetchDirect`/`fetchTunnelled` are expected to raise past their own try/catch. */
   private class ProbeStageException(val stage: String, message: String) : Exception(message)

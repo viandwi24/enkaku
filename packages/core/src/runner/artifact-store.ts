@@ -5,6 +5,12 @@ import type { Db } from '../db'
 import { artifacts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 
+/**
+ * The pre-plan-115 fallback for `saveForDevice`'s own cap, below — that
+ * path never handles `kind: 'file'` (it always writes `kind: 'log'`, "save
+ * last N lines" style), so it is out of plan 115 §3.6's "raise it for the
+ * file kind" scope and keeps this constant unchanged.
+ */
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 
 const slug = (label: string): string =>
@@ -43,6 +49,17 @@ export function createArtifactStore(deps: {
    * field existed. See this file's own module doc for the full mechanism.
    */
   nodeId?: () => string | null
+  /**
+   * The `kind: 'file'` size cap (plan 115 §3.6, W5) — read fresh on every
+   * save, the same "accessor, not a value" convention `nodeId` above already
+   * uses, so a settings change applies to the very next save with no
+   * restart. Driven from `transfer.maxPushBytes` (the farm's own push
+   * limit, W6) rather than the bare 8 MB `MAX_FILE_BYTES` this replaces for
+   * this kind — a video is 5-50 MB, three orders of magnitude past the old
+   * ceiling. Never applied to `kind: 'screenshot'` (§3.6: "the screenshot
+   * path is untouched") or `kind: 'log'`.
+   */
+  maxFileBytes: () => number
 }): ArtifactStore {
   const dir = join(deps.dataDir, 'artifacts', deps.jobId)
   let seq = 0
@@ -51,8 +68,11 @@ export function createArtifactStore(deps: {
     jobDir: () => dir,
 
     async save({ kind, label, data, ext }) {
-      if (kind === 'file' && data.length > MAX_FILE_BYTES) {
-        throw new EnkakuError('ARTIFACT_TOO_LARGE', `artifact "${label}" ${data.length} byte melebihi 8 MB`)
+      if (kind === 'file') {
+        const cap = deps.maxFileBytes()
+        if (data.length > cap) {
+          throw new EnkakuError('ARTIFACT_TOO_LARGE', `artifact "${label}" is ${data.length} bytes, exceeding the ${cap}-byte limit (transfer.maxPushBytes)`)
+        }
       }
       mkdirSync(dir, { recursive: true })
       seq += 1
@@ -171,7 +191,7 @@ export async function saveForDevice(
   ext = 'log',
 ): Promise<ArtifactInfo> {
   if (data.length > MAX_FILE_BYTES) {
-    throw new EnkakuError('ARTIFACT_TOO_LARGE', `artifact "${label}" ${data.length} byte melebihi 8 MB`)
+    throw new EnkakuError('ARTIFACT_TOO_LARGE', `artifact "${label}" is ${data.length} bytes, exceeding the ${MAX_FILE_BYTES}-byte limit`)
   }
   const relDir = join('artifacts', `device-${deviceId}`)
   const dir = join(deps.dataDir, relDir)

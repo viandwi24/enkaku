@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 import {
   AgentProvisionReportSchema,
+  classifyDeviceNetworkApply,
+  DeviceHttpProxyNetworkConfigSchema,
+  DeviceNetworkApplyBodySchema,
+  DeviceNetworkApplyResponseSchema,
+  DeviceNetworkApplyResultSchema,
+  DeviceNetworkConfigSchema,
   DeviceNetworkStatusResponseSchema,
+  DeviceReverseProxyNetworkConfigSchema,
+  DeviceVpnNetworkConfigSchema,
   GuestAgentStatusResponseSchema,
   GuestAgentSummaryResponseSchema,
+  StoredDeviceNetworkConfigSchema,
+  type DeviceNetworkApplyResult,
 } from './devices'
 
 /**
@@ -105,5 +115,263 @@ describe('AgentProvisionReportSchema / GuestAgentSummaryResponseSchema — plan 
   test('the summary parses byState/byVersion as open string-keyed counts', () => {
     const summary = { total: 20, byState: { ready: 18, outdated: 2 }, byVersion: { '1.2.0': 18, '1.1.0': 2 } }
     expect(GuestAgentSummaryResponseSchema.parse(summary)).toEqual(summary)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Plan 114 §4.1 / steps 114.6, 114.8, 114.9 — the RESPONSE side of the config
+// union. The invariant this whole block defends is acceptance criterion 8's
+// half that lives here: the response union is deliberately NARROWER than the
+// protocol's own `NetworkRouteConfigSchema`, because a response must never be
+// able to carry a `username` or a `password`.
+// ---------------------------------------------------------------------------
+
+/** A verbatim `GET /api/devices/:id/network` body from a core that predates plan 114 — no `engine`, no `setBy`. */
+const PRE_114_BODY = {
+  engine: 'vpn-helper',
+  config: { host: 'proxy.example', port: 1080, credentialRef: 'soax-jp', udpMode: 'udp', onGeoFail: 'report' },
+  enabled: true,
+  observed: { up: true, state: 'up', upstream: 'proxy.example:1080', stats: [1, 2, 3, 4] },
+  drift: false,
+  sessionId: 'sess-1',
+  failClosed: true,
+  health: 'unverified',
+  checks: [{ id: 'tunnel', state: 'pass', at: 1_700_000_000 }],
+  lastError: null,
+  exitHistory: [],
+  recovery: null,
+}
+
+describe('DeviceNetworkStatusResponseSchema.config — the read-time migration on the wire (plan 114 §4.1, step 114.6)', () => {
+  test('a verbatim pre-114 body parses, and its untagged config reads as vpn-helper', () => {
+    const parsed = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
+    expect(parsed.config).not.toBeNull()
+    expect(parsed.config?.engine).toBe('vpn-helper')
+    if (parsed.config?.engine !== 'vpn-helper') throw new Error('expected the vpn-helper arm')
+    expect(parsed.config.credentialRef).toBe('soax-jp')
+    expect(parsed.config.host).toBe('proxy.example')
+  })
+
+  test('config: null parses — the nullability sits OUTSIDE the preprocess, so null never reaches the union', () => {
+    expect(DeviceNetworkStatusResponseSchema.parse({ ...PRE_114_BODY, config: null }).config).toBeNull()
+  })
+
+  test('an adb-proxy config parses', () => {
+    const body = { ...PRE_114_BODY, engine: 'adb-proxy', config: { engine: 'adb-proxy', host: '10.0.0.2', port: 8899, exclusions: ['localhost'] } }
+    const parsed = DeviceNetworkStatusResponseSchema.parse(body)
+    expect(parsed.config?.engine).toBe('adb-proxy')
+    if (parsed.config?.engine !== 'adb-proxy') throw new Error('expected the adb-proxy arm')
+    expect(parsed.config.exclusions).toEqual(['localhost'])
+  })
+
+  test('a reverse config parses WITH a devicePort', () => {
+    const body = { ...PRE_114_BODY, engine: 'adb-reverse-proxy', config: { engine: 'adb-reverse-proxy', hostPort: 8888, devicePort: 28100 } }
+    const parsed = DeviceNetworkStatusResponseSchema.parse(body)
+    if (parsed.config?.engine !== 'adb-reverse-proxy') throw new Error('expected the reverse arm')
+    expect(parsed.config.devicePort).toBe(28100)
+  })
+
+  test('a reverse config parses with devicePort: NULL — the regression step 114.8 fixed', () => {
+    // The core emits this key unconditionally and emits `null` until a reverse has actually been
+    // established. Declared `z.number().optional()` alone, every GET in that window failed the
+    // parse outright — the exact window acceptance criterion 10 says must be REPORTED.
+    const body = { ...PRE_114_BODY, engine: 'adb-reverse-proxy', config: { engine: 'adb-reverse-proxy', hostPort: 8888, devicePort: null } }
+    const parsed = DeviceNetworkStatusResponseSchema.parse(body)
+    if (parsed.config?.engine !== 'adb-reverse-proxy') throw new Error('expected the reverse arm')
+    expect(parsed.config.devicePort).toBeNull()
+  })
+
+  test('a reverse config parses with devicePort ABSENT as well', () => {
+    const body = { ...PRE_114_BODY, engine: 'adb-reverse-proxy', config: { engine: 'adb-reverse-proxy', hostPort: 8888 } }
+    const parsed = DeviceNetworkStatusResponseSchema.parse(body)
+    if (parsed.config?.engine !== 'adb-reverse-proxy') throw new Error('expected the reverse arm')
+    expect(parsed.config.devicePort).toBeUndefined()
+  })
+
+  test('the same two devicePort readings hold on the bare arm schema', () => {
+    expect(DeviceReverseProxyNetworkConfigSchema.parse({ engine: 'adb-reverse-proxy', hostPort: 8888, devicePort: null }).devicePort).toBeNull()
+    expect(DeviceReverseProxyNetworkConfigSchema.parse({ engine: 'adb-reverse-proxy', hostPort: 8888 }).devicePort).toBeUndefined()
+  })
+
+  test('StoredDeviceNetworkConfigSchema rejects an array and null on its own, exactly as the protocol-side one does', () => {
+    expect(StoredDeviceNetworkConfigSchema.safeParse([{ host: 'h', port: 1080, udpMode: 'udp', onGeoFail: 'report' }]).success).toBe(false)
+    expect(StoredDeviceNetworkConfigSchema.safeParse(null).success).toBe(false)
+  })
+
+  test('DeviceNetworkConfigSchema (the BARE union) refuses an untagged config — an untagged PUT body from a post-114 client is a client bug', () => {
+    expect(DeviceNetworkConfigSchema.safeParse({ host: 'h', port: 1080, udpMode: 'udp', onGeoFail: 'report' }).success).toBe(false)
+  })
+})
+
+describe('DeviceNetworkStatusResponseSchema.setBy (plan 114 §3.3, step 114.9)', () => {
+  test('a response with NO setBy key parses to null — an older core’s silence reads as "nobody claimed it"', () => {
+    expect(DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY).setBy).toBeNull()
+  })
+
+  test('an explicit null parses to null', () => {
+    expect(DeviceNetworkStatusResponseSchema.parse({ ...PRE_114_BODY, setBy: null }).setBy).toBeNull()
+  })
+
+  test('both kinds parse', () => {
+    for (const kind of ['user', 'plugin'] as const) {
+      const setBy = { kind, id: 'sam', at: 1_700_000_000 }
+      expect(DeviceNetworkStatusResponseSchema.parse({ ...PRE_114_BODY, setBy }).setBy).toEqual(setBy)
+    }
+  })
+
+  test('an unknown kind is rejected — not coerced, not folded into "user"', () => {
+    for (const kind of ['system', 'farm', 'script', '']) {
+      expect(DeviceNetworkStatusResponseSchema.safeParse({ ...PRE_114_BODY, setBy: { kind, id: 'x', at: 1 } }).success).toBe(false)
+    }
+  })
+})
+
+describe('DeviceVpnNetworkConfigSchema is NARROWER than the protocol union — plan 114 acceptance criterion 8', () => {
+  /**
+   * A structural assertion, deliberately, and it guards against one specific
+   * future edit: "the response union duplicates `NetworkRouteConfigSchema`, just
+   * import that one instead". Doing so would re-admit `username`/`password` to a
+   * RESPONSE shape, which the API has never returned since plan 44 §4.5. The
+   * comment on the schema says so; this makes the comment enforceable.
+   */
+  test('the schema has no username and no password key at all', () => {
+    const keys = Object.keys(DeviceVpnNetworkConfigSchema.shape)
+    expect(keys).not.toContain('username')
+    expect(keys).not.toContain('password')
+    // `credentialUsername` is deliberately NOT a relaxation of the two lines above, and its name is
+    // half the reason: it is resolved by the core from `network_credentials` and reports WHICH
+    // upstream identity a route uses, which is the fact an operator reads a route by. `username` on
+    // this shape would be the write field coming back — a different thing, and the one this guard
+    // exists to keep out. The password has no arm here at all; it crosses the wire only on
+    // `DeviceNetworkCredentialRevealResponseSchema`, in answer to a deliberate, audited request.
+    expect(keys).toContain('credentialUsername')
+    expect(keys.sort()).toEqual(['credentialRef', 'credentialUsername', 'engine', 'expect', 'host', 'onGeoFail', 'port', 'udpMode'])
+  })
+
+  test('a body carrying them is STRIPPED, so nothing downstream can read a secret back off a parsed response', () => {
+    const parsed = DeviceVpnNetworkConfigSchema.parse({
+      host: 'proxy.example',
+      port: 1080,
+      udpMode: 'udp',
+      onGeoFail: 'report',
+      username: 'sam',
+      password: 'hunter2',
+    })
+    expect(parsed).not.toHaveProperty('username')
+    expect(parsed).not.toHaveProperty('password')
+    expect(JSON.stringify(parsed)).not.toContain('hunter2')
+    expect(parsed.engine).toBe('vpn-helper')
+  })
+
+  test('neither HTTP arm has one either — §3.8: no credential is ever written into a device setting', () => {
+    for (const shape of [DeviceHttpProxyNetworkConfigSchema.shape, DeviceReverseProxyNetworkConfigSchema.shape]) {
+      expect(Object.keys(shape)).not.toContain('username')
+      expect(Object.keys(shape)).not.toContain('password')
+    }
+  })
+})
+
+describe('classifyDeviceNetworkApply (plan 114 §3.9, step 114.8)', () => {
+  const result = (over: Partial<DeviceNetworkApplyResult>): DeviceNetworkApplyResult => ({
+    deviceId: 'dev-1',
+    status: null,
+    skip: null,
+    error: null,
+    ...over,
+  })
+
+  test('a clean row with a status is "applied"', () => {
+    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
+    expect(classifyDeviceNetworkApply(result({ status }))).toBe('applied')
+  })
+
+  test('an unverified status is still APPLIED — it is the normal terminal state of both HTTP rungs (§3.5)', () => {
+    const status = DeviceNetworkStatusResponseSchema.parse({
+      ...PRE_114_BODY,
+      engine: 'adb-proxy',
+      config: { engine: 'adb-proxy', host: '10.0.0.2', port: 8899 },
+      health: 'unverified',
+      checks: [
+        { id: 'setting', state: 'pass', at: 1 },
+        { id: 'egress', state: 'skip', at: null },
+      ],
+    })
+    expect(status.health).toBe('unverified')
+    expect(classifyDeviceNetworkApply(result({ status }))).toBe('applied')
+  })
+
+  test('an error alone is "failed"', () => {
+    expect(classifyDeviceNetworkApply(result({ error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'declined' } }))).toBe('failed')
+  })
+
+  test('a skip alone is "skipped"', () => {
+    expect(classifyDeviceNetworkApply(result({ skip: { code: 'E_DEVICE_OFFLINE', message: 'not reachable' } }))).toBe('skipped')
+  })
+
+  test('SKIP WINS OVER ERROR — a skipped device may legally carry neither a status nor an error, and the check order says so', () => {
+    const row = result({
+      skip: { code: 'E_DEVICE_HELD', message: 'somebody else is driving it' },
+      error: { code: 'E_REVERSE_FAILED', message: 'adb reverse did not establish' },
+    })
+    expect(classifyDeviceNetworkApply(row)).toBe('skipped')
+  })
+
+  test('ERROR WINS OVER APPLIED — a route persisted and then failing to apply produces BOTH a status and an error', () => {
+    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
+    const row = result({ status, error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'the device reports ""' } })
+    expect(classifyDeviceNetworkApply(row)).toBe('failed')
+  })
+
+  test('a skip on a row that also has a status still classifies as skipped', () => {
+    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
+    expect(classifyDeviceNetworkApply(result({ status, skip: { code: 'E_UNSUPPORTED', message: 'old phone' } }))).toBe('skipped')
+  })
+})
+
+describe('the bulk apply envelope round-trips (plan 114 §3.9, step 114.8)', () => {
+  test('a mixed four-device response parses and re-classifies to four distinct outcomes', () => {
+    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
+    const body = {
+      total: 4,
+      results: [
+        { deviceId: 'ok-1', status, skip: null, error: null },
+        { deviceId: 'offline-1', status: null, skip: { code: 'E_DEVICE_OFFLINE', message: 'not reachable' }, error: null },
+        { deviceId: 'held-1', status: null, skip: { code: 'E_DEVICE_HELD', message: 'in use' }, error: null },
+        { deviceId: 'broken-1', status: null, skip: null, error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'declined' } },
+      ],
+    }
+    const parsed = DeviceNetworkApplyResponseSchema.parse(body)
+    expect(parsed.total).toBe(4)
+    expect(parsed.results.map(classifyDeviceNetworkApply)).toEqual(['applied', 'skipped', 'skipped', 'failed'])
+    // Round-trip: re-parsing what we parsed changes nothing.
+    expect(DeviceNetworkApplyResponseSchema.parse(parsed)).toEqual(parsed)
+  })
+
+  test('a single result round-trips through its own schema', () => {
+    const row = { deviceId: 'dev-1', status: null, skip: null, error: { code: 'E_REVERSE_FAILED', message: 'no' } }
+    expect(DeviceNetworkApplyResultSchema.parse(row)).toEqual(row)
+  })
+
+  test('the request body keeps `route` UNPARSED — a username survives to the core’s own door rather than being silently stripped', () => {
+    // This is the single most load-bearing decision in the envelope: a Zod object strips unknown
+    // keys, so declaring `route: DeviceNetworkConfigSchema` here would drop a `password` before
+    // `assertNoHttpProxyAuth` ever saw it, and the operator would be told an authenticated proxy
+    // had been applied to forty phones when an anonymous one was written.
+    const parsed = DeviceNetworkApplyBodySchema.parse({
+      deviceIds: ['a', 'b'],
+      route: { engine: 'adb-proxy', host: 'h', port: 8080, username: 'sam', password: 'hunter2' },
+    })
+    expect(parsed.route.username).toBe('sam')
+    expect(parsed.route.password).toBe('hunter2')
+  })
+
+  test('`route` still has to BE an object — a string, an array and null are all refused', () => {
+    for (const route of ['nope', [{ engine: 'adb-proxy' }], null]) {
+      expect(DeviceNetworkApplyBodySchema.safeParse({ deviceIds: ['a'], route }).success).toBe(false)
+    }
+  })
+
+  test('an empty deviceIds list is refused', () => {
+    expect(DeviceNetworkApplyBodySchema.safeParse({ deviceIds: [], route: {} }).success).toBe(false)
   })
 })

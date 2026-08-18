@@ -1,14 +1,17 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import {
+  planPluginVersionRemoval,
   PluginServiceDeclarationSchema,
   unsupportedIsolationMessage,
   validatePluginSurface,
   type PluginServiceDeclaration,
   type PluginSurface,
+  type PluginVersionRemovalResult,
+  type PluginVersionRemovalScope,
 } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { devices, plugins, scripts, type PluginRow } from '../db/schema'
+import { devices, jobs, plugins, scripts, type PluginRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { changedRows } from '../db'
 import type { KvStore } from '../kv/store'
@@ -71,6 +74,19 @@ export interface DevSlotView extends DevSlot {
 export interface RemovalSummary {
   removed: boolean
   kvDeleted: number
+}
+
+/**
+ * What `removeVersions` reports (plan 82 §3.4's denormalised job history, plus
+ * plan 114 §3.9's bulk-report grain). One entry per version the plugin HAD when
+ * the request was planned — a kept row is a result, never an omission, which is
+ * what lets the caller state "nine went, two stayed" from one array.
+ */
+export interface BulkRemovalReport {
+  plugin: string
+  scope: PluginVersionRemovalScope
+  total: number
+  results: PluginVersionRemovalResult[]
 }
 
 export interface StagePluginInput {
@@ -201,7 +217,32 @@ export interface PluginRuntime {
    * Switching between two versions is `rollback`'s job, not this one's.
    */
   enable(name: string): PluginRow
+  /**
+   * One version. Throws `script_in_use` when a queued or running job still
+   * names one of that version's scripts — see `removeImpl`.
+   */
   remove(name: string, version: string, opts: { deleteKv: boolean }): RemovalSummary
+
+  /**
+   * Many versions, through the SAME door `remove` uses (`removeOne` below) —
+   * the farm owner's "remove all version" and "remove all except latest
+   * version".
+   *
+   * There is deliberately no second removal implementation and no direct DB
+   * write here: the `script_in_use` guard, the asset cleanup, the registry
+   * invalidation and the `deactivated` notification are all `removeOne`'s, so a
+   * bulk call cannot skip one of them. What this method adds is the PLAN (which
+   * versions are in scope, from `planPluginVersionRemoval` in `@enkaku/protocol`
+   * — the same function Studio's confirm dialog calls, so the dialog's promise
+   * and the server's behaviour cannot diverge) and the per-version REPORT.
+   *
+   * **It never throws for a version-level refusal.** Partial success is the
+   * normal case: nine removed and two refused is a completed request, and a
+   * throw would lose the nine. It still throws for a request-level refusal — a
+   * synthetic plugin name, or a name with no versions at all — because those are
+   * facts about the request rather than about a row.
+   */
+  removeVersions(name: string, opts: { scope: PluginVersionRemovalScope; deleteKv: boolean }): BulkRemovalReport
 
   /**
    * Two front-ends, one slot (§3.5): `source.kind === 'workspace'` is front-end A —
@@ -611,12 +652,66 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     const target = findRow(name, version)
     if (!target) return { removed: false, kvDeleted: 0 }
     const rows = db.select().from(scripts).where(eq(scripts.pluginId, target.id)).all()
+
+    /**
+     * **The same refusal `DELETE /api/scripts/:id` has always given**
+     * (`scripts/routes.ts`), applied here because this path deletes the very
+     * same `scripts` rows and did not check.
+     *
+     * That was a real hole, not a theoretical one: `jobs.script_id` carries no
+     * foreign key, so removing a plugin version out from under a queued or
+     * running job left the job pointing at a row that no longer exists — while
+     * `DELETE /api/scripts/:id` refused the identical deletion one route over.
+     * Job HISTORY survives either way (plan 82 §3.4 denormalises
+     * `jobs.script_name`/`script_version` at enqueue precisely so a deletion
+     * cannot erase what already ran), but a job that has not finished yet still
+     * needs its bundle.
+     *
+     * It belongs in the runtime rather than in the route because bulk removal
+     * goes through this same function: a guard on the route would protect one
+     * deletion and miss eleven, which is the wrong way round.
+     */
+    if (rows.length > 0) {
+      const blocking = db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            inArray(
+              jobs.scriptId,
+              rows.map((s) => s.id),
+            ),
+            inArray(jobs.status, ['queued', 'running']),
+          ),
+        )
+        .all()
+      if (blocking.length > 0) {
+        throw new EnkakuError(
+          'script_in_use',
+          `${blocking.length} queued or running job(s) still use ${name}@${version} — cancel or wait for them before removing this version`,
+        )
+      }
+    }
+
     db.delete(plugins).where(eq(plugins.id, target.id)).run()
     for (const s of rows) db.delete(scripts).where(eq(scripts.id, s.id)).run()
     // The removed version's tier-B payload goes with it (step 108.10). Done
     // AFTER the row is gone, so a crash in between leaves orphaned bytes
     // rather than a live row whose screen 404s.
-    assets.remove(target.id)
+    //
+    // And for exactly that reason the cleanup cannot be allowed to THROW: the
+    // row is already deleted by this line, so a failure here would report a
+    // completed removal as a failure — a 500 on the single-version route for a
+    // version that is gone, and, worse, a `script_in_use`-shaped refusal entry
+    // in a bulk report for a version the same report should say was removed.
+    // Orphaned bytes are the accepted outcome of a crash in this window; a lie
+    // about what happened is not.
+    try {
+      assets.remove(target.id)
+    } catch {
+      // Deliberately swallowed — see above. `restart()`'s dev-slot sweep is the
+      // other place stale asset directories are noticed.
+    }
     registry.invalidate(name)
 
     let kvDeleted = 0
@@ -801,6 +896,106 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     }
   }
 
+  /**
+   * **The one door every removal goes through** — the single version route, and
+   * every version a bulk request touches.
+   *
+   * Named and hoisted rather than left as an inline method on the returned
+   * object (where it used to live) precisely so `removeVersionsImpl` below can
+   * call it directly. A bulk path that called `removeImpl` instead would quietly
+   * lose the `deactivated` notification, and the farm would keep a service
+   * loaded for a version that no longer exists.
+   */
+  const removeOne = (name: string, version: string, opts: { deleteKv: boolean }): RemovalSummary => {
+    // Only a removal that actually removed the ACTIVE row deactivates
+    // anything — deleting a superseded version leaves what is loaded alone,
+    // and telling the host otherwise would tear down a working service.
+    const wasActive = activeImpl(name)?.version === version
+    const summary = removeImpl(name, version, opts)
+    if (summary.removed && wasActive) notify({ kind: 'deactivated', name, version })
+    return summary
+  }
+
+  const removeVersionsImpl = (name: string, opts: { scope: PluginVersionRemovalScope; deleteKv: boolean }): BulkRemovalReport => {
+    // Request-level refusals throw; version-level ones are reported. A synthetic
+    // owner is refused here as well as inside `removeOne`, so the answer is one
+    // coded error about the request rather than N identical row failures.
+    refuseSynthetic(name, 'removed')
+
+    /**
+     * **Read every row of this name, unfiltered.** `listImpl` is the same
+     * unfiltered `SELECT ... WHERE name = ?` the Plugins page reads, and that is
+     * deliberate: `scripts/delete-unowned-scripts.ts`'s header records the
+     * mistake its own first version made — deriving a delete list from a
+     * FILTERED listing that hides exactly the rows it means to act on, and then
+     * reporting "nothing to delete" on a farm holding five. A bulk remove that
+     * skipped, say, `failed` rows would leave behind precisely the junk an
+     * operator ran it to clear.
+     */
+    const candidates = listImpl({ name })
+    if (candidates.length === 0) throw new EnkakuError('plugin_not_found', `no plugin named "${name}"`)
+
+    const plan = planPluginVersionRemoval(candidates, opts.scope)
+    const results: PluginVersionRemovalResult[] = plan.keep.map((k) => ({
+      id: k.candidate.id,
+      version: k.candidate.version,
+      status: k.candidate.status,
+      kvDeleted: 0,
+      skip: { code: k.code, message: k.message },
+      error: null,
+    }))
+
+    /**
+     * The KV namespace belongs to the NAME, not to any one version (every
+     * version shares it — that is what the single-version dialog already tells
+     * the operator), so it is dropped exactly ONCE: on the first removal that
+     * actually succeeds. Passing `deleteKv` to all eleven would call
+     * `deleteNamespace` eleven times and report a total eleven times too large,
+     * ten of them counting nothing.
+     *
+     * Gated on a success rather than fired up front, because "delete everything
+     * and its data" that removed nothing must not still have deleted the data.
+     */
+    let kvPending = opts.deleteKv
+    for (const target of plan.remove) {
+      try {
+        const summary = removeOne(name, target.version, { deleteKv: kvPending })
+        if (!summary.removed) {
+          // The row vanished between the plan and the attempt — another
+          // operator, or another tab. Reported as a keep rather than a failure:
+          // the outcome the caller asked for is the outcome they got.
+          results.push({
+            id: target.id,
+            version: target.version,
+            status: target.status,
+            kvDeleted: 0,
+            skip: { code: 'plugin_not_found', message: `${name}@${target.version} was already gone` },
+            error: null,
+          })
+          continue
+        }
+        // Cleared on the removal that CARRIED the flag, not on a non-zero count:
+        // a plugin with an empty namespace deletes nothing and must still not
+        // have the sweep re-run on the next ten versions.
+        kvPending = false
+        results.push({ id: target.id, version: target.version, status: target.status, kvDeleted: summary.kvDeleted, skip: null, error: null })
+      } catch (err) {
+        // Per-version and never swallowed — chiefly `script_in_use`. The loop
+        // continues: one version a running job holds must not stop the other ten
+        // from being pruned, and an operator who is told which two were refused
+        // and why can act on that.
+        const code = err instanceof EnkakuError ? err.code : 'E_PLUGIN_REMOVE_FAILED'
+        const message = err instanceof Error ? err.message : String(err)
+        results.push({ id: target.id, version: target.version, status: target.status, kvDeleted: 0, skip: null, error: { code, message } })
+        // `kvPending` is deliberately left alone: a removal that threw did not
+        // reach the namespace sweep, so the flag passes to the next version that
+        // does succeed.
+      }
+    }
+
+    return { plugin: name, scope: opts.scope, total: candidates.length, results }
+  }
+
   return {
     list: listImpl,
     get: getImpl,
@@ -832,15 +1027,8 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       notify({ kind: 'activated', name: row.name, version: row.version })
       return row
     },
-    remove: (name, version, opts) => {
-      // Only a removal that actually removed the ACTIVE row deactivates
-      // anything — deleting a superseded version leaves what is loaded alone,
-      // and telling the host otherwise would tear down a working service.
-      const wasActive = activeImpl(name)?.version === version
-      const summary = removeImpl(name, version, opts)
-      if (summary.removed && wasActive) notify({ kind: 'deactivated', name, version })
-      return summary
-    },
+    remove: removeOne,
+    removeVersions: removeVersionsImpl,
     putDevSlot: putDevSlotImpl,
     dropDevSlot: dropDevSlotImpl,
     devSlots: devSlotsImpl,

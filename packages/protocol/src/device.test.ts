@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { AgentStateSchema, AgentStatusSchema, DEFAULT_AGENT_STATUS, DeviceInfoSchema, type AgentState, type AgentStatus, type LeaseHolder } from './device'
 import { MAIN_EVENT_KINDS } from './messages/device-event'
 
-const ALL_AGENT_STATES: AgentState[] = ['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported']
+const ALL_AGENT_STATES: AgentState[] = ['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported', 'consent-required']
 
 /**
  * The guest agent's provisioning state (plan 90 §3.8, §4.3) — a device

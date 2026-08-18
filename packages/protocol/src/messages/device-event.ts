@@ -48,10 +48,38 @@ export const MAIN_EVENT_KINDS = [
   'network.recovery.exhausted',
   /** A network route that needed automatic recovery is carrying traffic again — either mid-attempt or after a genuine reconnect reset the bound (plan 90 §3.7 rule 5) — carries { attempts } or { attempts, wasExhausted }. */
   'network.recovery.recovered',
+  /**
+   * A device was admitted still carrying a route the farm's own record does
+   * not want, and the farm took it back — carries { engine, reason,
+   * devicePort?, restored: 'captured'|'cleared', forgot }.
+   *
+   * The incident behind it: a phone turned off in the farm while it was
+   * unplugged kept `http_proxy 127.0.0.1:<port>` and got its `adb reverse`
+   * back on reconnect, so its traffic left through a metered residential proxy
+   * for a day with every screen reading "no route". Convergence on admission
+   * is the fix; this event is the half that makes the convergence legible,
+   * because a farm that silently un-does things to a phone is the same
+   * unreadable state pointed the other way.
+   */
+  'network.orphan.cleared',
   /** The guest agent's provisioning state changed (plan 90 §3.8, §4.3) — carries { state, reason? }. Fired once per state transition, never per verification pass (a clean reconnect that changes nothing emits no event, acceptance criterion 5). */
   'device.agent',
   /** A registered device-preparation component's state changed (plan 106 §3.1, §3.3) — carries { componentId, state, reason?, from }. Fired once per state transition, same rule as `device.agent` above (a clean pass that changes nothing emits no event). */
   'device.preparation',
+  /**
+   * A screen-rotation lock (`DeviceSettings.prep.rotation`, plan 85 §3.7) was
+   * asked for and the device did not end up in it — carries { mode, applied:
+   * false, reason, quality? }, plus { from, to, state } when the trigger was an
+   * operator changing the setting rather than a session opening.
+   *
+   * Deliberately only recorded for outcomes that are NOT a plain success. A
+   * lock is applied on every session build of every wall tile; recording each
+   * one would write dozens of rows an hour saying nothing happened, and would
+   * bury the one row that matters. The event exists because the failure used
+   * to be swallowed into `log.debug` — an operator saw a lock that silently
+   * never took (`packages/session/src/orientation.ts`).
+   */
+  'device.rotation',
   /** A co-control (Assist) grant started on this device (plan 91 §3.5, §3.4 item 4) — mirrors `control.acquired`/`control.released` for the SUBORDINATE grant rather than the lease. Carries { jobId, primaryKind }. */
   'control.assist.started',
   /** The bookend to `control.assist.started` — carries { jobId, primaryKind, reason }, `reason` one of `AssistEndReason` ('released' | 'ttl' | 'disconnected' | 'primary_ended' | 'mode_off'). */

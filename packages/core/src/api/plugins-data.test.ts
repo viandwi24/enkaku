@@ -369,6 +369,73 @@ describe('a secret is never returned with its value, on every route that can ret
   })
 })
 
+/**
+ * Plan 112 step 112.2 (finding F12) — redaction removes the VALUE, and used to leave the hint:
+ * `${first 7}…${last 4}` of the plaintext, in the clear on the row, handed to everyone holding
+ * `plugin.data`. `hint: false` on the write is the opt-out, and the assertion that matters is that
+ * it holds on EVERY read path, not on the one the writer happened to look at.
+ */
+describe('PUT /:name/data/entry with hint: false (plan 112 step 112.2)', () => {
+  const PASSWORD = 'Sup3rSecretUpstreamPassword'
+
+  test('every HTTP read path answers hint === null for a row written with hint: false', async () => {
+    const { app, kvApp, runtime, db, kv } = setUp('admin')
+    await activate(runtime, 'proxy-manager')
+    const d = seedDevice(db, 1)
+
+    // 1. the PUT's own echo
+    const put = await putEntry(app, 'proxy-manager', { scope: 'global', key: 'proxy-secret:a', value: { password: PASSWORD }, secret: true, hint: false })
+    expect(put.status).toBe(200)
+    const written = PluginDataEntryResponseSchema.parse(await put.json())
+    expect(written.secret).toBe(true)
+    expect(written.hint).toBeNull()
+
+    // 2. GET /:name/data — the operator's list
+    const list = PluginDataListResponseSchema.parse(await (await app.request('/proxy-manager/data?scope=global')).json())
+    expect(list.items.find((i) => i.key === 'proxy-secret:a')?.hint).toBeNull()
+
+    // 3. GET /:name/data/scan — the per-device join, which reads the row's column directly
+    await putEntry(app, 'proxy-manager', { scope: 'device', stableId: d.stableId, key: 'proxy-secret:a', value: { password: PASSWORD }, secret: true, hint: false })
+    const scan = PluginDataScanResponseSchema.parse(await (await app.request('/proxy-manager/data/scan?key=proxy-secret:a')).json())
+    expect(scan.items[0]?.entry?.secret).toBe(true)
+    expect(scan.items[0]?.entry?.hint).toBeNull()
+
+    // 4. the admin `/api/kv` surface, which reads the same rows through its own routes
+    const adminList = await jsonBody(await kvApp.request('/?scope=global&namespace=proxy-manager'))
+    expect((adminList.items as { key: string; hint: string | null }[]).find((i) => i.key === 'proxy-secret:a')?.hint).toBeNull()
+    const adminEntry = await jsonBody(await kvApp.request('/entry?scope=global&namespace=proxy-manager&key=proxy-secret:a'))
+    expect(adminEntry.hint).toBeNull()
+
+    // 5. the store itself, in process — the path a plugin handler reads through
+    expect(kv.get({ kind: 'global' }, 'proxy-manager', 'proxy-secret:a')?.hint).toBeNull()
+
+    // Nothing anywhere carries a fragment of the password. `{"passw…rd"}` is what the object shape
+    // used to produce (plan 112 §9 Q7, measured on the running farm).
+    const everything = JSON.stringify({ written, list, scan, adminList, adminEntry })
+    expect(everything).not.toContain(PASSWORD)
+    expect(everything).not.toContain('{"passw')
+    expect(everything).not.toContain(PASSWORD.slice(-4))
+  })
+
+  test('omitting hint is unchanged from today — the API key still gets its hint on every path', async () => {
+    const { app, kvApp, runtime } = setUp('admin')
+    await activate(runtime, 'tiktok')
+    const put = await putEntry(app, 'tiktok', { scope: 'global', key: 'token', value: 'sk-ant-api03-abcdefgh7Xq2', secret: true })
+    expect(PluginDataEntryResponseSchema.parse(await put.json()).hint).toBe('sk-ant-…7Xq2')
+    const list = PluginDataListResponseSchema.parse(await (await app.request('/tiktok/data?scope=global')).json())
+    expect(list.items[0]?.hint).toBe('sk-ant-…7Xq2')
+    const adminEntry = await jsonBody(await kvApp.request('/entry?scope=global&namespace=tiktok&key=token'))
+    expect(adminEntry.hint).toBe('sk-ant-…7Xq2')
+  })
+
+  test('a body carrying a non-boolean hint is refused rather than coerced', async () => {
+    const { app, runtime } = setUp()
+    await activate(runtime, 'tiktok')
+    const res = await putEntry(app, 'tiktok', { scope: 'global', key: 'token', value: 'v', secret: true, hint: 'no' })
+    expect(res.status).toBe(400)
+  })
+})
+
 describe('GET /:name/data/scan — the allowlist, paging, and the N+1 tripwire', () => {
   test('exposes exactly the six allowlisted device fields and no others', async () => {
     const { app, runtime, db, kv } = setUp()

@@ -14,7 +14,7 @@ import {
 } from './vocabulary'
 
 describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
-  test('the kind list is exactly the twelve entries the vocabulary names — no more, no fewer', () => {
+  test('the kind list is exactly the thirteen entries the vocabulary names — no more, no fewer', () => {
     expect(PARAM_KINDS).toEqual([
       'count',
       'chance',
@@ -28,11 +28,12 @@ describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
       'packageName',
       'workspaceFolder',
       'workspaceFile',
+      'artifact',
     ])
   })
 
-  test('the string kinds are exactly the four whose value is a string', () => {
-    expect(STRING_PARAM_KINDS).toEqual(['text', 'packageName', 'workspaceFolder', 'workspaceFile'])
+  test('the string kinds are exactly the five whose value is a string', () => {
+    expect(STRING_PARAM_KINDS).toEqual(['text', 'packageName', 'workspaceFolder', 'workspaceFile', 'artifact'])
     // Every one of them IS a kind — the two lists cannot drift apart into a
     // "string kind" that is not a kind at all.
     for (const kind of STRING_PARAM_KINDS) {

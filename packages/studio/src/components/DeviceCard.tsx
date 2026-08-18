@@ -175,7 +175,7 @@ export function DeviceCard({
               </span>
             )}
             {/* Plan 90 §5 step 90.6 — quiet for `ready`/`absent`/`provisioning`/`unsupported`; only `failed`/`outdated` need an operator (F10). */}
-            <AgentAlertChip agent={device.agent ?? 'absent'} />
+            <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} />
             <DeviceStatusBadge status={device.status} />
             {(onRequestForget || onRequestDisconnect || onReconnect) && (
               <DropdownMenu>

@@ -1,10 +1,120 @@
 <resources>
     <string name="app_name">Enkaku Guest Agent</string>
-    <string name="status_explanation">This device is managed by an Enkaku device farm. The app has no controls; everything is driven by the host over adb.</string>
+    <string name="status_explanation">This device is managed by an Enkaku device farm. The screen is read-only: everything here is driven by the host over adb.</string>
+    <string name="status_no_secrets">The pairing token and the proxy password never appear on this screen.</string>
     <string name="switch_keyboard">Switch keyboard</string>
-    <string name="state_routing">Routing this device\'s traffic through a test proxy.</string>
-    <string name="state_paired_no_route">Paired with a farm host. No route is active.</string>
-    <string name="state_idle">Idle — no host has paired yet.</string>
-    <string name="keyboard_not_available">Enkaku keyboard is not installed on this build yet.</string>
+    <string name="keyboard_not_available">Enkaku keyboard is not enabled on this device yet.</string>
     <string name="ime_notice">Enkaku input — driven by the farm host</string>
+
+    <!-- Controls -->
+    <string name="refresh">Refresh</string>
+    <string name="copy_report">Copy</string>
+    <string name="report_copied">Status copied to the clipboard.</string>
+    <string name="status_updated">Updated %1$s · refreshes itself while this screen is open</string>
+
+    <!-- Banner: the one line that must be readable from across the room -->
+    <string name="banner_held_title">Traffic is blocked (fail-closed)</string>
+    <string name="banner_held_body">The tunnel stopped carrying traffic, so this device is dropping every packet on purpose instead of letting it out on its own address. Nothing on this phone reaches the internet until the farm restores the route. To recover it by hand, turn the VPN off: Settings → Network &amp; internet → VPN → disconnect Enkaku route.</string>
+    <string name="banner_stale_tunnel_title">The tunnel outlived the route</string>
+    <string name="banner_stale_tunnel_body">This agent has no route configured, but Android still has this app\'s own VPN interface (%1$s) established. Traffic entering it may be going nowhere. Turn the VPN off in Settings → Network &amp; internet → VPN, or have the farm apply a route and stop it again.</string>
+    <string name="banner_foreign_vpn_title">Another VPN app is in control</string>
+    <string name="banner_foreign_vpn_body">Android has a VPN interface established (%1$s) that this agent did not create. Only one can be active at a time, so the farm cannot route this device until that one is turned off.</string>
+    <string name="banner_channel_down_title">The farm cannot reach this agent</string>
+    <string name="banner_channel_down_body">The control channel is not listening, so nothing the host sends arrives. It comes back when the host bootstraps the agent again, or after a reboot.</string>
+    <string name="banner_up_title">Route up</string>
+    <string name="banner_up_body">A tunnel is established and forwarding. That is not proof traffic reaches the intended exit — only an egress check answers that, and only the farm runs one.</string>
+    <string name="banner_idle_title">No route</string>
+    <string name="banner_idle_body">This device is using its own network. Nothing is being tunnelled.</string>
+    <string name="banner_unpaired_title">Not paired</string>
+    <string name="banner_unpaired_body">No farm host has handed this agent a token since it started, so every request on the control channel is refused with E_NOT_PAIRED.</string>
+
+    <!-- Farm link -->
+    <string name="section_link">Farm link</string>
+    <string name="label_paired">Paired</string>
+    <string name="value_paired_yes">yes — token accepted %1$s ago</string>
+    <string name="value_paired_no">no — no token since this app started</string>
+    <string name="label_channel">Control channel</string>
+    <string name="value_channel_listening">listening on localabstract:%1$s</string>
+    <string name="value_channel_stopped">not listening</string>
+    <string name="value_channel_failed">not listening — %1$s</string>
+    <string name="label_channel_uptime">Listening for</string>
+    <string name="label_last_contact">Last contact</string>
+    <string name="value_last_contact">%1$s ago — %2$s</string>
+    <string name="value_last_contact_never">never — the farm has sent no request since this app started</string>
+    <string name="label_requests">Requests served</string>
+    <string name="label_last_refused">Last refused</string>
+    <string name="value_last_refused">%1$s — %2$s ago</string>
+
+    <!-- Route -->
+    <string name="section_route">Route</string>
+    <string name="label_state">State</string>
+    <string name="value_state_up">UP — tunnel established, forwarding</string>
+    <string name="value_state_held">HELD — forwarding stopped, traffic blocked on purpose</string>
+    <string name="value_state_down">DOWN — no tunnel</string>
+    <string name="label_upstream">Upstream</string>
+    <string name="value_upstream_none">none</string>
+    <string name="label_fail_closed">On failure</string>
+    <string name="value_fail_closed_on">block traffic (failClosed = true)</string>
+    <string name="value_fail_closed_off">tear the route down (failClosed = false)</string>
+    <string name="label_last_error">Last error</string>
+    <string name="label_sent">Sent</string>
+    <string name="label_received">Received</string>
+    <string name="value_traffic">%1$s in %2$s packets</string>
+    <string name="label_consent">VPN consent</string>
+    <string name="value_consent_granted">granted</string>
+    <string name="value_consent_missing">not granted — the host\'s ACTIVATE_VPN app-op has not taken</string>
+    <string name="label_os_view">Android sees</string>
+    <string name="value_os_vpn_ours">%1$s — this app\'s own tunnel</string>
+    <string name="value_os_vpn_foreign">%1$s — a VPN this app did not create</string>
+    <string name="value_os_vpn_none">no VPN interface on this device</string>
+    <string name="value_interface_unnamed">an unnamed interface</string>
+    <string name="label_os_capture">Captured traffic</string>
+    <string name="value_os_capture_all">all IPv4 (0.0.0.0/0) enters that interface</string>
+    <string name="value_os_capture_none">no IPv4 default route into it — traffic is not being captured</string>
+    <string name="label_os_validated">Validated</string>
+    <string name="value_os_validated_yes">yes — Android reached the internet through that interface</string>
+    <string name="value_os_validated_no">no — Android has not confirmed internet through that interface</string>
+
+    <!-- Checks -->
+    <string name="section_checks">Checks</string>
+    <string name="label_ipv6">IPv6</string>
+    <string name="value_ipv6_blocked">blocked — no usable IPv6 path off this device</string>
+    <string name="value_ipv6_open">a usable IPv6 path exists — traffic can leave outside the tunnel</string>
+    <string name="value_ipv6_unknown">not checked — no VPN network to ask</string>
+    <string name="label_deadman">Dead-man\'s switch</string>
+    <string name="value_deadman">holds the route closed after %1$s of silence, while a route is up</string>
+    <string name="label_egress">Egress</string>
+    <string name="value_egress_unchecked">not checked — the farm has run no egress probe on this device since the agent started</string>
+    <string name="value_egress_ran">checked %1$s ago against %2$s</string>
+    <string name="label_egress_tunnelled">through the tunnel</string>
+    <string name="label_egress_direct">outside the tunnel</string>
+    <string name="value_leg_ok">reached it — HTTP %1$d in %2$d ms%3$s</string>
+    <string name="value_leg_failed">failed at %1$s — %2$s (%3$d ms)</string>
+    <string name="value_leg_seen_as">, seen as %1$s</string>
+
+    <!-- Keyboard -->
+    <string name="section_keyboard">Keyboard</string>
+    <string name="label_ime">Enkaku keyboard</string>
+    <string name="value_ime_current">selected — the farm can type on this device</string>
+    <string name="value_ime_enabled">enabled, but not the selected keyboard</string>
+    <string name="value_ime_disabled">not enabled on this device</string>
+    <string name="label_ime_connection">Input field</string>
+    <string name="value_ime_connected">one is focused right now</string>
+    <string name="value_ime_disconnected">none focused right now</string>
+
+    <!-- This build -->
+    <string name="section_build">This build</string>
+    <string name="label_version">Agent version</string>
+    <string name="value_version">%1$s (build %2$d)</string>
+    <string name="label_protocol">Wire protocol</string>
+    <string name="label_capabilities">Capabilities</string>
+    <string name="label_android">Android</string>
+    <string name="value_android">%1$s (SDK %2$d)</string>
+    <string name="label_device">Device</string>
+    <string name="label_package">Package</string>
+
+    <!-- Durations, shown for every "… ago" on this screen -->
+    <string name="duration_seconds">%1$ds</string>
+    <string name="duration_minutes">%1$dm %2$ds</string>
+    <string name="duration_hours">%1$dh %2$dm</string>
 </resources>

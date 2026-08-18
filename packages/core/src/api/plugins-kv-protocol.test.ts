@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   KvEntryResponseSchema,
   KvListResponseSchema,
+  KvNamespacesResponseSchema,
   PluginDevPutResponseSchema,
   PluginRestartResponseSchema,
   PluginStageResponseSchema,
@@ -142,5 +143,34 @@ describe('GET/PUT /api/kv matches KvListResponseSchema/KvEntryResponseSchema —
     const listRes = await app.request('/?scope=global&namespace=tiktok')
     const listParsed = KvListResponseSchema.parse(await listRes.json())
     expect(listParsed.items.every((i) => !i.secret || i.value === null)).toBe(true)
+  })
+})
+
+describe('GET /api/kv/namespaces matches KvNamespacesResponseSchema', () => {
+  test('the index parses against the real route, and carries no key, value or hint', async () => {
+    const opened = openDb(':memory:')
+    const db: Db = opened.db
+    runMigrations(db)
+    const store = createKvStore(db, dataDir, () => ({ maxValueBytes: 65536, maxKeyLength: 256, maxEntriesPerNamespace: 1000, maxEntriesPerDevice: 5000 }))
+    const audit = createAuditLogger(db)
+    const app = withUser('admin', createKvRoutes({ store, audit }))
+
+    await app.request('/entry', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'global', namespace: 'tiktok', key: 'token', value: 'sk-super-secret-value', secret: true }),
+    })
+    await app.request('/entry', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'global', namespace: 'tiktok', key: 'plain', value: 1 }),
+    })
+
+    const res = await app.request('/namespaces?scope=global')
+    const parsed = KvNamespacesResponseSchema.parse(await res.json())
+    expect(parsed.items).toEqual([{ namespace: 'tiktok', entries: 2, secrets: 1 }])
+    const raw = JSON.stringify(parsed)
+    expect(raw).not.toContain('sk-super-secret-value')
+    expect(raw).not.toContain('sk-supe')
   })
 })

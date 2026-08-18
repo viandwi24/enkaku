@@ -12,6 +12,7 @@ import {
   type RawStream,
   type ShellResult,
 } from '@enkaku/adb'
+import { grantRuntimePermissions, isGrantAllPermissionsRejection } from '@enkaku/drivers'
 import type { InstallResult, MediaScanMode, MediaScanResult, PushResult } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts, devices } from '../db/schema'
@@ -71,6 +72,16 @@ export interface InstallOpts {
   grantPermissions?: boolean
   /** `-d`, default false. */
   allowDowngrade?: boolean
+  /**
+   * The package this APK installs, when the caller knows it. Only used on the
+   * `-g`-refused fallback path (see `performInstall`): the explicit
+   * `pm grant`s that stand in for the flag have to be aimed at a package
+   * name, and `pm install` does not reliably print one. A caller that cannot
+   * supply it (an operator installing an arbitrary uploaded APK) still gets
+   * the install — with a line in `output` saying the runtime permissions were
+   * left ungranted, rather than a silent half-install.
+   */
+  packageName?: string
 }
 
 export interface TransferService {
@@ -291,20 +302,52 @@ async function performInstall(
     // version; dropping `-g` would leave runtime permissions ungranted,
     // which breaks a consumer (e.g. the UI server) at USE time, not install
     // time (plan 106 §5 step 106.8) — asserted directly in `transfer.test.ts`.
-    const flags = [
-      (opts.reinstall ?? true) ? '-r' : '',
-      (opts.grantPermissions ?? true) ? '-g' : '',
-      opts.allowDowngrade ? '-d' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-    const cmd = `pm install ${flags} ${shellQuote(remotePath)}`.replace(/\s+/g, ' ').trim()
-    const output = await runOnLane(backend, cmd, deps.settings().installTimeoutMs, controller.signal)
-    const parsed = parseInstallOutput(output)
+    const runInstall = async (grant: boolean): Promise<string> => {
+      const flags = [(opts.reinstall ?? true) ? '-r' : '', grant ? '-g' : '', opts.allowDowngrade ? '-d' : ''].filter(Boolean).join(' ')
+      const cmd = `pm install ${flags} ${shellQuote(remotePath)}`.replace(/\s+/g, ' ').trim()
+      return runOnLane(backend, cmd, deps.settings().installTimeoutMs, controller.signal)
+    }
+
+    const wantGrant = opts.grantPermissions ?? true
+    let output = await runInstall(wantGrant)
+    let parsed = parseInstallOutput(output)
+    let grantNote = ''
+
+    // Some builds refuse the `-g` flag itself rather than the install: a
+    // Xiaomi 25128PC17G (HyperOS, Android 16) denies it to the shell user, and
+    // that single rejection was failing BOTH ui-server APKs and the guest
+    // agent on that phone. `-g` is a convenience — install without it and
+    // grant the same permissions by hand. Detected on the exact rejection, so
+    // an ordinary `Failure [INSTALL_FAILED_*]` is still a failure and is
+    // never retried blindly (see `isGrantAllPermissionsRejection`).
+    if (!parsed.success && wantGrant && isGrantAllPermissionsRejection(parsed.reason)) {
+      output = await runInstall(false)
+      parsed = parseInstallOutput(output)
+      if (parsed.success) {
+        const packageName = opts.packageName ?? parsed.pkg
+        if (packageName) {
+          // Throws when a grant does not take — an app installed WITHOUT the
+          // permissions it asked for is a worse state than one that failed to
+          // install, and must not be reported as a success.
+          await grantRuntimePermissions({
+            exec: (cmd) => backend.adb.exec(backend.serial, cmd, { profile: 'appLifecycle' }),
+            packageName,
+          })
+          grantNote = `\n[enkaku] this device refuses the -g install flag; ${packageName}'s runtime permissions were granted explicitly instead`
+        } else {
+          // Named in the result rather than dropped: the caller asked for
+          // `-g`, did not get it, and nothing here knows which package to
+          // aim `pm grant` at.
+          grantNote =
+            '\n[enkaku] this device refuses the -g install flag and no package name was supplied, so runtime permissions were NOT granted — the app may misbehave at use time'
+        }
+      }
+    }
+
     if (!parsed.success) {
       throw new EnkakuError('E_INSTALL_FAILED', parsed.reason)
     }
-    return { package: parsed.pkg, durationMs: Date.now() - startedAt, output: output.trim() }
+    return { package: opts.packageName ?? parsed.pkg, durationMs: Date.now() - startedAt, output: `${output.trim()}${grantNote}` }
   } finally {
     // The staged APK is deleted in this `finally` on every exit path —
     // success, failure, AND cancel (plan 39 §4.2 step 4, acceptance #4).

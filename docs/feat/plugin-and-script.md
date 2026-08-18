@@ -170,17 +170,30 @@ one-member project that publishes with no edits. Still no side effects: shape va
 retries, isolation) belongs to the core's runner, so a plugin published with an older SDK keeps
 working on a newer core.
 
-### 4.2 `definePlugin` — many members, one bundle
+### 4.2 `definePlugin` — many members, one bundle, optionally one service
 
 ```ts
 export default definePlugin({
   id: 'tiktok',                  // [a-z0-9][a-z0-9-]* — this is ALSO the KV namespace
-  version: '1.2.0',              // stamped onto every member
+  version: '1.9.0',              // stamped onto every member
   title, description,
   reset: { packages: ['com.ss.android.ugc.trill'] },   // merged with each member's own
-  scripts: [autoScroll, switchAccount, searchFollow],  // PluginMemberScript[]
+  scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScroll],  // PluginMemberScript[]
+  // OPTIONAL (plan 109 §4.2) — a long-lived handler that runs inside the core process for as long
+  // as the plugin is active. `permissions` is what a script's own `ctx.farm.call(...)` (§4.3) is
+  // allowed to reach, and what the operator is shown and consents to at install.
+  service: defineService({ permissions: ['fs.read', 'job.run', 'device.list'], setup(ctx) { /* … */ } }),
+  // OPTIONAL (plan 108 §3.2) — the Studio screen(s) this plugin contributes; see `@enkaku/sdk`'s
+  // own README, "A plugin can own a screen — `surface`".
+  surface: { nav: [/* … */], views: { /* … */ }, actions: { /* … */ } },
 })
 ```
+
+Both `service` and `surface` are additive: a plugin that declares neither is exactly the plugin
+this section already described. This example is the real, current shape of
+`plugins/tiktok-automation-pack/src/index.ts` — plan 113 (M78) added `postVideo`, `enqueueVideo`,
+the `service` block, and its `content` view; the other four members and the `accounts` view predate
+it (plan 86, plan 108).
 
 Validated at import time, on the author's machine: id shape, semver, non-empty `scripts`, unique
 member ids, `run` is a function, `params`/`result` are Zod schemas, and a member declaring its own
@@ -200,9 +213,22 @@ never leave the bundle. Plugin-level `title`/`description` *do* reach the `plugi
 
 ### 4.3 `ScriptContext` — what a script can reach
 
-`device`, `params` (already `params.parse`d), `artifact`, `log`, `job`, `error` (finish-after-failure
-only), `kv` (`device` + `global`), `jobs` (the queue on its own device — plan 80/81),
-`onAssist` (plan 91), `progress` (plan 97 — coalesced, never persisted, never a result).
+Since plan 109 step 109.1, `ScriptContext` **extends `PluginContext`** (`packages/sdk/src/types.ts`)
+rather than re-declaring its own `log`/`kv` — a plugin helper typed `(ctx: PluginContext) => …`
+therefore accepts a script's context by construction, not by two interfaces being kept in step by
+hand. Its own members: `device`, `params` (already `params.parse`d), `artifact`, `job`, `error`
+(finish-after-failure only), `kv` (`device` + `global`), `jobs` (the queue on its own device — plan
+80/81), `onAssist` (plan 91), `progress` (plan 97 — coalesced, never persisted, never a result).
+Inherited from `PluginContext` (`packages/sdk/src/runtime.ts`): `storage` (`device`/`global`/
+`forDevice(id)` — the *same* KV store `kv` above exposes, under plan 79's older name; both names
+work and neither is going away, because a bundle already published against `ctx.kv` cannot be
+rewritten), `log`, and **`farm`** — the capability broker (plan 109 §3.1, §4.3) a script reaches
+through `ctx.farm.call(capability, input, outputSchema)`. A call is refused *before* it runs
+(`E_FARM_UNDECLARED`) unless the OWNING PLUGIN named that capability in its own
+`defineService({ permissions })` (§4.2) — and refused again, live, if the publishing user's role
+does not hold it (C4/C5 in plan 113's own evidence section). `plugins/tiktok-automation-pack/src/
+captions.ts`'s `readCaptionsFile` is a real, worked example: `ctx.farm.call('fs.read', { path }, …)`,
+behind `permissions: ['fs.read', 'job.run', 'device.list']` on the pack's own `service`.
 
 ---
 

@@ -9,7 +9,7 @@ export interface PreparationRegistryDeps {
   uiServerApkPaths: () => Promise<{ app: string; test: string }>
   uiServerExpectedArtifact: () => Promise<UiServerExpectedArtifact | null>
   /** Plan 106 §5 step 106.8 — see `ui-server-component.ts`'s own `UiServerComponentDeps.installApk` doc comment. Optional; falls back to `hostAdb` (the pre-106.8 path) when absent. */
-  installApk?: (deviceId: string, localPath: string, label: 'app' | 'test') => Promise<void>
+  installApk?: (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string) => Promise<void>
   log: Logger
 }
 

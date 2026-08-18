@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { AlertTriangle } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 
 export interface EntityTab {
@@ -15,6 +16,17 @@ export interface EntityTab {
    * local inspector to attach to).
    */
   disabledReason?: string
+  /**
+   * A danger marker beside the label, with this text as its tooltip — for the
+   * one thing a tab strip is otherwise bad at: a panel that is not on screen
+   * and is in trouble. `/plugins` keeps BOTH of its panels mounted and loading
+   * precisely so this can be true (a `/api/scripts` 500 behind a closed tab
+   * would otherwise be silent), and this is where that fact surfaces.
+   *
+   * Distinct from `disabledReason`: an alerting tab is still fully reachable —
+   * it is the tab you most want to click.
+   */
+  alert?: string
 }
 
 /**
@@ -75,6 +87,16 @@ export function EntityTabs({
               {t.label}
               {t.count !== null && t.count !== undefined && (
                 <span className="readout rounded-full bg-surface-2 px-1.5 text-[10.5px] text-fg-muted">{t.count}</span>
+              )}
+              {/* A native `title`, not a Radix `Tooltip`: this strip is rendered
+                  by pages that are mounted without a `TooltipProvider` (the
+                  `disabledReason` branch above is only used inside `AppShell`,
+                  which supplies one), and a marker that throws is worse than a
+                  marker with a plainer tooltip. */}
+              {t.alert && (
+                <span className="flex items-center text-led-danger" title={t.alert} aria-label={t.alert}>
+                  <AlertTriangle className="size-3.5" aria-hidden />
+                </span>
               )}
             </Link>
           )

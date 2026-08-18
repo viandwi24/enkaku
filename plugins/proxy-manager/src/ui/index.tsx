@@ -3,6 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '
 import { BANNER_NOT_BUILT } from '../shared'
 import { AssignmentsTab } from './parts/assignments'
 import { CatalogueTab } from './parts/catalogue'
+import { LogsTab } from './parts/logs'
 import { RunsTab } from './parts/runs'
 
 /**
@@ -27,9 +28,10 @@ import { RunsTab } from './parts/runs'
  *    `enkaku-host.d.ts` and checked by nothing).
  * 3. **The tab lives in the URL** (§9 Q2). `params`/`setParams` are the
  *    unclaimed half of the query, handed over uninterpreted, so a reload lands
- *    where the operator was. This screen keeps TWO independent keys there —
- *    `tab` and `q` — which is exactly the case the patch semantics exist for:
- *    writing one never has to know about the other.
+ *    where the operator was. This screen keeps THREE independent keys there —
+ *    `tab`, `q` and `proxy` — which is exactly the case the patch semantics
+ *    exist for: writing one never has to know about the others, and a row's
+ *    own "Logs" button writes two of them in one patch (plan 112 §3.11).
  * 4. **Its own stylesheet** (§9 Q1, step 111.9). `index.css` beside this file
  *    compiles to `ui/index.css` in the package, and Studio links it before
  *    this module. Two classes below — the banner's hazard stripes and the
@@ -40,15 +42,18 @@ import { RunsTab } from './parts/runs'
  *
  * `BANNER_NOT_BUILT` sits above the tabs, on every tab, for as long as it is
  * true (plan 111 criterion 12; `docs/design.md`: *a degraded or partial state
- * is never worded as the full one*). A React rewrite is precisely the moment a
- * screen starts LOOKING finished, and this pack still stores rows and contacts
- * nothing. The sentence is declared in `../shared.ts` and used by the manifest
- * too, so the plugin list and the screen cannot drift into disagreeing.
+ * is never worded as the full one*). A screen that grows Start and Stop buttons
+ * is precisely the moment it starts LOOKING finished — plan 112 §3.12 exists
+ * for that moment — and what it still cannot do is make any app on any phone
+ * USE one of these bridges. The sentence is declared in `../shared.ts` and used
+ * by the manifest too, so the plugin list and the screen cannot drift into
+ * disagreeing, and it is narrowed there rather than edited here.
  */
 
 const TABS = [
   { id: 'catalogue', label: 'Catalogue' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'logs', label: 'Logs' },
   { id: 'runs', label: 'Runs' },
 ] as const
 
@@ -72,16 +77,36 @@ function ProxyManagerView({ params, setParams }: PluginViewProps) {
    */
   const tab: TabId = isTab(params.tab) ? params.tab : DEFAULT_TAB
   const query = params.q ?? ''
+  /**
+   * The third key (plan 112 §3.11): which proxy the Logs tab is filtered to.
+   * `null` is "all", and it is spelled by the parameter being ABSENT rather
+   * than by a magic value — a URL a person can read.
+   */
+  const proxy = params.proxy ?? null
 
-  // Two independent writers over one query string. Neither passes the other's
-  // key, and neither has to: a key absent from the patch is left exactly as it
+  // Three independent writers over one query string. None passes another's
+  // key, and none has to: a key absent from the patch is left exactly as it
   // was (§9 Q2). Clearing the filter passes `null` rather than `''`, so the
   // URL loses the parameter instead of carrying `&q=`.
   const setTab = useCallback((next: string) => setParams({ tab: next === DEFAULT_TAB ? null : next }), [setParams])
   const setQuery = useCallback((next: string) => setParams({ q: next === '' ? null : next }), [setParams])
+  const setProxy = useCallback((next: string | null) => setParams({ proxy: next }), [setParams])
+  /**
+   * A row's own Logs button — two keys in ONE patch, which is the case the
+   * patch semantics exist for: it moves the tab and sets the filter together,
+   * so the URL an operator lands on is the one they can paste back.
+   */
+  const showLogsFor = useCallback((id: string) => setParams({ tab: 'logs', proxy: id }), [setParams])
 
   return (
-    <div className="space-y-4">
+    /**
+     * `@container` on the screen's own root as well as on each tab's, so a
+     * panel inside it can size itself against THIS box rather than the window.
+     * A viewport breakpoint here would be a claim about something the component
+     * cannot see — which is how a layout written for a wide page breaks inside
+     * a narrow one.
+     */
+    <div className="@container space-y-4">
       {/*
         The plugin's own Tailwind, class one of two: diagonal hazard stripes
         behind the honesty banner. `repeating-linear-gradient` appears nowhere
@@ -89,7 +114,15 @@ function ProxyManagerView({ params, setParams }: PluginViewProps) {
         wrong, rather than invisibly wrong — if `ui/index.css` never arrives.
       */}
       <div className="rounded-lg border border-led-warn/35 bg-[repeating-linear-gradient(135deg,transparent_0_9px,rgb(255_255_255/0.035)_9px_18px)] px-4 py-3">
-        <p className="text-[12.5px] font-medium">Nothing on this screen contacts a proxy</p>
+        {/*
+          The headline says the claim that survives everything this plan built.
+          It used to read "Nothing on this screen contacts a proxy", which was
+          true when the pack stored rows and dialled nothing and stopped being
+          true the moment the supervisor landed. Narrowed, not deleted — and
+          narrowed to the half that gets MORE important as the screen gains
+          controls, not less.
+        */}
+        <p className="text-[12.5px] font-medium">A proxy an app can be pointed at is not a route an app cannot escape</p>
         <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-fg-muted">{BANNER_NOT_BUILT}</p>
       </div>
 
@@ -109,10 +142,13 @@ function ProxyManagerView({ params, setParams }: PluginViewProps) {
           operator leaves open.
         */}
         <TabsContent value="catalogue" className="pt-2">
-          <CatalogueTab query={query} onQueryChange={setQuery} />
+          <CatalogueTab query={query} onQueryChange={setQuery} onShowLogs={showLogsFor} />
         </TabsContent>
         <TabsContent value="assignments" className="pt-2">
           <AssignmentsTab />
+        </TabsContent>
+        <TabsContent value="logs" className="pt-2">
+          <LogsTab proxy={proxy} onProxyChange={setProxy} />
         </TabsContent>
         <TabsContent value="runs" className="pt-2">
           <RunsTab />

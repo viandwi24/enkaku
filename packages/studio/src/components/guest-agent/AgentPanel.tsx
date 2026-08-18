@@ -73,6 +73,10 @@ function primaryActionLabel(state: GuestAgentState): string | null {
     case 'unreachable':
     case 'failed':
       return 'Retry'
+    // Not 'Retry': the last pass did not go wrong. Android's VPN consent has
+    // to be accepted on the phone itself, and this re-probes once it has been.
+    case 'consent-required':
+      return 'Check again'
     case 'ready':
     case 'unsupported':
       return null
@@ -149,100 +153,112 @@ export function AgentPanel({
   const disabled = !canUse
 
   return (
-    <div className="px-5 py-4">
-      {disabled && (
-        <p className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
-          Take control of this device to install, update, or remove its guest agent.
-        </p>
-      )}
+    /*
+     * Same reasoning as `NetworkPanel`: `px-5` belongs to the device page's own
+     * tab, which supplies no padding; the Settings popup's section pane does.
+     * The container element is separate from the padded one because a size
+     * container's own padding feeds back into the width its queries read.
+     */
+    <div className="@container">
+      <div className="py-4 @min-[32rem]:px-5">
+        {disabled && (
+          <p className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+            Take control of this device to install, update, or remove its guest agent.
+          </p>
+        )}
 
-      {loadError ? (
-        <ErrorState message={loadError} onRetry={load} />
-      ) : status === null ? (
-        <LoadingRows rows={2} />
-      ) : (
-        <div className="max-w-3xl space-y-4">
-          <section className="rounded-lg border bg-surface p-4">
-            <h3 className="text-[13.5px] font-semibold tracking-tight">Guest agent</h3>
-            <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
-              The on-device helper behind the network route, the screen label, non-ASCII typing, and mock location —
-              one app, four facets, negotiated by capability (plan 90). A package being present does not mean it can
-              be driven — "installed" and "ready" are shown as different states on purpose.
-            </p>
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={load} />
+        ) : status === null ? (
+          <LoadingRows rows={2} />
+        ) : (
+          <div className="max-w-3xl space-y-4">
+            <section className="@container rounded-lg border bg-surface p-4">
+              <h3 className="text-[13.5px] font-semibold tracking-tight">Guest agent</h3>
+              <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+                The on-device helper behind the network route, the screen label, non-ASCII typing, and mock location —
+                one app, four facets, negotiated by capability (plan 90). A package being present does not mean it can
+                be driven — "installed" and "ready" are shown as different states on purpose.
+              </p>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <AgentStateBadge state={status.state} />
-              {status.reason && <span className="text-[12px] text-fg-muted">{status.reason}</span>}
-            </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <AgentStateBadge state={status.state} />
+                {status.reason && <span className="text-[12px] text-fg-muted">{status.reason}</span>}
+              </div>
 
-            <dl className="mt-3 grid gap-1.5 sm:grid-cols-2">
-              <Row label="app version" value={status.appVersion ?? '—'} />
-              <Row label="Android SDK" value={status.androidSdkInt !== undefined ? String(status.androidSdkInt) : '—'} />
-              {/*
-                `checkedAt` (plan 90 §4.7's stated extension) has no producer
-                on this endpoint yet — see `GuestAgentStatusResponseSchema`'s
-                own doc comment (`@enkaku/protocol`). Rendered as `—`, the
-                same "no data" convention every other looked-up fact on this
-                page already uses (`DeviceHeader`'s popover), never a fake
-                timestamp.
-              */}
-              <Row label="last checked" value={status.checkedAt ? relativeTime(status.checkedAt) : '—'} />
-            </dl>
+              {/* Two `label … value` rows sit side by side once the card can
+                  give each about 11.5rem: 2 × 11.5 + 0.375rem gap ≈ 24rem of
+                  the CARD's width (a container query, so a narrow dialog pane
+                  stacks them while the device page keeps two columns). */}
+              <dl className="mt-3 grid gap-1.5 @min-[24rem]:grid-cols-2">
+                <Row label="app version" value={status.appVersion ?? '—'} />
+                <Row label="Android SDK" value={status.androidSdkInt !== undefined ? String(status.androidSdkInt) : '—'} />
+                {/*
+                  `checkedAt` (plan 90 §4.7's stated extension) has no producer
+                  on this endpoint yet — see `GuestAgentStatusResponseSchema`'s
+                  own doc comment (`@enkaku/protocol`). Rendered as `—`, the
+                  same "no data" convention every other looked-up fact on this
+                  page already uses (`DeviceHeader`'s popover), never a fake
+                  timestamp.
+                */}
+                <Row label="last checked" value={status.checkedAt ? relativeTime(status.checkedAt) : '—'} />
+              </dl>
 
-            <div className="mt-3">
-              <h4 className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">Capabilities</h4>
-              {namedFacets(status.capabilities).length > 0 ? (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {namedFacets(status.capabilities).map((facet) => (
-                    <span
-                      key={facet}
-                      className="inline-flex items-center rounded-full border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-fg-muted"
-                    >
-                      {facet}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-1 text-[12px] text-fg-subtle">Not reported yet — the agent has not answered a handshake.</p>
-              )}
-            </div>
+              <div className="mt-3">
+                <h4 className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">Capabilities</h4>
+                {namedFacets(status.capabilities).length > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {namedFacets(status.capabilities).map((facet) => (
+                      <span
+                        key={facet}
+                        className="inline-flex items-center rounded-full border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-fg-muted"
+                      >
+                        {facet}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-[12px] text-fg-subtle">Not reported yet — the agent has not answered a handshake.</p>
+                )}
+              </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
-              {primaryActionLabel(status.state) && (
-                <Button
-                  size="sm"
-                  variant={status.state === 'not-installed' ? 'secondary' : 'outline'}
-                  disabled={disabled || isPending('install')}
-                  onClick={() => void installOrRepair(primaryActionLabel(status.state)!)}
-                >
-                  {isPending('install') ? `${primaryActionLabel(status.state)}…` : primaryActionLabel(status.state)}
-                </Button>
-              )}
-              {/* Observed anywhere from seconds to ~2m40s on the same device, so the copy commits
-                  to no number. Without it the panel looks stuck, which is what led to this being
-                  reported as a broken button (carried over from the old NetworkPanel block). */}
-              {isPending('install') && (
-                <span className="text-[12px] text-fg-muted">
-                  Pushing the APK and provisioning it — this can take a couple of minutes. Safe to leave this tab.
-                </span>
-              )}
-              {removeOffered(status.state) && (
-                <ConfirmDialog
-                  trigger={
-                    <Button size="sm" variant="ghost" disabled={disabled}>
-                      Remove
-                    </Button>
-                  }
-                  title={`Remove the guest agent from ${deviceLabel}?`}
-                  description="Any active network route on this device is torn down first. The ACTIVATE_VPN grant is tied to this app's uid, so removing it drops that too — reinstalling later means going through the whole provisioning sequence again."
-                  confirmLabel="Remove"
-                  onConfirm={remove}
-                />
-              )}
-            </div>
-          </section>
-        </div>
-      )}
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
+                {primaryActionLabel(status.state) && (
+                  <Button
+                    size="sm"
+                    variant={status.state === 'not-installed' ? 'secondary' : 'outline'}
+                    disabled={disabled || isPending('install')}
+                    onClick={() => void installOrRepair(primaryActionLabel(status.state)!)}
+                  >
+                    {isPending('install') ? `${primaryActionLabel(status.state)}…` : primaryActionLabel(status.state)}
+                  </Button>
+                )}
+                {/* Observed anywhere from seconds to ~2m40s on the same device, so the copy commits
+                    to no number. Without it the panel looks stuck, which is what led to this being
+                    reported as a broken button (carried over from the old NetworkPanel block). */}
+                {isPending('install') && (
+                  <span className="text-[12px] text-fg-muted">
+                    Pushing the APK and provisioning it — this can take a couple of minutes. Safe to leave this tab.
+                  </span>
+                )}
+                {removeOffered(status.state) && (
+                  <ConfirmDialog
+                    trigger={
+                      <Button size="sm" variant="ghost" disabled={disabled}>
+                        Remove
+                      </Button>
+                    }
+                    title={`Remove the guest agent from ${deviceLabel}?`}
+                    description="Any active network route on this device is torn down first. The ACTIVATE_VPN grant is tied to this app's uid, so removing it drops that too — reinstalling later means going through the whole provisioning sequence again."
+                    confirmLabel="Remove"
+                    onConfirm={remove}
+                  />
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -75,6 +75,7 @@ class ControlService : Service() {
   override fun onDestroy() {
     deadMan.stop()
     running.set(false)
+    ControlChannelState.markStopped(null)
     runCatching { server?.close() }
     workers.shutdownNow()
     acceptThread?.interrupt()
@@ -113,6 +114,7 @@ class ControlService : Service() {
           try {
             LocalServerSocket(Protocol.SOCKET_NAME).use { socket ->
               server = socket
+              ControlChannelState.markListening()
               Log.i(TAG, "control channel listening on localabstract:${Protocol.SOCKET_NAME}")
               while (running.get()) {
                 val client = socket.accept()
@@ -122,7 +124,15 @@ class ControlService : Service() {
           } catch (t: Throwable) {
             // A closed socket during shutdown is expected; anything else is worth surfacing, since
             // the host reports an unreachable channel as `unreachable` rather than `ready`.
-            if (running.get()) Log.e(TAG, "control channel stopped", t)
+            if (running.get()) {
+              Log.e(TAG, "control channel stopped", t)
+              // Only a loop that died on its own carries a reason — a shutdown-time close is
+              // already covered by `onDestroy`'s own `markStopped(null)`, and reporting it as a
+              // failure on the status screen would be a lie about an ordinary stop.
+              ControlChannelState.markStopped(t.message ?: t.javaClass.simpleName)
+            } else {
+              ControlChannelState.markStopped(null)
+            }
           }
         },
         "enkaku-control-accept",
@@ -162,11 +172,20 @@ class ControlService : Service() {
     // permission would block the shell too — it is not signed with our key.
     // See docs/research/android-guest-agent.md §1.1.
     val token = request.optString("token")
-    if (!Pairing.hasToken()) return error(id, Protocol.ERR_NOT_PAIRED, "no host has paired yet")
-    if (!Pairing.matches(token)) return error(id, Protocol.ERR_UNAUTHORISED, "bad or missing token")
+    if (!Pairing.hasToken()) {
+      ControlChannelState.recordRejection(Protocol.ERR_NOT_PAIRED)
+      return error(id, Protocol.ERR_NOT_PAIRED, "no host has paired yet")
+    }
+    if (!Pairing.matches(token)) {
+      ControlChannelState.recordRejection(Protocol.ERR_UNAUTHORISED)
+      return error(id, Protocol.ERR_UNAUTHORISED, "bad or missing token")
+    }
 
     // Any authorised request proves the farm is still there — including the core's heartbeat.
     deadMan.touch()
+    // The same proof, kept where a human can read it: `StatusActivity` renders "last contact" off
+    // this, and the dead-man's switch's own `lastContact` is private to it by design.
+    ControlChannelState.recordRequest(method)
 
     return when (method) {
       Protocol.METHOD_HELLO ->

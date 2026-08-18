@@ -82,6 +82,14 @@ export const KvCallSchema = z.discriminatedUnion('op', [
     key: z.string(),
     value: z.unknown(),
     secret: z.boolean().optional(),
+    /**
+     * Whether a secret write also stores its display hint (plan 112 step 112.2). Optional, and
+     * ABSENT means `true` — the store's own default (`KvSetOptions.hint`), so every caller that
+     * predates this field sends the same message and gets the same row. `false` is the opt-out a
+     * caller storing a credential must send, because the hint is `${first 7}…${last 4}` of the
+     * plaintext, kept in the clear on the row and returned by every read path.
+     */
+    hint: z.boolean().optional(),
     ttlSec: z.number().int().positive().optional(),
   }),
   z.object({
@@ -91,6 +99,8 @@ export const KvCallSchema = z.discriminatedUnion('op', [
     value: z.unknown(),
     expectedVersion: z.number().int(),
     secret: z.boolean().optional(),
+    /** As `set`'s — absent means `true`. */
+    hint: z.boolean().optional(),
     ttlSec: z.number().int().positive().optional(),
   }),
   z.object({ op: z.literal('increment'), scope: KvScopeSchema, key: z.string(), by: z.number().optional() }),
@@ -352,6 +362,13 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
     t: z.literal('artifact.result'),
     callId: z.string(),
     ok: z.boolean(),
+    /**
+     * The saved artifact's id (plan 115 §3.6) — what `ctx.artifact.file()`
+     * hands back to a script. Present whenever `ok` is true; optional here
+     * only for wire tolerance (a parent built before this plan never sent
+     * it), never omitted by anything in this codebase today.
+     */
+    artifactId: z.string().optional(),
     error: z.object({ code: z.string(), message: z.string() }).optional(),
   }),
   z.object({

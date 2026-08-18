@@ -9,6 +9,8 @@ import type { Role } from '../auth/service'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
 import type { LeaseManager } from '../lease/lease-manager'
+import type { DeviceNetworkPort } from '../network/route-service'
+import { createDeviceNetworkService, type DeviceNetworkCapabilityService } from './device-network'
 import type { DeviceStateMachine } from '../device/state-machine'
 import type { ReadinessManager } from '../device/readiness'
 import { resolveScriptRef } from '../scripts/resolve'
@@ -148,6 +150,19 @@ export interface CapabilityContext {
    * memory of a prior read" rather than throwing).
    */
   fileToolsSession?: Session
+  /**
+   * The device network layer's one door, with this caller's lease admission and
+   * principal bound in (plan 114 §3.3, step 114.9) — what
+   * `device.network.get`/`.set`/`.clear` delegate to, and therefore what a
+   * plugin holding `device.network` reaches through `ctx.farm.call`.
+   *
+   * Optional for two separate reasons, both real: an orchestrator-mode host has
+   * no local device to have a route at all, and every pre-existing test that
+   * hand-builds a `CapabilityContext` literal keeps compiling unedited. The
+   * capabilities refuse with a named `E_NOT_SUPPORTED` when it is absent rather
+   * than throwing something unreadable.
+   */
+  network?: DeviceNetworkCapabilityService
 }
 
 /**
@@ -284,6 +299,17 @@ export interface CapabilityContextDeps {
    * hand-builds a `CapabilityContextDeps` literal keeps compiling unedited.
    */
   assistedByOf?: (deviceId: string) => LeaseHolder[]
+  /**
+   * Plan 114 §3.3, step 114.9 — the network layer's one door, threaded in from
+   * `createGuestAgentRoutes`'s handle exactly the way `jobService`/`workspace`
+   * are. `createCapabilityContext` wraps it with this caller's lease admission
+   * and principal; the raw port has neither and is never handed to a handler.
+   *
+   * Optional, so orchestrator mode and every pre-existing
+   * `CapabilityContextDeps` literal keep working — the capabilities refuse by
+   * name when it is absent.
+   */
+  network?: DeviceNetworkPort
 }
 
 /**
@@ -332,6 +358,11 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     currentRunId: null,
     agentTree: null,
     notify: deps.notify,
+    // Plan 114 step 114.9 — bound to THIS actor, so the transient lease a
+    // network write takes is held under the caller's own principal and the
+    // route's `setBy` names them. A context with no network port simply has no
+    // `network`, and the capabilities say so by name.
+    ...(deps.network ? { network: createDeviceNetworkService({ port: deps.network, leases: deps.leases }, actor) } : {}),
     fileToolsSession: fileToolsSessionFor(actor, null),
     hasPermission: (permission) => (actor ? can(actor.role, permission) : false),
 

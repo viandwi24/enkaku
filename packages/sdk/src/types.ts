@@ -232,7 +232,15 @@ export interface DeviceApi {
 export interface ArtifactApi {
   /** The screenshot is taken IN THE CORE and stored as a job artifact. */
   screenshot(label: string): Promise<void>
-  file(label: string, data: Uint8Array | string, opts?: { ext?: string }): Promise<void>
+  /**
+   * Saves bytes (or text) as a job artifact and returns the id it was saved
+   * under (plan 115 §3.6, W5) — the bridge between a script that has bytes
+   * (say, read out of the workspace) and `ctx.device.push({ artifactId })`,
+   * which had no way to reach a freshly-minted artifact before this.
+   * Additive: every existing caller ignores the return value already, so
+   * nothing published before this plan needs to change.
+   */
+  file(label: string, data: Uint8Array | string, opts?: { ext?: string }): Promise<{ artifactId: string }>
 }
 
 /** One entry as `kv.list` returns it (plan 79 §4.1, §4.4) — a secret's `value` is always `null`
@@ -256,6 +264,17 @@ export interface KvListResult {
 export interface KvSetOptions {
   /** Encrypted at rest and never returned by the HTTP API or a job log — see the SDK README. */
   secret?: boolean
+  /**
+   * Whether a `secret` write also stores a short display hint — `${first 7}…${last 4}` of the
+   * plaintext — on the row (plan 112 step 112.2). Defaults to `true`, which is what you want for
+   * an API key with a public prefix: it is how an operator tells two keys apart on the Data
+   * screen. Pass `false` for a **credential**: the hint is kept in the clear and returned by every
+   * read path, so eleven characters of a password would be visible to anyone holding
+   * `plugin.data`.
+   *
+   * Per write, not per key: pass it on every write of that key, exactly as with `secret`.
+   */
+  hint?: boolean
   /** Seconds until this value stops being readable — swept lazily, but never returned once past. */
   ttlSec?: number
 }

@@ -40,6 +40,67 @@ Tokens, screen patterns, and writing rules live in [`docs/design.md`](../../docs
 
 The device page uses the query param `/device?id=<deviceId>` rather than a dynamic `[id]` route, because a static export cannot pre-render dynamic ids.
 
+## Workspace file presenters (plan 116)
+
+`/workspace` (`app/workspace/page.tsx`) does not render every file through
+one `Textarea`. It resolves a **presenter** from the file's content type and
+mounts that instead — `components/workspace/presenters/index.ts` is the
+whole seam:
+
+```ts
+export interface FilePresenter {
+  id: 'text' | 'image' | 'video' | 'download'
+  /** First match in the registry wins — order is meaning, not style. */
+  match(file: { contentType: string; path: string }): boolean
+  capabilities: { view: true; edit: boolean }
+  /** Over this many bytes, the page shows metadata and a download instead of `Component`. */
+  maxBytes: number
+  /** Why this presenter cannot edit — rendered verbatim; required when `edit` is `false`. */
+  readOnlyReason?: string
+  Component: (props: PresenterProps) => JSX.Element
+}
+```
+
+Deliberately not called a "driver" — plan 115 already owns that word for a
+different seam (`ContentDriver`, `packages/core/src/workspace/drivers/index.ts`)
+answering WHERE a file's bytes live; this one answers HOW a file is shown
+and whether it can be edited. Neither file mentions the other's word.
+
+**Adding a presenter is one new file plus one registry line, and nothing
+else** — this is how the image and video presenters (`presenters/image.tsx`,
+`presenters/video.tsx`) were added, without touching `app/workspace/page.tsx`
+at all:
+
+1. Write a file exporting a `FilePresenter`. `match` decides which content
+   types it claims; `capabilities.edit: false` requires a `readOnlyReason`
+   (the sentence the page shows in place of a Save control — the page reads
+   this rather than a component special-casing itself); `maxBytes` is the
+   ceiling past which the page shows the file's metadata and a download
+   instead of mounting `Component` at all.
+2. Add the export to `REGISTRY` in `index.ts`, in the position its `match`
+   needs. Order is meaning: the first match wins, so a narrower presenter
+   must sit ahead of a broader one, and the catch-all `download` presenter
+   (`match: () => true`) must stay last or it would swallow every file
+   before a real presenter ever saw it.
+
+A presenter never fetches its own bytes for anything but text.
+`PresenterProps.src` is the `GET /api/workspace/file?path=…` URL (streamed,
+`Range`-aware — see `packages/core/README.md`'s own section on that route),
+and an image or video presenter points an `<img>`/`<video>` straight at it.
+Only `PresenterProps.text` carries loaded content plus a CAS-guarded
+`onSave`, and the page only supplies it to a presenter whose
+`capabilities.edit` is `true`.
+
+A type with no presenter still resolves to one: `download` names the
+content type, shows the size, and offers the file at the same `src` URL as
+a link — a real presenter, not a blank pane or an error.
+
+`Component`'s return type is `JSX.Element`, imported as `import type { JSX }
+from 'react'` — **not** the bare `JSX` namespace. Studio is on React 19,
+where the JSX types live under `declare module 'react'` and there is no
+ambient global `JSX` namespace; writing the bare form fails with
+`TS2503: Cannot find namespace 'JSX'`.
+
 ## Tab lifecycle and the Wall (plan 42)
 
 The device page's tabs stay mounted and are hidden with the `hidden` HTML attribute (`TabPanel` in `app/device/page.tsx`) instead of being conditionally rendered — a tab switch no longer unmounts `LiveView`, which is what makes returning to Control instant instead of replaying the wake-up sequence. **Monitor and Crashes are the deliberate exception**: each holds a device-side `logcat` stream, so they stay mount-on-demand exactly as before, with their own cleanup effect stopping the stream on unmount. A gated panel like `FilesPanel` renders its controls disabled with one explanatory line rather than an empty panel, so "Take control" from any tab takes effect immediately without a tab switch.

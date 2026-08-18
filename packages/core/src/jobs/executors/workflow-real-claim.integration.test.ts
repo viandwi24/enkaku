@@ -174,7 +174,7 @@ describe("a three-node workflow on one device — plan 99 step 99.7's own verifi
     const runner = createJobRunner({
       logDir: `/tmp/enkaku-workflow-real-claim-logs-${crypto.randomUUID()}`,
       sessions,
-      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
       onLog: () => {},
       onArtifact: () => {},

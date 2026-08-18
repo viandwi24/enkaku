@@ -1,6 +1,8 @@
 package dev.enkaku.guestagent.control
 
+import android.os.SystemClock
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -13,13 +15,29 @@ import java.util.concurrent.atomic.AtomicReference
 object Pairing {
   private val token = AtomicReference<String?>(null)
 
+  /**
+   * [SystemClock.elapsedRealtime] when a token was last accepted, or [ControlChannelState.NEVER].
+   * The token itself never leaves this object; this is only ever rendered as "paired N ago" by
+   * [dev.enkaku.guestagent.StatusActivity], which is what tells a human whether the host that
+   * bootstrapped this agent did so a moment ago or before it wandered off.
+   */
+  private val setAt = AtomicLong(ControlChannelState.NEVER)
+
   fun setToken(value: String?) {
-    token.set(value?.takeIf { it.isNotBlank() })
+    val accepted = value?.takeIf { it.isNotBlank() }
+    token.set(accepted)
+    if (accepted != null) setAt.set(SystemClock.elapsedRealtime())
   }
 
   fun hasToken(): Boolean = token.get() != null
 
-  fun clear() = token.set(null)
+  /** See [setAt]. [ControlChannelState.NEVER] when no token has ever been accepted this process lifetime. */
+  fun pairedAt(): Long = setAt.get()
+
+  fun clear() {
+    token.set(null)
+    setAt.set(ControlChannelState.NEVER)
+  }
 
   /**
    * Constant-time comparison. The control channel is only reachable through `adb forward`, so this

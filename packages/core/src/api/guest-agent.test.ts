@@ -63,7 +63,9 @@ function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: 
     },
     ensurePreGranted: async () => {
       calls.push('ensurePreGranted')
+      return { state: 'granted' as const, reason: null }
     },
+    vpnConsent: async () => ({ state: 'granted' as const, reason: null }),
     bootstrap: async (token) => {
       calls.push(`bootstrap:${token}`)
     },
@@ -203,6 +205,8 @@ interface Harness {
   restoreDeviceRoute: (deviceId: string) => Promise<void>
   /** The plan 52 §4.1 "device offline" handler — keeps the persisted route, marks checks unknown. */
   handleDeviceOffline: (deviceId: string) => Promise<void>
+  /** The shared per-device session seam (plan 44 §8b) — exercised directly by the pairing tests below. */
+  withGuestAgentClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
 }
 
 function makeHarness(opts: {
@@ -264,9 +268,9 @@ function makeHarness(opts: {
     ...(opts.guestAgentSettings ? { guestAgentSettings: opts.guestAgentSettings } : {}),
     ...(opts.agentProvisioner ? { agentProvisioner: opts.agentProvisioner } : {}),
   }
-  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline } = createGuestAgentRoutes(deps)
+  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient } = createGuestAgentRoutes(deps)
   const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
-  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline }
+  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient }
 }
 
 describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)', () => {
@@ -618,6 +622,9 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       lastError: unknown
       exitHistory: unknown[]
       recovery: unknown
+      captured: unknown
+      setBy: unknown
+      pendingClear: unknown
     }
     expect(body).toEqual({
       engine: 'none',
@@ -635,6 +642,12 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       exitHistory: [],
       // Plan 90 §3.7 rule 5 — no recovery has ever been needed for a route that does not exist yet.
       recovery: null,
+      // Plan 114 §3.6, §3.3 — additive: nothing captured from a phone this farm never wrote to,
+      // and nobody has set a route to be attributed.
+      captured: null,
+      setBy: null,
+      // No teardown is owed to a device this farm has never written a route to.
+      pendingClear: null,
     })
   })
 
@@ -656,14 +669,17 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
       engine: string
       health: string
       enabled: boolean
-      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string }
+      config: { engine: string; host: string; port: number; credentialRef?: string; credentialUsername?: string; udpMode: string; onGeoFail: string }
     }
     expect(body.engine).toBe('vpn-helper')
     expect(body.health).toBe('unverified')
     expect(body.enabled).toBe(true)
     // No username/password on the response — inline credentials were moved into this device's own
     // named credential (plan 52 §4.2, §5.1), referenced by `credentialRef` only.
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
+    // `credentialUsername` is the non-secret half, added so an operator can tell
+    // WHICH upstream session a route uses without revealing anything — the
+    // password still never appears on this polled endpoint (asserted below).
+    expect(body.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', credentialUsername: 'u', udpMode: 'udp', onGeoFail: 'report' })
 
     const applied = events.find((e) => e.kind === 'network.applied')
     expect(applied).toBeTruthy()
@@ -813,18 +829,21 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     const body = (await res.json()) as {
       engine: string
       enabled: boolean
-      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string } | null
+      config: { engine: string; host: string; port: number; credentialRef?: string; credentialUsername?: string; udpMode: string; onGeoFail: string } | null
     }
     expect(body.enabled).toBe(false)
     // No username/password on the response — moved into this device's own named credential.
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
+    // `credentialUsername` is the non-secret half, added so an operator can tell
+    // WHICH upstream session a route uses without revealing anything — the
+    // password still never appears on this polled endpoint (asserted below).
+    expect(body.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', credentialUsername: 'u', udpMode: 'udp', onGeoFail: 'report' })
     expect(ports.inUse.size).toBe(0)
 
     // The config on the row references the credential by name — no plaintext password anywhere
     // in `devices` (plan 52 §4.2, acceptance criterion 4).
     const row = db.select().from(devices).where(eq(devices.id, 'dev-1')).get()
     const stored = row?.networkRoute as { config: Record<string, unknown>; enabled: boolean; sessionId?: string } | null
-    expect(stored?.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
+    expect(stored?.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp' })
     expect(stored?.enabled).toBe(false)
     expect(JSON.stringify(stored)).not.toContain('hunter2')
     // The sticky-session id (plan 52 §4.3), minted on the PUT's own apply(), survives the
@@ -852,10 +871,10 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     expect(text).not.toContain('hunter2')
     const body = JSON.parse(text) as {
       enabled: boolean
-      config: { host: string; port: number; credentialRef?: string; udpMode: string; onGeoFail: string }
+      config: { engine: string; host: string; port: number; credentialRef?: string; credentialUsername?: string; udpMode: string; onGeoFail: string }
     }
     expect(body.enabled).toBe(true)
-    expect(body.config).toEqual({ host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
+    expect(body.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
   })
 
   test('enable/disable refuse without a held lease', async () => {
@@ -2669,5 +2688,101 @@ describe('device not found', () => {
     const r2 = await app.request('/ghost/network')
     expect(r1.status).toBe(404)
     expect(r2.status).toBe(404)
+  })
+})
+
+/**
+ * The pairing token, end to end.
+ *
+ * `launcher.bootstrap()` runs `am start … --es token <t>` and returns before the token has reached
+ * `ControlService`; the agent keeps answering with whatever token it already had until it does.
+ * Measured on hardware: ~500 ms of `E_UNAUTHORISED` ("bad or missing token") after every bootstrap
+ * of a device whose agent process survived the previous session, and PERMANENT `E_UNAUTHORISED`
+ * once a second session has bootstrapped with a token of its own (8/8 attempts refused on a moto
+ * g06, until the first session re-pushed its own token — then accepted immediately).
+ *
+ * Two devices in the reference farm (`ZP2222T7K5`, `R9RL608MQTT`) sat at a standing
+ * `failed: bad or missing token` because of exactly that, and nothing ever re-pushed.
+ */
+describe('device session pairing (token handover is asynchronous, and the agent is not idle)', () => {
+  /** A fake phone: one token in memory, replaced by every `bootstrap()`, exactly like `Pairing`. */
+  function fakePhone(opts: { stompRounds: number }) {
+    let deviceToken: string | null = null
+    let stompsLeft = opts.stompRounds
+    const bootstrapped: string[] = []
+    const { launcher } = fakeLauncher({
+      bootstrap: async (token: string) => {
+        bootstrapped.push(token)
+        deviceToken = token
+        // Another session pairing the same device in the same window — the exact race
+        // `daemon.ts`'s concurrent `onDeviceReady` hooks used to produce.
+        if (stompsLeft > 0) {
+          stompsLeft--
+          deviceToken = 'a-token-this-core-never-issued'
+        }
+      },
+    })
+    const makeClient = (o: GuestAgentClientOptions): GuestAgentClient =>
+      fakeClient({
+        hello: async (): Promise<HelloResult> => {
+          if (o.token !== deviceToken) throw new GuestAgentClientError('E_UNAUTHORISED', 'bad or missing token')
+          return { protocol: 1, appVersion: '1.0.0', androidSdkInt: 35, capabilities: ['socks5-route'] }
+        },
+      })
+    return { launcher, makeClient, bootstrapped }
+  }
+
+  test('a token stomped once is recovered by re-pushing it — the pass succeeds instead of failing', async () => {
+    const phone = fakePhone({ stompRounds: 1 })
+    const { db, withGuestAgentClient } = makeHarness({ launcher: phone.launcher, makeClient: phone.makeClient })
+    seedDevice(db)
+    const hello = await withGuestAgentClient('dev-1', (client) => client.hello())
+    expect(hello.appVersion).toBe('1.0.0')
+    // Two pushes of the SAME token — never a new one, and never a token read off the device.
+    expect(phone.bootstrapped).toHaveLength(2)
+    expect(phone.bootstrapped[0]).toBe(phone.bootstrapped[1]!)
+  })
+
+  test('a token stomped on every round fails with a reason that names the mechanism, not just "bad or missing token"', async () => {
+    const phone = fakePhone({ stompRounds: 99 })
+    const { db, withGuestAgentClient } = makeHarness({ launcher: phone.launcher, makeClient: phone.makeClient })
+    seedDevice(db)
+    const err = await withGuestAgentClient('dev-1', (client) => client.hello()).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(GuestAgentClientError)
+    const message = (err as Error).message
+    expect(message).toContain('rejected this core\'s pairing token')
+    expect(message).toContain('BootstrapActivity')
+    expect(message).toContain('bad or missing token')
+    // Bounded — three pushes, never a loop.
+    expect(phone.bootstrapped).toHaveLength(3)
+  })
+
+  test('concurrent callers share ONE ephemeral session, so they cannot invalidate each other\'s token', async () => {
+    const phone = fakePhone({ stompRounds: 0 })
+    const { db, withGuestAgentClient, ports } = makeHarness({ launcher: phone.launcher, makeClient: phone.makeClient })
+    seedDevice(db)
+    // The shape `daemon.ts`'s `onDeviceReady` fires: several `void`-ed calls, no `await` between.
+    const results = await Promise.all([
+      withGuestAgentClient('dev-1', (c) => c.hello()),
+      withGuestAgentClient('dev-1', (c) => c.labelStatus()),
+      withGuestAgentClient('dev-1', (c) => c.textStatus()),
+    ])
+    expect(results).toHaveLength(3)
+    // One bootstrap, one token, for all three.
+    expect(phone.bootstrapped).toHaveLength(1)
+    // And the port is still released once the LAST caller is out — a device with no applied
+    // route must hold nothing between calls.
+    expect(ports.inUse.size).toBe(0)
+  })
+
+  test('sequential callers still get a fresh session each — nothing is held between calls', async () => {
+    const phone = fakePhone({ stompRounds: 0 })
+    const { db, withGuestAgentClient, ports } = makeHarness({ launcher: phone.launcher, makeClient: phone.makeClient })
+    seedDevice(db)
+    await withGuestAgentClient('dev-1', (c) => c.hello())
+    expect(ports.inUse.size).toBe(0)
+    await withGuestAgentClient('dev-1', (c) => c.hello())
+    expect(phone.bootstrapped).toHaveLength(2)
+    expect(ports.inUse.size).toBe(0)
   })
 })

@@ -1,7 +1,8 @@
 'use client'
 
 import { Lock, RotateCcw, RotateCw, Smartphone, TabletSmartphone } from 'lucide-react'
-import { DeviceResponseSchema, type RotationMode } from '@enkaku/protocol'
+import { toast } from 'sonner'
+import { DeviceResponseSchema, type RotationApplyResult, type RotationMode } from '@enkaku/protocol'
 import {
   Button,
   DropdownMenu,
@@ -31,6 +32,35 @@ const SHORT_LABEL: Record<RotationMode, string> = {
 }
 
 /**
+ * What the server said it did to the LIVE screen, in one line each. The four
+ * states are genuinely different outcomes and the toast has to say which —
+ * before `rotation` existed on this response, every one of them produced the
+ * same "Rotation set to …" success message, which is how an operator came to
+ * report a working feature as broken: they were being told a database write
+ * had succeeded, and reading it as "the screen locked".
+ */
+function describeOutcome(result: RotationApplyResult | undefined, mode: RotationMode): { ok: boolean; message: string; description?: string } {
+  if (mode === 'device') {
+    return {
+      ok: true,
+      message: 'Rotation handed back to the device',
+      description: result?.state === 'applied' ? 'The live screen is back on the device’s own auto-rotate setting.' : undefined,
+    }
+  }
+  switch (result?.state) {
+    case 'applied':
+      return { ok: true, message: `${SHORT_LABEL[mode]} — applied to the live screen` }
+    case 'busy':
+      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: result.reason ?? 'A job is running; it applies to the next session.' }
+    case 'failed':
+      return { ok: false, message: `${SHORT_LABEL[mode]} — the device did not accept it`, description: result.reason }
+    default:
+      // `no-session`, and any core too old to send this field at all.
+      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: 'Applies the next time this device streams.' }
+  }
+}
+
+/**
  * A fast way to change `DeviceSettings.prep.rotation` from the Control tab
  * (plan 85 §3.7, §4.1, step 85.8) without a trip to the Settings tab. This is
  * a SHORTCUT to that one setting, not a second source of truth for it — it
@@ -38,12 +68,13 @@ const SHORT_LABEL: Record<RotationMode, string> = {
  * Settings tab's schema-driven form does, so a change from either place
  * shows up in the other.
  *
- * Takes effect at the START of the next session, the same as `keepAwake` and
- * `standbyScreenOff` already do: `applyRotation` (`@enkaku/session`) reads
- * this value once, when `createSession` runs, and reverts it when the
- * session closes. Changing it while a session is already live does not
- * re-lock the screen that is currently showing — the footnote below the menu
- * says so, rather than implying an effect that has not actually happened.
+ * Takes effect on the session that is running RIGHT NOW, as well as on every
+ * session afterwards: `PATCH /api/devices/:id` calls
+ * `SessionManager.setRotation` when this value changes, and reports back in
+ * `rotation` whether the live screen actually re-locked. It used to be
+ * apply-once at session creation — a wall tile that had been up for hours had
+ * no "next session" to wait for, so changing this did nothing and the toast
+ * said it had worked anyway.
  */
 export function RotationQuickAction({
   deviceId,
@@ -87,9 +118,17 @@ export function RotationQuickAction({
       'rotation',
       () => api(`/api/devices/${deviceId}`, DeviceResponseSchema, { method: 'PATCH', json: { settings: nextSettings } }),
       {
-        success: `Rotation set to "${SHORT_LABEL[next]}"`,
+        // No `success` string: this action has four different outcomes and
+        // `useAction` can only carry one fixed message. The failure branch
+        // below still covers the request itself failing.
         failure: 'Could not change the rotation setting',
-        onSuccess: () => onSaved(nextSettings),
+        onSuccess: (result) => {
+          const outcome = describeOutcome(result.rotation, next)
+          const opts = outcome.description ? { description: outcome.description } : undefined
+          if (outcome.ok) toast.success(outcome.message, opts)
+          else toast.warning(outcome.message, opts)
+          onSaved(nextSettings)
+        },
       },
     )
   }
@@ -131,7 +170,8 @@ export function RotationQuickAction({
           ))}
         </DropdownMenuRadioGroup>
         <p className="mt-1 border-t px-2 pt-2 text-[11px] leading-relaxed text-fg-muted">
-          Applies the next time a session starts on this device — it will not re-lock a screen that is already live.
+          Applies to this device only, immediately if it is streaming now. The phone’s own setting is put back when its last
+          session closes.
         </p>
       </DropdownMenuContent>
     </DropdownMenu>

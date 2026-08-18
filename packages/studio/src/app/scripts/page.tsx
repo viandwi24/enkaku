@@ -15,6 +15,12 @@ import { useRouter, useSearchParams } from 'next/navigation'
  * The query is carried over rather than dropped: `?device=`/`?cluster=` are
  * what make the Run flow open its dialog on arrival, so a bookmarked or
  * in-flight `/scripts?device=…` must reach `/plugins` still carrying it.
+ *
+ * `/plugins` is two tabs now (`?tab=plugins|scripts`), and nothing here has to
+ * say so: either of those parameters arriving with no explicit `?tab=` selects
+ * the Scripts tab on the other side, which is what "run a script on this
+ * device" meant in the first place. A bare `/scripts` still lands on Plugins,
+ * the same first thing the screen has always shown.
  */
 function ScriptsRedirect() {
   const router = useRouter()

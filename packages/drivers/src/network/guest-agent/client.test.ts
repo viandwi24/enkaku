@@ -173,7 +173,7 @@ describe('createGuestAgentClient (plan 44 §5.5)', () => {
       return { id: req.id, ok: true, result: { started: true } }
     })
     const client = createGuestAgentClient({ port: 1, token: 't', connect })
-    const result = await client.routeStart({ host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'report' })
+    const result = await client.routeStart({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'report' })
     expect(result).toEqual({ started: true })
   })
 

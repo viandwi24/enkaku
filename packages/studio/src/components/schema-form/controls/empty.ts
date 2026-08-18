@@ -24,6 +24,10 @@ export function emptyItem(plan: FieldPlan): unknown {
     // readout ("Nothing selected") is already the legible version of that.
     case 'workspacePath':
       return ''
+    // Same reasoning as `workspacePath` above: there is no "first artifact"
+    // to seed, and the empty readout already says "Nothing selected".
+    case 'artifact':
+      return ''
     case 'list':
       return []
     case 'table':

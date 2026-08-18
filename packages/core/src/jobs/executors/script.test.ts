@@ -96,7 +96,7 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
     const runner = createJobRunner({
       logDir: `/tmp/enkaku-script-executor-test-logs-${crypto.randomUUID()}`,
       sessions: fakeSessions(),
-      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
       onLog: () => {},
       onArtifact: () => {},
@@ -131,7 +131,7 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
     const runner = createJobRunner({
       logDir: `/tmp/enkaku-script-executor-test-logs-${crypto.randomUUID()}`,
       sessions: fakeSessions(),
-      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
       onLog: () => {},
       onArtifact: () => {},
@@ -186,7 +186,7 @@ describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared acro
     const runner = createJobRunner({
       logDir: `/tmp/enkaku-script-executor-kv-test-logs-${crypto.randomUUID()}`,
       sessions: fakeSessions(),
-      artifacts: () => ({ save: async () => ({ path: 'x', sizeBytes: 0 }) }),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
       onLog: () => {},
       onArtifact: () => {},

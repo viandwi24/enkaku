@@ -49,6 +49,24 @@ describe('createKvApiFor (plan 79 §4.4)', () => {
     expect(calls[1]).toEqual({ op: 'set', scope: 'global', key: 'plain', value: 'x' })
   })
 
+  // Plan 112 step 112.2 — `hint: false` is how a caller storing a CREDENTIAL declines the row's
+  // `${first 7}…${last 4}` display hint. Omitting it must stay indistinguishable from every call
+  // written before the option existed, so the absent field and `true` mean the same thing.
+  test('set()/setIfVersion() forward `hint` only when given, and never invent `hint: true`', async () => {
+    const calls: KvCall[] = []
+    const api = createKvApiFor('global', async <T>(call: KvCall) => {
+      calls.push(call)
+      return { version: 1 } as T
+    })
+    await api.set('credential', { password: 'p' }, { secret: true, hint: false })
+    await api.set('api-key', 'sk-abc', { secret: true })
+    await api.setIfVersion('credential', { password: 'p2' }, 1, { secret: true, hint: false })
+    expect(calls[0]).toEqual({ op: 'set', scope: 'global', key: 'credential', value: { password: 'p' }, secret: true, hint: false })
+    expect(calls[1]).toEqual({ op: 'set', scope: 'global', key: 'api-key', value: 'sk-abc', secret: true })
+    expect(calls[1]).not.toHaveProperty('hint')
+    expect(calls[2]).toEqual({ op: 'setIfVersion', scope: 'global', key: 'credential', value: { password: 'p2' }, expectedVersion: 1, secret: true, hint: false })
+  })
+
   test('setIfVersion() passes expectedVersion through and surfaces a null "lost the race"', async () => {
     const api = createKvApiFor('device', async <T>() => null as T)
     expect(await api.setIfVersion('k', 'v', 3)).toBeNull()

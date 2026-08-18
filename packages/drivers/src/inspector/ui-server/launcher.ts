@@ -1,5 +1,6 @@
 import type { AdbStreamEndReason } from '@enkaku/adb'
 import type { TransportExecOptions } from '@enkaku/protocol'
+import { installWithGrantFallback } from '../../install/grant-fallback'
 import { verifyDeviceArtifact } from './verify'
 
 /** The pinned openatx APK package and component (plan 06 §3.2/§4.6). */
@@ -64,7 +65,7 @@ export interface UiServerLauncherDeps {
    * launcher (`network/guest-agent/launcher.ts`, deliberately NOT given
    * this seam — see plan 106 §9 Q5) are both unaffected.
    */
-  installApk?: (localPath: string, label: 'app' | 'test') => Promise<void>
+  installApk?: (localPath: string, label: 'app' | 'test', packageName: string) => Promise<void>
   /**
    * The manifest's on-device expectation for the app APK (plan 41 §3.2) —
    * `undefined`/empty when the manifest carries none, in which case
@@ -143,16 +144,38 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
     // applied there by `TransferService.installFromLocalApk`'s own defaults
     // (both default `true`), the same flags this call always passed.
     if (deps.installApk) {
-      await deps.installApk(app, 'app')
-      await deps.installApk(test, 'test')
+      // The package name travels with the path: on the `-g`-refused fallback
+      // path the transfer service has to aim `pm grant` somewhere, and
+      // `pm install` does not reliably print the package it just installed.
+      await deps.installApk(app, 'app', UI_SERVER_PACKAGE)
+      await deps.installApk(test, 'test', UI_SERVER_TEST_PACKAGE)
       return
     }
     // -g auto-grants runtime permissions; -r replaces a different version.
     // `lane: 'install'` (plan 85 §3.4, §5 step 85.3, tests H5): these two
     // installs for the SAME device never run concurrently with each other,
-    // nor with more than `adb.maxInstallConcurrent` installs farm-wide.
-    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', app], { lane: 'install', serial: deps.serial })
-    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', test], { lane: 'install', serial: deps.serial })
+    // nor with more than `adb.maxInstallConcurrent` installs farm-wide —
+    // applied inside `installWithGrantFallback`, which also owns the retry
+    // for a platform that refuses `-g` outright (a Xiaomi HyperOS build
+    // fails BOTH of these installs and the guest agent's; see that module).
+    // The openatx pair declares POST_NOTIFICATIONS, READ_PHONE_STATE and
+    // GET_ACCOUNTS as runtime permissions, but the list is read off the
+    // device rather than named here — this codebase does not build these
+    // APKs and must not hardcode another project's manifest.
+    for (const apk of [app, test]) {
+      await installWithGrantFallback({
+        serial: deps.serial,
+        hostAdb: deps.hostAdb,
+        // This launcher's `exec` yields plain stdout (it predates plan 53's
+        // structured result), so there is no exit code to judge a `pm grant`
+        // on here — the `dumpsys` readback inside the helper is what decides.
+        exec: async (cmd) => ({ stdout: await deps.exec(cmd), stderr: '', exitCode: null }),
+        apkPath: apk,
+        packageName: apk === app ? UI_SERVER_PACKAGE : UI_SERVER_TEST_PACKAGE,
+        flags: ['-r'],
+        ...(deps.onLog ? { onLog: deps.onLog } : {}),
+      })
+    }
   }
 
   /**

@@ -1,4 +1,4 @@
-import { definePlugin, ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
+import { defineService, definePlugin, ui, type PluginMemberScript, type PluginServiceContext, type ScriptContext } from '@enkaku/sdk'
 import type { Selector } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
@@ -7,7 +7,9 @@ import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
 import postVideo from './post-video'
+import enqueueVideo from './enqueue-video'
 import { ACCOUNTS_KEY } from './accounts'
+import { QUEUE_PREFIX } from './queue'
 
 /**
  * TikTok automation pack.
@@ -628,30 +630,201 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
   },
 }
 
+/**
+ * Auto-posting settings (plan 113 §4.6, step 113.10) — plugin storage an operator changes from the
+ * "content" surface's own "Auto-post settings" form (below), never a hardcoded constant and never a
+ * republish. `enabled` defaults OFF: a farm that installs this pack must not start posting to real
+ * accounts just because a timer exists — the timer (`AUTO_POST_POLL_MS`) always runs once the service
+ * is active; `enabled`/`intervalMinutes` decide whether any one poll actually dispatches anything.
+ */
+const AUTO_POST_SETTINGS_KEY = 'settings:auto-post'
+/** When the auto-post timer last actually dispatched jobs, unix seconds — what `intervalMinutes` is measured against. */
+const AUTO_POST_LAST_RUN_KEY = 'state:auto-post-last-run'
+
+const AutoPostSettingsSchema = z
+  .object({
+    version: z.literal(1),
+    enabled: z.boolean(),
+    intervalMinutes: z.number().int().positive().max(24 * 60),
+  })
+  .strict()
+type AutoPostSettings = z.infer<typeof AutoPostSettingsSchema>
+
+const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = { version: 1, enabled: false, intervalMinutes: 60 }
+
+/**
+ * How often the timer WAKES UP to check the clock — not how often it posts. Deliberately much finer
+ * than any sane `intervalMinutes`, so a setting an operator just changed is honoured within a minute
+ * rather than only at the next multiple of the OLD interval.
+ */
+const AUTO_POST_POLL_MS = 60_000
+
+/**
+ * Enough of `device.list`'s own `DeviceInfoSchema` to decide eligibility, declared locally rather than
+ * imported — `FarmApi.call`'s own doc comment: the farm's output shape can change under a plugin
+ * published months ago, so the CALLER validates against what it needs, nothing more.
+ */
+const DeviceListOutput = z.object({
+  items: z.array(
+    z.object({
+      id: z.string(),
+      stableId: z.string(),
+      status: z.string(),
+      /** `kind: 'job'` (or `'user'`/`'agent'`) means something already holds this device. `null` means nothing does. */
+      heldBy: z.object({ kind: z.string() }).nullable(),
+    }),
+  ),
+})
+
+const JobRunOutput = z.object({ jobId: z.string() })
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * One eligible device, one post job, `params: { source: 'queue' }` (§4.6). "Eligible" is read straight
+ * off `device.list`'s own `status`/`heldBy` — `job.list` is deliberately NOT among this service's
+ * declared permissions (the list is exhaustive, and `device.list` alone is already enough to answer
+ * "does this device already have a running job": `heldBy.kind === 'job'`). A device mid-job, mid-manual
+ * -control, offline or quarantined is skipped rather than queued behind whatever it is already doing.
+ */
+async function runAutoPostTick(ctx: PluginServiceContext): Promise<void> {
+  let devices: z.infer<typeof DeviceListOutput>
+  try {
+    devices = await ctx.farm.call('device.list', {}, DeviceListOutput)
+  } catch (err) {
+    ctx.log.warn('auto-post tick could not list devices — skipping this tick', { error: messageOf(err) })
+    return
+  }
+
+  const eligible = devices.items.filter((device) => device.status === 'idle' && device.heldBy === null)
+  if (eligible.length === 0) {
+    ctx.log.info('auto-post tick found no eligible (idle, unheld) device')
+    return
+  }
+
+  for (const device of eligible) {
+    try {
+      await ctx.farm.call('job.run', { scriptRef: 'tiktok/post-video@latest', deviceId: device.id, params: { source: 'queue' } }, JobRunOutput)
+    } catch (err) {
+      // Never let one device's refusal (offline since the list was read, no grant, whatever) stop the
+      // rest — the same "one bad record must not take the others down" posture `proxy-manager`'s own
+      // `startEnabled` takes with its catalogue.
+      ctx.log.warn('auto-post tick could not enqueue a post job', { device: device.stableId, error: messageOf(err) })
+    }
+  }
+}
+
+/**
+ * The timer's own tick body — reads the stored settings fresh on every poll (so a changed
+ * `enabled`/`intervalMinutes` takes effect without a republish, per the step's own requirement), and
+ * only actually dispatches jobs once `intervalMinutes` has genuinely elapsed since the last dispatch.
+ */
+async function maybeRunAutoPostTick(ctx: PluginServiceContext): Promise<void> {
+  let settings: AutoPostSettings
+  try {
+    settings = (await ctx.storage.global.get(AUTO_POST_SETTINGS_KEY, AutoPostSettingsSchema)) ?? DEFAULT_AUTO_POST_SETTINGS
+  } catch (err) {
+    // A stored shape this build cannot understand must never be misread as "enabled" — fail closed,
+    // exactly the posture `queue.ts`/`accounts.ts` already take on their own stored shapes.
+    ctx.log.warn('auto-post settings entry has an incompatible shape — leaving auto-posting off this tick', { error: messageOf(err) })
+    return
+  }
+  if (!settings.enabled) return
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const lastRunSec = (await ctx.storage.global.get(AUTO_POST_LAST_RUN_KEY, z.number().int().nonnegative())) ?? 0
+  if (nowSec - lastRunSec < settings.intervalMinutes * 60) return
+
+  // Stamped BEFORE dispatching: a tick slow enough to still be running (many eligible devices) must
+  // not be re-entered by the next 60s poll before it has even finished.
+  await ctx.storage.global.set(AUTO_POST_LAST_RUN_KEY, nowSec)
+  await runAutoPostTick(ctx)
+}
+
 export default definePlugin({
   id: 'tiktok',
-  version: '1.7.0',
+  version: '1.12.0',
   title: 'TikTok automation pack',
   description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
-  scripts: [switchAccount, searchFollow, listAccounts, postVideo, autoScrollScript],
+  scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript],
 
   /**
-   * The screen this plugin contributes to Studio — plan 108 §4.3, the plan's own worked example,
-   * built here because 108.11 is where the vocabulary is proved against a real case before it is
-   * frozen (§8's first risk).
+   * Plan 113 §3.7, §4.6, §5 steps 113.5/113.10. `permissions` grew from `['fs.read']` to exactly
+   * `['fs.read', 'job.run', 'device.list']` — the list is what an operator is shown and consents to
+   * at install (plan 109 §4.1), and it is EXHAUSTIVE: nothing below calls a capability this array does
+   * not also name. `fs.read` is `captions.ts`'s `readCaptionsFile` (step 113.8); `job.run` and
+   * `device.list` are `runAutoPostTick` above, the auto-posting timer this step gives the service a
+   * body for. `job.list` is deliberately absent — see `runAutoPostTick`'s own comment for why
+   * `device.list`'s `heldBy` already answers the one question this service needs `job.list` for.
    *
-   * Nothing below names a control, and nothing below is code: the two columns that need formatting
-   * state an ordinary JSON Schema node and are drawn by Studio's one `planField`/`formatValue`
-   * resolver (§3.3), and the two actions read the row through the closed `Binding` language (§3.4)
-   * rather than through any expression an author could invent.
+   * Two consequences follow regardless of what this manifest declares (C4, C5): a declared permission
+   * is still refused if the publishing user's ROLE does not hold it, and a dev slot (`enkaku dev`) has
+   * no `ctx.farm` at all until this pack has been published once.
    *
-   * The KV namespace is deliberately absent — a data source can only ever read this plugin's own,
-   * taken from the URL path server-side (§3.7). `key` is `ACCOUNTS_KEY`, the same constant
-   * `list-accounts` writes and `switch-account` reads, so the screen and the scripts cannot drift
-   * onto two different keys.
+   * Plan 115 §5 step 115.6 adds `fs.list` — `folder.ts`'s `listVideoCandidates` (§4.5's flow, step 1)
+   * needs it, and without it here the call is refused before it runs, `E_FARM_UNDECLARED` (plan 113
+   * finding C3).
+   */
+  service: defineService({
+    permissions: ['fs.read', 'fs.list', 'job.run', 'device.list', 'device.get'],
+
+    setup(ctx) {
+      // Registered BEFORE the timer starts, so a `setup` that somehow throws between these two lines
+      // still leaves a disposer for whatever did get created — the same ordering `proxy-manager`'s own
+      // service takes with its listeners. `timer` is `null` only in that impossible window.
+      let ticking = false
+      let timer: ReturnType<typeof setInterval> | null = null
+      ctx.onStop(() => {
+        if (timer) clearInterval(timer)
+      })
+      timer = setInterval(() => {
+        // A poll that is still running when the next one fires is skipped rather than overlapped —
+        // `runAutoPostTick` awaits a farm call per eligible device, so a slow farm must not stack two
+        // ticks on top of each other.
+        if (ticking) return
+        ticking = true
+        void maybeRunAutoPostTick(ctx).finally(() => {
+          ticking = false
+        })
+      }, AUTO_POST_POLL_MS)
+    },
+  }),
+
+  /**
+   * The screens this plugin contributes to Studio. `accounts` is plan 108 §4.3's own worked example,
+   * built at 108.11 to prove the vocabulary against a real case before it was frozen (§8's first
+   * risk). `content` is plan 113 §5 step 113.10 — the surface that makes the post queue usable by a
+   * human: add a video with a caption, see every item's status and history, retry or remove one.
+   *
+   * Nothing below names a control, and nothing below is code: every column that needs formatting
+   * states an ordinary JSON Schema node and is drawn by Studio's one `planField`/`formatValue`
+   * resolver (§3.3), and every action reads the row (or the submitted form) through the closed
+   * `Binding` language (§3.4) rather than through any expression an author could invent.
+   *
+   * **`addVideo` is the one action here that could NOT be a plain `kv.set`, and it is worth stating
+   * why.** A `Binding` cannot concatenate — no operators, no string interpolation, no calls
+   * (`binding.ts`'s own evaluator; §3.4) — so nothing declarative can build `queue:<artifactId>` from
+   * a freshly-picked artifact id the way `queueKeyFor` does. `retryItem`/`removeItem` below don't hit
+   * this: a row already read off the queue carries its own exact stored key as `$entry.key` (`kv.list`
+   * echoes it straight back — `rowsFromList` in Studio's own `rows.ts`), so keying a write off a row
+   * needs no computation at all. Only the CREATE path invents a brand-new key, so only `addVideo`
+   * routes through a real script (`enqueue-video.ts`) via `then: { kind: 'job', … }` instead of
+   * `then: { kind: 'kv.set', … }` — see that file's own header for the full reasoning, including the
+   * device-picker consequence of a `job` action always needing a device to run on.
+   *
+   * The KV namespace is deliberately absent from both views — a data source can only ever read this
+   * plugin's own, taken from the URL path server-side (§3.7). `accounts`' `key` is `ACCOUNTS_KEY`, the
+   * same constant `list-accounts` writes and `switch-account` reads; `content`'s `prefix` is
+   * `QUEUE_PREFIX`, the same constant `queue.ts` claims and settles against — so the screen and the
+   * scripts can never drift onto two different keys.
    */
   surface: {
-    nav: [{ id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' }],
+    nav: [
+      { id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' },
+      { id: 'content', label: 'TikTok Posts', icon: 'upload', view: 'content' },
+    ],
     views: {
       accounts: {
         title: 'TikTok accounts',
@@ -686,6 +859,33 @@ export default definePlugin({
         toolbar: ['sync'],
         rowActions: ['switchTo', 'syncOne'],
         empty: { title: 'No accounts read yet', hint: 'Run “Sync accounts” to read the switch-account sheet on each device.' },
+      },
+      content: {
+        title: 'TikTok Posts',
+        description: 'Videos waiting to be posted, one entry per artifact — add one, watch its status, retry or remove it.',
+        // Every queue entry lives under one prefix in `storage.global` (queue.ts §3.3/§4.4) — a plain
+        // farm-wide list, not a per-device scan, because the queue is not a fact about any one phone.
+        data: { kind: 'kv.list', scope: 'global', prefix: QUEUE_PREFIX },
+        table: {
+          // The entry's OWN artifactId, not `$entry.key` (which carries the `queue:` prefix too) —
+          // this is what an operator actually recognises the video by.
+          rowKey: 'artifactId',
+          columns: [
+            { field: 'artifactId', header: 'Video', width: 'wide' },
+            { field: 'caption', header: 'Caption', width: 'wide' },
+            { field: 'status', header: 'Status', width: 'narrow' },
+            { field: 'attempts', header: 'Attempts', schema: { type: 'number', 'x-enkaku': { kind: 'count' } }, width: 'narrow' },
+            { field: 'claimedBy', header: 'Claimed by' },
+            // `claimedAt`/`postedAt` are unix seconds or `null` — `planColumn` renders a missing value
+            // as `'—'` under any declared plan (§4.2, `plan.ts`'s own C-cases), so `null` is safe here.
+            { field: 'claimedAt', header: 'Claimed', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+            { field: 'postedAt', header: 'Posted', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+            { field: 'lastError', header: 'Last error', width: 'wide' },
+          ],
+        },
+        toolbar: ['addVideo', 'autoPostSettings'],
+        rowActions: ['retryItem', 'removeItem'],
+        empty: { title: 'The post queue is empty', hint: 'Use “Add video” to queue one with a caption.' },
       },
     },
     actions: {
@@ -722,6 +922,111 @@ export default definePlugin({
         // Which account and which device are named by the dialog itself, from
         // the view's own `rowKey` (plan 108 §5 step 108.7).
         confirm: 'Switch this device to the selected account?',
+      },
+
+      // A FORM whose `videoArtifactId` field declares `kind: 'artifact'` (step 113.9) — rendered by
+      // Studio's existing `ArtifactControl`/`ArtifactPicker`, a real "upload a new file or browse a
+      // previously uploaded one" picker, with no bespoke UI written for this step at all. The
+      // declarative route was preferred over a tier-C React view (plan 111) exactly because this one
+      // field is all "add a video" structurally needs — see `enqueue-video.ts` for why `then` is a
+      // `job`, not a `kv.set` (this file's own `surface` doc comment carries the short version).
+      addVideo: {
+        kind: 'form',
+        label: 'Add video',
+        schema: {
+          type: 'object',
+          required: ['videoArtifactId'],
+          properties: {
+            videoArtifactId: {
+              type: 'string',
+              title: 'Video',
+              description: 'Upload a new video or pick a previously uploaded one.',
+              'x-enkaku': { kind: 'artifact' },
+            },
+            caption: {
+              type: 'string',
+              title: 'Caption',
+              maxLength: 2_200,
+              description: 'Left blank, a queued run falls back to the captions file instead.',
+            },
+          },
+        },
+        submitLabel: 'Add to queue',
+        then: {
+          kind: 'job',
+          label: 'Add video',
+          script: 'tiktok/enqueue-video@latest',
+          // No row to bind a device from (this is a toolbar action) — the operator picks any online
+          // device, which the job never actually touches (`enqueue-video.ts`'s own header explains why
+          // a device is unavoidable here regardless).
+          device: 'picker',
+          params: { artifactId: { $form: 'videoArtifactId' }, caption: { $form: 'caption' } },
+        },
+      },
+
+      // Plain literal key, so this one — unlike `addVideo` — needs no script behind it: `kv.set`'s
+      // `key`/`value` are both ordinary bindings over the submitted form, no concatenation required
+      // (§4.6's own settings block, `AUTO_POST_SETTINGS_KEY`/`AutoPostSettingsSchema` above).
+      autoPostSettings: {
+        kind: 'form',
+        label: 'Auto-post settings',
+        schema: {
+          type: 'object',
+          required: ['enabled', 'intervalMinutes'],
+          properties: {
+            enabled: {
+              type: 'boolean',
+              title: 'Auto-post from the queue',
+              default: false,
+              description: 'Off by default. Once on, the service posts one queued video per eligible device on its own clock.',
+            },
+            intervalMinutes: {
+              type: 'number',
+              title: 'Post every',
+              minimum: 5,
+              maximum: 1_440,
+              default: 60,
+              'x-enkaku': { kind: 'duration', unit: 'min' },
+            },
+          },
+        },
+        submitLabel: 'Save',
+        then: {
+          kind: 'kv.set',
+          label: 'Save auto-post settings',
+          scope: 'global',
+          key: { $literal: AUTO_POST_SETTINGS_KEY },
+          value: { version: { $literal: 1 }, enabled: { $form: 'enabled' }, intervalMinutes: { $form: 'intervalMinutes' } },
+        },
+      },
+
+      // `$entry.key` is the exact stored key (`queue:<artifactId>`, echoed back by `kv.list` — see
+      // this file's own `surface` doc comment) — which is what lets this stay a plain `kv.set` with no
+      // script behind it. History (`postedAt`/`attempts`) is preserved; the claim and any error clear.
+      retryItem: {
+        kind: 'kv.set',
+        label: 'Retry',
+        scope: 'global',
+        key: { $entry: 'key' },
+        value: {
+          version: { $literal: 1 },
+          artifactId: { $row: 'artifactId' },
+          caption: { $row: 'caption' },
+          status: { $literal: 'pending' },
+          claimedBy: { $literal: null },
+          claimedAt: { $literal: null },
+          postedAt: { $row: 'postedAt' },
+          attempts: { $row: 'attempts' },
+          lastError: { $literal: null },
+        },
+      },
+
+      removeItem: {
+        kind: 'kv.delete',
+        label: 'Remove',
+        scope: 'global',
+        key: { $entry: 'key' },
+        confirm: 'Remove this video from the post queue?',
       },
     },
   },

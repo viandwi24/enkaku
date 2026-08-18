@@ -16,7 +16,7 @@ import { GuestAgentClientError } from './client'
 import type { GuestAgentLauncher } from './launcher'
 import { createGuestAgentSession, createVpnHelperRoute, type GuestAgentClientFactory, type GuestAgentSession } from './vpn-helper'
 
-const CONFIG: Socks5RouteConfig = { host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'report' }
+const CONFIG: Socks5RouteConfig = { engine: 'vpn-helper', host: 'proxy.example', port: 1080, udpMode: 'udp', onGeoFail: 'report' }
 
 /** A launcher fake that records every call and never touches adb for real. */
 function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: GuestAgentLauncher; calls: string[] } {
@@ -29,7 +29,9 @@ function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: 
     },
     ensurePreGranted: async () => {
       calls.push('ensurePreGranted')
+      return { state: 'granted' as const, reason: null }
     },
+    vpnConsent: async () => ({ state: 'granted' as const, reason: null }),
     bootstrap: async (token) => {
       calls.push(`bootstrap:${token}`)
     },

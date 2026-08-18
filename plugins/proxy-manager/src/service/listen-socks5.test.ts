@@ -20,6 +20,7 @@ import {
 } from './listen-socks5'
 import type { BridgeEvent } from './logbook'
 import type { Listener } from './listener'
+import type { ListenerCredential } from './auth'
 
 /** Plan 112 step 112.6 — the SOCKS5 listener: RFC 1928 framing, all three address types, and X'07' for what a bridge cannot do. */
 
@@ -36,7 +37,11 @@ function servedPort(server: { port?: number }): number {
 const PLAIN_PORT = servedPort(plain)
 afterAll(() => plain.stop(true))
 
-async function withListener(upstreamPort: number, fn: (listener: Listener, events: BridgeEvent[]) => Promise<void>): Promise<void> {
+async function withListener(
+  upstreamPort: number,
+  fn: (listener: Listener, events: BridgeEvent[]) => Promise<void>,
+  opts: { auth?: ListenerCredential } = {},
+): Promise<void> {
   const events: BridgeEvent[] = []
   const listener = await createSocks5Listener({
     bindHost: '127.0.0.1',
@@ -45,6 +50,7 @@ async function withListener(upstreamPort: number, fn: (listener: Listener, event
     maxConnections: 16,
     idleMs: 5_000,
     log: (event) => events.push(event),
+    ...(opts.auth ? { auth: opts.auth } : {}),
   })
   try {
     await fn(listener, events)
@@ -59,6 +65,8 @@ function socksClient(port: number): {
   send: (bytes: Buffer) => void
   next: (n: number) => Promise<Buffer>
   connected: Promise<void>
+  /** Resolves once the SERVER has closed its end — the fast way to prove a disconnect, without waiting on `next()`'s own 3s data timeout. */
+  closed: Promise<void>
   close: () => void
 } {
   const sock = net.connect(port, '127.0.0.1')
@@ -80,6 +88,7 @@ function socksClient(port: number): {
   sock.on('error', () => {})
   return {
     send: (bytes) => sock.write(bytes),
+    closed: new Promise<void>((resolve) => sock.on('close', () => resolve())),
     next: (n) =>
       new Promise<Buffer>((resolve) => {
         waiting = { want: n, resolve }
@@ -242,7 +251,7 @@ describe('what a bridge will not do, answered by the RFC’s own codes', () => {
     })
   }
 
-  test('a client that will not do no-auth is told X’FF’ rather than being dropped — there is no listener-side auth in v1', async () => {
+  test('a client that will not do no-auth is told X’FF’ rather than being dropped — this listener has no credential configured', async () => {
     const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
     try {
       await withListener(upstream.port, async (listener, events) => {
@@ -284,6 +293,141 @@ describe('what a bridge will not do, answered by the RFC’s own codes', () => {
         expect(events.some((e) => e.event === 'refused' && e.reason === 'not-socks5')).toBe(true)
         client.close()
       })
+    } finally {
+      await upstream.close()
+    }
+  })
+})
+
+/**
+ * Plan 117 step 117.11, criterion 6 — listener authentication (§4.4,
+ * `service/auth.ts`), the four client behaviours across the two protocols.
+ * This describe block is the SOCKS5 half of that criterion; `listen-
+ * http.test.ts`'s own new block is the HTTP half.
+ */
+describe('listener authentication — RFC 1929, offered when the record has a credential (§4.4, plan 117 step 117.6)', () => {
+  const AUTH: ListenerCredential = { username: 'ops', password: 'super-secret-listener-pass' }
+
+  test('exactly one method is offered when authenticated: never X\'00\' alongside X\'02\'', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener) => {
+          const client = socksClient(listener.port)
+          await client.connected
+          client.send(greeting(METHOD_NO_AUTH, METHOD_USERNAME_PASSWORD))
+          expect([...(await client.next(2))]).toEqual([0x05, METHOD_USERNAME_PASSWORD])
+          client.close()
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('behaviour 1 — a client offering ONLY METHOD_NO_AUTH to an authenticated listener is refused (X\'FF\'), not silently served', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const client = socksClient(listener.port)
+          await client.connected
+          client.send(greeting(METHOD_NO_AUTH))
+          expect([...(await client.next(2))]).toEqual([0x05, METHOD_NONE_ACCEPTABLE])
+          expect(events.some((e) => e.event === 'refused' && e.reason === 'listener-auth-required' && e.code === 'E_PROXY_CLIENT_AUTH_REQUIRED')).toBe(
+            true,
+          )
+          client.close()
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('behaviour 2 — a client that authenticates CORRECTLY is served, all the way through to a real tunnel', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener) => {
+          const client = socksClient(listener.port)
+          await client.connected
+          client.send(greeting(METHOD_USERNAME_PASSWORD))
+          expect([...(await client.next(2))]).toEqual([0x05, METHOD_USERNAME_PASSWORD])
+          const u = Buffer.from(AUTH.username, 'utf8')
+          const p = Buffer.from(AUTH.password, 'utf8')
+          client.send(Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]))
+          expect([...(await client.next(2))]).toEqual([0x01, 0x00])
+          client.send(connectRequest(ATYP_IPV4, '127.0.0.1', PLAIN_PORT))
+          const reply = await client.next(10)
+          expect(reply[0]).toBe(0x05)
+          expect(reply[1]).toBe(0x00)
+          expect(upstream.connects).toBe(1)
+          client.close()
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('behaviour 3 — a client that authenticates INCORRECTLY is refused AND disconnected, never served', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const client = socksClient(listener.port)
+          await client.connected
+          client.send(greeting(METHOD_USERNAME_PASSWORD))
+          await client.next(2)
+          const u = Buffer.from(AUTH.username, 'utf8')
+          const p = Buffer.from('the-wrong-password', 'utf8')
+          client.send(Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]))
+          expect([...(await client.next(2))]).toEqual([0x01, 0x01])
+          // Disconnected: the SERVER closes its end (`client.end(...)` in
+          // `listen-socks5.ts`), proved directly rather than by waiting out
+          // `next()`'s own 3s no-data timeout.
+          await client.closed
+          expect(events.some((e) => e.event === 'refused' && e.reason === 'listener-auth-failed' && e.code === 'E_PROXY_CLIENT_AUTH_FAILED')).toBe(true)
+          expect(upstream.connects).toBe(0)
+          client.close()
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('a refused authentication is logged with the CLIENT ADDRESS and never with the credential offered', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const client = socksClient(listener.port)
+          await client.connected
+          client.send(greeting(METHOD_USERNAME_PASSWORD))
+          await client.next(2)
+          const u = Buffer.from('ops', 'utf8')
+          const p = Buffer.from('the-wrong-password', 'utf8')
+          client.send(Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]))
+          await client.next(2)
+          const refused = events.find((e): e is Extract<BridgeEvent, { event: 'refused' }> => e.event === 'refused' && e.reason === 'listener-auth-failed')
+          expect(refused?.clientAddress).toMatch(/^127\.0\.0\.1:\d+$/)
+          expect(JSON.stringify(refused)).not.toContain('the-wrong-password')
+          expect(JSON.stringify(refused)).not.toContain(AUTH.password)
+          client.close()
+        },
+        { auth: AUTH },
+      )
     } finally {
       await upstream.close()
     }

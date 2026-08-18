@@ -169,6 +169,13 @@ function normaliseLegacyWall(raw: unknown): unknown {
  * device's own auto-rotate behaviour untouched (today's behaviour, exactly);
  * the lock modes pin `user_rotation` while a session is open and are
  * reverted on close the same way `keepAwake` already is.
+ *
+ * `'lock-current'` locks whatever is on screen at the moment it is applied.
+ * Its behaviour on a device with no readable live orientation (asleep) is
+ * still the UNRATIFIED substitution plan 85 §9 Q4 proposed — fall back to
+ * portrait, and say so at `warn`. Nothing here ratifies it; see
+ * `packages/session/src/orientation.ts`'s `resolveCurrentTarget`, which is
+ * still the one place that decision lives.
  */
 export const RotationModeSchema = z.enum(['device', 'lock-portrait', 'lock-landscape', 'lock-current'])
 export type RotationMode = z.infer<typeof RotationModeSchema>
@@ -446,11 +453,16 @@ export const DeviceSettingsSchema = z
             .describe('Turn the device screen off while streaming')
             .meta({ title: 'Turn the device screen off while streaming' }),
           /**
-           * Rotation lock (plan 85 §3.7, §4.1) — schema only here; applying
-           * and reverting it belongs to plan 85.8, next to `keepAwake`.
+           * Rotation lock (plan 85 §3.7, §4.1) — schema only here. Applying
+           * and reverting it is `packages/session/src/orientation.ts`, next
+           * to `keepAwake`; re-applying it to a session that is already
+           * streaming is `SessionManager.setRotation`, called by `PATCH
+           * /api/devices/:id` the moment this value changes.
            */
           rotation: RotationModeSchema.default('device')
-            .describe('Lock the screen orientation while a session is open')
+            .describe(
+              'Lock the screen orientation while a session is open. Takes effect immediately on a device that is streaming right now, and on every session afterwards; the device’s own setting is put back when the last session closes. Not applied while a job is running — that waits for the job’s next session.',
+            )
             .meta({ title: 'Screen rotation' }),
           /**
            * Plan 90 §3.2, §3.3, §4.4, §5 step 90.5 — schema only here; the
@@ -2308,10 +2320,16 @@ export const FarmSettingsSchema = z.object({
       description: 'Where the geo check looks up an exit address\'s location, and how often it re-checks a route already applied.',
     }),
   /**
-   * The database-backed workspace (plan 64 §3.3) — three quotas so an agent
-   * in a retry loop is not a fine way to fill a disk. `E_QUOTA` names
-   * whichever of these was exceeded, plus current usage, so a caller that
-   * hits one can act on it (delete something) rather than just retry.
+   * The workspace (plan 64 §3.3, extended by plan 115 §3.1, §3.4, §3.5) —
+   * SQLite holds only the catalogue; a content driver holds the bytes
+   * (`inline` in the row, or `fs` on disk under `workspace-content/`). `
+   * maxFileBytes`/`maxTotalBytesPerScope` are now a DISK budget rather than a
+   * database one — which is what makes numbers this size reasonable at all —
+   * so their defaults moved from ~1 MiB/64 MiB to 256 MiB/8 GiB to fit the
+   * owner's actual workflow (uploading video into the workspace). `E_QUOTA`
+   * names whichever of these was exceeded, plus current usage AND which
+   * setting to raise, so a caller that hits one can act on it rather than
+   * just retry.
    */
   workspace: z
     .object({
@@ -2319,8 +2337,10 @@ export const FarmSettingsSchema = z.object({
         .number()
         .int()
         .min(1)
-        .default(1_048_576)
-        .describe('Largest single workspace file, in bytes.')
+        .default(268_435_456)
+        .describe(
+          'Largest single workspace file, in bytes — a disk budget (plan 115 §3.5): a file over the inline threshold below lives on disk behind the fs content driver, not in SQLite.',
+        )
         .meta(ui({ title: 'Max file size (bytes)', kind: 'bytes' })),
       maxFilesPerScope: z
         .number()
@@ -2333,14 +2353,23 @@ export const FarmSettingsSchema = z.object({
         .number()
         .int()
         .min(1)
-        .default(67_108_864)
-        .describe('Largest total size of one scope\'s files, in bytes.')
+        .default(8_589_934_592)
+        .describe('Largest total size of one scope\'s files, in bytes — a disk budget, not a database one (plan 115 §3.5).')
         .meta(ui({ title: 'Max total bytes per scope', kind: 'bytes' })),
+      inlineMaxBytes: z
+        .number()
+        .int()
+        .min(0)
+        .default(65_536)
+        .describe(
+          'Content at or under this size, and recognised as text, is stored inline in the workspace_files row; anything larger, or anything not text, is stored on disk behind the fs content driver instead (plan 115 §3.4). A caller never picks — this setting does.',
+        )
+        .meta(ui({ title: 'Inline storage threshold (bytes)', kind: 'bytes' })),
     })
-    .default({ maxFileBytes: 1_048_576, maxFilesPerScope: 1_000, maxTotalBytesPerScope: 67_108_864 })
+    .default({ maxFileBytes: 268_435_456, maxFilesPerScope: 1_000, maxTotalBytesPerScope: 8_589_934_592, inlineMaxBytes: 65_536 })
     .meta({
       title: 'Workspace',
-      description: 'Limits on the database-backed workspace agents and people share (plan 64).',
+      description: 'Limits on the workspace\'s database catalogue and its on-disk content driver, shared by agents and people (plan 64, extended by plan 115).',
     }),
   /**
    * The durable key/value store scripts use across jobs (plan 79 §4.3) —

@@ -803,496 +803,542 @@ export function DevicePopup({
   const reachCount = mirrorGroupId && !solo ? activeMemberCount : 1
 
   return (
-    <div
-      role="region"
-      aria-label={`Focused control — ${label}`}
-      // The TRANSPARENT container (plan 103's layout restructure, landed
-      // alongside 103.4–103.7 — see this plan's own status-line note): no
-      // background, no border, no shadow of its own. Three independently
-      // chromed panels sit inside it, the Wall visible through the gaps
-      // between them, matching the owner's own reference (Android Studio's
-      // emulator model — a control strip that floats beside the device
-      // window but travels with it). `resize` stays HERE, on the
-      // container, never on an individual panel: resizing this box resizes
-      // all three panels together as one object, which is the entire point
-      // of the reference being one container rather than three
-      // independently draggable windows.
-      //
-      // `items-stretch` (the flex default) makes the CENTRE and RIGHT
-      // panels share one height — both stretch to fill this container's
-      // fixed height exactly. The RAIL opts out with its own `self-start`
-      // (set on `HardwareRail`'s own root element, not here) so it hugs its
-      // buttons' natural height instead of stretching tall to match —
-      // owner-reported: the rail must never grow taller than its own
-      // content, only the centre/right pair share a height.
-      //
-      // `overflow-hidden`, not `overflow-auto` — this container itself must
-      // never scroll (nor may the columns wrapper that used to sit inside
-      // it, now removed): every panel handles its own sizing internally
-      // (the screen panel SHRINKS via `LiveView`'s own `fitContainer`
-      // prop; the actions panel is the only one that may ever scroll, and
-      // only inside its own tab content — `SidePanel.tsx`'s own comment).
-      // `overflow-hidden` (rather than `visible`) is what the native CSS
-      // `resize` handle needs to render at all.
-      //
-      // Plan 103 step 103.9 — `resize-y`, not `resize` (both axes): WIDTH is
-      // no longer something the operator drags directly. This container has
-      // no `width` of its own below (only `maxWidth`, a viewport safety
-      // rail), which — combined with `position: fixed` and only ONE inset
-      // (`left`) set — makes its computed width shrink-to-fit its three
-      // children (rail + centre + actions), exactly the standard CSS
-      // algorithm a floated or absolutely-positioned box with an `auto`
-      // width already uses. The centre panel's own width comes from
-      // `LiveView`'s `fitContainer` sizing effect (picture aspect ratio ×
-      // available height); this container simply hugs whatever that
-      // resolves to, so the popup's total width becomes
-      // rail + picture + actions, and resizing the HEIGHT (the one
-      // dimension still directly draggable) is what makes the width follow.
-      className="fixed left-1/2 top-1/2 z-40 flex -translate-x-1/2 -translate-y-1/2 items-stretch gap-3 overflow-hidden resize-y"
-      style={{ height: 'min(88vh, 720px)', maxWidth: '92vw', minWidth: 420, minHeight: 360 }}
-    >
-      {/* Panel 1 — the hardware rail. Its own background/border/shadow, AND
-          its own `self-start` (opting out of the container's
-          `items-stretch` so it hugs its content height rather than
-          stretching), live inside `HardwareRail.tsx` itself now (not
-          applied here), since that component owns exactly what its panel
-          looks like. */}
-      {deviceDetail && (
-        <HardwareRail
-          deviceId={deviceId}
-          inputEnabled={inputEnabled}
-          onActivity={noteActivity}
-          mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo } : undefined}
-          settings={deviceDetail.settings}
-          onSettingsSaved={(s) => setDeviceDetail((d) => (d ? { ...d, settings: s } : d))}
-        />
-      )}
-
-      {/* Panel 2 — the screen. `LiveView`'s own outer element already draws
-          a rounded, bordered, `bg-surface` box with the status line
-          ("● Streaming · fps · WxH · codec") at its own top — that IS this
-          panel's chrome, so nothing wraps it in a second one (a wrapper here
-          would double the border/background `LiveView` already draws). This
-          is also why the status line already lives INSIDE the centre panel
-          rather than in a bar spanning the whole popup: it always has, since
-          `LiveView` renders it internally regardless of `rail`.
-          `fitContainer` (owner-specified): this panel is the one that gives
-          way when the popup is resized. Plan 103 step 103.9: it now takes
-          the PICTURE's own aspect ratio rather than whatever width `flex-1`
-          left over — `LiveView`'s own sizing effect computes an explicit
-          pixel width from the stream's aspect ratio and the height it is
-          given, so this wrapper only needs `min-h-0` for HEIGHT; it no
-          longer claims leftover WIDTH (`flex-1` dropped) — the OUTER
-          container above hugs whatever width `LiveView` resolves to
-          instead. */}
-      <div className="flex min-h-0 flex-col">
-        {deviceDetail ? (
-          <LiveView
+    // The BAND (owner-reported 2026-08-17): a pointer-transparent, fixed strip
+    // 92vw wide, centred in the viewport, whose ONLY jobs are to give the popup
+    // below a definite width to be measured against and to be the `@container`
+    // context its panels query. Both jobs need a separate element:
+    // `container-type: inline-size` makes an element's inline size independent
+    // of its contents, and the popup's width is derived FROM its contents
+    // (plan 103 step 103.9), so the two cannot live on the same box. It also
+    // fixes what a percentage means inside the popup — `max-w-full` on a
+    // `fixed` box resolves against the whole viewport, but against this band it
+    // resolves to the 92vw the popup is actually allowed.
+    //
+    // `pointer-events-none` (with `pointer-events-auto` back on the popup):
+    // this strip spans the viewport horizontally, and without it the Wall
+    // behind the popup would stop taking clicks either side of it.
+    <div className="pointer-events-none fixed inset-x-[4vw] top-1/2 z-40 -translate-y-1/2 @container">
+      <div
+        role="region"
+        aria-label={`Focused control — ${label}`}
+        // The TRANSPARENT popup box (plan 103's layout restructure, landed
+        // alongside 103.4–103.7): no background, no border, no shadow of its
+        // own. Three independently chromed panels sit inside it, the Wall
+        // visible through the gaps between them, matching the owner's own
+        // reference (Android Studio's emulator model — a control strip that
+        // floats beside the device window but travels with it). `resize` stays
+        // HERE, on this box, never on an individual panel: resizing it resizes
+        // all three panels together as one object, which is the entire point of
+        // the reference being one container rather than three independently
+        // draggable windows.
+        //
+        // `items-stretch` (the flex default) makes the CENTRE and RIGHT panels
+        // share one height — both stretch to fill this box's fixed height
+        // exactly. The RAIL opts out with its own `self-start` (set on
+        // `HardwareRail`'s own root element, not here) so it hugs its buttons'
+        // natural height instead of stretching tall to match — owner-reported:
+        // the rail must never grow taller than its own content, only the
+        // centre/right pair share a height.
+        //
+        // `overflow-hidden`, not `overflow-auto` — this box itself must never
+        // scroll: every panel handles its own sizing internally (the screen
+        // panel SHRINKS via `LiveView`'s own `fitContainer` prop; the actions
+        // panel is the only one that may ever scroll, and only inside its own
+        // tab content — `SidePanel.tsx`'s own comment). `overflow-hidden`
+        // (rather than `visible`) is also what the native CSS `resize` handle
+        // needs to render at all.
+        //
+        // Plan 103 step 103.9 — `resize-y`, not `resize` (both axes): WIDTH is
+        // not something the operator drags. `w-max` makes this box exactly as
+        // wide as its three children want to be (rail + `LiveView`'s own
+        // aspect-ratio-derived width + actions), so dragging the HEIGHT is what
+        // moves the width.
+        //
+        // **`max-w-full` is what stops a landscape stream from throwing the
+        // actions panel off-screen.** Owner-reported 2026-08-17 with a
+        // screenshot: a phone lying flat streams 1600×720, `LiveView` resolves a
+        // ~1350 px panel from that ratio, and rail + picture + actions came to
+        // ~1720 px. The previous `maxWidth: '92vw'` was described as a "viewport
+        // safety rail" and was not one — it clamped this BOX while its children
+        // kept their full intrinsic widths and overflowed it, and
+        // `overflow-hidden` then cut the actions panel in half (measured in the
+        // browser: box 1386 px, `scrollWidth` 1722 px, the `<aside>` starting at
+        // x=1494 in a 1507 px viewport). A cap only does anything if something
+        // inside is allowed to give, which is the other half of this fix: the
+        // centre wrapper below is now `flex-1 min-w-0` (it, and only it, absorbs
+        // the shortfall — the rail and the actions panel stay `shrink-0`) and
+        // `LiveView`'s own root carries `maxWidth: '100%'` so its explicit pixel
+        // width becomes a ceiling rather than a floor. `max-w-full` resolves
+        // against the BAND element above, i.e. 92vw — a percentage on a `fixed`
+        // box would have resolved against the whole viewport instead, which is
+        // precisely the 92vw-vs-100vw confusion the band removes.
+        //
+        // `@max-[600px]:flex-col` — below a band that narrow there is no honest
+        // row layout left: the rail (56) + actions (288) + gaps (24) already eat
+        // 368 px, so a picture at `MIN_FIT_CONTAINER_WIDTH_PX` (240) needs 608.
+        // Under that the three panels stack instead, and each still gets real
+        // space (measured at a 360 px viewport: a 331×686 popup, a 331×307
+        // picture and a 331×309 actions panel) rather than the actions panel
+        // being squeezed to nothing or clipped. A CONTAINER query, never a `lg:`
+        // viewport one — `docs/design.md`, and this popup's width is its own,
+        // not the window's.
+        className="pointer-events-auto mx-auto flex w-max max-w-full items-stretch gap-3 overflow-hidden resize-y @max-[600px]:w-full @max-[600px]:flex-col"
+        style={{ height: 'min(88vh, 720px)', minWidth: 'min(420px, 100%)', minHeight: 360 }}
+      >
+        {/* Panel 1 — the hardware rail. Its own background/border/shadow, AND
+            its own `self-start` (opting out of the container's
+            `items-stretch` so it hugs its content height rather than
+            stretching), live inside `HardwareRail.tsx` itself now (not
+            applied here), since that component owns exactly what its panel
+            looks like. */}
+        {deviceDetail && (
+          <HardwareRail
             deviceId={deviceId}
             inputEnabled={inputEnabled}
             onActivity={noteActivity}
-            quality="control"
-            rail={false}
-            fitContainer
-            mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo, onResult: setMirrorLastResults } : undefined}
-            provisioning={provisioningOverlay}
+            mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo } : undefined}
+            settings={deviceDetail.settings}
+            onSettingsSaved={(s) => setDeviceDetail((d) => (d ? { ...d, settings: s } : d))}
           />
-        ) : (
-          !fetchError && (
-            // A plausible fixed width before the device's own detail (and so
-            // `LiveView`'s own aspect-ratio-derived width) exists yet — the
-            // wrapper above no longer has a `flex-1` to fall back on for
-            // this branch either.
-            <div className="w-80 flex-1 rounded-lg border border-line-strong bg-surface p-3 shadow-2xl">
-              <LoadingRows rows={2} />
-            </div>
-          )
         )}
-      </div>
 
-      {/* Panel 3 — identity, session state, and the tabs. Its own header
-          carries the device label and the Close button (`#01 - moto g06  X`
-          in the owner's own reference) — there is no shared title bar
-          spanning the container any more, so this is the only place either
-          one is drawn. */}
-      {/* `overflow-hidden` on the panel itself (never `overflow-auto`) — the
-          panel's OWN edges must stay clean; the one thing allowed to scroll
-          is `SidePanel`'s Actions tab content, deep inside, in its own
-          bounded box (see that file's own comment). */}
-      <aside className="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border border-line-strong bg-surface shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <ScreenShare className="size-4 shrink-0 text-accent-strong" aria-hidden />
-            <span className="truncate text-[13px] font-medium">{label}</span>
-            {busy && <span className="rack-label text-led-active">busy</span>}
-          </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            {/* Row 29 (audit) — a header affordance, not a 13th Actions row
-                (see the state comment above). Reuses `AskAnAgentDialog`
-                unchanged; it is an ordinary (modal) `Dialog`, not one of this
-                popup's non-modal action popups — the same accepted exception
-                `docs/design.md` already documents for the Mirror-confirm and
-                End-task `AlertDialog`s, since editing `AskAnAgentDialog.tsx`
-                itself (outside this plan's own file list) to grow a
-                `nonModal` path is out of scope here. */}
-            {deviceDetail && (
-              <Button variant="ghost" size="sm" aria-label="Ask an agent…" title="Ask an agent…" onClick={() => setAskAgentOpen(true)}>
-                <Bot className="size-4" aria-hidden />
-              </Button>
-            )}
-            {/* "Open full device page" is `ActionsList`'s own row (plan 103
-                §4.2, item 12), not duplicated here — one link, not two, per
-                §4.2's own "displace, don't append" compactness rule. */}
-            <Button variant="ghost" size="sm" aria-label="Close" onClick={onClose} className="shrink-0">
-              <X className="size-4" aria-hidden />
-            </Button>
-          </div>
+        {/* Panel 2 — the screen. `LiveView`'s own outer element already draws
+            a rounded, bordered, `bg-surface` box with the status line
+            ("● Streaming · fps · WxH · codec") at its own top — that IS this
+            panel's chrome, so nothing wraps it in a second one (a wrapper here
+            would double the border/background `LiveView` already draws). This
+            is also why the status line already lives INSIDE the centre panel
+            rather than in a bar spanning the whole popup: it always has, since
+            `LiveView` renders it internally regardless of `rail`.
+            `fitContainer` (owner-specified): this panel is the one that gives
+            way when the popup is resized. Plan 103 step 103.9: it takes the
+            PICTURE's own aspect ratio rather than whatever width was left
+            over — `LiveView`'s own sizing effect computes an explicit pixel
+            width from the stream's aspect ratio and the height it is given.
+
+            `flex-1 min-w-0 max-w-max` is the pair of rules that keeps that
+            true AND keeps the popup inside the viewport (the landscape bug,
+            2026-08-17 — the outer box's own comment has the measurements).
+            `max-w-max` caps this wrapper at its content's own max-content
+            width, which IS the width `LiveView` resolved, so it never grows
+            wider than the picture and no black bars come back. `flex-1
+            min-w-0` is what lets it SHRINK below that when rail + picture +
+            actions would not fit: it is the only one of the three panels that
+            gives (the rail and the actions panel are both `shrink-0`), and
+            `min-w-0` is what removes the automatic minimum size a flex item
+            otherwise takes from its content — without it, `LiveView`'s
+            explicit pixel width becomes an un-shrinkable floor and the
+            actions panel is pushed off-screen. */}
+        <div className="flex min-h-0 min-w-0 max-w-max flex-1 flex-col @max-[600px]:max-w-full">
+          {deviceDetail ? (
+            <LiveView
+              deviceId={deviceId}
+              inputEnabled={inputEnabled}
+              onActivity={noteActivity}
+              quality="control"
+              rail={false}
+              fitContainer
+              mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo, onResult: setMirrorLastResults } : undefined}
+              provisioning={provisioningOverlay}
+            />
+          ) : (
+            !fetchError && (
+              // A plausible fixed width before the device's own detail (and so
+              // `LiveView`'s own aspect-ratio-derived width) exists yet.
+              // `max-w-full` for the same reason `LiveView`'s own root has it:
+              // on a narrow band even this placeholder must give way rather
+              // than push the actions panel out of the popup.
+              <div className="w-80 max-w-full flex-1 rounded-lg border border-line-strong bg-surface p-3 shadow-2xl">
+                <LoadingRows rows={2} />
+              </div>
+            )
+          )}
         </div>
 
-        {/* The identity meta row (plan 103 §5, closing step 103.11's audit
-            rows 20-22) — facts an operator LOOKS UP (viewers, cluster/
-            stable-id/serial/engines) get a popover here rather than a row in
-            `ActionsList`; battery/temperature are the one fact an operator
-            WATCHES, so they render inline and unconditional, exactly as
-            `docs/design.md` requires ("a warning nobody opens is not a
-            warning") — never behind a click, same as `DeviceHeader.tsx`.
-            Reuses the SAME extracted components that file uses, not thinner
-            copies of them. Renders only once the device's own detail has
-            loaded — there is nothing to look up before then. */}
-        {deviceDetail && (
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
-            <AgentAlertChip agent={deviceDetail.agent ?? 'absent'} />
-            <LabelStateBadge state={labelState} />
-            <BatteryTempInline battery={battery ?? deviceDetail.battery ?? null} />
-            <span className="ml-auto flex items-center gap-0.5">
-              <ViewersPopover viewers={viewers} now={now} mySessionId={mySessionId} hoveredSessionId={hoveredSessionId} onHoverSession={setHoveredSessionId} />
-              <DeviceDetailsPopover
-                device={deviceDetail}
-                registry={registry}
-                inspectorFallback={inspectorFallback}
-                agentVersion={agentVersion}
-                settingsHref={`/device?id=${encodeURIComponent(deviceId)}&tab=settings`}
-              />
-            </span>
-          </div>
-        )}
-
-        {notice && (
-          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 text-[11.5px] text-led-warn">
-            <span>{notice.message}</span>
-            {/* `primary_ended` (plan 105 §3.3) — the device just became free
-                at the exact moment access to it was withdrawn, so the notice
-                offers Take control in place rather than going quiet. */}
-            {notice.offerTakeControl && (
-              <button
-                type="button"
-                className="shrink-0 text-[11px] font-medium underline-offset-2 hover:underline"
-                onClick={() => {
-                  setNotice(null)
-                  claimControl()
-                }}
-              >
-                Take control
-              </button>
-            )}
-          </div>
-        )}
-        {fetchError && <p className="shrink-0 border-b px-3 py-1.5 text-[11.5px] text-led-danger">{fetchError}</p>}
-
-        <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
-          {/* Session state — control state, Assist countdown, Mirror, End
-              task. Not part of plan §4.2's fixed 12-row Actions list (they
-              are cross-cutting session facts, not one-off device actions),
-              so they stay above the tabs rather than inside `SidePanel`'s
-              `Actions` tab. Plan 105 (M70) §5 step 105.1: every branch below
-              reads `controlState`, the ONE hook that decides which single
-              action is on offer — see `./ControlState.tsx`'s own header. */}
-          {/* Plan 105 §5 step 105.5 — the round trip: `free` used to render
-              NOTHING here (this session panel only ever showed for the other
-              four states), so a device that became free — by this client's
-              own release, or anyone else's — had no visible way back short
-              of switching to the Inspector tab. Release → re-take is now one
-              click, in the same place Release control itself lives. */}
-          {controlState.kind === 'free' && (
-            <div className="flex shrink-0 items-center justify-between rounded-lg border p-2.5">
-              <span className="text-[11.5px] text-fg-muted">Nobody holds this device.</span>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-6 px-2 text-[11px]"
-                disabled={Boolean(controlState.primary.disabledReason)}
-                title={controlState.primary.disabledReason ?? undefined}
-                onClick={claimControl}
-              >
-                {controlState.primary.label}
+        {/* Panel 3 — identity, session state, and the tabs. Its own header
+            carries the device label and the Close button (`#01 - moto g06  X`
+            in the owner's own reference) — there is no shared title bar
+            spanning the container any more, so this is the only place either
+            one is drawn. */}
+        {/* `overflow-hidden` on the panel itself (never `overflow-auto`) — the
+            panel's OWN edges must stay clean; the one thing allowed to scroll
+            is `SidePanel`'s Actions tab content, deep inside, in its own
+            bounded box (see that file's own comment). */}
+        <aside className="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border border-line-strong bg-surface shadow-2xl @max-[600px]:w-full @max-[600px]:grow @max-[600px]:basis-0 @max-[600px]:min-h-0">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <ScreenShare className="size-4 shrink-0 text-accent-strong" aria-hidden />
+              <span className="truncate text-[13px] font-medium">{label}</span>
+              {busy && <span className="rack-label text-led-active">busy</span>}
+            </div>
+            <div className="flex shrink-0 items-center gap-0.5">
+              {/* Row 29 (audit) — a header affordance, not a 13th Actions row
+                  (see the state comment above). Reuses `AskAnAgentDialog`
+                  unchanged; it is an ordinary (modal) `Dialog`, not one of this
+                  popup's non-modal action popups — the same accepted exception
+                  `docs/design.md` already documents for the Mirror-confirm and
+                  End-task `AlertDialog`s, since editing `AskAnAgentDialog.tsx`
+                  itself (outside this plan's own file list) to grow a
+                  `nonModal` path is out of scope here. */}
+              {deviceDetail && (
+                <Button variant="ghost" size="sm" aria-label="Ask an agent…" title="Ask an agent…" onClick={() => setAskAgentOpen(true)}>
+                  <Bot className="size-4" aria-hidden />
+                </Button>
+              )}
+              {/* "Open full device page" is `ActionsList`'s own row (plan 103
+                  §4.2, item 12), not duplicated here — one link, not two, per
+                  §4.2's own "displace, don't append" compactness rule. */}
+              <Button variant="ghost" size="sm" aria-label="Close" onClick={onClose} className="shrink-0">
+                <X className="size-4" aria-hidden />
               </Button>
             </div>
-          )}
+          </div>
 
-          {controlState.kind === 'held-by-job' && (
-            <div className="shrink-0 space-y-1 rounded-lg border p-2.5">
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">
-                <span className="readout text-fg">{controlState.holder.label}</span> is running on this device.
-              </p>
-              {/* Audit row 26 (plan 105) — reachable even though a job's
-                  hold is never takeable: `TakeControlDialog` itself shows
-                  "View job"/"Close" for this case, correctly, rather than a
-                  takeover button. */}
-              <button
-                type="button"
-                className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-                onClick={() => setTakeOverOpen(true)}
-              >
-                {controlState.secondary.label}
-              </button>
+          {/* The identity meta row (plan 103 §5, closing step 103.11's audit
+              rows 20-22) — facts an operator LOOKS UP (viewers, cluster/
+              stable-id/serial/engines) get a popover here rather than a row in
+              `ActionsList`; battery/temperature are the one fact an operator
+              WATCHES, so they render inline and unconditional, exactly as
+              `docs/design.md` requires ("a warning nobody opens is not a
+              warning") — never behind a click, same as `DeviceHeader.tsx`.
+              Reuses the SAME extracted components that file uses, not thinner
+              copies of them. Renders only once the device's own detail has
+              loaded — there is nothing to look up before then. */}
+          {deviceDetail && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
+              <AgentAlertChip agent={deviceDetail.agent ?? 'absent'} deviceId={deviceId} deviceLabel={deviceDetail.label} />
+              <LabelStateBadge state={labelState} />
+              <BatteryTempInline battery={battery ?? deviceDetail.battery ?? null} />
+              <span className="ml-auto flex items-center gap-0.5">
+                <ViewersPopover viewers={viewers} now={now} mySessionId={mySessionId} hoveredSessionId={hoveredSessionId} onHoverSession={setHoveredSessionId} />
+                <DeviceDetailsPopover
+                  device={deviceDetail}
+                  registry={registry}
+                  inspectorFallback={inspectorFallback}
+                  agentVersion={agentVersion}
+                  settingsHref={`/device?id=${encodeURIComponent(deviceId)}&tab=settings`}
+                />
+              </span>
             </div>
           )}
 
-          {controlState.kind === 'held-by-human' && (
-            <div className="shrink-0 space-y-1.5 rounded-lg border p-2.5">
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">
-                <span className="readout text-fg">{controlState.holder.label}</span> is using this device now.
-              </p>
-              {/* Plan 105 §9 Q1 — deliberately undecided: both actions are
-                  offered, weighted equally, and the caption says so plainly
-                  rather than silently picking one for the operator. */}
-              <p className="text-[11px] text-fg-subtle">Join them, or take over — not decided which should be the default here.</p>
-              <div className="flex gap-2">
-                {controlState.options.map((opt) =>
-                  opt.kind === 'assist' ? (
-                    <Button
-                      key={opt.kind}
-                      size="sm"
-                      variant="outline"
-                      className="h-6 px-2 text-[11px]"
-                      disabled={Boolean(opt.disabledReason)}
-                      title={opt.disabledReason ?? undefined}
-                      onClick={() => setAssistOpen(true)}
-                    >
-                      {opt.label}
-                    </Button>
-                  ) : (
-                    <Button
-                      key={opt.kind}
-                      size="sm"
-                      variant="outline"
-                      className="h-6 px-2 text-[11px]"
-                      onClick={() => setTakeOverOpen(true)}
-                    >
-                      {opt.label}
-                    </Button>
-                  ),
-                )}
-              </div>
-            </div>
-          )}
-
-          {controlState.kind === 'i-hold' && (
-            <div className="flex shrink-0 items-center justify-between rounded-lg border p-2.5">
-              <span className="readout text-[11px] text-fg-muted">{mmss(secondsLeft ?? 0)}</span>
-              {/* Audit row 27 (plan 105) — the popup can finally give up a
-                  lease it claimed, rather than only ever losing it to the
-                  server's idle timeout. Plan 105 §5 step 105.5: the click
-                  starts an undo window instead of releasing immediately — an
-                  accidental click is free to reverse, at zero risk, since
-                  the lease has not actually moved yet. */}
-              {releasePending ? (
-                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={undoRelease}>
-                  Releasing… Undo
-                </Button>
-              ) : (
-                <Button size="sm" variant="secondary" className="h-6 px-2 text-[11px]" onClick={requestReleaseControl}>
-                  {controlState.primary.label}
-                </Button>
+          {notice && (
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 text-[11.5px] text-led-warn">
+              <span>{notice.message}</span>
+              {/* `primary_ended` (plan 105 §3.3) — the device just became free
+                  at the exact moment access to it was withdrawn, so the notice
+                  offers Take control in place rather than going quiet. */}
+              {notice.offerTakeControl && (
+                <button
+                  type="button"
+                  className="shrink-0 text-[11px] font-medium underline-offset-2 hover:underline"
+                  onClick={() => {
+                    setNotice(null)
+                    claimControl()
+                  }}
+                >
+                  Take control
+                </button>
               )}
             </div>
           )}
+          {fetchError && <p className="shrink-0 border-b px-3 py-1.5 text-[11.5px] text-led-danger">{fetchError}</p>}
 
-          {controlState.kind === 'i-assist' && (
-            <div className="shrink-0 space-y-1 rounded-lg border border-led-warn p-2.5">
-              <p className="rack-label text-led-warn">Assisting — {controlState.primaryHolder.label} still has control</p>
-              <div className="flex items-center justify-between">
-                <span className="readout text-[11px] text-led-warn">{mmss(assistSecondsLeft ?? 0)}</span>
-                <button
-                  type="button"
-                  onClick={stopAssisting}
-                  className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+          <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+            {/* Session state — control state, Assist countdown, Mirror, End
+                task. Not part of plan §4.2's fixed 12-row Actions list (they
+                are cross-cutting session facts, not one-off device actions),
+                so they stay above the tabs rather than inside `SidePanel`'s
+                `Actions` tab. Plan 105 (M70) §5 step 105.1: every branch below
+                reads `controlState`, the ONE hook that decides which single
+                action is on offer — see `./ControlState.tsx`'s own header. */}
+            {/* Plan 105 §5 step 105.5 — the round trip: `free` used to render
+                NOTHING here (this session panel only ever showed for the other
+                four states), so a device that became free — by this client's
+                own release, or anyone else's — had no visible way back short
+                of switching to the Inspector tab. Release → re-take is now one
+                click, in the same place Release control itself lives. */}
+            {controlState.kind === 'free' && (
+              <div className="flex shrink-0 items-center justify-between rounded-lg border p-2.5">
+                <span className="text-[11.5px] text-fg-muted">Nobody holds this device.</span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={Boolean(controlState.primary.disabledReason)}
+                  title={controlState.primary.disabledReason ?? undefined}
+                  onClick={claimControl}
                 >
                   {controlState.primary.label}
+                </Button>
+              </div>
+            )}
+
+            {controlState.kind === 'held-by-job' && (
+              <div className="shrink-0 space-y-1 rounded-lg border p-2.5">
+                <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                  <span className="readout text-fg">{controlState.holder.label}</span> is running on this device.
+                </p>
+                {/* Audit row 26 (plan 105) — reachable even though a job's
+                    hold is never takeable: `TakeControlDialog` itself shows
+                    "View job"/"Close" for this case, correctly, rather than a
+                    takeover button. */}
+                <button
+                  type="button"
+                  className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+                  onClick={() => setTakeOverOpen(true)}
+                >
+                  {controlState.secondary.label}
                 </button>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Plan 104 (M69) §3.3 — no switch: mirror arms itself the moment
-              the candidate set (this device plus whatever is selected on
-              the Wall behind the popup) reaches two, and disarms itself the
-              moment it drops back below two. What used to be a control the
-              operator flips is now a STATEMENT — "how many devices the
-              current input reaches" — because the selection is already
-              visible (an accent border/tint on every selected tile, the
-              cursor badge naming the count at two or more, plan 101) and
-              restating it here a second time is what the switch used to do
-              redundantly. `reachCount` folds in `solo`/Alt-held: a live
-              group of N still reaches only THIS one device while "Focused
-              only" (or Alt) is held, and the statement says so rather than
-              quoting the group size while input is actually narrowed. */}
-          {/* Rendered only when it has something to say (owner's call,
-              2026-08-16). On one device this panel read "Input reaches — 1
-              device" inside a popup that is visibly showing one device, plus
-              a sentence explaining a switch that no longer exists. Both
-              restate what is already on screen, which is the same noise the
-              cursor badge was trimmed for: it appears at two or more, not at
-              one.
-              At two or more it is not noise — it is the safety basis for
-              having removed the switch at all (§3.3: the selection is the
-              consent, so the count a tap will reach has to be visible before
-              the tap). So the rule is "show it when the answer is not
-              obvious", never "show it always" or "never show it". */}
-          {(mirrorGroupId || mirrorStarting || reachCount > 1) && (
-          <div className="shrink-0 space-y-2 rounded-lg border p-2.5">
-            <div className="flex items-center justify-between">
-              <span className="rack-label">Input reaches</span>
-              <span className="readout text-[13px] font-medium">
-                {reachCount} device{reachCount === 1 ? '' : 's'}
-              </span>
-            </div>
-            {mirrorStarting && <p className="text-[11px] text-fg-subtle">Arming…</p>}
-            {mirrorGroupId && (
-              <>
-                <p className="readout text-[11px] text-fg-muted">
-                  {activeMemberCount} / {mirrorMembers.length} devices active
+            {controlState.kind === 'held-by-human' && (
+              <div className="shrink-0 space-y-1.5 rounded-lg border p-2.5">
+                <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                  <span className="readout text-fg">{controlState.holder.label}</span> is using this device now.
                 </p>
-                <label className="flex items-center justify-between gap-2 text-[11px] text-fg-muted">
-                  Focused only
-                  <Switch size="sm" checked={solo} disabled={altHeld} onCheckedChange={setSoloToggle} />
-                </label>
-                <p className="text-[11px] text-fg-subtle">Hold Alt to send to just this device for a moment.</p>
-                {mirrorLastResults && mirrorLastResults.length > 0 && (
-                  <div>
-                    <button
-                      type="button"
-                      className="readout text-[11px] underline-offset-2 hover:underline"
-                      onClick={() => setMirrorResultsOpen((o) => !o)}
-                    >
-                      {okResultCount}/{mirrorLastResults.length}
-                    </button>
-                    {mirrorResultsOpen && failedResults.length > 0 && (
-                      <ul className="mt-1 space-y-0.5 text-[11px] text-fg-subtle">
-                        {failedResults.map((r) => (
-                          <li key={r.deviceId}>
-                            {labelFor(r.deviceId)} — {r.code ?? 'failed'}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                {/* Plan 105 §9 Q1 — deliberately undecided: both actions are
+                    offered, weighted equally, and the caption says so plainly
+                    rather than silently picking one for the operator. */}
+                <p className="text-[11px] text-fg-subtle">Join them, or take over — not decided which should be the default here.</p>
+                <div className="flex gap-2">
+                  {controlState.options.map((opt) =>
+                    opt.kind === 'assist' ? (
+                      <Button
+                        key={opt.kind}
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[11px]"
+                        disabled={Boolean(opt.disabledReason)}
+                        title={opt.disabledReason ?? undefined}
+                        onClick={() => setAssistOpen(true)}
+                      >
+                        {opt.label}
+                      </Button>
+                    ) : (
+                      <Button
+                        key={opt.kind}
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => setTakeOverOpen(true)}
+                      >
+                        {opt.label}
+                      </Button>
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
+
+            {controlState.kind === 'i-hold' && (
+              <div className="flex shrink-0 items-center justify-between rounded-lg border p-2.5">
+                <span className="readout text-[11px] text-fg-muted">{mmss(secondsLeft ?? 0)}</span>
+                {/* Audit row 27 (plan 105) — the popup can finally give up a
+                    lease it claimed, rather than only ever losing it to the
+                    server's idle timeout. Plan 105 §5 step 105.5: the click
+                    starts an undo window instead of releasing immediately — an
+                    accidental click is free to reverse, at zero risk, since
+                    the lease has not actually moved yet. */}
+                {releasePending ? (
+                  <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={undoRelease}>
+                    Releasing… Undo
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="secondary" className="h-6 px-2 text-[11px]" onClick={requestReleaseControl}>
+                    {controlState.primary.label}
+                  </Button>
                 )}
-              </>
+              </div>
+            )}
+
+            {controlState.kind === 'i-assist' && (
+              <div className="shrink-0 space-y-1 rounded-lg border border-led-warn p-2.5">
+                <p className="rack-label text-led-warn">Assisting — {controlState.primaryHolder.label} still has control</p>
+                <div className="flex items-center justify-between">
+                  <span className="readout text-[11px] text-led-warn">{mmss(assistSecondsLeft ?? 0)}</span>
+                  <button
+                    type="button"
+                    onClick={stopAssisting}
+                    className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+                  >
+                    {controlState.primary.label}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Plan 104 (M69) §3.3 — no switch: mirror arms itself the moment
+                the candidate set (this device plus whatever is selected on
+                the Wall behind the popup) reaches two, and disarms itself the
+                moment it drops back below two. What used to be a control the
+                operator flips is now a STATEMENT — "how many devices the
+                current input reaches" — because the selection is already
+                visible (an accent border/tint on every selected tile, the
+                cursor badge naming the count at two or more, plan 101) and
+                restating it here a second time is what the switch used to do
+                redundantly. `reachCount` folds in `solo`/Alt-held: a live
+                group of N still reaches only THIS one device while "Focused
+                only" (or Alt) is held, and the statement says so rather than
+                quoting the group size while input is actually narrowed. */}
+            {/* Rendered only when it has something to say (owner's call,
+                2026-08-16). On one device this panel read "Input reaches — 1
+                device" inside a popup that is visibly showing one device, plus
+                a sentence explaining a switch that no longer exists. Both
+                restate what is already on screen, which is the same noise the
+                cursor badge was trimmed for: it appears at two or more, not at
+                one.
+                At two or more it is not noise — it is the safety basis for
+                having removed the switch at all (§3.3: the selection is the
+                consent, so the count a tap will reach has to be visible before
+                the tap). So the rule is "show it when the answer is not
+                obvious", never "show it always" or "never show it". */}
+            {(mirrorGroupId || mirrorStarting || reachCount > 1) && (
+            <div className="shrink-0 space-y-2 rounded-lg border p-2.5">
+              <div className="flex items-center justify-between">
+                <span className="rack-label">Input reaches</span>
+                <span className="readout text-[13px] font-medium">
+                  {reachCount} device{reachCount === 1 ? '' : 's'}
+                </span>
+              </div>
+              {mirrorStarting && <p className="text-[11px] text-fg-subtle">Arming…</p>}
+              {mirrorGroupId && (
+                <>
+                  <p className="readout text-[11px] text-fg-muted">
+                    {activeMemberCount} / {mirrorMembers.length} devices active
+                  </p>
+                  <label className="flex items-center justify-between gap-2 text-[11px] text-fg-muted">
+                    Focused only
+                    <Switch size="sm" checked={solo} disabled={altHeld} onCheckedChange={setSoloToggle} />
+                  </label>
+                  <p className="text-[11px] text-fg-subtle">Hold Alt to send to just this device for a moment.</p>
+                  {mirrorLastResults && mirrorLastResults.length > 0 && (
+                    <div>
+                      <button
+                        type="button"
+                        className="readout text-[11px] underline-offset-2 hover:underline"
+                        onClick={() => setMirrorResultsOpen((o) => !o)}
+                      >
+                        {okResultCount}/{mirrorLastResults.length}
+                      </button>
+                      {mirrorResultsOpen && failedResults.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-[11px] text-fg-subtle">
+                          {failedResults.map((r) => (
+                            <li key={r.deviceId}>
+                              {labelFor(r.deviceId)} — {r.code ?? 'failed'}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            )}
+
+            {jobId && (
+              <Button size="sm" variant="outline" className="w-full shrink-0 text-led-danger" onClick={() => setEndTaskOpen(true)}>
+                <OctagonX className="size-3.5" aria-hidden />
+                End task
+              </Button>
+            )}
+
+            {deviceDetail && (
+              <SidePanel
+                deviceId={deviceId}
+                device={deviceDetail}
+                devices={devices}
+                selectedIds={selectedIds}
+                assistState={assistState}
+                canUseLive={iHoldControl && !busy}
+                takeControlDisabledReason={takeControlReason}
+                onAssistSelect={() => setAssistOpen(true)}
+                onDeviceReloaded={reloadDevice}
+                onForgotten={onClose}
+                onClaimControl={claimControl}
+              />
             )}
           </div>
-          )}
+        </aside>
 
-          {jobId && (
-            <Button size="sm" variant="outline" className="w-full shrink-0 text-led-danger" onClick={() => setEndTaskOpen(true)}>
-              <OctagonX className="size-3.5" aria-hidden />
-              End task
-            </Button>
-          )}
+        {/* Assist (plan 91 §3.2, §3.12) — reuses `AssistDialog` unchanged,
+            opened from `ActionsList`'s own "Assist" row through this popup's
+            `assistOpen` state; ONE instance, non-modal (plan 103 §3.2). */}
+        {deviceDetail?.heldBy && (
+          <AssistDialog
+            deviceId={deviceId}
+            deviceLabel={label}
+            primary={deviceDetail.heldBy}
+            grantTtlSec={assistGrantTtlSec}
+            open={assistOpen}
+            onOpenChange={setAssistOpen}
+            onAssisted={(expiresAtMs, primary) => setAssisting({ expiresAt: expiresAtMs, primary })}
+            nonModal
+          />
+        )}
 
-          {deviceDetail && (
-            <SidePanel
-              deviceId={deviceId}
-              device={deviceDetail}
-              devices={devices}
-              selectedIds={selectedIds}
-              assistState={assistState}
-              canUseLive={iHoldControl && !busy}
-              takeControlDisabledReason={takeControlReason}
-              onAssistSelect={() => setAssistOpen(true)}
-              onDeviceReloaded={reloadDevice}
-              onForgotten={onClose}
-              onClaimControl={claimControl}
-            />
-          )}
-        </div>
-      </aside>
+        {/* Row 29 (audit) — reuses `AskAnAgentDialog` unchanged, from the
+            header's own Bot-icon button above. Modal (the component has no
+            `nonModal` path, and it is outside this plan's own file list to add
+            one) — the header comment above has the full reasoning. */}
+        {deviceDetail && <AskAnAgentDialog deviceId={deviceId} deviceLabel={label} open={askAgentOpen} onOpenChange={setAskAgentOpen} />}
 
-      {/* Assist (plan 91 §3.2, §3.12) — reuses `AssistDialog` unchanged,
-          opened from `ActionsList`'s own "Assist" row through this popup's
-          `assistOpen` state; ONE instance, non-modal (plan 103 §3.2). */}
-      {deviceDetail?.heldBy && (
-        <AssistDialog
-          deviceId={deviceId}
-          deviceLabel={label}
-          primary={deviceDetail.heldBy}
-          grantTtlSec={assistGrantTtlSec}
-          open={assistOpen}
-          onOpenChange={setAssistOpen}
-          onAssisted={(expiresAtMs, primary) => setAssisting({ expiresAt: expiresAtMs, primary })}
-          nonModal
-        />
-      )}
+        {/* Take over (plan 105 §5 step 105.1, audit row 26) — reuses
+            `TakeControlDialog` unchanged (per this plan's own instruction: "do
+            not write a second"), non-modal for the same reason `AssistDialog`
+            above is. Correctly informational rather than actionable when the
+            holder is a job (`holder.takeable` is `false`), and a real forced
+            takeover when it is a person or an agent. */}
+        {deviceDetail?.heldBy && (
+          <TakeControlDialog
+            deviceId={deviceId}
+            deviceLabel={label}
+            holder={deviceDetail.heldBy}
+            open={takeOverOpen}
+            onOpenChange={setTakeOverOpen}
+            // Plan 105 §5 step 105.6 — a forced takeover is always `'explicit'`
+            // (see the file header): the operator deliberately took the
+            // device, so closing the popup afterward must not give it up.
+            onTaken={(expiresAtSec) => {
+              setControlExpiresAt(expiresAtSec * 1000)
+              setLeaseOrigin('explicit')
+            }}
+            nonModal
+          />
+        )}
 
-      {/* Row 29 (audit) — reuses `AskAnAgentDialog` unchanged, from the
-          header's own Bot-icon button above. Modal (the component has no
-          `nonModal` path, and it is outside this plan's own file list to add
-          one) — the header comment above has the full reasoning. */}
-      {deviceDetail && <AskAnAgentDialog deviceId={deviceId} deviceLabel={label} open={askAgentOpen} onOpenChange={setAskAgentOpen} />}
-
-      {/* Take over (plan 105 §5 step 105.1, audit row 26) — reuses
-          `TakeControlDialog` unchanged (per this plan's own instruction: "do
-          not write a second"), non-modal for the same reason `AssistDialog`
-          above is. Correctly informational rather than actionable when the
-          holder is a job (`holder.takeable` is `false`), and a real forced
-          takeover when it is a person or an agent. */}
-      {deviceDetail?.heldBy && (
-        <TakeControlDialog
-          deviceId={deviceId}
-          deviceLabel={label}
-          holder={deviceDetail.heldBy}
-          open={takeOverOpen}
-          onOpenChange={setTakeOverOpen}
-          // Plan 105 §5 step 105.6 — a forced takeover is always `'explicit'`
-          // (see the file header): the operator deliberately took the
-          // device, so closing the popup afterward must not give it up.
-          onTaken={(expiresAtSec) => {
-            setControlExpiresAt(expiresAtSec * 1000)
-            setLeaseOrigin('explicit')
-          }}
-          nonModal
-        />
-      )}
-
-      {jobId && (
-        <AlertDialog open={endTaskOpen} onOpenChange={setEndTaskOpen}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>
-                End {deviceDetail?.heldBy?.label ?? 'this job'} on {label}?
-              </AlertDialogTitle>
-              <AlertDialogDescription>The job stops immediately. This cannot be undone.</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={isPending('end-task')}>Keep it running</AlertDialogCancel>
-              <AlertDialogAction
-                disabled={isPending('end-task')}
-                className="bg-led-danger text-white hover:bg-led-danger/90"
-                onClick={async (e) => {
-                  e.preventDefault()
-                  await run('end-task', () => api(`/api/jobs/${jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }), {
-                    success: 'Job ended',
-                    failure: 'Could not end the job',
-                  })
-                  setEndTaskOpen(false)
-                }}
-              >
-                {isPending('end-task') ? 'Ending…' : 'End task'}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
+        {jobId && (
+          <AlertDialog open={endTaskOpen} onOpenChange={setEndTaskOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  End {deviceDetail?.heldBy?.label ?? 'this job'} on {label}?
+                </AlertDialogTitle>
+                <AlertDialogDescription>The job stops immediately. This cannot be undone.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={isPending('end-task')}>Keep it running</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={isPending('end-task')}
+                  className="bg-led-danger text-white hover:bg-led-danger/90"
+                  onClick={async (e) => {
+                    e.preventDefault()
+                    await run('end-task', () => api(`/api/jobs/${jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }), {
+                      success: 'Job ended',
+                      failure: 'Could not end the job',
+                    })
+                    setEndTaskOpen(false)
+                  }}
+                >
+                  {isPending('end-task') ? 'Ending…' : 'End task'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+      </div>
     </div>
   )
 }

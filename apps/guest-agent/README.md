@@ -1,6 +1,6 @@
 # `enkaku-guest-agent`
 
-The on-device helper app. It is installed on **every admitted farm device** by the core — not only devices with a proxy configured — driven entirely over adb, and has no user-facing controls beyond a status screen and a keyboard-switch button. The plan behind the original SOCKS5-only agent is [`docs/plans/43-m15b-guest-agent.md`](../../docs/plans/43-m15b-guest-agent.md); the verified platform research behind every decision here is [`docs/research/android-guest-agent.md`](../../docs/research/android-guest-agent.md). The plan that made it one app with four facets and mandatory on every phone is [`docs/plans/90-m55-unified-guest-agent.md`](../../docs/plans/90-m55-unified-guest-agent.md).
+The on-device helper app. It is installed on **every admitted farm device** by the core — not only devices with a proxy configured — driven entirely over adb, and has no controls that change the device beyond a keyboard-switch button — everything else on its one screen is read-only diagnostics (see [The status screen](#the-status-screen)). The plan behind the original SOCKS5-only agent is [`docs/plans/43-m15b-guest-agent.md`](../../docs/plans/43-m15b-guest-agent.md); the verified platform research behind every decision here is [`docs/research/android-guest-agent.md`](../../docs/research/android-guest-agent.md). The plan that made it one app with four facets and mandatory on every phone is [`docs/plans/90-m55-unified-guest-agent.md`](../../docs/plans/90-m55-unified-guest-agent.md).
 
 > **Status:** working end to end in software, and verified on Android 15 hardware for the original route facet: the agent installs unattended, the control channel answers, and a SOCKS5 full tunnel with username/password carries real traffic — confirmed by Android's own `IS_VALIDATED` connectivity check passing *through* the tunnel. Plan 90's three newer facets (mandatory provisioning, the keyboard, the screen label) are implemented and unit-tested but **not yet confirmed on real hardware** by this pass — see `docs/plans/90-m55-unified-guest-agent.md`'s consolidated hardware-pending table for the exact commands. Known rough edges on the route facet are in [`docs/plans/44-m15v-proxy-end-to-end.md`](../../docs/plans/44-m15v-proxy-end-to-end.md) §8b.
 
@@ -72,6 +72,29 @@ Then it is installed with `adb install -r -g`, the `ACTIVATE_VPN` app op is gran
 > 1. Push any `v*` tag (e.g. `v0.1.8`). `.github/workflows/release.yml`'s `build-guest-agent` job builds and signs the APK, derives `versionCode` from the tag, and prints its size and sha256 to the job log; the release's `SHA256SUMS.txt` also carries the hash, and `guest-agent.apk` is attached to that release as a downloadable asset.
 > 2. Read the printed sha256 and size, and update `packages/toolchain/manifest/enkaku-tools.json`'s `guest-agent` entry by hand: `version` (a real value, not `TODO-first-release`), `versions[0].platforms.*.url` (the release asset's download URL), `versions[0].platforms.*.sha256`, `versions[0].platforms.*.sizeBytes`, and `deviceArtifact.versionCode` (the same `versionCode` the job derived from the tag). Commit this change.
 > 3. Push the **next** `v*` tag (e.g. `v0.1.9`). Its core binaries now embed a manifest that correctly resolves tier 3 for the guest-agent APK published by the *first* tag — the manifest deliberately lags one release behind the agent build it pins, the same way it would for any tool whose own release has to exist before it can be checksummed. Repeat steps 1–3 whenever the pinned agent build needs to move forward.
+
+## The status screen
+
+`StatusActivity` — behind the launcher icon, the only screen a human ever sees. It answers one question: **what is wrong with this phone**, without adb.
+
+It used to draw three fixed lines. The reason it no longer does is a real incident: a core restarted, the operator pressed "turn off" in Studio, the fleet row read `engine: none, enabled: false` — and the teardown never reached the phone. `RouteVpnService` stayed up with no working tunnel, and because the route was `failClosed: true` the device blocked all of its own traffic. Diagnosing it took `adb shell dumpsys`, `ip link` and a `ping`, and **every one of those answers was already in the app's own process**: `RouteState.current()` was `HELD`, `RouteState.lastError()` said why, and `ConnectivityManager` still had the interface. One glance at the phone would have answered it.
+
+| Section | What it shows | Read from |
+|---|---|---|
+| Banner | The single worst thing true right now, in words a non-engineer can act on. `HELD` is unmistakable and says what it means: *traffic is blocked on purpose because the tunnel is not carrying it*, plus the Settings path to recover the device by hand | `RouteState`, `VpnLink`, `ControlChannelState` |
+| Farm link | Paired or not and how long ago the token arrived; whether the control channel is listening; how long since the farm last spoke and which method it called; requests served; the last request that was *refused* and with which code | `Pairing`, `ControlChannelState` |
+| Route | Lifecycle state by its own name (`UP`/`HELD`/`DOWN`), the upstream (host and port), this route's `failClosed` policy, the last error verbatim, bytes and packets each way, VPN consent — and separately **what Android itself says**: the interface, whether `0.0.0.0/0` really enters it, and whether the platform validated internet through it | `RouteState`, `RouteVpnService`, `VpnLink` |
+| Checks | IPv6 blocked / open / **not checked**; the dead-man's switch budget; the last egress probe the farm ran, per leg, with the address the probe server saw | `Ipv6Leak`, `DeadMansSwitch`, `EgressProbe.lastRun()` |
+| Keyboard | Whether `EnkakuIme` is selected, enabled, or absent, and whether a field is focused | `TextFacet.status` |
+| This build | `versionName`/`versionCode`, wire protocol, advertised capabilities, Android version, model, package — enough to tell an **outdated** agent from a **misbehaving** one | `PackageManager`, `Protocol` |
+
+Three rules it is built to, and any change here has to keep:
+
+- **Never overstate.** A route that is `UP` means a tunnel is established, not that traffic reaches the intended exit — the farm's own `deriveHealth` keeps such a device `unverified` for exactly that reason, and the phone must not claim more than the farm does. Where the app cannot verify something it says *not checked*, never *ok*. Where it holds no fact at all, the row is **omitted** rather than rendered empty — which is why the rows are built in Kotlin and only the shell is in XML.
+- **No secrets.** The pairing token and the SOCKS5 password never appear. `RouteState.describeUpstream()` is host and port by construction; nothing on this screen touches `RouteVpnService.currentUpstream()`, the one accessor that holds credentials.
+- **Still no Compose.** Compose plus its `material3`/`ui`/tooling graph was 21.3 MB of a 21.7 MB release APK when this screen drew three lines of text (plan 90 §3.11), and it would cost the same for a list of label/value rows — the one shape a `TextView` is already good at. `Refresh` and `Copy` are the only additions, and the screen re-reads itself every 2 s while it is open because the state changes underneath the reader.
+
+`Copy` puts the whole report on the clipboard as plain text, because whoever is debugging is about to paste it into a message and retyping `no contact from the farm for 91004ms` off a phone screen is how the one detail that mattered gets dropped.
 
 ## Text input (the keyboard)
 

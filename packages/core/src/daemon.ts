@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
-import { AdbClient, createAdbdShim, Semaphore } from '@enkaku/adb'
+import { ADB_TIMEOUTS, AdbClient, createAdbdShim, Semaphore, type AdbTimeoutProfile } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
 import {
@@ -12,6 +12,7 @@ import {
   type DeviceStatus,
   type ServerMessage,
   type ShellResult,
+  type TransportExecOptions,
   type Viewer,
 } from '@enkaku/protocol'
 import type { Server } from 'bun'
@@ -33,6 +34,7 @@ import { createRetentionGc, type RetentionGc } from './maintenance/retention'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes } from './api/artifacts'
+import { createWorkspaceFileRoutes } from './api/workspace'
 import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
@@ -129,6 +131,7 @@ import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-re
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
 import { devices } from './db/schema'
+import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
 import { redactShellCommand } from './device/redact'
@@ -251,6 +254,16 @@ let blobGc: BlobGc | null = null
    * same pattern `onAdmitted`/`rescan` already use for a dep assigned later in this same function.
    */
   let agentProvisionerRef: AgentProvisioner | null = null
+  /**
+   * Plan 114 §4.3, step 114.3 — the reverse registry's `routeEnabled` veto,
+   * bound to the persisted route's own `enabled` flag once
+   * `createGuestAgentRoutes` exists. The registry is constructed beside
+   * `hostAdb`, well before the network subsystem, and deliberately reads no
+   * database of its own; this closure is how it asks. `null` until then, which
+   * is correct rather than merely convenient: no reverse can exist before the
+   * route service that establishes them does.
+   */
+  let networkRouteEnabledRef: ((deviceId: string) => boolean) | null = null
   /**
    * Device preparation's runner (plan 106 §3.3, §3.5) — `null` until it is
    * built, right after `agentProvisioner` (same file, same reasoning: no
@@ -522,6 +535,32 @@ let blobGc: BlobGc | null = null
         onLog: (level, msg) => log.child('host-adb')[level](msg),
       })
       hostAdb = hostAdbHandle
+
+      // `adb reverse`, and the map that survives a replug (plan 114 §4.3, step
+      // 114.4). Built right beside `hostAdbHandle` because that is its only
+      // dependency besides a serial lookup — no adb server, no device, no
+      // route is needed to hold an empty map, and constructing it here means
+      // `onDeviceReady` further down can call it unconditionally instead of
+      // through yet another forward-ref. It holds runtime state only; the
+      // route intent lives in `devices.network_route`, and the reconcile pass
+      // that re-seeds this map for an enabled `adb-reverse-proxy` route after
+      // a core restart belongs to steps 114.3/114.5.
+      const reverseRegistry = createReverseRegistry({
+        hostAdb: hostAdbHandle.run,
+        // Re-resolved per call, never captured on the entry: a phone that
+        // comes back over Wi-Fi returns on a different adb address.
+        serialOf: (deviceId) =>
+          db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial ?? null,
+        // Plan 114 §4.3, step 114.3 — the veto the registry declared and left
+        // unwired: a route an operator disabled while the phone was away must
+        // not come back just because the phone did. Forward-ref, the same
+        // pattern `agentProvisionerRef` uses, because `guestAgent` is built
+        // much further down this same boot; defaults to "yes" until then,
+        // which is the registry's own documented default and is correct in
+        // that window (nothing can have established a reverse yet).
+        routeEnabled: (deviceId) => networkRouteEnabledRef?.(deviceId) ?? true,
+        onLog: (level, msg) => log.child('reverse')[level](msg),
+      })
 
       // adb concurrency and health diagnostics (plan 23 §4.3, §4.6). Created
       // here (rather than inside the try-block below, once `adb` exists)
@@ -808,6 +847,11 @@ let blobGc: BlobGc | null = null
             db,
             dataDir: cfg.dataDir,
             jobId,
+            // Plan 115 §3.6 — this path only ever saves `kind: 'log'` (the
+            // crash trace, above), so the cap never actually fires here; kept
+            // in step with every other `createDbArtifactSink` call for the
+            // same reason nothing imports the settings singleton directly.
+            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
             onSaved: (info) => {
               saved = info
               hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } })
@@ -1831,6 +1875,10 @@ let blobGc: BlobGc | null = null
             db,
             dataDir: cfg.dataDir,
             jobId,
+            // Plan 115 §3.6 — a node-owned device's `ctx.artifact.file()`
+            // relays here to actually mint the row, so this is where its
+            // cap has to be real too, not just the local-runner path below.
+            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
             onSaved: () => {},
           })
           const saved = await sink.save({
@@ -1885,12 +1933,32 @@ let blobGc: BlobGc | null = null
       // `hostAdb` is the ONE shared bounded helper built above (plan 85
       // §3.4, §4.5) — this used to be its own third inline copy of the
       // undrained-stderr, no-timeout, no-bound F11 defect.
-      const guestAgentExec = async (serial: string, cmd: string): Promise<ShellResult> => {
+      const guestAgentExec = async (serial: string, cmd: string, opts?: TransportExecOptions): Promise<ShellResult> => {
         if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
         // The whole result, not just `.stdout`: the launcher decides whether
         // the agent is installed from the exit code, and reads `am start`'s
         // failure off stderr (plan 53).
-        return adb.exec(serial, cmd, { profile: 'appLifecycle' })
+        //
+        // `opts` is honoured when the caller states one (plan 114 step 114.3):
+        // the `adb-proxy` engine's `settings get`/`settings put` calls ask for
+        // the `probe` profile, and holding a sub-second shell read to the
+        // launcher's own install-sized `appLifecycle` budget would be a
+        // silently wrong timeout. Everything that says nothing still gets
+        // `appLifecycle`, exactly as before.
+        // A `TransportExecOptions.profile` is a free `string` while `AdbExecOptions.profile` is
+        // the closed set of `ADB_TIMEOUTS` keys, so an unrecognised name falls back to
+        // `appLifecycle` rather than being cast through — the same narrowing
+        // `packages/drivers/src/transport/adb-transport.ts`'s `toAdbProfile` already does, and for
+        // the same reason: a profile nobody defined must not silently become "no timeout".
+        if (!opts) return adb.exec(serial, cmd, { profile: 'appLifecycle' })
+        const profile = opts.profile !== undefined && opts.profile in ADB_TIMEOUTS ? (opts.profile as AdbTimeoutProfile) : 'appLifecycle'
+        return adb.exec(serial, cmd, {
+          profile,
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          ...(opts.queueTimeoutMs !== undefined ? { queueTimeoutMs: opts.queueTimeoutMs } : {}),
+          ...(opts.maxOutputBytes !== undefined ? { maxOutputBytes: opts.maxOutputBytes } : {}),
+          ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        })
       }
       const guestAgent = createGuestAgentRoutes({
         db,
@@ -1927,7 +1995,14 @@ let blobGc: BlobGc | null = null
           // The same fix's own necessary follow-on — DELETE clears the persisted row too.
           remove: (deviceId, actor) => agentProvisionerRef?.remove(deviceId, actor) ?? Promise.resolve(undefined),
         },
+        // Plan 114 §4.3, steps 114.3/114.4 — the `adb-reverse-proxy` rung's
+        // tunnel. A plain `const` built beside `hostAdbHandle` far above, so
+        // no forward-ref is needed here.
+        reverse: reverseRegistry,
       })
+      // The other half of the same wiring: the registry asks whether a route is
+      // still enabled before re-establishing its reverse on reconnect.
+      networkRouteEnabledRef = guestAgent.isRouteEnabled
       handleNetworkDeviceOffline = guestAgent.handleDeviceOffline
       restoreNetworkRoute = guestAgent.restoreDeviceRoute
       // An operator removing a device now hands the phone its network back
@@ -2021,7 +2096,7 @@ let blobGc: BlobGc | null = null
       // widening that is a separate, pre-existing condition this step does
       // not take on (plan 106 §9 Q5's own status note names it explicitly).
       const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))
-      const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test'): Promise<void> => {
+      const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string): Promise<void> => {
         const wanted = Math.max(1, settingsStore.get().adb.maxInstallConcurrent)
         if (wanted !== preparationInstallSem.max) preparationInstallSem.resize(wanted)
         return preparationInstallSem.acquire().then((release) =>
@@ -2032,7 +2107,11 @@ let blobGc: BlobGc | null = null
             kind: 'install',
             origin: 'preparation',
             holdFor: readinessHoldForTransfer,
-            op: (transferId, onProgress) => transferService.installFromLocalApk(deviceId, localPath, { transferId, onProgress }),
+            // `packageName` is what lets the transfer service grant runtime
+            // permissions by hand on a device that refuses the `-g` install
+            // flag (see `performInstall`) — without it that fallback can
+            // install the APK but not finish the job.
+            op: (transferId, onProgress) => transferService.installFromLocalApk(deviceId, localPath, { transferId, onProgress, packageName }),
           })
             .then(() => {
               log.child('preparation').debug(`ui-server ${label} apk installed on device ${deviceId} via the transfer machinery`)
@@ -2101,11 +2180,19 @@ let blobGc: BlobGc | null = null
       // The database-backed workspace (plan 64 §3.1, §4.1) — one store per
       // boot, quotas read fresh from settings on every call, the same
       // pattern every other settings-derived accessor in this function uses.
-      const workspaceStore = withAutoRebuild(createWorkspaceStore(db, () => settingsStore.get().workspace), {
-        devSlots: pluginDevSlots,
-        runtime: pluginRuntime,
-        log: log.child('plugins.dev'),
-      })
+      const workspaceStore = withAutoRebuild(
+        createWorkspaceStore(db, () => settingsStore.get().workspace, {
+          // plan 115 §3.3, §9 Q1 — the `fs` driver's root. A plain wiring parameter today; making
+          // it a farm setting later is a wiring change here, not a redesign.
+          fsContentRoot: join(cfg.dataDir, 'workspace-content'),
+          log: log.child('workspace'),
+        }),
+        {
+          devSlots: pluginDevSlots,
+          runtime: pluginRuntime,
+          log: log.child('plugins.dev'),
+        },
+      )
       // AI agents and connectors (plan 65 §4.5) — `agentStore` validates an
       // agent's tools against the SAME registry built just above, so a
       // capability that does not exist can never be saved onto an agent.
@@ -2143,6 +2230,14 @@ let blobGc: BlobGc | null = null
         // so an agent script's `ctx.listDevices()`/`ctx.getDevice()` reports an
         // assisting holder the same as every other surface.
         assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+        // Plan 114 §3.3, step 114.9 — the network layer's one door. It is the
+        // SAME three functions `PUT`/`DELETE /api/devices/:id/network` call, not
+        // a parallel path, which is the whole point: a plugin reaching
+        // `device.network.set` through `ctx.farm` takes the same lease
+        // admission, the same credential refusal and the same one-route lock an
+        // operator's own click does, and the route it writes is stamped with the
+        // plugin's principal rather than a person's.
+        network: guestAgent.deviceNetwork,
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
@@ -2569,6 +2664,14 @@ let blobGc: BlobGc | null = null
           // The one way a file enters the artifact store from outside a job
           // (plan 39 §4.4) — gated by the same `device.files`/`shell.mode`
           // switch install/push/pull use, and audited.
+          upload: { audit, shellSettings: () => settingsStore.get().shell },
+        }),
+        // The one way a file enters the WORKSPACE from outside `fs.write`
+        // (plan 115 §4.3, §5 step 115.3) — the same `workspaceStore`
+        // instance every other route/service in this file already shares,
+        // gated and audited exactly like `artifactRoutes` above.
+        workspaceFileRoutes: createWorkspaceFileRoutes({
+          workspace: workspaceStore,
           upload: { audit, shellSettings: () => settingsStore.get().shell },
         }),
         adbStatsRoutes: createAdbStatsRoutes({
@@ -3249,6 +3352,65 @@ let blobGc: BlobGc | null = null
           log.warn(`boot-time forward cleanup: could not list adb forwards, skipping: ${String(err)}`)
         }
 
+        // Boot-time REVERSE cleanup (plan 114 §4.3, the second gap step 114.4
+        // raised). Same defect as the forwards above and for the same reason:
+        // an `adb reverse` lives in the adb SERVER and on the phone, not in
+        // this process, so it survives a crash and accumulates across
+        // restarts. `createReverseRegistry` starts every boot with an empty
+        // map, so without this nothing would ever remove a reverse this farm
+        // established before the last restart, and the device-port range would
+        // fill up with bindings nothing on either side is using.
+        //
+        // Two things make this safe to do unconditionally. The removal is
+        // scoped to the registry's OWN device-port range
+        // (`ENKAKU_REVERSE_DEVICE_PORT_RANGE`, default 28100–28299), which is
+        // deliberately outside Android's ephemeral range and away from every
+        // device port this workspace otherwise binds — an entry in it is ours
+        // by construction. And the reconcile pass in
+        // `packages/core/src/network/route-service.ts` re-establishes every
+        // enabled `adb-reverse-proxy` route on the SAME persisted device port
+        // moments later, so a route that should be up comes straight back.
+        //
+        // The one caveat, stated rather than discovered: a SECOND core sharing
+        // this machine's adb server would have its reverses swept too. That is
+        // exactly the caveat the forward sweep above already carries, and the
+        // shared adb server is the reason `adb kill-server` is banned
+        // workspace-wide (CLAUDE.md).
+        //
+        // Unlike `adb forward --list`, `adb reverse --list` is per-device (it
+        // needs a transport to ask), so this walks `adb devices` first.
+        try {
+          const range = parseDevicePortRange(process.env.ENKAKU_REVERSE_DEVICE_PORT_RANGE)
+          const listed = await hostAdbHandle.run(['devices'])
+          const serials = listed
+            .split('\n')
+            .slice(1)
+            .map((line) => line.trim().split(/\s+/))
+            .filter((fields) => fields.length >= 2 && fields[1] === 'device')
+            .map((fields) => fields[0]!)
+          let removedReverses = 0
+          for (const serial of serials) {
+            const raw = await hostAdbHandle.run(['-s', serial, 'reverse', '--list']).catch(() => null)
+            if (raw === null) continue
+            for (const entry of parseReverseList(raw)) {
+              if (entry.devicePort < range.rangeStart || entry.devicePort > range.rangeEnd) continue
+              try {
+                await removeReverse(hostAdbHandle.run, serial, entry.devicePort)
+                removedReverses += 1
+              } catch (err) {
+                log.warn(`boot-time reverse cleanup: failed to remove device tcp:${entry.devicePort} (${serial}): ${String(err)}`)
+              }
+            }
+          }
+          if (removedReverses > 0) {
+            log.info(
+              `boot-time cleanup: removed ${removedReverses} leaked adb reverse(s) (device port range ${range.rangeStart}-${range.rangeEnd})`,
+            )
+          }
+        } catch (err) {
+          log.warn(`boot-time reverse cleanup: could not enumerate devices, skipping: ${String(err)}`)
+        }
+
         // `ports` is the one constructed unconditionally above, before adb
         // was ready — shared with the guest-agent network route (plan 44 §5.7).
         const adbClient = adb
@@ -3450,6 +3612,10 @@ let blobGc: BlobGc | null = null
               jobId,
               onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
               nodeId: () => jobNodeTracker.current(jobId),
+              // Plan 115 §3.6, W5/W6 — a script's `ctx.artifact.file()`
+              // lands here; the cap follows the same push limit that would
+              // gate the artifact once it reaches `ctx.device.push()`.
+              maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
             }),
           log: log.child('runner'),
           onLog: (entry) => {
@@ -3694,6 +3860,13 @@ let blobGc: BlobGc | null = null
             void handleNetworkDeviceOffline?.(deviceId).catch((err) =>
               log.warn(`handleNetworkDeviceOffline failed for ${deviceId}, tolerated: ${String(err)}`),
             )
+            // Plan 114 §4.3, step 114.4 — the reverse entry SURVIVES the
+            // device going offline (it is the intent to re-establish on the
+            // way back), it is only marked not-live so the `reverse` check
+            // stops reporting a `pass` this process can no longer confirm.
+            // Synchronous and device-free by construction: there is nothing
+            // left to reach.
+            reverseRegistry.handleDeviceOffline(deviceId)
           },
           onDeviceReady: (deviceId) => {
             scheduler?.kick()
@@ -3702,6 +3875,18 @@ let blobGc: BlobGc | null = null
             // route (plan 52 §4.1, §5.3): probe first, never blindly re-apply.
             void restoreNetworkRoute?.(deviceId).catch((err) =>
               log.warn(`restoreNetworkRoute failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+            )
+            // Plan 114 §4.3, step 114.4 — the SAME hook `restoreNetworkRoute`
+            // above already uses, for the same reason. `adb reverse` entries
+            // do not survive a reconnect any more than `adb forward` ones do
+            // (plan 109 R7), so every entry this registry holds is re-issued
+            // on the same device port; a device with no reverse costs one map
+            // lookup. A failure is tolerated and logged here on purpose — the
+            // entry stays marked not-live, which is what makes step 114.5's
+            // `reverse` check report `fail` instead of a dead port passing
+            // silently.
+            void reverseRegistry.handleDeviceOnline(deviceId).catch((err) =>
+              log.warn(`reverse re-establish failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
             )
             // Plan 90 §3.8's second hook — "device online" — the SAME hook
             // `restoreNetworkRoute` above already uses for exactly this

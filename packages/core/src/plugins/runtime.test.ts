@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { PluginManifestSchema } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
-import { plugins, scripts } from '../db/schema'
+import { jobs, plugins, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { createKvStore } from '../kv/store'
 import { createScriptRegistry } from '../scripts/registry'
@@ -866,5 +866,158 @@ describe('PluginRuntime — the reserved, synthetic `recordings` owner (plan 110
     expect(verifyCalls).toBe(1)
     expect(result).toEqual({ ok: 1, failed: 0 })
     expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.verifyError).toBeNull()
+  })
+})
+
+/**
+ * Plan 82 §3.4, §4.6 — bulk version removal, and the guard the single-version
+ * path was missing.
+ *
+ * The farm owner's ask (2026-08-17): *"remove di plugins itu bisa remove
+ * specific versi, atau remove all version, atau remove all except latest
+ * version"*. Version history accumulates per publish and nothing collects it —
+ * the farm this was written for carries 20+ `tiktok` rows — so "all except the
+ * latest" is the routine one, and it must not touch what is live.
+ */
+describe('PluginRuntime — removeVersions (bulk) and the script_in_use guard', () => {
+  /**
+   * Publishes N versions of one name and activates each in turn, which is how a
+   * real history is built: every earlier row ends up `superseded` (the status
+   * `rollback` requires), and the last one published is the live one.
+   */
+  async function withVersions(runtime: PluginRuntime, versions: string[]) {
+    const rows = []
+    for (const v of versions) {
+      const staged = await stageAndVerify(runtime, { version: v, bundle: `export {} // ${v}` })
+      runtime.activate(staged.id)
+      rows.push(staged)
+    }
+    return rows
+  }
+
+  test('scope "all" removes every version, including the active one', async () => {
+    const { runtime, db } = setUp()
+    await withVersions(runtime, ['1.0.0', '1.1.0', '1.2.0'])
+
+    const report = runtime.removeVersions('tiktok', { scope: 'all', deleteKv: false })
+    expect(report.total).toBe(3)
+    expect(report.results).toHaveLength(3)
+    expect(report.results.every((r) => r.skip === null && r.error === null)).toBe(true)
+    expect(db.select().from(plugins).all()).toHaveLength(0)
+    // The member `scripts` rows go with them — the same cleanup a single remove does.
+    expect(db.select().from(scripts).all()).toHaveLength(0)
+  })
+
+  test('scope "except-latest" keeps the newest and deletes the rest', async () => {
+    const { runtime, db } = setUp()
+    await withVersions(runtime, ['1.0.0', '1.1.0', '1.2.0'])
+
+    const report = runtime.removeVersions('tiktok', { scope: 'except-latest', deleteKv: false })
+    const removed = report.results.filter((r) => r.skip === null && r.error === null).map((r) => r.version)
+    const kept = report.results.filter((r) => r.skip !== null).map((r) => r.version)
+    expect(removed).toEqual(['1.0.0', '1.1.0'])
+    expect(kept).toEqual(['1.2.0'])
+    expect(db.select().from(plugins).all().map((r) => r.version)).toEqual(['1.2.0'])
+  })
+
+  /**
+   * The one that matters. After a rollback the ACTIVE version is older than the
+   * newest one; a prune that kept only "the latest" would delete the row this
+   * farm is running, with a 200 and a cheerful count.
+   */
+  test('after a rollback it keeps BOTH the active version and the newest one', async () => {
+    const { runtime, db } = setUp()
+    await withVersions(runtime, ['1.0.0', '1.1.0', '1.2.0'])
+    runtime.rollback('tiktok', '1.1.0')
+    expect(runtime.active('tiktok')!.version).toBe('1.1.0')
+
+    const report = runtime.removeVersions('tiktok', { scope: 'except-latest', deleteKv: false })
+    expect(report.results.filter((r) => r.skip === null && r.error === null).map((r) => r.version)).toEqual(['1.0.0'])
+    expect(db.select().from(plugins).all().map((r) => r.version).sort()).toEqual(['1.1.0', '1.2.0'])
+    // Still live, still resolving — the whole point of the exercise.
+    expect(runtime.active('tiktok')!.version).toBe('1.1.0')
+  })
+
+  test('a queued job holding a version refuses THAT version and no other (script_in_use)', async () => {
+    const { runtime, db } = setUp()
+    const rows = await withVersions(runtime, ['1.0.0', '1.1.0', '1.2.0'])
+    const held = rows.find((r) => r.version === '1.1.0')!
+    db.insert(jobs)
+      .values({ id: 'j-1', scriptId: `${held.id}:login`, deviceId: 'dev-1', status: 'queued', createdAt: new Date() })
+      .run()
+
+    const report = runtime.removeVersions('tiktok', { scope: 'except-latest', deleteKv: false })
+    const byVersion = Object.fromEntries(report.results.map((r) => [r.version, r]))
+    expect(byVersion['1.0.0']!.error).toBeNull()
+    expect(byVersion['1.1.0']!.error?.code).toBe('script_in_use')
+    expect(byVersion['1.1.0']!.error?.message).toContain('1.1.0')
+    // Partial success: the refusal did not stop the other removal, and the held
+    // row survives with its scripts intact so the job can still run.
+    expect(db.select().from(plugins).all().map((r) => r.version).sort()).toEqual(['1.1.0', '1.2.0'])
+    expect(db.select().from(scripts).where(eq(scripts.pluginId, held.id)).all()).toHaveLength(2)
+  })
+
+  test('the same guard applies to the SINGLE-version path — one door, not two', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    db.insert(jobs)
+      .values({ id: 'j-1', scriptId: `${staged.id}:login`, deviceId: 'dev-1', status: 'running', createdAt: new Date() })
+      .run()
+
+    expect(() => runtime.remove('tiktok', '1.0.0', { deleteKv: false })).toThrow(EnkakuError)
+    expect(db.select().from(plugins).all()).toHaveLength(1)
+  })
+
+  test('a finished job never blocks a removal — only queued and running do', async () => {
+    const { runtime, db } = setUp()
+    const staged = await stageAndVerify(runtime)
+    runtime.activate(staged.id)
+    db.insert(jobs)
+      .values({ id: 'j-1', scriptId: `${staged.id}:login`, deviceId: 'dev-1', status: 'success', createdAt: new Date() })
+      .run()
+
+    expect(runtime.remove('tiktok', '1.0.0', { deleteKv: false }).removed).toBe(true)
+    // Job history survives the deletion — plan 82 §3.4's denormalised columns.
+    expect(db.select().from(jobs).all()).toHaveLength(1)
+  })
+
+  test('deleteKv drops the shared namespace exactly once, however many versions go', async () => {
+    const { runtime, kv, db } = setUp()
+    await withVersions(runtime, ['1.0.0', '1.1.0', '1.2.0'])
+    kv.set({ kind: 'global' }, 'tiktok', 'a', 1)
+    kv.set({ kind: 'global' }, 'tiktok', 'b', 2)
+
+    const report = runtime.removeVersions('tiktok', { scope: 'all', deleteKv: true })
+    const totals = report.results.map((r) => r.kvDeleted)
+    expect(totals.reduce((n, x) => n + x, 0)).toBe(2)
+    // One result carries the whole count; the rest carry zero. Summing eleven
+    // namespace sweeps would report a total many times too large.
+    expect(totals.filter((n) => n > 0)).toHaveLength(1)
+    expect(db.select().from(plugins).all()).toHaveLength(0)
+  })
+
+  test('an unknown plugin name is a request-level refusal, not an empty report', async () => {
+    const { runtime } = setUp()
+    expect(() => runtime.removeVersions('nope', { scope: 'all', deleteKv: false })).toThrow(EnkakuError)
+  })
+
+  /**
+   * `scripts/delete-unowned-scripts.ts`'s header records the mistake its own
+   * first version made: deriving a delete list from a FILTERED listing that
+   * hides the rows it means to act on, then reporting "nothing to delete" on a
+   * farm holding five. A bulk remove that only saw healthy rows would leave
+   * behind exactly the junk an operator ran it to clear.
+   */
+  test('it sees failed and staged rows, not only the healthy ones', async () => {
+    const { runtime, db } = setUp()
+    await withVersions(runtime, ['1.0.0', '1.1.0'])
+    db.insert(plugins)
+      .values({ id: crypto.randomUUID(), name: 'tiktok', version: '0.9.0', bundle: 'x', bundleHash: 'h', status: 'failed', createdAt: new Date() })
+      .run()
+
+    const report = runtime.removeVersions('tiktok', { scope: 'except-latest', deleteKv: false })
+    expect(report.total).toBe(3)
+    expect(report.results.filter((r) => r.skip === null && r.error === null).map((r) => r.version).sort()).toEqual(['0.9.0', '1.0.0'])
   })
 })

@@ -105,6 +105,10 @@ const STATE_LABEL: Record<PreparationState, string> = {
   outdated: 'update available',
   failed: 'failed',
   unsupported: 'unsupported',
+  // Installed and answering; Android's VPN consent dialog is outstanding and
+  // adb cannot grant it on this build. Deliberately not worded as a failure —
+  // nothing went wrong, and the remedy is a tap on the phone, not a retry.
+  'consent-required': 'needs consent on the phone',
 }
 
 const STATE_TONE: Record<PreparationState, string> = {
@@ -114,6 +118,8 @@ const STATE_TONE: Record<PreparationState, string> = {
   outdated: 'text-led-warn border-led-warn/35 bg-led-warn/10',
   failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
   unsupported: 'text-fg-subtle border-line bg-transparent',
+  // `warn`, not `danger`: this device is one tap away from working.
+  'consent-required': 'text-led-warn border-led-warn/35 bg-led-warn/10',
 }
 
 function PreparationStateBadge({ state }: { state: PreparationState }) {
@@ -150,6 +156,11 @@ function retryLabel(state: PreparationState): string | null {
       return 'Update'
     case 'failed':
       return 'Retry'
+    // A re-probe, not a repair: the consent dialog has to be accepted on the
+    // phone, and this only asks the farm to look again once it has been.
+    // Offering it as "Retry" would suggest the farm can grant consent itself.
+    case 'consent-required':
+      return 'Check again'
     case 'provisioning':
     case 'ready':
     case 'unsupported':
@@ -176,7 +187,7 @@ function ComponentRow({
   const label = retryLabel(status.state)
   const provisioning = status.state === 'provisioning'
   return (
-    <div className="rounded-lg border bg-surface p-3.5">
+    <div className="@container rounded-lg border bg-surface p-3.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-[12.5px] font-medium">{componentLabel(id)}</span>
         <PreparationStateBadge state={status.state} />
@@ -194,7 +205,12 @@ function ComponentRow({
           is available for this install, only whether it is still running.
         </p>
       )}
-      <dl className="mt-2 grid gap-1 sm:grid-cols-2">
+      {/* `@min-[24rem]`, not `sm:` — this row is only ever rendered inside the
+          device popup's Settings pane, which is ~400px wide however wide the
+          browser window is; `sm:` was true on every desktop and meant two
+          columns of about 170px each. Two `label … value` rows want ~11.5rem
+          apiece: 2 × 11.5 + 0.25rem gap ≈ 24rem of the CARD's own width. */}
+      <dl className="mt-2 grid gap-1 @min-[24rem]:grid-cols-2">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-[11px] text-fg-subtle">version</dt>
           <dd className="readout min-w-0 truncate text-[11.5px]" title={status.version ?? '—'}>

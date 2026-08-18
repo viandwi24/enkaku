@@ -24,7 +24,7 @@ function send(msg: ChildToParent): void {
 }
 
 const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
-const pendingArtifact = new Map<string, { resolve: () => void; reject: (e: unknown) => void }>()
+const pendingArtifact = new Map<string, { resolve: (v: { artifactId: string }) => void; reject: (e: unknown) => void }>()
 const pendingKv = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingJobs = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 const pendingFarm = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
@@ -100,9 +100,9 @@ function jobsRequest<T>(call: JobsCall): Promise<T> {
 // `storage.forDevice` has to know which device this job holds, so it can
 // refuse every other one (plan 108 §3.1 G4).
 
-function saveArtifact(kind: 'screenshot' | 'file', label: string, dataBase64?: string, ext?: string): Promise<void> {
+function saveArtifact(kind: 'screenshot' | 'file', label: string, dataBase64?: string, ext?: string): Promise<{ artifactId: string }> {
   const callId = crypto.randomUUID()
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<{ artifactId: string }>((resolve, reject) => {
     pendingArtifact.set(callId, { resolve, reject })
     send({ t: 'artifact.save', callId, kind, label, ...(dataBase64 ? { dataBase64 } : {}), ...(ext ? { ext } : {}) })
   })
@@ -219,8 +219,15 @@ process.on('message', (raw: unknown) => {
     const waiter = pendingArtifact.get(msg.callId)
     if (!waiter) return
     pendingArtifact.delete(msg.callId)
-    if (msg.ok) waiter.resolve()
-    else waiter.reject(new Error(msg.error?.message ?? 'failed to save the artifact'))
+    if (msg.ok) {
+      // The parent always sends `artifactId` alongside `ok: true` (see
+      // `ipc.ts`'s own comment on `artifact.result`) — a defensive check
+      // rather than a cast, so a parent that somehow did not (an older build
+      // mid-upgrade) fails loudly instead of the script silently believing
+      // it holds an id it does not.
+      if (!msg.artifactId) waiter.reject(new Error('the parent saved the artifact but reported no artifactId'))
+      else waiter.resolve({ artifactId: msg.artifactId })
+    } else waiter.reject(new Error(msg.error?.message ?? 'failed to save the artifact'))
   } else if (msg.t === 'kv.result') {
     const waiter = pendingKv.get(msg.callId)
     if (!waiter) return

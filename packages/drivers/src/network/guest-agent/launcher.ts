@@ -7,11 +7,40 @@ import { GUEST_AGENT_SOCKET, type ShellResult } from '@enkaku/protocol'
 // `ui-server/launcher.ts` uses, not a second copy (plan 90 §3.8, F8): "the
 // `ui-server` algorithm, not a new one".
 import { verifyDeviceArtifact, type DeviceArtifactExpectation } from '../../inspector/ui-server/verify'
+// The `-g` fallback, shared with `ui-server/launcher.ts` and the core's own
+// `TransferService` — see that module's doc comment for the Xiaomi
+// (HyperOS) build that refuses the flag outright.
+import { installWithGrantFallback } from '../../install/grant-fallback'
 
 export { GUEST_AGENT_SOCKET }
 
 /** The first-party guest agent package (plan 43, plan 44 §4.4). */
 export const GUEST_AGENT_PACKAGE = 'dev.enkaku.guestagent'
+
+/**
+ * The RUNTIME permissions the agent declares — the list `install()` below
+ * grants by hand when a device refuses the `-g` install flag.
+ *
+ * Derived from `apps/guest-agent/app/src/main/AndroidManifest.xml`, which is
+ * the source of truth, not a guess. Of the seven `<uses-permission>` entries
+ * there — INTERNET, ACCESS_NETWORK_STATE, FOREGROUND_SERVICE,
+ * FOREGROUND_SERVICE_SPECIAL_USE, RECEIVE_BOOT_COMPLETED, SET_WALLPAPER and
+ * POST_NOTIFICATIONS — exactly one has a `dangerous` protection level and is
+ * therefore the only thing `-g` was ever granting: POST_NOTIFICATIONS
+ * (runtime from API 33; an install-time permission below that, which is why
+ * `grantRuntimePermissions` tolerates `pm grant` refusing to touch it on an
+ * older phone). Everything else is `normal` and granted at install time
+ * whether `-g` is present or not.
+ *
+ * It matters more than it looks: `ControlService` is a foreground service,
+ * and its ongoing notification is how a human holding the phone can tell the
+ * farm is driving it. `launcher.manifest.test.ts` guards this list against
+ * the manifest drifting away from it: every `<uses-permission>` there must be
+ * classified as runtime (here) or install-time (that test's own allowlist), so
+ * adding a permission and forgetting this list fails a test rather than a
+ * phone.
+ */
+export const GUEST_AGENT_RUNTIME_PERMISSIONS = ['android.permission.POST_NOTIFICATIONS'] as const
 
 /**
  * Clears the freshly-installed app's stopped state
@@ -28,6 +57,35 @@ const BOOTSTRAP_ACTIVITY = `${GUEST_AGENT_PACKAGE}/.BootstrapActivity`
  * back rather than trusting the `set` call.
  */
 const ACTIVATE_VPN_OP = 'ACTIVATE_VPN'
+
+/**
+ * What `ensurePreGranted()` learned about this device's VPN consent.
+ *
+ * It is a RESULT, not an exception, because "this phone will not pre-grant
+ * VPN consent from adb" is not the same event as "the agent could not be
+ * installed or reached", and collapsing the two costs a device every facet
+ * the agent has. Measured live on two OPPO phones (CPH2819/ColorOS Android
+ * 15 and CPH2173/Android 14): `appops set` there fails for EVERY op, not
+ * just this one —
+ *
+ * ```
+ * java.lang.SecurityException: uid 2000 does not have android.permission.MANAGE_APP_OPS_MODES
+ * ```
+ *
+ * — while the agent itself installs, starts, pairs, and answers `hello`
+ * with its full capability list. The only thing genuinely unavailable there
+ * is `vpn-helper` routing, which the platform gates behind a human accepting
+ * Android's VPN "Connection request" dialog on the phone. That consent is
+ * recorded as this very app op, so the readback below is also the detector
+ * for "someone accepted it" — no second mechanism needed, and the state
+ * clears itself on the next pass.
+ */
+export interface GuestAgentVpnConsent {
+  /** `granted` — the op reads `allow`, by whichever route it got there (adb, or a human accepting the dialog). */
+  state: 'granted' | 'pending'
+  /** Verbatim, operator-facing, and never summarised. `null` when granted. */
+  reason: string | null
+}
 
 /**
  * Reported once, when a repair attempt still leaves the artifact mismatched
@@ -105,7 +163,15 @@ export interface GuestAgentLauncher {
    * that case exactly once too, never loop).
    */
   ensureInstalled(opts?: { force?: boolean }): Promise<{ versionCode: number | null }>
-  ensurePreGranted(): Promise<void>
+  /**
+   * Grants the VPN app op if this build allows it, and REPORTS rather than
+   * throws when it does not — see `GuestAgentVpnConsent`. Still throws for
+   * the one case that genuinely is an install failure: a package the package
+   * manager has no UID for.
+   */
+  ensurePreGranted(): Promise<GuestAgentVpnConsent>
+  /** Read-only: the same readback `ensurePreGranted()` ends on, with no `appops set` attempt of its own. */
+  vpnConsent(): Promise<GuestAgentVpnConsent>
   bootstrap(token: string): Promise<void>
   forward(localPort: number): Promise<void>
   removeForward(localPort: number): Promise<void>
@@ -119,6 +185,26 @@ export interface GuestAgentLauncher {
  * (plan 44 §4.4; `ensureInstalled` specifically mirrors it again for plan 90
  * §3.8, F7/F8).
  */
+/**
+ * The one line of an `appops set` failure worth quoting. A refusal arrives as
+ * a whole Java stack trace whose FIRST `Exception` line is the useless header
+ * ("Exception occurred while executing 'set':"); the line that names the
+ * actual cause is the one below it. Picking the specific line is the
+ * difference between a reason an operator can act on and one they cannot.
+ */
+function summariseSetFailure(text: string, exitCode: number | null): string {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return (
+    lines.find((line) => /does not have|SecurityException|Permission|Unknown operation/.test(line)) ??
+    lines.find((line) => line.includes('Exception')) ??
+    lines[0] ??
+    `exit ${exitCode}`
+  )
+}
+
 export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAgentLauncher {
   const expectation = (): DeviceArtifactExpectation => ({ packageName: GUEST_AGENT_PACKAGE, ...deps.expectedArtifact })
 
@@ -133,8 +219,45 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
     // hence the separate ensurePreGranted() below.
     // `lane: 'install'` (plan 85 §3.4, plan 90 §3.8, F12): this install for
     // THIS device never runs concurrently with more than
-    // `adb.maxInstallConcurrent` installs farm-wide.
-    await deps.hostAdb(['-s', deps.serial, 'install', '-r', '-g', apk], { lane: 'install', serial: deps.serial })
+    // `adb.maxInstallConcurrent` installs farm-wide — applied inside
+    // `installWithGrantFallback`, which owns the `-g`-refused retry.
+    await installWithGrantFallback({
+      serial: deps.serial,
+      hostAdb: deps.hostAdb,
+      exec: deps.exec,
+      apkPath: apk,
+      packageName: GUEST_AGENT_PACKAGE,
+      expectedPermissions: GUEST_AGENT_RUNTIME_PERMISSIONS,
+      flags: ['-r'],
+      ...(deps.onLog ? { onLog: deps.onLog } : {}),
+    })
+  }
+
+  /**
+   * Classifies an `appops get ... ACTIVATE_VPN` readback. Shared by
+   * `ensurePreGranted()` and `vpnConsent()` so there is exactly one place
+   * that decides what "granted" looks like — and therefore exactly one place
+   * that would have to change if a future Android renames the op.
+   */
+  function classify(readback: string, setFailure: string | null): GuestAgentVpnConsent {
+    if (readback.includes('allow')) return { state: 'granted', reason: null }
+    const attempted = `appops set ${GUEST_AGENT_PACKAGE} ${ACTIVATE_VPN_OP} allow`
+    const cause =
+      setFailure !== null
+        ? `\`${attempted}\` was refused by the platform (${setFailure})`
+        : `\`${attempted}\` reported no error but the readback still says ${JSON.stringify(readback.trim())} — this app op is @hide/@SystemApi and its behaviour is not guaranteed across Android releases`
+    return {
+      state: 'pending',
+      reason:
+        `the guest agent is installed and answering, but Android VPN consent (${ACTIVATE_VPN_OP}) is not granted on this phone and this build will not let adb grant it: ${cause}. ` +
+        'Everything else the agent does — text input, screen labels, mock location, egress probes — works; only vpn-helper network routing is blocked. ' +
+        'To clear it, accept the VPN "Connection request" dialog on the phone itself: Android records that consent as this same app op, so the next provisioning pass will see it and the device turns ready on its own.',
+    }
+  }
+
+  const readConsent = async (setFailure: string | null): Promise<GuestAgentVpnConsent> => {
+    const readback = await deps.exec(`appops get ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP}`)
+    return classify(readback.stdout, setFailure)
   }
 
   return {
@@ -252,17 +375,25 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
         }
         await new Promise((r) => setTimeout(r, 500))
       }
-      await deps.exec(`appops set ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP} allow`)
+      const set = await deps.exec(`appops set ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP} allow`)
+      // Captured, not thrown on: ColorOS answers this with a SecurityException
+      // for EVERY app op (the shell uid has no MANAGE_APP_OPS_MODES there),
+      // which is a fact about the phone worth naming in the reason rather
+      // than a reason to abandon a working agent. The readback below is
+      // still what decides — a build that prints something alarming and
+      // grants the op anyway must read as granted.
+      const setText = `${set.stdout}\n${set.stderr}`.trim()
+      const setFailure = (set.exitCode !== null && set.exitCode !== 0) || setText.includes('Exception') ? summariseSetFailure(setText, set.exitCode) : null
       // Read back rather than trust: this app op is @hide/@SystemApi
       // (docs/research/android-guest-agent.md §1.2) and could stop behaving
       // this way on any future Android release without notice.
-      const readback = await deps.exec(`appops get ${shellQuote(GUEST_AGENT_PACKAGE)} ${ACTIVATE_VPN_OP}`)
-      if (!readback.stdout.includes('allow')) {
-        throw new Error(
-          `appops set ${GUEST_AGENT_PACKAGE} ${ACTIVATE_VPN_OP} allow did not take (readback: ${JSON.stringify(readback.stdout)}) — ` +
-            `this app op is @hide/@SystemApi and its behaviour is not guaranteed across Android releases`,
-        )
-      }
+      const consent = await readConsent(setFailure)
+      if (consent.state === 'pending') deps.onLog?.('warn', `${deps.serial}: ${consent.reason}`)
+      return consent
+    },
+
+    vpnConsent() {
+      return readConsent(null)
     },
 
     async bootstrap(token) {
@@ -271,6 +402,16 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       // `am start` is mandatory, not optional, or the agent never restarts
       // after the device's first reboot. Budget for the same after any
       // force-stop (see stop() below).
+      //
+      // It is also ASYNCHRONOUS in a way that matters: this returns as soon
+      // as `am start` returns, but the token only reaches `Pairing` after
+      // BootstrapActivity has run and `startForegroundService` has delivered
+      // `onStartCommand`. Measured at ~500 ms on a moto g06 and two OPPOs.
+      // Until then the agent still holds whatever token the PREVIOUS session
+      // gave it and answers `E_UNAUTHORISED` ("bad or missing token") — so
+      // callers must treat that code as "not yet", re-push, and retry, never
+      // as a terminal pairing failure. `createDeviceSession` in
+      // `packages/core/src/api/guest-agent.ts` is the one that does.
       const out = await deps.exec(`am start -n ${BOOTSTRAP_ACTIVITY} --es token ${shellQuote(token)}`)
       // Measured on a moto g06 (Android 15): a failing `am start` exits 1 and
       // puts "Error: Activity class {...} does not exist." on stderr — while

@@ -274,11 +274,65 @@ export function SettingsPopup({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
-      <DialogContent overlay={false} className="sm:max-w-2xl">
+      {/* `sm:max-w-4xl` (896px), not the `sm:max-w-2xl` (672px) this dialog
+          shipped with: after `p-6` on both sides, the 200px section nav and
+          the grid's own `gap-4`, 2xl left the content pane ~408px — narrower
+          than the phone the settings describe, which is why Network overflowed
+          sideways and grew a horizontal scrollbar. 4xl puts the pane at ~632px.
+          Deliberately NOT 5xl (1024px): this popup is non-modal precisely so
+          the operator keeps watching the live screen behind it, and a 1024px
+          dialog covers that screen on a laptop — the width is bought for the
+          content, not past the point where it costs the thing it floats over. */}
+      <DialogContent overlay={false} className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Settings — {device.label}</DialogTitle>
         </DialogHeader>
-        <SectionNav sections={sections} active={section} onChange={setSection} />
+        {/* **A fixed frame: the section nav stays put, the content pane is the
+            only scroller** (owner-reported, 2026-08-17: *"antar tab ganti
+            bisanya punya height berbeda bikin popup modal berganti ganti
+            heightnya"*). This dialog previously carried a max-width and
+            nothing else, so it was exactly as tall as whichever section was
+            showing — General is short, Network is very tall — and every click
+            in the left nav resized the whole window under the pointer that
+            was still aiming at it.
+
+            The height goes on the CONTENT PANE, not on `DialogContent`. That
+            keeps `DialogContent`'s own `grid` / `max-h-[90dvh]` /
+            `overflow-y-auto` base intact (no display or overflow override, so
+            its viewport cap still works as the last resort) and it is enough
+            on its own: the dialog's outer height becomes
+            `max(nav height, pane height)` plus header, and BOTH of those are
+            section-independent, so switching sections cannot change the outer
+            size in either direction. `min(70dvh, 660px)` — 660px is roughly
+            what the tallest section wants before it has to scroll at all, and
+            the `70dvh` term is what keeps a short window honest: at a 700px
+            viewport the pane is 490px and the dialog still ends well inside
+            the 90dvh cap rather than running off the top and bottom edges.
+
+            **The trade-off is deliberate: a short section (General, Tags)
+            leaves empty space below it. That is the correct trade and it must
+            not be "fixed" back into content-sized heights** — a nav whose next
+            target moves while you are aiming at it is a worse defect than
+            whitespace, and it is the whole reason a left nav is usable in an
+            OS settings dialog at all.
+
+            Reused verbatim from `SidePanel.tsx`'s tab content (its own comment
+            records the owner's rule: *"nothing scrolls except the actions
+            panel … only when its own height genuinely cannot hold the list"*)
+            — the same `min-h-0 overflow-y-auto` on the one pane that may
+            scroll, and nothing else in the frame scrolling with it. Written
+            fresh here only because `SectionNav` is shared with the Settings
+            page and the agent editor and takes no layout prop: the pane is
+            reached by an arbitrary variant instead. It is a DIRECT-CHILD chain
+            (`> div > [role=tabpanel]`) on purpose — a descendant selector
+            would also catch the `role="tabpanel"` elements panels like
+            `AgentPanel`/`NetworkPanel` render inside their own tabs.
+            `overflow-y-auto` also makes the pane's `overflow-x` compute to
+            `auto`, so any residual sideways overflow is contained here instead
+            of pushing the nav around. */}
+        <div className="[&>div>[role=tabpanel]]:h-[min(70dvh,660px)] [&>div>[role=tabpanel]]:min-h-0 [&>div>[role=tabpanel]]:overflow-y-auto [&>div>[role=tabpanel]]:overscroll-contain">
+          <SectionNav sections={sections} active={section} onChange={setSection} />
+        </div>
       </DialogContent>
     </Dialog>
   )

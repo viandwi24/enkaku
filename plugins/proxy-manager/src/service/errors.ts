@@ -36,6 +36,15 @@ export const PROXY_ERROR_CODES = [
   'E_PROXY_LISTEN_FAILED',
   /** The client spoke something this listener does not serve. */
   'E_PROXY_CLIENT_PROTOCOL',
+  /**
+   * Plan 117 §3.4. A `direct` upstream with `resolveThroughEgress` on could
+   * not resolve the destination through the resolver bound to `bindAddress`.
+   * **Thrown directly by `service/dial-direct.ts`, never through
+   * `classifyDialError`, and never followed by a second lookup through the
+   * host's default resolver.** A silent fallback there is the exact defect
+   * this option exists to remove — see plan 117 §3.4 rule 1 and criterion 4.
+   */
+  'E_PROXY_DNS_EGRESS_FAILED',
 ] as const
 
 export type ProxyErrorCode = (typeof PROXY_ERROR_CODES)[number]
@@ -64,6 +73,24 @@ export function scrubSecrets(text: string, secrets: readonly string[]): string {
   let out = text
   for (const secret of usable) out = out.split(secret).join('«redacted»')
   return out
+}
+
+/**
+ * The forms a listener credential (plan 117 §4.4, `service/auth.ts`) can
+ * appear in outside its own `proxy-auth:<id>` KV row: plaintext, and the
+ * RFC 7617 base64 an HTTP client sends it as. A library's own error text, or a
+ * header echoed back into a log line, is exactly where a credential leaks into
+ * something a person reads — the same reasoning this file already applies to
+ * the upstream password — so both forms are scrubbed rather than only the one
+ * nothing here interpolates on purpose.
+ *
+ * Deliberately typed as a loose shape rather than importing `ListenerCredential`
+ * from `./auth`: this file is the one every dial and bind error already flows
+ * through, and it stays free of a dependency on the module that owns the wire
+ * formats.
+ */
+export function listenerAuthSecrets(credential: { username: string; password: string }): string[] {
+  return [credential.password, Buffer.from(`${credential.username}:${credential.password}`, 'utf8').toString('base64')]
 }
 
 /** `message` off an unknown throwable, and nothing else off it — never `options`, never a stringified object. */

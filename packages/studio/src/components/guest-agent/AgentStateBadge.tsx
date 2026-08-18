@@ -22,6 +22,9 @@ const LABEL: Record<GuestAgentState, string> = {
   // Plan 90 §3.8, §3.9 rule 1 — the provisioner's own states (F10, F11).
   outdated: 'update available',
   failed: 'failed',
+  // The agent is installed and answering; Android's VPN consent dialog is
+  // outstanding and adb cannot grant it on this build. Not a failure state.
+  'consent-required': 'needs consent on the phone',
 }
 
 const TONE: Record<GuestAgentState, string> = {
@@ -32,6 +35,8 @@ const TONE: Record<GuestAgentState, string> = {
   unsupported: 'text-fg-subtle border-line bg-transparent',
   outdated: 'text-led-warn border-led-warn/35 bg-led-warn/10',
   failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  // `warn`, not `danger` — nothing is broken, a tap on the phone is pending.
+  'consent-required': 'text-led-warn border-led-warn/35 bg-led-warn/10',
 }
 
 const base =

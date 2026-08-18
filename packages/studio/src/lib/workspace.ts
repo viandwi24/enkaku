@@ -9,7 +9,7 @@ import {
   type WorkspaceFileMeta,
   type WorkspaceListEntry,
 } from '@enkaku/protocol'
-import { api, BadResponseError } from '@enkaku/ui'
+import { api, coreBase, BadResponseError } from '@enkaku/ui'
 
 /**
  * Thin client for the `fs.*` capabilities (plan 64 §4.2, §4.5) — Studio's
@@ -49,6 +49,62 @@ export function readWorkspaceFile(path: string): Promise<WorkspaceFileContent> {
   return invokeCap('fs.read', { path }, WorkspaceFileContentSchema)
 }
 
+/** `GET /api/workspace/file?path=…` (plan 116 §4.2) — the byte source every presenter's `src`
+ * points at, and the URL `headWorkspaceFile` below issues its `HEAD` against. */
+export function workspaceFileUrl(path: string): string {
+  return `${coreBase()}/api/workspace/file?path=${encodeURIComponent(path)}`
+}
+
+/** Strips the RFC 7232 quoting (and a possible weak-validator `W/` prefix) an `ETag` carries,
+ * back to the bare hex hash `fs.write`'s `ifMatch` expects. */
+function unquoteETag(etag: string | null): string | null {
+  if (!etag) return null
+  return etag.replace(/^W\//, '').replace(/^"|"$/g, '')
+}
+
+/**
+ * `HEAD /api/workspace/file?path=…` (plan 116 §4.2, step 116.6, finding P7) —
+ * learns a file's `WorkspaceFileMeta` from RESPONSE HEADERS alone, never its
+ * bytes. This is what lets the workspace page's `loadFile` resolve a
+ * presenter (and check `maxBytes`) BEFORE deciding whether to fetch content
+ * at all: opening a 200 MB video used to call `readWorkspaceFile` (`fs.read`)
+ * unconditionally, which base64-encodes the WHOLE file through the
+ * capability API purely to learn its `contentType` and size (P7).
+ *
+ * `hash` rides as `ETag` — the idiomatic HTTP carrier (plan 116's own
+ * reasoning on this) — because it is the CAS token a later save or delete
+ * sends back as `ifMatch` (§3.7); losing it here would turn opening a file
+ * into a save that fails with a stale-token error the operator cannot
+ * explain. The remaining `WorkspaceFileMeta` fields have no standard-header
+ * equivalent and ride as `X-Enkaku-*`, mirroring exactly what
+ * `packages/core/src/api/workspace.ts`'s `GET /file` HEAD branch sets — a
+ * mismatch between the two would silently reconstruct a wrong `meta`, so
+ * this function and that branch must be read together when either changes.
+ */
+export async function headWorkspaceFile(path: string): Promise<WorkspaceFileMeta> {
+  const res = await fetch(workspaceFileUrl(path), { method: 'HEAD', credentials: 'include' })
+  if (!res.ok) {
+    throw Object.assign(new Error(`Could not read "${path}" (HTTP ${res.status})`), {
+      code: res.status === 404 ? 'E_NOT_FOUND' : 'unknown',
+    })
+  }
+  const candidate = {
+    path,
+    contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    size: Number(res.headers.get('content-length') ?? '0'),
+    hash: unquoteETag(res.headers.get('etag')) ?? '',
+    createdBy: res.headers.get('x-enkaku-created-by'),
+    updatedBy: res.headers.get('x-enkaku-updated-by'),
+    createdAt: Number(res.headers.get('x-enkaku-created-at') ?? '0'),
+    updatedAt: Number(res.headers.get('x-enkaku-updated-at') ?? '0'),
+  }
+  const parsed = WorkspaceFileMetaSchema.safeParse(candidate)
+  if (!parsed.success) {
+    throw new BadResponseError(`/api/workspace/file?path=${encodeURIComponent(path)}`, z.prettifyError(parsed.error))
+  }
+  return parsed.data
+}
+
 export function writeWorkspaceFile(
   path: string,
   content: string,
@@ -63,6 +119,35 @@ export function deleteWorkspaceFile(path: string, ifMatch?: string): Promise<voi
 
 export function moveWorkspaceFile(from: string, to: string, ifMatch: string): Promise<WorkspaceFileMeta> {
   return invokeCap('fs.move', { from, to, ifMatch }, WorkspaceFileMetaSchema)
+}
+
+const WorkspaceUploadResponseSchema = z.object({ file: WorkspaceFileMetaSchema })
+const ErrorEnvelopeSchema = z.object({ error: z.object({ message: z.string() }) })
+
+/**
+ * A raw multipart upload (plan 115 §4.3) — the same reason `api()` is
+ * JSON-only that `FilesPanel.tsx`'s own `uploadArtifact` documents: a
+ * browser sets its own multipart boundary, never a fixed content-type, so
+ * this cannot go through `invokeCap` above. Posts to `POST
+ * /api/workspace/file`, which writes through the SAME `WorkspaceStore` `fs.write`
+ * uses, so quotas/CAS/the driver a write lands on all apply exactly as they
+ * would for a script (plan 115 §3.4). A refusal's message is surfaced
+ * verbatim — a quota refusal names the setting to raise (§3.5), and that
+ * detail is the whole point of not collapsing it into a generic string.
+ */
+export async function uploadWorkspaceFile(path: string, file: File): Promise<WorkspaceFileMeta> {
+  const form = new FormData()
+  form.set('path', path)
+  form.set('file', file)
+  const res = await fetch(`${coreBase()}/api/workspace/file`, { method: 'POST', body: form })
+  const raw: unknown = await res.json().catch(() => null)
+  if (!res.ok) {
+    const parsedError = ErrorEnvelopeSchema.safeParse(raw)
+    throw new Error(parsedError.success ? parsedError.data.error.message : `Upload failed (HTTP ${res.status})`)
+  }
+  const parsed = WorkspaceUploadResponseSchema.safeParse(raw)
+  if (!parsed.success) throw new BadResponseError('/api/workspace/file', z.prettifyError(parsed.error))
+  return parsed.data.file
 }
 
 /**

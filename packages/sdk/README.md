@@ -138,6 +138,8 @@ A result is capped at `job.maxResultBytes` — a farm setting, default **64 KiB*
 
 The job detail screen then names the fix rather than just the wall: *"save large output as an artifact with `ctx.artifact.file('report', data)` and return a small summary that points at it."* Artifacts are already the large-payload door — per-job, broadcast live, sized, retained — reachable from every script's `ctx`. A result is for the handful of numbers a human or another script needs to read as *values*; anything bigger belongs in a file.
 
+`ctx.artifact.file()` resolves `Promise<{ artifactId }>` (plan 115 §3.6) — the id the artifact was saved under, so a script that read bytes from somewhere (say, the workspace) and wants them on a device can chain straight into `ctx.device.push({ artifactId, ... })` without a second lookup. Additive: every caller that only wanted the side effect can keep ignoring the return value.
+
 ### `ctx.progress` is an observation; `result` is a commitment
 
 `ctx.progress(value)` reports how a long run is going *right now* — coalesced to at most one push per `job.progressIntervalMs` (default 1000ms), last value wins, so calling it in a tight per-item loop costs one assignment, never one message per call. It is never persisted (no column, no `UPDATE`, gone the moment the core restarts), never validated against `result`'s schema, and never readable by `ctx.jobs.resultOf` or by any other job — its only consumer is someone watching the job detail screen while it runs. A `result` is written exactly once, at settle, and is the one thing another script may read back.
@@ -612,7 +614,9 @@ export default definePlugin({
 })
 ```
 
-That is the real surface from `plugins/tiktok-automation-pack/src/index.ts`, not a sketch. Read it alongside this section — it is the reference implementation and it is kept working.
+That is the pack's `accounts` view, copied from `plugins/tiktok-automation-pack/src/index.ts`, not a sketch. Read it alongside this section — it is the reference implementation and it is kept working.
+
+It is no longer the pack's *whole* surface: plan 113 added a second view (`content`, the post queue) and a `service` block, and neither is reproduced here. The excerpt is a worked example of the vocabulary, not an inventory of one pack — for the full picture, read the file.
 
 ### Columns and forms are JSON Schema — there is no field vocabulary here
 

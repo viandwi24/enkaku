@@ -1,51 +1,147 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The only screen a human ever sees (see StatusActivity.kt). Deliberately a hand-written layout,
-  not Compose: three TextViews and a button do not need a UI framework, and Compose's Kotlin
-  runtime plus its material3/ui/tooling dependency graph was 21.3 MB of the 21.7 MB release APK
-  for exactly this screen (plan 90 §3.11, F1/F3). Padding and spacing are plain dp so this keeps
-  compiling with no theme library beyond the platform.
+  The only screen a human ever sees (see StatusActivity.kt). Still a hand-written layout and still
+  no Compose: Compose's runtime plus its material3/ui/tooling graph was 21.3 MB of a 21.7 MB
+  release APK when this screen drew three lines of text (plan 90 §3.11, F1/F3), and it would cost
+  exactly the same today for a screen that is a list of label/value rows — the one shape plain
+  `TextView`s are already good at. Padding and spacing are plain dp so this keeps compiling with no
+  theme library beyond the platform.
+
+  This file is only the shell: the banner, an empty container, the footer and the buttons. The rows
+  themselves are built in StatusActivity so a fact the app cannot honestly report is OMITTED rather
+  than rendered as an empty box.
+
+  `fitsSystemWindows` on the root is load-bearing, not cosmetic: targetSdk 36 means Android draws
+  this window edge to edge, and without it the title sits under the status-bar clock while the
+  footer and the buttons sit under the navigation bar — seen exactly that way on a moto g06
+  (Android 15) before it was added.
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp">
+    android:fillViewport="true"
+    android:background="@android:color/white"
+    android:scrollbars="vertical"
+    android:fitsSystemWindows="true">
 
-    <TextView
-        android:id="@+id/title"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:text="@string/app_name" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <TextView
-        android:id="@+id/state_line"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:textSize="16sp"
-        tools:ignore="HardcodedText"
-        tools:text="Idle — no host has paired yet." />
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@color/status_fg"
+            android:text="@string/app_name" />
 
-    <TextView
-        android:id="@+id/explanation"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:textSize="13sp"
-        android:textColor="#666666"
-        android:gravity="center"
-        android:text="@string/status_explanation" />
+        <TextView
+            android:id="@+id/subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textSize="12sp"
+            android:textColor="@color/status_fg_muted"
+            tools:ignore="HardcodedText"
+            tools:text="dev (build 1) · protocol 1 · Android 15" />
 
-    <Button
-        android:id="@+id/switch_keyboard_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:text="@string/switch_keyboard" />
+        <LinearLayout
+            android:id="@+id/banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="vertical"
+            android:padding="14dp">
 
-</LinearLayout>
+            <TextView
+                android:id="@+id/banner_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                tools:ignore="HardcodedText"
+                tools:text="Traffic is blocked (fail-closed)" />
+
+            <TextView
+                android:id="@+id/banner_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="13sp"
+                android:textColor="@color/status_fg"
+                tools:ignore="HardcodedText"
+                tools:text="The tunnel stopped carrying traffic…" />
+
+        </LinearLayout>
+
+        <!-- Sections and their rows are added here by StatusActivity.render(). -->
+        <LinearLayout
+            android:id="@+id/sections"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <TextView
+            android:id="@+id/footer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:textSize="11sp"
+            android:textColor="@color/status_fg_muted"
+            tools:ignore="HardcodedText"
+            tools:text="Updated 14:32:05" />
+
+        <TextView
+            android:id="@+id/explanation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="11sp"
+            android:textColor="@color/status_fg_muted"
+            android:text="@string/status_explanation" />
+
+        <TextView
+            android:id="@+id/no_secrets"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="11sp"
+            android:textColor="@color/status_fg_muted"
+            android:text="@string/status_no_secrets" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/refresh_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/refresh" />
+
+            <Button
+                android:id="@+id/copy_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/copy_report" />
+
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/switch_keyboard_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/switch_keyboard" />
+
+    </LinearLayout>
+
+</ScrollView>

@@ -5,6 +5,7 @@ import { DEVICE_CLIPBOARD_CAPABILITIES } from './device-clipboard'
 import { DEVICE_FILES_CAPABILITIES } from './device-files'
 import { DEVICE_INPUT_CAPABILITIES } from './device-input'
 import { DEVICE_INSPECT_CAPABILITIES } from './device-inspect'
+import { DEVICE_NETWORK_CAPABILITIES } from './device-network'
 import { DEVICE_STATE_CAPABILITIES } from './device-state'
 import { FILE_TOOLS_CAPABILITIES } from './file-tools'
 import { FS_CAPABILITIES } from './fs'
@@ -21,6 +22,7 @@ const SOURCES: { file: string; caps: AnyCoreCapability[] }[] = [
   { file: 'capability/device-files.ts', caps: DEVICE_FILES_CAPABILITIES },
   { file: 'capability/device-clipboard.ts', caps: DEVICE_CLIPBOARD_CAPABILITIES },
   { file: 'capability/device-state.ts', caps: DEVICE_STATE_CAPABILITIES },
+  { file: 'capability/device-network.ts', caps: DEVICE_NETWORK_CAPABILITIES },
   { file: 'capability/script.ts', caps: SCRIPT_CAPABILITIES },
   { file: 'capability/job.ts', caps: JOB_CAPABILITIES },
   { file: 'capability/fs.ts', caps: FS_CAPABILITIES },
@@ -58,5 +60,6 @@ export {
   type AgentStatusResult,
   type AgentCancelResult,
 } from './context'
+export { createDeviceNetworkService, type DeviceNetworkCapabilityService } from './device-network'
 export { buildCapabilityRegistry, type CapabilityRegistry, type CapabilitySource } from './registry'
 export { defineCapability, type AnyCoreCapability, type CoreCapability } from './types'

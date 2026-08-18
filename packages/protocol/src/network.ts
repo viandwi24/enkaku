@@ -1,14 +1,33 @@
 import { z } from 'zod'
 
 /**
- * The device-facing network layer (spec §7.9), reduced from Plan 33 §4.1 to
- * exactly what a SOCKS5 route needs for plan 44's end-to-end slice.
+ * The device-facing network layer (spec §7.9) — Plan 33 §4.1's three-rung
+ * ladder, all of it now modelled here after plan 114 §3.2.
  *
- * `adb-proxy` and `adb-reverse-proxy` — the other two rungs on Plan 33's
- * ladder — are deliberately NOT modelled here. They are deferred by plan 44
- * §2 to Plan 33 §5.5 and live nowhere in this file.
+ * The three rungs are NOT equals and this file is the first place that has to
+ * say so, because everything downstream reads its vocabulary from here:
+ *
+ * - `adb-proxy` — `settings put global http_proxy host:port`. **Advisory**: an
+ *   app with its own networking ignores it and nothing on the device stops it.
+ *   Android's value carries no credential field and is world-readable by every
+ *   app on the phone, so one is never written there (spec §7.9, plan 114 §3.8
+ *   and its `E_HTTP_PROXY_NO_AUTH`).
+ * - `adb-reverse-proxy` — the same advisory setting, pointed at `127.0.0.1` on
+ *   the device side of an `adb reverse`, so the proxy (and therefore its
+ *   account) lives on the farm's own machine and never on the phone.
+ * - `vpn-helper` — a SOCKS5 full tunnel through the guest agent. The only
+ *   **enforcing** rung: apps cannot opt out of it.
+ *
+ * Both HTTP rungs advertise every `NetworkCapabilities` field as `false` and
+ * their `egress` check is permanently `skip`, which is what keeps
+ * `deriveHealth` at `unverified` for them forever (plan 114 §3.5). That is the
+ * correct answer, not a gap: an egress probe run from the host proves the proxy
+ * works for the host, and a probe run on the device through a client that
+ * honours the setting proves only that such a client can reach it — never that
+ * any app under test did. `deriveHealth` is deliberately NOT touched by plan
+ * 114; the engines simply cannot reach its top state.
  */
-export const NetworkEngineIdSchema = z.enum(['none', 'vpn-helper'])
+export const NetworkEngineIdSchema = z.enum(['none', 'adb-proxy', 'adb-reverse-proxy', 'vpn-helper'])
 export type NetworkEngineId = z.infer<typeof NetworkEngineIdSchema>
 
 /**
@@ -147,6 +166,36 @@ export function matchGeoExpectation(expect: GeoExpectation, observed: GeoObserva
  * are never persisted or returned from an API response carrying that value.
  */
 export const Socks5RouteConfigSchema = z.object({
+  /**
+   * Plan 114 §4.1 — the discriminator that lets this shape join
+   * `NetworkRouteConfigSchema` beside the two HTTP rungs.
+   *
+   * `.default('vpn-helper')` rather than a bare required literal, and the
+   * distinction is load-bearing in two directions:
+   *
+   * - **Input stays optional**, so every producer that predates plan 114 keeps
+   *   working unchanged — the `PUT /api/devices/:id/network` body Studio sends
+   *   today, `scripts/smoke-guest-agent.ts`'s hand-built configs, and any row
+   *   already on disk. A required literal would have turned all three into a
+   *   400 or a throw the moment this file landed, days before the UI that
+   *   sends the tag exists.
+   * - **Output is required**, so a consumer switching on `config.engine` gets
+   *   an exhaustive union with no `undefined` arm to remember. That is the
+   *   whole point of making this a discriminated union rather than an
+   *   optional flag people branch on by hand.
+   *
+   * Note what `.default()` does NOT do: `z.discriminatedUnion` builds a map
+   * from discriminator VALUE to member and an absent key matches no entry, so
+   * a default on the literal does not make the union accept an untagged
+   * object. `tagUntaggedRouteConfig()` below is what does that, deliberately
+   * and visibly, on the two read paths that can meet a pre-plan-114 value.
+   *
+   * On the guest-agent wire (`RouteStartRequestSchema.config` in
+   * `guest-agent.ts`) this rides along as one extra key the agent ignores:
+   * `ControlService.handle` reads `config` field by field off a `JSONObject`
+   * (`optString`/`optInt`), so an unknown key is not an error there.
+   */
+  engine: z.literal('vpn-helper').default('vpn-helper'),
   host: z.string().min(1).describe('SOCKS5 upstream host').meta({ title: 'Host' }),
   port: z.number().int().min(1).max(65535).describe('SOCKS5 upstream port').meta({ title: 'Port' }),
   username: z.string().optional().describe('Upstream username, if the proxy requires authentication').meta({ title: 'Username' }),
@@ -226,6 +275,131 @@ export const Socks5RouteConfigSchema = z.object({
 export type Socks5RouteConfig = z.infer<typeof Socks5RouteConfigSchema>
 
 /**
+ * Rung 1 of spec §7.9's ladder (plan 33 §5, plan 114 §3.2, §4.1) — the phone is
+ * ASKED to send its traffic through `host:port` by way of
+ * `settings put global http_proxy`.
+ *
+ * **There is no credential field and there deliberately never will be.**
+ * Android's system proxy value is `host:port` plus an exclusion list and has
+ * nowhere to put a username or password; worse, the value is world-readable by
+ * every app on the device, so spec §7.9 forbids putting one there in writing.
+ * A request carrying a `username`/`password`, or a pasted URL with a userinfo
+ * component, is refused with `E_HTTP_PROXY_NO_AUTH` and pointed at
+ * `adb-reverse-proxy` instead, where the account stays on the farm's machine
+ * (plan 114 §3.8).
+ *
+ * Nothing here is enforcing. The whole justification for the guest agent APK is
+ * that this rung cannot be: an app using raw sockets, its own resolver, or a
+ * pinned client ignores this setting and the device does not care.
+ */
+export const HttpProxyRouteConfigSchema = z.object({
+  engine: z.literal('adb-proxy'),
+  host: z.string().min(1).describe('Host of a proxy the phone itself can reach').meta({ title: 'Proxy host' }),
+  port: z.number().int().min(1).max(65535).describe('Port of a proxy the phone itself can reach').meta({ title: 'Proxy port' }),
+  /**
+   * Written to `global_http_proxy_exclusion_list`. Optional and operator-supplied — plan 114 §9 Q4
+   * asks whether the farm has any address of its own that must always be excluded, and until that
+   * is answered nothing is defaulted in: silently exempting traffic somebody wanted proxied is a
+   * worse failure than an empty list.
+   */
+  exclusions: z.array(z.string()).optional().describe('Hosts the phone should reach directly, bypassing the proxy').meta({ title: 'Exclusions' }),
+})
+export type HttpProxyRouteConfig = z.infer<typeof HttpProxyRouteConfigSchema>
+
+/**
+ * Rung 2 (plan 33 §5, plan 114 §3.2, §4.1) — the same advisory setting, pointed
+ * at the device's own loopback, with `adb reverse` carrying the connection back
+ * to a proxy listening on THIS farm's machine.
+ *
+ * This is the rung on which an authenticated upstream is possible at all,
+ * because the account lives in the host-side listener and the phone only ever
+ * dials `127.0.0.1`. The engine itself still advertises `auth: false` — the
+ * credential is somebody else's (plan 112's proxy manager, or whatever the
+ * operator runs on the machine), and claiming a capability the engine does not
+ * have is exactly what `NetworkCapabilitiesSchema` exists to prevent.
+ *
+ * `hostPort` is where the proxy listens ON THE FARM. The device-side port is
+ * allocated per device by the reverse registry (plan 114 §4.3) and is never
+ * chosen by the operator, which is why it is absent from this schema.
+ */
+export const ReverseProxyRouteConfigSchema = z.object({
+  engine: z.literal('adb-reverse-proxy'),
+  hostPort: z.number().int().min(1).max(65535).describe('Port the proxy listens on, on this farm’s own machine').meta({ title: 'Port on this machine' }),
+  /** Same field, same reasoning, as `HttpProxyRouteConfigSchema.exclusions`. */
+  exclusions: z.array(z.string()).optional().describe('Hosts the phone should reach directly, bypassing the proxy').meta({ title: 'Exclusions' }),
+})
+export type ReverseProxyRouteConfig = z.infer<typeof ReverseProxyRouteConfigSchema>
+
+/**
+ * Every shape a declared route can take (plan 114 §4.1), discriminated on
+ * `engine`.
+ *
+ * **Why a discriminated union and not `z.union`.** `z.union` tries its members
+ * in order and takes the first that parses, which is how plan 108 §4.2 got a
+ * list silently keyed by index into a map — `z.record` was listed before
+ * `z.array` and happily accepted the array. `z.discriminatedUnion` does not try
+ * anything: it reads one key, looks the value up in a map built from the
+ * members' literals, and runs exactly that member or fails. Order is therefore
+ * not a correctness input here at all, and no shape ambiguity between the three
+ * members can produce a wrong match. The members are nonetheless listed
+ * narrowest-first (`adb-proxy`, `adb-reverse-proxy`, then the much larger
+ * `vpn-helper`) so that the ordering is still the safe one if this is ever
+ * refactored into a plain union by someone who does not read this comment.
+ *
+ * `none` is NOT a member. It is an engine id — the answer to "which engine is
+ * this device running" when the answer is "no route" — not a config shape; a
+ * device with no route carries `config: null`, and has since plan 44.
+ */
+export const NetworkRouteConfigSchema = z.discriminatedUnion('engine', [
+  HttpProxyRouteConfigSchema,
+  ReverseProxyRouteConfigSchema,
+  Socks5RouteConfigSchema,
+])
+export type NetworkRouteConfig = z.infer<typeof NetworkRouteConfigSchema>
+
+/**
+ * The read-time migration (plan 114 §4.1). A `devices.network_route.config`
+ * written before plan 114 — or a `GET /api/devices/:id/network` answered by a
+ * core that predates it — carries no `engine` key, and an untagged object
+ * matches no arm of a discriminated union (see `Socks5RouteConfigSchema.engine`
+ * for why a Zod `.default()` does not cover this). This is what tags it.
+ *
+ * An untagged config is a `vpn-helper` config **by construction, not by
+ * guess**: `vpn-helper` was the only engine that existed, so it is the only
+ * thing that could have written one. That is the same discipline
+ * `failClosed`/`sessionId`/`exitHistory` already follow on
+ * `PersistedNetworkRouteSchema` — an absent field means "predates the plan",
+ * never a defaulted value chosen for convenience — and it is why this is a
+ * migration rather than a compatibility shim: the tag is written back on the
+ * next save and the untagged form stops existing.
+ *
+ * Deliberately narrow about what it will touch. Only a plain, non-array object
+ * with no `engine` key of its own is tagged; `null`, `undefined`, arrays,
+ * primitives and anything already carrying an `engine` are returned untouched
+ * so the union's own error is what the caller sees. The array exclusion is not
+ * hypothetical caution — spreading an array into an object literal is precisely
+ * how plan 108 §4.2 turned a list into an index-keyed map.
+ */
+export function tagUntaggedRouteConfig(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  if ('engine' in value) return value
+  return { ...(value as Record<string, unknown>), engine: 'vpn-helper' }
+}
+
+/**
+ * `NetworkRouteConfigSchema` with the read-time migration in front of it — the
+ * shape to parse a STORED or RECEIVED route config with, as opposed to one this
+ * process just built. Anything reading `devices.network_route` or a `/network`
+ * response wants this one; a handler validating a fresh request body wants the
+ * bare union, because a body arriving untagged from a client built after plan
+ * 114 is a client bug and should be refused rather than guessed at.
+ *
+ * Wired to `PersistedNetworkRouteSchema.config` by step 114.3 — see that
+ * field's own comment.
+ */
+export const StoredNetworkRouteConfigSchema = z.preprocess(tagUntaggedRouteConfig, NetworkRouteConfigSchema)
+
+/**
  * A named, reusable upstream credential (plan 52 §4.2) — never carries the
  * secret itself; that only ever exists encrypted in `network_credentials`
  * or decrypted in memory for the length of one `route.apply()` call. What
@@ -253,13 +427,27 @@ export type CreateNetworkCredentialRequest = z.infer<typeof CreateNetworkCredent
  * independently and answers one question:
  *
  * - `tunnel` — the device reports a TUN is established.
+ * - `setting` — the device's own `settings get global http_proxy` reads back what we wrote.
+ * - `reverse` — the `adb reverse` entry is live and the host-side listener answers on it.
  * - `upstream` — a SOCKS5 session reaches the proxy and completes its handshake.
  * - `egress` — a probe through the tunnel returns an address.
  * - `geo` — that address matches what the upstream was asked for.
  * - `dns` — the resolver that looked us up belongs to the upstream's network.
  * - `leak` — IPv6 blocked; lockdown active when required.
+ *
+ * `setting` and `reverse` are plan 114 §3.5's two additions, and they are
+ * additive in the strict sense: every existing reader treats a check id as
+ * data (an id, a state, a detail string) rather than branching on it, so
+ * nothing has to learn them to keep working. Which ids an engine reports is
+ * the engine's own business — `vpn-helper` skips both of these, and both HTTP
+ * rungs skip `tunnel`/`geo`/`dns`/`leak` and skip `egress` PERMANENTLY, which
+ * is what pins their `deriveHealth` at `unverified`.
+ *
+ * `setting: pass` is worth showing and is not success. It says the device
+ * accepted the write and reports it back — a real, non-trivial fact, and a
+ * strictly weaker one than "this phone's traffic goes through that proxy".
  */
-export const RouteCheckIdSchema = z.enum(['tunnel', 'upstream', 'egress', 'geo', 'dns', 'leak'])
+export const RouteCheckIdSchema = z.enum(['tunnel', 'setting', 'reverse', 'upstream', 'egress', 'geo', 'dns', 'leak'])
 export type RouteCheckId = z.infer<typeof RouteCheckIdSchema>
 
 /**
@@ -329,7 +517,26 @@ export function deriveHealth(checks: RouteCheck[]): 'ok' | 'degraded' | 'unverif
  * without first running `config` through `redactRouteConfig()`.
  */
 export const PersistedNetworkRouteSchema = z.object({
-  config: Socks5RouteConfigSchema,
+  /**
+   * A row written before plan 114 has no `engine` key at all, and it still
+   * parses — as `vpn-helper`, via `tagUntaggedRouteConfig()` in front of the
+   * union (`StoredNetworkRouteConfigSchema`). That is the compatibility hinge
+   * and it is load bearing: `readPersistedRoute`
+   * (`packages/core/src/network/route-service.ts`) treats a parse failure as
+   * "no route" rather than throwing, so a broken migration would not surface
+   * as an error anyone could follow back here — it would surface as every
+   * existing device's saved route quietly vanishing.
+   *
+   * **Step 114.3 flipped this from `Socks5RouteConfigSchema` to the stored
+   * union.** 114.1 shipped the vocabulary deliberately unspent, because a union
+   * here immediately requires the engine-aware route lifecycle that 114.3
+   * builds — every site reading `persisted.config.host`/`.udpMode`/
+   * `.credentialRef` and handing it to a VPN-only helper has to narrow on
+   * `config.engine` first. The preprocess takes over from
+   * `Socks5RouteConfigSchema.engine`'s own `.default()` at this point, and that
+   * is what makes an `adb-proxy` row readable at all.
+   */
+  config: StoredNetworkRouteConfigSchema,
   enabled: z.boolean(),
   /**
    * A per-device sticky-session identity (plan 52 §3.3, §4.3): generated
@@ -369,6 +576,128 @@ export const PersistedNetworkRouteSchema = z.object({
    * 55 lacks it.
    */
   exitHistory: z.array(GeoObservationSchema).optional(),
+  /**
+   * Plan 114 §3.6 — the device's own proxy settings as they were BEFORE this
+   * farm ever wrote one, so turning a route off restores what was found rather
+   * than a hard-coded reset. Plan 33 §5's original prescription
+   * (`settings put global http_proxy :0`) is the asymmetric one: it leaves the
+   * literal string `:0` where a pristine device had `null`. This copies
+   * `packages/session/src/screen-label.ts`, which solved exactly this for
+   * `secure` keys — read the prior value, normalise Android's literal string
+   * `null` to `''`, and restore it verbatim on revert.
+   *
+   * Captured **once**, on the first apply for a device, and never overwritten
+   * by a later re-apply — otherwise a farm-set value becomes the "original"
+   * the second time round and the real one is gone for good. Values are the
+   * raw strings the four `settings get global` reads returned, already
+   * normalised; `at` is unix epoch seconds.
+   *
+   * Absent means "nothing was ever captured" — a route that predates plan 114,
+   * or a capture that failed because the device was unreachable. That is a
+   * DIFFERENT case from an empty capture and revert must not conflate them: it
+   * clears the four keys to Android's default and the UI says it cleared
+   * rather than restored (§3.6 rule 4).
+   */
+  captured: z
+    .object({
+      httpProxy: z.string(),
+      host: z.string(),
+      port: z.string(),
+      exclusionList: z.string(),
+      at: z.number().int(),
+    })
+    .optional(),
+  /**
+   * Plan 114 §4.3, and the gap step 114.4 raised on its way out: **the
+   * `adb-reverse-proxy` rung's device-side port is bookkeeping, not intent, and
+   * it has to be on disk anyway.**
+   *
+   * `ReverseProxyRouteConfigSchema` carries only `hostPort` — the operator says
+   * where the proxy listens on the farm, and the device-side port is allocated
+   * by the reverse registry. But after a core restart the phone is still
+   * carrying `http_proxy 127.0.0.1:<devicePort>`, and the registry is an
+   * in-memory map that did not survive. Without this field, nothing on disk
+   * records which port that was, and the reconcile pass would have to either
+   * re-read the setting off the device and trust it (a value the farm did not
+   * write is not a value the farm may reallocate against) or allocate a fresh
+   * port and leave the phone pointed at a dead one. So it is persisted, and
+   * `ReverseRegistry.establish(deviceId, { hostPort, devicePort })` honours a
+   * supplied port exactly and never walks the range — that contract exists for
+   * this field.
+   *
+   * On `PersistedNetworkRoute` rather than on the config union deliberately,
+   * exactly like `sessionId` and `captured`: `config` is what the operator
+   * asked for and is echoed back to them; this is what the farm allocated on
+   * their behalf. Absent for every engine but `adb-reverse-proxy`, and absent
+   * for that one until step 114.5 builds the engine that populates it.
+   */
+  reverse: z
+    .object({
+      /** The port ON THE PHONE that `http_proxy` points at. Sticky for the life of the route. */
+      devicePort: z.number().int().min(1).max(65535),
+      /** The port on the farm's own machine the reverse forwards to — a copy of `config.hostPort` at the time of the allocation, so a re-established reverse can be compared against what the config now says. */
+      hostPort: z.number().int().min(1).max(65535),
+      /** Unix epoch seconds the allocation was made. */
+      at: z.number().int(),
+    })
+    .optional(),
+  /**
+   * Plan 114 §3.3 — who set this route. A person and a plugin can both reach
+   * `PUT /api/devices/:id/network`, and the resolution between them is
+   * last-write-wins with attribution, never a lock: a lock between an operator
+   * and a plugin produces a device nobody can fix, which is why plan 52 §3.1
+   * chose ownership plus audit over teardown for the adjacent problem.
+   *
+   * `id` is the actor — a user id, or the plugin id. `at` is unix epoch
+   * seconds. Optional only because routes written before plan 114 have no such
+   * record; never absent on a route written after it.
+   */
+  setBy: z
+    .object({
+      kind: z.enum(['user', 'plugin']),
+      id: z.string(),
+      at: z.number().int(),
+    })
+    .optional(),
+  /**
+   * **A teardown this farm owes a device it could not reach.**
+   *
+   * The measured incident: a phone was turned off in the farm while it was
+   * unplugged, and every engine's `revert()` swallows an unreachable device by
+   * contract (`http-proxy.ts`'s `restoreAll` tolerates each failed write;
+   * `vpn-helper.ts`'s says nothing at all over a session that was never
+   * active). So the row was cleared, the screen read "no route", and the phone
+   * kept `http_proxy 127.0.0.1:28100` — pointing at a farm the record no
+   * longer believed in. When it came back the reverse came back with it and
+   * the phone's traffic went out through a metered residential proxy nobody
+   * had asked for since the day before.
+   *
+   * The intent to clear must therefore outlive the attempt, the same way
+   * `enabled` outlives an apply that failed: `revertNetwork` writes this
+   * whenever the teardown could not be confirmed ON THE DEVICE, and
+   * `restoreDeviceRoute` settles it on the next admission. Until it is settled
+   * the row STAYS — with `enabled: false` — even for `DELETE /network`, which
+   * would otherwise erase the `captured` values the revert still has to
+   * restore and the `reverse.devicePort` it still has to remove.
+   *
+   * `forget` is what the caller asked for and is honoured once the device is
+   * finally reached: `true` erases the row (DELETE), `false` keeps the
+   * disabled config (`/disable`, an engine switch).
+   */
+  pendingClear: z
+    .object({
+      /** The engine the DEVICE is still carrying — not necessarily what `config` will say by then. */
+      engine: NetworkEngineIdSchema,
+      /** The reverse's device-side port, when the owed teardown includes removing one. */
+      devicePort: z.number().int().min(1).max(65535).optional(),
+      /** Erase the whole row once the device is finally reverted (`DELETE`), rather than keep a disabled config. */
+      forget: z.boolean(),
+      /** Why the teardown could not be confirmed — an operator-readable sentence, carried onto the device event. */
+      reason: z.string(),
+      /** Unix epoch seconds the debt was first recorded. Not refreshed by a later failed attempt: how long a phone has been carrying it is the point. */
+      since: z.number().int(),
+    })
+    .optional(),
 })
 export type PersistedNetworkRoute = z.infer<typeof PersistedNetworkRouteSchema>
 
@@ -394,9 +723,18 @@ export function pushExitHistory(history: GeoObservation[] | undefined, observati
  * one of those call sites through a single helper turns "did we redact this"
  * into a question answerable by grepping for the helper's name, rather than
  * an audit of every place a `Socks5RouteConfig` is ever touched.
+ *
+ * Plan 114 widened the parameter to the whole `NetworkRouteConfig` union while
+ * keeping the caller's own narrower type on the way out (hence the generic
+ * rather than a plain union parameter — a caller handing in a
+ * `Socks5RouteConfig` must not get a union back and have to re-narrow it).
+ * Neither HTTP rung has anything to redact: the whole point of §3.8 is that no
+ * credential is ever written into a device setting, so those configs carry no
+ * secret and pass through untouched.
  */
 const REDACTED_PASSWORD = '••••••••'
-export function redactRouteConfig(config: Socks5RouteConfig): Socks5RouteConfig {
+export function redactRouteConfig<T extends NetworkRouteConfig>(config: T): T {
+  if (config.engine !== 'vpn-helper') return config
   if (config.password === undefined) return config
   return { ...config, password: REDACTED_PASSWORD }
 }
@@ -458,7 +796,13 @@ export type NetworkObservation = z.infer<typeof NetworkObservationSchema>
 export const NetworkStatusSchema = z.object({
   engine: NetworkEngineIdSchema,
   capabilities: NetworkCapabilitiesSchema,
-  /** What we asked for, lease-scoped — null when no route has been declared. */
+  /**
+   * What we asked for, lease-scoped — null when no route has been declared.
+   * Still the SOCKS5 shape for the same reason, and with the same one-line
+   * flip pending, as `PersistedNetworkRouteSchema.config` above: this is the
+   * core↔node tunnel shape and its producer is the same VPN-only route
+   * lifecycle 114.3 rewrote.
+   */
   declared: Socks5RouteConfigSchema.nullable(),
   /**
    * The operator's declared on/off intent (plan 44 step 5.4), persisted

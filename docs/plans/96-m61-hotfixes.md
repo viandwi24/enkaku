@@ -3534,3 +3534,99 @@ fail (Studio is unaffected by this entry; no Studio file was touched).
 ```
 bash scripts/check-plan-status.sh
 ```
+
+---
+
+### 96.37 — `increment()` discards **every** stored property of the row it updates: `secret` (rewriting an encrypted value as plaintext), `hint`, `expiresAt` (silently clearing a TTL), and `updated_by_job_id`. FILED, not fixed.
+
+Found while building plan 112 step 112.2, and recorded here rather than fixed
+in place because the fix needs a signature change that step did not own.
+
+Plan 112 §0 already carried this as finding **F13**, but only as "`increment`
+silently un-secrets a key". Measured against a real store, that is one of four
+losses, and it is not the worst one:
+
+```
+set(key, 12345678901, { secret: true, ttlSec: 3600 })
+  → {"value":12345678901,"secret":true,"hint":"1234567…8901","expiresAt":1787003735}
+
+increment(key, 1)
+  → {"value":12345678902,"secret":false,"hint":null,"expiresAt":null}
+raw row: {"secret":0,"hint":null,"value":"12345678902","expires_at":null}
+```
+
+The cause is one argument: `increment` calls
+`writeRow(tx, …, undefined, treatedExisting)` — `opts` is literally
+`undefined` — so `writeRow` derives every option from nothing instead of from
+the row it is updating.
+
+**The TTL loss is the one to lead with, and F13's wording hides it.** A
+credential that `increment` un-secrets is alarming but rare; a counter with a
+TTL is the *common* case, and this makes a key that was meant to expire
+permanent, with no error and nothing in any log. It bites non-secret rows,
+which is most rows.
+
+Two notes for whoever takes it, both established by measurement:
+
+- **`ttlSec` cannot be reconstructed from `expiresAt` through the current
+  `writeRow` signature** — it converts a relative TTL to an absolute stamp on
+  the way in, so preserving one means teaching `writeRow` an inherit mode or an
+  absolute `expiresAt`. That is why 112.2 did not close it as a one-liner.
+- **The hint *intent* is recoverable** as `existing.hint !== null`, because a
+  secret shorter than nine characters stores `'••••'` rather than null. So a
+  fix can restore `hint: false` semantics (plan 112 step 112.2) without a new
+  column.
+
+---
+
+### 96.38 — `PUT /api/kv/entry` (the admin KV route) cannot decline a secret's hint, so an admin rewriting a credential through it silently restores the leak plan 112 step 112.2 closed. FIXED 2026-08-18.
+
+Step 112.2 added `hint?: boolean` (default `true`) to `KvSetOptions`, the IPC
+`KvCallSchema`, the `KvApi` client, and `PUT /api/plugins/:name/data/entry`,
+so a plugin can store a credential without `secretHint` leaving
+`${first 7}…${last 4}` of the plaintext readable on the row.
+
+**It did not reach `packages/core/src/api/kv.ts`.** That route's `WriteBody`
+takes `secret` / `ttlSec` / `ifVersion` and nothing else, so every write
+through it re-derives the hint.
+
+Why that matters rather than being a tidy-up: the flag is **per write, not per
+key** (112.2's own finding, and `plugins/proxy-manager` asserts it). A row
+written correctly by a plugin with `hint: false` holds `hint: null` — until
+someone edits that same key from the admin KV surface, at which point the
+fragment comes back with nothing said. The rows this reaches are exactly the
+sensitive ones: `proxy-secret:<id>` is a real, live example on this farm today.
+
+Two lines to close (`hint: z.boolean().optional()` on `WriteBody`, and pass it
+into `kv.set`), plus a test asserting a `hint: false` row stays `hint: null`
+through the admin door the way `plugins-data.test.ts` already asserts it
+through the plugin one. Filed rather than fixed because it was found from
+inside `plugins/proxy-manager`, whose boundary does not include `packages/core`.
+
+**Closed, and it was those two lines plus a third surface.** `WriteBody` in
+`packages/core/src/api/kv.ts` now carries `hint: z.boolean().optional()` and
+threads it into `store.set`/`store.setIfVersion`; an omitted field still means
+the store's default (`true`), so a body written before this field existed
+produces a byte-identical row. `kv.test.ts` asserts a `hint: false` write stores
+`hint: null` and that the fragment reaches no read path, that an omitted `hint`
+still derives one, and that a `hint: false` row rewritten with `hint: false`
+stays hint-free. The `kv.set` audit row now records *whether* a hint was stored
+(a boolean), never the hint.
+
+The third surface is the one that made it a live leak: **Studio's KV panel had
+no way to express the flag at all**, so every credential typed into it got a
+hint. The panel now shows a "Store a hint" switch whenever the secret switch is
+on, and — a deliberate departure from the store's own default — it sends
+`hint: false` unless that switch is turned on. What is typed into that form is
+overwhelmingly a credential, and the identification a hint used to buy is now
+the reveal button's job (`POST /api/kv/entry/reveal`, same pass). The store's
+default is unchanged for every other caller.
+
+This was closed in the same pass that added the reveal route, on purpose: an
+audited door onto a value that was already leaking eleven of its characters to
+every unaudited listing would have been theatre. See `docs/feat/kv-storage.md`
+§4.
+
+**96.37 is untouched** — `increment()` still discards `secret`/`hint`/
+`expiresAt`/`updated_by_job_id`. It is a different bug with a signature change
+behind it, and this pass deliberately was not it.

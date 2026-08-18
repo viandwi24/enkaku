@@ -396,7 +396,7 @@ export function DeviceHeader({
               visible chip only when it needs a look). The version itself
               lives in the `ⓘ` popover below, per this file's placement
               rule for looked-up facts. */}
-          <AgentAlertChip agent={device.agent ?? 'absent'} />
+          <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} />
 
           {/* Physical labelling (plan 89 §3.5, §5 step 89.8) — the one place
               this page shows whether the phone's own screen actually says

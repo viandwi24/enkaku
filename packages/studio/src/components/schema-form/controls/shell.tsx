@@ -63,7 +63,10 @@ export function FieldRow({
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-1.5">
+        {/* `min-w-0`: the readout beside it is `shrink-0`, so without this a
+            long field name cannot give ground and the two collide instead of
+            the name wrapping. */}
+        <div className="flex min-w-0 items-baseline gap-1.5">
           <Label htmlFor={id} className="text-[13px] font-normal">
             {label}
           </Label>

@@ -266,15 +266,15 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
   })
 
   describe('ensurePreGranted', () => {
-    test('sets and reads back ACTIVATE_VPN allow without throwing', async () => {
+    test('sets and reads back ACTIVATE_VPN allow, reporting granted', async () => {
       const { deps, execCalls } = fakeDeps()
       const launcher = createGuestAgentLauncher(deps)
-      await expect(launcher.ensurePreGranted()).resolves.toBeUndefined()
+      await expect(launcher.ensurePreGranted()).resolves.toEqual({ state: 'granted', reason: null })
       expect(execCalls.some((c) => c.startsWith('appops set') && c.includes('ACTIVATE_VPN allow'))).toBe(true)
       expect(execCalls.some((c) => c.startsWith('appops get') && c.includes('ACTIVATE_VPN'))).toBe(true)
     })
 
-    test('throws naming the app op when the read-back does not say allow', async () => {
+    test('reports pending — never throws — when the read-back does not say allow', async () => {
       const { deps } = fakeDeps({
         exec: async (cmd) => {
           if (cmd.startsWith('appops get')) return sh('ACTIVATE_VPN: ignore')
@@ -282,11 +282,15 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
         },
       })
       const launcher = createGuestAgentLauncher(deps)
-      await expect(launcher.ensurePreGranted()).rejects.toThrow(/ACTIVATE_VPN/)
-      await expect(launcher.ensurePreGranted()).rejects.toThrow(/did not take/)
+      const consent = await launcher.ensurePreGranted()
+      expect(consent.state).toBe('pending')
+      // The reason is the product: it has to name the op, say the agent still
+      // works, and name the dialog that clears it.
+      expect(consent.reason).toContain('ACTIVATE_VPN')
+      expect(consent.reason).toContain('Connection request')
     })
 
-    test('throws when the read-back is empty (op unset or unsupported)', async () => {
+    test('reports pending when the read-back is empty (op unset or unsupported)', async () => {
       const { deps } = fakeDeps({
         exec: async (cmd) => {
           if (cmd.startsWith('appops get')) return sh('')
@@ -294,7 +298,37 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
         },
       })
       const launcher = createGuestAgentLauncher(deps)
-      await expect(launcher.ensurePreGranted()).rejects.toThrow()
+      await expect(launcher.ensurePreGranted()).resolves.toMatchObject({ state: 'pending' })
+    })
+
+    test("names the platform's own refusal when `appops set` itself is denied (ColorOS: no MANAGE_APP_OPS_MODES for the shell user)", async () => {
+      const denial = 'java.lang.SecurityException: uid 2000 does not have android.permission.MANAGE_APP_OPS_MODES.'
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('appops set')) return { stdout: '', stderr: `\nException occurred while executing 'set':\n${denial}`, exitCode: 255 }
+          if (cmd.startsWith('appops get')) return sh('No operations.\nDefault mode: ignore')
+          return sh()
+        },
+      })
+      const consent = await createGuestAgentLauncher(deps).ensurePreGranted()
+      expect(consent.state).toBe('pending')
+      expect(consent.reason).toContain('MANAGE_APP_OPS_MODES')
+    })
+
+    test('still throws when the package has no UID — that is a failed install, not a consent problem', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('appops get')) return { stdout: '', stderr: 'No UID for dev.enkaku.guestagent in user 0', exitCode: 1 }
+          return sh()
+        },
+      })
+      await expect(createGuestAgentLauncher(deps).ensurePreGranted()).rejects.toThrow(/not registered with package manager/)
+    })
+
+    test('vpnConsent() reads back without attempting a set of its own', async () => {
+      const { deps, execCalls } = fakeDeps()
+      await expect(createGuestAgentLauncher(deps).vpnConsent()).resolves.toEqual({ state: 'granted', reason: null })
+      expect(execCalls.some((c) => c.startsWith('appops set'))).toBe(false)
     })
   })
 

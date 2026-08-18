@@ -1347,11 +1347,22 @@ export const workspaceFiles = sqliteTable(
     id: text('id').primaryKey(),
     /** Absolute, NFC-normalised, unique — validated by `workspace/path.ts` before this table is ever touched. */
     path: text('path').notNull().unique(),
+    /** Empty for a row whose bytes live behind a driver (`storage !== 'inline'`) — the CATALOGUE
+     * (plan 115 §3.1) never duplicates what the driver already holds. */
     content: blob('content', { mode: 'buffer' }).notNull(),
     contentType: text('content_type').notNull().default('text/plain'),
     size: integer('size').notNull(),
-    /** sha256 of `content` — the compare-and-swap token (§3.4). */
+    /** sha256 of the file's bytes — the compare-and-swap token (§3.4), AND (plan 115 §3.3) the
+     * content address the `fs` driver's locator is built from (W7: one hash, two uses). */
     hash: text('hash').notNull(),
+    /** Which driver holds this row's bytes — `inline` (the `content` column above) or `fs` (plan
+     * 115 §3.1, §3.2). Every row written before plan 115 reads back `'inline'` with NO backfill,
+     * matching plan 99's `scripts.kind` precedent exactly: existing rows keep their bytes in the
+     * row and are read through the `inline` driver forever, deliberately (§3.2, no migration). */
+    storage: text('storage').notNull().default('inline'),
+    /** Meaningless to everyone except the driver named by `storage` — for `fs` it is the sha256
+     * above; `null` for an `inline` row, which needs no locator at all (plan 115 §3.1, §4.2). */
+    locator: text('locator'),
     /** 'user:<id>' or 'agent:<id>' — an agent's writes are attributable (§4.5, acceptance #12). */
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
@@ -1408,6 +1419,37 @@ export type AgentBlobInsert = typeof agentBlobs.$inferInsert
  * `secrets/store.ts` AEAD envelope (`iv.tag.ciphertext`) under the `'kv'`
  * namespace, so the column has to accept either shape uniformly as a string.
  * A non-secret row holds `JSON.stringify(value)`.
+ *
+ * ---
+ *
+ * **THIS ONE TABLE IS THE WHOLE STORAGE MODEL FOR SCRIPTS AND PLUGINS.** Read
+ * as four separate features it is not — a farm owner asked for "device KV,
+ * global KV, plugin storage, and encrypted credentials" expecting four
+ * screens, and every one of those is this table. There are exactly three
+ * axes and one flag (`docs/feat/kv-storage.md` is the long version):
+ *
+ * 1. **`scope`** — `global` (the farm) or `device` (one phone). The rule is
+ *    one sentence, from plan 108 §3.1: *if forgetting the device should
+ *    forget the fact, it is device-scoped*. A device row is deleted in the
+ *    same transaction that forgets the device (`device/lifecycle.ts`).
+ * 2. **`namespace`** — the owning plugin id. Runtime-injected, never typed by
+ *    a script, and it exists in BOTH scopes — "plugin storage" is not a third
+ *    place, it is this column. A plugin has no storage engine of its own.
+ * 3. **`key`** — the script's own name for the value.
+ *
+ * ...plus **`secret`**, which is an at-rest encryption flag on the `value`
+ * column, NOT a fourth store. What it buys is exactly one thing: the value is
+ * not readable by grepping the database. `secrets.key` sits beside
+ * `enkaku.db` and anyone who can read the data directory can decrypt every
+ * row (`secrets/store.ts` says the same, deliberately, in the same words).
+ *
+ * Genuinely NOT this table, and not reachable from `/api/kv` at all: the
+ * farm's own credential tables — `network_credentials`, `connectors`,
+ * `webhook_endpoints`, `plugin_webhooks` — each encrypted under its own
+ * `SecretNamespace` and each with its own admin surface.
+ *
+ * Enumerating what a farm actually holds is `GET /api/kv/namespaces` over
+ * `idx_kv_scan` below, one `GROUP BY` per scope.
  */
 export const kvEntries = sqliteTable(
   'kv_entries',

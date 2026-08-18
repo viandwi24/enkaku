@@ -141,7 +141,14 @@ export function PhysicalLabellingPanel({
           screenW={device.screenW}
           screenH={device.screenH}
         />
-        <div className="min-w-0 flex-1 space-y-2">
+        {/*
+          `basis-56`, not a bare `flex-1`. `flex-1` is `flex: 1 1 0%`, and a
+          zero basis can never trigger the `flex-wrap` on the row above — so
+          beside the preview's fixed 220px this column was squeezed to 8px in a
+          ~280px pane instead of dropping to its own line. A real basis is what
+          makes the wrap happen.
+        */}
+        <div className="min-w-0 flex-1 basis-56 space-y-2">
           <p className="rack-label">Current state</p>
           {mode === 'off' ? (
             <p className="text-[12.5px] text-fg-muted">Labelling is off for this device — nothing is written to it.</p>

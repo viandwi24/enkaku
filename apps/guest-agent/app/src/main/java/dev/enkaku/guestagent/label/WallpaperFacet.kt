@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.graphics.BitmapFactory
 import android.graphics.Point
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.view.WindowManager
 import java.io.File
 
@@ -169,9 +170,11 @@ object WallpaperFacet {
   private fun captureOriginalOnce(context: Context, manager: WallpaperManager, prefs: SharedPreferences) {
     if (prefs.contains(KEY_ORIGINAL_CAPTURED)) return
     val captured = runCatching {
-      val file = manager.getWallpaperFile(WallpaperManager.FLAG_SYSTEM) ?: return@runCatching false
-      val input = context.contentResolver.openInputStream(file) ?: return@runCatching false
-      input.use { stream ->
+      // `getWallpaperFile` hands back a ParcelFileDescriptor, NOT a content Uri. This used to be
+      // fed to `contentResolver.openInputStream(Uri)`, which does not compile — the whole module
+      // failed to build at `1877b5c` until this line was fixed.
+      val descriptor = manager.getWallpaperFile(WallpaperManager.FLAG_SYSTEM) ?: return@runCatching false
+      ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { stream ->
         File(context.filesDir, ORIGINAL_FILENAME).outputStream().use { output -> stream.copyTo(output) }
       }
       true

@@ -46,7 +46,7 @@ describe('captured requests', () => {
     }
     const result = GuestAgentRequestSchema.parse(raw)
     if (result.method !== 'route.start') throw new Error('expected route.start')
-    expect(result.config).toEqual({ host: 'proxy.example.com', port: 1337, username: 'u', password: 'p', udpMode: 'udp' })
+    expect(result.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example.com', port: 1337, username: 'u', password: 'p', udpMode: 'udp' })
   })
 
   test('route.status', () => {

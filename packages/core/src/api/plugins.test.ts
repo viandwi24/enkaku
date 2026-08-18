@@ -544,3 +544,155 @@ describe('POST /api/plugins/:name/action/:actionId', () => {
     expect(((await jsonBody(version)).plugin as { version: string }).version).toBe('1.0.0')
   })
 })
+
+/**
+ * `POST /api/plugins/:name/versions/remove` — the two bulk variants of the farm
+ * owner's three-way Remove (2026-08-17). The third, one specific version, is
+ * `DELETE /:name/:version` and is covered above.
+ */
+describe('POST /api/plugins/:name/versions/remove — bulk version removal', () => {
+  async function publish(app: Hono<AuthEnv>, version: string): Promise<string> {
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'tiktok', version, bundle: `export {} // ${version}` }),
+    })
+    const body = await jsonBody(res)
+    return (body.plugin as { id: string }).id
+  }
+
+  /** Publishes and activates each version in turn, so the earlier rows end up `superseded` as they do on a real farm. */
+  async function history(app: Hono<AuthEnv>, versions: string[]): Promise<string[]> {
+    const ids: string[] = []
+    for (const v of versions) {
+      const id = await publish(app, v)
+      await app.request(`/${id}/activate`, { method: 'POST' })
+      ids.push(id)
+    }
+    return ids
+  }
+
+  const removeAll = (app: Hono<AuthEnv>, scope: string, deleteKv = false) =>
+    app.request('/tiktok/versions/remove', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope, deleteKv }),
+    })
+
+  test('scope "except-latest" prunes the history and reports every version, kept ones included', async () => {
+    const { app } = setUp()
+    await history(app, ['1.0.0', '1.1.0', '1.2.0'])
+
+    const res = await removeAll(app, 'except-latest')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      plugin: string
+      scope: string
+      total: number
+      webhooksDeleted: number
+      results: { version: string; skip: { code: string } | null; error: { code: string } | null }[]
+    }
+    expect(body.plugin).toBe('tiktok')
+    expect(body.total).toBe(3)
+    // results.length === total: a kept row is a RESULT, not an omission, which
+    // is what lets the screen say "two of three stayed" from one array.
+    expect(body.results).toHaveLength(3)
+    expect(body.results.filter((r) => !r.skip && !r.error).map((r) => r.version)).toEqual(['1.0.0', '1.1.0'])
+    expect(body.results.find((r) => r.version === '1.2.0')!.skip!.code).toBe('plugin_kept_active')
+  })
+
+  test('scope "all" empties the plugin', async () => {
+    const { app } = setUp()
+    await history(app, ['1.0.0', '1.1.0'])
+    const res = await removeAll(app, 'all')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { results: { skip: unknown; error: unknown }[] }
+    expect(body.results).toHaveLength(2)
+    expect(body.results.every((r) => !r.skip && !r.error)).toBe(true)
+    const list = (await jsonBody(await app.request('/'))) as unknown as { items: unknown[] }
+    expect(list.items).toHaveLength(0)
+  })
+
+  /**
+   * The report is the answer, so a request where two of eleven were refused is
+   * a 200 with two named refusals — not a 4xx that would tell the caller nothing
+   * happened when nine rows are gone.
+   */
+  test('a partial success is a 200, and the refusal is named per version', async () => {
+    const { app, db } = setUp()
+    const ids = await history(app, ['1.0.0', '1.1.0', '1.2.0'])
+    // A queued job pinned to 1.1.0's `login` script — the same thing that makes
+    // `DELETE /api/scripts/:id` answer `script_in_use`.
+    const held = db.select().from(scripts).all().find((s) => s.id.startsWith(ids[1]!))!
+    db.run(
+      `INSERT INTO jobs (id, script_id, device_id, status, created_at) VALUES ('j-bulk', '${held.id}', 'dev-1', 'queued', ${Math.floor(Date.now() / 1000)})`,
+    )
+
+    const res = await removeAll(app, 'except-latest')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { results: { version: string; error: { code: string; message: string } | null }[] }
+    const failed = body.results.filter((r) => r.error)
+    expect(failed).toHaveLength(1)
+    expect(failed[0]!.version).toBe('1.1.0')
+    expect(failed[0]!.error!.code).toBe('script_in_use')
+    // The other one still went — one refusal must not stop the rest.
+    expect(body.results.find((r) => r.version === '1.0.0')!.error).toBeNull()
+  })
+
+  test('an unknown plugin is a 404, and a malformed scope a 400', async () => {
+    const { app } = setUp()
+    expect((await removeAll(app, 'all')).status).toBe(404)
+    await history(app, ['1.0.0'])
+    expect((await removeAll(app, 'everything')).status).toBe(400)
+  })
+
+  test('operator cannot; the route needs script.delete', async () => {
+    const { app } = setUp('operator')
+    expect((await removeAll(app, 'all')).status).toBe(403)
+  })
+
+  /**
+   * One audit row per version PLUS one envelope row. A bulk action that wrote a
+   * single row for eleven deletions would lose exactly what an operator needs
+   * afterwards: which version went, and when.
+   */
+  test('audits one plugin.delete per version touched, with the same target shape the single route uses, plus one envelope row', async () => {
+    const { app, db } = setUp()
+    await history(app, ['1.0.0', '1.1.0', '1.2.0'])
+    await removeAll(app, 'except-latest')
+
+    const rows = db.select().from(auditLog).all()
+    const perVersion = rows.filter((r) => r.action === 'plugin.delete')
+    expect(perVersion.map((r) => r.target).sort()).toEqual(['tiktok@1.0.0', 'tiktok@1.1.0'])
+
+    const envelope = rows.filter((r) => r.action === 'plugin.delete.bulk')
+    expect(envelope).toHaveLength(1)
+    const meta = envelope[0]!.meta as { scope: string; removed: number; kept: number; failed: number; keptVersions: string[] }
+    expect(meta.scope).toBe('except-latest')
+    expect(meta.removed).toBe(2)
+    expect(meta.kept).toBe(1)
+    expect(meta.failed).toBe(0)
+    // The kept versions have no row of their own — nothing was attempted on
+    // them — so the envelope is the only place they are recorded.
+    expect(meta.keptVersions).toEqual(['1.2.0'])
+  })
+
+  test('a refused version is audited too, as a plugin.delete that did not remove', async () => {
+    const { app, db } = setUp()
+    const ids = await history(app, ['1.0.0', '1.1.0'])
+    const held = db.select().from(scripts).all().find((s) => s.id.startsWith(ids[0]!))!
+    db.run(
+      `INSERT INTO jobs (id, script_id, device_id, status, created_at) VALUES ('j-bulk', '${held.id}', 'dev-1', 'running', ${Math.floor(Date.now() / 1000)})`,
+    )
+    await removeAll(app, 'all')
+
+    const refused = db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((r) => r.action === 'plugin.delete' && r.target === 'tiktok@1.0.0')
+    expect(refused).toHaveLength(1)
+    expect((refused[0]!.meta as { removed: boolean; error: { code: string } }).removed).toBe(false)
+    expect((refused[0]!.meta as { error: { code: string } }).error.code).toBe('script_in_use')
+  })
+})

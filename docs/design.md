@@ -163,7 +163,7 @@ videos: z.number().int().min(1).max(2_000).default(30)
   .meta(ui({ title: 'Number of videos', kind: 'count', group: 'Core settings' }))
 ```
 
-`kind` is the value's *meaning* — twelve entries, closed:
+`kind` is the value's *meaning* — thirteen entries, closed:
 
 | `kind` | domain | means |
 | --- | --- | --- |
@@ -179,8 +179,11 @@ videos: z.number().int().min(1).max(2_000).default(30)
 | `packageName` | string | an Android package id |
 | `workspaceFolder` | string | a folder in the workspace — `/videos`, stored without a trailing slash |
 | `workspaceFile` | string | a file in the workspace — `/captions.txt` |
+| `artifact` | string | an artifact id — the same opaque id `POST /api/artifacts` returns and `device.push`/`resolveArtifact` accept |
 
 The two workspace kinds are always a workspace path — absolute *within the workspace*, the same string `fs.list`/`fs.read` take — and never a host filesystem path; nothing outside the workspace is nameable this way, which is why they are two kinds rather than one `kind: 'path'`. `workspaceFile` takes an optional `extensions` (`['.txt']`), scoped to that one kind exactly the way `unit` is scoped to `duration`: it narrows what the browser *offers*, never what is accepted, so a value stored before the filter existed still reads back.
+
+`artifact` (plan 113 §4.1, step 113.9) names a value the vocabulary keeps deliberately separate from the two workspace kinds above: an artifact is a row in the artifact store (files on disk, a multipart upload route), never a place in the workspace tree, and never a path or a URL — only its id. Rendered by `ArtifactControl`, which wraps the same `ArtifactPicker` (upload-new / choose-existing against `GET /api/artifacts?kind=upload`) the bulk-transfer and install-batch dialogs already use, so an operator picks or uploads a video instead of pasting a UUID.
 
 Structure, not `kind`, decides arity: a `[min, max]` tuple is already a range because `prefixItems` says so — `ordered` (default `true`) only says which end sorts first. There is no `kind: 'range'`, and there is no control name anywhere in the vocabulary at all: `slider`, `stepper`, `dropdown` are Studio's words, never the schema's, because a schema that named a widget would freeze the design system at the moment the script was published.
 

@@ -20,11 +20,23 @@ export interface KvSetResult {
   version: number
 }
 
+/**
+ * `set`/`setIfVersion`'s options — structurally the SDK's own `KvSetOptions` (`@enkaku/sdk`'s
+ * `types.ts`), which is what `plugin-context.ts` annotates this client as. `hint` (plan 112 step
+ * 112.2) defaults to `true` when omitted: passing `false` on a `secret` write leaves the row's
+ * `hint` column `null`, so no read path can return `${first 7}…${last 4}` of a credential.
+ */
+export interface KvClientSetOptions {
+  secret?: boolean
+  hint?: boolean
+  ttlSec?: number
+}
+
 export interface KvApiClient {
   get<T>(key: string, schema: z.ZodType<T>): Promise<T | null>
   getRaw(key: string): Promise<unknown>
-  set(key: string, value: unknown, opts?: { secret?: boolean; ttlSec?: number }): Promise<KvSetResult>
-  setIfVersion(key: string, value: unknown, expectedVersion: number, opts?: { secret?: boolean; ttlSec?: number }): Promise<KvSetResult | null>
+  set(key: string, value: unknown, opts?: KvClientSetOptions): Promise<KvSetResult>
+  setIfVersion(key: string, value: unknown, expectedVersion: number, opts?: KvClientSetOptions): Promise<KvSetResult | null>
   increment(key: string, by?: number): Promise<number>
   delete(key: string, opts?: { ifVersion?: number }): Promise<boolean>
   list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<KvListResult>
@@ -65,6 +77,9 @@ export function createKvApiFor(scope: KvScopeKind, request: <T>(call: KvCall) =>
         key,
         value,
         ...(opts?.secret !== undefined ? { secret: opts.secret } : {}),
+        // Omitted stays omitted — the wire field's absence and `true` mean the same thing, and
+        // sending `hint: true` explicitly would only make the two spellings look different.
+        ...(opts?.hint !== undefined ? { hint: opts.hint } : {}),
         ...(opts?.ttlSec !== undefined ? { ttlSec: opts.ttlSec } : {}),
       })
     },
@@ -77,6 +92,7 @@ export function createKvApiFor(scope: KvScopeKind, request: <T>(call: KvCall) =>
         value,
         expectedVersion,
         ...(opts?.secret !== undefined ? { secret: opts.secret } : {}),
+        ...(opts?.hint !== undefined ? { hint: opts.hint } : {}),
         ...(opts?.ttlSec !== undefined ? { ttlSec: opts.ttlSec } : {}),
       })
     },

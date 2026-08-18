@@ -23,14 +23,24 @@ The three matching helpers a selector's behaviour is defined by — `matches`, `
 
 The fifth layer, and the only optional one — its default engine is `none`, and a device with `none` behaves exactly as it did before the layer existed.
 
-| Engine | Capabilities | Notes |
-|---|---|---|
-| `none` | — | The default. Never touches the device's routing |
-| `vpn-helper` | auth, enforcing, udp, probe | A SOCKS5 full tunnel via the on-device guest agent (`network/guest-agent/`). The only rung an app under test cannot ignore — `settings put global http_proxy` is advisory and can be bypassed |
+Four engines, on spec §7.9's three-rung ladder. **The rungs are not equals**, and the capability column is the honest form of that — every `false` in it is a fact worth publishing, not a gap to hide:
 
-`vpn-helper` advertises `probe` (since plan 51 §4.2/§5.4 — a real egress probe measured from inside the tunnel). Advertising it is not the same as passing it: `deriveHealth()` (`@enkaku/protocol`) still reports `unverified` until an `egress` check actually passes — a successful `apply()` means the command succeeded, not that traffic is genuinely leaving through the proxy, and `unverified` must never be worded as success (CLAUDE.md).
+| Engine | Capabilities | Enforcing? | Notes |
+|---|---|---|---|
+| `none` | — | — | The default. Never touches the device's routing |
+| `adb-proxy` | *(none)* | **no — advisory** | `settings put global http_proxy host:port` over the transport (`network/adb-proxy/http-proxy.ts`, plan 114). Apps that honour the system proxy use it; an app with its own networking, its own resolver, or a pinned client ignores it and nothing on the phone stops it. Android's value has no credential field and is world-readable by every app on the device, so one is **refused**, never written (`E_HTTP_PROXY_NO_AUTH`) |
+| `adb-reverse-proxy` | *(none)* | **no — advisory** | The same advisory setting, pointed at `127.0.0.1:<devicePort>` on the device side of an `adb reverse` (`network/adb-proxy/reverse-proxy.ts`, plan 114). This is the rung on which an authenticated upstream becomes possible **at all** — the account lives in the listener on the farm's machine and never reaches the phone — but the engine itself supports no authentication, hence `auth: false`. Exercised over USB only; wireless `adb reverse` is untested |
+| `vpn-helper` | auth, enforcing, udp, probe | **yes** | A SOCKS5 full tunnel via the on-device guest agent (`network/guest-agent/`). The only rung an app under test cannot ignore |
 
-Both hold the `network-route` lock, so two network engines can never be active at once.
+Two things follow from that table and neither is optional wording:
+
+**`health` is structurally `unverified` for both advisory rungs, forever.** Their `egress` check is a permanent `skip`, and `deriveHealth()` (`@enkaku/protocol`) gates `ok` behind a passing `egress` and nothing else — so the top state is unreachable for them by construction, not by omission. That is the correct answer: an egress probe has to run *on the device* to say anything, and the only thing a device-side probe could ever prove about an advisory setting is that a client which honours it can reach the proxy — never that any app under test does. Reporting that as a pass would promote `health` to `ok` and be a false statement about the phone. What these rungs' `setting` check does prove is real and worth showing: the device accepted the write and reports the value back. That is not success. **`unverified` must never be worded as success** (CLAUDE.md), and for these two it is the terminal state.
+
+**`vpn-helper` advertises `probe` (plan 51 §4.2/§5.4 — a real egress probe measured from inside the tunnel), and advertising it is not the same as passing it**: `deriveHealth()` still reports `unverified` until an `egress` check actually passes. A successful `apply()` means the command succeeded, not that traffic is genuinely leaving through the proxy.
+
+All four hold the `network-route` lock, so two network engines can never be active at once — switching a device from one to another reverts the incumbent first, in the same request, and a failed revert refuses the new apply rather than leaving two half-applied routes.
+
+Both advisory engines capture the device's own four `global` proxy values before their first write and restore them verbatim on revert. Where the captured value was empty, or where nothing was ever captured, they write `:0` **then** `delete` — `delete` alone does not reliably stop the framework using a proxy it has already read, and `:0` alone would leave a literal string a pristine device never had. `:0` is a step, never the terminal state; plan 33 §5.5's original prescription said otherwise and was corrected.
 
 The guest agent behind `vpn-helper` is a first-party APK with four facets, not a single-purpose proxy shim — see `apps/guest-agent/README.md` for the membership rule that decides what belongs in it, and `packages/core/README.md`'s "The agent is a device property, not a session step" section for how it is provisioned onto every admitted device (plan 90).
 

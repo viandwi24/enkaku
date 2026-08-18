@@ -2,9 +2,11 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import net from 'node:net'
 import { createSocks5Upstream } from './dial-socks5'
 import { startSocks5Upstream } from './fixtures'
+import { basicAuthHeaderValue } from './auth'
 import { createHttpListener, parseProxyRequestLine, toOriginForm } from './listen-http'
 import type { BridgeEvent } from './logbook'
 import type { Listener } from './listener'
+import type { ListenerCredential } from './auth'
 
 /**
  * Plan 112 step 112.5 — the HTTP listener.
@@ -30,7 +32,7 @@ const PLAIN_PORT = servedPort(plain)
 async function withListener(
   upstreamPort: number,
   fn: (listener: Listener, events: BridgeEvent[]) => Promise<void>,
-  opts: { maxConnections?: number; username?: string; password?: string } = {},
+  opts: { maxConnections?: number; username?: string; password?: string; auth?: ListenerCredential } = {},
 ): Promise<void> {
   const events: BridgeEvent[] = []
   const listener = await createHttpListener({
@@ -46,6 +48,7 @@ async function withListener(
     maxConnections: opts.maxConnections ?? 16,
     idleMs: 5_000,
     log: (event) => events.push(event),
+    ...(opts.auth ? { auth: opts.auth } : {}),
   })
   try {
     await fn(listener, events)
@@ -365,5 +368,132 @@ describe('maxConnections', () => {
     } finally {
       await upstream.close()
     }
+  })
+})
+
+/**
+ * Plan 117 step 117.11, criterion 6 — listener authentication (§4.4). This is
+ * the HTTP half of the four client behaviours; `listen-socks5.test.ts`'s own
+ * new block is the SOCKS5 half.
+ */
+describe('listener authentication — RFC 7617 Basic, on BOTH request forms (§4.4, plan 117 step 117.6)', () => {
+  const AUTH: ListenerCredential = { username: 'ops', password: 'super-secret-listener-pass' }
+
+  test('behaviour 4 — no Proxy-Authorization at all gets 407, with Proxy-Authenticate naming the realm', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const reply = await rawRequest(listener.port, `CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`)
+          expect(reply).toContain('407 Proxy Authentication Required')
+          expect(reply).toContain('Proxy-Authenticate: Basic realm="proxy-manager"')
+          expect(events.some((e) => e.event === 'refused' && e.reason === 'listener-auth-required' && e.code === 'E_PROXY_CLIENT_AUTH_REQUIRED')).toBe(
+            true,
+          )
+          expect(upstream.connects).toBe(0)
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('an incorrect Proxy-Authorization is refused just the same, and never served', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const wrong = basicAuthHeaderValue({ username: 'ops', password: 'the-wrong-one' })
+          const reply = await rawRequest(listener.port, `CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\nProxy-Authorization: ${wrong}\r\n\r\n`)
+          expect(reply).toContain('407 Proxy Authentication Required')
+          expect(events.some((e) => e.event === 'refused' && e.reason === 'listener-auth-failed' && e.code === 'E_PROXY_CLIENT_AUTH_FAILED')).toBe(true)
+          expect(upstream.connects).toBe(0)
+          expect(reply).not.toContain('the-wrong-one')
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('a correct Proxy-Authorization is served — CONNECT form', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener) => {
+          const header = basicAuthHeaderValue(AUTH)
+          const reply = await rawRequest(listener.port, `CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\nProxy-Authorization: ${header}\r\n\r\n`)
+          expect(reply).toContain('200 Connection Established')
+          expect(upstream.connects).toBe(1)
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('a correct Proxy-Authorization is served — absolute-form, the request checked AFTER the request line already parsed', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener) => {
+          const header = basicAuthHeaderValue(AUTH)
+          const reply = await rawRequest(
+            listener.port,
+            `GET http://127.0.0.1:${PLAIN_PORT}/ HTTP/1.1\r\nHost: x\r\nProxy-Authorization: ${header}\r\nConnection: close\r\n\r\n`,
+          )
+          expect(reply).toContain('hello-from-plain-http')
+          expect(upstream.connects).toBe(1)
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('a request this listener does not serve at all still gets its 405, never a 407 that would misname the fault', async () => {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    try {
+      await withListener(
+        upstream.port,
+        async (listener, events) => {
+          const reply = await rawRequest(listener.port, 'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
+          expect(reply).toContain('405 Method Not Allowed')
+          expect(reply).not.toContain('407')
+          expect(events.some((e) => e.event === 'refused' && e.reason === 'not-a-proxy-request')).toBe(true)
+        },
+        { auth: AUTH },
+      )
+    } finally {
+      await upstream.close()
+    }
+  })
+
+  test('the scrubber catches BOTH forms of the listener credential — plaintext and its RFC 7617 base64 encoding', async () => {
+    // `errors.ts`'s `listenerAuthSecrets` is what a caller running this
+    // credential through `scrubSecrets` would use; this proves both forms it
+    // returns are actually the forms that can appear on the wire.
+    const { listenerAuthSecrets, scrubSecrets } = await import('./errors')
+    const secrets = listenerAuthSecrets(AUTH)
+    const base64Form = secrets[1]
+    if (base64Form === undefined) throw new Error('listenerAuthSecrets did not return a base64 form')
+    const header = basicAuthHeaderValue(AUTH)
+    expect(header).toContain(base64Form)
+    const leaked = `client sent Proxy-Authorization: ${header} for account ${AUTH.username} with password ${AUTH.password}`
+    const scrubbed = scrubSecrets(leaked, secrets)
+    expect(scrubbed).not.toContain(AUTH.password)
+    expect(scrubbed).not.toContain(base64Form)
+    // Control: the username alone (not a secret) is left alone, and the
+    // marker replaces exactly what was redacted.
+    expect(scrubbed).toContain(AUTH.username)
+    expect(scrubbed).toContain('«redacted»')
   })
 })

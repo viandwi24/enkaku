@@ -114,9 +114,11 @@ function planAgainst(plan: FieldPlan, value: unknown, now: number): PlannedColum
         : raw(plan, value)
 
     case 'text':
-    // A workspace path is a string that reads as itself in one line — the
-    // same case as `text`, never the quoted JSON of the fallback below.
+    // A workspace path — and an artifact id — is a string that reads as
+    // itself in one line, the same case as `text`, never the quoted JSON of
+    // the fallback below.
     case 'workspacePath':
+    case 'artifact':
       return typeof value === 'string' ? text(plan, value.length > 0 ? value : '—') : raw(plan, value)
 
     // `list`, `table`, `group` and `json` are all shapes `planField` plans as

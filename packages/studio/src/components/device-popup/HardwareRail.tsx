@@ -99,7 +99,16 @@ export function HardwareRail({
       // `items-stretch` (owner-reported — the rail was stretching tall to
       // match the centre/right panels, when it should hug its own buttons'
       // height and nothing more).
-      className="flex w-14 shrink-0 self-start flex-col items-center gap-1 rounded-lg border border-line-strong bg-surface p-1.5 shadow-2xl"
+      //
+      // `@max-[600px]:*`: below a 600 px band `DevicePopup` stacks its three
+      // panels into a column (see its own comment for the arithmetic), and a
+      // 56 px-wide vertical rail of ten buttons would eat the whole popup
+      // height there. It becomes a wrapping horizontal strip across the top
+      // instead — the same buttons, laid the other way. A CONTAINER query
+      // against the popup's own band, never a viewport breakpoint
+      // (`docs/design.md`); the `@container` context is the band element in
+      // `DevicePopup.tsx`, which is this component's only caller.
+      className="flex w-14 shrink-0 self-start flex-col items-center gap-1 rounded-lg border border-line-strong bg-surface p-1.5 shadow-2xl @max-[600px]:w-full @max-[600px]:flex-row @max-[600px]:flex-wrap @max-[600px]:justify-center @max-[600px]:self-stretch"
     >
       {buttons.map((b) => (
         <Tooltip key={b.label}>
@@ -118,9 +127,13 @@ export function HardwareRail({
           <TooltipContent side="right">{b.hint}</TooltipContent>
         </Tooltip>
       ))}
-      <span className="my-1 h-px w-8 bg-line" aria-hidden />
+      {/* A horizontal hairline in the column layout, a vertical one once the
+          rail turns into a row (see the root's own `@max-[600px]` note). */}
+      <span className="my-1 h-px w-8 bg-line @max-[600px]:mx-1 @max-[600px]:my-0 @max-[600px]:h-8 @max-[600px]:w-px" aria-hidden />
       <RotationQuickAction deviceId={deviceId} settings={settings} onSaved={onSettingsSaved} iconOnly />
-      <span className="my-1 h-px w-8 bg-line" aria-hidden />
+      {/* A horizontal hairline in the column layout, a vertical one once the
+          rail turns into a row (see the root's own `@max-[600px]` note). */}
+      <span className="my-1 h-px w-8 bg-line @max-[600px]:mx-1 @max-[600px]:my-0 @max-[600px]:h-8 @max-[600px]:w-px" aria-hidden />
       <ClipboardButton deviceId={deviceId} canSend={inputEnabled} />
     </div>
   )

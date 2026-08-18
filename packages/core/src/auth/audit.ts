@@ -74,6 +74,13 @@ export type AuditAction =
   | 'device.label.apply'
   | 'device.label.clear'
   | 'device.labels.apply'
+  // `POST /api/devices/prep/apply` — one prep setting across a selection.
+  // One row for the whole request, carrying the keys and the counts: forty
+  // rows for one click would bury the trail the same way forty PATCH rows
+  // already do, and the per-device outcomes live in each device's own event
+  // log (`settings.changed`, `device.rotation`), which is where an answer to
+  // "what happened to THIS phone" belongs.
+  | 'device.prep.apply'
   | 'script.publish'
   | 'script.delete'
   | 'script.toggle'
@@ -103,6 +110,11 @@ export type AuditAction =
   // now), which is not a schedule malfunction and is not audited.
   | 'schedule.failed'
   | 'artifact.upload'
+  // A browser upload into the workspace (plan 115 §4.3) — the ONE way bytes
+  // enter the workspace from outside `fs.write`, gated and audited exactly
+  // like `artifact.upload` above; `meta` carries the size and content type,
+  // never the file's own name (already the destination path, `target`).
+  | 'workspace.upload'
   // Every capability invocation, refusals included (plan 63 §3.4 step 7,
   // acceptance #7) — one action for the whole registry rather than one per
   // capability id, since the id itself already rides along as `target`.
@@ -161,6 +173,24 @@ export type AuditAction =
   // The durable KV store's admin surface (plan 79 §4.3, step 4) — never carries a secret's plaintext in `meta`.
   | 'kv.set'
   | 'kv.delete'
+  // A stored KV secret read back in plaintext (`POST /api/kv/entry/reveal`,
+  // `packages/core/src/api/kv.ts`). ONE row per request that reaches the
+  // handler, whatever the outcome — a grant, a refusal, a key that does not
+  // exist, a row that is not secret, a value that would not decrypt — because
+  // the question this action exists to answer is "who read this secret", and a
+  // log that only records the successes answers a different, easier one.
+  //
+  // `userId` is the operator, `target` the KEY, and `meta` carries the outcome,
+  // the scope, the stableId and the namespace — the coordinates of the row and
+  // nothing out of it. Never the value, and nothing derived from it: not a
+  // hint, not a length, not a prefix. The same rule `kv.set` above and
+  // `device.network.credential.reveal` below both state.
+  //
+  // It exists BECAUSE the alternative leaves no trace: `secrets.key` sits beside
+  // `enkaku.db`, so anyone holding `kv.manage` can already open every secret in
+  // the farm with `sqlite3`. This action is what makes the supported path the
+  // recorded one.
+  | 'kv.reveal'
   // Plugins (plan 82 §5 step 11) — publish/stage, the explicit activate/rollback/reload/restart
   // that §3.9 keeps separate from any bundle upload, delete, and the dev slot lifecycle.
   | 'plugin.publish'
@@ -174,6 +204,17 @@ export type AuditAction =
   | 'plugin.reload'
   | 'plugin.restart'
   | 'plugin.delete'
+  // The ENVELOPE row for one bulk version removal
+  // (`POST /api/plugins/:name/versions/remove` — "remove all versions" / "remove
+  // all except the latest"). It does NOT replace the per-version `plugin.delete`
+  // rows above: that request still writes one of those per version it removed or
+  // was refused, with the same `name@version` target the single-version route
+  // uses, so a version's removal is findable the same way whichever route did
+  // it. This row answers the other question — which single operator action, with
+  // which scope, produced those eleven — and carries the counts plus the kept
+  // versions, which have no row of their own because nothing was attempted on
+  // them.
+  | 'plugin.delete.bulk'
   | 'plugin.dev'
   // A write/delete through a plugin's own data routes (plan 108 §4.5, step 108.4) — kept apart
   // from `kv.set`/`kv.delete` above so the log says WHICH plugin's namespace was touched and by
@@ -265,6 +306,22 @@ export type AuditAction =
   | 'command.saved.create'
   | 'command.saved.update'
   | 'command.saved.delete'
+  // A device's stored upstream proxy password read back in plaintext
+  // (`POST /api/devices/:id/network/credential/reveal`,
+  // `packages/core/src/network/route-service.ts`). ONE row per request,
+  // whatever the outcome — a grant, a refusal, a route with no credential, a
+  // secret that would not decrypt — because the question this action exists to
+  // answer is "who tried to read this password", and a log that only records
+  // the successes answers a different, easier one.
+  //
+  // `userId` is the operator, `target` the device id, and `meta` carries the
+  // outcome, the credential's NAME (`credentialRef`), whether it had a
+  // username, and the role that was checked. It never carries the password, the
+  // username's value, or anything derived from either — not a hint, not a
+  // length, not a prefix. The rule `kv.set`, `command.run`, `connector.*` and
+  // `plugin.webhook` above all state, applied to the one action in this list
+  // whose entire purpose is to hand a secret to somebody.
+  | 'device.network.credential.reveal'
 
 export interface AuditLogger {
   record(input: { userId: string | null; action: AuditAction; target?: string; meta?: unknown }): void

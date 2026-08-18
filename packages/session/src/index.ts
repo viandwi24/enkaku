@@ -82,6 +82,14 @@ export type { Logger } from './logger'
 export type { DeviceSnapshot, DeviceSnapshotSource, ArtifactSink, SavedArtifact, TransferPort } from './types'
 export { probeDeviceIdentity, parseWmSize, parseWmDensity, pickStableId, type DeviceProbeResult } from './probe'
 export { wakeDevice, STAYON } from './wake'
+/**
+ * Plan 85 §3.7 — the rotation lock's own types. `applyRotation` itself stays
+ * internal to this package (`session.ts` is its only caller); the two TYPES
+ * are exported because `SessionManager.setRotation` hands a `RotationOutcome`
+ * straight out to `packages/core`'s `PATCH /api/devices/:id`, which reports it
+ * to the operator who asked for the lock.
+ */
+export type { RotationLock, RotationOutcome } from './orientation'
 // Plan 89 (M54 — device identity and physical labelling), step 89.6/89.7 —
 // tier 0's device-scoped, sessionless functions (`packages/core/src/device/labelling.ts`
 // is the caller; unlike `applyRotation`/`applyFarmTag` above, these are never

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { EnkakuError } from '../util/errors'
 import { pathWithinAnyPrefix } from '../workspace/path'
+import { isTextContentType } from '../workspace/store'
 import type { CapabilityContext } from './context'
 import { defineCapability } from './types'
 
@@ -17,17 +18,6 @@ import { defineCapability } from './types'
  * anything else is base64 at the API edge and never rendered inline in
  * Studio"). The store itself only ever sees raw bytes.
  */
-
-function isTextContentType(contentType: string): boolean {
-  return (
-    contentType.startsWith('text/') ||
-    contentType === 'application/json' ||
-    contentType === 'application/javascript' ||
-    contentType === 'application/typescript' ||
-    contentType.endsWith('+json') ||
-    contentType.endsWith('+xml')
-  )
-}
 
 function encodeContent(content: string, contentType: string): Uint8Array {
   if (isTextContentType(contentType)) return new TextEncoder().encode(content)

@@ -10,7 +10,7 @@ import {
   type PreparationComponentStatus,
 } from './device-preparation'
 
-const ALL_STATES: AgentState[] = ['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported']
+const ALL_STATES: AgentState[] = ['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported', 'consent-required']
 
 describe('PreparationStateSchema (plan 106 §3.1)', () => {
   test('is literally AgentStateSchema, not a parallel enum that can drift', () => {

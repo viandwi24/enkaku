@@ -1051,7 +1051,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                 ...(msg.ext ? { ext: msg.ext } : {}),
               })
               deps.onArtifact(job.id, { kind: msg.kind, label: msg.label, ...saved })
-              send({ t: 'artifact.result', callId: msg.callId, ok: true })
+              // Plan 115 §3.6 — the bridge: `saved.id` is what
+              // `ctx.artifact.file()` hands back to the script, so it can
+              // pass it straight to `ctx.device.push({ artifactId })`.
+              send({ t: 'artifact.result', callId: msg.callId, ok: true, artifactId: saved.id })
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err)
               const code = err instanceof SessionError ? err.code : 'ARTIFACT_FAILED'

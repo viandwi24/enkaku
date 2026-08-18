@@ -1,8 +1,8 @@
 'use client'
 
-import { Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { FileCode2, Folder, FolderOpen, Loader2, Plus, Rocket, Save, Trash2 } from 'lucide-react'
+import { Check, Download, FileCode2, Folder, FolderOpen, Loader2, Pencil, Plus, Rocket, Save, Trash2, Upload, X } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
   Button,
@@ -16,16 +16,21 @@ import {
   Input,
   Label,
   LoadingRows,
-  Textarea,
   cn,
+  fileSize,
   relativeTime,
 } from '@enkaku/ui'
+import { resolvePresenter } from '@/components/workspace/presenters'
 import {
   deleteWorkspaceFile,
   defaultPublishName,
+  headWorkspaceFile,
   listWorkspace,
+  moveWorkspaceFile,
   publishScriptFromWorkspace,
   readWorkspaceFile,
+  uploadWorkspaceFile,
+  workspaceFileUrl,
   writeWorkspaceFile,
   PLUGIN_NAME_SHAPE,
   SCRIPT_MEMBER_NAME_SHAPE,
@@ -95,6 +100,15 @@ function WorkspaceView() {
   const [newFileName, setNewFileName] = useState('')
   const [creating, setCreating] = useState(false)
 
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameError, setRenameError] = useState<string | null>(null)
+
   const [publishOpen, setPublishOpen] = useState(false)
   // Two halves, not one field (plan 110 §3.2) — a script is published as
   // `<plugin>/<script>`, and the operator has to be able to see which half a
@@ -113,16 +127,36 @@ function WorkspaceView() {
       .catch((err: unknown) => setListError(err instanceof Error ? err.message : String(err)))
   }, [])
 
+  /**
+   * `HEAD` first, always (plan 116 §4.3, step 116.6, finding P7, criterion
+   * 10) — learns `contentType`/size (and, via the response's `ETag`/
+   * `X-Enkaku-*` headers, the rest of `WorkspaceFileMeta`) without reading a
+   * single byte, so a presenter can be resolved BEFORE anything decides
+   * whether bytes are worth fetching at all. `fs.read` (`readWorkspaceFile`,
+   * which base64-encodes non-text content) is called ONLY once the resolved
+   * presenter both wants content (`capabilities.edit` — today, only the text
+   * presenter) AND the file is under that presenter's own `maxBytes`; a file
+   * over the ceiling is never fetched, matching §3.6's own point that the
+   * ceiling prevents the transfer rather than hiding the result afterward.
+   */
   const loadFile = useCallback((path: string) => {
     setLoadingFile(true)
     setFileError(null)
     setConflict(null)
-    readWorkspaceFile(path)
-      .then((file) => {
+    void (async () => {
+      const head = await headWorkspaceFile(path)
+      const presenter = resolvePresenter({ contentType: head.contentType, path: head.path })
+      if (presenter.capabilities.edit && head.size <= presenter.maxBytes) {
+        const file = await readWorkspaceFile(path)
         setMeta(file)
         setDraft(file.content)
         setOriginal(file.content)
-      })
+      } else {
+        setMeta(head)
+        setDraft('')
+        setOriginal('')
+      }
+    })()
       .catch((err: unknown) => setFileError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoadingFile(false))
   }, [])
@@ -193,6 +227,62 @@ function WorkspaceView() {
       setListError(err instanceof Error ? err.message : String(err))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleUploadChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // lets the same file be picked again
+    if (!file) return
+    const path = prefix + file.name
+    setUploading(true)
+    setUploadError(null)
+    try {
+      await uploadWorkspaceFile(path, file)
+      void loadDir(prefix)
+    } catch (err) {
+      // Surfaced verbatim (plan 115 §4.4) — a quota refusal names the setting to raise.
+      setUploadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const startRename = (entry: WorkspaceListEntry) => {
+    setRenamingPath(entry.path)
+    setRenameValue(fileName(entry.path))
+    setRenameError(null)
+  }
+
+  const cancelRename = () => {
+    setRenamingPath(null)
+    setRenameError(null)
+  }
+
+  const confirmRename = async (entry: WorkspaceListEntry) => {
+    const trimmed = renameValue.trim()
+    if (!entry.hash) return
+    if (!trimmed || trimmed === fileName(entry.path)) {
+      setRenamingPath(null)
+      return
+    }
+    const dir = entry.path.slice(0, entry.path.length - fileName(entry.path).length)
+    const to = dir + trimmed
+    setRenameBusy(true)
+    setRenameError(null)
+    try {
+      const updated = await moveWorkspaceFile(entry.path, to, entry.hash)
+      setRenamingPath(null)
+      if (selectedPath === entry.path) {
+        setSelectedPath(to)
+        setMeta(updated)
+        router.push(`/workspace?path=${encodeURIComponent(to)}`)
+      }
+      void loadDir(prefix)
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRenameBusy(false)
     }
   }
 
@@ -267,6 +357,17 @@ function WorkspaceView() {
 
   const canPublish = selectedPath?.startsWith('/scripts/') ?? false
 
+  // Which presenter renders `meta` (plan 116 §4.3) — resolved from the
+  // content type alone, so this is the ONE place the page decides "how does
+  // this file render", instead of the `Textarea` it used to hardcode below.
+  const presenter = meta ? resolvePresenter({ contentType: meta.contentType, path: meta.path }) : null
+  // Save is a text-presenter-only control by construction, so defaulting to
+  // `true` while `presenter` is still unresolved (during the initial load)
+  // keeps the button from flashing away and back for the common text case;
+  // it is disabled anyway until loading finishes (§3.2, §4.3).
+  const canEdit = presenter ? presenter.capabilities.edit : true
+  const overLimit = presenter !== null && meta !== null && meta.size > presenter.maxBytes
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
@@ -307,8 +408,20 @@ function WorkspaceView() {
             <Button size="sm" variant="secondary" className="h-7 shrink-0 px-2" disabled={creating || !newFileName.trim()} onClick={() => void createFile()}>
               <Plus className="size-3.5" aria-hidden />
             </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 shrink-0 px-2"
+              disabled={uploading}
+              title="Upload a file"
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              {uploading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Upload className="size-3.5" aria-hidden />}
+            </Button>
+            <input ref={uploadInputRef} type="file" className="hidden" onChange={(e) => void handleUploadChange(e)} />
           </div>
 
+          {uploadError && <p className="px-3 py-2 text-[12px] text-led-danger">{uploadError}</p>}
           {listError && <p className="px-3 py-3 text-[12px] text-led-danger">{listError}</p>}
           {!listError && entries === null && (
             <div className="px-3 py-3">
@@ -328,17 +441,65 @@ function WorkspaceView() {
                       <Folder className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
                       <span className="truncate">{fileName(e.path)}</span>
                     </button>
+                  ) : renamingPath === e.path ? (
+                    <div className="px-3 py-1">
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(ev) => setRenameValue(ev.target.value)}
+                          className="h-7 text-[12px]"
+                          onKeyDown={(ev) => {
+                            if (ev.key === 'Enter') void confirmRename(e)
+                            if (ev.key === 'Escape') cancelRename()
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 shrink-0 px-2"
+                          disabled={renameBusy || !renameValue.trim()}
+                          onClick={() => void confirmRename(e)}
+                        >
+                          {renameBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2" disabled={renameBusy} onClick={cancelRename}>
+                          <X className="size-3.5" aria-hidden />
+                        </Button>
+                      </div>
+                      {renameError && <p className="mt-1 text-[11.5px] text-led-danger">{renameError}</p>}
+                    </div>
                   ) : (
-                    <button
-                      onClick={() => openFile(e.path)}
+                    <div
                       className={cn(
-                        'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2',
-                        selectedPath === e.path && 'bg-surface-2 font-medium',
+                        'group flex w-full items-center gap-1.5 px-3 py-1.5 hover:bg-surface-2',
+                        selectedPath === e.path && 'bg-surface-2',
                       )}
                     >
-                      <FileCode2 className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
-                      <span className="truncate">{fileName(e.path)}</span>
-                    </button>
+                      <button
+                        onClick={() => openFile(e.path)}
+                        className={cn(
+                          'flex min-w-0 flex-1 items-center gap-2 text-left text-[12.5px]',
+                          selectedPath === e.path && 'font-medium',
+                        )}
+                      >
+                        <FileCode2 className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                        <span className="truncate">{fileName(e.path)}</span>
+                      </button>
+                      <span className="shrink-0 text-[11px] text-fg-muted">{fileSize(e.size)}</span>
+                      <button
+                        type="button"
+                        aria-label={`Rename ${fileName(e.path)}`}
+                        title="Rename"
+                        className="shrink-0 rounded p-1 text-fg-muted hover:bg-surface-3 hover:text-fg"
+                        onClick={(ev) => {
+                          ev.stopPropagation()
+                          startRename(e)
+                        }}
+                      >
+                        <Pencil className="size-3" aria-hidden />
+                      </button>
+                    </div>
                   )}
                 </li>
               ))}
@@ -373,10 +534,12 @@ function WorkspaceView() {
                     <Trash2 className="size-3.5" aria-hidden />
                     Delete
                   </Button>
-                  <Button size="sm" className="h-7 text-[12px]" onClick={() => void save()} disabled={saving || loadingFile || !dirty}>
-                    {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Save className="size-3.5" aria-hidden />}
-                    Save
-                  </Button>
+                  {canEdit && (
+                    <Button size="sm" className="h-7 text-[12px]" onClick={() => void save()} disabled={saving || loadingFile || !dirty}>
+                      {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Save className="size-3.5" aria-hidden />}
+                      Save
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -387,6 +550,12 @@ function WorkspaceView() {
                   {' · '}
                   {relativeTime(meta.updatedAt)}
                 </p>
+              )}
+
+              {/* Generated from the registry (§3.2) — a presenter's `readOnlyReason` shows here verbatim, so
+                  adding an editor for this type later flips one boolean and this line stops appearing on its own. */}
+              {presenter && !canEdit && presenter.readOnlyReason && (
+                <p className="border-b px-4 py-1.5 text-[11.5px] text-fg-muted">{presenter.readOnlyReason}</p>
               )}
 
               {conflict && (
@@ -409,14 +578,29 @@ function WorkspaceView() {
               <div className="flex-1 px-4 py-3">
                 {loadingFile ? (
                   <LoadingRows rows={6} />
-                ) : (
-                  <Textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    className="min-h-[60vh] font-mono text-[12.5px] leading-relaxed"
-                    spellCheck={false}
-                  />
-                )}
+                ) : meta && presenter ? (
+                  overLimit ? (
+                    <div className="flex flex-col items-start gap-3 px-1 py-10">
+                      <p className="text-[13px]">
+                        This file is {fileSize(meta.size)} — over the {fileSize(presenter.maxBytes)} limit for viewing it here.
+                      </p>
+                      <p className="text-[12px] text-fg-muted">{meta.contentType}</p>
+                      <Button asChild size="sm" variant="secondary">
+                        <a href={workspaceFileUrl(meta.path)} target="_blank" rel="noreferrer">
+                          <Download className="size-3.5" aria-hidden />
+                          Download
+                        </a>
+                      </Button>
+                    </div>
+                  ) : (
+                    <presenter.Component
+                      path={meta.path}
+                      meta={meta}
+                      src={workspaceFileUrl(meta.path)}
+                      text={presenter.capabilities.edit ? { value: draft, onChange: setDraft, onSave: save, dirty } : undefined}
+                    />
+                  )
+                ) : null}
               </div>
             </>
           )}

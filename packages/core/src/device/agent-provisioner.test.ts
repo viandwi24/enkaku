@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import { GuestAgentClientError, type GuestAgentArtifactMismatch, type GuestAgentLauncher } from '@enkaku/drivers'
+import { GuestAgentClientError, type GuestAgentArtifactMismatch, type GuestAgentLauncher, type GuestAgentVpnConsent } from '@enkaku/drivers'
 import type { GuestAgentCapability, HelloResult } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
@@ -59,13 +59,16 @@ interface LauncherBehavior {
     opts: { force?: boolean } | undefined,
     fireMismatch: (info: GuestAgentArtifactMismatch) => void,
   ) => Promise<{ versionCode: number | null }>
+  /** Defaults to `granted` — only the `consent-required` tests override it. */
+  vpnConsent?: () => GuestAgentVpnConsent
 }
 
 function fakeMakeLauncher(behavior: LauncherBehavior): NonNullable<AgentProvisionerDeps['makeLauncher']> {
   return (_row, opts): GuestAgentLauncher => ({
     isInstalled: async () => true,
     ensureInstalled: (o) => behavior.ensureInstalled(o, opts.onMismatch),
-    ensurePreGranted: async () => undefined,
+    ensurePreGranted: async () => ({ state: 'granted', reason: null }),
+    vpnConsent: async () => behavior.vpnConsent?.() ?? { state: 'granted', reason: null },
     bootstrap: async () => undefined,
     forward: async () => undefined,
     removeForward: async () => undefined,
@@ -148,6 +151,55 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       const agentEvents = events.filter((e) => e.kind === 'device.agent')
       expect(agentEvents).toHaveLength(1)
       expect(agentEvents[0]?.meta).toMatchObject({ state: 'ready', from: 'absent' })
+    })
+
+    test('installed, answering, but VPN consent ungranted → `consent-required`, NOT ready and NOT failed', async () => {
+      const consentReason =
+        'the guest agent is installed and answering, but Android VPN consent (ACTIVATE_VPN) is not granted on this phone ' +
+        'and this build will not let adb grant it: `appops set ...` was refused by the platform ' +
+        '(java.lang.SecurityException: uid 2000 does not have android.permission.MANAGE_APP_OPS_MODES.)'
+      const { deps, db, events } = fakeDeps({
+        makeLauncher: fakeMakeLauncher({
+          ensureInstalled: async () => ({ versionCode: 5 }),
+          vpnConsent: () => ({ state: 'pending', reason: consentReason }),
+        }),
+      })
+      seedDevice(db)
+      const status = await createAgentProvisioner(deps).ensure('dev-1')
+
+      expect(status.state).toBe('consent-required')
+      // The identity facts from `hello()` survive — this device's agent WORKS,
+      // and reporting it with no version or capabilities would read as broken.
+      expect(status.appVersion).toBe('1.0.0')
+      expect(status.capabilities).toEqual(['socks5-route', 'egress-probe'])
+      expect(status.reason).toBe(consentReason)
+      // Not a bounded-retry failure: retrying cannot clear it, only a human can.
+      expect(status.attempts).toBe(0)
+      expect(status.nextAttemptAt).toBeNull()
+
+      expect(readRow(db).preparation).toMatchObject({ 'guest-agent': { state: 'consent-required' } })
+      expect(events.filter((e) => e.kind === 'device.agent')[0]?.meta).toMatchObject({ state: 'consent-required', from: 'absent' })
+    })
+
+    test('a consent readback that cannot be read leaves the device ready — an unreadable answer is not a verdict', async () => {
+      const { deps, db } = fakeDeps({
+        makeLauncher: (_row, opts) => ({
+          isInstalled: async () => true,
+          ensureInstalled: async () => ({ versionCode: 5 }),
+          ensurePreGranted: async () => ({ state: 'granted' as const, reason: null }),
+          vpnConsent: async () => {
+            throw new Error('device went away mid-read')
+          },
+          bootstrap: async () => undefined,
+          forward: async () => undefined,
+          removeForward: async () => undefined,
+          stop: async () => undefined,
+          ...opts,
+        }),
+      })
+      seedDevice(db)
+      const status = await createAgentProvisioner(deps).ensure('dev-1')
+      expect(status.state).toBe('ready')
     })
 
     test('a clean reconnect (already ready, nothing changed) runs one verification pass and emits no event (acceptance criterion 5)', async () => {
@@ -492,7 +544,8 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
               ensureInstalled: async () => {
                 throw new Error('unexpected')
               },
-              ensurePreGranted: async () => undefined,
+              ensurePreGranted: async () => ({ state: 'granted' as const, reason: null }),
+              vpnConsent: async () => ({ state: 'granted' as const, reason: null }),
               bootstrap: async () => undefined,
               forward: async () => undefined,
               removeForward: async () => undefined,
@@ -604,6 +657,9 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
         makeLauncher: undefined, // use the REAL createGuestAgentLauncher
         exec: async (_serial, cmd) => {
           if (cmd.startsWith('dumpsys package')) return { stdout: 'Unable to find package: dev.enkaku.guestagent\n', stderr: '', exitCode: 0 }
+          // The provisioner reads VPN consent back after `hello()` succeeds;
+          // a device that grants the app op normally answers `allow`.
+          if (cmd.startsWith('appops get')) return { stdout: 'ACTIVATE_VPN: allow', stderr: '', exitCode: 0 }
           return { stdout: '', stderr: '', exitCode: 0 }
         },
       })

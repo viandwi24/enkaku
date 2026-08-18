@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A five-colour palette for StatusActivity's banner and value rows. Plain colours, no theme
+  library: the app targets `android:Theme.Material.Light` and pulls in nothing beyond the platform
+  (see StatusActivity.kt on why there is no Compose and no material3 here).
+
+  Tone is meaning, not decoration — `status_bad` is only ever used for a state that is actively
+  costing the device its network (HELD, a leak), and `status_good` is never used for something the
+  app has not actually verified.
+-->
+<resources>
+    <color name="status_fg">#111111</color>
+    <color name="status_fg_muted">#666666</color>
+    <color name="status_good">#1B6E2F</color>
+    <color name="status_warn">#8A5A00</color>
+    <color name="status_bad">#B3261E</color>
+
+    <color name="banner_bad_bg">#FBE5E3</color>
+    <color name="banner_warn_bg">#FDF1DC</color>
+    <color name="banner_good_bg">#E4F1E6</color>
+    <color name="banner_muted_bg">#EEEEEE</color>
+</resources>

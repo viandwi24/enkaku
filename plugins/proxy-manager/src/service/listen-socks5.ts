@@ -1,8 +1,10 @@
 import { createListener, type Listener, type ListenerOptions } from './listener'
+import { credentialMatches, parseSocks5AuthRequest, socks5AuthReply } from './auth'
 
 /**
- * The SOCKS5 listener — RFC 1928, with RFC 1929's method in the negotiation
- * vocabulary and deliberately not selected.
+ * The SOCKS5 listener — RFC 1928, with RFC 1929's username/password method
+ * offered for a record that has a listener credential saved, and refused for
+ * one that does not.
  *
  * ## Why this ships even though the owner's own case does not need it
  *
@@ -12,19 +14,30 @@ import { createListener, type Listener, type ListenerOptions } from './listener'
  * client. Shipping only the HTTP listener would make the payoff of folding
  * this into the farm unreachable, which is the point of the plan.
  *
- * ## Method negotiation, and why NO AUTHENTICATION is the only method offered
+ * ## Method negotiation, and why exactly one method is ever offered
  *
- * There is no listener-side authentication in v1, and §3.9 is why: an
- * unauthenticated proxy reachable off-host is an open relay, so the bind is
- * loopback-only and the two questions are settled together (§9 Q2 asks whether
- * to build both). Offering RFC 1929 and then accepting **any** credentials
- * would be worse than not offering it: it would look like authentication.
+ * Plan 112 shipped with no listener-side authentication at all: an
+ * unauthenticated proxy reachable off-host is an open relay, so the bind was
+ * loopback-only and that was the whole answer. Plan 117 §3.5 makes the bind
+ * rule conditional on its own premise instead — a non-loopback bind is
+ * permitted only for a record that can prove who is dialling it — so this
+ * listener now offers RFC 1929 for a record that has a credential saved
+ * (`opts.auth`, read by `supervisor.ts` from the `proxy-auth:<id>` KV row) and
+ * offers no authentication at all for one that does not.
  *
- * So the greeting is answered with X'00' when the client offers it, and with
- * X'FF' — the RFC's own "no acceptable methods" — when it does not. A client
- * configured with a username and password for the bridge itself offers both
- * X'00' and X'02' and is served; one configured to *require* X'02' is refused
- * by name rather than by a dropped socket.
+ * **Exactly one method is ever offered, never both.** A client that could
+ * choose between them could choose its way past authentication on a listener
+ * that has one configured — offering RFC 1929 and then also accepting X'00'
+ * would make the credential decorative rather than required. So `opts.auth`
+ * present ⇒ only X'02' is offered, and a client that does not offer it back is
+ * refused with X'FF' — the RFC's own "no acceptable methods" — exactly as a
+ * client that offered only X'02' to an unauthenticated listener already was.
+ * `opts.auth` absent ⇒ only X'00' is offered, unchanged from plan 112.
+ *
+ * The bind rule itself does not change here — a non-loopback bind still
+ * requires `listenerAuth` and a stored credential, and that gate is step
+ * 117.7's, in `shared.ts`. This step only builds the half the gate depends on:
+ * a listener that can actually turn a credential away.
  *
  * ## BIND and UDP ASSOCIATE
  *
@@ -144,8 +157,13 @@ export function createSocks5Listener(opts: Omit<ListenerOptions, 'writeOverflowR
       writeOverflowRefusal: undefined,
     },
     (client, api) => {
-      let stage: 'greet' | 'request' | 'done' = 'greet'
+      let stage: 'greet' | 'auth' | 'request' | 'done' = 'greet'
       let buf = Buffer.alloc(0)
+
+      /** `host:port`, or `undefined` when Node has none to give — never thrown over, only logged. */
+      function clientAddress(): string | undefined {
+        return client.remoteAddress ? `${client.remoteAddress}:${client.remotePort ?? 0}` : undefined
+      }
 
       function onData(chunk: Buffer): void {
         if (stage === 'done') return
@@ -166,19 +184,60 @@ export function createSocks5Listener(opts: Omit<ListenerOptions, 'writeOverflowR
             api.refuse('not-socks5', { code: 'E_PROXY_CLIENT_PROTOCOL' })
             return
           }
-          if (!greeting.methods.includes(METHOD_NO_AUTH)) {
+
+          // Never both: an authenticated listener offers ONLY X'02', an
+          // unauthenticated one offers ONLY X'00' — see this file's header.
+          const wanted = opts.auth ? METHOD_USERNAME_PASSWORD : METHOD_NO_AUTH
+          if (!greeting.methods.includes(wanted)) {
             stage = 'done'
             client.removeListener('data', onData)
             client.end(Buffer.from([VERSION, METHOD_NONE_ACCEPTABLE]))
             api.refuse(
-              greeting.methods.includes(METHOD_USERNAME_PASSWORD) ? 'listener-auth-not-supported' : 'no-acceptable-method',
-              { code: 'E_PROXY_CLIENT_PROTOCOL' },
+              opts.auth
+                ? 'listener-auth-required'
+                : greeting.methods.includes(METHOD_USERNAME_PASSWORD)
+                  ? 'listener-auth-not-supported'
+                  : 'no-acceptable-method',
+              opts.auth
+                ? { code: 'E_PROXY_CLIENT_AUTH_REQUIRED', clientAddress: clientAddress() }
+                : { code: 'E_PROXY_CLIENT_PROTOCOL' },
             )
             return
           }
           buf = buf.subarray(greeting.length)
+          client.write(Buffer.from([VERSION, wanted]))
+          if (opts.auth) {
+            stage = 'auth'
+          } else {
+            stage = 'request'
+          }
+          if (buf.length === 0) return
+        }
+
+        if (stage === 'auth') {
+          // Unreachable without `opts.auth` set — the greet branch above only
+          // ever moves to 'auth' when there is a credential to check against.
+          const auth = opts.auth
+          if (!auth) return
+          const parsed = parseSocks5AuthRequest(buf)
+          if (parsed.kind === 'need-more') return
+          if (parsed.kind === 'bad') {
+            stage = 'done'
+            client.removeListener('data', onData)
+            client.end(socks5AuthReply(false))
+            api.refuse('auth-malformed', { code: 'E_PROXY_CLIENT_PROTOCOL', clientAddress: clientAddress() })
+            return
+          }
+          buf = buf.subarray(parsed.request.length)
+          if (!credentialMatches(parsed.request.credential, auth)) {
+            stage = 'done'
+            client.removeListener('data', onData)
+            client.end(socks5AuthReply(false))
+            api.refuse('listener-auth-failed', { code: 'E_PROXY_CLIENT_AUTH_FAILED', clientAddress: clientAddress() })
+            return
+          }
+          client.write(socks5AuthReply(true))
           stage = 'request'
-          client.write(Buffer.from([VERSION, METHOD_NO_AUTH]))
           if (buf.length === 0) return
         }
 

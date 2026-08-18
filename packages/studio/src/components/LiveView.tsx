@@ -854,7 +854,16 @@ export function LiveView({
         // always wins over a flex-basis's own width contribution).
         fitContainer && !compact && 'flex flex-1 min-h-0 flex-col',
       )}
-      style={fitContainer && !compact && idealWidthPx !== null ? { width: idealWidthPx } : undefined}
+      // `maxWidth: '100%'` turns that explicit pixel width into a CEILING
+      // rather than a floor (owner-reported 2026-08-17: a phone lying flat
+      // streams 1600×720, this effect resolves ~1350 px from that ratio, and
+      // the popup's rail + picture + actions then came to ~1720 px — the
+      // actions panel was cut off by the viewport). The width above is what
+      // the picture WANTS; this is what the space actually allows, and
+      // `object-contain` on the canvas keeps the aspect ratio when the two
+      // disagree. `DevicePopup.tsx`'s centre wrapper is `flex-1 min-w-0` for
+      // the same reason — a cap does nothing unless something may give.
+      style={fitContainer && !compact && idealWidthPx !== null ? { width: idealWidthPx, maxWidth: '100%' } : undefined}
     >
       {/* Stream readouts: the numbers that describe the picture being watched.
           Skipped in compact (Wall tile) mode — a tile has room for a status

@@ -3,7 +3,7 @@ import net from 'node:net'
 import { startSocks5Upstream, type Socks5Fixture } from './fixtures'
 import type { LogSink } from './logbook'
 import { PROXY_STATES, createSupervisor, type Supervisor, type SupervisorHost } from './supervisor'
-import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyKeyFor, proxySecretKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
+import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyAuthKeyFor, proxyKeyFor, proxySecretKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
 
 /** Plan 112 step 112.7 — the supervisor: the five states, the two-phase stop, the cap, the disposer. */
 
@@ -24,11 +24,14 @@ function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
   return {
     label: 'Office UK',
     listen: { proto: 'http', bindHost: '127.0.0.1', port: 0 },
-    upstream: { proto: 'socks5', host: '127.0.0.1', port: 1, username: USERNAME },
+    upstream: { proto: 'socks5', host: '127.0.0.1', port: 1, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
     enabled: false,
     logDestinations: false,
     maxConnections: DEFAULT_MAX_CONNECTIONS,
     drainMs: DEFAULT_DRAIN_MS,
+    capacity: 0,
+    exclusive: false,
+    listenerAuth: false,
     notes: '',
     ...over,
   }
@@ -216,7 +219,11 @@ describe('the state machine', () => {
     try {
       await h.supervisor.refresh()
       expect((await h.supervisor.start('bad')).lastError?.code).toBe('E_PROXY_LISTEN_UNSUPPORTED')
-      expect((await h.supervisor.start('offhost')).lastError?.code).toBe('E_PROXY_BIND_NOT_LOOPBACK')
+      // `E_PROXY_BIND_NOT_LOOPBACK` was retired at step 117.7 — `offhost` has
+      // no listener credential (the fixture's `record()` defaults
+      // `listenerAuth: false`), so the conditional rule refuses it as
+      // `E_PROXY_LISTENER_AUTH_REQUIRED` instead.
+      expect((await h.supervisor.start('offhost')).lastError?.code).toBe('E_PROXY_LISTENER_AUTH_REQUIRED')
       expect((await h.supervisor.start('noport')).lastError?.code).toBe('E_PROXY_PORT_UNASSIGNED')
       for (const id of ['bad', 'offhost', 'noport']) expect(h.supervisor.runtimeOf(id)?.state).toBe('failed')
       // Control: nothing bound. The port all three name is still free.
@@ -459,7 +466,7 @@ describe('the cap, the counters, and what is never stored', () => {
     const writes: string[] = []
     const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
     const entries = new Map<string, unknown>([
-      [proxyKeyFor('office-uk'), writeProxyRecord(record({ enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port }, upstream: { proto: 'socks5', host: '127.0.0.1', port: upstream.port, username: USERNAME } }))],
+      [proxyKeyFor('office-uk'), writeProxyRecord(record({ enabled: true, listen: { proto: 'http', bindHost: '127.0.0.1', port }, upstream: { proto: 'socks5', host: '127.0.0.1', port: upstream.port, username: USERNAME, bindAddress: '', resolveThroughEgress: true } }))],
       [proxySecretKeyFor('office-uk'), { password: PASSWORD }],
     ])
     const noop = () => {}
@@ -528,6 +535,112 @@ describe('the cap, the counters, and what is never stored', () => {
       expect((await h.supervisor.start('office-uk')).state).toBe('running')
       const failed = await openTunnel(port).catch((e: unknown) => e)
       expect(failed).toBeInstanceOf(Error)
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('the listener credential — read from `proxy-auth:<id>` and wired through to the bind gate (plan 117 §3.5, §4.4, steps 117.6–117.8a)', () => {
+  /** Same shape as `harness()`, plus an optional `proxy-auth:<id>` row per proxy. */
+  async function authHarness(records: Record<string, ProxyRecord>, auth: Record<string, { username: string; password: string }> = {}): Promise<Harness> {
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    const lines: Harness['lines'] = []
+    const reported: Harness['reported'] = []
+    const push = (level: string) => (message: string, fields?: Record<string, unknown>) => {
+      lines.push({ level, message, ...(fields ? { fields } : {}) })
+    }
+    const log: LogSink = { debug: push('debug'), info: push('info'), warn: push('warn'), error: push('error') }
+    const entries = new Map<string, unknown>()
+    for (const [id, rec] of Object.entries(records)) {
+      entries.set(proxyKeyFor(id), writeProxyRecord({ ...rec, upstream: { ...rec.upstream, port: upstream.port } }))
+      entries.set(proxySecretKeyFor(id), { password: PASSWORD })
+      const cred = auth[id]
+      if (cred) entries.set(proxyAuthKeyFor(id), cred)
+    }
+    const host: SupervisorHost = {
+      storage: {
+        global: {
+          getRaw: async (key) => entries.get(key) ?? null,
+          list: async (listOpts) => ({
+            items: [...entries.entries()].filter(([key]) => (listOpts?.prefix ? key.startsWith(listOpts.prefix) : true)).map(([key, value]) => ({ key, value })),
+            nextCursor: null,
+          }),
+        },
+      },
+      log,
+      reportListener: (listener) => {
+        reported.push(listener)
+        return listener
+      },
+    }
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000, idleMs: 5_000 })
+    return { supervisor, lines, reported, upstream, close: async () => { supervisor.destroyAll(); await upstream.close() } }
+  }
+
+  test('listenerAuth true + a saved credential lets a non-loopback bind actually start', async () => {
+    const port = await freePort()
+    const h = await authHarness(
+      {
+        'office-uk': record({ listen: { proto: 'http', bindHost: '10.0.0.5', port }, listenerAuth: true }),
+      },
+      { 'office-uk': { username: 'ops', password: 'super-secret-listener-pass' } },
+    )
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('office-uk')
+      // `10.0.0.5` is not an address this test box necessarily holds, so the
+      // BIND may itself fail (EADDRNOTAVAIL) — that is a fact about the host,
+      // not about the auth gate. What this test proves is that VALIDATION let
+      // it through: the failure, if any, is never `E_PROXY_LISTENER_AUTH_…`.
+      expect(runtime.lastError?.code).not.toBe('E_PROXY_LISTENER_AUTH_REQUIRED')
+      expect(runtime.lastError?.code).not.toBe('E_PROXY_LISTENER_AUTH_MISSING')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('listenerAuth true with NO saved credential refuses to start with E_PROXY_LISTENER_AUTH_MISSING, even on loopback', async () => {
+    const port = await freePort()
+    const h = await authHarness({
+      'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, listenerAuth: true }),
+    })
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('office-uk')
+      expect(runtime.state).toBe('failed')
+      expect(runtime.lastError?.code).toBe('E_PROXY_LISTENER_AUTH_MISSING')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('a saved credential actually reaches the listener — an unauthenticated client is refused', async () => {
+    const port = await freePort()
+    const h = await authHarness(
+      { 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, listenerAuth: true }) },
+      { 'office-uk': { username: 'ops', password: 'super-secret-listener-pass' } },
+    )
+    try {
+      await h.supervisor.refresh()
+      expect((await h.supervisor.start('office-uk')).state).toBe('running')
+      // No `Proxy-Authorization` at all — the listener's own `407`, proving
+      // `supervisor.ts` actually passed the credential down to `listen-http.ts`
+      // rather than merely reading it and discarding it.
+      const reply = await new Promise<string>((resolve) => {
+        const sock = net.connect(port, '127.0.0.1')
+        let out = ''
+        sock.on('connect', () => sock.write(`CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`))
+        sock.on('data', (chunk: Buffer) => {
+          out += chunk.toString('latin1')
+        })
+        sock.on('close', () => resolve(out))
+        setTimeout(() => {
+          sock.destroy()
+          resolve(out)
+        }, 3_000)
+      })
+      expect(reply).toContain('407')
     } finally {
       await h.close()
     }

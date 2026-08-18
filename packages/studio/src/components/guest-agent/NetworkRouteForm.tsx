@@ -1,35 +1,25 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DeviceNetworkStatusResponseSchema } from '@enkaku/protocol'
-import {
-  Button,
-  ConfirmDialog,
-  ErrorState,
-  Input,
-  Label,
-  LoadingRows,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Switch,
-  api,
-  cn,
-  duration,
-  useAction,
-} from '@enkaku/ui'
+import { Button, ConfirmDialog, ErrorState, LoadingRows, Switch, api, cn, duration, relativeTime, useAction } from '@enkaku/ui'
+import { HttpProxyFields } from '@/components/guest-agent/HttpProxyFields'
+import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
+// Step 114.8 — the two sentences moved to their own module so `BulkProxyDialog`
+// renders the SAME words about N devices rather than a second copy that can be
+// softened independently (plan 114 risk 1). Nothing about them changed.
+import { HTTP_MODE_DESCRIPTION, VPN_MODE_DESCRIPTION } from '@/components/guest-agent/proxy-copy'
+import { VpnRouteFields } from '@/components/guest-agent/VpnRouteFields'
 import {
   disableNetworkRoute,
   enableNetworkRoute,
   fetchNetworkStatus,
   retryNetworkRoute,
   type GeoObservation,
+  type NetworkEngineId,
   type NetworkHealth,
   type NetworkRecoveryStatus,
   type NetworkStatus,
-  type NetworkUdpMode,
   type RouteCheck,
   type RouteCheckId,
   type RouteCheckState,
@@ -37,30 +27,36 @@ import {
 import { useNow } from '@/lib/useNow'
 
 /**
- * A `socks5://user:pass@host:port` URL, parsed in the browser only — the raw
- * URL is never sent anywhere, it just fills the fields below (plan 44 §4.6:
- * "Accept a SOCKS5 URL paste as a convenience... Parse it in the browser; do
- * not send the raw URL."). Returns null for anything that is not a
- * `socks5:` URL with an explicit host and port.
+ * The three modes an operator chooses between (plan 114 §3.10). Deliberately
+ * NOT the same list as `NetworkEngineId`: HTTP proxy is two engines, because
+ * an authenticated HTTP proxy is only possible when the proxy runs on this
+ * farm's machine (plan 114 §3.2, F6), and "where is the proxy?" is a question
+ * the operator has to answer anyway. Off is `engine: 'none'`.
  */
-function parseSocks5Url(
-  raw: string,
-): { host: string; port: number; username?: string; password?: string } | null {
-  let url: URL
-  try {
-    url = new URL(raw.trim())
-  } catch {
-    return null
-  }
-  if (url.protocol !== 'socks5:' || !url.hostname || !url.port) return null
-  const port = Number(url.port)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
-  return {
-    host: url.hostname,
-    port,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-  }
+type ProxyMode = 'off' | 'http' | 'vpn'
+
+/** The two advisory rungs — `settings put global http_proxy`, which an app is free to ignore. */
+function isHttpEngine(engine: NetworkEngineId): boolean {
+  return engine === 'adb-proxy' || engine === 'adb-reverse-proxy'
+}
+
+function modeOfEngine(engine: NetworkEngineId): ProxyMode {
+  if (engine === 'vpn-helper') return 'vpn'
+  if (isHttpEngine(engine)) return 'http'
+  return 'off'
+}
+
+/**
+ * What the `mode` row of the status readout says about the route that is
+ * actually applied. Names the rung, not just the family: "HTTP proxy" alone
+ * would hide the single most consequential difference between the two of them,
+ * which is where the proxy — and therefore any account it needs — lives.
+ */
+const MODE_READOUT: Record<NetworkEngineId, string> = {
+  none: 'off',
+  'adb-proxy': 'HTTP proxy · a proxy the phone can reach',
+  'adb-reverse-proxy': 'HTTP proxy · a proxy on this machine',
+  'vpn-helper': 'VPN',
 }
 
 /** Honest wording for a health value — `unverified` must never read as success (plan 44 §4.6, point 3). */
@@ -92,12 +88,19 @@ function HealthBadge({ health }: { health: NetworkHealth }) {
 }
 
 /**
- * Plain-language names for the six named checks `health` is derived from (plan 51 §4.1, §5.8) —
+ * Plain-language names for the named checks `health` is derived from (plan 51 §4.1, §5.8; plan 114
+ * §3.5 added `setting` and `reverse`) —
  * an operator should be able to tell which fact is missing without opening logs (acceptance
  * criterion 9).
  */
 const CHECK_LABEL: Record<RouteCheckId, string> = {
   tunnel: 'Tunnel established',
+  // Plan 114 §3.5 — deliberately NOT worded as success. `pass` here says the device accepted the
+  // write and reads it back, which is a strictly weaker fact than "this phone's traffic goes
+  // through that proxy"; the advisory sentence beside the HTTP fields is what makes the
+  // difference plain.
+  setting: 'Setting confirmed on the device',
+  reverse: 'Tunnel to this machine is live',
   upstream: 'Reaches the proxy',
   egress: 'Traffic actually leaves through it',
   geo: 'Exit matches the expected region',
@@ -137,11 +140,22 @@ function describeExitLocation(o: GeoObservation): string {
 function CheckRow({ check }: { check: RouteCheck }) {
   return (
     <div className="flex items-start justify-between gap-3 py-1">
-      <div className="flex items-start gap-2">
+      {/* `min-w-0` on both the row's left half and the text block inside it:
+          without it a flex child's minimum is its own min-content, so a
+          squeezed check row pushes past the panel instead of wrapping — the
+          overlapping labels in the same report. */}
+      <div className="flex min-w-0 items-start gap-2">
         <span className={cn('mt-1 size-1.5 shrink-0 rounded-full', CHECK_STATE_DOT[check.state])} aria-hidden />
-        <div>
+        <div className="min-w-0">
           <div className="text-[12px] text-fg">{CHECK_LABEL[check.id]}</div>
-          {check.detail && <div className="text-[11px] leading-relaxed text-fg-muted">{check.detail}</div>}
+          {/* `wrap-anywhere`, not `break-words`: a check detail is server text
+              and routinely carries an unbreakable token (`ENKAKU_NETWORK_PROBE_DNS_ZONE`,
+              `packages/probe-server/README.md`). Only `overflow-wrap: anywhere`
+              lowers an element's MIN-CONTENT width — `break-word` wraps the
+              visible line but still reports the long word as the minimum, which
+              is what forced this whole panel to 327px and put a horizontal
+              scrollbar under the popup. */}
+          {check.detail && <div className="wrap-anywhere text-[11px] leading-relaxed text-fg-muted">{check.detail}</div>}
         </div>
       </div>
       <span className={cn('shrink-0 text-[11px] font-medium whitespace-nowrap', CHECK_STATE_TEXT[check.state])}>
@@ -151,24 +165,73 @@ function CheckRow({ check }: { check: RouteCheck }) {
   )
 }
 
-type ToggleTone = 'off' | 'ok' | 'warn' | 'danger'
+/**
+ * `asked` is its own tone, and that is the whole point of it (plan 114 §3.1
+ * rule 2). An HTTP proxy that the device has accepted is a real state, but it
+ * is neither a success (`ok`, green — the farm cannot know an app used it) nor
+ * a warning (`warn`, amber — nothing is wrong). Painting it either colour
+ * would be the wording problem in a different medium.
+ */
+type ToggleTone = 'off' | 'ok' | 'asked' | 'warn' | 'danger'
 
 /**
- * The on/off toggle's rendering, driven by exactly the three states called
- * out in the spec — plus the transient fourth (enabled, no observation
- * reported yet) that falls out of the same fields. `enabled: true` with
- * `observed.up === false` is deliberately its own, alarming state rather
- * than folded into a neutral "on": that silent gap — WiFi up, network
- * `VALIDATED`, no usable internet because the upstream nobody was
- * listening on anymore — is the exact failure this toggle exists to catch.
+ * The on/off toggle's rendering, per mode.
+ *
+ * The VPN branches are the spec's three states — plus the transient fourth
+ * (enabled, no observation reported yet) that falls out of the same fields.
+ * `enabled: true` with `observed.up === false` is deliberately its own,
+ * alarming state rather than folded into a neutral "on": that silent gap —
+ * WiFi up, network `VALIDATED`, no usable internet because the upstream nobody
+ * was listening on anymore — is the exact failure this toggle exists to catch.
+ *
+ * The HTTP branches (plan 114 §3.1) say `asked`, never `on`, and never borrow
+ * the VPN wording: there is no device observation in these modes and there
+ * never will be one, so "the device has not reported an observation yet" would
+ * be a sentence that stays true forever while implying it will not.
  */
-function describeToggle(status: NetworkStatus): { checked: boolean; tone: ToggleTone; title: string; note: string } {
+function describeToggle(
+  status: NetworkStatus,
+  engine: NetworkEngineId,
+): { checked: boolean; tone: ToggleTone; title: string; note: string } {
   if (!status.config) {
     return {
       checked: false,
       tone: 'off',
       title: 'Route off',
-      note: 'Nothing saved yet — apply a route below, then switch it on.',
+      note: 'Nothing saved yet — choose a mode below, then switch it on.',
+    }
+  }
+  if (isHttpEngine(engine)) {
+    if (!status.enabled) {
+      return {
+        checked: false,
+        tone: 'off',
+        title: 'Proxy off',
+        note: 'The saved proxy address is kept — switch back on without retyping it.',
+      }
+    }
+    const setting = status.checks.find((c) => c.id === 'setting')
+    if (setting?.state === 'fail') {
+      return {
+        checked: true,
+        tone: 'danger',
+        title: 'Proxy on — the device did not accept the setting',
+        note: `${setting.detail ?? 'What the device reads back does not match what was written'}. The phone is not using this proxy.`,
+      }
+    }
+    if (setting?.state === 'pass') {
+      return {
+        checked: true,
+        tone: 'asked',
+        title: 'Proxy set — the device was asked to use it',
+        note: 'The phone holds the setting and reads it back. Apps that honour it will use this proxy; nothing here can tell you which apps did.',
+      }
+    }
+    return {
+      checked: true,
+      tone: 'asked',
+      title: 'Proxy set — not read back from the device yet',
+      note: 'The setting has been written. Nothing has confirmed it on the phone yet.',
     }
   }
   if (!status.enabled) {
@@ -228,6 +291,11 @@ function describeToggle(status: NetworkStatus): { checked: boolean; tone: Toggle
  * recovery has ever run for this route, or once it has genuinely recovered
  * (`attempts` resets to 0 the moment a pass reaches `ready`, plan 90 §3.7
  * rule 1) — this is not shown as a permanent ledger, only a live one.
+ *
+ * VPN-only in practice: there is nothing to recover in HTTP mode, so
+ * `recovery` is null for those engines (plan 114 §4.4) — a settings write
+ * either reads back or it does not, and retrying it on a backoff would be
+ * theatre.
  */
 function describeRecovery(recovery: NetworkRecoveryStatus | null, nowMs: number): string | null {
   if (!recovery || recovery.attempts === 0) return null
@@ -247,8 +315,32 @@ function describeRecovery(recovery: NetworkRecoveryStatus | null, nowMs: number)
 const TOGGLE_TONE_CLASS: Record<ToggleTone, string> = {
   off: 'text-fg-muted',
   ok: 'text-led-ok',
+  asked: 'text-fg',
   warn: 'text-led-warn',
   danger: 'text-led-danger',
+}
+
+/**
+ * The `set by` row (plan 114 §3.3, step 114.9), for each of the three answers
+ * the farm can honestly give.
+ *
+ * The third one is why this is a function and not `status.setBy?.id ?? '—'`. A
+ * dash reads as "unknown", and it is not unknown: a route with no actor either
+ * predates the attribution or was re-applied by the farm itself when the phone
+ * came back, and neither is somebody setting a route. A device showing a proxy
+ * nobody remembers setting is exactly the confusion this row exists to prevent,
+ * so the honest sentence is said rather than left as a gap for the operator to
+ * fill in with a guess.
+ *
+ * `you` is deliberately NOT said. This panel does not know which user is
+ * looking at it, and "set by you" in front of the wrong operator would be a
+ * confident false statement — the id is the fact, and it is what the audit log
+ * and the device event log both carry.
+ */
+function setByReadout(setBy: NetworkStatus['setBy'], now: number): string {
+  if (!setBy) return 'the farm — no operator or plugin claimed this route'
+  const who = setBy.kind === 'plugin' ? `${setBy.id} (plugin)` : setBy.id
+  return `${who}, ${relativeTime(setBy.at, now)}`
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -263,9 +355,15 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * The route status and the apply/remove form for a `ready` device (plan 44
- * §4.6). Only ever rendered for a device whose guest agent is `ready` —
- * `NetworkPanel` gates that, this component does not re-check it.
+ * The device's Network → Proxy screen: a mode selector, the body for whichever
+ * mode is chosen, and the route status readout (plan 114 §3.10).
+ *
+ * **The mode selector renders on every device, whatever the guest agent's
+ * state.** That is the structural point of the split — VPN is one of three
+ * modes, not the price of admission to the screen. Step 114.7 is what removes
+ * `NetworkPanel`'s remaining `state === 'ready'` gate and moves the precondition
+ * into `VpnRouteFields`, where it belongs; nothing here reads the agent's state
+ * and nothing here needs to.
  */
 export function NetworkRouteForm({
   deviceId,
@@ -282,39 +380,13 @@ export function NetworkRouteForm({
   // stopped clock reading "retrying in 14s" forever is worse than the
   // static sentence it replaces.
   const now = useNow()
-  // The form is seeded from `config` exactly once, the first time it
-  // loads — re-seeding on every reload would stomp on an operator's
-  // in-progress edit the moment `apply`'s response comes back.
-  const seeded = useRef(false)
-
-  const [host, setHost] = useState('')
-  const [port, setPort] = useState('')
-  const [username, setUsername] = useState('')
-  // Never pre-filled from the server — the API does not return one, and this
-  // stays true even after a successful apply (plan 44 §4.6, point 4).
-  const [password, setPassword] = useState('')
-  const [udpMode, setUdpMode] = useState<NetworkUdpMode>('udp')
-  // Plan 54 §4.2, §5.6 — defaults true (the safe reading) until the server's own value is seeded
-  // in, matching `resolveFailClosed()`'s own default so the switch never flashes "off" for an
-  // instant on a route that will read `true` a moment later.
-  const [failClosed, setFailClosed] = useState(true)
-  // Asking for an anonymous upstream has to be explicit: blank credential fields mean "keep the
-  // stored one", because the API never returns a username for them to be seeded from.
-  const [clearCredential, setClearCredential] = useState(false)
-  const [pasteUrl, setPasteUrl] = useState('')
-  const [pasteError, setPasteError] = useState<string | null>(null)
-
-  // Plan 55 §3.1, §4.1, §4.4 — the expected-exit fields. `country` alone enables the `geo` check
-  // (acceptance criterion 1); the rest narrow it further, per §3.3's "match at the narrowest
-  // level declared". Blank means "not declared", never a guessed default.
-  const [expectCountry, setExpectCountry] = useState('')
-  const [expectRegion, setExpectRegion] = useState('')
-  const [expectCity, setExpectCity] = useState('')
-  const [expectAsn, setExpectAsn] = useState('')
-  const [expectIsp, setExpectIsp] = useState('')
-  // Plan 55 §3.5, §4.1, §5.6 — defaults to the safe reading until the server's own value is
-  // seeded in, matching `resolveOnGeoFail()`'s own default.
-  const [onGeoFail, setOnGeoFail] = useState<'report' | 'hold'>('report')
+  /**
+   * `null` means "follow whatever is applied", which is why this is not seeded
+   * from the status in an effect: a seeding effect would have to guard against
+   * re-seeding after every apply, and would still stomp an operator who picked
+   * a mode while the first fetch was in flight.
+   */
+  const [picked, setPicked] = useState<ProxyMode | null>(null)
 
   const load = () => {
     setError(null)
@@ -324,85 +396,6 @@ export function NetworkRouteForm({
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [deviceId])
-
-  useEffect(() => {
-    if (status?.config && !seeded.current) {
-      seeded.current = true
-      setHost(status.config.host)
-      setPort(String(status.config.port))
-      setUdpMode(status.config.udpMode)
-      setFailClosed(status.failClosed)
-      const expect = status.config.expect
-      setExpectCountry(expect?.country ?? '')
-      setExpectRegion(expect?.region ?? '')
-      setExpectCity(expect?.city ?? '')
-      setExpectAsn(expect?.asn !== undefined ? String(expect.asn) : '')
-      setExpectIsp(expect?.isp ?? '')
-      setOnGeoFail(status.config.onGeoFail)
-    }
-  }, [status])
-
-  function fillFromPastedUrl() {
-    const parsed = parseSocks5Url(pasteUrl)
-    if (!parsed) {
-      setPasteError('Not a socks5://user:pass@host:port URL with an explicit port')
-      return
-    }
-    setPasteError(null)
-    setHost(parsed.host)
-    setPort(String(parsed.port))
-    setUsername(parsed.username ?? '')
-    setPassword(parsed.password ?? '')
-    setPasteUrl('')
-  }
-
-  const portNum = Number(port)
-  const canApply =
-    canUse && host.trim().length > 0 && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535
-
-  const expectAsnNum = expectAsn.trim() ? Number(expectAsn.trim()) : undefined
-  // A bare country is enough to enable the check (Plan 55 §4.1); everything else is optional and
-  // only sent when actually filled in. No country at all means "no expectation" — omit `expect`
-  // entirely rather than send an empty object the server would reject (`country` is required).
-  const expect = expectCountry.trim()
-    ? {
-        country: expectCountry.trim().toUpperCase(),
-        ...(expectRegion.trim() ? { region: expectRegion.trim() } : {}),
-        ...(expectCity.trim() ? { city: expectCity.trim() } : {}),
-        ...(expectAsnNum !== undefined && Number.isInteger(expectAsnNum) && expectAsnNum > 0 ? { asn: expectAsnNum } : {}),
-        ...(expectIsp.trim() ? { isp: expectIsp.trim() } : {}),
-      }
-    : undefined
-
-  const applyRoute = () =>
-    run(
-      'apply',
-      () =>
-        api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, {
-          method: 'PUT',
-          json: {
-            host: host.trim(),
-            port: portNum,
-            username: username.trim() ? username.trim() : undefined,
-            password: password ? password : undefined,
-            udpMode,
-            failClosed,
-            clearCredential: clearCredential ? true : undefined,
-            expect,
-            onGeoFail,
-          },
-        }),
-      {
-        success: 'Route applied',
-        failure: 'Could not apply the route',
-        onSuccess: (s) => {
-          setStatus(s)
-          // Already sent; nothing left for the field to do, and it should
-          // not linger in the DOM longer than it has to.
-          setPassword('')
-        },
-      },
-    )
 
   const removeRoute = () =>
     run('remove', () => api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, { method: 'DELETE' }), {
@@ -441,12 +434,32 @@ export function NetworkRouteForm({
   if (error) return <ErrorState message={error} onRetry={load} />
   if (status === null) return <LoadingRows rows={2} />
 
-  const toggle = describeToggle(status)
+  // What is actually applied on the device, as opposed to what the operator is
+  // currently looking at. `status.engine` is the fallback for a route written
+  // by a core that predates the union and carries no tag of its own.
+  const appliedEngine: NetworkEngineId = status.config?.engine ?? status.engine
+  const appliedIsHttp = isHttpEngine(appliedEngine)
+  const mode = picked ?? modeOfEngine(appliedEngine)
+
+  const toggle = describeToggle(status, appliedEngine)
   const toggling = isPending('enable') || isPending('disable')
   const recoveryNote = describeRecovery(status.recovery, now)
+  const settingCheck = status.checks.find((c) => c.id === 'setting')
 
   return (
-    <div className="space-y-4">
+    /*
+     * `@container` (Tailwind v4 container queries), not `lg:` — this panel is
+     * hosted at two very different widths: the device page's Network tab
+     * (~768px, `NetworkPanel`'s own `max-w-3xl`) and the device popup's
+     * Settings → Network section (~400px today, ~600-800px once the popup's
+     * frame widens). A viewport breakpoint is a statement about the BROWSER
+     * WINDOW, and inside a dialog the window is not the box: `lg:` fired on a
+     * wide monitor, demanded `1fr + 20rem` inside a ~400px pane, collapsed the
+     * flexible column to roughly one word per line and still overflowed —
+     * which is the horizontal scrollbar an operator reported. Every breakpoint
+     * below is now measured against the width this panel was actually given.
+     */
+    <div className="@container space-y-4">
       {/*
        * Always visible, never gated on whether a route exists — the bug
        * this fixes is precisely that the old off-switch only appeared once
@@ -466,7 +479,9 @@ export function NetworkRouteForm({
             <span className={cn('text-[13px] font-medium', TOGGLE_TONE_CLASS[toggle.tone])}>{toggle.title}</span>
             {toggling && <span className="text-[11.5px] text-fg-subtle">Working…</span>}
           </div>
-          <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">{toggle.note}</p>
+          {/* The note embeds server text (`setting.detail`, `lastError.message`), so
+              it needs the same `wrap-anywhere` as the check rows below. */}
+          <p className="mt-0.5 wrap-anywhere text-[11.5px] leading-relaxed text-fg-muted">{toggle.note}</p>
           {/* Plan 90 §3.7 rule 5, fixes F20 — an attempt count and a live
               countdown instead of the static "not routed" sentence this
               banner showed before this. */}
@@ -495,10 +510,17 @@ export function NetworkRouteForm({
             }
             title="Remove the saved network route?"
             description={
-              <>
-                This clears the saved host, port, and credentials — unlike "turn off", which keeps them for next
-                time. Reapplying afterwards means retyping the password.
-              </>
+              appliedIsHttp ? (
+                <>
+                  This clears the saved proxy and puts the phone’s own proxy setting back the way the farm found
+                  it — unlike "turn off", which keeps the address for next time.
+                </>
+              ) : (
+                <>
+                  This clears the saved host, port, and credentials — unlike "turn off", which keeps them for next
+                  time. Reapplying afterwards means retyping the password.
+                </>
+              )
             }
             confirmLabel="Remove"
             onConfirm={removeRoute}
@@ -506,280 +528,206 @@ export function NetworkRouteForm({
         )}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-        <form
-          className="rounded-lg border bg-surface p-3.5"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void applyRoute()
-          }}
-        >
-          <h3 className="rack-label mb-2.5">socks5 upstream</h3>
+      {/*
+        The split engages at 45rem (720px) of CONTAINER width, and the number is
+        arithmetic rather than taste: the status column is a rigid 20rem, the gap
+        is `gap-4` (1rem), and the left column needs 24rem before it stops being
+        a column of single words — its own worst case is the host/port row
+        inside a `p-3.5` card, i.e. 24rem − 1.75rem of padding = 22.25rem, of
+        which the port takes 7rem and the gap 0.75rem, leaving 14.5rem for the
+        host field. 24 + 1 + 20 = 45rem. Below that the two panels stack, which
+        is always correct and never overflows.
 
-          <div className="mb-3 flex items-end gap-2">
-            <div className="flex-1 space-y-1.5">
-              <Label htmlFor={`paste-${deviceId}`} className="text-[12px] font-normal text-fg-muted">
-                Paste a socks5:// URL to fill the fields below
-              </Label>
-              <Input
-                id={`paste-${deviceId}`}
-                placeholder="socks5://user:pass@host:1080"
-                value={pasteUrl}
-                onChange={(e) => setPasteUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    fillFromPastedUrl()
-                  }
-                }}
-                disabled={!canUse}
-              />
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={fillFromPastedUrl}
-              disabled={!canUse || !pasteUrl.trim()}
-            >
-              Fill fields
-            </Button>
-          </div>
-          {pasteError && <p className="mb-3 text-[11.5px] text-led-danger">{pasteError}</p>}
-
-          <div className="grid gap-3 sm:grid-cols-[1fr_7rem]">
-            <div className="space-y-1.5">
-              <Label htmlFor={`host-${deviceId}`} className="text-[12px] font-normal">
-                Host
-              </Label>
-              <Input
-                id={`host-${deviceId}`}
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-                placeholder="proxy.example.com"
-                disabled={!canUse}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`port-${deviceId}`} className="text-[12px] font-normal">
-                Port
-              </Label>
-              <Input
-                id={`port-${deviceId}`}
-                inputMode="numeric"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                placeholder="1080"
-                disabled={!canUse}
-              />
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor={`username-${deviceId}`} className="text-[12px] font-normal">
-                Username
-              </Label>
-              <Input
-                id={`username-${deviceId}`}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="off"
-                disabled={!canUse}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`password-${deviceId}`} className="text-[12px] font-normal">
-                Password
-              </Label>
-              <Input
-                id={`password-${deviceId}`}
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="off"
-                disabled={!canUse}
-              />
-              <p className="text-[11px] text-fg-subtle">Never shown back — type it again to change the route.</p>
-            </div>
-          </div>
-
+        `minmax(0,1fr)` rather than `1fr`: a bare `1fr` is `minmax(auto,1fr)`,
+        so the flexible column refuses to shrink below its own min-content and
+        pushes the grid wider than its container — the second half of the same
+        overflow bug.
+      */}
+      <div className="grid gap-4 @min-[45rem]:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="space-y-4">
           {/*
-            Which credential this route actually authenticates with. Without this the fields above
-            read blank on a route that HAS one, and saving again dropped it — connecting anonymously
-            to an upstream that may accept it and hand back a default-pool exit, so the route looks
-            healthy while the requested targeting is silently gone.
+            Plan 114 §3.1 rule 1, acceptance criterion 2 — the difference
+            between the modes is stated HERE, at the point of choice, in
+            ordinary words. Not in a tooltip, not in the docs, and not only
+            after the operator has already picked one. The two sentences are
+            asserted verbatim by a test for exactly that reason: the whole
+            feature turns on an operator not believing HTTP proxy captures
+            their traffic.
           */}
-          <div className="mt-2 text-[11px]">
-            {clearCredential ? (
-              <p className="text-led-warn">
-                Saving will drop the stored credential and connect with no authentication.{' '}
-                <button type="button" className="underline" onClick={() => setClearCredential(false)}>
-                  Keep it
-                </button>
-              </p>
-            ) : status?.config?.credentialRef ? (
-              <p className="text-fg-subtle">
-                Authenticating with stored credential <span className="font-mono text-fg-muted">{status.config.credentialRef}</span>. Leave
-                the fields above blank to keep it, or type a new username and password to replace it.{' '}
-                <button type="button" className="underline" onClick={() => setClearCredential(true)} disabled={!canUse}>
-                  Use no authentication
-                </button>
-              </p>
-            ) : (
-              <p className="text-fg-subtle">This route has no stored credential — it connects to the upstream anonymously.</p>
-            )}
-          </div>
-
-          <div className="mt-3 space-y-1.5">
-            <Label htmlFor={`udp-${deviceId}`} className="text-[12px] font-normal">
-              UDP mode
-            </Label>
-            <Select value={udpMode} onValueChange={(v) => setUdpMode(v as NetworkUdpMode)} disabled={!canUse}>
-              <SelectTrigger id={`udp-${deviceId}`} className="w-full sm:w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="udp">UDP (native)</SelectItem>
-                <SelectItem value="tcp">TCP only</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Plan 54 §4.2, §5.6, §5.7 — the default IS the safe behaviour (does not leak); this
-              switch is the explicit opt-out for an operator debugging by hand, not a knob most
-              people ever need to touch. The consequence is stated plainly either way, since a
-              held-but-unreachable device still needs an operator to know that's what happened. */}
-          <div className="mt-3 flex items-start gap-2.5 rounded border bg-bg px-2.5 py-2">
-            <Switch
-              id={`fail-closed-${deviceId}`}
-              checked={failClosed}
-              onCheckedChange={setFailClosed}
+          <ChoiceGroup label="mode">
+            <Choice
+              name={`mode-${deviceId}`}
+              value="off"
+              checked={mode === 'off'}
+              onSelect={() => setPicked('off')}
               disabled={!canUse}
-              className="mt-0.5"
-              aria-label="Fail closed on tunnel failure"
+              title="Off"
+              description="No proxy. The phone uses whatever network path it already has."
             />
-            <Label htmlFor={`fail-closed-${deviceId}`} className="text-[12px] font-normal">
-              <span className="text-fg">Fail closed</span>
-              <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
-                {failClosed
-                  ? 'When the tunnel breaks, the device blocks its own traffic instead of falling back to its real address. Recommended, and the default.'
-                  : 'Off: a broken tunnel falls back to the device’s real address instead of blocking traffic — only useful while debugging the route by hand.'}
-              </p>
-            </Label>
-          </div>
+            <Choice
+              name={`mode-${deviceId}`}
+              value="http"
+              checked={mode === 'http'}
+              onSelect={() => setPicked('http')}
+              disabled={!canUse}
+              title="HTTP proxy"
+              description={HTTP_MODE_DESCRIPTION}
+            />
+            <Choice
+              name={`mode-${deviceId}`}
+              value="vpn"
+              checked={mode === 'vpn'}
+              onSelect={() => setPicked('vpn')}
+              disabled={!canUse}
+              title="VPN"
+              description={VPN_MODE_DESCRIPTION}
+            />
+          </ChoiceGroup>
 
-          {/* Plan 55 §3.1, §3.3, §4.4 — country alone enables the `geo` check; everything else
-              narrows it. Matching happens at the narrowest level declared, so filling in only the
-              country is never failed by a city or ISP change — the drift is still visible in the
-              check's own detail line and in the exit history below. */}
-          <div className="mt-3 rounded border bg-bg px-2.5 py-2.5">
-            <h4 className="text-[12px] font-medium text-fg">Expected exit</h4>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
-              Where this route should exit. Only fields filled in here are checked — declaring just a
-              country will not fail on a city change, but a drift is still shown.
-            </p>
-            <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor={`expect-country-${deviceId}`} className="text-[12px] font-normal">
-                  Country (ISO 2-letter)
-                </Label>
-                <Input
-                  id={`expect-country-${deviceId}`}
-                  value={expectCountry}
-                  onChange={(e) => setExpectCountry(e.target.value.slice(0, 2))}
-                  placeholder="JP"
-                  disabled={!canUse}
-                  maxLength={2}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor={`expect-region-${deviceId}`} className="text-[12px] font-normal">
-                  Region (optional)
-                </Label>
-                <Input
-                  id={`expect-region-${deviceId}`}
-                  value={expectRegion}
-                  onChange={(e) => setExpectRegion(e.target.value)}
-                  placeholder="Tokyo"
-                  disabled={!canUse}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor={`expect-city-${deviceId}`} className="text-[12px] font-normal">
-                  City (optional)
-                </Label>
-                <Input
-                  id={`expect-city-${deviceId}`}
-                  value={expectCity}
-                  onChange={(e) => setExpectCity(e.target.value)}
-                  placeholder="Shibuya"
-                  disabled={!canUse}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor={`expect-isp-${deviceId}`} className="text-[12px] font-normal">
-                  ISP (optional)
-                </Label>
-                <Input
-                  id={`expect-isp-${deviceId}`}
-                  value={expectIsp}
-                  onChange={(e) => setExpectIsp(e.target.value)}
-                  placeholder="NTT"
-                  disabled={!canUse}
-                />
-              </div>
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor={`expect-asn-${deviceId}`} className="text-[12px] font-normal">
-                  ASN (optional)
-                </Label>
-                <Input
-                  id={`expect-asn-${deviceId}`}
-                  inputMode="numeric"
-                  value={expectAsn}
-                  onChange={(e) => setExpectAsn(e.target.value)}
-                  placeholder="4713"
-                  disabled={!canUse}
-                />
-              </div>
-            </div>
-
-            {expectCountry.trim() && (
-              <div className="mt-3 space-y-1.5">
-                <Label htmlFor={`on-geo-fail-${deviceId}`} className="text-[12px] font-normal">
-                  On mismatch
-                </Label>
-                <Select value={onGeoFail} onValueChange={(v) => setOnGeoFail(v as 'report' | 'hold')} disabled={!canUse}>
-                  <SelectTrigger id={`on-geo-fail-${deviceId}`} className="w-full sm:w-56">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="report">Report only</SelectItem>
-                    <SelectItem value="hold">Hold the device closed</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-[11px] leading-relaxed text-fg-muted">
-                  {onGeoFail === 'hold'
-                    ? 'A drifted exit blocks the device’s own traffic on purpose, the same as a failed tunnel — it recovers on its own once the exit is back in range. Only turn this on if presenting the wrong identity is worse than no connectivity at all.'
-                    : 'A drifted exit only shows up in health and the checks below — the device keeps routing.'}
+          {mode === 'off' && (
+            <div className="rounded-lg border bg-surface p-3.5">
+              <h3 className="rack-label mb-2.5">off</h3>
+              {status.config ? (
+                <>
+                  {/*
+                    One sentence about THIS phone, not a sentence about both
+                    possibilities (plan 114 §3.6 rule 4, criterion 6). Restoring
+                    a captured value and clearing the keys are different
+                    outcomes, and an operator deciding whether to press the
+                    button needs to know which one they are about to get.
+                    `captured` is optional on the wire because a core older than
+                    step 114.10 answers without it — `undefined` there means
+                    "this farm cannot say", which is a third answer and is
+                    worded as one rather than being rounded down to "cleared".
+                  */}
+                  <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                    {status.captured === undefined ? (
+                      <>
+                        Turning the proxy off clears the saved route and puts the phone’s own proxy setting back the
+                        way the farm found it — if it captured one. This farm is not reporting whether it did, so
+                        which of those happens cannot be shown here.
+                      </>
+                    ) : status.captured ? (
+                      <>
+                        Turning the proxy off clears the saved route and puts this phone’s own proxy setting back to
+                        what the farm found on it, captured {relativeTime(status.captured.at)}.
+                      </>
+                    ) : (
+                      <>
+                        Turning the proxy off clears the saved route and clears this phone’s proxy setting. The farm
+                        never captured an original value for it — a route saved before this existed, or a phone that
+                        was unreachable when it was applied — so there is nothing to put back, which is not the same
+                        as restoring.
+                      </>
+                    )}
+                  </p>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                    To keep the saved route and stop using it for now, use the switch above instead.
+                  </p>
+                  <div className="mt-3 border-t pt-3">
+                    <ConfirmDialog
+                      trigger={
+                        <Button type="button" size="sm" variant="outline" disabled={!canUse}>
+                          Turn off and restore
+                        </Button>
+                      }
+                      title="Turn the proxy off?"
+                      description={
+                        <>
+                          The saved route is cleared and the phone’s own proxy setting is put back the way the farm
+                          found it.
+                        </>
+                      }
+                      confirmLabel="Turn off"
+                      onConfirm={removeRoute}
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                  No proxy is set on this phone. It reaches the network on its own address.
                 </p>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
-          <div className="mt-4 flex items-center gap-2 border-t pt-3">
-            <Button type="submit" size="sm" disabled={!canApply || isPending('apply')}>
-              {isPending('apply') ? 'Applying…' : status.config ? 'Update route' : 'Apply route'}
-            </Button>
-          </div>
-        </form>
+          {mode === 'http' && (
+            <HttpProxyFields
+              deviceId={deviceId}
+              canUse={canUse}
+              status={status}
+              onApplied={setStatus}
+              onChooseVpn={() => setPicked('vpn')}
+            />
+          )}
+
+          {mode === 'vpn' && (
+            <VpnRouteFields
+              deviceId={deviceId}
+              canUse={canUse}
+              status={status}
+              onApplied={setStatus}
+              /*
+               * Plan 114 §3.4 rule 4 — VPN is what the operator is LOOKING at,
+               * not what the phone has. `picked` is local state: nothing is
+               * saved until Apply, and on a phone whose agent cannot serve this
+               * mode there may be no Apply to press. The precondition says so
+               * in words rather than leaving a selected radio to read as a
+               * setting that took effect — and the panel never resolves it by
+               * quietly applying the advisory rung instead.
+               */
+              unsavedSelection={picked === 'vpn' && modeOfEngine(appliedEngine) !== 'vpn'}
+              onCancelSelection={() => setPicked(null)}
+              /* The explicit second choice, never an automatic downgrade. */
+              onChooseHttp={() => setPicked('http')}
+            />
+          )}
+        </div>
 
         <div className="rounded-lg border bg-surface p-3.5">
           <h3 className="rack-label mb-2.5">route status</h3>
           <dl className="space-y-1.5">
+            {/* Plan 114 §3.10 — above `engine`, because "which of the three
+                modes is this phone in" is the operator's question and
+                `adb-reverse-proxy` is a registry id they never typed. */}
+            <Row label="mode" value={MODE_READOUT[appliedEngine]} />
             <Row label="engine" value={status.engine} />
-            <Row label="enabled" value={status.enabled ? 'yes' : 'no'} />
-            <Row label="fail closed" value={status.failClosed ? 'yes' : 'no — may leak on failure'} />
+            {/*
+              `asked`, not `yes` (plan 114 §3.1 rule 2). The farm asked the
+              device to use this proxy; it cannot know the device obeyed, and
+              no app on the phone is obliged to. The VPN rung keeps `yes`
+              because the route it applies is not one an app can decline.
+            */}
+            <Row label="enabled" value={status.enabled ? (appliedIsHttp ? 'asked' : 'yes') : 'no'} />
+            {appliedIsHttp && (
+              <Row
+                label="setting confirmed on the device"
+                value={
+                  settingCheck?.state === 'pass'
+                    ? 'yes'
+                    : settingCheck?.state === 'fail'
+                      ? 'no'
+                      : settingCheck?.state === 'skip'
+                        ? 'not checked'
+                        : 'not checked yet'
+                }
+              />
+            )}
+            {/* Fail-closed is a property of the VPN tunnel. Showing it in HTTP
+                mode would read as a promise this rung cannot make — there is
+                no tunnel to hold closed, and an app that ignores the setting
+                was never inside anything to be held. */}
+            {!appliedIsHttp && <Row label="fail closed" value={status.failClosed ? 'yes' : 'no — may leak on failure'} />}
+            {/*
+              Who set this (plan 114 §3.3, step 114.9). Shown whenever a route
+              exists, INCLUDING when nobody claimed it — see `setByReadout`.
+              An operator and the proxy-manager plugin can both write this
+              device's route, resolved as last-write-wins with attribution
+              rather than a lock (a lock between a person and a plugin produces
+              a device nobody can fix), so the attribution is the only thing
+              that makes the outcome legible.
+            */}
+            {status.config && <Row label="set by" value={setByReadout(status.setBy, now)} />}
             <div className="flex items-baseline justify-between gap-3">
               <dt className="text-[12px] text-fg-subtle">health</dt>
               <dd>
@@ -790,8 +738,9 @@ export function NetworkRouteForm({
 
           {status.health === 'unverified' && (
             <p className="mt-2.5 text-[11.5px] leading-relaxed text-fg-muted">
-              The route was applied and the device accepted it, but no egress check has confirmed traffic is
-              actually leaving through this proxy yet.
+              {appliedIsHttp
+                ? 'This is the normal, permanent state for an HTTP proxy: the setting is on the phone, and no check can confirm an app actually used it.'
+                : 'The route was applied and the device accepted it, but no egress check has confirmed traffic is actually leaving through this proxy yet.'}
             </p>
           )}
 
@@ -813,16 +762,35 @@ export function NetworkRouteForm({
             </div>
           )}
 
-          {status.config ? (
+          {status.config === null ? (
+            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">No route saved yet.</p>
+          ) : status.config.engine === 'adb-proxy' ? (
+            <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
+              <Row label="requested proxy" value={`${status.config.host}:${status.config.port}`} />
+            </dl>
+          ) : status.config.engine === 'adb-reverse-proxy' ? (
+            <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
+              <Row label="proxy on this machine" value={`127.0.0.1:${status.config.hostPort}`} />
+              {/* The loopback address the phone itself dials — allocated by the
+                  farm, never typed, and worth showing so an operator reading
+                  `settings get global http_proxy` on the device recognises it. */}
+              <Row
+                label="the phone dials"
+                value={status.config.devicePort ? `127.0.0.1:${status.config.devicePort}` : 'not established yet'}
+              />
+            </dl>
+          ) : (
             <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
               <Row label="requested upstream" value={`${status.config.host}:${status.config.port}`} />
               <Row label="requested udp mode" value={status.config.udpMode} />
             </dl>
-          ) : (
-            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">No route saved yet.</p>
           )}
 
-          {status.observed ? (
+          {appliedIsHttp ? (
+            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">
+              This mode has nothing for the device to report beyond the setting itself, which is checked above.
+            </p>
+          ) : status.observed ? (
             <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
               {/* Plan 54 §4.1, §5.7 — `up` alone reads `no` for both `held` and `down`; the state
                   row is what actually distinguishes "blocking on purpose" from "not routed at
@@ -841,8 +809,10 @@ export function NetworkRouteForm({
 
           {status.lastError && (
             <div className="mt-2.5 rounded border border-led-danger/40 bg-led-danger/5 px-2.5 py-2 text-[11.5px]">
-              <span className="readout font-medium text-led-danger">{status.lastError.code}</span>
-              <p className="mt-0.5 text-fg-muted">{status.lastError.message}</p>
+              {/* Same reason as `CheckRow`'s detail: an error code and an
+                  upstream's message are both unbroken tokens often enough. */}
+              <span className="readout wrap-anywhere font-medium text-led-danger">{status.lastError.code}</span>
+              <p className="mt-0.5 wrap-anywhere text-fg-muted">{status.lastError.message}</p>
             </div>
           )}
 
@@ -887,8 +857,12 @@ export function NetworkRouteForm({
               <ul className="mt-1.5 space-y-1">
                 {status.exitHistory.map((o, i) => (
                   // eslint-disable-next-line react/no-array-index-key -- addresses can repeat; (address, at) pairs are the real key but at can collide within the same second too.
-                  <li key={`${o.at}-${i}`} className="flex items-baseline justify-between gap-3 text-[11.5px]">
-                    <span className="readout text-fg">{o.address}</span>
+                  // Three facts on one line only while there is room for three:
+                  // the timestamp is `shrink-0` (a truncated date is useless), so
+                  // below roughly 20rem it wraps to its own line instead of
+                  // squeezing the address and the location into two ellipses.
+                  <li key={`${o.at}-${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[11.5px]">
+                    <span className="readout min-w-0 truncate text-fg">{o.address}</span>
                     <span className="min-w-0 truncate text-fg-muted">{describeExitLocation(o)}</span>
                     <span className="shrink-0 text-fg-subtle">{new Date(o.at * 1000).toLocaleString()}</span>
                   </li>
