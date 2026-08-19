@@ -124,7 +124,7 @@ const LOCAL_BUILD_PATHS = [
 
 export async function resolveGuestAgentApkPath(
   opts: {
-    toolchain?: { resolveToolPath(id: string): Promise<string> }
+    toolchain?: { resolveToolPath(id: string): Promise<string>; ensureRequiredTools(ids: string[]): Promise<void> }
     onLog?: (level: 'warn', msg: string) => void
     /**
      * Test seam. Tier 2 scans the working directory, so a test asserting "nothing is available"
@@ -153,12 +153,20 @@ export async function resolveGuestAgentApkPath(
   }
 
   // 3. The provisioned artifact: downloaded from a pinned release and sha256-verified, the same
-  //    path adb and the ui-server inspector take.
+  //    path adb and the ui-server inspector take. `guest-agent` is deliberately NOT in
+  //    REQUIRED_TOOLS (plan 43 §5.5 — installing it must never gate daemon boot), so nothing
+  //    provisions it ahead of time; `ensureRequiredTools` here is what performs that provisioning
+  //    on demand, the first time it is actually needed, installing+activating it if no active
+  //    pointer exists yet (a no-op, fast, once it does).
   if (opts.toolchain) {
     try {
+      await opts.toolchain.ensureRequiredTools(['guest-agent'])
       return await opts.toolchain.resolveToolPath('guest-agent')
-    } catch {
-      // fall through to the error below, which says more than a provisioning failure would
+    } catch (err) {
+      // fall through to the error below, which says more than a bare provisioning failure would —
+      // but log the real reason first, since "no APK available" alone hides e.g. a download/
+      // checksum failure that has nothing to do with a missing local build.
+      opts.onLog?.('warn', `provisioning the guest agent APK failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

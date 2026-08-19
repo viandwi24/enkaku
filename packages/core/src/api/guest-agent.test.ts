@@ -590,7 +590,12 @@ describe('POST /api/devices/:id/guest-agent — install/repair (plan 44 §5.8)',
     try {
       const resolved = await resolveGuestAgentApkPath({
         localBuildPaths: ['package.json'], // any file that certainly exists in the repo root
-        toolchain: { resolveToolPath: async () => 'SHOULD-NOT-REACH-TIER-3' },
+        toolchain: {
+          resolveToolPath: async () => 'SHOULD-NOT-REACH-TIER-3',
+          ensureRequiredTools: async () => {
+            throw new Error('SHOULD-NOT-REACH-TIER-3')
+          },
+        },
         onLog: (_l, msg) => warnings.push(msg),
       })
       expect(resolved).toBe('package.json')
