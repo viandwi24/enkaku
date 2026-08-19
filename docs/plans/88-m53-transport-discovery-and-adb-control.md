@@ -1,12 +1,14 @@
 # Plan 88 — M53 : Getting Devices Connected, and Keeping Them Connected
 
-> Status: partial, close to done — re-verified 2026-08-12 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor`, a Scan network button), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), 88.10 (documentation, `bun run spec:check` at GAP 0), and 88.11 (cutover discoverability and bulk cutover — see this line's own paragraph below). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
+> Status: partial, close to done — re-verified 2026-08-12 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor` — **its own "Scan network button" bullet was NOT actually built here, despite this line previously claiming it was; see 88.12**), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), 88.10 (documentation, `bun run spec:check` at GAP 0), and 88.11 (cutover discoverability and bulk cutover — see this line's own paragraph below). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
 >
 > **Three hypotheses are still pending the owner's real hardware — H1, H3, H6 — and this line says so plainly rather than reading "implemented" over an untested claim** (the exact drift plans 84, 85 and 87 each shipped with once). H6 (88.1): the reproduction is written up with exact commands but not run — needs a phone put into `adb-tcp` mode, which the operating agent's hardware rule forbade; the shipped fix (`AdbTcpTransport.disconnect()` as a no-op) is covered by fakes only. H1 and H3 (88.5's own first checklist item, unchecked): whether `tcpip:<port>` works as a device service over `openRaw`, and whether `persist.adb.tcp.port` survives a reboot without root — both still need a real phone, and 88.5's worker owns running that spike.
 >
 > **Two additional gaps, discovered while writing 88.10 and not this step's job to fix, are worth carrying forward precisely because they touch acceptance criteria 2 and 14:** (1) `deriveConnection`'s farm-network-inferred `medium` and the endpoint store's declared `medium` are both real, unit-tested code that **no production call site threads real data into** — `daemon.ts`, `capability/context.ts`, `api/topology.ts`, and `device-registry.ts`'s own default export all call `listDevicesWithTags`/`rowToDeviceInfo` with no network list, so every device Studio renders reads `mediumSource: 'unknown'` and the badge is USB-or-TCP only; OTG/WI-FI is unreachable outside a test today. This was already flagged in writing under 88.4's own "Known gap" note; this line confirms it is still open. (2) `GET /api/devices?connection=` (named in 88.6's own checklist and acceptance criterion 15) does not exist — `devices.ts` reads no `connection` query param anywhere; only Studio's client-side filter works. Both are documented honestly in `docs/guide/enrollment.md`, `docs/guide/install.md`, `docs/spec.md` §7.5, and `packages/core/README.md` rather than papered over — see 88.10's own checklist entries for exactly where.
 > **Residual wiring gap, found and fixed 2026-08-13 (`docs/plans/96-m61-hotfixes.md` §96.5).** 88.5's own claim above ("confirmed and fixed in the same pass") was accurate for the four call sites its own checklist entry named (`daemon.ts:1455`, `capability/context.ts:340,353`, `api/topology.ts:54`, `api/devices.ts:577`) but incomplete: three more call sites computing the exact `DeviceInfo`/`device.added` payload an operator watches were still passing an empty network list or nothing — `POST /discovered/:stableId/admit` (`api/devices.ts:388,393`, both the broadcast and the response body), `DeviceRegistry`'s own "new device registered" broadcast plus its `listDevices()` (`registry/device-registry.ts` — `DeviceRegistryDeps` had no `networks` accessor at all), and the cluster detail device list (`api/clusters.ts:181` — `createClusterRoutes` had neither `networks` nor `declaredMedia`). The user-visible symptom this produced: a device admitted from the Discovered tray badged `TCP` on the very screen an operator was watching, then silently flipped to `OTG`/`WI-FI` on the next refetch. All three are fixed and proven through their real HTTP routes / broadcast payloads (`api/devices.test.ts`, `api/clusters.test.ts`, `registry/device-registry.test.ts`) — see §96.5 for the full account, including one finding that narrows this plan's own original claim further: `device-registry.ts`'s "new device registered" broadcast branch is unreachable under the current admission gate (`classify()` only returns `'admitted'` when a `devices` row already exists, and the code's own second lookup is the identical query with no `await` between them), so that specific site was dead code even before this fix, not a live source of the symptom above.
 > **88.11 added and fixed, 2026-08-19** — the cutover wizard's own Studio surface had no honest entry point (a USB device's "Reconnect" row silently opened it instead of reconnecting) and no bulk capability, both flagged by the owner comparing this farm to Panda/some3c's own Devices-page menu. `ActionsList.tsx`'s Reconnect row now only ever reconnects; a new, USB-only "Move to the network (Wi-Fi/OTG)…" row opens the wizard (the fixed 12-row list grows to 13 on a USB device only — deliberate, stated, and mirrors the same file's own Wake/Sleep precedent for a conditional row). `BulkCutoverDialog.tsx` (new) is the multi-target sibling — `TargetPicker`-driven, a `Promise.all` fan-out over the existing per-device route (there is no batch cutover endpoint), client-side USB/offline eligibility skipping via `SkippedGroups`, one shared port (confirmed device-local, not farm-wide), and an "armed, not the whole journey" report. Reached from a new "Move to network…" entry in the Devices page's own fleet `⋮` menu, pre-filled from the current selection or every eligible USB device. "Farm networks" discoverability under Settings is fixed with a cross-link from the "Network" tab to "Discovery & monitoring" rather than a structural schema move. See 88.11 for the full account and its own file list; the two live UX defects (the mislabeled Reconnect row, the misplaced Farm networks section) are also logged in `docs/plans/96-m61-hotfixes.md`.
+> **88.12 added and fixed, 2026-08-19** — `POST /api/devices/scan` (the bounded subnet sweep of §3.5/§4.5) had **no Studio call site at all**, confirmed by an exhaustive grep across `packages/studio/src` before this step, despite this route's own doc comment in `packages/core/src/api/devices.ts` (~line 508) and 88.6's own checklist bullet both stating or implying a "Scan network" button already existed. Both were false — corrected here, and in `docs/plans/96-m61-hotfixes.md`. Built in both places 88.6's checklist and the owner's own Panda comparison pointed to, sharing one hook rather than two: `packages/studio/src/lib/network-scan.ts` (`useNetworkScan`, `summariseSweepReport`, `scanDisabledReason`). `FarmNetworksEditor.tsx` (Settings → Discovery & monitoring) gained a "Scan network" button beside the address-budget readout, disabled with the exact empty-state reason ("No networks configured — the sweep cannot run") when nothing is configured, or its own distinct reason when networks exist but none have "Include in a sweep" on; a successful scan renders the real `SweepReport` counts inline (`Swept <cidrs> · N scanned · N answered · ...`), never a generic "done". The Devices page's fleet `⋮` menu gained a matching "Scan network" item beside "Move to network…", disabled the same way, refetching the fleet and the Discovered tray on success (the same belt-and-suspenders refetch `renumberFleet`/`DiscoveredTray`'s own Rescan already do alongside the WS-driven `device.added`/`device.discovered` update the sweep's admission path already emits — no new WS plumbing needed). `E_SCAN_BUSY`/`E_SCAN_UNAVAILABLE`/`E_NOT_SUPPORTED` are surfaced by letting the server's own message through `useAction`'s existing failure toast — the same "no policy re-implemented, no invented wording" pattern `DiscoveredTray.tsx`'s "Rescan" button already established for `POST /rescan`'s identical optionality. See `packages/studio/src/lib/network-scan.test.ts`, `packages/studio/src/components/settings/FarmNetworksEditor.test.tsx`, and `packages/studio/src/app/page.test.tsx` for coverage of the disabled-with-reason precondition, the real-counts render, and the two distinct refusal codes.
+
 > Depends on: Plan 56 (admission — anything a network scan finds goes through the Discovered tray, never around it), Plan 85 (the `DeviceReconciler`, the bounded `host-adb` helper, the autoscaled stream lane). Neither needs to change first; this plan extends both. Plan 29 is a **draft** and is superseded in part by §5 88.4 — see §3.8.
 > Spec references: §7.1 (transport engines), §7.5 (stable identity, admission, discovery reconciliation), §7.7 (tool management API and UI), §10.4 (adb serialisation and the `kill-server` prohibition — **this plan amends it**), §12 (data model), §13 (core⇄Studio protocol), §15.1 (the enrollment flow), §16 (NFR targets)
 > Ships: packages/core/src/registry/endpoints.ts
@@ -1476,10 +1478,15 @@ onPhase: (phase, detail) => hub.broadcast({ type: 'adb.server.phase', payload: {
       `maxAddresses` — because `SchemaForm` cannot render an array of objects
       (F28) and a JSON textarea for a farm's network topology is not a
       feature.
-- [ ] A **Scan network** button beside the Discovered tray's Rescan, with a
-      one-line report in the same voice (F29): *"Scanned 254 addresses on
-      Chassis A · 21 answered · 1 new phone in Discovered"*. Disabled with an
-      explanation when no scannable network is configured.
+- [x] A **Scan network** button — NOT built here despite this bullet's
+      original wording; left unchecked for years while the plan's own top
+      Status line and `devices.ts`'s own doc comment both incorrectly
+      claimed it existed. Actually built by step 88.12 (2026-08-19), in two
+      places rather than only beside the Discovered tray's Rescan:
+      `FarmNetworksEditor.tsx` (beside the ranges it scans) and the Devices
+      page's fleet `⋮` menu (beside "Move to network…") — see 88.12 for the
+      full account, and `docs/plans/96-m61-hotfixes.md` for the false-claim
+      entry.
 - [ ] Studio tests render every new component through the DOM renderer (plan
       72's rule: a UI change is not verified until its screens have rendered).
 - **Verifiable result:** a 20-device farm shows USB/OTG/WI-FI at a glance on
@@ -1795,6 +1802,74 @@ UX defects, not new design.
   working `href="/settings?tab=discovery"`. `bash scripts/typecheck.sh` and
   `bun run --cwd packages/studio test` both green — see this plan's own
   status line for the exact counts this pass ran.
+
+### 88.12 — Scan network: closing the gap `devices.ts`'s own doc comment and 88.6's own checklist bullet falsely claimed was already closed
+
+- [x] **Confirmed the gap first, not assumed:** an exhaustive grep across
+      `packages/studio/src` for `/scan` and `/api/devices/scan` found zero
+      call sites. `POST /rescan` (a different route — it re-reads adb's own
+      list, no IP range needed) has always had a caller
+      (`DiscoveredTray.tsx`'s "Rescan" button); `POST /scan` (the bounded
+      subnet sweep of §3.5/§4.5, which dials addresses adb has never heard
+      of) never did, despite `devices.ts`'s own doc comment above the route
+      (~line 508, corrected by this step) and this plan's own top Status
+      line and 88.6 checklist bullet (also corrected by this step) both
+      stating or implying otherwise.
+- [x] `packages/studio/src/lib/network-scan.ts` (new): `useNetworkScan()` —
+      one `POST /api/devices/scan` call behind `useAction`'s existing
+      pending/toast machinery, shared by both call sites below rather than
+      each hand-rolling its own fetch. `summariseSweepReport()` — one line
+      naming every `SweepReport` category that actually changed (`adopted`,
+      `discovered`, `conflicts`) and closing with an explicit "nothing new"
+      when nothing did, the same wording discipline
+      `DiscoveredTray.tsx`'s own `summariseReconcileReport` and
+      `registry/cutover.ts`'s own `detail` field already established.
+      `scanDisabledReason()` / `hasScannableNetwork()` — the one
+      client-side-knowable precondition (`discovery.networks[].scan`, none
+      of it needs a round trip): `null` (loading), zero networks configured
+      (reuses `FarmNetworksEditor`'s own empty-state wording verbatim, per
+      this step's own brief — "reuse that reasoning… rather than inventing
+      new wording"), networks configured but none swept, or ready. Every
+      OTHER refusal (`E_SCAN_BUSY`, `E_SCAN_UNAVAILABLE` for `scan.mode:
+      'off'`, `E_NOT_SUPPORTED` for orchestrator mode/adb not ready) has no
+      Studio-visible signal and is deliberately left to surface after the
+      click, as the server's own message through `useAction`'s built-in
+      failure toast — mirroring `DiscoveredTray.tsx`'s "Rescan" button,
+      which does the identical thing for `POST /rescan`'s own
+      `E_NOT_SUPPORTED` case rather than inventing a second error-mapping
+      convention.
+- [x] `packages/studio/src/components/settings/FarmNetworksEditor.tsx`: a
+      "Scan network" button beside the "Farm networks" heading (adjacent to
+      the address-budget readout the empty-state copy already promised this
+      button beside), disabled with the exact reason above, and the last
+      `SweepReport` rendered inline once one has run.
+- [x] `packages/studio/src/app/page.tsx`: a "Scan network" item in the fleet
+      `⋮` menu beside "Move to network…" (88.11's own precedent for a
+      Devices-page entry point, per the owner's Panda comparison) — styling-
+      only disabled (no Radix `disabled` prop, so `title`'s hover reason
+      still fires; same reasoning `ActionsList.tsx`'s own disabled-row
+      comment gives for its identical Tooltip-based pattern), refetching the
+      fleet (`load()`) and the Discovered tray (`loadDiscovered()`) on
+      success — belt-and-suspenders alongside the `device.added`/
+      `device.discovered` WS broadcasts the sweep's own admission path
+      (Plan 56, reused verbatim — a sweep-found device goes through
+      `registry.onOnline`) already emits, the same two-path pattern
+      `renumberFleet`/`DiscoveredTray`'s Rescan already use.
+- [x] `packages/core/src/api/devices.ts`: corrected the `POST /scan` doc
+      comment's false "the Studio 'Rescan / scan all networks' button"
+      claim to name the two real call sites above instead.
+- [x] `docs/plans/96-m61-hotfixes.md`: logged the false-claim defect.
+- **Verifiable result:** `bash scripts/typecheck.sh` clean;
+  `bun run --cwd packages/studio test` scoped to
+  `src/lib/network-scan.test.ts`, `src/components/settings/FarmNetworksEditor.test.tsx`,
+  and `src/app/page.test.tsx` — 83 pass, 0 fail. Both buttons render
+  disabled with the correct reason on a farm with no scannable network;
+  a successful scan on either renders the real `scanned`/`answered`/
+  `adopted`/`discovered` counts, never a generic "done"; `E_SCAN_BUSY` and
+  `E_SCAN_UNAVAILABLE` each surface their own distinct server wording
+  through the failure toast, proven by capturing it in
+  `FarmNetworksEditor.test.tsx` (a local `mock.module('sonner', …)`, the
+  same capture technique `AdmitDeviceDialog.test.tsx` already established).
 
 ---
 

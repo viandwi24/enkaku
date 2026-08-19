@@ -3835,3 +3835,66 @@ fail for that file, scoped run). `bash scripts/typecheck.sh`: OK across
 every package. `bun run spec:check`: pre-existing GAP 1 (`plugin_webhooks`,
 unrelated, cross-session), warning-only, unaffected. `bash
 scripts/check-plan-status.sh`: clean.
+
+### 96.43 — `POST /api/devices/scan`'s own doc comment (and plan 88's own top Status line and 88.6 checklist bullet) claimed a Studio "Scan network" button already called it. It did not exist. FIXED 2026-08-19.
+
+**What broke.** Plan 88 (§3.5, §4.5, §4.6) built two genuinely different
+discovery endpoints: `POST /rescan` (a direct, fast adb-level re-read of
+adb's own device list — no IP range needed) and `POST /scan` (the bounded
+subnet sweep — dials every address in the farm's configured CIDR ranges
+looking for a device listening on the adb TCP port, e.g. a phone with OTG
+just enabled). `packages/studio/src/components/DiscoveredTray.tsx`'s
+"Rescan" button has always called the first one. Nothing anywhere under
+`packages/studio/src` ever called the second — confirmed by an exhaustive
+grep for `/scan` and `/api/devices/scan` across the whole package, which
+found zero matches. `packages/core/src/api/devices.ts`'s own doc comment
+directly above the `POST /scan` route (~line 508) nonetheless stated, as
+fact: "the Studio 'Rescan / scan all networks' button" calls this route —
+and plan 88's own top Status line separately credited step 88.6 with "a
+Scan network button" as **Implemented and test-green**, while that exact
+checklist bullet inside 88.6 itself sat unchecked (`[ ]`) the entire time,
+contradicting the summary line built to describe it. Three independent
+places asserted a UI call site existed; none of them did. This is the same
+class of defect §96.31, §96.36, and others in this register already caught
+— documentation (or a doc comment) describing code that was never written,
+discovered only by checking the claim against a grep rather than trusting
+the prose.
+
+**Impact.** An operator who enabled OTG on a USB-connected phone and went
+looking for the "scan the network to find it" flow the owner's own
+competitor-app comparison described (Panda/some3c) had no button anywhere
+in Studio that reached `POST /scan` — the farm-network ranges configured
+under Settings → Discovery & monitoring → "Farm networks" were entirely
+inert from the UI's perspective, reachable only via a raw `curl` to the
+route directly. The feature existed, fully working, server-side (`sweeper.sweep()`,
+its singleton mutex, its `E_SCAN_BUSY`/`E_SCAN_UNAVAILABLE` refusals, all
+covered by `packages/core/src/registry/sweep.test.ts`) and was simply
+unreachable.
+
+**Fixed.** Plan 88 §5 step 88.12 (see that plan for the full account).
+`packages/studio/src/lib/network-scan.ts` (new) — one shared
+`useNetworkScan()` hook, `summariseSweepReport()`, and
+`scanDisabledReason()` — backs a "Scan network" button in
+`FarmNetworksEditor.tsx` (beside the address-budget readout its own
+empty-state copy already referenced by name) and a matching item in the
+Devices page's fleet `⋮` menu (beside "Move to network…", 88.11's own
+precedent for a Devices-page entry point). Both disable with a named reason
+when no network is configured for a sweep, both render the real
+`SweepReport` counts on success, and both let `E_SCAN_BUSY`/
+`E_SCAN_UNAVAILABLE`/`E_NOT_SUPPORTED` surface as the server's own message
+through `useAction`'s existing failure toast — no new error-mapping
+convention invented. The false doc comment in `devices.ts` is corrected to
+name the two real call sites; plan 88's top Status line and 88.6's checklist
+bullet are both corrected to stop claiming this was already done, and now
+point to 88.12.
+
+**Tests.** `packages/studio/src/lib/network-scan.test.ts` (new, pure
+functions), `packages/studio/src/components/settings/FarmNetworksEditor.test.tsx`
+(new describe block — disabled-with-reason, a successful scan's real
+counts, and `E_SCAN_BUSY`/`E_SCAN_UNAVAILABLE` captured with a distinct,
+correct message each via a local `mock.module('sonner', …)`), and
+`packages/studio/src/app/page.test.tsx` (new describe block — the fleet
+menu item's disabled state, a successful scan's refetch, and both refusal
+codes leaving the item back at its idle label). `bun run --cwd packages/studio
+test` scoped to those three files: 83 pass / 0 fail. `bash
+scripts/typecheck.sh`: OK across every package.
