@@ -345,7 +345,7 @@ export default definePlugin({
       // (plan 112 §3.7).
       ctx.onStop(() => {
         liveSupervisor = null
-        supervisor.destroyAll()
+        return supervisor.destroyAll()
       })
 
       await supervisor.startEnabled()

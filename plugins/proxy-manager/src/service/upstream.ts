@@ -4,6 +4,7 @@ import { createDirectUpstream } from './dial-direct'
 import { createHttpUpstream } from './dial-http'
 import { createSocks5Upstream } from './dial-socks5'
 import { ProxyError } from './errors'
+import { createGostRuntime, type GostRuntime, type GostRuntimeHost } from './gost-runtime'
 
 /**
  * What the listeners see of "the thing on the other side" (plan 112 §4.4).
@@ -78,6 +79,22 @@ export const DEFAULT_DIAL_TIMEOUT_MS = 10_000
 export const DEFAULT_IDLE_MS = 600_000
 
 /**
+ * One process for the whole plugin, created on the first Windows `direct`
+ * record that ever needs it — never on macOS/Linux, where the bug it exists
+ * for (§ below) does not reach. Module-level rather than threaded through
+ * every caller: it is genuinely one shared resource (one `gost` process
+ * backing every Windows `direct` record at once, `gost-runtime.ts`'s own
+ * header explains why), the same shape `DEFAULT_DIAL_TIMEOUT_MS` above is a
+ * module constant rather than a parameter everyone repeats.
+ */
+let gostRuntime: GostRuntime | null = null
+
+/** Exposed for `supervisor.ts`'s `onStop` — the plugin's own teardown is the only caller with a reason to kill it. `null` when nothing on this host ever reached the Windows path. */
+export function currentGostRuntime(): GostRuntime | null {
+  return gostRuntime
+}
+
+/**
  * Build the upstream a record names.
  *
  * `https` never reaches here: `validateProxyRecord` refuses it at write and
@@ -89,14 +106,41 @@ export const DEFAULT_IDLE_MS = 600_000
  * instead of `common` — it names no remote host, port, username or password,
  * so building it from the same object the other two share would carry three
  * fields it ignores and hide the one it actually needs.
+ *
+ * ## The Windows branch (plan 117 §12)
+ *
+ * `net.connect({ localAddress })` is silently a no-op on Windows under Bun —
+ * a confirmed, currently-unresolved upstream limitation (`gost-provision.ts`'s
+ * own header carries the full evidence and the GitHub issue numbers), not a
+ * defect in `dial-direct.ts`, which is why that file is untouched and still
+ * the only path on macOS and Linux. On `win32`, a record with a non-empty
+ * `bindAddress` is instead served by a small local `gost` process this
+ * function ensures on demand, dialled with the SAME `createHttpUpstream`
+ * this file already uses for a vendor HTTP upstream — `gost`'s own listener
+ * speaks plain HTTP CONNECT on loopback, so no new dialler is needed for
+ * this hop. An EMPTY `bindAddress` on Windows still takes the plain
+ * `createDirectUpstream` path unchanged: with nothing to bind, the option
+ * Bun ignores is never passed, so the bug this branch exists for does not
+ * apply.
  */
-export function createUpstream(record: ProxyRecord, password: string, opts: { timeoutMs?: number } = {}): Upstream {
+export async function createUpstream(record: ProxyRecord, password: string, opts: { timeoutMs?: number; log?: GostRuntimeHost['log'] } = {}): Promise<Upstream> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS
   const common = { host: record.upstream.host, port: record.upstream.port, username: record.upstream.username, password, timeoutMs }
   const proto: ProxyKind = record.upstream.proto
   if (proto === 'socks5') return createSocks5Upstream(common)
   if (proto === 'http') return createHttpUpstream(common)
-  if (proto === 'direct') return createDirectUpstream({ bindAddress: record.upstream.bindAddress, resolveThroughEgress: record.upstream.resolveThroughEgress, timeoutMs })
+  if (proto === 'direct') {
+    const { bindAddress, resolveThroughEgress } = record.upstream
+    if (process.platform === 'win32' && bindAddress.length > 0) {
+      if (!opts.log) {
+        throw new ProxyError('E_PROXY_GOST_UNAVAILABLE', 'a `direct` record with a bind address needs the local gost helper on Windows, and no logger was supplied to start it — this is a caller bug in this pack, not a record problem')
+      }
+      if (!gostRuntime) gostRuntime = createGostRuntime({ log: opts.log })
+      const port = await gostRuntime.ensurePort(bindAddress)
+      return createHttpUpstream({ host: '127.0.0.1', port, username: '', password: '', timeoutMs })
+    }
+    return createDirectUpstream({ bindAddress, resolveThroughEgress, timeoutMs })
+  }
   throw new ProxyError(
     'E_PROXY_UPSTREAM_PROTOCOL',
     `upstream protocol "${proto}" is not implemented — validateProxyRecord refuses it at write and at start, so reaching this line means a record got past both`,

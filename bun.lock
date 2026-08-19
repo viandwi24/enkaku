@@ -40,7 +40,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.7",
+      "version": "0.1.10",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -231,10 +231,11 @@
     },
     "plugins/proxy-manager": {
       "name": "@enkaku/plugin-proxy-manager",
-      "version": "0.2.0",
+      "version": "0.8.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
+        "@enkaku/toolchain": "workspace:*",
         "socks": "^2.8.9",
         "zod": "^4.0.0",
       },
@@ -248,7 +249,7 @@
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "1.7.0",
+      "version": "1.12.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",

@@ -92,7 +92,7 @@ function rig(opts: { views?: ProxyView[]; logs?: () => Promise<PluginLogPage> } 
       return runtime({ state: 'running', port: 9902 })
     },
     startEnabled: async () => {},
-    destroyAll: () => {},
+    destroyAll: async () => {},
   }
 
   const push = (level: string) => (message: string, fields?: Record<string, unknown>) => {

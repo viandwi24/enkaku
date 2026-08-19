@@ -369,7 +369,7 @@ describe('stop is two phases (criterion 9)', () => {
 })
 
 describe('the ctx.onStop disposer (criteria 10 and 11)', () => {
-  test('it destroys immediately, synchronously, and well inside the host’s 5 s total budget', async () => {
+  test('it destroys immediately, without honouring any record’s drain, and well inside the host’s 5 s total budget', async () => {
     const port = await freePort()
     const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, drainMs: 30_000 }) })
     try {
@@ -378,12 +378,16 @@ describe('the ctx.onStop disposer (criteria 10 and 11)', () => {
       const tunnel = await openTunnel(port)
 
       const started = performance.now()
-      const returned = h.supervisor.destroyAll()
+      // `destroyAll()` returns a `Promise<void>` (plan 117 §12: it also awaits
+      // killing the local `gost` helper, on the one platform that ever starts
+      // one) — `ctx.onStop` accepts and awaits exactly this shape, within its
+      // own 5 s total budget across every disposer. What this test still
+      // asserts is the property that actually matters: no record's own
+      // `drainMs` is honoured here, so awaiting the promise cannot itself
+      // block on a 30 s drain.
+      await h.supervisor.destroyAll()
       const elapsed = performance.now() - started
 
-      // Synchronous: it returns `undefined`, not a promise, so the host's
-      // disposer runner cannot be made to wait on it at all.
-      expect(returned).toBeUndefined()
       // The 30 s drain on the record is deliberately longer than the 5 s
       // budget: a disposer that honoured it could only fail, earn a warn
       // naming the plugin, and leave the service reading `stopping`.

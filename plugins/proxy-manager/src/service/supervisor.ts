@@ -18,7 +18,7 @@ import { createHttpListener } from './listen-http'
 import { createSocks5Listener } from './listen-socks5'
 import type { Listener } from './listener'
 import { probeUrlFromEnv, runEgressProbe } from './probe'
-import { DEFAULT_DIAL_TIMEOUT_MS, DEFAULT_IDLE_MS, createUpstream } from './upstream'
+import { DEFAULT_DIAL_TIMEOUT_MS, DEFAULT_IDLE_MS, createUpstream, currentGostRuntime } from './upstream'
 import type { ListenerCredential } from './auth'
 
 /**
@@ -163,8 +163,17 @@ export interface Supervisor {
   restart(id: string): Promise<ProxyRuntime>
   /** Start every record whose stored intent says it should be listening. Never throws for one bad record. */
   startEnabled(): Promise<void>
-  /** The `ctx.onStop` disposer. Synchronous, no drain — see this file's header. */
-  destroyAll(): void
+  /**
+   * The `ctx.onStop` disposer. No drain, matching this file's own header —
+   * but NOT purely synchronous: the local `gost` helper this plugin may have
+   * started on Windows (plan 117 §12) is a real child process, and killing
+   * it without waiting would leave it running past the plugin's own stop.
+   * `ctx.onStop` accepts and awaits a `Promise<void>`, with a 5 s budget
+   * across every disposer combined — a bare `.kill()` resolves in well under
+   * that, so this stays inside the same time budget the header already
+   * accepts.
+   */
+  destroyAll(): Promise<void>
 }
 
 const CATALOGUE_PAGE = 200
@@ -383,7 +392,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       const password = await readPassword(entry.id)
       const auth = await readAuth(entry.id)
       const secrets = [password, ...(auth ? listenerAuthSecrets(auth) : [])]
-      const upstream = createUpstream(entry.record, password, { timeoutMs: opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS })
+      const upstream = await createUpstream(entry.record, password, { timeoutMs: opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS, log: host.log })
       result = await runEgressProbe({ upstream, probeUrl, timeoutMs: opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS, secrets })
     }
     try {
@@ -479,7 +488,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
     try {
       password = await readPassword(id)
       auth = listenerAuth
-      const upstream = createUpstream(entry.record, password, opts.dialTimeoutMs === undefined ? {} : { timeoutMs: opts.dialTimeoutMs })
+      const upstream = await createUpstream(entry.record, password, opts.dialTimeoutMs === undefined ? { log: host.log } : { timeoutMs: opts.dialTimeoutMs, log: host.log })
       const emit = loggerFor(entry)
       const log = (event: ProxyEvent): void => {
         if (event.event === 'accepted') entry.runtime.totalConnections += 1
@@ -706,10 +715,11 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       logServiceEvent(host.log, { event: 'service-started', catalogue: entries.size, started })
     },
 
-    destroyAll() {
+    async destroyAll() {
       torndown = true
       if (probeTimer) clearTimeout(probeTimer)
       probeTimer = null
+      await currentGostRuntime()?.stopAll()
       let destroyed = 0
       for (const entry of entries.values()) {
         clearDrain(entry)

@@ -45,6 +45,18 @@ export const PROXY_ERROR_CODES = [
    * this option exists to remove — see plan 117 §3.4 rule 1 and criterion 4.
    */
   'E_PROXY_DNS_EGRESS_FAILED',
+  /**
+   * `gost-provision.ts` was reached on a platform other than Windows — belt
+   * to `upstream.ts`'s own dispatch, which is the only thing that is
+   * supposed to call it and only ever does so on `win32`. Naming the
+   * platform in `dialWindowsEgressBinding`'s own error keeps this one purely
+   * "should be unreachable", never thrown in practice.
+   */
+  'E_PROXY_GOST_UNSUPPORTED_PLATFORM',
+  /** `gost`'s own release zip did not contain `gost.exe` where this pack expects it — the release layout changed underneath a pinned version. */
+  'E_PROXY_GOST_ARCHIVE_UNEXPECTED',
+  /** The local `gost` helper process this pack spawned (Windows-only, plan 117 §12) exited, or never started, before a `direct` upstream could reach it. */
+  'E_PROXY_GOST_UNAVAILABLE',
 ] as const
 
 export type ProxyErrorCode = (typeof PROXY_ERROR_CODES)[number]
