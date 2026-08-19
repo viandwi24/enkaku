@@ -2179,6 +2179,31 @@ describe('the device number reaches the protocol and the API (plan 89 §4.2, §4
     expect(lookupDeviceNumber(db, 'stable-c')).toBe(3)
   })
 
+  test('POST /numbers/compact does not crash on an orphaned reservation left by a forgotten device, and reports it released (plan 96 §96.42)', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    setDeviceNumber(db, 'stable-a', 1, { userId: null })
+    // A forgotten device: it once held #2 (the very number `stable-a` would
+    // otherwise be moved into by the dense reassignment below), and its
+    // `devices` row was removed the way `forget()` removes it — leaving its
+    // `device_numbers` reservation behind, per §3.2. Before the fix, this
+    // reproduced the owner's live `UNIQUE constraint failed:
+    // device_numbers.number` crash.
+    seedDevice(db, 'ghost')
+    setDeviceNumber(db, 'stable-ghost', 2, { userId: null })
+    db.delete(devices).where(eq(devices.stableId, 'stable-ghost')).run()
+
+    const res = await app.request('/numbers/compact', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      changed: Array<{ stableId: string; from: number; to: number }>
+      released: Array<{ stableId: string; number: number }>
+    }
+    expect(body.released).toEqual([{ stableId: 'stable-ghost', number: 2 }])
+    expect(lookupDeviceNumber(db, 'stable-ghost')).toBeNull()
+    expect(lookupDeviceNumber(db, 'stable-a')).toBe(1)
+  })
+
   test('DELETE /numbers/:stableId releases the reservation — freed for compaction, never reused by the next automatic allocation', async () => {
     const { db, app } = makeApp()
     seedDevice(db, 'a')

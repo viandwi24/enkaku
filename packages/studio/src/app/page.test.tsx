@@ -963,7 +963,7 @@ describe('Dashboard — Renumber fleet… (plan 89 §3.2 point 5, §5 step 89.3)
     const { apiMock } = renderWithApi(<Dashboard />, {
       ...baseResponses,
       '/api/devices/numbers/compact': {
-        body: { changed: [{ stableId: 'ZP2222RMBS', from: 3, to: 1 }], relabelled: 1, failed: [] },
+        body: { changed: [{ stableId: 'ZP2222RMBS', from: 3, to: 1 }], released: [], relabelled: 1, failed: [] },
       },
     })
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
@@ -978,6 +978,54 @@ describe('Dashboard — Renumber fleet… (plan 89 §3.2 point 5, §5 step 89.3)
     // The list is reloaded after a successful compaction — the same devices
     // fetch fires again rather than trusting stale numbers on screen.
     expect(apiMock.calls.filter((c) => c.path.startsWith('/api/devices?')).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+/**
+ * "Move to network…" (plan 88 §5 step 88.5's own bulk sibling; plan 96
+ * hotfix — the direct answer to "kalau di panda kan dipermudah kaya ke
+ * halaman devices sudah ada menunya", a menu reachable from the Devices
+ * page itself rather than buried in a per-device popup). Defaulted from the
+ * CURRENT farm-wide selection when one exists, or every eligible
+ * (USB-connected) device otherwise — never every device unconditionally,
+ * since a device already on the network has nowhere left to move to.
+ */
+describe('Dashboard — Move to network… (plan 88 §5, plan 96 hotfix)', () => {
+  const deviceB = {
+    ...device,
+    id: 'dev-2',
+    label: 'pixel 8',
+    connection: { kind: 'tcp', medium: 'wired', mediumSource: 'network', address: '10.0.0.9', port: 5555, networkLabel: null },
+  }
+  const responses = { ...baseResponses, '/api/devices?*': { body: { items: [device, deviceB], nextCursor: null, total: 2 } } }
+
+  test('with no selection, defaults to every eligible USB device — a device already on the network is excluded', async () => {
+    const user = userEvent.setup()
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Move to network…' }))
+
+    // Only `device` (usb) is eligible by default — `deviceB` (tcp) is left out.
+    await waitFor(() => expect(screen.getByText('Move 1 device to the network')).toBeTruthy())
+  })
+
+  test('with a live selection, the dialog opens pre-filled with it — even a device already on the network', async () => {
+    setSearchParams({ view: 'list' })
+    const user = userEvent.setup()
+    renderWithApi(<Dashboard />, responses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
+
+    await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Move to network…' }))
+
+    // The selection is the default AS PICKED — the dialog's own eligibility
+    // check (not this pre-fill) is what later skips `deviceB` with a reason.
+    await waitFor(() => expect(screen.getByText('Move 2 devices to the network')).toBeTruthy())
   })
 })
 

@@ -53,6 +53,7 @@ function vpnStatus(over: Record<string, unknown> = {}): NetworkStatus {
     exitHistory: [],
     recovery: null,
     setBy: null,
+    pendingClear: null,
   }
 }
 

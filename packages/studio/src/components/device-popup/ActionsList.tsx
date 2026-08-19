@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { ReconnectOutcomeSchema, ScriptListItemSchema, type Readiness } from '@enkaku/protocol'
 import {
   Download,
+  EthernetPort,
   ExternalLink,
   FileTerminal,
   FolderOpen,
@@ -135,17 +136,17 @@ function Row({
 
 /**
  * The device popup's `Actions` tab (plan 103 §3.3, §4.2, §5 steps 103.3–
- * 103.6) — `Reconnect · Disconnect · Install apk · Adb command · Run script
- * · Wake/Sleep · Assist · Files · Jobs · Settings · Forget · Open full
- * device page`, in that exact order. Every ACTION dialog opened from here
- * goes through 103.1's non-modal path (`nonModal` on each dialog) so the
- * live screen beside this list stays visible and interactive while the
- * dialog is open — the whole point of this plan (§3.2); the READ popups
- * (Jobs, Files — §3.3, step 103.4) and the sectioned Settings popup
- * (step 103.6) are always non-modal, with no toggle, since nothing else
- * ever opens them.
+ * 103.6) — `Reconnect · Disconnect · [Move to the network…, USB only] ·
+ * Install apk · Adb command · Run script · Wake/Sleep · Assist · Files ·
+ * Jobs · Settings · Forget · Open full device page`, in that exact order.
+ * Every ACTION dialog opened from here goes through 103.1's non-modal path
+ * (`nonModal` on each dialog) so the live screen beside this list stays
+ * visible and interactive while the dialog is open — the whole point of
+ * this plan (§3.2); the READ popups (Jobs, Files — §3.3, step 103.4) and the
+ * sectioned Settings popup (step 103.6) are always non-modal, with no
+ * toggle, since nothing else ever opens them.
  *
- * All twelve rows are real now. Ten open their existing dialog/popup
+ * Every row is real. Eleven open their existing dialog/popup
  * (`RunScriptDialog`, `AssistDialog` — that ONE dialog instance is owned and
  * rendered by `DevicePopup` itself, since its countdown banner lives above
  * the tabs; this row only calls `onAssistSelect` — `DisconnectDeviceDialog`,
@@ -158,6 +159,15 @@ function Row({
  * naming four separate surfaces; see `ReadPopups.tsx`'s own doc comment for
  * the full reasoning, flagged in this plan's own status line as a judgement
  * call rather than an owner ruling.
+ *
+ * **The list is thirteen rows on a USB device, twelve on a TCP one — a
+ * deliberate, conditional exception to the fixed-twelve rule, not a silent
+ * 13th row (see the "Move to the network…" row's own comment below for the
+ * full reasoning).** Before this fix, a USB device's "Reconnect" row
+ * silently opened the cutover wizard instead of reconnecting — actively
+ * misleading, and a live UX defect an operator hit this session, not a
+ * design choice (`docs/plans/96-m61-hotfixes.md`). Reconnect now always
+ * reconnects; the cutover wizard has its own honestly-named row.
  *
  * **"Adb command" opens a modal, not a side-panel tab (plan 103 §9 Q4,
  * answered 2026-08-16).** It used to switch `SidePanel` to a "Terminal" tab
@@ -383,23 +393,54 @@ export function ActionsList({
 
   return (
     <div className="space-y-0.5">
-      {/* A USB device has nothing to redial over the network — the same
-          distinction `DeviceHeader.tsx`'s Connection group already draws
-          between Disconnect/Reconnect (tcp) and the cutover wizard (usb).
-          §4.2's fixed 12-row list has no separate row for the cutover
-          wizard, so on a USB device this ONE row opens it instead of firing
-          a reconnect that has nothing to redial. */}
-      <Row
-        icon={RefreshCw}
-        label="Reconnect"
-        onSelect={isUsb ? () => setCutoverOpen(true) : () => void reconnect()}
-      />
+      {/* Two verbs, two rows — "Reconnect" always redials (§4.2's own
+          words: "dials its last known address"), on USB and TCP alike (a
+          USB device that adb still lists is an immediate `already-connected`
+          no-op, which is a legitimate, honest answer, not a dead click).
+          Before this fix, a USB device's "Reconnect" row silently opened the
+          cutover wizard instead — actively misleading, since an operator
+          reading "Reconnect" expects a redial of a connection that already
+          existed, never "move this phone to the network" (found in-browser
+          this session; see `docs/plans/96-m61-hotfixes.md` for the entry). */}
+      <Row icon={RefreshCw} label="Reconnect" onSelect={() => void reconnect()} />
       <Row
         icon={Unplug}
         label="Disconnect"
         onSelect={isUsb ? undefined : () => setDisconnectOpen(true)}
         disabledReason={isUsb ? 'adb has no way to release a single USB transport. Unplug the cable to disconnect it.' : null}
       />
+      {/* The cutover wizard's own honest row (plan 88 §3.4 — "Move
+          {device.label} to the network", `CutoverDialog.tsx:152`'s own
+          dialog title). USB-only, matching `DeviceHeader.tsx`'s identical
+          Connection-group item and its own reasoning: a device already on
+          the network has nowhere left to move TO with this flow.
+
+          §4.2's list is fixed at twelve for the common case, and growing it
+          is supposed to displace something rather than be appended (§4.2's
+          own words) — but there IS already a precedent for a DELIBERATE,
+          conditional exception rather than a silent 13th row: Wake/Sleep
+          below grows from one row to two only once there is more than one
+          candidate, because a single dynamic label genuinely cannot
+          describe eight devices in mixed states (plan 103 §5 step 103.10).
+          The same reasoning applies here in the other direction — this row
+          only exists at all for a USB device (never for one already on the
+          network), so the list is thirteen rows on a USB device and twelve
+          on a TCP one, never thirteen unconditionally. Nothing else in the
+          fixed list was a good candidate to displace instead: every other
+          row names a capability with no natural second reading to fold this
+          one into (unlike Disconnect/Reconnect, which stay two rows for the
+          identical reason — DeviceHeader.tsx's own Connection group already
+          proves three independent rows read correctly together, and
+          collapsing two of them here to make room would reintroduce a
+          different version of the exact ambiguity this whole fix exists to
+          remove). This dialog stays single-device, deliberately, matching
+          plan 104 §10's own recorded reasoning for `CutoverDialog.tsx`
+          ("there is no multi-device reading of 'cut this device over' that
+          means anything" for a row bound to one focused device) — the
+          Devices page's own fleet menu ("Move to network…",
+          `BulkCutoverDialog.tsx`) is where targeting several phones at once
+          lives. */}
+      {isUsb && <Row icon={EthernetPort} label="Move to the network (Wi-Fi/OTG)…" onSelect={() => setCutoverOpen(true)} />}
       <Row icon={Download} label="Install apk" onSelect={() => setInstallOpen(true)} />
       <Row icon={FileTerminal} label="Adb command" onSelect={() => setAdbOpen(true)} />
       <Row icon={Play} label="Run script" onSelect={() => setRunOpen(true)} />

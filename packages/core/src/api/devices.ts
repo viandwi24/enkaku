@@ -507,13 +507,14 @@ export function createDeviceRoutes(deps: {
 
   /**
    * `POST /scan` (plan 88 §3.5, §4.5, §4.6, §5 step 88.3) — the bounded
-   * subnet sweep's manual trigger (F29, H4): the Studio "Rescan / scan all
-   * networks" button, and nothing else — there is no automatic cadence to
-   * call this on a timer (§9 Q1, decided 2026-08-12). A static route, same
-   * shadowing reason as `/rescan` above. `sweeper.sweep()` itself enforces
-   * `scan.mode`/"no scannable network" (`E_SCAN_UNAVAILABLE`) and the
-   * singleton mutex (`E_SCAN_BUSY`) — both map through `ERROR_STATUS` above,
-   * so this route does no policy checking of its own.
+   * subnet sweep's manual trigger (F29, H4), distinct from `POST /rescan`
+   * above (that one re-reads adb's own list; this one dials addresses adb
+   * has never heard of). There is no automatic cadence to call this on a
+   * timer (§9 Q1, decided 2026-08-12). A static route, same shadowing reason
+   * as `/rescan` above. `sweeper.sweep()` itself enforces `scan.mode`/"no
+   * scannable network" (`E_SCAN_UNAVAILABLE`) and the singleton mutex
+   * (`E_SCAN_BUSY`) — both map through `ERROR_STATUS` above, so this route
+   * does no policy checking of its own.
    *
    * Audited as its own `device.scan` action (plan 88 §5 step 88.4) — step
    * 88.3 had to audit this under `device.rescan` with `meta.via: 'scan'` as a
@@ -521,6 +522,16 @@ export function createDeviceRoutes(deps: {
    * was held by a concurrent step at the time; that step's own comment said
    * a dedicated action should be added once the file was free again, and
    * step 88.4 is what does it.
+   *
+   * **This doc comment used to claim "the Studio 'Rescan / scan all
+   * networks' button" already called this route — false.** Confirmed by an
+   * exhaustive grep across `packages/studio/src` (found zero call sites of
+   * `/scan` or `/api/devices/scan`) before step 88.12 built the first ones:
+   * `FarmNetworksEditor.tsx`'s own "Scan network" button (beside the ranges
+   * it scans) and the Devices page fleet menu's "Scan network" item (beside
+   * "Move to network…"), sharing `packages/studio/src/lib/network-scan.ts`.
+   * See plan 88 §5 step 88.12 and `docs/plans/96-m61-hotfixes.md` for the
+   * full account of this false claim.
    */
   app.post('/scan', requirePermission('device.settings'), async (c) => {
     if (!deps.sweeper) throw new EnkakuError('E_NOT_SUPPORTED', 'network scanning is not available (orchestrator mode, or the adb subsystem is not ready)')
@@ -536,8 +547,9 @@ export function createDeviceRoutes(deps: {
   /**
    * `POST /numbers/compact` (plan 89 §3.2 point 5, §4.2, §4.3, §5 step
    * 89.9's own item 4) — the fleet-wide renumber compaction, reassigning
-   * `1..n` in `label ASC, id ASC` order and re-pushing every moved device's
-   * label in the SAME request, exactly as §3.2 point 5 requires: a
+   * `1..n` in existing-NUMBER order (plan 96 §96.41 fixed this from the
+   * original, buggy `label ASC, id ASC`) and re-pushing every moved
+   * device's label in the SAME request, exactly as §3.2 point 5 requires: a
    * compaction that renumbered without re-labelling would leave a phone
    * displaying a number that had already moved. `device.admin` per the
    * plan's own table does not exist in this codebase's ACL (see `/rescan`'s
@@ -546,10 +558,14 @@ export function createDeviceRoutes(deps: {
    * device mutation in this router uses. `relabelled`/`failed` read `0`/`[]`
    * when `deps.labelling` is not wired (orchestrator mode, or a test
    * harness that predates this step) — honest, not a stub: there is
-   * genuinely no labelling service to re-push through.
+   * genuinely no labelling service to re-push through. `released` (plan 96
+   * §96.42) names every orphaned `device_numbers` reservation
+   * `compactDeviceNumbers` deleted along the way — a forgotten device's
+   * number that was still squatting on a slot the dense sequence needed,
+   * previously an uncaught `UNIQUE constraint failed` crash.
    */
   app.post('/numbers/compact', requirePermission('device.settings'), async (c) => {
-    const changed = compactDeviceNumbers(db)
+    const { changed, released } = compactDeviceNumbers(db)
     let relabelled = 0
     const failed: { stableId: string; reason: string }[] = []
     if (deps.labelling && changed.length > 0) {
@@ -568,8 +584,12 @@ export function createDeviceRoutes(deps: {
         }
       }
     }
-    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.numbers.compact', meta: { changed: changed.length, relabelled, failed: failed.length } })
-    return typedJson(c, DeviceNumberCompactResponseSchema, { changed, relabelled, failed })
+    deps.audit.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'device.numbers.compact',
+      meta: { changed: changed.length, released, relabelled, failed: failed.length },
+    })
+    return typedJson(c, DeviceNumberCompactResponseSchema, { changed, released, relabelled, failed })
   })
 
   /**

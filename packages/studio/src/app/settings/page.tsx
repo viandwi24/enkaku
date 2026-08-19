@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ChevronDown, ChevronRight, Plus, UserPlus } from 'lucide-react'
 import {
@@ -141,6 +142,35 @@ function SettingsView() {
         <>
           <FarmForm keys={keys} omit={['discovery.networks']} />
           <FarmNetworksEditor />
+        </>
+      ) : id === 'network' ? (
+        // Plan 88 §5 step 88.5's "Farm networks" editor (CIDR ranges, the
+        // sweep's address space and policy) lives under Settings →
+        // "Discovery & monitoring" — a DIFFERENT top-level schema key
+        // (`discovery`) than this tab's own `network` (the geo-verification
+        // lookup a route's exit is checked against, plan 55 §3.2). An
+        // operator searching "Network" for IP-range scanning found nothing
+        // related here, confirmed in-browser this session
+        // (`docs/plans/96-m61-hotfixes.md`'s hotfix entry for the full
+        // account) — this banner is the smallest correct fix. A real MOVE
+        // was considered and rejected: `discovery`'s sweep-policy fields
+        // (port, scan mode, max addresses) sit in the same schema block as
+        // the CIDR list and are all rendered by one `FarmForm`; relocating
+        // only the CIDR table here would split one coherent settings group
+        // across two tabs for no schema reason, and relocating the whole
+        // `discovery` block would touch a widely-read settings path
+        // (`packages/core/src/registry/{sweep,reconnect,endpoints}.ts`,
+        // `cutover.ts`) for a UI-only fix. A cross-link costs none of that.
+        <>
+          <p className="rounded-lg border bg-surface-2/40 px-3 py-2 text-[12.5px] text-fg-muted">
+            Looking for IP-range scanning, or the list of farm networks (CIDR ranges) used to find and label devices on
+            the network? That lives under{' '}
+            <Link href="/settings?tab=discovery" className="font-medium text-accent-strong underline underline-offset-2">
+              Discovery &amp; monitoring
+            </Link>
+            . This tab is the separate geo-verification lookup a network route's exit is checked against.
+          </p>
+          <FarmForm keys={keys} />
         </>
       ) : id === 'video' ? (
         // Plan 92 §3.6, §3.7, §3.9, §5 step 92.8 — still entirely

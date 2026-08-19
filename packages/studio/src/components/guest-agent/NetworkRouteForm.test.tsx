@@ -517,3 +517,146 @@ describe('NetworkRouteForm — the `unverified` note and `set by` (plan 114 §3.
     expect(rowValue(container, 'set by')).toBeNull()
   })
 })
+
+/**
+ * **A teardown the farm owes a phone it could not reach** — the state that
+ * arrives on the wire the moment `DELETE /:id/network` or
+ * `POST /:id/network/disable` is accepted for an OFFLINE device
+ * (`requireDisarmAdmission`, `packages/core/src/network/route-service.ts`).
+ *
+ * Everything here was on the wire and nothing rendered it: the panel showed a
+ * route that is `enabled: false` yet still fully described, whose config — after
+ * a `DELETE` — exists only until the phone comes back. These fixtures are the
+ * measured bodies, `reason` strings included verbatim, so a reworded core and a
+ * reworded panel cannot drift into agreement by both being wrong.
+ */
+describe('NetworkRouteForm — an owed teardown (`pendingClear`)', () => {
+  const HOUR_AGO = Math.floor(Date.now() / 1000) - 3600
+
+  /** The measured `DELETE` on an offline device carrying the reverse rung. */
+  const REVERSE_DEBT = {
+    engine: 'adb-reverse-proxy',
+    devicePort: 28700,
+    forget: true,
+    reason: 'the device was offline, so its proxy setting was never cleared',
+    since: HOUR_AGO,
+  }
+
+  /** The same door, reached by `/disable` on an offline device carrying a VPN. */
+  const VPN_DEBT = {
+    engine: 'vpn-helper',
+    forget: false,
+    reason: 'the device was offline, so it was never told to stop',
+    since: HOUR_AGO,
+  }
+
+  test('says what is true now, why, since when, and that nothing is required', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="pc-1" canUse={true} />, {
+      '/api/devices/pc-1/network': {
+        body: makeStatus({
+          engine: 'adb-reverse-proxy',
+          config: REVERSE_CONFIG,
+          enabled: false,
+          pendingClear: REVERSE_DEBT,
+        }),
+      },
+    })
+    // 1. What is true right now — the subject is the phone, not the record.
+    await waitFor(() => expect(getByText('The phone is still carrying this proxy')).toBeTruthy())
+    // ...and the cost of that is stated, not implied.
+    expect(container.textContent).toMatch(/traffic still goes out through that proxy/i)
+    expect(container.textContent).toMatch(/metered/i)
+    // 2. Why — the server's own sentence, verbatim and unparsed.
+    expect(getByText('the device was offline, so its proxy setting was never cleared')).toBeTruthy()
+    // 3. Since when — relative, the way every other time on this panel reads.
+    expect(container.textContent).toMatch(/owed since/i)
+    expect(container.textContent).toContain('1h ago')
+    // 4. What happens next, and that the answer is "nothing".
+    expect(getByText('Nothing is required of you.')).toBeTruthy()
+    expect(container.textContent).toMatch(/next time the device is admitted/i)
+    // The loopback the phone still dials, so a hand-run `settings get` is recognisable.
+    expect(container.textContent).toContain('127.0.0.1:28700')
+  })
+
+  test('a DELETE says the saved route goes; a /disable says it stays — never the same sentence', async () => {
+    const forgets = renderWithApi(<NetworkRouteForm deviceId="pc-2" canUse={true} />, {
+      '/api/devices/pc-2/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: false, pendingClear: REVERSE_DEBT }),
+      },
+    })
+    await waitFor(() => expect(forgets.container.textContent).toMatch(/The saved route goes with it/i))
+    expect(forgets.container.textContent).toMatch(/erased once the phone has been told/i)
+    expect(forgets.container.textContent).not.toMatch(/The saved route stays\./i)
+    cleanup()
+
+    const keeps = renderWithApi(<NetworkRouteForm deviceId="pc-3" canUse={true} />, {
+      '/api/devices/pc-3/network': {
+        body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: false, pendingClear: VPN_DEBT }),
+      },
+      '/api/devices/pc-3/preparation': { body: {} },
+    })
+    await waitFor(() => expect(keeps.container.textContent).toMatch(/The saved route stays\./i))
+    expect(keeps.container.textContent).toMatch(/without retyping them/i)
+    expect(keeps.container.textContent).not.toMatch(/The saved route goes with it/i)
+  })
+
+  test('a VPN debt is worded as a tunnel that was never told to stop, not as a proxy setting', async () => {
+    const { container, getByText } = renderWithApi(<NetworkRouteForm deviceId="pc-4" canUse={true} />, {
+      '/api/devices/pc-4/network': {
+        body: makeStatus({ engine: 'vpn-helper', config: VPN_CONFIG, enabled: false, pendingClear: VPN_DEBT }),
+      },
+      '/api/devices/pc-4/preparation': { body: {} },
+    })
+    await waitFor(() => expect(getByText('The phone is still carrying this tunnel')).toBeTruthy())
+    expect(getByText('the device was offline, so it was never told to stop')).toBeTruthy()
+    expect(container.textContent).toMatch(/through that tunnel/i)
+  })
+
+  /**
+   * The tone decision, asserted rather than left to review: this is a pending,
+   * self-resolving state — closer to "queued" than to "broken" — and
+   * `led-danger` elsewhere in this product means a phone is actually cut off.
+   * Spending it here trains an operator to ignore it there.
+   */
+  test('is warned, never alarmed — no led-danger anywhere in the notice', async () => {
+    const { getByText } = renderWithApi(<NetworkRouteForm deviceId="pc-5" canUse={true} />, {
+      '/api/devices/pc-5/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: false, pendingClear: REVERSE_DEBT }),
+      },
+    })
+    await waitFor(() => expect(getByText('The phone is still carrying this proxy')).toBeTruthy())
+    const notice = getByText('The phone is still carrying this proxy').closest('div.rounded-lg')
+    expect(notice).toBeTruthy()
+    expect(notice?.className).toContain('led-warn')
+    expect(notice?.outerHTML).not.toContain('led-danger')
+    // The reason is server text and can carry an unbreakable token — the same
+    // `wrap-anywhere` every other server string on this panel has, never
+    // `break-words` (which does not lower min-content width, and is what put a
+    // horizontal scrollbar under this panel once).
+    const reason = getByText('the device was offline, so its proxy setting was never cleared')
+    expect(reason.className).toContain('wrap-anywhere')
+    expect(notice?.outerHTML).not.toContain('break-words')
+  })
+
+  test('the on/off banner stops saying a flat "off" while a teardown is owed', async () => {
+    const owed = renderWithApi(<NetworkRouteForm deviceId="pc-6" canUse={true} />, {
+      '/api/devices/pc-6/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: false, pendingClear: REVERSE_DEBT }),
+      },
+    })
+    await waitFor(() => expect(owed.getByText('Proxy off here — the phone has not been told')).toBeTruthy())
+    expect(owed.queryByText('Proxy off')).toBeNull()
+    cleanup()
+
+    // The common case stays exactly as quiet as it was: no notice, and the
+    // ordinary off banner back.
+    const clean = renderWithApi(<NetworkRouteForm deviceId="pc-7" canUse={true} />, {
+      '/api/devices/pc-7/network': {
+        body: makeStatus({ engine: 'adb-reverse-proxy', config: REVERSE_CONFIG, enabled: false }),
+      },
+    })
+    await waitFor(() => expect(clean.getByText('Proxy off')).toBeTruthy())
+    expect(clean.queryByText('The phone is still carrying this proxy')).toBeNull()
+    expect(clean.container.textContent).not.toMatch(/Nothing is required of you/i)
+  })
+})

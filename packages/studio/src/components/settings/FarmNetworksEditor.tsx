@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Network, Plus, Trash2 } from 'lucide-react'
+import { Network, Plus, ScanSearch, Trash2 } from 'lucide-react'
 import { addressCount, CidrSchema, SettingsResponseSchema, UpdateSettingsResponseSchema, type FarmSettings } from '@enkaku/protocol'
 import {
   Button,
@@ -25,6 +25,7 @@ import {
   cn,
   useAction,
 } from '@enkaku/ui'
+import { scanDisabledReason, summariseSweepReport, useNetworkScan } from '@/lib/network-scan'
 
 type FarmNetwork = FarmSettings['discovery']['networks'][number]
 
@@ -94,6 +95,7 @@ export function FarmNetworksEditor() {
   const [maxAddresses, setMaxAddresses] = useState(1024)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
+  const { scan, scanning, lastReport } = useNetworkScan()
 
   const load = () => {
     setError(null)
@@ -138,16 +140,37 @@ export function FarmNetworksEditor() {
   const overLimit = scannedTotal > maxAddresses
   const hasInvalidRow = rows.some((r) => cidrError(r.cidr) !== null || !r.cidr.trim())
   const dirty = rows.length > 0
+  // Computed off `rows` — the table as currently DISPLAYED, which is the
+  // saved config until an edit is made and Save is clicked. A sweep run
+  // between an edit and a Save still probes whatever is actually saved
+  // server-side, not the pending edit; that gap is surfaced honestly by the
+  // report itself (`networks` names exactly what was swept) rather than
+  // guessed at here.
+  const scanDisabled = scanDisabledReason(rows)
 
   return (
     <div className="max-w-3xl py-4">
-      <h3 className="rack-label mb-2">Farm networks</h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="rack-label">Farm networks</h3>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 text-[12px]"
+          disabled={!!scanDisabled || scanning}
+          title={scanDisabled ?? undefined}
+          onClick={() => void scan()}
+        >
+          <ScanSearch className={`size-3.5 ${scanning ? 'animate-pulse' : ''}`} aria-hidden />
+          {scanning ? 'Scanning…' : 'Scan network'}
+        </Button>
+      </div>
       <p className="mb-3 max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
         The address space the bounded sweep is allowed to probe — an explicit list, never guessed from this computer's own network. Add every network your device chassis lives on; only rows with "Include in a sweep" ticked are ever probed, and the total below can never exceed the farm's scan ceiling.
       </p>
       <p className="mb-4 max-w-xl rounded-md border bg-surface-2 px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
         <strong className="font-semibold text-fg">Wired or Wi-Fi is a claim you are making, not something Enkaku measured.</strong> adb cannot tell a switch port from a radio — only you can. Whatever medium you pick here is what turns a device found on this network into an OTG badge or a WI-FI badge. Get it wrong and every device on that network shows a confidently wrong badge.
       </p>
+      {lastReport && <p className="mb-4 max-w-xl text-[12px] text-fg-muted">{summariseSweepReport(lastReport)}</p>}
 
       {rows.length === 0 ? (
         <EmptyState

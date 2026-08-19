@@ -1,11 +1,32 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { FarmNetworksEditor } from './FarmNetworksEditor'
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
-afterEach(cleanup)
+/**
+ * `useAction`'s built-in failure toast (`packages/ui/src/lib/actions.ts`) is
+ * how `E_SCAN_BUSY`/`E_SCAN_UNAVAILABLE` reach the operator — captured here
+ * so the "Scan network" tests below can assert the two refusals actually
+ * read differently, not just that something red appeared. Same pattern
+ * `AdmitDeviceDialog.test.tsx` already established for capturing `sonner`.
+ */
+const toastErrorCalls: Array<{ title: string; description?: string }> = []
+mock.module('sonner', () => ({
+  toast: {
+    success: () => {},
+    error: (title: string, opts?: { description?: string }) => toastErrorCalls.push({ title, description: opts?.description }),
+    warning: () => {},
+  },
+  Toaster: () => null,
+}))
+
+const { FarmNetworksEditor } = await import('./FarmNetworksEditor')
+
+afterEach(() => {
+  cleanup()
+  toastErrorCalls.length = 0
+})
 
 const DISCOVERY_BASE = {
   scanIntervalSec: 10,
@@ -159,5 +180,88 @@ describe('FarmNetworksEditor — editing and saving', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'Network 1 medium' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Wi-Fi' }))
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Network 1 medium' }).textContent).toContain('Wi-Fi'))
+  })
+})
+
+/**
+ * "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — this closes the
+ * real gap the plan's own step 88.3/88.4 status notes incorrectly claimed
+ * was already closed: `POST /api/devices/scan` (the bounded subnet sweep)
+ * had no Studio call site at all until this button. Shares
+ * `packages/studio/src/lib/network-scan.ts` with the Devices page's own
+ * fleet-menu "Scan network" item — see `page.test.tsx`'s sibling describe
+ * block for that one.
+ */
+describe('FarmNetworksEditor — Scan network (plan 88 §5 step 88.12)', () => {
+  test('no networks configured: the button is visibly disabled with the same reason as the empty state, not a click that fails afterward', async () => {
+    renderWithApi(<FarmNetworksEditor />, { '/api/settings': { body: settingsGet([]) } })
+    await waitFor(() => expect(screen.getByText(/the sweep cannot run/i)).toBeTruthy())
+    const button = screen.getByRole('button', { name: 'Scan network' }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('No networks configured — the sweep cannot run')
+  })
+
+  test('networks configured but none included in a sweep: disabled with a distinct reason', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: false }]) },
+    })
+    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
+    const button = screen.getByRole('button', { name: 'Scan network' }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title).toMatch(/include in a sweep/i)
+  })
+
+  test('a scannable network enables the button; a successful scan renders the real counts, not a generic "done"', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+      '/api/devices/scan': {
+        body: {
+          networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 }],
+          scanned: 254,
+          skipped: 2,
+          answered: 3,
+          connected: 3,
+          identified: 3,
+          adopted: ['SER1'],
+          discovered: ['SER2'],
+          conflicts: [],
+          durationMs: 1200,
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
+    const button = screen.getByRole('button', { name: 'Scan network' }) as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect(screen.getByText('Swept 10.20.0.0/24 · 254 scanned · 3 answered · 1 reconnected · 1 newly discovered')).toBeTruthy(),
+    )
+  })
+
+  test('E_SCAN_BUSY surfaces as "a scan is already running", not a generic failure', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+      '/api/devices/scan': { status: 409, body: { error: { code: 'E_SCAN_BUSY', message: 'a sweep is already running — wait for it to finish before starting another' } } },
+    })
+    const button = await screen.findByRole('button', { name: 'Scan network' })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(toastErrorCalls.length).toBe(1))
+    expect(toastErrorCalls[0]?.description).toBe('a sweep is already running — wait for it to finish before starting another')
+    // The button returns to its idle label rather than sticking on "Scanning…".
+    expect(screen.getByRole('button', { name: 'Scan network' })).toBeTruthy()
+  })
+
+  test('E_SCAN_UNAVAILABLE surfaces its own distinct wording, different from E_SCAN_BUSY', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+      '/api/devices/scan': { status: 409, body: { error: { code: 'E_SCAN_UNAVAILABLE', message: 'network scanning is turned off (discovery.scan.mode) — turn it on in Settings to sweep' } } },
+    })
+    const button = await screen.findByRole('button', { name: 'Scan network' })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(toastErrorCalls.length).toBe(1))
+    expect(toastErrorCalls[0]?.description).toBe('network scanning is turned off (discovery.scan.mode) — turn it on in Settings to sweep')
   })
 })

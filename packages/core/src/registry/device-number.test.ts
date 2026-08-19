@@ -202,8 +202,11 @@ describe('compactDeviceNumbers (plan 89 §3.2, §4.2)', () => {
       .run()
   }
 
-  test('reassigns 1..n in label ASC, id ASC order and reports every change', () => {
+  test('reassigns 1..n in existing-NUMBER order (never label ASC) and reports every change', () => {
     const db = setUpDb()
+    // Labels are deliberately in the OPPOSITE order from the numbers, so a
+    // label-sorted compaction (the bug) and a number-sorted compaction (the
+    // fix) disagree on the outcome — proving which key actually drove it.
     seedMember(db, 'S3', 'Charlie')
     seedMember(db, 'S7', 'Alpha')
     seedMember(db, 'S8', 'Bravo')
@@ -211,27 +214,161 @@ describe('compactDeviceNumbers (plan 89 §3.2, §4.2)', () => {
     setDeviceNumber(db, 'S7', 7, { userId: null })
     setDeviceNumber(db, 'S8', 8, { userId: null })
 
-    const changes = compactDeviceNumbers(db)
-    // label order: Alpha(S7) < Bravo(S8) < Charlie(S3) -> #1, #2, #3.
-    // S3/Charlie already happened to sit at #3 (its target position), so it
-    // is correctly NOT reported as a change — only S7 and S8 actually moved.
-    expect(lookupDeviceNumber(db, 'S7')).toBe(1)
-    expect(lookupDeviceNumber(db, 'S8')).toBe(2)
-    expect(lookupDeviceNumber(db, 'S3')).toBe(3)
-    expect(changes.length).toBe(2)
-    expect(changes.find((c) => c.stableId === 'S7')).toEqual({ stableId: 'S7', from: 7, to: 1 })
+    const { changed: changes, released } = compactDeviceNumbers(db)
+    // number order: S3(3) < S7(7) < S8(8) -> #1, #2, #3. Every one of them
+    // moves, because none already sat at its number-order target position —
+    // label order would have produced S7->1, S8->2, S3->3 instead (wrong).
+    expect(lookupDeviceNumber(db, 'S3')).toBe(1)
+    expect(lookupDeviceNumber(db, 'S7')).toBe(2)
+    expect(lookupDeviceNumber(db, 'S8')).toBe(3)
+    expect(changes.length).toBe(3)
+    expect(changes.find((c) => c.stableId === 'S3')).toEqual({ stableId: 'S3', from: 3, to: 1 })
+    expect(changes.find((c) => c.stableId === 'S7')).toEqual({ stableId: 'S7', from: 7, to: 2 })
+    expect(changes.find((c) => c.stableId === 'S8')).toEqual({ stableId: 'S8', from: 8, to: 3 })
+    // No orphans in this fixture — the ordinary case must report none.
+    expect(released).toEqual([])
 
     // Numbers stay UNIQUE throughout — re-loading confirms no duplicate survived.
     const numbers = [...loadDeviceNumbers(db).values()].sort((a, b) => a - b)
     expect(numbers).toEqual([1, 2, 3])
   })
 
+  test("reproduces the owner's live-farm bug report: gap-closing preserves relative NUMBER order, labels cannot scramble it (plan 89 §3.2 point 5)", () => {
+    const db = setUpDb()
+    // Labels deliberately collide the way the owner's real farm data does —
+    // two "moto g06 power" and three "SM-A075F" — so label ties (or a plain
+    // alphabetical sort) cannot be what determines the outcome.
+    seedMember(db, 'D1', 'moto g06 power')
+    seedMember(db, 'D2', 'SM-F711B')
+    // #3 is the gap — a forgotten device, deliberately never seeded.
+    seedMember(db, 'D4', 'CPH2819')
+    seedMember(db, 'D5', 'moto g06 power')
+    seedMember(db, 'D6', '25128PC17G')
+    seedMember(db, 'D7', 'CPH2173')
+    seedMember(db, 'D8', 'SM-A075F')
+    seedMember(db, 'D9', 'SM-A075F')
+    seedMember(db, 'D10', 'SM-A075F')
+    setDeviceNumber(db, 'D1', 1, { userId: null })
+    setDeviceNumber(db, 'D2', 2, { userId: null })
+    setDeviceNumber(db, 'D4', 4, { userId: null })
+    setDeviceNumber(db, 'D5', 5, { userId: null })
+    setDeviceNumber(db, 'D6', 6, { userId: null })
+    setDeviceNumber(db, 'D7', 7, { userId: null })
+    setDeviceNumber(db, 'D8', 8, { userId: null })
+    setDeviceNumber(db, 'D9', 9, { userId: null })
+    setDeviceNumber(db, 'D10', 10, { userId: null })
+
+    compactDeviceNumbers(db)
+
+    // Only the #3 gap closes: #1/#2 stay put, everything from the old #4
+    // onward shifts down by exactly one, in the SAME relative order it had
+    // before. This is the opposite of "some permutation of 1..9" — it is
+    // the ONE specific permutation that merely closes the gap.
+    expect(lookupDeviceNumber(db, 'D1')).toBe(1)
+    expect(lookupDeviceNumber(db, 'D2')).toBe(2)
+    expect(lookupDeviceNumber(db, 'D4')).toBe(3)
+    expect(lookupDeviceNumber(db, 'D5')).toBe(4)
+    expect(lookupDeviceNumber(db, 'D6')).toBe(5)
+    expect(lookupDeviceNumber(db, 'D7')).toBe(6)
+    expect(lookupDeviceNumber(db, 'D8')).toBe(7)
+    expect(lookupDeviceNumber(db, 'D9')).toBe(8)
+    expect(lookupDeviceNumber(db, 'D10')).toBe(9)
+
+    const numbers = [...loadDeviceNumbers(db).values()].sort((a, b) => a - b)
+    expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+  })
+
+  test("reproduces the owner's live-farm CRASH: an orphaned reservation left by forget() must not raise UNIQUE constraint failed, and is released and reported (plan 96 §96.42)", () => {
+    const db = setUpDb()
+    // Nine LIVE devices, numbered 1,2,4..10 — the same gap-at-3 shape as the
+    // test above, but this time #3 is not simply "never issued": it is held
+    // by a `device_numbers` row for a stableId with NO matching `devices`
+    // row — exactly what `forget()` leaves behind
+    // (`packages/core/src/device/lifecycle.ts`'s own comment: `deviceNumbers`
+    // is untouched by forget, §3.2's whole point — the reservation
+    // survives). This is the exact shape confirmed against the owner's live
+    // `.dev-data/enkaku.db`.
+    seedMember(db, 'L1', 'Alpha')
+    seedMember(db, 'L2', 'Bravo')
+    seedMember(db, 'L4', 'Delta')
+    seedMember(db, 'L5', 'Echo')
+    seedMember(db, 'L6', 'Foxtrot')
+    seedMember(db, 'L7', 'Golf')
+    seedMember(db, 'L8', 'Hotel')
+    seedMember(db, 'L9', 'India')
+    seedMember(db, 'L10', 'Juliet')
+    setDeviceNumber(db, 'L1', 1, { userId: null })
+    setDeviceNumber(db, 'L2', 2, { userId: null })
+    setDeviceNumber(db, 'L4', 4, { userId: null })
+    setDeviceNumber(db, 'L5', 5, { userId: null })
+    setDeviceNumber(db, 'L6', 6, { userId: null })
+    setDeviceNumber(db, 'L7', 7, { userId: null })
+    setDeviceNumber(db, 'L8', 8, { userId: null })
+    setDeviceNumber(db, 'L9', 9, { userId: null })
+    setDeviceNumber(db, 'L10', 10, { userId: null })
+
+    // A forgotten device: it once held #3, then `forget()` deleted its
+    // `devices` row while leaving its `device_numbers` reservation in
+    // place — the orphan.
+    seedMember(db, 'GHOST', 'forgotten phone')
+    setDeviceNumber(db, 'GHOST', 3, { userId: null })
+    db.delete(devices).where(eq(devices.stableId, 'GHOST')).run()
+    expect(lookupDeviceNumber(db, 'GHOST')).toBe(3) // still reserved, per §3.2, until compaction
+
+    // Before the fix, the dense 1..n reassignment tried to move live device
+    // L4 into #3 — still held by GHOST — and raised a raw, uncaught
+    // `UNIQUE constraint failed: device_numbers.number`. It must not throw.
+    let result: ReturnType<typeof compactDeviceNumbers> | undefined
+    expect(() => {
+      result = compactDeviceNumbers(db)
+    }).not.toThrow()
+    const { changed, released } = result!
+
+    // The final LIVE numbering is dense 1..9, relative order preserved.
+    expect(lookupDeviceNumber(db, 'L1')).toBe(1)
+    expect(lookupDeviceNumber(db, 'L2')).toBe(2)
+    expect(lookupDeviceNumber(db, 'L4')).toBe(3)
+    expect(lookupDeviceNumber(db, 'L5')).toBe(4)
+    expect(lookupDeviceNumber(db, 'L6')).toBe(5)
+    expect(lookupDeviceNumber(db, 'L7')).toBe(6)
+    expect(lookupDeviceNumber(db, 'L8')).toBe(7)
+    expect(lookupDeviceNumber(db, 'L9')).toBe(8)
+    expect(lookupDeviceNumber(db, 'L10')).toBe(9)
+    const numbers = [...loadDeviceNumbers(db).values()].sort((a, b) => a - b)
+    expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+    // GHOST's orphaned reservation no longer exists.
+    expect(lookupDeviceNumber(db, 'GHOST')).toBeNull()
+
+    // And the release is named in the report, not silent.
+    expect(released).toEqual([{ stableId: 'GHOST', number: 3 }])
+    expect(changed.length).toBeGreaterThan(0)
+  })
+
+  test('an unnumbered device (from: 0) always lands AFTER every already-numbered device, never in the middle by label coincidence', () => {
+    const db = setUpDb()
+    seedMember(db, 'S1', 'Zulu') // #1 — alphabetically LAST, must still stay #1
+    seedMember(db, 'S2', 'Yankee') // #2
+    seedMember(db, 'S3', 'Aardvark') // unnumbered — alphabetically FIRST, must still land LAST
+    setDeviceNumber(db, 'S1', 1, { userId: null })
+    setDeviceNumber(db, 'S2', 2, { userId: null })
+    // S3 has no reservation at all — as if it had been explicitly released.
+
+    const { changed, released } = compactDeviceNumbers(db)
+    expect(lookupDeviceNumber(db, 'S1')).toBe(1)
+    expect(lookupDeviceNumber(db, 'S2')).toBe(2)
+    expect(lookupDeviceNumber(db, 'S3')).toBe(3)
+    expect(changed).toEqual([{ stableId: 'S3', from: 0, to: 3 }])
+    expect(released).toEqual([])
+  })
+
   test('a device that already sits at its target number is not reported as changed', () => {
     const db = setUpDb()
     seedMember(db, 'S1', 'Alpha')
     setDeviceNumber(db, 'S1', 1, { userId: null })
-    const changes = compactDeviceNumbers(db)
-    expect(changes).toEqual([])
+    const { changed, released } = compactDeviceNumbers(db)
+    expect(changed).toEqual([])
+    expect(released).toEqual([])
   })
 
   test('is idempotent: running it twice in a row produces no further changes', () => {
@@ -242,7 +379,8 @@ describe('compactDeviceNumbers (plan 89 §3.2, §4.2)', () => {
     setDeviceNumber(db, 'S7', 7, { userId: null })
     compactDeviceNumbers(db)
     const second = compactDeviceNumbers(db)
-    expect(second).toEqual([])
+    expect(second.changed).toEqual([])
+    expect(second.released).toEqual([])
   })
 
   test('advances the watermark so a subsequent fresh allocation continues past the compacted count', () => {
@@ -262,7 +400,7 @@ describe('compactDeviceNumbers (plan 89 §3.2, §4.2)', () => {
     seedMember(db, 'S2', 'Bravo')
     setDeviceNumber(db, 'S1', 1, { userId: null })
     // S2 has no reservation at all — as if it had been explicitly released.
-    const changes = compactDeviceNumbers(db)
+    const { changed: changes } = compactDeviceNumbers(db)
     const s2 = changes.find((c) => c.stableId === 'S2')
     expect(s2).toEqual({ stableId: 'S2', from: 0, to: 2 })
     expect(lookupDeviceNumber(db, 'S2')).toBe(2)

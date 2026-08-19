@@ -598,6 +598,174 @@ describe('the cold vpn-helper revert has to actually reach the agent', () => {
   })
 })
 
+/**
+ * **Turning a route OFF while the device is offline — the case where turning it
+ * off matters most.**
+ *
+ * The measured problem: two phones at another location, both `offline`, both
+ * carrying an ENABLED route that would be re-applied the moment they
+ * reconnected — one an `adb-reverse-proxy` pointed at a metered upstream, one a
+ * `failClosed` `vpn-helper`. `DELETE /network` and `/network/disable` both
+ * answered `409 device_unavailable`, so the operator's only route to "off" was
+ * to wait for the phone, let the route re-arm, and turn it off afterwards.
+ *
+ * The gate (`requireHeldLease`) predates the `pendingClear` debt and was
+ * refusing the request before the machinery built for exactly this case could
+ * run. `requireDisarmAdmission` lets the disarm direction through — and only
+ * that direction, and only for a status no lease can be taken on.
+ */
+describe('disarming a route the device is not there to hear (requireDisarmAdmission)', () => {
+  /** The device the farm can no longer reach: offline on the record AND unreachable over adb. */
+  function goOffline(h: RouteHarness, deviceId: string): void {
+    h.db.update(devices).set({ status: 'offline' }).where(eq(devices.id, deviceId)).run()
+    h.phone(deviceId).offline = true
+  }
+
+  test('DELETE on an offline device is accepted, records the debt with the reverse’s device port, and releases the reverse', async () => {
+    const h = makeRouteHarness()
+    h.seed('dev-1')
+    const phone = h.phone('dev-1')
+    phone.settings.set('http_proxy', 'operators.own.proxy:3128')
+    hold(h, 'dev-1')
+    await put(h, 'dev-1', { engine: 'adb-reverse-proxy', hostPort: 9905 })
+    expect(h.reverse?.get('dev-1')?.devicePort).toBe(28100)
+    goOffline(h, 'dev-1')
+
+    const res = await h.app.request('/dev-1/network', { method: 'DELETE' })
+    expect(res.status).toBe(200)
+
+    const row = persisted(h, 'dev-1')
+    // The row survives: it is the only thing left holding the capture the revert still owes this
+    // phone and the device port its reverse still has to be removed from.
+    expect(row?.enabled).toBe(false)
+    expect(row?.captured?.httpProxy).toBe('operators.own.proxy:3128')
+    expect(row?.pendingClear).toMatchObject({ engine: 'adb-reverse-proxy', devicePort: 28100, forget: true })
+    expect(row?.pendingClear?.reason).toContain('the device was offline')
+    // Host-side bookkeeping goes immediately — it costs nothing to reach and it is the half that
+    // would otherwise turn a leftover setting back into a live tunnel on reconnect.
+    expect(h.reverse?.get('dev-1')).toBeNull()
+
+    // The answer never claims a clean off.
+    const body = (await res.json()) as StatusBody & { pendingClear: { engine: string; forget: boolean; reason: string } | null }
+    expect(body.enabled).toBe(false)
+    expect(body.pendingClear?.forget).toBe(true)
+    expect(body.pendingClear?.reason).toContain('the device was offline')
+    expect(h.events.find((e) => e.kind === 'network.reverted')?.meta?.ok).toBe(false)
+  })
+
+  test('the debt this door writes is settled by the SAME admission path as one from a failed live revert', async () => {
+    const h = makeRouteHarness()
+    h.seed('dev-1')
+    const phone = h.phone('dev-1')
+    phone.settings.set('http_proxy', 'operators.own.proxy:3128')
+    hold(h, 'dev-1')
+    await put(h, 'dev-1', { engine: 'adb-reverse-proxy', hostPort: 9905 })
+    goOffline(h, 'dev-1')
+    await h.app.request('/dev-1/network', { method: 'DELETE' })
+
+    // The phone comes back.
+    h.db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'dev-1')).run()
+    phone.offline = false
+    await h.service.restoreDeviceRoute('dev-1')
+
+    // The pre-farm value, restored — not guessed, not cleared.
+    expect(phone.settings.get('http_proxy')).toBe('operators.own.proxy:3128')
+    // `forget` travelled with the debt, so the DELETE the operator asked for finally completes.
+    expect(persisted(h, 'dev-1')).toBeNull()
+    const cleared = h.events.find((e) => e.kind === 'network.orphan.cleared')
+    expect(cleared?.meta).toMatchObject({ engine: 'adb-reverse-proxy', devicePort: 28100, restored: 'captured', forgot: true })
+  })
+
+  test('a failClosed VPN: the disarm reaches the RouteVpnService on admission, not just the bookkeeping', async () => {
+    const calls: string[] = []
+    const h = makeRouteHarness({
+      vpnClient: {
+        routeStop: async () => {
+          calls.push('stop')
+          return { stopped: true }
+        },
+        routeStatus: async () => {
+          calls.push('status')
+          return { prepared: true, up: true, upstream: 'proxy.example:1080' }
+        },
+      },
+    })
+    h.seed('dev-1')
+    h.db
+      .update(devices)
+      .set({ networkRoute: { config: VPN, enabled: true, failClosed: true }, status: 'offline' })
+      .where(eq(devices.id, 'dev-1'))
+      .run()
+    h.phone('dev-1').offline = true
+
+    const res = await h.app.request('/dev-1/network/disable', { method: 'POST' })
+    expect(res.status).toBe(200)
+    // Nothing was said to a phone that is not there — and the record says so rather than claiming
+    // the kill switch was stood down.
+    expect(calls).toEqual([])
+    expect(persisted(h, 'dev-1')?.pendingClear).toMatchObject({ engine: 'vpn-helper', forget: false })
+    expect(persisted(h, 'dev-1')?.pendingClear?.reason).toContain('never told to stop')
+    expect(persisted(h, 'dev-1')?.enabled).toBe(false)
+    const body = (await res.json()) as StatusBody & { pendingClear: { forget: boolean } | null }
+    expect(body.pendingClear?.forget).toBe(false)
+
+    // Admission: the session is WOKEN (`status`) so the `stop` that follows is a real one — the
+    // difference between telling the agent to stand down and only writing it down here.
+    h.db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'dev-1')).run()
+    h.phone('dev-1').offline = false
+    await h.service.restoreDeviceRoute('dev-1')
+
+    expect(calls).toContain('status')
+    expect(calls).toContain('stop')
+    expect(persisted(h, 'dev-1')?.pendingClear).toBeUndefined()
+    // A `/disable` keeps the config so it can be switched back on; only the debt went.
+    expect(persisted(h, 'dev-1')?.enabled).toBe(false)
+    expect(persisted(h, 'dev-1')?.config).toMatchObject({ engine: 'vpn-helper' })
+  })
+
+  test('the ENABLE direction stays refused — a route applied to a phone you cannot reach is a promise you cannot keep', async () => {
+    const h = makeRouteHarness()
+    h.seed('dev-1')
+    hold(h, 'dev-1')
+    await put(h, 'dev-1', HTTP_PROXY)
+    await h.app.request('/dev-1/network/disable', { method: 'POST' })
+    goOffline(h, 'dev-1')
+
+    for (const [method, path] of [
+      ['POST', '/dev-1/network/enable'],
+      ['POST', '/dev-1/network/retry'],
+    ] as const) {
+      const res = await h.app.request(path, { method })
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe('device_unavailable')
+    }
+    const put409 = await put(h, 'dev-1', HTTP_PROXY)
+    expect(put409.status).toBe(409)
+    expect(((await put409.json()) as { error: { code: string } }).error.code).toBe('device_unavailable')
+  })
+
+  test('the gate is not widened generally: an ONLINE device still needs the lease, and a busy one is still refused', async () => {
+    const h = makeRouteHarness()
+    h.seed('dev-1')
+    hold(h, 'dev-1')
+    await put(h, 'dev-1', HTTP_PROXY)
+    h.leases.releaseManual('dev-1', 'client-a')
+
+    // Online and takeable: "take control first" is a real instruction, so it stands.
+    const noLease = await h.app.request('/dev-1/network', { method: 'DELETE' })
+    expect(noLease.status).toBe(409)
+    expect(((await noLease.json()) as { error: { code: string } }).error.code).toBe('no_lease')
+
+    // A job is driving that phone right now. Pulling its route out from under it is not a disarm,
+    // it is a collision — and unlike offline/quarantined, this is a state a lease CAN be taken in
+    // once the job ends, so the refusal is an instruction rather than a dead end.
+    h.db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'dev-1')).run()
+    const busy = await h.app.request('/dev-1/network/disable', { method: 'POST' })
+    expect(busy.status).toBe(409)
+    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe('device_busy')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // §4.5 — /retry, and the untagged body Studio still sends
 // ---------------------------------------------------------------------------

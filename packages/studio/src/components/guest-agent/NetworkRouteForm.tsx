@@ -9,6 +9,7 @@ import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
 // renders the SAME words about N devices rather than a second copy that can be
 // softened independently (plan 114 risk 1). Nothing about them changed.
 import { HTTP_MODE_DESCRIPTION, VPN_MODE_DESCRIPTION } from '@/components/guest-agent/proxy-copy'
+import { PendingClearNotice } from '@/components/guest-agent/PendingClearNotice'
 import { VpnRouteFields } from '@/components/guest-agent/VpnRouteFields'
 import {
   disableNetworkRoute,
@@ -193,6 +194,27 @@ function describeToggle(
   status: NetworkStatus,
   engine: NetworkEngineId,
 ): { checked: boolean; tone: ToggleTone; title: string; note: string } {
+  /*
+   * An owed teardown outranks every reading below, and it is checked FIRST —
+   * ahead of the "nothing saved" guard — because the one thing this banner must
+   * never say while a debt is outstanding is a flat "off". The record is off;
+   * the PHONE is not, and the two off-states below both go on to describe a
+   * saved config being kept, which is a sentence about this farm's database at
+   * the exact moment the interesting fact is about the device.
+   *
+   * `warn`, never `danger`: nothing failed and nothing is retryable (see
+   * `PendingClearNotice`, which carries the reason, the age, and the "nothing is
+   * required of you" the note here only points at rather than repeating).
+   */
+  if (status.pendingClear) {
+    const vpn = status.pendingClear.engine === 'vpn-helper'
+    return {
+      checked: false,
+      tone: 'warn',
+      title: vpn ? 'Route off here — the phone has not been told' : 'Proxy off here — the phone has not been told',
+      note: 'The device is still carrying it, and its traffic still goes through it. Nothing to do: the farm settles this by itself the next time the device is admitted — see the note above.',
+    }
+  }
   if (!status.config) {
     return {
       checked: false,
@@ -460,6 +482,16 @@ export function NetworkRouteForm({
      * below is now measured against the width this panel was actually given.
      */
     <div className="@container space-y-4">
+      {/*
+       * First, above the switch and outside the two-column grid — a teardown
+       * this farm owes the phone is the single most consequential fact about
+       * this device's network, it is true whichever mode the operator is
+       * currently looking at, and it is the one thing on this screen that says
+       * the record and the DEVICE currently disagree. Full width so it never
+       * lands in the narrow status column, where a four-sentence explanation
+       * would wrap to one word per line.
+       */}
+      {status.pendingClear && <PendingClearNotice pendingClear={status.pendingClear} now={now} />}
       {/*
        * Always visible, never gated on whether a route exists — the bug
        * this fixes is precisely that the old off-switch only appeared once

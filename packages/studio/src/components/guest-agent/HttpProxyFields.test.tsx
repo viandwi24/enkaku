@@ -28,6 +28,7 @@ const baseStatus: NetworkStatus = {
   exitHistory: [],
   recovery: null,
   setBy: null,
+  pendingClear: null,
 }
 
 function statusWith(config: NetworkStatus['config']): NetworkStatus {

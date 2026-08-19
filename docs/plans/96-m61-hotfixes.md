@@ -3630,3 +3630,208 @@ every unaudited listing would have been theatre. See `docs/feat/kv-storage.md`
 **96.37 is untouched** — `increment()` still discards `secret`/`hint`/
 `expiresAt`/`updated_by_job_id`. It is a different bug with a signature change
 behind it, and this pass deliberately was not it.
+
+---
+
+### 96.39 — A USB device's "Reconnect" row silently opened the cutover wizard instead of reconnecting. FIXED 2026-08-19.
+
+Found in-browser this session, not read from a stale checkbox: opening a
+USB device's popup (`packages/studio/src/components/device-popup/
+ActionsList.tsx`) and clicking "Reconnect" opened `CutoverDialog` — the
+USB→network move wizard — instead of firing `POST .../connection/reconnect`.
+The row's own `onSelect` read `isUsb ? () => setCutoverOpen(true) : () =>
+void reconnect()`, a conflation the file's own comment attributed to plan
+103 §4.2's fixed 12-row list having no separate row for the cutover wizard.
+
+This is actively misleading, not merely inconsistent: an operator reading
+"Reconnect" expects a redial of a connection that already existed — the same
+word means exactly that on a TCP device, one line above in the same list —
+never "move this phone off USB onto the network." Nothing in the row's label
+or icon said otherwise, so the only way to discover the wizard at all, on a
+USB device, was to click a button whose name promised something else.
+
+**Fixed as plan 88 §5 step 88.11.** Reconnect now always reconnects, on USB
+and TCP alike (a USB device adb still lists answers `already-connected`, an
+honest no-op). The wizard gets its own row, "Move to the network
+(Wi-Fi/OTG)…", USB-only, matching `DeviceHeader.tsx`'s identical Connection-
+group item word for word. The fixed-list row budget grows from twelve to
+thirteen on a USB device only — a deliberate, stated exception (step 88.11's
+own account gives the full reasoning, including why no existing row was a
+better candidate to fold this into instead). `ActionsList.test.tsx` and
+`DeviceContextMenu.test.tsx` (the Wall's right-click menu renders the same
+component) both updated: the row-count test is now split by connection kind
+(thirteen on USB, twelve on TCP), and a new test proves Reconnect fires
+directly on a USB device rather than opening a dialog.
+
+### 96.40 — "Farm networks" (CIDR ranges, sweep policy) lived under Settings → "Discovery & monitoring", while a tab literally named "Network" held only geo-verification. FIXED 2026-08-19.
+
+Found in-browser this session: an operator looking for IP-range scanning —
+the setting that tells the reconnect ladder's sweep which subnets to probe,
+plan 88 §3.5/§3.6 — opens Settings → "Network" (the tab whose name most
+directly matches what they are looking for) and finds nothing related. That
+tab is plan 55 §3.2's geo-verification lookup, a different `FarmSettingsSchema`
+top-level key (`network`) from the one `FarmNetworksEditor.tsx` actually
+edits (`discovery.networks`, under the "Discovery & monitoring" tab). Nothing
+on the "Network" tab said where the feature the tab's own name promises
+actually lives.
+
+**Fixed as plan 88 §5 step 88.11**, with a cross-link rather than a
+structural move — considered and rejected, because `discovery`'s sweep-policy
+fields (port, scan mode, max addresses) share one schema block and one
+`FarmForm` with the CIDR list; relocating only the table would split one
+coherent settings group across two tabs for no schema reason, and relocating
+the whole `discovery` block would touch a widely-read settings path
+(`packages/core/src/registry/{sweep,reconnect,endpoints}.ts`, `cutover.ts`)
+purely for a UI-only fix. `packages/studio/src/app/settings/page.tsx`'s
+`network` section now renders a banner above the generic form: "Looking for
+IP-range scanning, or the list of farm networks... That lives under
+Discovery & monitoring", linking to `/settings?tab=discovery`.
+`settings/page.test.tsx` gained a test proving the banner renders and its
+link resolves to the right tab.
+
+### 96.41 — Fleet renumber compaction sorted by device LABEL instead of device NUMBER, scrambling the whole fleet instead of closing one gap. FIXED 2026-08-19.
+
+Found against the owner's own live farm data, not a synthetic case: on a
+ten-device farm numbered `#1, #2, #4..#10` (`#3` a forgotten device, the one
+real gap), running fleet renumber compaction (plan 89 §3.2 point 5,
+`POST /api/devices/numbers/compact`) turned into a total, unrelated reshuffle
+— device `#1` ("moto g06 power") landed at `#9`, and every other device moved
+by an amount that tracked its display *name*, not its number. `#3`'s gap
+closed only by accident, as a side effect of the alphabetical shuffle, not as
+the operation's actual effect.
+
+The root cause was `compactDeviceNumbers()`
+(`packages/core/src/registry/device-number.ts`) fetching the candidate row
+set with `tx.select(...).from(devices).orderBy(asc(devices.label),
+asc(devices.id))` and assigning `1..n` straight down that list. `number` and
+`label` are two deliberately separate identities in this codebase (§3.3):
+number is incremental from first connection and never reused; label is
+whatever free-text name the operator gave the device, which says nothing
+about arrival order. Sorting the gap-closing operation by the display name
+conflated the two — a coincidence of alphabetizing (`"25128PC17G"` sorting
+before `"moto g06 power"`) was able to move a device that had never lost its
+reservation, defeating the "your physical sticker still matches" guarantee
+§3.2 point 1 exists for. "Compaction" in §3.2 point 5's own words means
+closing gaps while everything else keeps its position — `#1, #2, #4, #5`
+becomes `#1, #2, #3, #4` — not a full renumber in some unrelated order.
+
+**Fixed directly in `compactDeviceNumbers()`.** The ordering key is now each
+device's existing number (the `deviceNumbers` reservation map already being
+built for `from`/`to` reporting), read once before sorting; `devices.id ASC`
+is now only the tie-break base order, applied solely among devices sharing
+the same bucket. A device with no existing reservation (`from: 0` — released,
+or admitted between the §4.1 backfill and this call) sorts after every
+already-numbered device, `id ASC` among themselves, so admitting or
+re-sighting a fresh device can never displace an existing device's relative
+order. The two-pass negative-placeholder transaction that avoids colliding
+with `deviceNumbers.number`'s UNIQUE index mid-compaction was re-verified,
+not touched — it iterates `changes` (a filter over the newly-sorted
+`targets`, not the sort key itself) and assigns each moving, already-reserved
+row a placeholder unique per row regardless of what order they arrive in, so
+the reordering has no interaction with it. The function's own doc comment
+(previously still describing `label ASC, id ASC`) is corrected to say why
+number order, not name order, is what "closing a gap" means for this
+feature.
+
+`packages/core/src/registry/device-number.test.ts`'s existing compaction test
+that asserted the buggy `label ASC` outcome is corrected to assert the fixed
+`number ASC` outcome instead (same fixture, opposite — now correct —
+expectation), plus two new tests: one reproducing the owner's exact
+nine-device live-farm scenario verbatim (labels deliberately colliding
+alphabetically — two `"moto g06 power"`, three `"SM-A075F"` — proving the
+result is the ONE specific gap-closing permutation, `1,2,3,4,5,6,7,8,9` with
+every device's relative order preserved, not merely "some permutation of
+1..9"), and one proving an unnumbered (`from: 0`) device always lands after
+every already-numbered device even when its label would sort first
+alphabetically. `bun test packages/core/src/registry/device-number.test.ts`:
+20 pass / 0 fail (was 18); `bun test packages/core/src/api/devices.test.ts`
+(the `/numbers/compact` endpoint's own tests, unaffected because that
+fixture's labels and numbers happened to already agree in order): 138 pass /
+0 fail, unchanged.
+
+### 96.42 — Fleet renumber compaction crashed with an uncaught `UNIQUE constraint failed: device_numbers.number` when a forgotten device's orphaned reservation sat inside the target range. FIXED 2026-08-19.
+
+The very next thing the owner hit, immediately after §96.41's ordering fix
+landed: running `POST /api/devices/numbers/compact` on the owner's own live
+farm raised a raw, uncaught `SQLiteError: UNIQUE constraint failed:
+device_numbers.number`, logged only as `packages/core/src/server/http.ts`'s
+generic "unexpected api error" — nothing between the endpoint and SQLite
+translated it into anything an operator could act on. Confirmed by querying
+the owner's live `.dev-data/enkaku.db` read-only: `device_numbers` held
+`number=3, stable_id='0badffd30411'`, and `0badffd30411` had no row in
+`devices` — a forgotten device. The farm's nine live devices were numbered
+`1,2,4,5,6,7,8,9,10` (the one real gap at `#3`).
+
+**Root cause.** `forget()` (`packages/core/src/device/lifecycle.ts`, around
+its `deviceNumbers`-related comment) deliberately does NOT delete a device's
+`device_numbers` row — that is §3.2's whole point, the reservation survives
+so a reconnecting device gets its old number back. But `compactDeviceNumbers`
+(`packages/core/src/registry/device-number.ts`) computed its dense `1..n`
+target sequence purely from the LIVE `devices` table, with no idea an
+orphaned reservation (no matching `devices` row) might already be squatting
+on a number inside that range. The moment the two-pass reassignment tried to
+move a live device — or insert a newly-numbered one — into a number an
+orphan still held, the `UNIQUE` index on `device_numbers.number` refused it
+and the raw SQLite error propagated uncaught. This is independent of
+§96.41's ordering bug: the *set* of target numbers `{1..n}` is the same
+regardless of which live device gets which number, so a single stale
+reservation inside that range was enough to trigger it either way.
+
+This also meant the product was not delivering what it already promised:
+`packages/studio/src/app/page.tsx`'s "Renumber fleet?" confirm dialog says,
+verbatim, "Reassigns every device's number to close any gaps left by
+released **or forgotten** devices…" — the implementation never actually
+closed a forgotten device's gap; it just happened not to collide, until it
+did.
+
+**Fixed in `compactDeviceNumbers()`**, inside the SAME transaction, before
+computing the sort/targets/two-pass reassignment: every `device_numbers` row
+whose `stableId` has no matching `devices` row is now deleted, vacating its
+slot, and returned to the caller as `released: { stableId, number }[]`. The
+deletion is **unconditional** — every orphan is released on every
+compaction, not only the ones whose number this particular run happens to
+need. That is a deliberate choice, argued in the function's own doc comment:
+compaction is already an explicit, operator-initiated "finalize the current
+numbering" action (§3.2 point 5's reason for existing as a separate verb
+from automatic allocation), so it is the natural place to also finalize that
+a still-orphaned reservation is not coming back to reclaim its slot.
+Anything narrower — "only release an orphan if its number is needed this
+specific run" — would leave other orphans alive and reintroduce this exact
+crash on some future compaction that happens to need one of them. The
+trade-off accepted, stated plainly because it narrows a documented guarantee
+(§3.2): a forgotten device's number is no longer guaranteed to survive
+forever, only until the next operator-run compaction — at that point it is
+genuinely gone, and a reconnect afterward allocates a brand-new number. The
+two-pass negative-placeholder UNIQUE-avoidance logic that closes gaps among
+the live devices was not touched; it runs against the already-vacated set.
+
+**Threaded through the wire, never a silent behaviour change**
+(`packages/protocol/src/api/devices.ts`'s `DeviceNumberCompactResponseSchema`
+gained `released: { stableId: string; number: number }[]`, alongside the
+existing `changed`); `packages/core/src/api/devices.ts`'s `POST
+/numbers/compact` route returns it and records it in the audit log's `meta`;
+`packages/studio/src/app/page.tsx`'s post-compaction toast now names how many
+forgotten-device numbers were released, in addition to the existing
+changed/relabelled/failed counts. `docs/spec.md` §7.5's device-number
+paragraph is updated to describe both this and §96.41's ordering fix (it had
+never been updated for either).
+
+**Tests.** `packages/core/src/registry/device-number.test.ts` gained a test
+reproducing the owner's exact live-farm shape (nine live devices numbered
+`1,2,4..10`, plus an orphaned `device_numbers` row for a nonexistent
+`stableId` holding `#3`) asserting: `compactDeviceNumbers` does not throw;
+the final live numbering is `1..9` with relative order preserved; the
+orphaned row is gone from `device_numbers` afterward; and `released` names
+the forgotten `stableId` and its former number. The existing "no orphans"
+tests were extended to assert `released` stays empty, so the ordinary path
+is provably unchanged. `packages/core/src/api/devices.test.ts` gained the
+same reproduction at the HTTP layer (`POST /numbers/compact`). Run counts:
+`bun test packages/core/src/registry/device-number.test.ts`: 21 pass / 0
+fail (was 20 per §96.41); `bun test packages/core/src/api/devices.test.ts`:
+139 pass / 0 fail (was 138). `packages/studio/src/app/page.test.tsx`'s
+existing "Renumber fleet…" test was updated for the new required
+`released: []` field on its mocked response and still passes (53 pass / 0
+fail for that file, scoped run). `bash scripts/typecheck.sh`: OK across
+every package. `bun run spec:check`: pre-existing GAP 1 (`plugin_webhooks`,
+unrelated, cross-session), warning-only, unaffected. `bash
+scripts/check-plan-status.sh`: clean.

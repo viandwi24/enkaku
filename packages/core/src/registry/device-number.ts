@@ -1,4 +1,4 @@
-import { asc, eq, sql } from 'drizzle-orm'
+import { asc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { deviceNumbers, devices, sequences } from '../db/schema'
 import type { Actor } from '../device/lifecycle'
@@ -136,26 +136,100 @@ export function releaseDeviceNumber(db: Db, stableId: string, _actor: Actor): vo
 }
 
 /**
- * Reassigns 1..n across every current farm device in `label ASC, id ASC`
- * order, and returns the devices whose number changed so the caller can
- * re-push their labels in the SAME operation. A compaction that renumbered
- * without re-labelling would leave phones displaying numbers that moved,
- * which is the one outcome §3.2 exists to prevent.
+ * Reassigns 1..n across every current farm device, ordered by each device's
+ * EXISTING number — never by `label` — and returns the devices whose number
+ * changed so the caller can re-push their labels in the SAME operation. A
+ * compaction that renumbered without re-labelling would leave phones
+ * displaying numbers that moved, which is the one outcome §3.2 exists to
+ * prevent.
+ *
+ * Sorting by number (not label) is the whole point of "compaction": §3.2
+ * point 5 defines it as closing the gaps left by released numbers while
+ * everything else keeps its relative order — `#1, #2, #4, #5` becomes
+ * `#1, #2, #3, #4`, never a full reshuffle. `number` and `label` are
+ * deliberately separate identities (§3.3): a device's number is incremental
+ * from first connection and never reused, while its label is operator-chosen
+ * free text that says nothing about arrival order. Sorting the renumber by
+ * label — the previous, buggy behaviour — let two devices that happened to
+ * alphabetize differently swap positions arbitrarily, so device #1 could end
+ * up as #9 even though it never lost its reservation; that defeats the
+ * "your sticker still matches" guarantee this whole feature exists for.
  *
  * `from: 0` means the device had no reservation before this call (an
  * explicitly released number, or a device admitted between §4.1's backfill
  * and this call never existing in the first place) — 0 is never a valid
- * device number, so it is unambiguous as "there was none."
+ * device number, so it is unambiguous as "there was none." Such devices sort
+ * AFTER every already-numbered device (by `id ASC` among themselves), so an
+ * unnumbered device can never displace an existing device's relative order.
+ *
+ * **Orphaned reservations are released first, unconditionally.** `forget()`
+ * (`packages/core/src/device/lifecycle.ts`) deliberately leaves a device's
+ * `device_numbers` row in place — §3.2's sticky-reservation guarantee is
+ * that a device which reconnects gets its old number back. But that row has
+ * no matching `devices` row while the device is gone, and this function used
+ * to compute its dense `1..n` target sequence purely from the LIVE `devices`
+ * table, with no idea an orphaned reservation might already be squatting on
+ * a number inside that range. The first live device (or newly-numbered
+ * device) whose target collided with a still-present orphan blew up with a
+ * raw, uncaught `UNIQUE constraint failed: device_numbers.number` — exactly
+ * what happened against the owner's live farm database, where a forgotten
+ * device still held #3 while nine live devices held 1,2,4..10 (plan 96
+ * §96.42).
+ *
+ * Deleting every orphan here — rather than only the ones whose number
+ * happens to fall inside this run's target range — is deliberate, not
+ * laziness: compaction is itself an explicit, operator-initiated "finalize
+ * the current numbering" action (§3.2 point 5's whole reason for existing
+ * as a separate verb from automatic allocation), so it is the natural place
+ * to also finalize the fact that a still-orphaned reservation is not coming
+ * back to reclaim its slot. Anything narrower — "only release an orphan if
+ * its number is actually needed this time" — would leave some orphans alive
+ * after a compaction that promised (`packages/studio/src/app/page.tsx`'s
+ * "Renumber fleet?" dialog copy) to close gaps left by "released or
+ * forgotten" devices, and would reintroduce exactly this bug on the NEXT
+ * compaction that happens to need that particular slot. The cost accepted:
+ * a forgotten device's number is no longer guaranteed to survive forever —
+ * only until the next operator-run compaction, at which point it is
+ * genuinely gone and a reconnect allocates a brand-new one. That is a
+ * narrower, deliberate loosening of §3.2, not an accident, and every
+ * release is reported back to the caller (`released`) so it is never a
+ * silent behaviour change (CLAUDE.md's rule on this).
  */
-export function compactDeviceNumbers(db: Db): { stableId: string; from: number; to: number }[] {
+export function compactDeviceNumbers(db: Db): {
+  changed: { stableId: string; from: number; to: number }[]
+  released: { stableId: string; number: number }[]
+} {
   return db.transaction((tx) => {
-    const rows = tx.select({ stableId: devices.stableId }).from(devices).orderBy(asc(devices.label), asc(devices.id)).all()
     const current = new Map<string, number>()
     for (const r of tx.select({ stableId: deviceNumbers.stableId, number: deviceNumbers.number }).from(deviceNumbers).all()) {
       current.set(r.stableId, r.number)
     }
 
-    const targets = rows.map((row, i) => ({ stableId: row.stableId, from: current.get(row.stableId) ?? 0, to: i + 1 }))
+    // `id ASC` here is only the tie-break base order for devices sharing the
+    // same sort bucket (unnumbered devices, or — impossible in practice,
+    // since `number` is UNIQUE — a number collision). The real ordering key,
+    // applied below, is each device's existing number.
+    const rows = tx.select({ stableId: devices.stableId }).from(devices).orderBy(asc(devices.id)).all()
+    const liveIds = new Set(rows.map((r) => r.stableId))
+    const released = [...current.entries()]
+      .filter(([stableId]) => !liveIds.has(stableId))
+      .map(([stableId, number]) => ({ stableId, number }))
+      .sort((a, b) => a.number - b.number)
+    if (released.length > 0) {
+      tx.delete(deviceNumbers)
+        .where(inArray(deviceNumbers.stableId, released.map((r) => r.stableId)))
+        .run()
+      for (const r of released) current.delete(r.stableId)
+    }
+
+    const sorted = [...rows].sort((a, b) => {
+      const an = current.get(a.stableId) ?? 0
+      const bn = current.get(b.stableId) ?? 0
+      if (an === 0 || bn === 0) return an === bn ? 0 : an === 0 ? 1 : -1
+      return an - bn
+    })
+
+    const targets = sorted.map((row, i) => ({ stableId: row.stableId, from: current.get(row.stableId) ?? 0, to: i + 1 }))
     const changes = targets.filter((t) => t.from !== t.to)
 
     // Two passes, deliberately: writing final numbers directly, in order,
@@ -189,6 +263,6 @@ export function compactDeviceNumbers(db: Db): { stableId: string; from: number; 
     }
 
     writeWatermark(tx, targets.length + 1)
-    return changes
+    return { changed: changes, released }
   })
 }

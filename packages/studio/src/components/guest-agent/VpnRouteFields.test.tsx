@@ -31,6 +31,7 @@ const baseStatus: NetworkStatus = {
   exitHistory: [],
   recovery: null,
   setBy: null,
+  pendingClear: null,
 }
 
 function vpnStatus(over: Partial<NonNullable<NetworkStatus['config']>> = {}): NetworkStatus {

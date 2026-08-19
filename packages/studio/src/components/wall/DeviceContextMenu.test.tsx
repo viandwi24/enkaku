@@ -89,14 +89,18 @@ function Menu(props: { deviceId: string; devices: { id: string; label: string }[
 }
 
 describe('DeviceContextMenu — renders panel 3, not a copy of it (plan 103 §5 step 103.10)', () => {
-  test('shows a plausible loading state, then the device label as the header and the same twelve action rows ActionsList renders alone', async () => {
+  test('shows a plausible loading state, then the device label as the header and the same action rows ActionsList renders alone', async () => {
     const { getByText, getAllByRole } = renderWithApi(
       <Menu deviceId="dev-1" devices={[idleDevice]} selectedIds={['dev-1']} onClose={() => {}} />,
       baseResponses,
     )
     await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
     const rows = [...getAllByRole('button'), ...getAllByRole('link')].filter((el) => el.getAttribute('aria-label') !== 'Close')
-    expect(rows).toHaveLength(12)
+    // `idleDevice` has no `connection` field, so `DeviceConnectionSchema`'s
+    // own default supplies `kind: 'usb'` — thirteen rows, matching
+    // `ActionsList.test.tsx`'s own usb-device count (the fixed twelve plus
+    // "Move to the network (Wi-Fi/OTG)…", plan 88 §5, plan 96 hotfix).
+    expect(rows).toHaveLength(13)
   })
 
   test('with more than one device selected, the header reads "N devices selected" — the old menu\'s own rule', async () => {

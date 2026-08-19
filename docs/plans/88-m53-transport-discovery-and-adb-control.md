@@ -1,11 +1,12 @@
 # Plan 88 — M53 : Getting Devices Connected, and Keeping Them Connected
 
-> Status: partial, close to done — re-verified 2026-08-12 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor`, a Scan network button), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), and 88.10 (documentation, `bun run spec:check` at GAP 0). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
+> Status: partial, close to done — re-verified 2026-08-12 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor`, a Scan network button), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), 88.10 (documentation, `bun run spec:check` at GAP 0), and 88.11 (cutover discoverability and bulk cutover — see this line's own paragraph below). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
 >
 > **Three hypotheses are still pending the owner's real hardware — H1, H3, H6 — and this line says so plainly rather than reading "implemented" over an untested claim** (the exact drift plans 84, 85 and 87 each shipped with once). H6 (88.1): the reproduction is written up with exact commands but not run — needs a phone put into `adb-tcp` mode, which the operating agent's hardware rule forbade; the shipped fix (`AdbTcpTransport.disconnect()` as a no-op) is covered by fakes only. H1 and H3 (88.5's own first checklist item, unchecked): whether `tcpip:<port>` works as a device service over `openRaw`, and whether `persist.adb.tcp.port` survives a reboot without root — both still need a real phone, and 88.5's worker owns running that spike.
 >
 > **Two additional gaps, discovered while writing 88.10 and not this step's job to fix, are worth carrying forward precisely because they touch acceptance criteria 2 and 14:** (1) `deriveConnection`'s farm-network-inferred `medium` and the endpoint store's declared `medium` are both real, unit-tested code that **no production call site threads real data into** — `daemon.ts`, `capability/context.ts`, `api/topology.ts`, and `device-registry.ts`'s own default export all call `listDevicesWithTags`/`rowToDeviceInfo` with no network list, so every device Studio renders reads `mediumSource: 'unknown'` and the badge is USB-or-TCP only; OTG/WI-FI is unreachable outside a test today. This was already flagged in writing under 88.4's own "Known gap" note; this line confirms it is still open. (2) `GET /api/devices?connection=` (named in 88.6's own checklist and acceptance criterion 15) does not exist — `devices.ts` reads no `connection` query param anywhere; only Studio's client-side filter works. Both are documented honestly in `docs/guide/enrollment.md`, `docs/guide/install.md`, `docs/spec.md` §7.5, and `packages/core/README.md` rather than papered over — see 88.10's own checklist entries for exactly where.
 > **Residual wiring gap, found and fixed 2026-08-13 (`docs/plans/96-m61-hotfixes.md` §96.5).** 88.5's own claim above ("confirmed and fixed in the same pass") was accurate for the four call sites its own checklist entry named (`daemon.ts:1455`, `capability/context.ts:340,353`, `api/topology.ts:54`, `api/devices.ts:577`) but incomplete: three more call sites computing the exact `DeviceInfo`/`device.added` payload an operator watches were still passing an empty network list or nothing — `POST /discovered/:stableId/admit` (`api/devices.ts:388,393`, both the broadcast and the response body), `DeviceRegistry`'s own "new device registered" broadcast plus its `listDevices()` (`registry/device-registry.ts` — `DeviceRegistryDeps` had no `networks` accessor at all), and the cluster detail device list (`api/clusters.ts:181` — `createClusterRoutes` had neither `networks` nor `declaredMedia`). The user-visible symptom this produced: a device admitted from the Discovered tray badged `TCP` on the very screen an operator was watching, then silently flipped to `OTG`/`WI-FI` on the next refetch. All three are fixed and proven through their real HTTP routes / broadcast payloads (`api/devices.test.ts`, `api/clusters.test.ts`, `registry/device-registry.test.ts`) — see §96.5 for the full account, including one finding that narrows this plan's own original claim further: `device-registry.ts`'s "new device registered" broadcast branch is unreachable under the current admission gate (`classify()` only returns `'admitted'` when a `devices` row already exists, and the code's own second lookup is the identical query with no `await` between them), so that specific site was dead code even before this fix, not a live source of the symptom above.
+> **88.11 added and fixed, 2026-08-19** — the cutover wizard's own Studio surface had no honest entry point (a USB device's "Reconnect" row silently opened it instead of reconnecting) and no bulk capability, both flagged by the owner comparing this farm to Panda/some3c's own Devices-page menu. `ActionsList.tsx`'s Reconnect row now only ever reconnects; a new, USB-only "Move to the network (Wi-Fi/OTG)…" row opens the wizard (the fixed 12-row list grows to 13 on a USB device only — deliberate, stated, and mirrors the same file's own Wake/Sleep precedent for a conditional row). `BulkCutoverDialog.tsx` (new) is the multi-target sibling — `TargetPicker`-driven, a `Promise.all` fan-out over the existing per-device route (there is no batch cutover endpoint), client-side USB/offline eligibility skipping via `SkippedGroups`, one shared port (confirmed device-local, not farm-wide), and an "armed, not the whole journey" report. Reached from a new "Move to network…" entry in the Devices page's own fleet `⋮` menu, pre-filled from the current selection or every eligible USB device. "Farm networks" discoverability under Settings is fixed with a cross-link from the "Network" tab to "Discovery & monitoring" rather than a structural schema move. See 88.11 for the full account and its own file list; the two live UX defects (the mislabeled Reconnect row, the misplaced Farm networks section) are also logged in `docs/plans/96-m61-hotfixes.md`.
 > Depends on: Plan 56 (admission — anything a network scan finds goes through the Discovered tray, never around it), Plan 85 (the `DeviceReconciler`, the bounded `host-adb` helper, the autoscaled stream lane). Neither needs to change first; this plan extends both. Plan 29 is a **draft** and is superseded in part by §5 88.4 — see §3.8.
 > Spec references: §7.1 (transport engines), §7.5 (stable identity, admission, discovery reconciliation), §7.7 (tool management API and UI), §10.4 (adb serialisation and the `kill-server` prohibition — **this plan amends it**), §12 (data model), §13 (core⇄Studio protocol), §15.1 (the enrollment flow), §16 (NFR targets)
 > Ships: packages/core/src/registry/endpoints.ts
@@ -1676,6 +1677,124 @@ onPhase: (phase, detail) => hub.broadcast({ type: 'adb.server.phase', payload: {
   `docs/guide/install.md` say so explicitly rather than describing the
   badge as working. Not this step's job to fix; flagged here so it is not
   lost between 88.4's note and whichever step closes it.
+
+### 88.11 — Cutover discoverability and bulk cutover (extends 88.5, 88.6)
+
+Two live UX defects an operator hit this session, plus the bulk capability
+the owner asked for directly (comparing this farm to Panda/some3c, whose
+Devices page carries its own menu for the USB→network move): *"kalau di
+panda kan dipermudah kaya ke halaman devices sudah ada menunya."* Recorded
+in `docs/plans/96-m61-hotfixes.md` (the two defects) since both were live
+UX defects, not new design.
+
+- [x] **`ActionsList.tsx`'s "Reconnect" row no longer doubles as the cutover
+      trigger.** Before this step, a USB device's "Reconnect" row silently
+      opened `CutoverDialog` instead of reconnecting (`onSelect={isUsb ?
+      () => setCutoverOpen(true) : () => void reconnect()}`) — actively
+      misleading, since "Reconnect" reads as re-establishing a connection
+      that already existed, never "move this phone to the network."
+      Reconnect now always fires `POST .../connection/reconnect` (a USB
+      device that adb still lists answers `already-connected`, a legitimate
+      no-op, not a dead click). The cutover wizard gets its own row, "Move
+      to the network (Wi-Fi/OTG)…" (matching `DeviceHeader.tsx`'s identical
+      Connection-group item, word for word, and `CutoverDialog.tsx:152`'s
+      own dialog title in substance), USB-only.
+
+      **The 12-row budget (§4.2/plan 103 §4.2) does not have room for a 13th
+      row unconditionally, and the fix is a deliberate, stated exception,
+      not a silent overflow.** The new row renders only for a USB device
+      (never for one already on the network, which has nowhere left to move
+      TO) — so the list is thirteen rows on a USB device and twelve on a
+      TCP one. This mirrors a precedent the same file already established
+      for Wake/Sleep (plan 103 §5 step 103.10): a single dynamic label
+      cannot describe every state, so the row count grows by exactly one
+      only when the extra row is genuinely meaningful, never appended
+      unconditionally. No existing row was a good candidate to fold this
+      into instead — collapsing Disconnect/Reconnect back into one row to
+      make space would reintroduce a different version of the exact
+      ambiguity this whole fix removes, and `DeviceHeader.tsx`'s own
+      Connection group already proves three independent rows (Disconnect,
+      Reconnect, Move to network) read correctly together. `ActionsList.tsx`
+      is also what the Wall's right-click `DeviceContextMenu.tsx` renders
+      (that file's own doc comment: one vocabulary, not two) — verified by
+      reading it, and fixed at the one shared component rather than twice.
+      Stays single-device, matching plan 104 §10's own recorded reasoning
+      for `CutoverDialog.tsx` ("there is no multi-device reading of 'cut
+      this device over' that means anything" for a row bound to one focused
+      device) — targeting several phones at once is 88.11's own next
+      bullet, reached from the Devices page instead.
+- [x] **`BulkCutoverDialog.tsx`** (new,
+      `packages/studio/src/components/device/`) — the multi-target sibling
+      of the singular wizard, composed exactly like every other bulk dialog
+      in this repo: `TargetPicker`/`useTargetSelection` (plan 104, no
+      `cluster` mode — matching §3.4's own table row for Reconnect/
+      Disconnect, "single · devices"), a `Promise.all` fan-out over
+      `POST /:id/connection/cutover` (the core has no batch cutover
+      endpoint, and `CutoverManager.start` is independently keyed by
+      `stableId` — confirmed by reading `cutover.ts`'s own `sessions` map —
+      so N concurrent single-device calls is correct, not a shortcut), and
+      `OutcomeSummary`/`SkippedGroups` for the report. Design decisions,
+      each stated in the file's own header comment:
+      - **One port for every targeted device.** Confirmed by reading
+        `AdbClient.tcpip`/`enableTcp` in `cutover.ts`: `tcpip:<port>` is a
+        DEVICE service over that one phone's own adb transport
+        (`host:transport:<serial>` then `tcpip:<port>`), restarting only
+        that phone's adbd listener — not a farm-wide allocation, so many
+        devices sharing 5555 is not a conflict.
+      - **Eligibility is checked client-side before any request goes out.**
+        Only a USB-connected, non-offline device is targeted; a device
+        already on the network, or offline, is skipped with a stated reason
+        via `SkippedGroups` — never silently dropped, never sent a doomed
+        request. A server-side refusal (a running job, anything else) still
+        lands in the Failed section.
+      - **The dialog reports arming, not the whole journey.** Each `POST`
+        already waits, server-side, for TCP mode to be enabled and verified
+        by read-back before returning — "armed" here is a real, confirmed
+        state. The dialog does not poll `device.cutover` per targeted
+        device inline; each device's own tile/badge/popup already watches
+        that broadcast the moment this dialog closes, and plan 107's
+        operation tray was considered and rejected (an in-memory,
+        non-persisted `CutoverManager` session is not the durable-record
+        shape that tray is built for). No bulk "cancel all pending"
+        affordance either — each device's own popup already carries a
+        working, idempotent per-device Cancel once armed.
+- [x] **A page-level entry point on the Devices page** — `app/page.tsx`'s
+      fleet `⋮` dropdown (beside "Add device") gains "Move to network…",
+      opening `BulkCutoverDialog` pre-filled from the CURRENT farm-wide
+      selection (`selectedIds`) when non-empty, or every USB-connected
+      device in the fleet otherwise (never every device unconditionally —
+      a TCP device has nowhere left to move to). The direct, literal answer
+      to the owner's Panda comparison: a menu reachable from the Devices
+      page itself, not buried in a per-device popup.
+- [x] **"Farm networks" discoverability (§3.6, 88.6).** The CIDR/sweep-
+      policy editor lives under Settings → "Discovery & monitoring"
+      (`discovery` schema key), while a separate tab literally named
+      "Network" exists holding only the geo-verification lookup (`network`
+      schema key, plan 55 §3.2) — confirmed in-browser this session: an
+      operator opening "Network" looking for IP-range scanning finds
+      nothing related. Fixed with a cross-link banner at the top of the
+      Network tab pointing at Discovery & monitoring, the smaller of the
+      two options this step's own brief offered. A structural move was
+      considered and rejected: `discovery`'s sweep-policy fields (port,
+      scan mode, max addresses) sit in the same schema block as the CIDR
+      list and share one `FarmForm`; relocating only the CIDR table would
+      split one coherent settings group across two tabs for no schema
+      reason, and relocating the whole `discovery` block would touch a
+      widely-read settings path (`sweep.ts`, `reconnect.ts`, `endpoints.ts`,
+      `cutover.ts`) for a UI-only fix.
+- **Verifiable result:** `ActionsList.test.tsx`'s row-count test is split by
+  connection kind (thirteen on USB, twelve on TCP) and a new describe block
+  proves the cutover row is reachable independently of Reconnect, on both
+  kinds; `DeviceContextMenu.test.tsx`'s row count is updated identically
+  (same shared component); `BulkCutoverDialog.test.tsx` proves eligibility
+  skipping (non-USB, offline), the shared port on every request body, and a
+  server-side `failed` step landing in the report; `page.test.tsx` proves
+  the fleet menu entry opens the dialog pre-filled from an active selection,
+  and defaults to every eligible USB device with none selected;
+  `settings/page.test.tsx` proves the Network tab's cross-link text and its
+  working `href="/settings?tab=discovery"`. `bash scripts/typecheck.sh` and
+  `bun run --cwd packages/studio test` both green — see this plan's own
+  status line for the exact counts this pass ran.
 
 ---
 

@@ -78,6 +78,24 @@ describe('SettingsPage — smoke render', () => {
 })
 
 /**
+ * Plan 88 §5 step 88.5's "Farm networks" editor (CIDR ranges, sweep policy)
+ * lives under Settings → "Discovery & monitoring", while a separate tab
+ * literally named "Network" exists and holds only the geo-verification
+ * lookup (plan 55 §3.2) — an operator searching "Network" for IP-range
+ * scanning found nothing related, confirmed in-browser this session
+ * (`docs/plans/96-m61-hotfixes.md`). This is the fix: a cross-link.
+ */
+describe('SettingsPage — Network tab cross-links to Discovery & monitoring (plan 88 §5, plan 96 hotfix)', () => {
+  test('explains where farm networks / IP-range scanning actually lives, with a working link', async () => {
+    setSearchParams({ tab: 'network' })
+    renderWithApi(<SettingsPage />, baseResponses())
+    await waitFor(() => expect(screen.getByText(/Looking for IP-range scanning/)).toBeTruthy())
+    const link = screen.getByRole('link', { name: 'Discovery & monitoring' })
+    expect(link.getAttribute('href')).toBe('/settings?tab=discovery')
+  })
+})
+
+/**
  * The Guest agent tab's fleet-wide summary and "Provision all" action (plan
  * 90 §3.8, §5 step 90.6) — `farmSections.ts`'s own comment on this section
  * reserved this exact spot for it.

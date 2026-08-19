@@ -531,11 +531,30 @@ export const DeviceNetworkStatusResponseSchema = z.object({
    * `.default(null)` for the same reason `setBy` has one: a core that predates
    * this field answers with no such key, and "nothing is owed" is the honest
    * reading of that silence.
+   *
+   * **This is also the whole answer a disarm gives for a phone that was not
+   * there to hear it.** `DELETE /:id/network` and `POST /:id/network/disable`
+   * accept an offline device (the enable direction still does not), and they
+   * answer with the ordinary status object — `enabled: false` and this field
+   * non-null. There is no separate "accepted but not delivered" envelope,
+   * deliberately: a debt recorded by the door and a debt recorded by a live
+   * revert that could not reach the phone are the same fact, and one shape
+   * means a client cannot handle one and miss the other.
    */
   pendingClear: z
     .object({
       engine: NetworkEngineIdSchema,
       devicePort: z.number().int().min(1).max(65535).optional(),
+      /**
+       * The row is being kept ONLY until the phone can be told (`DELETE`), and
+       * is erased when the debt settles — as opposed to a `/disable`, whose
+       * config is kept on purpose so it can be switched back on.
+       *
+       * `.default(false)` because a core that predates this key still answers
+       * without it, and "the config is being kept" is the safer reading of that
+       * silence: it never invites a client to render a route as already gone.
+       */
+      forget: z.boolean().default(false),
       reason: z.string(),
       since: z.number().int(),
     })
@@ -768,18 +787,33 @@ export const GuestAgentSummaryResponseSchema = z.object({
  * is no label to re-push yet, not a silently skipped one. The moment 89.9
  * wires the re-push, this response starts saying something real with no
  * shape change.
+ *
+ * `released` (plan 96 §96.42) — every `device_numbers` reservation that was
+ * deleted because it was orphaned (a `forget()`ed device's number, per §3.2's
+ * own comment on `lifecycle.ts`'s `forget()`, with no matching `devices` row)
+ * before the dense `1..n` sequence was computed. Compaction deletes every
+ * orphan unconditionally, not just the ones whose slot this run happens to
+ * need — see `compactDeviceNumbers`'s own doc comment for why — so this is
+ * reported explicitly rather than silently folded into `changed`, which
+ * only ever describes a still-live device's number moving.
  */
 export const DeviceNumberChangeSchema = z.object({
   stableId: z.string(),
   from: z.number().int(),
   to: z.number().int(),
 })
+export const DeviceNumberReleasedSchema = z.object({
+  stableId: z.string(),
+  number: z.number().int(),
+})
 export const DeviceNumberCompactResponseSchema = z.object({
   changed: z.array(DeviceNumberChangeSchema),
+  released: z.array(DeviceNumberReleasedSchema),
   relabelled: z.number().int(),
   failed: z.array(z.object({ stableId: z.string(), reason: z.string() })),
 })
 export type DeviceNumberChange = z.infer<typeof DeviceNumberChangeSchema>
+export type DeviceNumberReleased = z.infer<typeof DeviceNumberReleasedSchema>
 
 // ---- POST /api/devices/prep/apply ----
 

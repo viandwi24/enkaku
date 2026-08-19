@@ -371,8 +371,15 @@ export interface NetworkStatusResult {
    * Non-null means the record says off and the phone has not been told —
    * settled on the next admission, and the only field on this object that says
    * the device may still be carrying something.
+   *
+   * `forget` is why the rest of this object may still describe a whole route
+   * after a `DELETE`: the row is being held open only to carry the `captured`
+   * values and the reverse's device port the teardown still owes the phone, and
+   * it goes the moment the debt is settled. Without it a client that just
+   * called `DELETE` on an absent phone and got a route back has no way to tell
+   * "the delete did not happen" from "the delete is owed".
    */
-  pendingClear: { engine: NetworkEngineId; devicePort?: number; reason: string; since: number } | null
+  pendingClear: { engine: NetworkEngineId; devicePort?: number; forget: boolean; reason: string; since: number } | null
 }
 
 /**
@@ -526,6 +533,60 @@ export function requireHeldLease(leases: LeaseManager, deviceId: string): void {
   const lease = leases.getLease(deviceId)
   const allowed = leases.checkInputAllowed(deviceId, lease?.holder ?? '')
   if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)
+}
+
+/**
+ * **The DISARM direction's admission — the one place `device_unavailable` is
+ * not the end of the request.**
+ *
+ * `requireHeldLease` above refuses an offline device outright, because every
+ * endpoint it guards writes something to a phone. That is the right rule for
+ * turning a route ON: applying a route to a phone you cannot reach is a promise
+ * you cannot keep, and `/enable`, `PUT` and `/retry` keep taking it unchanged.
+ *
+ * It is the WRONG rule for turning one off, and offline is exactly the case
+ * where turning it off matters most. The measured shape of the problem: two
+ * phones sat at another location carrying enabled routes — one an
+ * `adb-reverse-proxy` pointed at a metered upstream, one a `failClosed`
+ * `vpn-helper` — and `DELETE /network` and `/network/disable` both answered
+ * `409 device_unavailable`. The operator's only option was to wait for the
+ * phone to come back, let the route re-arm on admission, and turn it off
+ * afterwards. For the fail-closed one that is the shape of an incident this
+ * farm has already had: a `RouteVpnService` armed with a kill switch and no
+ * farm connection left a phone with no internet at all.
+ *
+ * A lease is not merely unheld for such a device, it is **unobtainable**:
+ * `acquireManual` refuses any status but `idle`/`manual` with this same code.
+ * So the gate is not "take control first", it is "you may never turn this off".
+ *
+ * What makes widening it safe is that the machinery for "we could not reach the
+ * phone" already exists and predates nothing: `revertNetwork` records the
+ * teardown as a `pendingClear` debt on the row instead of claiming an off that
+ * did not happen, and `clearOrphanedRoute` settles it — with a real teardown,
+ * not a bookkeeping-only clear — on the device's next admission. The gate was
+ * refusing the request *before* the machinery built for it could run.
+ *
+ * **Exactly one code is let through, and nothing else about the check changes:**
+ *
+ * - `device_unavailable` (`offline`, and `quarantined`) — allowed. Both are
+ *   states in which no lease can be taken, so the off button is unreachable for
+ *   the same reason; and a quarantined phone still carrying a farm route
+ *   through somebody's paid upstream is the same hazard as an offline one. A
+ *   quarantined device is often still reachable over adb, in which case the
+ *   teardown below simply lands and no debt is recorded at all.
+ * - `device_busy` — still refused. A job is driving that phone right now, and
+ *   pulling its route out from under it is not a disarm, it is a collision.
+ * - `no_lease` / `not_lease_holder` — still refused. The device is ONLINE and
+ *   takeable; "take control first" is a real instruction there, and somebody
+ *   else may be driving it.
+ * - `device_not_found` — still refused, obviously.
+ */
+export function requireDisarmAdmission(leases: LeaseManager, deviceId: string): void {
+  const lease = leases.getLease(deviceId)
+  const allowed = leases.checkInputAllowed(deviceId, lease?.holder ?? '')
+  if (allowed.ok) return
+  if (allowed.code === 'device_unavailable') return
+  throw new EnkakuError(allowed.code, allowed.message)
 }
 
 /** Reads a device row or throws `device_not_found`. Exported for the same reason `requireHeldLease` is. */
@@ -1995,6 +2056,10 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
         ? {
             engine: persisted.pendingClear.engine,
             ...(persisted.pendingClear.devicePort !== undefined ? { devicePort: persisted.pendingClear.devicePort } : {}),
+            // On the wire as well as on disk: it is the difference between "this config is being
+            // kept so it can be switched back on" and "this config only still exists because the
+            // phone has not been told yet, and it goes when it is".
+            forget: persisted.pendingClear.forget,
             reason: persisted.pendingClear.reason,
             since: persisted.pendingClear.since,
           }
@@ -2320,8 +2385,20 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    * after `revert()` closed the session would mint a token for nothing.
    */
   async function revertUnreachedReason(row: DeviceRow, persisted: PersistedNetworkRoute): Promise<string | null> {
+    // **The offline check comes FIRST, ahead of the `vpn-helper` early return, and the order is
+    // load-bearing.** A VPN route whose live entry this process still holds — a device the farm
+    // has marked offline without `handleDeviceOffline` having cleared the entry, which is exactly
+    // what a reconciler-driven transition looks like — took the early return and reported a clean
+    // off for a phone that is not there. That is "an off that did not happen, recorded as done",
+    // and it is now reachable by an operator on purpose, because `requireDisarmAdmission` lets the
+    // disarm doors through for an offline device. The wording matches each engine's own teardown:
+    // the advisory rungs clear a setting, the VPN is told to stop.
+    if (row.status === 'offline') {
+      return persisted.config.engine === 'vpn-helper'
+        ? 'the device was offline, so it was never told to stop'
+        : 'the device was offline, so its proxy setting was never cleared'
+    }
     if (persisted.config.engine === 'vpn-helper') return null
-    if (row.status === 'offline') return 'the device was offline, so its proxy setting was never cleared'
     const declared = advisoryDeclaredValue(row.id, persisted)
     try {
       const { route } = buildEngine(row, persisted.config)
@@ -2903,7 +2980,11 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    */
   async function clearRouteFromRequest(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
     const row = mustGet(deviceId)
-    requireHeldLease(deps.leases, row.id)
+    // The disarm direction, same as `/network/disable` — `requireDisarmAdmission` carries the whole
+    // argument. The plugin path into this function (`device.network.clear`) is NOT widened by this:
+    // `createDeviceNetworkService`'s `withDevice` takes its own `admitMember` hold first and still
+    // refuses an unreachable device with `device_unavailable` before it ever gets here.
+    requireDisarmAdmission(deps.leases, row.id)
     await revertNetwork(row.id, actor, { forget: true })
     // **The row only goes when the phone was actually told.** Erasing it on a teardown that never
     // reached the device throws away the capture the revert still owes it and the device port the
@@ -3208,7 +3289,9 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
 
   app.post('/:id/network/disable', requirePermission('device.network'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
+    // The disarm direction — see `requireDisarmAdmission` for why this one endpoint and `DELETE`
+    // accept a device no lease can be taken on, and why `/enable`, `PUT` and `/retry` do not.
+    requireDisarmAdmission(deps.leases, row.id)
     const persisted = readPersistedRoute(row)
     const actor = c.get('user')?.id ?? null
     if (persisted) {

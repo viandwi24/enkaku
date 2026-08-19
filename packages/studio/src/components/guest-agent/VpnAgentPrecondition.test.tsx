@@ -52,6 +52,7 @@ const baseStatus: NetworkStatus = {
   exitHistory: [],
   recovery: null,
   setBy: null,
+  pendingClear: null,
 }
 
 function networkBody(over: Record<string, unknown> = {}): Record<string, unknown> {

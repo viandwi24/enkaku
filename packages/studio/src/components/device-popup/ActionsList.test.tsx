@@ -72,7 +72,7 @@ const tcpDevice = { ...usbDevice, connection: { kind: 'tcp', address: '10.0.0.5'
 
 const noop = () => {}
 
-describe('ActionsList — Reconnect (plan 103 §4.2)', () => {
+describe('ActionsList — Reconnect always reconnects, on USB and TCP alike (plan 88, plan 96 hotfix — the mislabeled row)', () => {
   test('a tcp device fires POST /connection/reconnect directly, no dialog', async () => {
     const { getByRole, apiMock } = renderWithApi(
       <TooltipProvider>
@@ -85,15 +85,42 @@ describe('ActionsList — Reconnect (plan 103 §4.2)', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  test('a usb device opens the Cutover wizard instead — nothing to redial over the network yet', async () => {
+  // Before this fix, a USB device's "Reconnect" row silently opened the
+  // Cutover wizard instead of reconnecting — the exact defect this session
+  // found and this test now guards against.
+  test('a usb device ALSO fires POST /connection/reconnect directly, no dialog — no longer doubles as the cutover trigger', async () => {
+    const { getByRole, apiMock } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={usbDevice} devices={[usbDevice]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      { '/api/devices/dev-1/connection/reconnect': { body: { result: 'already-connected', serial: 'ZP2222RMBS' } } },
+    )
+    fireEvent.click(getByRole('button', { name: 'Reconnect' }))
+    await waitFor(() => expect(apiMock.calls.some((c) => c.path === '/api/devices/dev-1/connection/reconnect')).toBe(true))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('ActionsList — "Move to the network…" is its own row, reachable independently of Reconnect (plan 88 §5, plan 96 hotfix)', () => {
+  test('usb: the row is present and opens the Cutover wizard', async () => {
     const { getByRole } = renderWithApi(
       <TooltipProvider>
         <ActionsList deviceId="dev-1" device={usbDevice} devices={[usbDevice]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
       </TooltipProvider>,
     )
-    fireEvent.click(getByRole('button', { name: 'Reconnect' }))
+    fireEvent.click(getByRole('button', { name: 'Move to the network (Wi-Fi/OTG)…' }))
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toBeTruthy()
+    expect(within(dialog).getByText('Move moto g06 to the network')).toBeTruthy()
+  })
+
+  test('tcp: the row does not render at all — a device already on the network has nowhere left to move to', async () => {
+    renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={tcpDevice} devices={[tcpDevice]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+    )
+    expect(screen.queryByRole('button', { name: 'Move to the network (Wi-Fi/OTG)…' })).toBeNull()
   })
 })
 
@@ -359,8 +386,8 @@ describe('ActionsList — Adb command opens AdbCommandDialog, non-modal (plan 10
   })
 })
 
-describe('ActionsList — the twelve rows fit without scrolling at a plausible panel width (plan 103 §4.2, §6)', () => {
-  test('renders exactly twelve rows plus the dialogs, no more, no fewer', () => {
+describe('ActionsList — the row count fits without scrolling at a plausible panel width (plan 103 §4.2, §6; grows by one, deliberately, on USB — see the "Move to the network…" row\'s own comment)', () => {
+  test('a usb device renders exactly thirteen rows plus the dialogs — the fixed twelve, plus "Move to the network…"', () => {
     const { getAllByRole } = renderWithApi(
       <TooltipProvider>
         <ActionsList
@@ -372,14 +399,29 @@ describe('ActionsList — the twelve rows fit without scrolling at a plausible p
           onAssistSelect={noop}
           onDeviceReloaded={noop}
           onForgotten={noop}
-         
+
         />
       </TooltipProvider>,
     )
-    // Every row is a `role="button"` or `role="link"` at the top level —
-    // twelve total (§4.2's own ordered list). All twelve are real now
-    // (plan 103 §5 steps 103.4–103.6) — none is a genuinely disabled
-    // placeholder any more.
+    const rows = [...getAllByRole('button'), ...getAllByRole('link')]
+    expect(rows).toHaveLength(13)
+  })
+
+  test('a tcp device renders exactly twelve rows — no "Move to the network…" row, nothing left to move to', () => {
+    const { getAllByRole } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList
+          deviceId="dev-1"
+          device={tcpDevice}
+          devices={[tcpDevice]}
+          assistState="unavailable"
+          canUseLive
+          onAssistSelect={noop}
+          onDeviceReloaded={noop}
+          onForgotten={noop}
+        />
+      </TooltipProvider>,
+    )
     const rows = [...getAllByRole('button'), ...getAllByRole('link')]
     expect(rows).toHaveLength(12)
   })

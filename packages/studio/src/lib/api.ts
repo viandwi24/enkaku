@@ -391,6 +391,34 @@ export interface NetworkStatus {
    * are different claims, and only one of them is about the phone.
    */
   captured?: { at: number } | null
+  /**
+   * **A teardown this farm owes this device and has not been able to deliver**
+   * — `PersistedNetworkRoute.pendingClear` on the wire.
+   *
+   * Non-null means the record says off and the PHONE has not been told: it may
+   * still be carrying a system proxy, or a fail-closed TUN, that nothing in this
+   * farm currently wants. `DELETE /:id/network` and `POST /:id/network/disable`
+   * accept an offline device and answer with the ordinary status object —
+   * `enabled: false` and this field non-null — so this is the only field that
+   * distinguishes "off, and the phone knows" from "off, and the phone does not".
+   * `PendingClearNotice` is what renders it.
+   *
+   * Required and nullable, exactly like `setBy` above and unlike `captured`:
+   * the response schema gives it `.default(null)`, so a core that predates the
+   * field still parses into a present `null` here. Only `captured` is optional,
+   * because "we cannot say" is a third answer there and is worded as one.
+   *
+   * `devicePort` is present only when the owed teardown includes removing a
+   * reverse; `forget` says whether settling it erases the whole row (`DELETE`)
+   * or keeps the disabled config (`/disable`).
+   */
+  pendingClear: {
+    engine: NetworkEngineId
+    devicePort?: number
+    forget: boolean
+    reason: string
+    since: number
+  } | null
 }
 
 /**

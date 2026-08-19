@@ -48,9 +48,21 @@ export function AgentAlertChip({
   deviceLabel: string
   className?: string
 }) {
-  if (agent !== 'failed' && agent !== 'outdated') return null
+  /**
+   * `consent-required` is here for the same reason the other two are: it is a
+   * state an operator has to *do something* about, and until it was added this
+   * list said nothing at all about a phone that is one tap away from working.
+   * Measured on this farm — two Oppos sat in `consent-required` while their
+   * cards showed only "disconnected", because this guard returned null for
+   * every state but the original two.
+   *
+   * `ready`, `provisioning` and `absent` stay silent on purpose (nothing to act
+   * on, or a pass already in flight), and so does `unsupported` — an old phone
+   * is not a broken one, and a chip promising an action there would be a lie.
+   */
+  if (agent !== 'failed' && agent !== 'outdated' && agent !== 'consent-required') return null
 
-  const label = agent === 'failed' ? 'Agent failed' : 'Agent outdated'
+  const label = agent === 'failed' ? 'Agent failed' : agent === 'outdated' ? 'Agent outdated' : 'Needs VPN consent'
   const tone =
     agent === 'failed'
       ? 'text-led-danger border-led-danger/40 bg-led-danger/10 hover:bg-led-danger/20'
@@ -69,7 +81,9 @@ export function AgentAlertChip({
           title={
             agent === 'failed'
               ? 'The guest agent could not be installed or reached — open for the reason, and a retry.'
-              : 'A newer guest agent build is pinned — open for the detail, and an update.'
+              : agent === 'outdated'
+                ? 'A newer guest agent build is pinned — open for the detail, and an update.'
+                : 'The agent is installed and answering, but Android will not let it open a tunnel until the VPN dialog is accepted on the phone itself.'
           }
         >
           <TriangleAlert className="size-2.5" aria-hidden />

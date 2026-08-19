@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Download, Globe, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, RotateCcwSquare, Search, SlidersHorizontal, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
+import { Download, EthernetPort, Globe, Hash, Inbox, LayoutGrid, List, MoreVertical, Plus, RotateCcwSquare, ScanSearch, Search, SlidersHorizontal, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   connectionBadge,
@@ -30,6 +30,7 @@ import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
 import { BulkTransferDialog } from '@/components/BulkTransferDialog'
 import { BulkProxyDialog } from '@/components/network/BulkProxyDialog'
+import { BulkCutoverDialog } from '@/components/device/BulkCutoverDialog'
 import { BulkPrepDialog } from '@/components/BulkPrepDialog'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
@@ -71,6 +72,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { useBulkSelection } from '@/hooks/use-bulk-selection'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
 import { isAdmin, useAuth } from '@/lib/auth'
+import { scanDisabledReason, summariseSweepReport, useNetworkScan } from '@/lib/network-scan'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
@@ -246,6 +248,14 @@ function DashboardView() {
   // `BulkTransferDialog` holds a batch's; there is no tray entry, deliberately
   // (plan 114 F20 — a sub-second settings write is not a tray operation).
   const [bulkProxyOpen, setBulkProxyOpen] = useState(false)
+  // "Move to network…" (plan 88 §5 step 88.5's own bulk sibling,
+  // `BulkCutoverDialog.tsx`) — the Devices page's own direct answer to the
+  // owner's Panda comparison: a menu reachable from THIS page, not buried in
+  // a per-device popup. Same `bulkProxyOpen` shape: no tray entry (each
+  // targeted device's own arm outcome is reported synchronously, once, when
+  // the dialog's fan-out settles — see that dialog's own file header for why
+  // a live per-device poll stays out of scope here).
+  const [bulkCutoverOpen, setBulkCutoverOpen] = useState(false)
   // "Prep settings…" — `FarmSettings.defaults` is copy-on-admission, so a farm
   // default cannot reach a phone that is already enrolled ("Devices already
   // registered keep their own settings"). This is the only way to set
@@ -278,6 +288,11 @@ function DashboardView() {
   // the feature's own safe default, so a slow fetch never shows a
   // pre-checked box for a farm that has not opted in.
   const [farmLabellingMode, setFarmLabellingMode] = useState<DeviceLabelMode>('off')
+  // "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — `null` until
+  // the same `/api/settings` fetch below resolves, so the fleet menu's item
+  // reads "Checking farm networks…" rather than a false "enabled" during
+  // that brief window (`scanDisabledReason`'s own null case).
+  const [scanNetworks, setScanNetworks] = useState<{ scan: boolean }[] | null>(null)
   // "Apply labels" (plan 89 §3.7 point 3, §5 step 89.8) — the fleet-wide
   // switch-on: `POST /api/devices/labels/apply` returns a per-device report
   // synchronously (no batch job, no WS updates to wait for), so the report
@@ -289,6 +304,22 @@ function DashboardView() {
   const { run, isPending } = useAction()
 
   const loadDiscovered = () => void fetchDiscoveredDevices().then(setDiscovered).catch(() => undefined)
+
+  // "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — the fleet
+  // menu's own trigger for the bounded subnet sweep, sharing `useNetworkScan`
+  // with `FarmNetworksEditor`'s identical button under Settings rather than
+  // reimplementing the fetch. A device the sweep admits or queues arrives
+  // over the SAME `device.added`/`device.discovered` WS messages this page
+  // already listens for above — `load()`/`loadDiscovered()` here are the
+  // same belt-and-suspenders refetch `DiscoveredTray`'s own Rescan already
+  // does alongside its WS-driven update, not the only path a new device
+  // reaches the screen through.
+  const scanDisabledReasonText = scanDisabledReason(scanNetworks)
+  const { scan: scanNetwork, scanning: scanningNetwork } = useNetworkScan((report) => {
+    toast.success(summariseSweepReport(report))
+    void load()
+    loadDiscovered()
+  })
 
   const applyLabelsToSelected = () =>
     run(
@@ -321,18 +352,26 @@ function DashboardView() {
       {
         failure: 'Could not renumber the fleet',
         onSuccess: (result) => {
-          if (result.changed.length === 0) {
+          // Plan 96 §96.42 — an orphaned reservation (a forgotten device's
+          // number, left behind on purpose by `forget()` per §3.2, until a
+          // compaction like this one explicitly releases it) is reported as
+          // its own clause, never folded silently into "changed": releasing
+          // it is a real, one-way consequence of running this action, and
+          // CLAUDE.md's rule against silent behaviour changes applies.
+          const releasedNote = result.released.length > 0 ? ` · ${result.released.length} forgotten-device number${result.released.length === 1 ? '' : 's'} released` : ''
+          if (result.changed.length === 0 && result.released.length === 0) {
             toast.success('Every number was already compact — nothing changed')
           } else if (result.failed.length === 0) {
             toast.success(
               `Renumbered ${result.changed.length} device${result.changed.length === 1 ? '' : 's'}` +
-                (result.relabelled > 0 ? ` · ${result.relabelled} label${result.relabelled === 1 ? '' : 's'} re-applied` : ''),
+                (result.relabelled > 0 ? ` · ${result.relabelled} label${result.relabelled === 1 ? '' : 's'} re-applied` : '') +
+                releasedNote,
             )
           } else {
             // Outcome first, grouped by reason, always named (docs/design.md
             // "Multi-device reports") — a bulk toast is small, so the names
             // ride the description rather than a full report panel.
-            toast.warning(`Renumbered ${result.changed.length} device${result.changed.length === 1 ? '' : 's'}`, {
+            toast.warning(`Renumbered ${result.changed.length} device${result.changed.length === 1 ? '' : 's'}${releasedNote}`, {
               description: `${result.failed.length} label${result.failed.length === 1 ? '' : 's'} could not be re-applied: ${result.failed
                 .map((f) => `${f.stableId} (${f.reason})`)
                 .join(', ')}`,
@@ -373,7 +412,10 @@ function DashboardView() {
     // this page needing the whole farm Settings form. A fetch failure
     // leaves the safe `'off'` default in place.
     void api('/api/settings', SettingsResponseSchema)
-      .then((b) => setFarmLabellingMode(b.settings.defaults.labelling.mode))
+      .then((b) => {
+        setFarmLabellingMode(b.settings.defaults.labelling.mode)
+        setScanNetworks(b.settings.discovery.networks)
+      })
       .catch(() => undefined)
   }, [])
 
@@ -912,6 +954,42 @@ function DashboardView() {
                 <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setRenumberOpen(true) }}>
                   <Hash className="size-3.5" aria-hidden />
                   Renumber fleet…
+                </DropdownMenuItem>
+                {/* Plan 88 §5 step 88.5's own bulk sibling — the direct
+                    answer to "kalau di panda kan dipermudah kaya ke halaman
+                    devices sudah ada menunya": a menu entry reachable from
+                    the Devices page itself, not buried in a per-device
+                    popup. `BulkCutoverDialog` below reads its own pre-filled
+                    default from `selectedIds` (the CURRENT farm-wide
+                    selection) when non-empty, or every eligible USB device
+                    otherwise. */}
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setBulkCutoverOpen(true) }}>
+                  <EthernetPort className="size-3.5" aria-hidden />
+                  Move to network…
+                </DropdownMenuItem>
+                {/* Plan 88 §5 step 88.12 — the bounded subnet sweep's own
+                    trigger, reachable from the Devices page an operator
+                    actually works from day to day (the owner's own Panda
+                    comparison), not only from Settings → Discovery &
+                    monitoring where `FarmNetworksEditor` carries the
+                    identical action beside the ranges it scans. Styling-only
+                    disabled (no `disabled` prop) — same reasoning
+                    `ActionsList.tsx`'s own disabled row comment gives: a
+                    truly disabled Radix item stops firing the hover that
+                    would show `title`'s reason, so the guard lives in
+                    `onSelect` instead. */}
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    if (scanDisabledReasonText || scanningNetwork) return
+                    void scanNetwork()
+                  }}
+                  aria-disabled={!!scanDisabledReasonText}
+                  title={scanDisabledReasonText ?? undefined}
+                  className={cn((scanDisabledReasonText || scanningNetwork) && 'cursor-not-allowed opacity-50')}
+                >
+                  <ScanSearch className="size-3.5" aria-hidden />
+                  {scanningNetwork ? 'Scanning…' : 'Scan network'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1526,6 +1604,28 @@ function DashboardView() {
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
         clusters={clusters}
+      />
+      {/* Plan 88 §5 step 88.5's bulk sibling, opened from the fleet `⋮` menu
+          above. `devices` (the pre-filled default) is the CURRENT selection
+          when one exists — same triple every other bulk dialog on this page
+          takes — or, with nothing selected, every USB-connected device in
+          the fleet (a TCP device has nowhere left to move TO; defaulting to
+          "every device" would just fill the picker with rows the dialog's
+          own eligibility check immediately skips). `allDevices` is still the
+          WHOLE pool, so the picker can widen past that default to a device
+          that is not currently USB-connected — it will be named in the
+          report's Skipped section rather than silently dropped, exactly as
+          a hand-picked ineligible device already is. */}
+      <BulkCutoverDialog
+        open={bulkCutoverOpen}
+        onOpenChange={setBulkCutoverOpen}
+        devices={
+          selectedIds.length > 0
+            ? (devices ?? []).filter((d) => selectedIds.includes(d.id))
+            : (devices ?? []).filter((d) => (d.connection?.kind ?? 'usb') === 'usb')
+        }
+        allDevices={devices ?? []}
+        onDone={() => void load()}
       />
       {/* Same triple, and the selection is deliberately NOT cleared on close
           for the same reason: a partial result leaves the operator with
