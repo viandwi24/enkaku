@@ -77,6 +77,24 @@ export interface RemovalSummary {
 }
 
 /**
+ * What `deleteData` deleted, split the way an operator reads it back: *"12
+ * entries — 4 farm-wide and 8 across 3 devices."*
+ *
+ * The split is not decoration. `docs/feat/kv-storage.md` §1 is explicit that
+ * global and device rows are one table on two axes, and an operator who is told
+ * only a total cannot tell "this plugin kept one catalogue" from "this plugin
+ * had written something onto thirty of my phones" — which is exactly the fact
+ * Reset data exists to make visible.
+ */
+export interface DataDeletionSummary {
+  entries: number
+  global: number
+  device: number
+  /** How many devices held at least one row under this namespace. */
+  devices: number
+}
+
+/**
  * What `removeVersions` reports (plan 82 §3.4's denormalised job history, plus
  * plan 114 §3.9's bulk-report grain). One entry per version the plugin HAD when
  * the request was planned — a kept row is a result, never an omission, which is
@@ -222,6 +240,23 @@ export interface PluginRuntime {
    * names one of that version's scripts — see `removeImpl`.
    */
   remove(name: string, version: string, opts: { deleteKv: boolean }): RemovalSummary
+
+  /**
+   * **Everything one plugin has stored, in both scopes** — the sweep behind
+   * `?deleteKv=1` and behind `POST /:name/reset`, named once so the two cannot
+   * come to mean different sets of rows.
+   *
+   * `namespace` is the plugin NAME and is taken from the caller's already-
+   * resolved path segment, never from a request body: `docs/feat/kv-storage.md`
+   * §3 is the rule, and it is what makes the operator-level `plugin.data`
+   * permission defensible instead of a way to reach any namespace on the farm.
+   *
+   * It does NOT touch `plugin_webhooks`. A webhook's secret is farm-minted, has
+   * to keep verifying while the plugin is stopped, and is not the plugin's data
+   * to lose (`kv-storage.md` §6) — which is why `?deleteKv=1` never swept it
+   * either, and why a reset that left a plugin installed and active must not.
+   */
+  deleteData(name: string): DataDeletionSummary
 
   /**
    * Many versions, through the SAME door `remove` uses (`removeOne` below) —
@@ -714,13 +749,26 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     }
     registry.invalidate(name)
 
-    let kvDeleted = 0
-    if (opts.deleteKv) {
-      kvDeleted += kv.deleteNamespace({ kind: 'global' }, name)
-      const allDevices = db.select({ stableId: devices.stableId }).from(devices).all()
-      for (const d of allDevices) kvDeleted += kv.deleteNamespace({ kind: 'device', stableId: d.stableId }, name)
-    }
+    // One sweep, shared with `POST /:name/reset` — see `deleteDataImpl`.
+    const kvDeleted = opts.deleteKv ? deleteDataImpl(name).entries : 0
     return { removed: true, kvDeleted }
+  }
+
+  const deleteDataImpl = (name: string): DataDeletionSummary => {
+    const global = kv.deleteNamespace({ kind: 'global' }, name)
+    let device = 0
+    let touched = 0
+    // Every device row, not only the connected ones: a phone that is offline —
+    // or that has been offline for a week — still holds whatever this plugin
+    // wrote against its `stableId`, and skipping it would leave the namespace
+    // half-deleted with nothing saying so.
+    for (const d of db.select({ stableId: devices.stableId }).from(devices).all()) {
+      const n = kv.deleteNamespace({ kind: 'device', stableId: d.stableId }, name)
+      if (n === 0) continue
+      device += n
+      touched++
+    }
+    return { entries: global + device, global, device, devices: touched }
   }
 
   const putDevSlotImpl = async (input: {
@@ -1029,6 +1077,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     },
     remove: removeOne,
     removeVersions: removeVersionsImpl,
+    deleteData: deleteDataImpl,
     putDevSlot: putDevSlotImpl,
     dropDevSlot: dropDevSlotImpl,
     devSlots: devSlotsImpl,

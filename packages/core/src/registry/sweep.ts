@@ -33,6 +33,8 @@ export interface SweepNetwork {
   label: string
   medium: ConnectionMedium
   scan: boolean
+  /** Overrides `SweeperSettings.tcpPort` for this network only (plan 88 §9 Q7, resolved). `undefined` falls back to the farm-wide port. */
+  port?: number
 }
 
 /**
@@ -220,10 +222,11 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
     const plan: string[] = []
     let skipped = 0
     for (const net of scannable) {
-      networksReport.push({ cidr: net.cidr, label: net.label, addresses: addressCount(net.cidr) })
+      const effectivePort = net.port ?? cfg.tcpPort
+      networksReport.push({ cidr: net.cidr, label: net.label, addresses: addressCount(net.cidr), port: effectivePort })
       const ordered = orderHosts(hostsForCidr(net.cidr), priorityHosts.get(net.cidr) ?? null)
       for (const hostInt of ordered) {
-        const address = `${intToIp(hostInt)}:${cfg.tcpPort}`
+        const address = `${intToIp(hostInt)}:${effectivePort}`
         if (known.has(address)) {
           skipped++
           continue

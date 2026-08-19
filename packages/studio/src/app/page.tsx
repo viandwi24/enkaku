@@ -19,6 +19,7 @@ import {
   type DeviceStatus,
   type JobInfo,
   type Readiness,
+  type SweepReport,
 } from '@enkaku/protocol'
 import { z } from 'zod'
 import { DeviceCard } from '@/components/DeviceCard'
@@ -31,6 +32,7 @@ import { BulkForgetDialog } from '@/components/BulkForgetDialog'
 import { BulkTransferDialog } from '@/components/BulkTransferDialog'
 import { BulkProxyDialog } from '@/components/network/BulkProxyDialog'
 import { BulkCutoverDialog } from '@/components/device/BulkCutoverDialog'
+import { ScanNetworkDialog } from '@/components/device/ScanNetworkDialog'
 import { BulkPrepDialog } from '@/components/BulkPrepDialog'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
@@ -72,7 +74,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { useBulkSelection } from '@/hooks/use-bulk-selection'
 import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDevice } from '@/lib/api'
 import { isAdmin, useAuth } from '@/lib/auth'
-import { scanDisabledReason, summariseSweepReport, useNetworkScan } from '@/lib/network-scan'
+import { summariseSweepReport } from '@/lib/network-scan'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
@@ -288,11 +290,13 @@ function DashboardView() {
   // the feature's own safe default, so a slow fetch never shows a
   // pre-checked box for a farm that has not opted in.
   const [farmLabellingMode, setFarmLabellingMode] = useState<DeviceLabelMode>('off')
-  // "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — `null` until
-  // the same `/api/settings` fetch below resolves, so the fleet menu's item
-  // reads "Checking farm networks…" rather than a false "enabled" during
-  // that brief window (`scanDisabledReason`'s own null case).
-  const [scanNetworks, setScanNetworks] = useState<{ scan: boolean }[] | null>(null)
+  // "Scan network" (plan 88 §5 — superseding step 88.12's navigate-away
+  // shortcut with a real, self-contained modal, the owner's own request
+  // after seeing that fallback live) — the fleet menu's item now ALWAYS
+  // opens `ScanNetworkDialog`, never disabled, never a navigation; the
+  // dialog owns its own `/api/settings` fetch, so this page no longer needs
+  // to know whether a network is configured just to render the menu item.
+  const [scanDialogOpen, setScanDialogOpen] = useState(false)
   // "Apply labels" (plan 89 §3.7 point 3, §5 step 89.8) — the fleet-wide
   // switch-on: `POST /api/devices/labels/apply` returns a per-device report
   // synchronously (no batch job, no WS updates to wait for), so the report
@@ -305,21 +309,17 @@ function DashboardView() {
 
   const loadDiscovered = () => void fetchDiscoveredDevices().then(setDiscovered).catch(() => undefined)
 
-  // "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — the fleet
-  // menu's own trigger for the bounded subnet sweep, sharing `useNetworkScan`
-  // with `FarmNetworksEditor`'s identical button under Settings rather than
-  // reimplementing the fetch. A device the sweep admits or queues arrives
-  // over the SAME `device.added`/`device.discovered` WS messages this page
-  // already listens for above — `load()`/`loadDiscovered()` here are the
-  // same belt-and-suspenders refetch `DiscoveredTray`'s own Rescan already
-  // does alongside its WS-driven update, not the only path a new device
-  // reaches the screen through.
-  const scanDisabledReasonText = scanDisabledReason(scanNetworks)
-  const { scan: scanNetwork, scanning: scanningNetwork } = useNetworkScan((report) => {
+  // `ScanNetworkDialog`'s own `onScanned` — a device the sweep admits or
+  // queues arrives over the SAME `device.added`/`device.discovered` WS
+  // messages this page already listens for above; `load()`/`loadDiscovered()`
+  // here are the same belt-and-suspenders refetch `DiscoveredTray`'s own
+  // Rescan already does alongside its WS-driven update, not the only path a
+  // new device reaches the screen through.
+  const onNetworkScanned = (report: SweepReport) => {
     toast.success(summariseSweepReport(report))
     void load()
     loadDiscovered()
-  })
+  }
 
   const applyLabelsToSelected = () =>
     run(
@@ -412,10 +412,7 @@ function DashboardView() {
     // this page needing the whole farm Settings form. A fetch failure
     // leaves the safe `'off'` default in place.
     void api('/api/settings', SettingsResponseSchema)
-      .then((b) => {
-        setFarmLabellingMode(b.settings.defaults.labelling.mode)
-        setScanNetworks(b.settings.discovery.networks)
-      })
+      .then((b) => setFarmLabellingMode(b.settings.defaults.labelling.mode))
       .catch(() => undefined)
   }, [])
 
@@ -967,29 +964,20 @@ function DashboardView() {
                   <EthernetPort className="size-3.5" aria-hidden />
                   Move to network…
                 </DropdownMenuItem>
-                {/* Plan 88 §5 step 88.12 — the bounded subnet sweep's own
-                    trigger, reachable from the Devices page an operator
-                    actually works from day to day (the owner's own Panda
-                    comparison), not only from Settings → Discovery &
-                    monitoring where `FarmNetworksEditor` carries the
-                    identical action beside the ranges it scans. Styling-only
-                    disabled (no `disabled` prop) — same reasoning
-                    `ActionsList.tsx`'s own disabled row comment gives: a
-                    truly disabled Radix item stops firing the hover that
-                    would show `title`'s reason, so the guard lives in
-                    `onSelect` instead. */}
-                <DropdownMenuItem
-                  onSelect={(e) => {
-                    e.preventDefault()
-                    if (scanDisabledReasonText || scanningNetwork) return
-                    void scanNetwork()
-                  }}
-                  aria-disabled={!!scanDisabledReasonText}
-                  title={scanDisabledReasonText ?? undefined}
-                  className={cn((scanDisabledReasonText || scanningNetwork) && 'cursor-not-allowed opacity-50')}
-                >
+                {/* Plan 88 §5 — superseding step 88.12's disabled-with-a-
+                    tooltip-that-navigates-away shortcut. The owner saw that
+                    version live and asked for the real thing instead
+                    (verbatim: "harusnya scan network -> muncul modals ada
+                    input dinamis untuk range ip dan port ... bisa dinamis
+                    gitu dan kesimpan ... ada tombol langsung scan all nya").
+                    ALWAYS opens `ScanNetworkDialog` — never disabled, never
+                    a navigation. The dialog's own empty state ("No ranges
+                    yet") is where "no networks configured" now lives, with
+                    an "Add range" affordance immediately visible in the same
+                    view, not a dead-end tooltip. */}
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setScanDialogOpen(true) }}>
                   <ScanSearch className="size-3.5" aria-hidden />
-                  {scanningNetwork ? 'Scanning…' : 'Scan network'}
+                  Scan network
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1627,6 +1615,12 @@ function DashboardView() {
         allDevices={devices ?? []}
         onDone={() => void load()}
       />
+      {/* Plan 88 §5 — opened from the fleet `⋮` menu's "Scan network" item
+          above, ALWAYS (see that item's own comment). The dialog owns its
+          own `/api/settings` fetch and its own save/scan cycle; this page
+          only supplies the post-scan refetch, the same belt-and-suspenders
+          pattern `BulkCutoverDialog`'s `onDone` above already uses. */}
+      <ScanNetworkDialog open={scanDialogOpen} onOpenChange={setScanDialogOpen} onScanned={onNetworkScanned} />
       {/* Same triple, and the selection is deliberately NOT cleared on close
           for the same reason: a partial result leaves the operator with
           devices to go and look at, and clearing the list is how they lose

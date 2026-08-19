@@ -215,6 +215,26 @@ export type AuditAction =
   // versions, which have no row of their own because nothing was attempted on
   // them.
   | 'plugin.delete.bulk'
+  /**
+   * **Reset data** — `POST /api/plugins/:name/reset`: everything one plugin
+   * stored, deleted, after its own cleanup handler was given one run to undo
+   * what it did to the outside world.
+   *
+   * Its own action rather than a flag on `plugin.delete`, because nothing was
+   * deleted from the `plugins` table: the plugin is still installed and still
+   * active. Folding the two together would make "when did somebody remove this
+   * plugin" answer for a request that removed no plugin.
+   *
+   * Written on EVERY path, including the ones where nothing was deleted —
+   * `meta.status` is `reset`, `reset-with-debts` or `blocked`, and a blocked
+   * pass is exactly the row an operator wants to find later. It carries the
+   * entry counts, the per-outcome cleanup counts, and the ids of any device
+   * still owed a teardown (`pendingIds`) or left uncleaned (`failedIds`) — the
+   * one list that cannot be reconstructed from anywhere else once the plugin's
+   * own data is gone. Never a plugin-authored `message`: that is prose, up to
+   * six hundred characters of it, and the audit log is not where it belongs.
+   */
+  | 'plugin.reset'
   | 'plugin.dev'
   // A write/delete through a plugin's own data routes (plan 108 §4.5, step 108.4) — kept apart
   // from `kv.set`/`kv.delete` above so the log says WHICH plugin's namespace was touched and by

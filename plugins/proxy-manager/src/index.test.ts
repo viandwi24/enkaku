@@ -135,10 +135,39 @@ describe('the plugin definition', () => {
     // description in the plugin list says so. 0.6.0 is Apply's second mode: the
     // permission list is UNCHANGED, but the pack can now send that stored
     // password to a phone, which is not what 0.5.x's description described.
-    // None of the three is a patch, because in every case what changed is what
+    // 0.8.0 is Reset data: the pack declares a `resetData` block, and that
+    // block names `device.network.clear` — the capability this pack's own
+    // comment refused to take. Scoped to one operator-initiated pass or not, it
+    // appears in its own list on the install screen, so it is the same class of
+    // change as the three before it.
+    // None of them is a patch, because in every case what changed is what
     // the operator is agreeing to.
-    expect(plugin.version).toBe('0.6.0')
+    expect(plugin.version).toBe('0.8.0')
     expect(plugin.scripts.length).toBe(1)
+  })
+
+  /**
+   * **Reset data's grant, asserted as two lists rather than one.**
+   *
+   * The standing list is what this pack may call at any moment; the reset list
+   * is what it may call during one operator-initiated pass. The property worth
+   * a test is not that `device.network.clear` is declared somewhere — it is
+   * that it is declared in the SECOND list and NOT the first, because a rebase
+   * that moved it up one line would silently hand a running service the
+   * authority to un-route forty phones, with every other test in this file
+   * still passing.
+   */
+  test('device.network.clear is in the reset list and NOT in the standing one', () => {
+    const service = plugin.service
+    expect(service?.permissions).toEqual(['device.list', 'device.network.set'])
+    expect(service?.permissions).not.toContain('device.network.clear')
+    expect(service?.resetData?.permissions).toEqual(['device.network.get', 'device.network.clear'])
+    // A handler exists, which is what makes the block legal at all
+    // (`defineService` refuses a block without one).
+    expect(typeof service?.onResetData).toBe('function')
+    // And the operator is told what it will do, on the screen where they
+    // consent to it and again in the confirm dialog.
+    expect(service?.resetData?.description).toContain('every device this plugin routed')
   })
 
   test('every member carries a title and a description', () => {

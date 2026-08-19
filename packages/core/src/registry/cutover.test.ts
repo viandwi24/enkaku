@@ -250,7 +250,7 @@ describe('createCutoverManager — arm, flip, watch (plan 88 §3.4 step 3)', () 
 
   test('trace counts accumulate across polls from not-found outcomes', async () => {
     const sweep: SweepReport = {
-      networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 }],
+      networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }],
       scanned: 254,
       skipped: 0,
       answered: 3,

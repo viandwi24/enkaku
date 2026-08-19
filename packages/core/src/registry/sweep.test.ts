@@ -212,6 +212,75 @@ describe('Sweeper.sweep — singleton mutex (plan 88 §3.5, §4.5, §5 step 88.3
   })
 })
 
+describe('Sweeper.sweep — per-range port override (plan 88 §9 Q7, resolved; `docs/plans/96-m61-hotfixes.md` §96.44\'s follow-up)', () => {
+  test('a network with its own `port` is probed on that port, not the farm-wide tcpPort — and the report names it', async () => {
+    const probedAddresses: string[] = []
+    const tcpPreProbe: TcpPreProbe = async (host, port) => {
+      probedAddresses.push(`${host}:${port}`)
+      return 'refused'
+    }
+    const h = setUp({
+      settings: {
+        tcpPort: 5555,
+        networks: [{ cidr: '10.0.0.0/30', label: 'Overridden', medium: 'wired', scan: true, port: 7000 }],
+      },
+      tcpPreProbe,
+    })
+
+    const report = await h.sweeper.sweep()
+
+    // A /30 has two usable hosts (.1, .2) — both probed on the OVERRIDE port.
+    expect(probedAddresses.sort()).toEqual(['10.0.0.1:7000', '10.0.0.2:7000'])
+    expect(report.networks).toEqual([{ cidr: '10.0.0.0/30', label: 'Overridden', addresses: 4, port: 7000 }])
+  })
+
+  test('a network with no `port` set still falls back to the farm-wide tcpPort — the report names that too', async () => {
+    const probedAddresses: string[] = []
+    const tcpPreProbe: TcpPreProbe = async (host, port) => {
+      probedAddresses.push(`${host}:${port}`)
+      return 'refused'
+    }
+    const h = setUp({
+      settings: {
+        tcpPort: 6060,
+        networks: [{ cidr: '10.0.0.0/30', label: 'Default', medium: 'wired', scan: true }],
+      },
+      tcpPreProbe,
+    })
+
+    const report = await h.sweeper.sweep()
+
+    expect(probedAddresses.sort()).toEqual(['10.0.0.1:6060', '10.0.0.2:6060'])
+    expect(report.networks).toEqual([{ cidr: '10.0.0.0/30', label: 'Default', addresses: 4, port: 6060 }])
+  })
+
+  test('two networks — one overridden, one not — each probed on their own effective port in the same sweep', async () => {
+    const probedAddresses: string[] = []
+    const tcpPreProbe: TcpPreProbe = async (host, port) => {
+      probedAddresses.push(`${host}:${port}`)
+      return 'refused'
+    }
+    const h = setUp({
+      settings: {
+        tcpPort: 5555,
+        networks: [
+          { cidr: '10.0.0.0/30', label: 'Overridden', medium: 'wired', scan: true, port: 7000 },
+          { cidr: '10.0.1.0/30', label: 'Default', medium: 'wired', scan: true },
+        ],
+      },
+      tcpPreProbe,
+    })
+
+    const report = await h.sweeper.sweep()
+
+    expect(probedAddresses.sort()).toEqual(['10.0.0.1:7000', '10.0.0.2:7000', '10.0.1.1:5555', '10.0.1.2:5555'])
+    expect(report.networks).toEqual([
+      { cidr: '10.0.0.0/30', label: 'Overridden', addresses: 4, port: 7000 },
+      { cidr: '10.0.1.0/30', label: 'Default', addresses: 4, port: 5555 },
+    ])
+  })
+})
+
 describe('Sweeper.sweep — skip-known, counts add up (plan 88 §3.5, §4.5, §5 step 88.3 verifiable result)', () => {
   test('a /24 probes exactly 254 addresses (network/broadcast excluded), skips adb-known ones, and every count adds up', async () => {
     // Three of the 254 usable addresses in 10.0.0.0/24 are already known to
@@ -242,7 +311,7 @@ describe('Sweeper.sweep — skip-known, counts add up (plan 88 §3.5, §4.5, §5
 
     const report = await h.sweeper.sweep()
 
-    expect(report.networks).toEqual([{ cidr: '10.0.0.0/24', label: 'Chassis A', addresses: 256 }])
+    expect(report.networks).toEqual([{ cidr: '10.0.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }])
     expect(report.skipped).toBe(3)
     expect(report.scanned).toBe(254 - 3) // every usable host in the /24 except the 3 already known
     expect(report.answered).toBe(2)

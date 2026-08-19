@@ -55,12 +55,16 @@ function isModifiedClick(e: React.MouseEvent): boolean {
  *    being dropped, so a tile that looks fine is not silently lying about a
  *    broken agent. See the rail's own `data-agent-alert` below.
  *
- * Two things plan 89/92 gave this tile are deliberately NOT carried onto the
- * new, minimal picture: the per-device number (composed beside the label so
- * renaming a device could never destroy it) and the connection glyph. Both
- * still exist — `DeviceCard`'s own header, unchanged by this step — but the
- * Wall tile itself no longer shows either. Reported, not silently dropped:
- * see plan 101 §5 step 101.7's own note and this repo's step-101.7 report.
+ * Plan 89/92 gave this tile a per-device number (composed beside the label)
+ * and a connection glyph; step 101.7 deliberately dropped both to keep the
+ * tile to picture-plus-name-plus-rail. **The number is back, owner-reversed
+ * 2026-08-19**: it now floats on its own line directly above the name
+ * (`#{n}`, `.readout`, never shown for a device with no reservation yet) —
+ * stacked rather than composed inline, since inline was step 101.7's own
+ * prior shape and the owner asked for a two-line layout specifically. The
+ * connection glyph stays dropped; `DeviceCard`'s own header still carries
+ * it, unchanged. See plan 101 §5 step 101.7's own note, this repo's
+ * step-101.7 report, and plan 101 §5's newest step for this reversal.
  *
  * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16, side-by-side against
  * `refs/ui`): the tile ALSO lost the persistent `ReadinessControl` (Wake/
@@ -343,7 +347,25 @@ export function WallTile({
             surface, so it deliberately does not use a `--color-*` token the
             way a themed panel would. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 h-[36%] bg-linear-to-b from-black/55 to-transparent" />
-        <span className="pointer-events-none absolute inset-x-0 top-2 truncate px-2 text-center text-[12.5px] font-semibold text-white/90">
+        {/* The number, stacked above the name (owner reversal, 2026-08-19,
+            of step 101.7/101.8's "no per-device number" rule — see this
+            file's own top comment for that prior decision's reasoning).
+            `#{n}` matches `DeviceCard`'s existing convention (never a bare
+            zero-padded digit, never a fake `#0` for a device with no
+            reservation yet) rather than inventing a second number format
+            for the same field. `.readout` per docs/design.md's own rule:
+            digits use the monospace face so they never look like prose. */}
+        {device.number != null && (
+          <span className="readout pointer-events-none absolute inset-x-0 top-2 truncate px-2 text-center text-[11px] font-semibold text-white/70">
+            #{device.number}
+          </span>
+        )}
+        <span
+          className={cn(
+            'pointer-events-none absolute inset-x-0 truncate px-2 text-center text-[12.5px] font-semibold text-white/90',
+            device.number != null ? 'top-[26px]' : 'top-2',
+          )}
+        >
           {device.label}
         </span>
 

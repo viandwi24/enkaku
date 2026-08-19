@@ -1277,7 +1277,7 @@ describe('POST /rescan (plan 85 §3.3, §4.4, §4.6, §5 step 85.2)', () => {
 
 describe('POST /scan (plan 88 §3.5, §4.5, §4.6, §5 step 88.3)', () => {
   const sampleReport: SweepReport = {
-    networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', addresses: 256 }],
+    networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }],
     scanned: 251,
     skipped: 3,
     answered: 2,

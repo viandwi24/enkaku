@@ -8,6 +8,8 @@ import {
   type PluginHttpMethod,
   PluginActionBodySchema,
   PluginBulkRemoveBodySchema,
+  type PluginResetItem,
+  type PluginResetStatus,
 } from '@enkaku/protocol'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
@@ -19,7 +21,7 @@ import type { KvEntry, KvScope, KvStore } from '../kv/store'
 import { actionPermission, createPluginActionExecutor, type PluginActionDeps } from '../plugins/action-executor'
 import { isPluginPackageContentType, readPluginPackage } from '../plugins/package'
 import type { PluginRuntime, StagePluginInput } from '../plugins/runtime'
-import type { RuntimeHost } from '../plugins/runtime-host'
+import type { PluginResetOutcome, RuntimeHost } from '../plugins/runtime-host'
 import { filterRequestHeaders, resolvePluginHandler, runHttpHandler, runQueryHandler } from '../plugins/service-routes'
 import { deliverWebhook, type WebhookRateLimiter } from '../plugins/webhook-routes'
 import type { PluginWebhookStore } from '../plugins/webhook-secrets'
@@ -184,6 +186,17 @@ export function pluginRouteErrorStatus(code: string): number {
 }
 
 const ScopeKindSchema = z.enum(['global', 'device'])
+
+/**
+ * **Failures first, then debts, then everything else** — `POST /:name/reset`'s
+ * item order, applied server-side so a CLI, a browser and a log all read the
+ * same list in the same order.
+ *
+ * The rule is `docs/design.md`'s: what the operator has to act on goes at the
+ * top. A reset over forty devices where two failed must not put those two on
+ * line thirty-eight.
+ */
+const RESET_ITEM_ORDER: Record<PluginResetItem['outcome'], number> = { failed: 0, pending: 1, cleared: 2, unchanged: 3 }
 
 /** `?scope=&stableId=` → a `KvScope`. The NAMESPACE is deliberately absent: it is never a caller
  * input on these routes, only the `:name` path segment (§3.7). */
@@ -1054,6 +1067,191 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
     runtime.dropDevSlot(name)
     audit.record({ userId: actorId(c), action: 'plugin.dev', target: name, meta: { dropped: true } })
     return c.json({ ok: true })
+  })
+
+  /**
+   * `POST /:name/reset` — **Reset data.** The farm owner's ask: *"di plugins
+   * ada opsi buat reset data dong, jadi kalau ini diklik otomatis reset semua
+   * datanya, terus trigger reset function handler juga di pluginsnya."*
+   *
+   * ## What it is, next to the route it is modelled on
+   *
+   * `DELETE /:name/:version?deleteKv=1` is the closest precedent and this
+   * follows its shape and its permission (`script.delete`) rather than
+   * inventing a third convention: the same sweep function
+   * (`runtime.deleteData`), the same both-scopes definition of "this plugin's
+   * data", the same rule that `plugin_webhooks` is not part of it. What differs
+   * is stated in one line — **the plugin stays installed and active; only its
+   * data goes** — and one thing is added, which is the whole point:
+   *
+   * ## The handler runs BEFORE the delete
+   *
+   * A plugin's stored data is frequently the only record of what it did to the
+   * outside world. `proxy-manager`'s assignments are the only place the farm
+   * knows which phones it pointed at a proxy; delete them first and the routes
+   * on those phones become orphans nothing can explain. So the order is: run
+   * the plugin's cleanup handler with its data fully intact, read what it
+   * reports, and only then decide whether to delete.
+   *
+   * ## What happens when cleanup partly fails — the decision, stated
+   *
+   * | the handler reported | `status` | the data |
+   * |---|---|---|
+   * | nothing outstanding (or has no handler) | `reset` | deleted |
+   * | debts only — cleanups that did not complete but are now RECORDED somewhere that outlives this plugin (a device row's `pendingClear`) | `reset-with-debts` | deleted |
+   * | any outright failure, a handler that threw, a handler that could not run, or a report the farm cannot parse | `blocked` | **nothing is deleted** |
+   *
+   * `blocked` deletes nothing at all, not even the devices that cleaned up
+   * fine. A partial delete would destroy precisely the record of which phones
+   * are still carrying something — the orphan this action exists to prevent,
+   * created by the action itself. The handler is contractually idempotent and
+   * re-runnable (`defineService({ onResetData })`), so the operator's move is to
+   * fix the cause and press Reset again; the second pass finds the already-clean
+   * devices `unchanged` and finishes the rest.
+   *
+   * The difference between a debt and a failure is not a judgement this route
+   * makes — the handler declares it per item, and the vocabulary
+   * (`PLUGIN_RESET_OUTCOMES`) is explicit that `pending` means somebody else is
+   * now holding the obligation and can settle it without the plugin.
+   *
+   * ## Two things it refuses outright
+   *
+   * A plugin with no ACTIVE version is refused rather than having its data
+   * deleted. A disabled version's manifest is where its cleanup handler is
+   * declared, and `runtime.service()` only ever answers for the active row — so
+   * resetting a disabled plugin would read "no handler, nothing to undo" off a
+   * plugin that has plenty to undo. Enable it, reset, disable it again.
+   *
+   * A dev slot is not enough for the same reason: the host does not load a dev
+   * slot's service (`farm-broker.ts`'s known gap), so there is no running
+   * instance to ask.
+   *
+   * **Always 200, `blocked` included** — the same reasoning
+   * `POST /:name/versions/remove` states: the report IS the answer, and a
+   * non-2xx would tell a caller nothing happened when eleven phones were just
+   * un-routed.
+   */
+  app.post('/:name/reset', requirePermission('script.delete'), async (c) => {
+    const name = c.req.param('name')
+    const row = runtime.active(name)
+    if (!row) {
+      throw new EnkakuError(
+        'plugin_not_found',
+        `no ACTIVE plugin named "${name}" — Reset data is refused rather than deleting the data of a version that is not live. ` +
+          `A disabled version is where its own cleanup handler is declared, and this farm can only read the active version's manifest, ` +
+          `so resetting one would delete its data while reporting that it had nothing to undo. Enable it, reset, then disable it again.`,
+      )
+    }
+
+    // 1. The cleanup, with the data still entirely intact. The host contains it
+    //    — it never throws for a plugin-level problem, because each of those
+    //    has to reach the operator as a reason nothing was deleted.
+    const outcome = deps.service?.host
+      ? await deps.service.host.resetData(name)
+      : ({
+          declared: runtime.service(name)?.resetData != null,
+          ran: false,
+          skipped: runtime.service(name)?.resetData
+            ? {
+                code: 'E_PLUGIN_RUNTIME_UNAVAILABLE',
+                message:
+                  `plugin "${name}@${row.version}" declares a Reset data cleanup handler, and this host runs no plugin services at all ` +
+                  `(orchestrator mode) — so the cleanup cannot run and nothing was deleted.`,
+              }
+            : null,
+          error: null,
+          report: { items: [] },
+        } satisfies PluginResetOutcome)
+
+    const counts = { cleared: 0, unchanged: 0, pending: 0, failed: 0 }
+    for (const item of outcome.report.items) counts[item.outcome]++
+
+    /**
+     * The one decision, in one expression. A fault the handler never got past
+     * (`skipped`/`error`) counts exactly as a `failed` item does: in both cases
+     * the farm does not know what is still out there, which is the only
+     * question that matters here.
+     */
+    const blockedBy =
+      outcome.skipped?.message ??
+      outcome.error?.message ??
+      (counts.failed > 0
+        ? `${counts.failed} of ${outcome.report.items.length} cleanup ${counts.failed === 1 ? 'step' : 'steps'} failed, and nothing is holding what they left behind. ` +
+          `Nothing was deleted — this plugin's data is the only record of it. Fix the cause and reset again; the handler is safe to re-run.`
+        : null)
+
+    // 2. …and only now. Not one row is deleted on a blocked pass, including the
+    //    rows for the devices that DID clean up: see this route's header.
+    const data = blockedBy === null ? runtime.deleteData(name) : { entries: 0, global: 0, device: 0, devices: 0 }
+    const status: PluginResetStatus = blockedBy !== null ? 'blocked' : counts.pending > 0 ? 'reset-with-debts' : 'reset'
+
+    const entriesSaid = `${data.entries} stored ${data.entries === 1 ? 'entry' : 'entries'}`
+    const deviceSaid = data.devices > 0 ? ` (${data.global} farm-wide, ${data.device} across ${data.devices} device${data.devices === 1 ? '' : 's'})` : ''
+    const message =
+      status === 'blocked'
+        ? `${name} was NOT reset. ${blockedBy}`
+        : status === 'reset-with-debts'
+          ? `${name} was reset — ${entriesSaid} deleted${deviceSaid} — but ${counts.pending} cleanup ${counts.pending === 1 ? 'step is' : 'steps are'} still owed. ` +
+            `Each one is recorded against the device it belongs to and will be settled the next time that device is admitted; nothing here is waiting on this plugin.`
+          : `${name} was reset. ${entriesSaid} deleted${deviceSaid}.` +
+            (outcome.ran ? ` Its cleanup handler ran first and reported ${outcome.report.items.length} ${outcome.report.items.length === 1 ? 'item' : 'items'}.` : ' It declares no cleanup handler, so there was nothing to undo.')
+
+    /**
+     * **One audit row, on every path, including the refusals.**
+     *
+     * `plugin.reset` and not `plugin.delete`: the plugin is still installed and
+     * still active, so folding this into the removal action would make
+     * "when did somebody delete this plugin" answer for a request that deleted
+     * no plugin. The row carries the counts and the status rather than the
+     * items — an item's `message` is plugin-authored text and can be six
+     * hundred characters, and the audit log is not where a plugin's prose
+     * belongs. A BLOCKED pass is recorded exactly as loudly as a successful
+     * one: an attempted and refused deletion is a thing an operator wants to
+     * find later, on the same reasoning the webhook route writes a row on every
+     * path.
+     */
+    audit.record({
+      userId: actorId(c),
+      action: 'plugin.reset',
+      target: `${name}@${row.version}`,
+      meta: {
+        status,
+        deleted: blockedBy === null,
+        entries: data.entries,
+        global: data.global,
+        device: data.device,
+        devices: data.devices,
+        handlerDeclared: outcome.declared,
+        handlerRan: outcome.ran,
+        ...counts,
+        ...(outcome.skipped ? { skipped: outcome.skipped.code } : {}),
+        ...(outcome.error ? { error: outcome.error.code } : {}),
+        // Which devices are still carrying something. The one list worth
+        // keeping verbatim, because it is the list somebody will need in an
+        // hour and cannot reconstruct from anywhere else once the data is gone.
+        ...(counts.pending > 0 ? { pendingIds: outcome.report.items.filter((i) => i.outcome === 'pending').map((i) => i.id) } : {}),
+        ...(counts.failed > 0 ? { failedIds: outcome.report.items.filter((i) => i.outcome === 'failed').map((i) => i.id) } : {}),
+      },
+    })
+
+    return c.json({
+      plugin: name,
+      status,
+      handler: {
+        declared: outcome.declared,
+        ran: outcome.ran,
+        skipped: outcome.skipped,
+        error: outcome.error,
+        // Failures first, then debts, then the rest — the screen renders this
+        // order as it arrives, so "what do I have to act on" is the top of the
+        // list rather than something to scroll for.
+        items: [...outcome.report.items].sort((a, b) => RESET_ITEM_ORDER[a.outcome] - RESET_ITEM_ORDER[b.outcome]),
+        note: outcome.report.note ?? null,
+        counts,
+      },
+      data: { deleted: blockedBy === null, keptBecause: blockedBy, ...data },
+      message,
+    })
   })
 
   /**

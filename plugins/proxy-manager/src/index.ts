@@ -3,6 +3,7 @@ import { definePlugin, defineService, ui, type PluginMemberScript } from '@enkak
 import { z } from 'zod'
 import { applyAssignment } from './service/apply'
 import { registerProxyRoutes } from './service/handlers'
+import { resetProxyManager } from './service/reset'
 import { createSupervisor } from './service/supervisor'
 import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXY_KEY_PREFIX, VIEW_NOT_BUILT, type ProxyApplyMode } from './shared'
 
@@ -166,6 +167,18 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
   },
 }
 
+/**
+ * The supervisor belonging to the CURRENTLY LOADED instance of this module, or
+ * `null` when `setup` has not run (or has been torn down).
+ *
+ * Module scope, and deliberately: `setup` and `onResetData` are siblings on the
+ * `defineService` input rather than nested, so a closure cannot join them, and
+ * the host imports this bundle afresh per start — so one module instance is one
+ * running service, and this variable can never point at a previous load's
+ * sockets. See `setup` for the full argument.
+ */
+let liveSupervisor: ReturnType<typeof createSupervisor> | null = null
+
 export default definePlugin({
   id: 'proxy-manager',
   /**
@@ -198,8 +211,18 @@ export default definePlugin({
    * approved at 0.5.x, where the whole point of the reverse rung was that the
    * account never left the farm. The description they read says so
    * (`PLUGIN_NOT_BUILT`), and a minor bump is what puts it in front of them.
+   *
+   * **0.8.0 — Reset data, and it is a consent change for the fourth time.** The
+   * pack now declares a `resetData` block, and that block names
+   * `device.network.clear` — the capability this pack's own comment refused to
+   * take. It is scoped to one operator-initiated pass and the running service
+   * still cannot reach it (see `service.permissions` below), but a scoped grant
+   * is still a grant, it appears in its own list on the install screen, and a
+   * pack that quietly gained the ability to un-route phones under a version
+   * somebody had already approved is exactly the consent problem 0.6.0's note
+   * describes. A minor bump, for the same reason all three before it were.
    */
-  version: '0.7.0',
+  version: '0.8.0',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],
@@ -222,11 +245,22 @@ export default definePlugin({
    *   the reason the other two halves of `shared.ts`'s honesty copy had to be
    *   narrowed.
    *
-   * `device.network.clear` is deliberately NOT declared. Turning a device's
-   * proxy off is the operator's own act on the device's own screen, where the
-   * §3.6 restore is explained; a plugin that could silently un-route forty
-   * phones is a bigger authority than anything on this screen asks for. It is
-   * one line to add the day a case for it is named.
+   * **`device.network.clear` is still deliberately NOT declared HERE, and the
+   * argument that withheld it still holds.** Turning a device's proxy off is
+   * the operator's own act on the device's own screen, where the §3.6 restore
+   * is explained; a plugin that could silently un-route forty phones is a
+   * bigger authority than anything on this screen asks for.
+   *
+   * The day a case for it would be named has come, and the case is narrower
+   * than the grant would have been — so what was added is narrower too. It sits
+   * in `resetData.permissions` below, which is a *different list with a
+   * different lifetime*: those capabilities are live only during an
+   * operator-initiated Reset data pass, only through the context object handed
+   * to `onResetData`, and only until that one pass ends. `setup`, the Apply
+   * handler, the five bridge routes and every member script are refused
+   * `device.network.clear` exactly as they were before — `farm-broker.ts` checks
+   * the standing list for them, and this list only when the host says a pass is
+   * open. Nothing on this screen gained the ability to un-route a phone.
    *
    * **`events: []` still.** There is nothing to reconcile on a device event:
    * an assignment is intent, and applying it is a deliberate press (plan 114 §9
@@ -237,6 +271,37 @@ export default definePlugin({
   service: defineService({
     permissions: ['device.list', 'device.network.set'],
     events: [],
+
+    /**
+     * **Reset data** — the operator action that deletes everything this pack
+     * stored, and the one run this pack gets to undo what it did first.
+     *
+     * The owner's own example is this pack, and it is the right one: the
+     * `assigned` rows below are the ONLY record of which phones this pack
+     * pointed at a proxy. Deleting them without turning those routes off leaves
+     * live routes on real devices that nothing left in the farm can explain.
+     * `service/reset.ts` is the handler and carries the full account.
+     *
+     * ## The two capabilities, and why they are here rather than above
+     *
+     * - `device.network.get` — read `setBy` before touching anything, so a
+     *   route this pack did NOT set is left alone rather than un-routed on the
+     *   operator's behalf without being asked.
+     * - `device.network.clear` — the one this pack has always withheld. See the
+     *   `permissions` comment above for what has and has not changed: it is
+     *   live during a reset pass and at no other moment, and the running
+     *   service cannot reach it.
+     *
+     * Both are shown to the operator at install, in their own list, described
+     * as what they are. That is the trade: the pack gains the authority to
+     * finish its own cleanup, and gains it for one operator-initiated pass
+     * rather than for its whole lifetime.
+     */
+    resetData: {
+      permissions: ['device.network.get', 'device.network.clear'],
+      description:
+        'Turns off the network route on every device this plugin routed — checking first that the route on each phone was set by this plugin and not by you — and stops every bridge it has listening. A phone that cannot be reached is not reported as done: the farm records the teardown against that device and carries it out the next time the device is admitted.',
+    },
     /**
      * Declared so the operator learns at install that this plugin opens ports
      * on their machine — a declaration is the SHAPE consented to, never a
@@ -258,6 +323,19 @@ export default definePlugin({
 
     async setup(ctx) {
       const supervisor = createSupervisor(ctx)
+      /**
+       * `onResetData` is a sibling of `setup`, not a closure inside it, so this
+       * is how the reset pass reaches the supervisor `setup` built.
+       *
+       * Module scope is the right scope for it and not a shortcut. The host
+       * cache-busts its `import()` per start (`runtime-host.ts`), so a fresh
+       * load gets a fresh module instance with its own `liveSupervisor` — and
+       * the `onResetData` the host captured off that same instance's `service`
+       * object reads that same variable. A reset can therefore only ever stop
+       * bridges belonging to the instance that is actually running, never a
+       * previous load's.
+       */
+      liveSupervisor = supervisor
 
       // Registered BEFORE anything binds, so a setup that throws halfway still
       // has a disposer for whatever did get opened. It destroys immediately
@@ -265,7 +343,10 @@ export default definePlugin({
       // disposer combined, and a `drainMs` of 10 s could only blow it, earn a
       // warn naming this plugin, and leave the service reading `stopping`
       // (plan 112 §3.7).
-      ctx.onStop(() => supervisor.destroyAll())
+      ctx.onStop(() => {
+        liveSupervisor = null
+        supervisor.destroyAll()
+      })
 
       await supervisor.startEnabled()
 
@@ -350,6 +431,29 @@ export default definePlugin({
        * core's own event loop (plan 112 §4.6).
        */
       registerProxyRoutes(ctx, supervisor)
+    },
+
+    /**
+     * The cleanup half of Reset data — see `resetData` above and
+     * `service/reset.ts` for the whole account.
+     *
+     * It runs while this pack's data is still entirely intact, which is the
+     * point: the `assigned` rows are the only record of which phones were
+     * routed, and they are what the handler reads to know where to go.
+     *
+     * A supervisor that is not there is a refusal, not an empty pass. It means
+     * `setup` has not finished (or has been torn down) under a service the host
+     * reported as running, and answering "nothing to undo" for that would let
+     * the farm delete every assignment this pack holds on the strength of a
+     * question that was never actually asked.
+     */
+    async onResetData(ctx) {
+      if (!liveSupervisor) {
+        throw new Error(
+          'this plugin’s service has no live supervisor, so its bridges cannot be accounted for — nothing was cleaned up and nothing should be deleted. Reload the plugin and reset again.',
+        )
+      }
+      return resetProxyManager(ctx, liveSupervisor)
     },
   }),
 

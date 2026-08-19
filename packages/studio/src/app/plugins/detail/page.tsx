@@ -422,6 +422,42 @@ function PluginDetail() {
                 </p>
               </div>
 
+              {/*
+                Reset data's own block, kept apart from `permissions` above and
+                never merged into it. The two lists have different lifetimes —
+                one is what this plugin may call at any moment for as long as it
+                runs, the other is what it may call during one
+                operator-initiated Reset data pass and at no other time — and
+                showing them as one list would tell an operator they had
+                consented to something wider than they did. This is the screen
+                where that distinction has to be legible, because it is where a
+                person decides whether to keep the plugin installed.
+              */}
+              {service.resetData && (
+                <div>
+                  <h3 className="rack-label mb-1.5">reset data</h3>
+                  <p className="text-[12px] leading-relaxed text-fg-muted">
+                    {service.resetData.description ??
+                      'This plugin declares a cleanup handler for Reset data, and no description of what it undoes.'}
+                  </p>
+                  {service.resetData.permissions.length > 0 && (
+                    <>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {service.resetData.permissions.map((perm) => (
+                          <Badge key={perm} variant="outline" className="readout text-[11px]">
+                            {perm}
+                          </Badge>
+                        ))}
+                      </div>
+                      <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                        Borrowed for the length of one Reset data pass, through the context that pass hands the handler — not part of the
+                        list above, and refused everywhere else, including this plugin&apos;s own screens and scripts.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+
               {service.listeners.length > 0 && (
                 <div>
                   <h3 className="rack-label mb-1.5">listeners</h3>

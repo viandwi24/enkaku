@@ -55,6 +55,8 @@ export type {
   PluginServiceInput,
   PluginServiceDeclaration,
   ServiceSetup,
+  /** Reset data — the cleanup hook an operator's Reset runs before the delete. */
+  ServiceResetData,
   FarmEvent,
   FarmEventType,
   // Step 109.6 — the three handler families a service registers.

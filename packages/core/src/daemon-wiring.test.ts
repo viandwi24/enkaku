@@ -1330,6 +1330,69 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
 })
 
 /**
+ * The bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3): `createSweeper`
+ * was fully built and unit-tested (`registry/sweep.test.ts`) but never
+ * constructed or wired into `daemon.ts` — the seventeenth-ish instance of
+ * this file's own dominant "correct code, unreachable production call site"
+ * defect class (see the file-level comment above). Two independent surfaces
+ * were broken by the SAME missing wiring: `POST /api/devices/scan` always
+ * threw `E_NOT_SUPPORTED` (`deps.sweeper` was never passed to
+ * `createDeviceRoutes`), and the reconnect ladder's step 4 (`allowSweep`)
+ * was permanently unreachable (`createDeviceReconnector`'s own optional
+ * `sweeper` dep was never passed either) — an exhausted ladder always
+ * reported `not-found` regardless of what a caller passed for `allowSweep`.
+ * `docs/plans/96-m61-hotfixes.md` records the fix.
+ */
+describe("the bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3): createSweeper actually constructed and threaded into BOTH POST /api/devices/scan and the reconnect ladder's allowSweep step", () => {
+  test('a single Sweeper is constructed via createSweeper(...), reading the live discovery settings, BEFORE the reconnect ladder — the ladder needs this SAME instance, not a second one', () => {
+    const call = extractCall(daemonSource, 'const sweeper = createSweeper({')
+    expect(call).toContain('client: adb')
+    expect(call).toContain('db,')
+    expect(call).toContain('endpoints,')
+    expect(call).toContain('registry,')
+    expect(call).toContain('settings: () => settingsStore.get().discovery')
+    expect(call).toContain("hub: { broadcast: (msg) => hub.broadcast(msg) }")
+    expect(call).toContain("log: log.child('sweep')")
+    expect(daemonSource).toContain('sweeperRef = sweeper')
+
+    // Construction order matters: the ladder's own `sweeper` dep (asserted
+    // below) can only be the real instance if it is built first.
+    const sweeperAt = daemonSource.indexOf('const sweeper = createSweeper({')
+    const reconnectorAt = daemonSource.indexOf('reconnector = createDeviceReconnector({')
+    expect(sweeperAt).toBeGreaterThan(-1)
+    expect(reconnectorAt).toBeGreaterThan(-1)
+    expect(sweeperAt).toBeLessThan(reconnectorAt)
+  })
+
+  test('createDeviceReconnector(...) is given the real sweeper — without it, opts.allowSweep is permanently a no-op and an exhausted ladder can never fall through to a scan', () => {
+    const call = extractCall(daemonSource, 'reconnector = createDeviceReconnector({')
+    expect(call).toContain('sweeper,')
+    // The stale gap comment ("no sweep branch yet") must not survive this fix
+    // silently claiming a gap that is now closed — doc drift of exactly the
+    // kind this session has been correcting elsewhere.
+    expect(daemonSource).not.toContain('no sweep branch yet')
+  })
+
+  test("deviceRoutes: createDeviceRoutes({...}) passes a `sweeper` that forwards to the live sweeperRef — without it, POST /api/devices/scan always threw E_NOT_SUPPORTED on a real boot no matter how correctly Studio's 'Scan network' button called it", () => {
+    const call = extractCall(daemonSource, 'deviceRoutes: createDeviceRoutes({')
+    expect(call).toContain('sweeper: {')
+    expect(call).toContain('sweeperRef?.sweep(opts)')
+    // Orchestrator mode / "adb subsystem not ready yet" must still refuse
+    // E_NOT_SUPPORTED, not crash on a null sweeper — the wrapper rejects
+    // with the exact coded error the route used to throw for a missing dep.
+    expect(call).toContain('E_NOT_SUPPORTED')
+    expect(call).toContain('network scanning is not available')
+  })
+
+  test('sweeperRef is cleared in stop() — a request racing shutdown must fail closed, not reach a torn-down adb/db', () => {
+    const stopIdx = daemonSource.indexOf('reconnector = null')
+    expect(stopIdx).toBeGreaterThan(-1)
+    const tail = daemonSource.slice(stopIdx, stopIdx + 600)
+    expect(tail).toContain('sweeperRef = null')
+  })
+})
+
+/**
  * Plan 109 (M74 — the plugin runtime) §4.2, step 109.2. The host loads a
  * plugin's own code into THIS process, so where its two calls sit in `start()`
  * is not a detail — it is the difference between "a broken plugin is a failed

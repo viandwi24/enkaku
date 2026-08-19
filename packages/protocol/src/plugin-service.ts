@@ -296,6 +296,123 @@ export const PluginWebhookInfoSchema = z.object({
 })
 export type PluginWebhookInfo = z.infer<typeof PluginWebhookInfoSchema>
 
+/**
+ * A cap on the extra capabilities a reset pass may borrow. Smaller than
+ * `PLUGIN_SERVICE_MAX_PERMISSIONS` on purpose: this list is authority a plugin
+ * does NOT hold while it is merely running, and a list of sixty-four of those
+ * is not a scoped grant, it is a second manifest.
+ */
+export const PLUGIN_SERVICE_MAX_RESET_PERMISSIONS = 8
+
+/**
+ * What a plugin declares about **Reset data** — the operator action that
+ * deletes everything the plugin stored and, first, gives the plugin one run to
+ * undo what it did to the outside world.
+ *
+ * `resetData` is non-null **exactly when the bundle exports a reset handler**
+ * (`defineService({ onResetData })` sets it, and refuses a `resetData` block
+ * with no handler behind it). So "does this plugin have anything to undo" is
+ * answerable from the persisted manifest, without importing the bundle — the
+ * same property `service` itself has, and for the same reason: the decision has
+ * to be makeable before any plugin code is loaded.
+ *
+ * **`resetData`, not `reset`** — the same collision rule this file's header
+ * records for `runtime`. `definePlugin({ reset: { packages } })` already exists
+ * one level up and means something entirely unrelated (npm packages a job
+ * reinstalls, plan 82 §3.10). Two `reset` keys nested one level apart in a
+ * published authoring type is a permanent ambiguity, and the operator-facing
+ * name for this one is "Reset data" anyway.
+ *
+ * ## `permissions` here is not `permissions` up there
+ *
+ * The list on the declaration is what the service may call **at any moment, for
+ * its whole lifetime**. This one is what the reset handler may call **during one
+ * operator-initiated pass, through the context object handed to that handler,
+ * and not one call later**. Both halves are enforced (`farm-broker.ts` unions
+ * the two lists only while the host says a pass is open, and only for the
+ * elevated context it built for that pass), and both are shown at install.
+ *
+ * The distinction exists because of a real case. `proxy-manager` deliberately
+ * withheld `device.network.clear` — *"a plugin that could silently un-route
+ * forty phones is a bigger authority than anything on this screen asks for"* —
+ * and reset is the one moment it genuinely needs it, because its stored
+ * assignments are the only record of which phones it pointed at a proxy.
+ * Granting the capability outright to satisfy that moment would hand the
+ * running service the standing authority the comment refused. This is the
+ * narrower grant that satisfies the case without conceding the argument.
+ */
+export const PluginServiceResetDataSchema = z.object({
+  /**
+   * Capabilities the reset handler may call **only** during a reset pass, on
+   * top of `permissions`. Everything else about a farm call is unchanged: the
+   * real ACL still runs under `plugin:<name>`, the lease admission still
+   * applies, and every call is still audited.
+   */
+  permissions: z.array(z.string().min(1).max(120)).max(PLUGIN_SERVICE_MAX_RESET_PERMISSIONS).default([]),
+  /**
+   * One sentence, in the plugin author's own words, naming what the handler
+   * undoes. It is rendered **inside the confirm dialog**, which is why it is
+   * declared rather than left to the plugin's description: the operator is
+   * about to authorise an irreversible act plus a pass over their devices, and
+   * "what will this touch" must be answerable on that screen.
+   */
+  description: z.string().max(400).optional(),
+})
+export type PluginServiceResetData = z.infer<typeof PluginServiceResetDataSchema>
+
+/**
+ * What one thing a reset handler cleaned up ended as.
+ *
+ * Four values, and the split between the last two is the one that decides
+ * whether the plugin's data is deleted at all:
+ *
+ * | outcome | meaning | is the data safe to delete? |
+ * |---|---|---|
+ * | `cleared` | the undo happened, and the plugin saw it happen | yes |
+ * | `unchanged` | there was nothing to undo here | yes |
+ * | `pending` | the undo could not complete, **and the farm has recorded the debt somewhere that outlives this plugin's data** (a device row's `pendingClear`, say) | yes — the record has moved, it has not vanished |
+ * | `failed` | the undo did not happen and nothing recorded that it is still owed | **no** |
+ *
+ * A handler must not report `pending` on a hope. It means "somebody other than
+ * me is now holding this obligation, and can settle it without me" — if that is
+ * not true, the honest value is `failed`.
+ */
+export const PLUGIN_RESET_OUTCOMES = ['cleared', 'unchanged', 'pending', 'failed'] as const
+export type PluginResetOutcome = (typeof PLUGIN_RESET_OUTCOMES)[number]
+
+/** Whether an item names a device or something else the plugin owns (a listener, a bridge, a remote booking). */
+export const PLUGIN_RESET_ITEM_KINDS = ['device', 'resource'] as const
+export type PluginResetItemKind = (typeof PLUGIN_RESET_ITEM_KINDS)[number]
+
+/** One thing a reset handler tried to clean up. */
+export const PluginResetItemSchema = z.object({
+  kind: z.enum(PLUGIN_RESET_ITEM_KINDS).default('resource'),
+  /** A device's `stableId` for `kind: 'device'`; whatever the plugin calls the thing otherwise. */
+  id: z.string().min(1).max(200),
+  /** What to show a person instead of `id`, when the plugin knows a better name. */
+  label: z.string().max(200).optional(),
+  outcome: z.enum(PLUGIN_RESET_OUTCOMES),
+  /** One sentence an operator reads. Required even on `cleared` — "what did it actually do to my phone" has to be answerable per row. */
+  message: z.string().max(600),
+})
+export type PluginResetItem = z.infer<typeof PluginResetItemSchema>
+
+/** The cap on a handler's report. A farm with more than this many devices is real; a handler reporting more rows than this is not reporting, it is dumping. */
+export const PLUGIN_RESET_MAX_ITEMS = 1000
+
+/**
+ * What a reset handler returns. Parsed by the host before anything is deleted
+ * — it is plugin output crossing into the core, so it goes through Zod like any
+ * other external input, and a handler that returns nothing at all is a valid
+ * empty report (it had nothing to undo).
+ */
+export const PluginResetReportSchema = z.object({
+  items: z.array(PluginResetItemSchema).max(PLUGIN_RESET_MAX_ITEMS).default([]),
+  /** Anything that is true of the whole pass rather than of one item. Rendered above the list. */
+  note: z.string().max(600).optional(),
+})
+export type PluginResetReport = z.infer<typeof PluginResetReportSchema>
+
 export const PluginServiceDeclarationSchema = z.object({
   /**
    * Exhaustive. `ctx.farm` refuses any capability absent from this list
@@ -341,6 +458,17 @@ export const PluginServiceDeclarationSchema = z.object({
    * sent, and `ctx.onWebhook` still has to be called for anything to answer.
    */
   webhooks: z.array(PluginWebhookSchema).max(PLUGIN_SERVICE_MAX_WEBHOOKS).default([]),
+  /**
+   * The **Reset data** hook and the authority it borrows for one pass — see
+   * `PluginServiceResetDataSchema`.
+   *
+   * `null` (the default, and what every manifest written before this field
+   * existed reads back as) means the plugin has nothing to undo. Reset still
+   * works on such a plugin: it deletes the data and says the handler did not
+   * run because there is none, which is a complete answer rather than a
+   * degraded one.
+   */
+  resetData: PluginServiceResetDataSchema.nullable().default(null),
 })
 export type PluginServiceDeclaration = z.infer<typeof PluginServiceDeclarationSchema>
 

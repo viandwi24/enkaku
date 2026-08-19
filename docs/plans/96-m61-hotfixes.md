@@ -3898,3 +3898,161 @@ menu item's disabled state, a successful scan's refetch, and both refusal
 codes leaving the item back at its idle label). `bun run --cwd packages/studio
 test` scoped to those three files: 83 pass / 0 fail. `bash
 scripts/typecheck.sh`: OK across every package.
+
+### 96.44 — `ScanNetworkDialog`'s port field is farm-wide, not per-range, even though the owner's own sketch showed one per row. A real, named limitation, not a silent omission. NOT A BUG at the time — logged for visibility. **RESOLVED 2026-08-19 — see the follow-up note at the end of this entry.**
+
+**What the owner asked for.** After seeing §96.43's "disabled item navigates
+to Settings" fallback live, the owner asked for a real, self-contained
+scan-configuration modal instead (plan 88 §5 step 88.13), sketching the row
+shape directly: *"input dinamis untuk range ip dan port: 1. [ip start] -
+[ip end] [port]... bisa dinamis gitu."* Read literally, that sketch shows a
+port PER ROW.
+
+**What the backend actually has.** `discovery.tcpPort`
+(`packages/protocol/src/settings.ts`) is a single farm-wide integer.
+`packages/core/src/registry/sweep.ts` has no per-network port field, and
+`SweepReport`/`Sweeper.sweep()` take no per-range port argument — the
+bounded sweep probes every configured, ticked network on the ONE configured
+port. Building a per-row port input in `ScanNetworkDialog.tsx` would have
+been exactly the defect class this whole session was hunting: a UI control
+that promises something the backend does not deliver (the false "released
+or forgotten" claim, the phantom "Scan network" button §96.43 itself just
+fixed, the label-vs-number compaction bug — all the same shape).
+
+**What was built instead.** `ScanNetworkDialog.tsx` shows the port field
+exactly ONCE, above the range table, editing the real
+`discovery.tcpPort` setting — and states the limitation in its own copy,
+plainly, rather than letting an operator infer it from an absent column:
+*"One port for every range — a device listens for adb on its own local
+network stack, so this applies farm-wide. Per-range ports are not supported
+yet."* `FarmNetworksEditor.tsx` (Settings → Discovery & monitoring) does not
+duplicate this control — `discovery.tcpPort` is already editable one
+component up on the same Settings page via the generic schema form, so a
+second port input there would be two controls for one setting on one
+screen, not a fix for anything.
+
+**Disposition.** Not treated as a defect to silently work around (a fake
+per-row field that only writes into the single farm-wide value, discarding
+N-1 of the operator's own inputs, would have been worse than the plain
+single field this shipped with). Left as an open, named gap — a genuine
+per-range port would need `discovery.networks[]` itself to carry a port
+per row, `sweep.ts`'s probe loop to read it per network, and `SweepReport`
+to report per-range results, none of which this step's own scope permitted
+touching (plan 88 §5 step 88.13's own constraint: `discovery.networks[]`
+and the sweep's address enumeration/cost-ceiling math stay CIDR-native and
+unchanged). See plan 88 §5 step 88.13 and §9 for the fuller account; a
+future plan is where a real per-range port would land, if the owner asks
+for it once they see this modal.
+
+**RESOLVED, 2026-08-19 — the same day, once the owner actually saw the
+modal.** The "future plan, if asked" framing above did not last a day: the
+owner asked, and the three touch points this entry named turned out to be
+exactly right and genuinely contained, not a re-architecture. Built in full:
+`discovery.networks[].port` (`packages/protocol/src/settings.ts`, an
+optional integer with the same 1024–65535 bounds as `discovery.tcpPort`,
+absent meaning "inherit the farm default" — the same convention this file's
+own `video` fields already established for a per-device override);
+`packages/core/src/registry/sweep.ts`'s probe loop reads `net.port ??
+cfg.tcpPort` instead of always `cfg.tcpPort`; `SweepReportSchema.networks[]`
+gained its own `port` field so a `Swept ...` summary and the raw report both
+name which port was actually probed per range, not just farm-wide.
+`packages/studio/src/lib/ip-range.ts`'s `NetworkCidrRow`/`RangeRow` carry
+`port` losslessly through `networksToRanges`/`rangeRowsToNetworks` (new
+round-trip tests: create with an override, edit it, remove it, and confirm
+it never bleeds into an adjacent or unrelated row); `RangeNetworksFields.tsx`
+gained a Port column (shared by both `FarmNetworksEditor.tsx` and
+`ScanNetworkDialog.tsx`, per this file's own "one implementation, not two
+vocabularies" precedent already governing that component), with the live
+farm default shown as each blank cell's placeholder so an operator can tell
+an inherited port from an overridden one at a glance. `ScanNetworkDialog.tsx`'s
+false "Per-range ports are not supported yet" copy is corrected to describe
+the field as the farm default and fallback. See plan 88's own top status
+line (the "88.13 follow-up" paragraph) and §9 Q7 (now marked resolved, not
+open) for the full account, including the second bug fixed in the same
+pass (a dialog-overflow regression this new column would otherwise have
+made worse).
+
+### 96.45 — `createSweeper` was fully built and unit-tested, but `daemon.ts` never constructed or wired it in: `POST /api/devices/scan` and the reconnect ladder's sweep fallback both failed/no-opped on the real running server despite every unit test passing
+
+**Found while fixing an unrelated Studio bug (§96.44), the same discovery
+path §96.16 named for the action recorder** — a textbook instance of this
+whole session's dominant defect class ("correct code, unreachable
+production call site"), and by count the largest one yet: this single gap
+broke TWO independent surfaces at once. `grep -n "createSweeper"
+packages/core/src -r --include='*.ts'` found the function defined only in
+`packages/core/src/registry/sweep.ts` — zero production call sites anywhere
+in `daemon.ts`. Two consequences, both silent on a real boot:
+
+1. `POST /api/devices/scan` (plan 88 §3.5/§4.5/§4.6, `api/devices.ts` ~line
+   537) always threw `E_NOT_SUPPORTED` — `createDeviceRoutes({...})`'s
+   optional `sweeper` key was simply never passed at its one production call
+   site (`daemon.ts`, `deviceRoutes: createDeviceRoutes({...})`). This is
+   the backend for §96.43's "Scan network" fleet-menu item and §96.44's
+   `ScanNetworkDialog` "Scan all" button, both shipped and, by every
+   account on record, believed working — **the entire "Scan network"
+   feature (button, modal, IP-range editor, per-range port) was
+   non-functional on a real server the moment an operator actually clicked
+   it**, despite `network-scan.test.ts`, `FarmNetworksEditor.test.tsx`, and
+   `page.test.tsx`'s new describe block all passing, because none of those
+   tests go through `daemon.ts` — they exercise the route/hook layer
+   directly, against a hand-built `sweeper` stub.
+2. `registry/reconnect.ts`'s reconnect ladder (plan 88 §3.3/§4.4) has its
+   own optional `sweeper` dependency, gating step 4 (`opts.allowSweep`) —
+   also never passed. `daemon.ts`'s own comment at the ladder's construction
+   site said so explicitly: *"Only the ladder through remembered addresses
+   (step 88.2's own deliverable): no sweep branch yet (step 88.3's), so an
+   exhausted ladder always reports `not-found` rather than ever scanning a
+   subnet."* Plan 88's own top status line nonetheless listed 88.3 under
+   "Implemented and test-green" and 88.2 as "now including the sweep branch
+   88.3 added" — true only for `sweep.ts`'s own unit tests
+   (`registry/sweep.test.ts`), not for either production path that was
+   supposed to reach it. That status line is corrected alongside this entry.
+
+**The fix.** One `Sweeper` is constructed in `daemon.ts` via `createSweeper`,
+right before the reconnect ladder (same scope, same moment as `reconnector`
+— both need the exact same instance, not two independent sweepers racing
+two singleton mutexes), reading `settingsStore.get().discovery` directly for
+`SweeperSettings` (a structural subset, so nothing here re-lists field names
+and risks drifting from `packages/protocol/src/settings.ts`'s schema).
+Threading it into the two broken paths needed two different techniques,
+because `createDeviceRoutes` is called (`daemon.ts`, `deviceRoutes:
+createDeviceRoutes({...})`) long before the adb subsystem — and therefore
+this sweeper — exists in boot order, the identical ordering problem
+`agentProvisionerRef`/`labellingRef`/`preparationRunnerRef` already solve
+elsewhere in this file:
+
+- `createDeviceReconnector({..., sweeper})` — passed directly. Both are
+  built in the same later-boot scope, so no forward-ref is needed here;
+  this alone closes gap 2 (the ladder's `allowSweep` step).
+- `createDeviceRoutes({..., sweeper: { sweep: (opts) => sweeperRef?.sweep(opts)
+  ?? Promise.reject(new EnkakuError('E_NOT_SUPPORTED', ...)) }})` — a
+  forward-ref closure over a new `let sweeperRef: Sweeper | null = null`
+  (declared beside `reconnector`, assigned once the real sweeper is built,
+  cleared in `stop()`). `DeviceRoutesDeps.sweeper` is declared as a plain
+  value (`{ sweep(...): Promise<SweepReport> }`), not an accessor function
+  like `connection.reconnector`/`rescan`, so the forward-ref has to live
+  inside the wrapper's own `sweep` method — the same shape
+  `agentProvisionerRef`'s `ensure`/`status`/`remove` wrappers already use a
+  few hundred lines above for an identical "field wants a value, subsystem
+  exists later" mismatch. This closes gap 1: orchestrator mode and "adb not
+  ready yet" both still resolve `sweeperRef` to `null` and reject with the
+  exact `E_NOT_SUPPORTED` message the route used to throw for a missing
+  dep — `POST /scan`'s own `if (!deps.sweeper)` guard is now dead in
+  production (kept for the unit tests that build `createDeviceRoutes`
+  directly without this wrapper).
+
+**Verification.** `bash scripts/typecheck.sh`: every package OK. `bun test
+packages/core/src/daemon-wiring.test.ts packages/core/src/registry/sweep.test.ts
+packages/core/src/registry/reconnect.test.ts`: 127 pass / 0 fail (includes a
+new "the bounded subnet sweep" describe block in `daemon-wiring.test.ts`,
+this repo's established house style for this exact defect class — it reads
+`daemon.ts`'s own source text and asserts the real construction, the
+construction ORDER relative to the reconnect ladder, both wiring sites, and
+that the stale "no sweep branch yet" comment is gone). `bun run spec:check`:
+unchanged, GAP 1 (`plugin_webhooks`, unrelated to this change — see that
+table's own history). `bash scripts/check-plan-status.sh`: passes; plan 88's
+status line is updated to describe this fix rather than continue the false
+"test-green" claim. End-to-end confirmation against the owner's own live
+`:7700` dev server (`POST /api/devices/scan` with a real `discovery.networks`
+entry) is left to the owner: this pass did not fabricate a network entry to
+test against one that was not already configured with intent.

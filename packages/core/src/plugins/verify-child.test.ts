@@ -494,7 +494,7 @@ describe('verifyPluginBundle — a plugin`s service declaration (plan 109 §4.1,
     const path = writeBundle(serviceBundle(`{ kind: 'enkaku.service', setup: async () => {} }`))
     const report = await verifyPluginBundle(path)
     expect(report.ok).toBe(true)
-    expect(report.service).toEqual({ permissions: [], isolation: 'in-process', listeners: [], events: [], webhooks: [] })
+    expect(report.service).toEqual({ permissions: [], isolation: 'in-process', listeners: [], events: [], webhooks: [], resetData: null })
   }, 10_000)
 
   test('declared permissions survive the round trip; the setup FUNCTION does not cross the boundary', async () => {

@@ -1294,45 +1294,63 @@ describe('Dashboard — the title pill and consolidated header (plan 101 §5 ste
 })
 
 /**
- * "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — the fleet
- * menu's own trigger for the bounded subnet sweep, beside "Move to
- * network…". Closes a real gap: `POST /api/devices/scan` had no Studio
- * call site anywhere before this (confirmed by grep) despite its own doc
- * comment in `packages/core/src/api/devices.ts` claiming otherwise.
- * `FarmNetworksEditor.test.tsx` covers the shared `network-scan.ts` helpers
- * and the E_SCAN_BUSY/E_SCAN_UNAVAILABLE wording in more depth; this file
- * covers the Devices-page entry point specifically: the disabled-with-
- * reason precondition and the refetch after a successful scan.
+ * "Scan network" (plan 88 §5 — superseding step 88.12's disabled-with-a-
+ * navigate-away-tooltip shortcut with a real, self-contained modal, the
+ * owner's own request after seeing that fallback live). The menu item ALWAYS
+ * opens `ScanNetworkDialog`, never disabled, never a `router.push`.
+ * `ScanNetworkDialog.test.tsx` covers the dialog's own save/edit/"Scan all"
+ * behaviour in depth; this file covers only the Devices-page wiring: the
+ * item always opens the dialog regardless of configured networks, and a
+ * successful scan inside it refetches the fleet and the tray here.
  */
-describe('Dashboard — Scan network (plan 88 §5 step 88.12)', () => {
+describe('Dashboard — Scan network (plan 88 §5)', () => {
   function settingsWithNetworks(networks: Array<{ cidr: string; label: string; medium: 'wired' | 'wireless'; scan: boolean }>) {
     const base = defaultFarmSettings()
     return { settings: { ...base, discovery: { ...base.discovery, networks } }, schema: {}, deviceSchema: {} }
   }
 
-  test('no scannable network configured: the menu item is disabled with a reason, not a click that fails afterward', async () => {
+  test('no networks configured: the menu item still opens the dialog — never disabled, never a router.push', async () => {
     const user = userEvent.setup()
-    const { apiMock } = renderWithApi(<Dashboard />, { ...baseResponses, '/api/settings': { body: settingsWithNetworks([]) } })
+    renderWithApi(<Dashboard />, { ...baseResponses, '/api/settings': { body: settingsWithNetworks([]) } })
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
     await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
     const item = await screen.findByRole('menuitem', { name: 'Scan network' })
-    await waitFor(() => expect(item.getAttribute('aria-disabled')).toBe('true'))
-    expect(item.getAttribute('title')).toBe('No networks configured — the sweep cannot run')
+    expect(item.getAttribute('aria-disabled')).toBeNull()
 
     await user.click(item)
-    await new Promise((r) => setTimeout(r, 0))
-    expect(apiMock.calls.some((c) => c.path === '/api/devices/scan')).toBe(false)
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Scan network' })).toBeTruthy())
+    // The dialog's own empty state is where "no networks configured" now
+    // lives — with an "Add range" affordance right there, not a dead-end
+    // tooltip and not a navigation.
+    await waitFor(() => expect(screen.getByText('No ranges yet')).toBeTruthy())
+    expect(mockRouter.push).not.toHaveBeenCalled()
   })
 
-  test('a scannable network enables the item; a successful scan refetches the fleet and the tray', async () => {
+  test('a configured, scannable network: the item opens the dialog pre-loaded with it, ready for "Scan all"', async () => {
+    const user = userEvent.setup()
+    renderWithApi(<Dashboard />, {
+      ...baseResponses,
+      '/api/settings': { body: settingsWithNetworks([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+    })
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Scan network' }))
+
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    expect((screen.getByLabelText('Range 1 start IP') as HTMLInputElement).value).toBe('10.20.0.0')
+    expect(screen.getByRole('button', { name: 'Scan all' })).toBeTruthy()
+  })
+
+  test('a successful "Scan all" inside the dialog refetches the fleet and the tray', async () => {
     const user = userEvent.setup()
     const { apiMock } = renderWithApi(<Dashboard />, {
       ...baseResponses,
       '/api/settings': { body: settingsWithNetworks([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
       '/api/devices/scan': {
         body: {
-          networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 }],
+          networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }],
           scanned: 254,
           skipped: 0,
           answered: 1,
@@ -1348,54 +1366,18 @@ describe('Dashboard — Scan network (plan 88 §5 step 88.12)', () => {
     await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
 
     await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
-    const item = await screen.findByRole('menuitem', { name: 'Scan network' })
-    expect(item.getAttribute('aria-disabled')).toBe('false')
+    await user.click(await screen.findByRole('menuitem', { name: 'Scan network' }))
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
 
     const devicesCallsBefore = apiMock.calls.filter((c) => c.path.startsWith('/api/devices?')).length
-    await user.click(item)
+    await user.click(screen.getByRole('button', { name: 'Scan all' }))
 
     await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'POST' && c.path === '/api/devices/scan')).toBe(true))
     // The fleet list is refetched after a successful scan, the same
     // belt-and-suspenders refetch every other fleet-menu action here does
     // alongside its WS-driven update (`renumberFleet` above is the
-    // precedent this mirrors).
+    // precedent this mirrors) — `ScanNetworkDialog`'s own `onScanned` is
+    // this page's `onNetworkScanned`.
     await waitFor(() => expect(apiMock.calls.filter((c) => c.path.startsWith('/api/devices?')).length).toBeGreaterThan(devicesCallsBefore))
-  })
-
-  test('E_SCAN_BUSY leaves the item back at "Scan network", not stuck on "Scanning…"', async () => {
-    const user = userEvent.setup()
-    const { apiMock } = renderWithApi(<Dashboard />, {
-      ...baseResponses,
-      '/api/settings': { body: settingsWithNetworks([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
-      '/api/devices/scan': { status: 409, body: { error: { code: 'E_SCAN_BUSY', message: 'a sweep is already running — wait for it to finish before starting another' } } },
-    })
-    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
-
-    await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
-    const item = await screen.findByRole('menuitem', { name: 'Scan network' })
-    await user.click(item)
-
-    await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'POST' && c.path === '/api/devices/scan')).toBe(true))
-    // Same item, still mounted (`onSelect` calls `preventDefault`, so the
-    // menu never auto-closes on this click) — its label reverts once the
-    // refused request settles, rather than sticking on "Scanning…".
-    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Scan network' })).toBeTruthy())
-  })
-
-  test('E_SCAN_UNAVAILABLE also leaves the item back at "Scan network"', async () => {
-    const user = userEvent.setup()
-    const { apiMock } = renderWithApi(<Dashboard />, {
-      ...baseResponses,
-      '/api/settings': { body: settingsWithNetworks([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
-      '/api/devices/scan': { status: 409, body: { error: { code: 'E_SCAN_UNAVAILABLE', message: 'no scannable network is configured — add one under Settings → Farm networks' } } },
-    })
-    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
-
-    await user.click(screen.getByRole('button', { name: 'More fleet actions' }))
-    const item = await screen.findByRole('menuitem', { name: 'Scan network' })
-    await user.click(item)
-
-    await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'POST' && c.path === '/api/devices/scan')).toBe(true))
-    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Scan network' })).toBeTruthy())
   })
 })

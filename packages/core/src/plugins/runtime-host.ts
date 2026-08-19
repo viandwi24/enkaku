@@ -9,13 +9,16 @@ import {
   type PluginServiceContext,
   type PluginSocketHandler,
   type PluginWebhookHandler,
+  type ServiceResetData,
 } from '@enkaku/sdk'
 import {
   refusedPluginEventTypesMessage,
   ReportedListenerSchema,
+  PluginResetReportSchema,
   type PluginHandlerKind,
   type PluginHandlerView,
   type PluginListenerProto,
+  type PluginResetReport,
   type PluginServiceDeclaration,
   type PluginLogPage,
   type PluginServiceStatus,
@@ -113,6 +116,23 @@ export const MAX_INVOCATION_TIMEOUT_MS = 300_000
  * bind test could be reported as the plugin failing to let go.
  */
 export const DISPOSER_TIMEOUT_MS = 5_000
+
+/**
+ * How long a Reset data pass may take.
+ *
+ * The ceiling rather than the default, and the arithmetic is why: a handler
+ * that turns a route off does it one device at a time through
+ * `device.network.clear`, whose own farm deadline is 120 s per device. Two
+ * unreachable phones already outlast the 30 s default, and a reset that
+ * *timed out halfway* is the exact state this feature exists to avoid — the
+ * caller is freed, the handler keeps running (`invoke` cannot cancel it), and
+ * nobody can say which devices were reached.
+ *
+ * It is not unbounded, because the operator is waiting on an HTTP response.
+ * A pass that needs longer than this is a pass that should be reported as
+ * partly done and pressed again — which the idempotence rule makes safe.
+ */
+export const RESET_TIMEOUT_MS = 300_000
 /** §4.2's Error budget row — "20 handler failures in 60 s". */
 export const ERROR_BUDGET_FAILURES = 20
 export const ERROR_BUDGET_WINDOW_MS = 60_000
@@ -246,7 +266,30 @@ export interface RuntimeHostDeps {
    * govern both halves of a plugin. Absent ⇒ every `ctx.farm` call refuses
    * `E_FARM_UNAVAILABLE`, fail-closed.
    */
-  farm?: (pluginId: string, id: string, input: unknown) => Promise<unknown>
+  farm?: (
+    pluginId: string,
+    id: string,
+    input: unknown,
+    /**
+     * **The reset pass's borrowed authority, and the only thing that widens a
+     * plugin's capability list anywhere in this codebase.**
+     *
+     * `{ reset: true }` tells the broker to check this one call against
+     * `permissions ∪ resetData.permissions` instead of `permissions` alone.
+     * It is set by the HOST, never by plugin code and never by a request body:
+     * `buildContext` passes it only for the context object it builds for a
+     * reset pass, and only while that pass's own token is still open — so a
+     * plugin that squirrels the reset `ctx` away and calls it a minute later is
+     * back to its ordinary list.
+     *
+     * Every other check is untouched. The broker still resolves the real
+     * capability, `invoke()` still applies the real ACL under
+     * `plugin:<name>`, the lease admission still runs, and the call is still
+     * audited — a borrowed permission is permission to be CHECKED for
+     * something, never permission to skip the checking.
+     */
+    opts?: { reset?: boolean },
+  ) => Promise<unknown>
   /**
    * One log line from plugin code. `daemon.ts` wires
    * `plugins/runtime-logs.ts` here (step 109.8) — the per-plugin ring, the
@@ -298,6 +341,7 @@ export interface RuntimeHostDeps {
   startTimeoutMs?: number
   disposerTimeoutMs?: number
   eventTimeoutMs?: number
+  resetTimeoutMs?: number
   errorBudget?: { failures: number; windowMs: number }
   /**
    * What to do with a floating rejection this host could NOT attribute to any
@@ -331,6 +375,24 @@ export interface RuntimeHost {
   unload(name: string, reason: string): Promise<void>
   /** `unload` then `load`, under one lock so nothing interleaves. */
   reload(name: string): Promise<PluginServiceView>
+  /**
+   * **Run one plugin's Reset data cleanup handler — and nothing else.**
+   *
+   * This host deletes no data and never will: it runs plugin code, contains it,
+   * and reports what came back. `api/plugins.ts` is what decides, from this
+   * report, whether the namespace is deleted — see `PluginResetOutcome`.
+   *
+   * Held under the same per-name lock `load`/`unload`/`reload` use, so a reload
+   * arriving mid-pass cannot tear the record down while the handler is halfway
+   * through un-routing forty phones.
+   *
+   * Never throws for a plugin-level problem. A service that is not running, a
+   * manifest that promises a handler the bundle does not export, a handler that
+   * throws, and a report the farm cannot parse are all *reported* — because
+   * each one has to reach the operator as a reason nothing was deleted, and a
+   * throw at this layer would flatten four different next actions into one 500.
+   */
+  resetData(name: string): Promise<PluginResetOutcome>
   /** Every ACTIVE plugin that declares a service (§4.2's Load row). Called after the HTTP server is listening, never before. */
   loadActive(): Promise<{ loaded: number; failed: number }>
   unloadAll(reason: string): Promise<void>
@@ -375,6 +437,28 @@ export interface RuntimeHost {
   dispose(): void
 }
 
+/**
+ * What one Reset data pass produced, as the host saw it. The route turns this
+ * into `PluginResetResponse`; nothing here knows about HTTP or about KV.
+ *
+ * `ran: false` always carries a `skipped` OR an `error`. There is deliberately
+ * no fourth state where the handler quietly did not run: "nothing happened and
+ * nobody said why" is the shape that lets an operator believe a cleanup
+ * occurred.
+ */
+export interface PluginResetOutcome {
+  /** Whether the ACTIVE version's manifest declares a handler at all. */
+  declared: boolean
+  /** Whether plugin code was actually entered. */
+  ran: boolean
+  /** Why it was not entered. */
+  skipped: { code: string; message: string } | null
+  /** It was entered, and it threw, overran, or answered a shape the farm could not parse. */
+  error: { code: string; message: string } | null
+  /** Whatever it reported. Empty on every path where it did not run. */
+  report: PluginResetReport
+}
+
 interface ServiceRecord {
   name: string
   version: string
@@ -411,6 +495,17 @@ interface ServiceRecord {
   generation: number
   /** The materialised bundle path, for stack-based rejection attribution. */
   modulePath: string | null
+  /**
+   * The loaded instance's Reset data handler, or `null`.
+   *
+   * Held on the record rather than re-imported on demand, and the reason is
+   * module state: `loadImpl` cache-busts its `import()` per start, so importing
+   * again would produce a SECOND live instance of the plugin's module with its
+   * own copy of everything `setup` built — and the reset handler would then
+   * clean up after a supervisor that owns none of the sockets. It has to be the
+   * function belonging to the instance that is actually running.
+   */
+  onResetData: ServiceResetData | null
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +700,7 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
   const startTimeoutMs = deps.startTimeoutMs ?? defaultTimeoutMs
   const disposerTimeoutMs = deps.disposerTimeoutMs ?? DISPOSER_TIMEOUT_MS
   const eventTimeoutMs = deps.eventTimeoutMs ?? defaultTimeoutMs
+  const resetTimeoutMs = deps.resetTimeoutMs ?? RESET_TIMEOUT_MS
   const portFree = deps.isPortFree ?? bindTestPortFree
   const budget = deps.errorBudget ?? { failures: ERROR_BUDGET_FAILURES, windowMs: ERROR_BUDGET_WINDOW_MS }
   const unattributed = deps.unattributedRejection ?? 'rethrow'
@@ -814,7 +910,15 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
     if (set.size === 0) modulePaths.delete(path)
   }
 
-  function buildContext(rec: ServiceRecord): PluginServiceContext {
+  /**
+   * The token a reset pass's borrowed authority hangs on. One object per pass,
+   * flipped shut in a `finally` — see `resetDataImpl`.
+   */
+  interface ResetPass {
+    open: boolean
+  }
+
+  function buildContext(rec: ServiceRecord, opts?: { resetPass?: ResetPass }): PluginServiceContext {
     const generation = rec.generation
     const base = createPluginContext({
       pluginId: rec.name,
@@ -822,7 +926,20 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
       resolveStableId: deps.resolveStableId,
       emitLog: (level, msg, fields) =>
         deps.emitLog ? deps.emitLog(rec.name, level, msg, fields) : log.child(rec.name)[level](msg, fields),
-      ...(deps.farm ? { farm: (id: string, input: unknown) => deps.farm!(rec.name, id, input) } : {}),
+      /**
+       * `resetPass` is read HERE, at call time, rather than baked into the
+       * closure as a boolean — which is what makes the grant expire.
+       *
+       * A reset handler that stores its `ctx` in module scope and calls
+       * `ctx.farm.call('device.network.clear', …)` ten minutes later goes
+       * through this same function with `open: false`, so the broker checks it
+       * against the ordinary declared list and refuses it. The authority is
+       * scoped to the pass, not to the object — the object is only how the
+       * pass is reached.
+       */
+      ...(deps.farm
+        ? { farm: (id: string, input: unknown) => deps.farm!(rec.name, id, input, opts?.resetPass?.open === true ? { reset: true } : undefined) }
+        : {}),
       // Tier 2 of the rejection attribution: every error the core rejects one
       // of this plugin's ports with carries the plugin's id, so a floating
       // `void ctx.storage.global.set(...)` is attributable however far down a
@@ -1227,6 +1344,11 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
     handlers.clear(rec.name)
     rec.counters.handlers = 0
     rec.counters.openSockets = 0
+    // The Reset data handler belongs to the instance being torn down, so it
+    // goes with it. Leaving it behind would let a reset run a stopped
+    // instance's cleanup against sockets and timers its own disposers have
+    // already released.
+    rec.onResetData = null
     const disposed = await runDisposers(rec, reason)
     const released = await checkReportedPorts(rec, reason)
     // Cleared AFTER the bind test, which is the only thing that needs them:
@@ -1284,6 +1406,7 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
       eventUnsubscribes: [],
       generation: 0,
       modulePath: null,
+      onResetData: null,
     }
     rec.version = row.version
     rec.declaration = declaration
@@ -1318,6 +1441,12 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
         )
       }
 
+      // Captured off the instance being started, BEFORE `setup` runs: a setup
+      // that throws leaves `releaseInstance` to clear it again, and a reset
+      // asked of a failed service must find no handler rather than one
+      // belonging to a `setup` that never finished.
+      rec.onResetData = typeof service.onResetData === 'function' ? service.onResetData : null
+
       const ctx = buildContext(rec)
       // `starting` is the ONLY status `setup` may run in, and it is the only
       // invocation allowed to run in it. Everything else is refused until
@@ -1339,6 +1468,96 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
       setStatus(rec, 'failed')
       log.error(`plugin "${name}@${row.version}" service failed to start — ${message}`)
       throw err instanceof EnkakuError ? err : new EnkakuError(code, message, err)
+    }
+  }
+
+  /**
+   * **Reset data, the host's half.** Runs the plugin's cleanup handler under
+   * the containment funnel, with one pass's borrowed authority open, and
+   * reports what happened. It deletes nothing — see `RuntimeHost.resetData`.
+   *
+   * The ordering below is the feature: the handler is entered while the
+   * plugin's data is still entirely intact, because the data is the only record
+   * of what the plugin did to the outside world. Anything that reads
+   * "notify, then delete" here has it backwards.
+   */
+  async function resetDataImpl(name: string): Promise<PluginResetOutcome> {
+    const empty: PluginResetReport = { items: [] }
+    const declaration = deps.plugins.service(name)
+    const declared = declaration?.resetData != null
+    const skip = (code: string, message: string): PluginResetOutcome => ({ declared, ran: false, skipped: { code, message }, error: null, report: empty })
+
+    // A plugin with no declared handler is not a failure and is not this
+    // function's business: the caller deletes its data and says there was
+    // nothing to undo. Answering `ran: false` with no fault is the one legal
+    // way to reach that state.
+    if (!declared) return { declared: false, ran: false, skipped: null, error: null, report: empty }
+
+    const rec = records.get(name)
+    if (!rec || rec.status !== 'running') {
+      return skip(
+        rec?.status === 'starting' ? 'E_PLUGIN_RUNTIME_STARTING' : 'E_PLUGIN_RUNTIME_NOT_RUNNING',
+        `plugin "${name}" declares a Reset data cleanup handler, and its service is "${rec?.status ?? 'not loaded'}" — so the cleanup ` +
+          `cannot run and nothing was deleted. Start the service (Plugins → Restart) and reset again: the handler is the only thing that ` +
+          `knows what this plugin left on your devices, and deleting its data without running it would strand exactly that.`,
+      )
+    }
+    const handler = rec.onResetData
+    if (!handler) {
+      // The manifest promised a handler the loaded bundle does not export.
+      // Treated as a fault rather than as "nothing to undo": honouring the
+      // absent half of a manifest that claims a cleanup exists is how a lie
+      // becomes a deletion.
+      return skip(
+        'E_PLUGIN_RESET_MISSING',
+        `plugin "${name}@${rec.version}"'s manifest declares a Reset data handler, but the running bundle exports none — the manifest and ` +
+          `the bundle disagree, which means the row was written by a different build. Nothing was deleted. Reload the plugin.`,
+      )
+    }
+
+    /**
+     * The pass. Open for exactly as long as the handler is being awaited, and
+     * shut in a `finally` whether it returned, threw, or blew its deadline —
+     * including the case `invoke` cannot cancel, where the handler is still
+     * running after the caller has been freed. That last one is why the token
+     * is an object read at call time rather than a boolean captured in a
+     * closure: an abandoned handler that keeps going must lose the borrowed
+     * authority at the same instant the operator's request ends.
+     */
+    const pass: ResetPass = { open: true }
+    const ctx = buildContext(rec, { resetPass: pass })
+    const borrowed = declaration?.resetData?.permissions ?? []
+    if (borrowed.length > 0) {
+      log.info(`plugin "${name}": Reset data pass open — borrowing ${borrowed.join(', ')} for the length of this pass only`)
+    }
+    try {
+      const returned = await invoke(name, { what: 'reset', timeoutMs: resetTimeoutMs }, () => handler(ctx))
+      // Plugin output crossing into the core, so it is parsed and not trusted
+      // — the same rule every other boundary in this workspace follows. A
+      // handler that returned nothing at all is a valid empty report: it had
+      // nothing to undo, and saying so is not the same as failing.
+      const parsed = PluginResetReportSchema.safeParse(returned ?? {})
+      if (!parsed.success) {
+        return {
+          declared,
+          ran: true,
+          skipped: null,
+          error: {
+            code: 'E_PLUGIN_RESET_REPORT_INVALID',
+            message:
+              `plugin "${name}"'s Reset data handler ran, but answered a report this farm cannot read — ` +
+              `${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}. ` +
+              `Nothing was deleted: a cleanup whose own account of itself is unreadable cannot be treated as a cleanup that succeeded.`,
+          },
+          report: empty,
+        }
+      }
+      return { declared, ran: true, skipped: null, error: null, report: parsed.data }
+    } catch (err) {
+      const { code, message } = describe(err)
+      return { declared, ran: true, skipped: null, error: { code, message }, report: empty }
+    } finally {
+      pass.open = false
     }
   }
 
@@ -1374,6 +1593,11 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
         await unloadRecord(rec, reason, 'stopped')
       }),
     reload: (name) => withLock(name, () => loadImpl(name)),
+    // Under the SAME lock as load/unload/reload: a reload arriving while a
+    // handler is halfway through un-routing forty phones would tear the record
+    // down under it, and the borrowed authority would be attached to a
+    // generation that no longer exists.
+    resetData: (name) => withLock(name, () => resetDataImpl(name)),
 
     async loadActive() {
       let loaded = 0

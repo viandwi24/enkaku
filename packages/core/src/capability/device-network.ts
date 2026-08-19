@@ -141,15 +141,46 @@ export function createDeviceNetworkService(deps: DeviceNetworkServiceDeps, actor
    * user that does not exist. The `clientId` carries the full principal either
    * way, so the hold is still attributable.
    */
-  async function withDevice<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
+  async function withDevice<T>(deviceId: string, fn: () => Promise<T>, opts: { disarm?: boolean } = {}): Promise<T> {
     const clientId = principal()
     const userId = pluginNameFromPrincipal(clientId) === null ? clientId : null
     const admitted = admitMember(deps.leases, deviceId, clientId, userId)
-    if (!admitted.ok) throw new EnkakuError(admitted.code, admitted.message)
+    /**
+     * **The disarm direction, and the one code it lets through** — the same
+     * widening `requireDisarmAdmission` (`network/route-service.ts`) applies to
+     * `DELETE /api/devices/:id/network`, applied here so the capability and the
+     * HTTP endpoint agree about when a route may be turned OFF.
+     *
+     * That file carries the whole argument and it is not restated. The short
+     * form: a lease on an `offline` or `quarantined` device is not merely
+     * unheld, it is UNOBTAINABLE, so `device_unavailable` on the off switch does
+     * not mean "take control first", it means "you may never turn this off" —
+     * and offline is the case where turning a route off matters most. The
+     * machinery for a teardown that cannot reach the phone already exists and
+     * predates this: `revertNetwork` records the debt as `pendingClear` and the
+     * device's next admission settles it, with a real teardown. The gate was
+     * refusing the request before the machinery built for it could run.
+     *
+     * `device_busy` and `not_lease_holder` are still refused, unchanged. A job
+     * driving the phone right now, or a person holding it, is a collision and
+     * not a disarm.
+     *
+     * **This narrows nothing that was previously wide, and widens nothing but
+     * `clear`.** `set` still takes a full admission — applying a route to a
+     * phone you cannot reach is a promise you cannot keep. The route-service
+     * comment that used to read *"the plugin path into this function is NOT
+     * widened by this"* was true when written and is superseded here; the
+     * reason it is superseded is Reset data, where a plugin's stored assignments
+     * are the only record of which phones carry its routes, and the phones that
+     * most need un-routing are exactly the ones that are away.
+     */
+    if (!admitted.ok && !(opts.disarm === true && admitted.code === 'device_unavailable')) {
+      throw new EnkakuError(admitted.code, admitted.message)
+    }
     try {
       return await fn()
     } finally {
-      if (admitted.acquiredHere) deps.leases.releaseManual(deviceId, clientId)
+      if (admitted.ok && admitted.acquiredHere) deps.leases.releaseManual(deviceId, clientId)
     }
   }
 
@@ -158,7 +189,7 @@ export function createDeviceNetworkService(deps: DeviceNetworkServiceDeps, actor
     // reading what a phone is set to must work while somebody else is driving it.
     get: (deviceId) => deps.port.get(deviceId),
     set: (deviceId, route) => withDevice(deviceId, () => deps.port.set(deviceId, route, principal())),
-    clear: (deviceId) => withDevice(deviceId, () => deps.port.clear(deviceId, principal())),
+    clear: (deviceId) => withDevice(deviceId, () => deps.port.clear(deviceId, principal()), { disarm: true }),
   }
 }
 
@@ -224,7 +255,7 @@ export const deviceNetworkClear = defineCapability({
   deadline: 120_000,
   effect: 'write',
   description:
-    "Turn a device's network route off and forget it, restoring the proxy settings the farm found on the phone before it ever wrote one. Idempotent: a device with no route is left alone rather than reported as an error.",
+    "Turn a device's network route off and forget it, restoring the proxy settings the farm found on the phone before it ever wrote one. Idempotent: a device with no route is left alone rather than reported as an error. Allowed for an offline or quarantined device — the same disarm-direction rule DELETE /api/devices/:id/network follows — in which case the teardown is recorded against the device as owed and settled the next time it is admitted, and the answer says so rather than claiming an off that did not happen.",
   handler: (ctx, { deviceId }) => mustNetwork(ctx.network).clear(deviceId) as Promise<z.infer<typeof DeviceNetworkStatusResponseSchema>>,
 })
 

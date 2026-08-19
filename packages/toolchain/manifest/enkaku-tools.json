@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "updatedAt": "2026-08-13T00:00:00Z",
+  "updatedAt": "2026-08-19T00:00:00Z",
   "tools": [
     {
       "id": "adb",
@@ -134,19 +134,19 @@
       "format": "raw",
       "versions": [
         {
-          "version": "TODO-first-release",
+          "version": "0.1.8",
           "releasedAt": "unknown",
           "compatibleCoreRange": "TODO-M55",
           "deviceArtifact": {
             "packageName": "dev.enkaku.guestagent",
-            "versionCode": 0,
-            "signatureSha256": "BAA2B36DD52BE50EAE2036404E130065EBF3836D904A6137D740FBE378EDB32F"
+            "versionCode": 1008,
+            "signatureSha256": "420222E0C1BD95A6EA11C0F735B0F7CEEF48C05877F487308F80FCF5895048B6"
           },
           "platforms": {
             "*": {
-              "url": "https://github.com/viandwi24/enkaku/releases/download/TODO-first-release/guest-agent.apk",
-              "sha256": "TODO-verify",
-              "sizeBytes": 0
+              "url": "https://github.com/viandwi24/enkaku/releases/download/v0.1.8/guest-agent.apk",
+              "sha256": "15ee925d13a47d068ed9cf14f5959e2b4bd5599454ffb1cc65c2846312ecc198",
+              "sizeBytes": 1198993
             }
           }
         }

@@ -72,6 +72,7 @@ const FIXTURE_SERVICE: VerifyReport['service'] = {
       toleranceSec: 300,
     },
   ],
+  resetData: null,
 }
 
 function control(): RuntimeHostFixtureControl {

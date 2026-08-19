@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ActionSpecSchema, NavEntrySchema, PluginSurfaceSchema, SurfaceIdSchema, ViewSpecSchema } from '../plugin-surface'
-import { PluginServiceDeclarationSchema, PluginServiceStatusSchema } from '../plugin-service'
+import { PluginResetItemSchema, PluginServiceDeclarationSchema, PluginServiceStatusSchema } from '../plugin-service'
 import { RuntimeEnvelopeSchema } from '../runtime-envelope'
 import { KvEntrySchema } from './kv'
 
@@ -179,6 +179,79 @@ export const PluginRemoveResponseSchema = z.object({ removed: z.boolean(), kvDel
 
 /** `POST /api/plugins/:name/disable` and `DELETE /api/plugins/dev/:name` — both answer a bare acknowledgement. */
 export const PluginOkResponseSchema = z.object({ ok: z.boolean() })
+
+/**
+ * ## Reset data — `POST /api/plugins/:name/reset`
+ *
+ * The farm owner's ask: *"di plugins ada opsi buat reset data dong … terus
+ * trigger reset function handler juga di pluginsnya. contoh ketika plugin proxy
+ * manager di reset, selain hapus semua data, plugin proxy manager juga harus set
+ * network proxy ke off dulu ke device yang pernah diassign … jadi biar ga
+ * error."*
+ *
+ * **The handler runs BEFORE the data is deleted, and that ordering is the whole
+ * feature.** The plugin's stored data is what tells it which phones it touched;
+ * deleting first and notifying after would hand the handler an empty namespace
+ * and leave live routes on real devices that nothing in the farm can any longer
+ * explain.
+ *
+ * ### Three outcomes, and the middle one is not a success
+ *
+ * | `status` | what happened | was the data deleted? |
+ * |---|---|---|
+ * | `reset` | cleanup finished, or there was none to do | yes |
+ * | `reset-with-debts` | cleanup could not finish, but every unfinished piece is now recorded somewhere that outlives this plugin's data (`PLUGIN_RESET_OUTCOMES`' `pending`) | yes |
+ * | `blocked` | at least one piece of cleanup **failed** — the undo did not happen and nothing is holding the obligation | **no. Nothing was deleted.** |
+ *
+ * `blocked` deletes nothing at all, not even the parts that cleaned up fine.
+ * A partial delete would destroy the record of exactly the devices still
+ * carrying whatever the plugin left on them, which is the orphan this action
+ * exists to prevent. The handler is required to be idempotent and re-runnable
+ * (`defineService({ onReset })` says so), so the operator's move is to fix the
+ * cause and press Reset again.
+ *
+ * Always answered `200`, including `blocked`: a partly-completed pass is a
+ * completed request whose report IS the answer, and a 4xx would tell a caller
+ * nothing happened when eleven phones were just un-routed. Request-level
+ * refusals (no such plugin, the service is not running) still throw.
+ */
+export const PLUGIN_RESET_STATUSES = ['reset', 'reset-with-debts', 'blocked'] as const
+export type PluginResetStatus = (typeof PLUGIN_RESET_STATUSES)[number]
+
+/** Why a declared reset handler did not run, or how it ended badly. A code plus the sentence a person reads. */
+export const PluginResetFaultSchema = z.object({ code: z.string(), message: z.string() })
+
+export const PluginResetResponseSchema = z.object({
+  plugin: z.string(),
+  status: z.enum(PLUGIN_RESET_STATUSES),
+  handler: z.object({
+    /** Whether the ACTIVE version's manifest declares one at all. */
+    declared: z.boolean(),
+    /** Whether plugin code was actually entered. `false` with `declared: true` always carries a `skipped` or an `error`. */
+    ran: z.boolean(),
+    /** Present when the handler was not entered — the service is not running, say. Never a silent `ran: false`. */
+    skipped: PluginResetFaultSchema.nullable(),
+    /** Present when the handler was entered and threw, overran its deadline, or answered a report shape the farm could not parse. */
+    error: PluginResetFaultSchema.nullable(),
+    items: z.array(PluginResetItemSchema),
+    note: z.string().nullable(),
+    counts: z.object({ cleared: z.number(), unchanged: z.number(), pending: z.number(), failed: z.number() }),
+  }),
+  data: z.object({
+    deleted: z.boolean(),
+    /** Why nothing was deleted, when nothing was. `null` on a delete that happened. */
+    keptBecause: z.string().nullable(),
+    /** Rows actually removed, split by scope so "8 device entries across 3 phones" is sayable. */
+    entries: z.number(),
+    global: z.number(),
+    device: z.number(),
+    /** How many devices held at least one row under this namespace. */
+    devices: z.number(),
+  }),
+  /** One sentence stating what happened, written server-side so the CLI and the browser cannot word the same outcome differently. */
+  message: z.string(),
+})
+export type PluginResetResponse = z.infer<typeof PluginResetResponseSchema>
 
 /**
  * ## Bulk version removal — `POST /api/plugins/:name/versions/remove`

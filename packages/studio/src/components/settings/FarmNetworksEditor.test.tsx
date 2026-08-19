@@ -47,7 +47,7 @@ function settingsGet(networks: Array<{ cidr: string; label: string; medium: 'wir
   }
 }
 
-describe('FarmNetworksEditor — loading, error (plan 88 §5 step 88.6)', () => {
+describe('FarmNetworksEditor — loading, error (plan 88 §5)', () => {
   test('loading: shows a busy skeleton while /api/settings is in flight', () => {
     renderWithApi(<FarmNetworksEditor />, {}, { unmatched: 'pending' })
     expect(document.querySelector('[aria-busy="true"]')).toBeTruthy()
@@ -66,8 +66,8 @@ describe('FarmNetworksEditor — empty state (the case that matters most)', () =
   test('no networks configured: says the sweep cannot run, not just "no rows"', async () => {
     renderWithApi(<FarmNetworksEditor />, { '/api/settings': { body: settingsGet([]) } })
     await waitFor(() => expect(screen.getByText(/the sweep cannot run/i)).toBeTruthy())
-    expect(screen.getByText(/10\.20\.0\.0\/24/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /add a network/i })).toBeTruthy()
+    expect(screen.getByText(/10\.20\.0\.0 - 10\.20\.0\.255/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /add a range/i })).toBeTruthy()
     // No table is rendered in the empty state.
     expect(screen.queryByRole('table')).toBeNull()
   })
@@ -79,12 +79,13 @@ describe('FarmNetworksEditor — empty state (the case that matters most)', () =
     expect(screen.getByText(/adb cannot tell a switch port from a radio/i)).toBeTruthy()
   })
 
-  test('clicking "Add a network" from the empty state opens one editable row', async () => {
+  test('clicking "Add a range" from the empty state opens one editable row', async () => {
     renderWithApi(<FarmNetworksEditor />, { '/api/settings': { body: settingsGet([]) } })
     await waitFor(() => expect(screen.getByText(/the sweep cannot run/i)).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: /add a network/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add a range/i }))
     await waitFor(() => expect(screen.getByRole('table')).toBeTruthy())
-    expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy()
+    expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy()
+    expect(screen.getByLabelText('Range 1 end IP')).toBeTruthy()
   })
 })
 
@@ -93,21 +94,33 @@ describe('FarmNetworksEditor — live per-row count and running total', () => {
     renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
     })
-    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    expect((screen.getByLabelText('Range 1 start IP') as HTMLInputElement).value).toBe('10.20.0.0')
+    expect((screen.getByLabelText('Range 1 end IP') as HTMLInputElement).value).toBe('10.20.0.255')
     expect(screen.getByText('256')).toBeTruthy()
     expect(screen.getByText(/256 \/ 1,024 addresses in the sweep/)).toBeTruthy()
   })
 
-  test('typing an invalid CIDR shows the inline error and dims the count, without waiting for Save', async () => {
+  test('typing an invalid end IP shows the inline error and dims the count, without waiting for Save', async () => {
     renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }]) },
     })
-    const cidrInput = await screen.findByLabelText('Network 1 CIDR')
-    fireEvent.change(cidrInput, { target: { value: 'not-a-cidr' } })
-    await waitFor(() => expect(screen.getByText(/must be an IPv4 CIDR/)).toBeTruthy())
+    const endInput = await screen.findByLabelText('Range 1 end IP')
+    fireEvent.change(endInput, { target: { value: 'not-an-ip' } })
+    await waitFor(() => expect(screen.getByText(/must be a valid IPv4 address/)).toBeTruthy())
     // Save is disabled while a row is invalid. `toBeDisabled()` (jest-dom) is
     // not wired up for this workspace's test setup — read the DOM property.
     expect((screen.getByRole('button', { name: 'Save networks' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  test('a start IP after the end IP shows the inline error', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }]) },
+    })
+    const startInput = await screen.findByLabelText('Range 1 start IP')
+    fireEvent.change(startInput, { target: { value: '10.20.0.255' } })
+    fireEvent.change(screen.getByLabelText('Range 1 end IP'), { target: { value: '10.20.0.0' } })
+    await waitFor(() => expect(screen.getByText(/must not be after/)).toBeTruthy())
   })
 
   test('four /24s ticked for scan sum to exactly 1,024 — the ceiling default', async () => {
@@ -124,17 +137,14 @@ describe('FarmNetworksEditor — live per-row count and running total', () => {
   })
 
   test('over the ceiling: the total turns to the danger state, names what to do, and disables Save', async () => {
-    // Seeded at exactly the ceiling (four /24s = 1,024, itself a VALID saved
-    // state — `FarmSettingsSchema`'s own cross-field refinement would reject
-    // anything already over it, so a mock GET response cannot represent an
-    // over-ceiling state; only a fifth row added live, client-side, can.
     const networks = Array.from({ length: 4 }, (_, i) => ({ cidr: `10.${i}.0.0/24`, label: '', medium: 'wired' as const, scan: true }))
     renderWithApi(<FarmNetworksEditor />, { '/api/settings': { body: settingsGet(networks) } })
     await waitFor(() => expect(screen.getByText(/1,024 \/ 1,024 addresses in the sweep/)).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add a network' }))
-    const fifthCidr = await screen.findByLabelText('Network 5 CIDR')
-    fireEvent.change(fifthCidr, { target: { value: '10.4.0.0/24' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add a range' }))
+    const fifthStart = await screen.findByLabelText('Range 5 start IP')
+    fireEvent.change(fifthStart, { target: { value: '10.4.0.0' } })
+    fireEvent.change(screen.getByLabelText('Range 5 end IP'), { target: { value: '10.4.0.255' } })
 
     await waitFor(() => expect(screen.getByText(/1,280 \/ 1,024 addresses in the sweep/)).toBeTruthy())
     expect(screen.getByText(/over the limit/)).toBeTruthy()
@@ -143,19 +153,17 @@ describe('FarmNetworksEditor — live per-row count and running total', () => {
 })
 
 describe('FarmNetworksEditor — editing and saving', () => {
-  test('Save PATCHes only discovery.networks, trimmed, and reloads from the response', async () => {
+  test('Save PATCHes only discovery.networks (no tcpPort — already editable elsewhere on this page), derived from the range', async () => {
     const { apiMock } = renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': ({ method }) =>
         method === 'PATCH'
-          ? { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]).settings }
-          : { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+          ? { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) }
+          : { body: settingsGet([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }]) },
     })
-    const cidrInput = await screen.findByLabelText('Network 1 CIDR')
-    // A saved value is already schema-valid (trimmed) — surrounding
-    // whitespace only ever enters through what an operator TYPES, so that is
-    // simulated here rather than in the mocked GET response.
-    fireEvent.change(cidrInput, { target: { value: '10.20.0.0/24 ' } })
-    fireEvent.change(screen.getByLabelText('Network 1 label'), { target: { value: ' Chassis A ' } })
+    const startInput = await screen.findByLabelText('Range 1 start IP')
+    fireEvent.change(screen.getByLabelText('Range 1 label'), { target: { value: ' Chassis A ' } })
+    // Re-typing the same range is enough to mark the row dirty for this test.
+    fireEvent.change(startInput, { target: { value: '10.20.0.0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save networks' }))
 
     await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'PATCH' && c.path === '/api/settings')).toBe(true))
@@ -163,12 +171,20 @@ describe('FarmNetworksEditor — editing and saving', () => {
     expect(patch?.body).toEqual({ discovery: { networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }] } })
   })
 
+  test('Save is disabled with no edits — a fresh load is not itself "dirty"', async () => {
+    renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
+    })
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    expect((screen.getByRole('button', { name: 'Save networks' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   test('removing the only row goes back to the empty state', async () => {
     renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }]) },
     })
-    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: 'Remove network 1' }))
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Remove range 1' }))
     await waitFor(() => expect(screen.getByText(/the sweep cannot run/i)).toBeTruthy())
   })
 
@@ -176,23 +192,54 @@ describe('FarmNetworksEditor — editing and saving', () => {
     renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: '', medium: 'wired', scan: true }]) },
     })
-    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
-    fireEvent.click(screen.getByRole('combobox', { name: 'Network 1 medium' }))
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    fireEvent.click(screen.getByRole('combobox', { name: 'Range 1 medium' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Wi-Fi' }))
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Network 1 medium' }).textContent).toContain('Wi-Fi'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Range 1 medium' }).textContent).toContain('Wi-Fi'))
+  })
+
+  test('a range spanning multiple stored CIDRs loads as ONE row, and editing it rewrites exactly its own CIDR set', async () => {
+    const networks = [
+      { cidr: '10.20.0.10/31', label: 'Chassis B', medium: 'wireless' as const, scan: true },
+      { cidr: '10.20.0.12/30', label: 'Chassis B', medium: 'wireless' as const, scan: true },
+      { cidr: '10.20.0.16/32', label: 'Chassis B', medium: 'wireless' as const, scan: true },
+    ]
+    const { apiMock } = renderWithApi(<FarmNetworksEditor />, {
+      '/api/settings': ({ method }) =>
+        method === 'PATCH'
+          ? { body: settingsGet(networks) }
+          : { body: settingsGet(networks) },
+    })
+    // ONE row, not three.
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
+    expect(screen.queryByLabelText('Range 2 start IP')).toBeNull()
+    expect((screen.getByLabelText('Range 1 start IP') as HTMLInputElement).value).toBe('10.20.0.10')
+    expect((screen.getByLabelText('Range 1 end IP') as HTMLInputElement).value).toBe('10.20.0.16')
+
+    fireEvent.change(screen.getByLabelText('Range 1 label'), { target: { value: 'Chassis B (relabelled)' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save networks' }))
+
+    await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'PATCH' && c.path === '/api/settings')).toBe(true))
+    const patch = apiMock.calls.find((c) => c.method === 'PATCH' && c.path === '/api/settings')
+    const patched = (patch?.body as { discovery: { networks: Array<{ cidr: string; label: string }> } }).discovery.networks
+    // Exactly the original CIDR set, relabelled — not orphaned, not duplicated.
+    expect(patched.map((n) => n.cidr).sort()).toEqual(networks.map((n) => n.cidr).sort())
+    expect(patched.every((n) => n.label === 'Chassis B (relabelled)')).toBe(true)
   })
 })
 
 /**
- * "Scan network" (plan 88 §3.5, §4.5, §4.6, §5 step 88.12) — this closes the
- * real gap the plan's own step 88.3/88.4 status notes incorrectly claimed
- * was already closed: `POST /api/devices/scan` (the bounded subnet sweep)
- * had no Studio call site at all until this button. Shares
- * `packages/studio/src/lib/network-scan.ts` with the Devices page's own
- * fleet-menu "Scan network" item — see `page.test.tsx`'s sibling describe
- * block for that one.
+ * "Scan network" (plan 88 §5) — this closes the real gap the plan's own step
+ * 88.3/88.4 status notes incorrectly claimed was already closed: `POST
+ * /api/devices/scan` (the bounded subnet sweep) had no Studio call site at
+ * all until this button. Shares `packages/studio/src/lib/network-scan.ts`
+ * with the Devices page's own "Scan network" fleet-menu item, which now
+ * opens `ScanNetworkDialog` instead of scanning directly — see
+ * `ScanNetworkDialog.test.tsx` for that surface's own "Scan all" coverage.
+ * This button's OWN behaviour (scan only what is already saved, unchanged
+ * from before the modal existed) is still covered here.
  */
-describe('FarmNetworksEditor — Scan network (plan 88 §5 step 88.12)', () => {
+describe('FarmNetworksEditor — Scan network button (unchanged: scans only what is saved)', () => {
   test('no networks configured: the button is visibly disabled with the same reason as the empty state, not a click that fails afterward', async () => {
     renderWithApi(<FarmNetworksEditor />, { '/api/settings': { body: settingsGet([]) } })
     await waitFor(() => expect(screen.getByText(/the sweep cannot run/i)).toBeTruthy())
@@ -205,7 +252,7 @@ describe('FarmNetworksEditor — Scan network (plan 88 §5 step 88.12)', () => {
     renderWithApi(<FarmNetworksEditor />, {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: false }]) },
     })
-    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
     const button = screen.getByRole('button', { name: 'Scan network' }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
     expect(button.title).toMatch(/include in a sweep/i)
@@ -216,7 +263,7 @@ describe('FarmNetworksEditor — Scan network (plan 88 §5 step 88.12)', () => {
       '/api/settings': { body: settingsGet([{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]) },
       '/api/devices/scan': {
         body: {
-          networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 }],
+          networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }],
           scanned: 254,
           skipped: 2,
           answered: 3,
@@ -229,7 +276,7 @@ describe('FarmNetworksEditor — Scan network (plan 88 §5 step 88.12)', () => {
         },
       },
     })
-    await waitFor(() => expect(screen.getByLabelText('Network 1 CIDR')).toBeTruthy())
+    await waitFor(() => expect(screen.getByLabelText('Range 1 start IP')).toBeTruthy())
     const button = screen.getByRole('button', { name: 'Scan network' }) as HTMLButtonElement
     expect(button.disabled).toBe(false)
 

@@ -142,12 +142,52 @@ describe('the transient hold (plan 93 §3.8’s admitMember, applied to one devi
     expect(leases.getHolder('dev-1')?.id).toBe('u2')
   })
 
-  test('an unreachable device is refused with device_unavailable rather than silently applied', async () => {
+  test('an unreachable device is refused with device_unavailable when a route is being APPLIED', async () => {
     const { leases } = setUp('offline')
     const { port, calls } = fakePort()
     const service = createDeviceNetworkService({ port, leases }, actor('u1'))
-    await expect(service.clear('dev-1')).rejects.toMatchObject({ code: 'device_unavailable' })
+    await expect(service.set('dev-1', { engine: 'adb-proxy', host: 'h', port: 8080 })).rejects.toMatchObject({ code: 'device_unavailable' })
     expect(calls).toHaveLength(0)
+  })
+
+  /**
+   * **The disarm direction, and the one code it lets through.** This test used
+   * to assert that `clear` refused an offline device too. That was the rule when
+   * it was written and it is the wrong rule: a lease on an offline device is not
+   * merely unheld, it is UNOBTAINABLE, so `device_unavailable` on the off switch
+   * does not mean "take control first", it means "you may never turn this off" —
+   * and offline is the case where turning a route off matters most.
+   *
+   * `requireDisarmAdmission` (`network/route-service.ts`) already made exactly
+   * this widening for `DELETE /api/devices/:id/network`, with the whole argument
+   * and the measured incident behind it; the capability now follows the same
+   * rule so the two doors agree. The teardown that cannot reach the phone is
+   * recorded as a `pendingClear` debt by the door itself and settled on the
+   * device's next admission — that is the machinery this gate was refusing the
+   * request in front of.
+   */
+  test('the same device IS admitted for a clear — the off switch must not be unreachable on the phones that most need it', async () => {
+    const { leases, acquires, releases } = setUp('offline')
+    const { port, calls } = fakePort()
+    const service = createDeviceNetworkService({ port, leases }, actor('plugin:proxy-manager'))
+
+    await service.clear('dev-1')
+
+    expect(calls).toEqual([{ op: 'clear', deviceId: 'dev-1', actor: 'plugin:proxy-manager' }])
+    // No lease was taken, because none could be — and so none is given back.
+    expect(acquires).toHaveLength(0)
+    expect(releases).toHaveLength(0)
+  })
+
+  test('a clear is still refused while somebody else is driving the phone — a disarm is not a takeover', async () => {
+    const { leases } = setUp()
+    leases.acquireManual('dev-1', 'someone-else', 'u2')
+    const { port, calls } = fakePort()
+    const service = createDeviceNetworkService({ port, leases }, actor('plugin:proxy-manager'))
+
+    await expect(service.clear('dev-1')).rejects.toMatchObject({ code: 'not_lease_holder' })
+    expect(calls).toHaveLength(0)
+    expect(leases.getHolder('dev-1')?.id).toBe('u2')
   })
 
   test('a read takes no lease at all — seeing what a phone is set to must work while somebody else drives it', async () => {

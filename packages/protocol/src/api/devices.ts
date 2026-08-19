@@ -132,8 +132,16 @@ export type ReconcileReport = z.infer<typeof ReconcileReportSchema>
  * redefining it.
  */
 export const SweepReportSchema = z.object({
-  /** Every network the sweep actually looked at, and how big each one is (`addressCount()` — the full range, including the network/broadcast address). */
-  networks: z.array(z.object({ cidr: z.string(), label: z.string(), addresses: z.number() })),
+  /**
+   * Every network the sweep actually looked at, how big each one is
+   * (`addressCount()` — the full range, including the network/broadcast
+   * address), and the port actually probed on it — `net.port` when the
+   * range overrides the farm default, otherwise `discovery.tcpPort` itself
+   * (plan 88 §9 Q7, resolved). Surfaced so an operator debugging "why didn't
+   * it find my device" can see which port was actually used per range,
+   * rather than having to cross-reference Settings.
+   */
+  networks: z.array(z.object({ cidr: z.string(), label: z.string(), addresses: z.number(), port: z.number() })),
   /** Addresses actually pre-probed — already net of `skipped`. */
   scanned: z.number(),
   /** Addresses adb already listed (any state) before the sweep started — never re-probed. */

@@ -4,7 +4,7 @@ import { hasScannableNetwork, scanDisabledReason, summariseSweepReport } from '.
 
 function report(overrides: Partial<SweepReport> = {}): SweepReport {
   return {
-    networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 }],
+    networks: [{ cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 }],
     scanned: 0,
     skipped: 0,
     answered: 0,
@@ -62,8 +62,8 @@ describe('summariseSweepReport', () => {
     const line = summariseSweepReport(
       report({
         networks: [
-          { cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256 },
-          { cidr: '10.21.0.0/24', label: 'Chassis B', addresses: 256 },
+          { cidr: '10.20.0.0/24', label: 'Chassis A', addresses: 256, port: 5555 },
+          { cidr: '10.21.0.0/24', label: 'Chassis B', addresses: 256, port: 7000 },
         ],
         scanned: 500,
         answered: 4,

@@ -168,6 +168,7 @@ import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type Devi
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
+import { createSweeper, type Sweeper } from './registry/sweep'
 import { createCutoverManager, type CutoverManager } from './registry/cutover'
 import { formatDeviceLabel, loadDeviceNumbers } from './registry/device-number'
 import { createApp } from './server/http'
@@ -223,6 +224,18 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let reconciler: DeviceReconciler | null = null
   /** The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) — null until the adb subsystem comes up (mirrors `reconciler` above), cleared in `stop()`. Used by the restart flow's reattach step and (once step 88.4 lands) per-device connect/reconnect routes. */
   let reconnector: DeviceReconnector | null = null
+  /**
+   * The bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3) — null until
+   * the adb subsystem comes up (mirrors `reconnector` above; also null
+   * forever in orchestrator mode), cleared in `stop()`. `createDeviceRoutes`
+   * is built well before this is assigned (`deviceRoutes` below, vs. this
+   * near the reconnect ladder), so its `sweeper` dep is a closure reading
+   * `sweeperRef` at call time — the SAME forward-ref shape `agentProvisionerRef`
+   * uses for its own method-shaped deps field, not an accessor function like
+   * `connection.reconnector` (`SweeperDeps`'s consumer, `createDeviceRoutes`'s
+   * `sweeper` field, is declared as a plain value, not `() => Sweeper | null`).
+   */
+  let sweeperRef: Sweeper | null = null
   /** The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — null until `reconnector` exists (it reuses that SAME ladder to watch), mirrors `reconnector` above, cleared in `stop()`. */
   let cutoverManager: CutoverManager | null = null
   let sessions: SessionManager | null = null
@@ -1594,9 +1607,13 @@ let blobGc: BlobGc | null = null
         // `ctx.farm` reaches through `farmRunnerPort` below, so a plugin helper
         // called from either end is checked against one manifest and audited
         // under one principal (criterion 2, criterion 10).
-        farm: (pluginId, capability, input) =>
+        // `opts.reset` is the host's own flag for a call made from inside an
+        // open Reset data pass (`RuntimeHostDeps.farm`); it is forwarded
+        // verbatim and originates nowhere else — not in a request body, not in
+        // plugin code.
+        farm: (pluginId, capability, input, opts) =>
           farmBroker
-            ? farmBroker.call({ pluginId, capability, input, via: 'service' })
+            ? farmBroker.call({ pluginId, capability, input, via: 'service', ...(opts?.reset === true ? { reset: true } : {}) })
             : Promise.reject(new EnkakuError('E_FARM_UNAVAILABLE', 'the capability broker is not built yet — the core is still booting')),
         log: log.child('plugin-host'),
       })
@@ -2436,6 +2453,27 @@ let blobGc: BlobGc | null = null
           // adb subsystem failed to start), so this reads it fresh at call
           // time rather than capturing a null.
           rescan: () => reconciler?.runOnce() ?? null,
+          // `POST /scan` (plan 88 §3.5, §4.5, §5 step 88.3) — same forward-ref
+          // reasoning as `rescan` just above (`sweeperRef` is assigned later
+          // in boot, alongside `reconnector`, or never in orchestrator mode /
+          // if the adb subsystem failed to start), but `sweeper`'s own field
+          // type is a plain value (`{ sweep(...): Promise<SweepReport> }`),
+          // not an accessor — so the forward-ref lives inside this closure's
+          // `sweep` method instead of in the field itself, the same shape
+          // `agentProvisionerRef`'s `ensure`/`status`/`remove` wrappers use
+          // below for their own method-shaped deps. Rejects with the exact
+          // `E_NOT_SUPPORTED` the route used to throw itself for "no sweeper
+          // wired" — this dep is never actually `undefined` any more, so
+          // `POST /scan`'s own `if (!deps.sweeper)` guard is now unreachable
+          // dead code in production (kept for the unit tests that construct
+          // `createDeviceRoutes` directly without this wrapper).
+          sweeper: {
+            sweep: (opts) =>
+              sweeperRef?.sweep(opts) ??
+              Promise.reject(
+                new EnkakuError('E_NOT_SUPPORTED', 'network scanning is not available (orchestrator mode, or the adb subsystem is not ready)'),
+              ),
+          },
           // Presence's snapshot half (plan 31 §3.4): `/ws` has no replay, so a
           // client GETs the current list before subscribing to `device.viewers`.
           viewersOf: (deviceId) => viewersOfDevice?.(deviceId) ?? [],
@@ -3921,13 +3959,36 @@ let blobGc: BlobGc | null = null
         })
         await registry.start()
 
-        // The reconnect ladder (plan 88 §3.3, §4.4, fixes F8/F10/F13) —
-        // built right after `registry` exists, since it needs `onOnline` to
-        // adopt a device it successfully reconnects exactly like a live
-        // tracker `add` event would. Only the ladder through remembered
-        // addresses (step 88.2's own deliverable): no sweep branch yet
-        // (step 88.3's), so an exhausted ladder always reports `not-found`
-        // rather than ever scanning a subnet.
+        // The bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3) — built
+        // right before the reconnect ladder below, since the ladder's own
+        // step 4 (`allowSweep`) needs this SAME `Sweeper` instance, not a
+        // second one: two sweepers would mean two singleton mutexes, and
+        // `POST /scan` racing an in-progress ladder-triggered sweep is
+        // exactly the double-sweep §3.5 rules out. `settings` reads the
+        // whole `discovery` block fresh on every call (same as `reconciler`
+        // below) — `SweeperSettings` is structurally a subset of it, so
+        // nothing here has to re-list the fields by hand and risk drifting
+        // from the schema in `packages/protocol/src/settings.ts`.
+        const sweeper = createSweeper({
+          client: adb,
+          db,
+          endpoints,
+          registry,
+          settings: () => settingsStore.get().discovery,
+          hub: { broadcast: (msg) => hub.broadcast(msg) },
+          log: log.child('sweep'),
+        })
+        sweeperRef = sweeper
+
+        // The reconnect ladder (plan 88 §3.3, §4.4, §5 step 88.3, fixes
+        // F8/F10/F13) — built right after `registry` exists, since it needs
+        // `onOnline` to adopt a device it successfully reconnects exactly
+        // like a live tracker `add` event would. As of step 88.3, the ladder
+        // through remembered addresses AND `sweeper` above are both wired:
+        // an exhausted ladder falls through to the bounded sweep whenever a
+        // caller passes `allowSweep: true` (`reconnect.ts`'s own step 4),
+        // rather than always reporting `not-found` once remembered addresses
+        // run out.
         reconnector = createDeviceReconnector({
           client: adb,
           db,
@@ -3938,6 +3999,7 @@ let blobGc: BlobGc | null = null
             probeTimeoutMs: settingsStore.get().discovery.scan.probeTimeoutMs,
           }),
           log: log.child('reconnect'),
+          sweeper,
         })
 
         // The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step
@@ -4098,6 +4160,13 @@ let blobGc: BlobGc | null = null
       // No `.stop()` of its own — the ladder holds only an in-memory
       // per-`stableId` mutex map, nothing that outlives the process.
       reconnector = null
+      // Same reasoning as `reconnector` just above — `Sweeper` holds only an
+      // in-flight promise as its singleton mutex, nothing that outlives the
+      // process. `POST /scan`'s wrapper (`deviceRoutes`'s `sweeper` field)
+      // reads `sweeperRef` fresh on every call, so clearing it here makes
+      // any request racing `stop()` fail closed with `E_NOT_SUPPORTED`
+      // rather than reach a torn-down `adb`/`db`.
+      sweeperRef = null
       // Unlike the ladder above, an armed cutover DOES hold a live poll
       // timer (plan 88 §3.4, §5 step 88.5) — `stopAll()` clears every one
       // before the hub it would otherwise broadcast into is torn down.

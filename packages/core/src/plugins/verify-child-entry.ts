@@ -208,6 +208,19 @@ async function main(): Promise<void> {
         events: declaredService.events,
         // Step 109.7. Same field-by-field reasoning as above.
         webhooks: declaredService.webhooks,
+        /**
+         * Reset data. Same field-by-field reasoning again, and here the
+         * spread's failure mode would be the WORST of the set: `onResetData`
+         * is a function sitting one key away from this one, and a spread that
+         * carried it into `JSON.stringify` would drop it silently — leaving a
+         * manifest that promises a cleanup hook the farm can never find.
+         *
+         * `defineService` guarantees `resetData` is non-null exactly when the
+         * handler exists, so this one value carries both facts. The host still
+         * checks for the function itself before entering it, because a
+         * hand-crafted bundle need never have called `defineService` at all.
+         */
+        resetData: declaredService.resetData,
       })
       if (!parsed.success) {
         throw new VerifyChildError(

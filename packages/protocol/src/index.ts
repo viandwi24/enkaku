@@ -1663,4 +1663,19 @@ export {
   duplicateWebhookIdsMessage,
   type PluginWebhook,
   type PluginWebhookInfo,
+  // Reset data — the declaration of a plugin's cleanup hook, the authority it
+  // borrows for one operator-initiated pass, and the per-item report it
+  // answers with.
+  PLUGIN_SERVICE_MAX_RESET_PERMISSIONS,
+  PLUGIN_RESET_OUTCOMES,
+  PLUGIN_RESET_ITEM_KINDS,
+  PLUGIN_RESET_MAX_ITEMS,
+  PluginServiceResetDataSchema,
+  PluginResetItemSchema,
+  PluginResetReportSchema,
+  type PluginServiceResetData,
+  type PluginResetOutcome,
+  type PluginResetItemKind,
+  type PluginResetItem,
+  type PluginResetReport,
 } from './plugin-service'

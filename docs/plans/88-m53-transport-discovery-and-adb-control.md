@@ -1,6 +1,6 @@
 # Plan 88 — M53 : Getting Devices Connected, and Keeping Them Connected
 
-> Status: partial, close to done — re-verified 2026-08-12 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor` — **its own "Scan network button" bullet was NOT actually built here, despite this line previously claiming it was; see 88.12**), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), 88.10 (documentation, `bun run spec:check` at GAP 0), and 88.11 (cutover discoverability and bulk cutover — see this line's own paragraph below). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
+> Status: partial, close to done — re-verified 2026-08-19 against the code (file existence, targeted `bun test`, `grep`), not assumed from stale checkboxes within each step section below (several were left unticked despite the work landing; this line is the accurate one). **Implemented and test-green:** 88.1 (connection as a first-class concept), 88.2 (the address book and the reconnect ladder, now including the sweep branch 88.3 added), 88.3 (the bounded sweep — H5 confirmed), 88.4 (per-device disconnect/reconnect — H2 confirmed), 88.5 (the guided OTG cutover wizard — `registry/cutover.ts`, the two `POST`/`DELETE /:id/connection/cutover` routes, `CutoverDialog.tsx`; also closes 88.4's own "declared medium never read back" gap and a deeper sibling defect it exposed — `discovery.networks` was never threaded into ANY production device-list call site at all, confirmed and fixed in the same pass, see 88.5's own checklist entry), 88.6 (badge component, client-side connection filter, `FarmNetworksEditor` — **its own "Scan network button" bullet was NOT actually built here, despite this line previously claiming it was; see 88.12**), 88.7 (the adb-health rolling window and its five symptoms, a read-only doctor check), 88.8 (`adb-server-control.ts`'s `cycle()`, the Restart adb server button, the farm-wide banner), 88.9 (the rule change and its workspace-wide guard test), 88.10 (documentation, `bun run spec:check` at GAP 0), 88.11 (cutover discoverability and bulk cutover — see this line's own paragraph below), and 88.13 (the owner's own scan-configuration modal, superseding 88.12's disabled-with-a-navigate-away-tooltip shortcut — range-based `[start IP] - [end IP]` rows editing the same CIDR-native `discovery.networks[]` through a new presentation-layer bridge, `@/lib/ip-range.ts`; one farm-wide port field; a "Scan all" button that saves then sweeps in one click — see 88.13's own paragraph below and its own checklist for the full account). **Pending real hardware, owner to run (both write to the phone's TCP-listener state, which the operating agent's hardware rule forbade — see 88.5's own checklist entry for exact commands):** H1 (does `tcpip:<port>` work as a device service with no CLI spawn) and H3 (does `persist.adb.tcp.port` need root) — the code lands correctly either way (H1 has an automatic fallback, H3 is measured and reported, never promised), so this gates only the two hypotheses' labels, not shipping.
 >
 > **Three hypotheses are still pending the owner's real hardware — H1, H3, H6 — and this line says so plainly rather than reading "implemented" over an untested claim** (the exact drift plans 84, 85 and 87 each shipped with once). H6 (88.1): the reproduction is written up with exact commands but not run — needs a phone put into `adb-tcp` mode, which the operating agent's hardware rule forbade; the shipped fix (`AdbTcpTransport.disconnect()` as a no-op) is covered by fakes only. H1 and H3 (88.5's own first checklist item, unchecked): whether `tcpip:<port>` works as a device service over `openRaw`, and whether `persist.adb.tcp.port` survives a reboot without root — both still need a real phone, and 88.5's worker owns running that spike.
 >
@@ -8,7 +8,37 @@
 > **Residual wiring gap, found and fixed 2026-08-13 (`docs/plans/96-m61-hotfixes.md` §96.5).** 88.5's own claim above ("confirmed and fixed in the same pass") was accurate for the four call sites its own checklist entry named (`daemon.ts:1455`, `capability/context.ts:340,353`, `api/topology.ts:54`, `api/devices.ts:577`) but incomplete: three more call sites computing the exact `DeviceInfo`/`device.added` payload an operator watches were still passing an empty network list or nothing — `POST /discovered/:stableId/admit` (`api/devices.ts:388,393`, both the broadcast and the response body), `DeviceRegistry`'s own "new device registered" broadcast plus its `listDevices()` (`registry/device-registry.ts` — `DeviceRegistryDeps` had no `networks` accessor at all), and the cluster detail device list (`api/clusters.ts:181` — `createClusterRoutes` had neither `networks` nor `declaredMedia`). The user-visible symptom this produced: a device admitted from the Discovered tray badged `TCP` on the very screen an operator was watching, then silently flipped to `OTG`/`WI-FI` on the next refetch. All three are fixed and proven through their real HTTP routes / broadcast payloads (`api/devices.test.ts`, `api/clusters.test.ts`, `registry/device-registry.test.ts`) — see §96.5 for the full account, including one finding that narrows this plan's own original claim further: `device-registry.ts`'s "new device registered" broadcast branch is unreachable under the current admission gate (`classify()` only returns `'admitted'` when a `devices` row already exists, and the code's own second lookup is the identical query with no `await` between them), so that specific site was dead code even before this fix, not a live source of the symptom above.
 > **88.11 added and fixed, 2026-08-19** — the cutover wizard's own Studio surface had no honest entry point (a USB device's "Reconnect" row silently opened it instead of reconnecting) and no bulk capability, both flagged by the owner comparing this farm to Panda/some3c's own Devices-page menu. `ActionsList.tsx`'s Reconnect row now only ever reconnects; a new, USB-only "Move to the network (Wi-Fi/OTG)…" row opens the wizard (the fixed 12-row list grows to 13 on a USB device only — deliberate, stated, and mirrors the same file's own Wake/Sleep precedent for a conditional row). `BulkCutoverDialog.tsx` (new) is the multi-target sibling — `TargetPicker`-driven, a `Promise.all` fan-out over the existing per-device route (there is no batch cutover endpoint), client-side USB/offline eligibility skipping via `SkippedGroups`, one shared port (confirmed device-local, not farm-wide), and an "armed, not the whole journey" report. Reached from a new "Move to network…" entry in the Devices page's own fleet `⋮` menu, pre-filled from the current selection or every eligible USB device. "Farm networks" discoverability under Settings is fixed with a cross-link from the "Network" tab to "Discovery & monitoring" rather than a structural schema move. See 88.11 for the full account and its own file list; the two live UX defects (the mislabeled Reconnect row, the misplaced Farm networks section) are also logged in `docs/plans/96-m61-hotfixes.md`.
 > **88.12 added and fixed, 2026-08-19** — `POST /api/devices/scan` (the bounded subnet sweep of §3.5/§4.5) had **no Studio call site at all**, confirmed by an exhaustive grep across `packages/studio/src` before this step, despite this route's own doc comment in `packages/core/src/api/devices.ts` (~line 508) and 88.6's own checklist bullet both stating or implying a "Scan network" button already existed. Both were false — corrected here, and in `docs/plans/96-m61-hotfixes.md`. Built in both places 88.6's checklist and the owner's own Panda comparison pointed to, sharing one hook rather than two: `packages/studio/src/lib/network-scan.ts` (`useNetworkScan`, `summariseSweepReport`, `scanDisabledReason`). `FarmNetworksEditor.tsx` (Settings → Discovery & monitoring) gained a "Scan network" button beside the address-budget readout, disabled with the exact empty-state reason ("No networks configured — the sweep cannot run") when nothing is configured, or its own distinct reason when networks exist but none have "Include in a sweep" on; a successful scan renders the real `SweepReport` counts inline (`Swept <cidrs> · N scanned · N answered · ...`), never a generic "done". The Devices page's fleet `⋮` menu gained a matching "Scan network" item beside "Move to network…", disabled the same way, refetching the fleet and the Discovered tray on success (the same belt-and-suspenders refetch `renumberFleet`/`DiscoveredTray`'s own Rescan already do alongside the WS-driven `device.added`/`device.discovered` update the sweep's admission path already emits — no new WS plumbing needed). `E_SCAN_BUSY`/`E_SCAN_UNAVAILABLE`/`E_NOT_SUPPORTED` are surfaced by letting the server's own message through `useAction`'s existing failure toast — the same "no policy re-implemented, no invented wording" pattern `DiscoveredTray.tsx`'s "Rescan" button already established for `POST /rescan`'s identical optionality. See `packages/studio/src/lib/network-scan.test.ts`, `packages/studio/src/components/settings/FarmNetworksEditor.test.tsx`, and `packages/studio/src/app/page.test.tsx` for coverage of the disabled-with-reason precondition, the real-counts render, and the two distinct refusal codes.
+> **88.13 added and fixed, 2026-08-19** — the owner saw 88.12's own "disabled item navigates to Settings" fallback live and asked for the real thing instead, verbatim: *"harusnya scan network -> muncul modals ada input dinamis untuk range ip dan port: [ip start] - [ip end] [port]... bisa dinamis gitu dan kesimpan, bisa ditambah, jadi semua setting langsung dimodal, bisa di edit, di tambah, dan ada tombol langsung scan all nya."* The Devices page's "Scan network" item now ALWAYS opens `ScanNetworkDialog.tsx` (new) — never disabled, never a navigation; 88.12's `router.push('/settings?tab=discovery')` fallback and its test assertion are removed. `discovery.networks[]` stays CIDR-native (unchanged, per this step's own explicit constraint) — a new presentation-layer bridge, `packages/studio/src/lib/ip-range.ts`, converts a typed `[start IP] - [end IP]` range to and from the minimal exact CIDR set (42 tests: single addresses, exact blocks, multi-block ranges, octet-crossing ranges, the whole IPv4 space, and the round-trip for a range spanning several stored CIDR rows — both creating and editing it without orphaning or duplicating any block). A new shared hook (`@/lib/network-ranges.ts`) and shared table component (`RangeNetworksFields.tsx`) are now mounted by BOTH `FarmNetworksEditor.tsx` (Settings → Discovery & monitoring, rewritten to edit ranges rather than raw CIDR, `docs/plans/00-overview.md` §4.3's "replace, never version") and the new modal — one range-editing implementation, not two vocabularies for the same feature, the same reasoning this session's `ActionsList`/`DeviceContextMenu` merge already established. The modal alone shows a port field (editing the real farm-wide `discovery.tcpPort` — `FarmNetworksEditor` does not need one, since `tcpPort` is already editable one component up on the same Settings page) and a "Scan all" button that saves only when something is genuinely unsaved, then sweeps, in one click. Per-range ports are a real, named, deliberate gap (the owner's own sketch showed one; the backend has only a farm-wide port) — stated in the modal's own copy and logged in `docs/plans/96-m61-hotfixes.md`, not silently omitted. See 88.13 for the full account and its own file list.
 
+> **88.13 follow-up, two owner-reported bugs fixed 2026-08-19 (found live, testing the just-shipped modal in the browser).** (1) **Per-range port, §9 Q7 resolved — built, not left as a named gap.** The owner pushed back on 88.13's "Per-range ports are not supported yet" copy, and it turned out to be the easy fix §9 Q7 already scoped: `discovery.networks[].port` (`packages/protocol/src/settings.ts`) is now a real, optional per-range override (`.optional()`, same bounds as `discovery.tcpPort`, absent means inherit the farm default); `sweep.ts`'s probe loop reads `net.port ?? cfg.tcpPort` at the one address-building line instead of always `cfg.tcpPort`; `SweepReport.networks[]` gained its own `port` field so an operator debugging "why didn't it find my device" can see which port was actually probed per range, not just per farm. `ip-range.ts`'s `NetworkCidrRow`/`RangeRow` carry `port` losslessly through `networksToRanges`/`rangeRowsToNetworks` (adjacent CIDRs with differing ports are kept as separate rows, exactly like differing medium/scan already were), `RangeNetworksFields.tsx` gained a Port column (blank placeholder shows the live farm default so a row's inherited-vs-overridden state is visible at a glance), and `ScanNetworkDialog.tsx`'s top-level Port field is now worded as the farm default and fallback, not the only port a range can ever use. The false "Per-range ports are not supported yet" copy is corrected in the dialog; `docs/plans/96-m61-hotfixes.md` §96.44 is updated with a resolved-follow-up note rather than being left to read as still current. (2) **The modal itself overflowed horizontally** (verified by direct measurement with one range row added: `dialog clientWidth: 510px, scrollWidth: 795px` — the DIALOG ITSELF, not just the intended internal `.overflow-x-auto` table scroller, which measured `745/745`, not overflowing at all). Root cause: `DialogContent` (`@enkaku/ui`'s `dialog.tsx`) is `display: grid`, and its direct child wrapping the port field + range table had no `min-width` set — a grid item's default `min-width: auto` lets a wide descendant's intrinsic content width (the range table, several plain-block levels below the actual `overflow-x-auto` container) bubble all the way up and grow the grid track, and therefore the dialog, past its own `max-w-3xl`. Fixed with `min-w-0` on that one grid-item div (`ScanNetworkDialog.tsx`) — not by widening `max-w-3xl`, which would only have raised the threshold at which the same bug reappears (exactly the risk the Port column above just added). Verified after both fixes landed together (the overflow bug gets worse with more table columns, so it was re-checked with the new Port column present, not just the pre-existing columns). Both fixes: `bash scripts/typecheck.sh` clean across every package; `bun test packages/core/src/registry/sweep.test.ts` (15 pass, 3 new for the per-range-port-override behavior), `bun test packages/core/src/api/devices.test.ts packages/core/src/registry/cutover.test.ts` (172 pass, both updated for `SweepReport.networks[].port` now being required); `bun run --cwd packages/studio test` scoped to `src/lib/ip-range.test.ts` (49 pass, 7 new for the port round-trip), `src/lib/network-scan.test.ts` (8 pass), `src/components/device/ScanNetworkDialog.test.tsx` (16 pass, 1 new asserting the `min-w-0` fix and the Port column together), `src/components/settings/FarmNetworksEditor.test.tsx` (21 pass), `src/app/page.test.tsx` (56 pass) — 150 pass, 0 fail across the five Studio files run together. `bun run spec:check` — pre-existing warning-only gap (`plugin_webhooks`), unrelated. `bash scripts/check-plan-status.sh` — clean. `bun run build:studio` — refused by its own guard, the owner's dev server was live on :3001 at verification time; not bypassed, reported here instead.
+>
+> **Wiring gap, found and fixed 2026-08-19 (`docs/plans/96-m61-hotfixes.md`
+> §96.45).** This line's own "Implemented and test-green" claim for 88.3, and
+> 88.2's "now including the sweep branch 88.3 added," were accurate only at
+> `registry/sweep.test.ts`'s unit level — `daemon.ts` never called
+> `createSweeper` at all (`grep -n "createSweeper" packages/core/src -r`
+> found zero production call sites). Two consequences, both silent on a real
+> boot: `POST /api/devices/scan` always threw `E_NOT_SUPPORTED`
+> (`createDeviceRoutes({...})`'s `sweeper` key was never passed), which meant
+> **88.12's and 88.13's entire Studio "Scan network" feature — the fleet
+> menu item, `ScanNetworkDialog`, the IP-range editor, the per-range port —
+> was non-functional on any real server**, despite every Studio test for it
+> passing (those tests stub `sweeper` directly and never touch `daemon.ts`);
+> and the reconnect ladder's own step 4 (`opts.allowSweep`) was permanently
+> unreachable, exactly as `daemon.ts`'s own comment at the ladder's
+> construction site admitted at the time ("no sweep branch yet"). Fixed by
+> constructing one `Sweeper` in `daemon.ts`, right before the reconnect
+> ladder (both need the SAME instance), and threading it into
+> `createDeviceReconnector({..., sweeper})` directly (built in the same
+> scope) and into `createDeviceRoutes({..., sweeper})` through a
+> `sweeperRef` forward-ref closure — the same `agentProvisionerRef`-style
+> pattern this file already uses when a dependency field wants a plain value
+> but its subsystem is only built later in boot than the router that
+> consumes it. See §96.45 for the full account, including why orchestrator
+> mode and "adb not ready yet" both still correctly resolve to
+> `E_NOT_SUPPORTED` rather than a crash, and `daemon-wiring.test.ts`'s new
+> "the bounded subnet sweep" block for the regression guard.
+>
 > Depends on: Plan 56 (admission — anything a network scan finds goes through the Discovered tray, never around it), Plan 85 (the `DeviceReconciler`, the bounded `host-adb` helper, the autoscaled stream lane). Neither needs to change first; this plan extends both. Plan 29 is a **draft** and is superseded in part by §5 88.4 — see §3.8.
 > Spec references: §7.1 (transport engines), §7.5 (stable identity, admission, discovery reconciliation), §7.7 (tool management API and UI), §10.4 (adb serialisation and the `kill-server` prohibition — **this plan amends it**), §12 (data model), §13 (core⇄Studio protocol), §15.1 (the enrollment flow), §16 (NFR targets)
 > Ships: packages/core/src/registry/endpoints.ts
@@ -1871,6 +1901,138 @@ UX defects, not new design.
   `FarmNetworksEditor.test.tsx` (a local `mock.module('sonner', …)`, the
   same capture technique `AdmitDeviceDialog.test.tsx` already established).
 
+### 88.13 — Scan network: a real modal, superseding 88.12's disabled-with-a-navigate-away-tooltip shortcut
+
+- [x] **The defect 88.12 shipped:** the owner saw the just-built "disabled
+      item navigates to Settings" fallback live and asked for the real thing
+      instead, verbatim: *"harusnya scan network -> muncul modals ada input
+      dinamis untuk range ip dan port: 1. [ip start] - [ip end] [port]...
+      bisa dinamis gitu dan kesimpan, bisa ditambah, jadi semua setting
+      langsung dimodal, bisa di edit, di tambah, dan ada tombol langsung
+      scan all nya."* The Devices page's "Scan network" fleet-menu item now
+      ALWAYS opens a self-contained modal — never disabled, never a
+      `router.push`. `page.tsx`'s own `router.push('/settings?tab=discovery')`
+      fallback and its `page.test.tsx` assertion are both removed, not left
+      dangling.
+- [x] `packages/studio/src/lib/ip-range.ts` (new) — the presentation-layer
+      bridge between a typed `[start IP] - [end IP]` range and
+      `discovery.networks[]`'s CIDR-native storage (`packages/core/src/
+      registry/sweep.ts`, `CidrSchema`, `addressCount()` — all left
+      UNCHANGED, per this step's own constraint against rewriting the
+      sweep's address enumeration/ordering/cost-ceiling math). Pure,
+      IPv4-only, no bitwise operators (they corrupt the top half of the
+      address space via JS's signed-Int32 coercion — see the file's header
+      comment):
+      `rangeToCidrs(startIp, endIp)` — the standard "peel off the largest
+      properly-aligned block" algorithm, exact by construction (never rounds
+      up or down); `cidrToRange(cidr)` — the inverse, masking an unaligned
+      hand-typed CIDR down to its real block; `networksToRanges(networks)` —
+      groups CONSECUTIVE-BY-ADDRESS, attribute-matching, gap-free CIDR
+      entries back into one editable range row (a range spanning several
+      blocks always round-trips to ONE row, since `rangeToCidrs`'s output is
+      always contiguous and attribute-uniform by construction); two
+      non-adjacent CIDRs sharing a label are deliberately kept as two rows,
+      never merged across a gap. `rangeRowsToNetworks(rows)` — the write
+      side, and the answer to the trickiest part named in this step's own
+      brief ("editing a merged row must not orphan or duplicate its
+      underlying CIDR set"): it REGENERATES the whole array from the current
+      rows rather than diffing against what was saved, so there is no
+      "which of the N old CIDR rows does this edited row own" question to
+      get wrong. `rangeAddressCount()` sums `addressCount()` over a range's
+      own derived CIDR blocks (proven equal to `end - start + 1` in the test
+      file, not assumed). 42 tests in `ip-range.test.ts`: single-address
+      ranges, already-exact CIDR blocks, ranges spanning multiple blocks,
+      an octet-crossing range, the whole 0.0.0.0–255.255.255.255 space, the
+      round-trip for a multi-block range (create AND edit, asserting the
+      relabelled write reproduces the identical CIDR set), two non-adjacent
+      same-labelled CIDRs staying separate, and a deterministic sweep over
+      every (start, end) pair in a 20-address window with exact-coverage
+      assertions (no gap, no overlap, nothing outside the typed range).
+- [x] `packages/studio/src/lib/network-ranges.ts` (new) — `useNetworkRanges()`,
+      the shared load/edit/save state for BOTH `FarmNetworksEditor.tsx` and
+      the new `ScanNetworkDialog.tsx`: one range-editing implementation, not
+      two vocabularies for the same feature (the `ActionsList`/
+      `DeviceContextMenu` merge earlier this session, `docs/plans/
+      96-m61-hotfixes.md`, is the direct precedent this step cites and
+      follows). Genuine dirty-tracking (a saved-rows snapshot compared by
+      value), not the pre-range editor's "dirty = at least one row exists"
+      shortcut — needed so "Scan all" only saves when there really is
+      something unsaved. `save(overridePort?)` takes the port explicitly at
+      call time rather than reading mutable hook state, because a text
+      field bound directly to hook state and edited in the same render that
+      reads it risks the save closing over the pre-update value (documented
+      in the file's own header comment as the reason for this shape).
+- [x] `packages/studio/src/components/settings/RangeNetworksFields.tsx`
+      (new) — the shared presentational table (Start IP / End IP / Label /
+      Medium / Sweep / Addresses / remove), add-row button, and budget
+      readout. Mounted by both `FarmNetworksEditor.tsx` and
+      `ScanNetworkDialog.tsx`, so a farm's network list reads and edits
+      identically regardless of which door an operator walked through.
+- [x] `packages/studio/src/components/settings/FarmNetworksEditor.tsx`:
+      rewritten to edit ranges instead of raw CIDR (`Replace, never version`,
+      `docs/plans/00-overview.md` §4.3 — no `v2`, the one call site migrated
+      in the same change). Its own pre-existing "Scan network" button is
+      UNCHANGED (still scans only what is already saved) — `ScanNetworkDialog`
+      is where "Scan all" (save-then-scan) lives. No port field added here:
+      `discovery.tcpPort` is already editable on this SAME Settings page one
+      component up (`settings/page.tsx`'s `discovery` tab renders the
+      generic `<FarmForm omit={['discovery.networks']}/>`, which already
+      includes `tcpPort`, immediately above this editor) — confirmed by
+      reading `settings/page.tsx` before adding a second control for the
+      same setting on the same screen.
+- [x] `packages/studio/src/components/device/ScanNetworkDialog.tsx` (new) —
+      the modal itself, opened unconditionally from the Devices page's
+      fleet `⋮` menu. Owns its own `/api/settings` fetch (refreshed on every
+      open, since the dialog stays mounted while closed — the same pattern
+      `BulkCutoverDialog.tsx` already established for this page's other
+      dialogs); shows `RangeNetworksFields` (or, with zero rows, an
+      empty state — "No ranges yet" — with "Add a range" immediately
+      visible, no navigation); ONE port field, editing `discovery.tcpPort`
+      farm-wide, with its own copy stating the real limitation plainly:
+      *"One port for every range … Per-range ports are not supported yet."*
+      (see this step's own "Real, present limitation" note below); a Save
+      button; and a "Scan all" button — the owner's own "tombol langsung
+      scan all nya" — that saves first ONLY when something is actually
+      unsaved (rows or port), then triggers the sweep via the shared
+      `useNetworkScan()` hook, rendering the same `summariseSweepReport()`
+      wording `FarmNetworksEditor`'s button already uses.
+- [x] `packages/studio/src/app/page.tsx`: the fleet-menu "Scan network" item
+      now unconditionally opens `ScanNetworkDialog` — the `scanNetworks`
+      state, `scanDisabledReasonText`, `useNetworkScan` call, and the
+      `router.push('/settings?tab=discovery')` fallback (and its
+      `aria-disabled`/`title`/`cursor-not-allowed` styling) are all removed
+      from this file; the dialog owns that state now. `onNetworkScanned`
+      (the dialog's `onScanned` prop) keeps the exact same belt-and-
+      suspenders refetch (`load()` + `loadDiscovered()`) 88.12 already
+      established.
+- [x] **Real, present limitation, named rather than papered over — RESOLVED,
+      same day.** `discovery.tcpPort` was one farm-wide port, not per-range,
+      even though the owner's own sketch showed `[port]` per row. No fake
+      per-row port field was built at the time — the same defect class this
+      whole session hunted down (a false "released or forgotten" claim, a
+      phantom "Scan network" button, a label-vs-number compaction bug: UI
+      promising something the backend does not deliver). Logged in
+      `docs/plans/96-m61-hotfixes.md` §96.44. **The owner pushed back the
+      same day, and it turned out to be the contained backend change §9 Q7
+      already scoped, not a re-architecture: `discovery.networks[].port`
+      (optional override), `sweep.ts`'s `net.port ?? cfg.tcpPort`, and
+      `SweepReport.networks[].port` for visibility. See this plan's own
+      status line above (the "88.13 follow-up" paragraph) for the full
+      account, and §9 Q7 below — no longer open.**
+- **Verifiable result:** `bash scripts/typecheck.sh` clean. `bun run --cwd
+  packages/studio test` scoped to `src/lib/ip-range.test.ts` (42 tests),
+  `src/lib/network-scan.test.ts` (unchanged, 8 tests), `src/components/
+  settings/FarmNetworksEditor.test.tsx` (21 tests, rewritten for ranges),
+  `src/components/device/ScanNetworkDialog.test.tsx` (15 tests, new), and
+  `src/app/page.test.tsx` (56 tests, its "Scan network" describe block
+  rewritten) — 142 pass, 0 fail across the five files run together.
+  `bun run spec:check` — pre-existing warning-only gap
+  (`plugin_webhooks`), unrelated to this step. `bash
+  scripts/check-plan-status.sh` — clean, no undeclared-`Ships:` failures.
+  `bun run build:studio` — refused by its own guard because the owner's dev
+  server was live on :3001 at verification time ("Building now would
+  corrupt it"); not bypassed, reported here instead.
+
 ---
 
 ## 6. Acceptance criteria
@@ -2105,3 +2267,23 @@ Rung-specific:
    standing at the rack will get bored sooner. §7.3 records the real cutover
    wall-clock at three rungs and the default should be set from that number,
    not from this document.
+
+7. **RESOLVED, 2026-08-19 (the same day 88.13 shipped) — built. Should the
+   sweep support a port per range, not one farm-wide port?** Step 88.13's own
+   modal originally shipped the port field once, farm-wide — the owner's own
+   sketch showed `[port]` per row, but `discovery.tcpPort` was a single value
+   and `sweep.ts` had no per-network port to target. The owner pushed back
+   before this question's "let it sit for a while" framing ever got tested:
+   read literally, the change was exactly as contained as this entry
+   predicted, not a re-architecture. Built: `discovery.networks[].port`
+   (`packages/protocol/src/settings.ts`, `.optional()`, unset falls back to
+   `discovery.tcpPort`), `sweep.ts`'s probe loop now reads `net.port ??
+   cfg.tcpPort` at the one address-building line, and `SweepReport.networks[]`
+   gained its own `port` field naming which port was actually probed per
+   range — the exact three touch points this entry named in advance. The
+   farm-wide field in `ScanNetworkDialog.tsx` stays as the default and
+   fallback (still the right home for a new row's implicit port); its copy
+   now says so rather than implying it is the only port available. See this
+   plan's own status line's "88.13 follow-up" paragraph for the full account,
+   including the verification run and the second bug (a dialog-overflow
+   regression) fixed in the same pass.

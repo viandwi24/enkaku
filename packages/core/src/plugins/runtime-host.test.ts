@@ -80,6 +80,7 @@ const FIXTURE_SERVICE: VerifyReport['service'] = {
       toleranceSec: 300,
     },
   ],
+  resetData: null,
 }
 
 function serviceReport(overrides: Partial<VerifyReport> = {}): VerifyReport {
@@ -196,13 +197,13 @@ describe('the manifest carries the service declaration, and only an active plugi
     // The row is written by hand through the fake verify, i.e. as if a build
     // that HAD a process host had written it. This build has not, and the read
     // path is a second refusal, not a re-run of the first.
-    await h.install('procplug', { service: { permissions: [], isolation: 'process', listeners: [], events: [], webhooks: [] } })
+    await h.install('procplug', { service: { permissions: [], isolation: 'process', listeners: [], events: [], webhooks: [], resetData: null } })
     expect(h.plugins.service('procplug')).toBeNull()
     expect(await h.host.loadActive()).toEqual({ loaded: 0, failed: 0 })
   })
 
   test('the schema ACCEPTS `process` — reserving the field is the point (criterion 7)', () => {
-    expect(PluginServiceDeclarationSchema.parse({ isolation: 'process' })).toEqual({ permissions: [], isolation: 'process', listeners: [], events: [], webhooks: [] })
+    expect(PluginServiceDeclarationSchema.parse({ isolation: 'process' })).toEqual({ permissions: [], isolation: 'process', listeners: [], events: [], webhooks: [], resetData: null })
     expect(unsupportedIsolationMessage('process')).toContain('reserved but not implemented')
     expect(unsupportedIsolationMessage('in-process')).toBeNull()
   })

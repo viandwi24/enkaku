@@ -450,19 +450,27 @@ describe('WallTile — the quiet budgeted state (plan 92 §3.4, §4.7)', () => {
 })
 
 /**
- * Plan 101 §5 step 101.7 — the tile shows the screencast and nothing else.
- * The number, the connection glyph, and the battery/temperature/readiness/
- * status chip row (plan 88/89/92 §4.8) all left the tile; the name is the
- * one thing that survives, floated over the picture instead of sitting in a
- * header line above it. `tile-identity.test.ts` still covers `tileIdentityOf`
- * itself (`DeviceCard` reads it); these tests cover what `WallTile` no
- * longer does with it, and what it does with the name instead.
+ * Plan 101 §5 step 101.7 — the tile shows the screencast and almost nothing
+ * else. The connection glyph and the battery/temperature/readiness/status
+ * chip row (plan 88/89/92 §4.8) left the tile and stay gone; the name
+ * floats over the picture instead of sitting in a header line above it.
+ * **The per-device number was owner-reversed back onto the tile,
+ * 2026-08-19** — stacked on its own line directly above the name, not
+ * step 101.7's old inline "beside the label" shape. `tile-identity.test.ts`
+ * still covers `tileIdentityOf` itself (`DeviceCard` reads it); these tests
+ * cover what `WallTile` does with the number and the name directly.
  */
-describe('WallTile — the screencast and nothing else (plan 101 §5 step 101.7, requirements 1-3)', () => {
-  test('no per-device number anywhere on the tile', () => {
+describe('WallTile — the screencast plus the number and name (plan 101 §5 step 101.7, reversed for the number 2026-08-19)', () => {
+  test('the number floats above the name, `#N` — never a bare or zero-padded digit', () => {
     const numberedDevice = { ...device, number: 42 }
-    const { queryByText } = renderWithApi(<WallTile device={numberedDevice} live={false} onShowLive={() => undefined} />)
-    expect(queryByText('#42')).toBeNull()
+    const { getByText } = renderWithApi(<WallTile device={numberedDevice} live={false} onShowLive={() => undefined} />)
+    expect(getByText('#42')).toBeTruthy()
+  })
+
+  test('a device with no number reservation yet shows no number — never a fake `#0`', () => {
+    const unnumberedDevice = { ...device, number: null }
+    const { queryByText } = renderWithApi(<WallTile device={unnumberedDevice} live={false} onShowLive={() => undefined} />)
+    expect(queryByText(/^#/)).toBeNull()
   })
 
   test('no connection-glyph tooltip anywhere on the tile', () => {

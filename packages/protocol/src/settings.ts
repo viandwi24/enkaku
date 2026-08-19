@@ -1278,6 +1278,22 @@ export const FarmSettingsSchema = z.object({
             // the exact same two values.
             medium: z.enum(['wired', 'wireless']).default('wired').meta({ title: 'Medium' }),
             scan: z.boolean().default(true).meta({ title: 'Include in a sweep' }),
+            /**
+             * Per-range port override (plan 88 §9 Q7, resolved; `docs/plans/
+             * 96-m61-hotfixes.md` §96.44's follow-up). Optional, matching
+             * `DeviceSettingsSchema.video`'s own "absent means inherit the
+             * farm default" convention (this file, above) — unset falls back
+             * to `discovery.tcpPort` for this range. Same bounds as
+             * `tcpPort` itself.
+             */
+            port: z
+              .number()
+              .int()
+              .min(1024)
+              .max(65535)
+              .optional()
+              .describe('Overrides the farm-wide adb port (discovery.tcpPort) for this range only. Leave unset to use the farm default.')
+              .meta({ title: 'Port (optional override)' }),
           }),
         )
         .max(16)

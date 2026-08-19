@@ -97,6 +97,7 @@ async function main(): Promise<void> {
           toleranceSec: 300,
         },
       ],
+      resetData: null,
     },
     resetPackages: [],
   }

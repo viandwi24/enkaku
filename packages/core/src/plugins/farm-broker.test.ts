@@ -136,6 +136,8 @@ interface Harness {
   ran: Ran
   /** Set the declared permission list for `bridge`. `null` = the plugin declares no service at all. */
   declare(permissions: string[] | null): void
+  /** Set the Reset data block's borrowed permission list. `null` = this plugin declares no cleanup handler. */
+  declareReset(permissions: string[] | null): void
   /** Set who published `bridge`, and their role — resolved LIVE on every call. */
   publishedBy(userId: string | null, role?: Role): void
   rows(): ReturnType<AuditLogger['list']>
@@ -170,12 +172,23 @@ function setUp(opts?: { audit?: boolean }): Harness {
   }
 
   let declared: string[] | null = ['test.read']
+  let resetDeclared: string[] | null = null
   let publisher: string | null = null
   const roles = new Map<string, Role>()
 
   const plugins: BrokerPlugins = {
     active: (name) => (name === 'bridge' ? pluginRow('bridge', publisher) : null),
-    service: (name) => (name === 'bridge' && declared ? { permissions: declared, isolation: 'in-process', listeners: [], events: [], webhooks: [] } : null),
+    service: (name) =>
+      name === 'bridge' && declared
+        ? {
+            permissions: declared,
+            isolation: 'in-process',
+            listeners: [],
+            events: [],
+            webhooks: [],
+            resetData: resetDeclared ? { permissions: resetDeclared } : null,
+          }
+        : null,
   }
 
   const broker = createFarmBroker({
@@ -194,6 +207,9 @@ function setUp(opts?: { audit?: boolean }): Harness {
     ran,
     declare: (permissions) => {
       declared = permissions
+    },
+    declareReset: (permissions) => {
+      resetDeclared = permissions
     },
     publishedBy: (userId, role) => {
       publisher = userId
@@ -398,5 +414,95 @@ describe('a host with no audit logger still refuses — the gate is not a side e
     // Nothing was written, because nothing was wired — the point is that the
     // ANSWER did not change. `daemon.ts` always wires one.
     expect(h.rows()).toEqual([])
+  })
+})
+
+/**
+ * **Reset data's borrowed authority.** `resetData.permissions` is a second,
+ * narrower list that is live only while the host says an operator-initiated
+ * reset pass is open — the answer to `proxy-manager`'s standing refusal to
+ * declare `device.network.clear`, which would otherwise have had to become a
+ * permanent grant so that one moment could work.
+ *
+ * The property under test is not "a reset can call it". It is that everything
+ * else still cannot, and that the capability's handler NEVER RUNS on the paths
+ * where it is refused — the same claim criterion 10 makes about the standing
+ * list, because a scoped grant that leaked would be worse than no scoping at
+ * all: it would carry the reassurance without the property.
+ */
+describe('the Reset data grant is scoped to the pass, not handed to the plugin', () => {
+  const resetCall = (broker: FarmBroker, capability: string, input?: unknown) =>
+    broker.call({ pluginId: 'bridge', capability, ...(input !== undefined ? { input } : {}), via: 'service', reset: true })
+
+  test('a capability in `resetData.permissions` runs during a pass', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(['test.read'])
+
+    expect(await resetCall(h.broker, 'test.read', { n: 21 })).toEqual({ n: 42 })
+    expect(h.ran.read).toBe(1)
+  })
+
+  test('the SAME capability is refused outside a pass, and its handler never runs', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(['test.read'])
+
+    await expect(serviceCall(h.broker, 'test.read', { n: 21 })).rejects.toMatchObject({ code: 'E_FARM_UNDECLARED' })
+    expect(h.ran.read).toBe(0)
+  })
+
+  test('the refusal outside a pass NAMES the reset list, because that is the mistake an author actually makes', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(['test.read'])
+
+    await expect(serviceCall(h.broker, 'test.read', { n: 1 })).rejects.toMatchObject({
+      message: expect.stringContaining('resetData.permissions'),
+    })
+  })
+
+  test('a pass does not widen a plugin to anything it did not name in EITHER list', async () => {
+    const h = setUp()
+    h.declare(['test.read'])
+    h.declareReset(['test.device'])
+
+    await expect(resetCall(h.broker, 'test.admin')).rejects.toMatchObject({ code: 'E_FARM_UNDECLARED' })
+    expect(h.ran.admin).toBe(0)
+  })
+
+  test('a plugin that declares no reset block gains nothing from the flag', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(null)
+
+    await expect(resetCall(h.broker, 'test.read')).rejects.toMatchObject({ code: 'E_FARM_UNDECLARED' })
+    expect(h.ran.read).toBe(0)
+  })
+
+  test('the standing list still works during a pass — borrowing adds, it does not replace', async () => {
+    const h = setUp()
+    h.declare(['test.read'])
+    h.declareReset(['test.device'])
+
+    expect(await resetCall(h.broker, 'test.read', { n: 2 })).toEqual({ n: 4 })
+  })
+
+  test('a borrowed call is still audited under the plugin principal, exactly like every other one', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(['test.read'])
+
+    await resetCall(h.broker, 'test.read', { n: 1 })
+    expect(h.rows()[0]).toMatchObject({ action: 'capability.invoke', userId: 'plugin:bridge' })
+  })
+
+  test('a refusal during a pass records what could have been borrowed, so the log says a reset was running', async () => {
+    const h = setUp()
+    h.declare([])
+    h.declareReset(['test.device'])
+
+    await expect(resetCall(h.broker, 'test.admin')).rejects.toMatchObject({ code: 'E_FARM_UNDECLARED' })
+    expect(h.rows()[0]?.meta).toMatchObject({ reset: true, borrowed: ['test.device'] })
   })
 })

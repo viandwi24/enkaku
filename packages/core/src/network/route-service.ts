@@ -2981,9 +2981,15 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
   async function clearRouteFromRequest(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
     const row = mustGet(deviceId)
     // The disarm direction, same as `/network/disable` — `requireDisarmAdmission` carries the whole
-    // argument. The plugin path into this function (`device.network.clear`) is NOT widened by this:
-    // `createDeviceNetworkService`'s `withDevice` takes its own `admitMember` hold first and still
-    // refuses an unreachable device with `device_unavailable` before it ever gets here.
+    // argument.
+    //
+    // The plugin path into this function (`device.network.clear`) now follows the SAME rule:
+    // `createDeviceNetworkService`'s `withDevice` takes its own `admitMember` hold first and lets
+    // exactly `device_unavailable` through for the clear direction, refusing `device_busy` and
+    // `not_lease_holder` unchanged. (This comment previously said the plugin path was not widened;
+    // that was true when written. Reset data is what changed it — a plugin's stored data can be the
+    // only record of which phones carry its routes, and the phones that most need un-routing are
+    // exactly the ones that are away. See `capability/device-network.ts`'s `withDevice`.)
     requireDisarmAdmission(deps.leases, row.id)
     await revertNetwork(row.id, actor, { forget: true })
     // **The row only goes when the phone was actually told.** Erasing it on a teardown that never

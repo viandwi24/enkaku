@@ -111,6 +111,37 @@ export interface FarmBrokerCall {
   jobId?: string
   /** The job's own device, when `via === 'script'`. NOT the capability's target — that is `input.deviceId`, and `invoke` records it separately. */
   jobDeviceId?: string
+  /**
+   * **This call is part of an open Reset data pass** — check it against
+   * `permissions ∪ resetData.permissions` rather than `permissions` alone.
+   *
+   * ## Why a wider list exists at all, and why it is not simply a wider manifest
+   *
+   * `proxy-manager` withheld `device.network.clear` on the record, in as many
+   * words: *"a plugin that could silently un-route forty phones is a bigger
+   * authority than anything on this screen asks for."* Reset is the one moment
+   * the argument stops holding — the plugin's stored assignments are the only
+   * record of which phones it pointed somewhere, and deleting them without
+   * turning those routes off leaves orphans nothing can explain. But *"reset
+   * can clear routes"* and *"this plugin can clear routes whenever it likes"*
+   * are different grants, and only the first one was earned.
+   *
+   * So the wider list is real authority with three edges on it, all enforced
+   * elsewhere and all load-bearing:
+   *
+   * 1. **Operator-initiated.** Nothing opens a pass except
+   *    `POST /api/plugins/:name/reset`, behind `script.publish`.
+   * 2. **One run.** `runtime-host.ts` flips the pass shut in a `finally`, so a
+   *    handler abandoned past its deadline loses the grant at the same instant
+   *    the operator's request ends.
+   * 3. **Through one object.** Only the context built for that pass carries the
+   *    flag; the `ctx` the running service has held since `setup` never does.
+   *
+   * This flag is set by the HOST. It is not a request field, not readable from
+   * plugin code, and not something a plugin can pass to `ctx.farm.call` — the
+   * plugin-facing signature is `(id, input, schema)` and has nowhere to put it.
+   */
+  reset?: boolean
 }
 
 export interface FarmBrokerDeps {
@@ -259,14 +290,48 @@ export function createFarmBroker(deps: FarmBrokerDeps): FarmBroker {
           { declared: [] },
         )
       }
-      const declared = [...declaration.permissions]
+      /**
+       * The standing list, plus — during an open Reset data pass and only then
+       * — the list the plugin declared it needs for one cleanup run. See
+       * `FarmBrokerCall.reset` for what "only then" is worth and who enforces
+       * it.
+       *
+       * `borrowed` stays a separate array rather than being folded into
+       * `declared` because it is what the AUDIT row has to say: "refused, and
+       * here is what it could have had during a reset" and "allowed, because a
+       * reset was running" are different facts from the ordinary ones, and an
+       * operator reading the log later must be able to tell that a capability
+       * this plugin does not normally hold was exercised.
+       */
+      const standing = [...declaration.permissions]
+      const borrowed = c.reset === true ? [...(declaration.resetData?.permissions ?? [])] : []
+      const declared = borrowed.length > 0 ? [...standing, ...borrowed.filter((p) => !standing.includes(p))] : standing
       if (!declared.includes(capability)) {
+        // The refusal names the reset list too when there IS one, because the
+        // likeliest cause of this exact refusal is an author who put a
+        // capability in `resetData.permissions` and then called it from
+        // `setup` — and "you declared it, in the other list, for the other
+        // moment" is the sentence that fixes that in one read.
+        const resetHint =
+          c.reset !== true && (declaration.resetData?.permissions ?? []).includes(capability)
+            ? ` It IS in this plugin's \`resetData.permissions\`, which is only live during an operator-initiated Reset data pass — not from ${c.via === 'script' ? 'a member script' : 'the running service'}.`
+            : ''
         return refuse(
           'E_FARM_UNDECLARED',
           `ctx.farm.call("${capability}"): plugin "${c.pluginId}@${row.version}" did not declare it. ` +
             `Its manifest declares ${declared.length > 0 ? declared.map((d) => `"${d}"`).join(', ') : '(nothing)'} — ` +
-            `the list is exhaustive on purpose: it is what an operator consented to at install`,
-          { declared },
+            `the list is exhaustive on purpose: it is what an operator consented to at install.${resetHint}`,
+          { declared, ...(c.reset === true ? { reset: true, borrowed } : {}) },
+        )
+      }
+      if (borrowed.includes(capability)) {
+        // One line per borrowed call, at info, naming the plugin and the
+        // capability. The `capability.invoke` audit row below carries the
+        // authoritative record; this is so a farm owner watching the log while
+        // they press Reset can SEE the phones being un-routed rather than
+        // discovering it afterwards.
+        log.info(
+          `plugin "${c.pluginId}": "${capability}" allowed under an open Reset data pass — it is not in this plugin's standing permission list`,
         )
       }
 

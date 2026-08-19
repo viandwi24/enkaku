@@ -22,6 +22,7 @@ import {
 } from '@enkaku/ui'
 import type { PluginRowWithService } from '@/app/plugins/plugin-list'
 import { previewBulkRemoval, requestBulkRemoval, summariseBulkRemoval } from '@/lib/plugin-removal'
+import { ResetPluginAction } from './ResetPluginAction'
 
 /**
  * Every lifecycle control a published plugin version has, in one component,
@@ -160,6 +161,16 @@ export function PluginActions({
           onConfirm={disable}
         />
       )}
+      {/*
+        Reset data — offered on the ACTIVE version only, and that is the
+        server's rule rather than a UI preference. `POST /:name/reset` refuses a
+        plugin with no active version outright: a disabled version's manifest is
+        where its own cleanup handler is declared, and the farm can only read
+        the active row's, so resetting one would delete its data while reporting
+        that it had nothing to undo. Rendering the button on a superseded row
+        would offer an act the server will not perform.
+      */}
+      {p.status === 'active' && <ResetPluginAction selected={p} onChanged={onChanged} dense={dense} />}
       {/*
         All three removals, now that `POST /api/plugins/:name/versions/remove`
         exists. A plugin with ONE version keeps the plain button it always had:

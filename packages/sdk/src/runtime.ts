@@ -2,6 +2,7 @@ import type { z } from 'zod'
 import {
   PluginServiceDeclarationSchema,
   type PluginCaller,
+  type PluginResetReport,
   type PluginHttpMethod,
   type PluginListenerProto,
   type PluginQueryResult,
@@ -650,6 +651,58 @@ export function isFarmEventOfType<T extends FarmEventType>(event: ServerMessage,
 export type ServiceSetup = (ctx: PluginServiceContext) => void | Promise<void>
 
 /**
+ * **Reset data** — what your plugin does about the outside world, one moment
+ * before the farm deletes everything your plugin stored.
+ *
+ * An ordinary lifecycle handler beside `setup`, receiving the same
+ * `PluginServiceContext`, so `ctx.storage`, `ctx.log` and `ctx.farm` are the
+ * same three things they are everywhere else and a helper you already wrote
+ * works here unchanged.
+ *
+ * ## Four rules, and none of them is optional
+ *
+ * 1. **You run BEFORE the delete.** Your data is still there — that is the
+ *    whole point, because your data is the only record of what you did. Read
+ *    it, undo what it describes, and report.
+ * 2. **The handler itself is optional.** A plugin without one still resets; it
+ *    just has nothing to undo, and the farm says so rather than pretending a
+ *    cleanup ran.
+ * 3. **Be idempotent and re-runnable.** A reset that half-completes leaves your
+ *    data in place (see below), and an operator will press the button again.
+ *    Pressing it twice must be safe, and the second press must be able to
+ *    finish what the first one started.
+ * 4. **Report per thing, honestly.** Return `{ items: [...] }` — one entry per
+ *    device or resource you touched. `failed` means the undo did not happen and
+ *    nobody is holding the obligation; `pending` means it did not happen *and*
+ *    the farm has recorded the debt somewhere that outlives your data. Do not
+ *    report `pending` on a hope.
+ *
+ * ## What your report decides
+ *
+ * | your items | the farm | your data |
+ * |---|---|---|
+ * | all `cleared`/`unchanged` | *"Reset."* | deleted |
+ * | any `pending`, none `failed` | *"Reset — with N debts, named."* | deleted (the record moved, it did not vanish) |
+ * | **any `failed`** | *"Blocked. Nothing was deleted."* | **kept, in full** |
+ *
+ * Throwing has the same effect as a `failed` item: nothing is deleted, and the
+ * error is shown verbatim. So a handler that cannot reach one phone should
+ * report that one phone, not throw — throwing discards the twelve it did clean
+ * up from the operator's view of what happened.
+ *
+ * ## The extra authority, and its edges
+ *
+ * `defineService({ resetData: { permissions: [...] } })` lists capabilities the
+ * handler may call **that the running service may not**. They are live only
+ * while an operator-initiated pass is open, and only through the context object
+ * this handler is called with — stash that `ctx` and use it a minute later and
+ * the extra capabilities are refused again, exactly as if they had never been
+ * declared. Everything else about a farm call is unchanged: the real ACL, the
+ * lease admission and the audit row all still apply.
+ */
+export type ServiceResetData = (ctx: PluginServiceContext) => PluginResetReport | void | Promise<PluginResetReport | void>
+
+/**
  * What an author passes to `defineService`.
  *
  * The declaration half is the schema's **input** type, not its output.
@@ -662,6 +715,18 @@ export type ServiceSetup = (ctx: PluginServiceContext) => void | Promise<void>
  */
 export type PluginServiceInput = Partial<z.input<typeof PluginServiceDeclarationSchema>> & {
   setup: ServiceSetup
+  /**
+   * The **Reset data** cleanup hook — see `ServiceResetData`. Optional; a plugin
+   * without one still resets.
+   *
+   * It is a sibling of `setup` rather than a member of the `resetData`
+   * declaration block for the same reason `setup` is not inside the
+   * declaration: what crosses to the farm is JSON, and a function nested in a
+   * declared object is a `JSON.stringify` that silently drops it. Declaring
+   * `resetData` without one is refused below — a borrowed capability with no
+   * handler to use it is a grant an operator consented to for nothing.
+   */
+  onResetData?: ServiceResetData
 }
 
 /**
@@ -681,6 +746,13 @@ export interface PluginService extends PluginServiceDeclaration {
   /** A brand, so a host can recognise one without importing this package at run time. */
   readonly kind: 'enkaku.service'
   setup: ServiceSetup
+  /**
+   * The Reset data hook, when this plugin has one. Present exactly when the
+   * `resetData` declaration above is non-null — `defineService` keeps the two
+   * in step, so the manifest's `resetData` is a reliable answer to "does this
+   * plugin have anything to undo" without importing the bundle.
+   */
+  onResetData?: ServiceResetData
 }
 
 /**
@@ -717,12 +789,38 @@ export function defineService(input: PluginServiceInput): PluginService {
   if (typeof input.setup !== 'function') {
     throw new Error('defineService({ setup }): `setup` must be a function that receives the plugin service context')
   }
-  const { setup, ...declared } = input
-  const parsed = PluginServiceDeclarationSchema.safeParse(declared)
+  if (input.onResetData !== undefined && typeof input.onResetData !== 'function') {
+    throw new Error('defineService({ onResetData }): `onResetData`, when present, must be a function that receives the plugin service context')
+  }
+  const { setup, onResetData, ...declared } = input
+  /**
+   * The two halves of Reset data are kept in step HERE, on the author's own
+   * machine, so neither can exist without the other on a farm.
+   *
+   * - A handler with no `resetData` block gets an empty one: the declaration
+   *   is what tells the farm a cleanup hook exists at all, and a plugin that
+   *   wrote `onResetData` and nothing else must not have its handler silently
+   *   skipped because the manifest said `resetData: null`.
+   * - A `resetData` block with no handler is refused rather than normalised
+   *   away. Its `permissions` are authority an operator is shown and consents
+   *   to at install; consenting to a grant nothing can use is consent spent
+   *   for nothing, and the likeliest cause is a handler the author forgot to
+   *   wire.
+   */
+  if (declared.resetData !== undefined && declared.resetData !== null && onResetData === undefined) {
+    throw new Error(
+      'defineService({ resetData }): a `resetData` block was declared but there is no `onResetData` handler to use it — ' +
+        'the block exists to describe (and to borrow authority for) a cleanup hook, so declaring one without the hook ' +
+        'asks the operator to consent to a grant nothing can spend. Add `onResetData`, or remove `resetData`.',
+    )
+  }
+  const parsed = PluginServiceDeclarationSchema.safeParse(
+    onResetData !== undefined && (declared.resetData === undefined || declared.resetData === null) ? { ...declared, resetData: {} } : declared,
+  )
   if (!parsed.success) {
     throw new Error(`defineService: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`)
   }
-  return Object.freeze({ kind: 'enkaku.service' as const, ...parsed.data, setup })
+  return Object.freeze({ kind: 'enkaku.service' as const, ...parsed.data, setup, ...(onResetData !== undefined ? { onResetData } : {}) })
 }
 
 /** Whether a value is a `defineService()` result. */

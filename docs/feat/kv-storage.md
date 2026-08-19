@@ -203,8 +203,10 @@ plugin KV, and none of them visible on the Key/Value store screen:
 `plugin_webhooks` is the interesting one, because it is the case that *looks* like plugin KV and
 deliberately is not (its own schema comment has the full argument): the farm generates the value,
 the farm verifies against it, the operator rotates it. It must keep verifying while the plugin is
-stopped or `failed`; it must not be swept by `?deleteKv=1`, count against the plugin's quota, or be
-rewritable by the plugin as a side effect of an ordinary `set`. And it has no hint column at all —
+stopped or `failed`; it must not be swept by `?deleteKv=1` **or by Reset data** (which leaves the
+plugin installed and active, so a webhook whose secret vanished would answer 200 and reject every
+delivery), count against the plugin's quota, or be rewritable by the plugin as a side effect of an
+ordinary `set`. And it has no hint column at all —
 there is nothing to suppress, because 32 random bytes have no public prefix worth showing.
 
 Also not this table: **artifacts** (files on disk, `POST /api/artifacts`) and the **workspace**
@@ -221,7 +223,20 @@ those, not here.
 | `GET/PUT/DELETE /api/kv/entry` | `kv.manage` (admin) | can name *any* namespace — that is why it is admin-only; `PUT` takes `hint` |
 | `POST /api/kv/entry/reveal` | `kv.manage` (admin) | the **only** response in this surface carrying a secret's plaintext — one named key, `no-store`, one `kv.reveal` audit row per request including refusals (§4) |
 | `GET /api/plugins/:name/data`, `PUT/DELETE /data/entry`, `GET /data/count`, `GET /data/scan` | `plugin.data` (operator) | namespace fixed to `:name`; `scan` answers one key across every device |
-| `DELETE /api/plugins/:name/:version?deleteKv=1` | plugin management | the only bulk delete in the product |
+| `DELETE /api/plugins/:name/:version?deleteKv=1` | plugin management (`script.delete`) | bulk delete #1: the plugin GOES, and its namespace with it |
+| `POST /api/plugins/:name/reset` | plugin management (`script.delete`) | bulk delete #2 — **Reset data**: the plugin STAYS installed and active, only its namespace goes, and the plugin's own cleanup handler runs **first** (see below) |
+
+The two bulk deletes share one sweep function (`PluginRuntime.deleteData`) and therefore one definition of "this plugin's data": both scopes, every device row, and never `plugin_webhooks` (§6). What Reset adds is the ordering and the veto.
+
+**The handler runs before the delete, and its report can stop the delete.** A plugin's stored data is frequently the only record of what it did to the outside world — `proxy-manager`'s assignments are the only place the farm knows which phones it pointed at a proxy — so a reset gives the plugin one run (`defineService({ onResetData })`) to undo that while the data is still intact. What comes back decides what happens next:
+
+| the handler reported | the data |
+|---|---|
+| nothing outstanding, or the plugin declares no handler | deleted |
+| debts only — cleanups that did not complete but are now recorded somewhere that outlives this plugin (a device row's `pendingClear`) | deleted; the screen says how many are owed and never calls it a plain success |
+| any outright failure, a handler that threw, a handler that could not run, or a report the farm cannot parse | **nothing is deleted** — not even the rows for the parts that cleaned up, because those rows are the record of which devices are still carrying something |
+
+The handler is contractually idempotent and re-runnable, so a blocked pass is fixed by fixing the cause and pressing Reset again. A `resetData.permissions` list may borrow capabilities the running service does not hold, live only for the length of one operator-initiated pass — that is how `proxy-manager` reaches `device.network.clear` without holding it the rest of the time.
 
 The index route returns **metadata only** — a namespace name and two counts. No key, no value, and
 no hint, by construction: it exists so a browsing surface can offer a picker instead of a text box,
