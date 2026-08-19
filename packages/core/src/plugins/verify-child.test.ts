@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { verifyPluginBundle } from './verify-child'
 
 const dirs: string[] = []
+/**
+ * Synchronous on purpose, not `Bun.write` (a genuine race this test file
+ * used to have: `Bun.write` returns a Promise and this function's every
+ * caller treated its own return as "the file is on disk", so
+ * `verifyPluginBundle` sometimes span a child against a bundle whose write
+ * had not finished — flaky, and the flake count changed between local runs
+ * with nothing else changed, which is what surfaced it).
+ */
 function writeBundle(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'enkaku-verify-child-'))
   dirs.push(dir)
   const path = join(dir, 'bundle.mjs')
-  Bun.write(path, source)
+  writeFileSync(path, source)
   return path
 }
 

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { downloadVerified, extractZip, moveFile } from '@enkaku/toolchain'
+import { downloadVerified, extractZip, moveFile, rmPath } from '@enkaku/toolchain'
 import { ProxyError } from './errors'
 
 /**
@@ -113,7 +113,33 @@ export function gostBinaryPath(): string {
  * the same plugin data root, so a crash mid-provision never leaves a
  * half-written file at the canonical path for the next call to trust.
  */
-export async function ensureGostBinary(log: { info(msg: string, fields?: Record<string, unknown>): void }): Promise<string> {
+/**
+ * Windows error codes worth a retry rather than an immediate failure — a
+ * real-time antivirus (Windows Defender, measured on the owner's own farm
+ * host, 2026-08-19) opens and scans a just-downloaded `.zip`/`.exe` on its
+ * own schedule, and a read/rename that lands inside that window fails with
+ * one of these rather than a normal "file not found". `fs-safe.ts`'s own
+ * `TRANSIENT` set (used by `moveFile` below) already covers `EPERM`/
+ * `EACCES`/`EBUSY`; `EUNKNOWN` is added here because it is what was actually
+ * observed — Bun/libuv's catch-all for a Windows error it has no POSIX
+ * mapping for, which a locked/scanning file is one real cause of.
+ */
+const RETRYABLE_CODES = new Set(['EUNKNOWN', 'EPERM', 'EACCES', 'EBUSY'])
+
+function isRetryable(err: unknown): boolean {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code: unknown }).code) : ''
+  if (RETRYABLE_CODES.has(code)) return true
+  // `downloadVerified`/`extractZip` wrap some failures as a plain Error whose
+  // MESSAGE carries the OS code (`open '...': EUNKNOWN: unknown error`)
+  // rather than setting `.code` — matching the code is not enough on its own.
+  const message = err instanceof Error ? err.message : String(err)
+  return [...RETRYABLE_CODES].some((code) => message.includes(code))
+}
+
+const PROVISION_ATTEMPTS = 3
+const PROVISION_RETRY_DELAY_MS = 1000
+
+export async function ensureGostBinary(log: { info(msg: string, fields?: Record<string, unknown>): void; warn(msg: string, fields?: Record<string, unknown>): void }): Promise<string> {
   const dest = gostBinaryPath()
   if (existsSync(dest)) return dest
 
@@ -125,22 +151,47 @@ export async function ensureGostBinary(log: { info(msg: string, fields?: Record<
     throw new ProxyError('E_PROXY_GOST_UNSUPPORTED_PLATFORM', `gost provisioning was reached on ${process.platform} — this workaround exists for Windows only`)
   }
 
-  const dataDir = pluginDataDir()
-  const staging = join(dataDir, `.staging-${Date.now()}`)
-  mkdirSync(staging, { recursive: true })
-  const zipPath = join(staging, 'gost.zip')
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= PROVISION_ATTEMPTS; attempt++) {
+    const dataDir = pluginDataDir()
+    const staging = join(dataDir, `.staging-${Date.now()}-${attempt}`)
+    mkdirSync(staging, { recursive: true })
+    const zipPath = join(staging, 'gost.zip')
 
-  log.info('provisioning gost — downloading', { subject: 'gost', version: GOST_VERSION, url: GOST_WINDOWS_ARTIFACT.url })
-  await downloadVerified({ artifact: GOST_WINDOWS_ARTIFACT, dest: zipPath, toolId: 'gost', version: GOST_VERSION })
+    try {
+      log.info('provisioning gost — downloading', { subject: 'gost', version: GOST_VERSION, url: GOST_WINDOWS_ARTIFACT.url, attempt })
+      await downloadVerified({ artifact: GOST_WINDOWS_ARTIFACT, dest: zipPath, toolId: 'gost', version: GOST_VERSION })
 
-  log.info('provisioning gost — extracting', { subject: 'gost', version: GOST_VERSION })
-  await extractZip(zipPath, staging)
+      log.info('provisioning gost — extracting', { subject: 'gost', version: GOST_VERSION })
+      await extractZip(zipPath, staging)
 
-  const extracted = join(staging, 'gost.exe')
-  if (!existsSync(extracted)) {
-    throw new ProxyError('E_PROXY_GOST_ARCHIVE_UNEXPECTED', `gost_${GOST_VERSION}_windows_amd64.zip did not contain gost.exe at its root — the release layout may have changed`)
+      const extracted = join(staging, 'gost.exe')
+      if (!existsSync(extracted)) {
+        throw new ProxyError('E_PROXY_GOST_ARCHIVE_UNEXPECTED', `gost_${GOST_VERSION}_windows_amd64.zip did not contain gost.exe at its root — the release layout may have changed`)
+      }
+      await moveFile(extracted, dest)
+      log.info('provisioning gost — ready', { subject: 'gost', version: GOST_VERSION, path: dest })
+      await rmPath(staging).catch(() => {})
+      return dest
+    } catch (err) {
+      lastErr = err
+      await rmPath(staging).catch(() => {})
+      if (attempt < PROVISION_ATTEMPTS && isRetryable(err)) {
+        log.warn('provisioning gost — a locked file (commonly Windows Defender scanning the download) blocked this attempt, retrying', {
+          subject: 'gost',
+          attempt,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        await Bun.sleep(PROVISION_RETRY_DELAY_MS * attempt)
+        continue
+      }
+      break
+    }
   }
-  await moveFile(extracted, dest)
-  log.info('provisioning gost — ready', { subject: 'gost', version: GOST_VERSION, path: dest })
-  return dest
+
+  const detail = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  throw new ProxyError(
+    'E_PROXY_GOST_UNAVAILABLE',
+    `could not provision the local gost helper after ${PROVISION_ATTEMPTS} attempts: ${detail} — if this names a locked or missing file, Windows Defender (or another antivirus) may be scanning or quarantining the download; adding an exclusion for "%APPDATA%\\Enkaku\\plugins\\proxy-manager\\gost" resolves it`,
+  )
 }
