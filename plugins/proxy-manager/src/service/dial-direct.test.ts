@@ -9,18 +9,26 @@ import { describeDirectUpstream } from '../shared'
  * literal short-circuit, the connect timeout, the family plumbing, and
  * criterion 4's no-fallback assertion.
  *
- * **Why loopback proves the no-fallback rule without any special host
- * configuration**, measured while writing this file rather than assumed: an
- * outgoing socket BOUND to `127.0.0.1` cannot reach anything off this
- * machine — the kernel refuses to route it, immediately (`queryA
- * ECONNREFUSED`, not a timeout). So `bindAddress: '127.0.0.1'` is not merely
- * a convenient address, it is a deterministic way to make the BOUND resolver
- * fail every time, on every machine, with no network access required at all
- * — which is exactly what proves the no-fallback rule: if `dial-direct.ts`
- * ever fell back to the host's own unbound resolver, resolving a real
- * hostname like `example.com` would very likely SUCCEED on a machine with
- * ordinary internet access, and this test would then observe a connected
- * socket instead of a thrown `E_PROXY_DNS_EGRESS_FAILED`. It does not.
+ * **Why `192.0.2.1` (not loopback) proves the no-fallback rule without any
+ * special host configuration.** An earlier version of this file bound the
+ * resolver to `127.0.0.1`, on the assumption that a socket bound to loopback
+ * "cannot reach anything off this machine". That held on the machine it was
+ * written on and **failed on CI** (a Linux runner whose own DNS resolution
+ * terminates on loopback — `systemd-resolved`'s stub listener — so a
+ * resolver bound to `127.0.0.1` asking `127.0.0.53` for `example.com` is a
+ * loopback-to-loopback query that genuinely succeeds there). `192.0.2.1` is
+ * `TEST-NET-1` (RFC 5737) — an address block reserved for documentation and
+ * therefore never assigned to any real interface, on any machine. Binding a
+ * socket's LOCAL source to an address the host does not own fails at the
+ * kernel's own `bind()`, unconditionally (`EADDRNOTAVAIL`/`ECONNREFUSED`
+ * depending on platform, never a timeout, never a route decision that could
+ * vary with what else happens to be listening on loopback) — measured
+ * originally in plan 117 §0.3, and it is what this file now relies on: if
+ * `dial-direct.ts` ever fell back to the host's own unbound resolver,
+ * resolving a real hostname like `example.com` would very likely SUCCEED on
+ * a machine with ordinary internet access, and this test would then observe
+ * a connected socket instead of a thrown `E_PROXY_DNS_EGRESS_FAILED`. It
+ * does not.
  */
 
 function listen(server: net.Server, host: string): Promise<number> {
@@ -62,15 +70,17 @@ describe('the literal short-circuit (§4.3 detail 2) — net.isIP() decides, not
   test('the control: the SAME bindAddress genuinely cannot resolve a hostname — a literal is not "resolution that happens to work"', async () => {
     // If this test failed to reject, the "literal" test above would prove
     // nothing: it would be indistinguishable from a resolver that just
-    // happens to work over loopback.
-    const upstream = createDirectUpstream({ bindAddress: '127.0.0.1', resolveThroughEgress: true, timeoutMs: 3_000 })
+    // happens to work. `192.0.2.1` (not loopback — see this file's own
+    // header) is what makes the failure genuinely unconditional rather than
+    // dependent on what else is listening on this machine.
+    const upstream = createDirectUpstream({ bindAddress: '192.0.2.1', resolveThroughEgress: true, timeoutMs: 3_000 })
     await expect(upstream.connect({ host: 'example.com', port: 80 })).rejects.toMatchObject({ code: 'E_PROXY_DNS_EGRESS_FAILED' })
   })
 })
 
 describe('criterion 4 — a resolver failure never falls back to the host’s default resolver', () => {
   test('E_PROXY_DNS_EGRESS_FAILED, and the connection is never attempted at all', async () => {
-    const upstream = createDirectUpstream({ bindAddress: '127.0.0.1', resolveThroughEgress: true, timeoutMs: 3_000 })
+    const upstream = createDirectUpstream({ bindAddress: '192.0.2.1', resolveThroughEgress: true, timeoutMs: 3_000 })
     let rejected: unknown
     try {
       await upstream.connect({ host: 'example.com', port: 80 })
@@ -88,7 +98,7 @@ describe('criterion 4 — a resolver failure never falls back to the host’s de
   })
 
   test('exactly one failure path — the message names the resolver it used, not a second attempt', async () => {
-    const upstream = createDirectUpstream({ bindAddress: '127.0.0.1', resolveThroughEgress: true, timeoutMs: 3_000 })
+    const upstream = createDirectUpstream({ bindAddress: '192.0.2.1', resolveThroughEgress: true, timeoutMs: 3_000 })
     await expect(upstream.connect({ host: 'another-real-hostname.example', port: 443 })).rejects.toMatchObject({
       code: 'E_PROXY_DNS_EGRESS_FAILED',
     })
