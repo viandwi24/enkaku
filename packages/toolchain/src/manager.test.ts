@@ -235,7 +235,14 @@ describe('guest-agent (plan 90 §90.1 — fixes F5, F6)', () => {
   test('deviceArtifactExpectation returns the bundled manifest deviceArtifact, including versionCode and signatureSha256', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
     try {
-      pinActivePointer(dataDir, 'guest-agent', 'TODO-first-release', 'guest-agent.apk')
+      // The active pointer must name a version the BUNDLED manifest actually
+      // has an entry for — `deviceArtifactExpectation` matches by exact
+      // string (`manager.ts`: `tool.versions.find(x => x.version === version)`,
+      // no fallback). This pinned `'TODO-first-release'` before the guest
+      // agent's first real release landed in the manifest as `'0.1.8'`; the
+      // fixture was never updated to match, so this always resolved to
+      // `null` regardless of the manifest's own correctness.
+      pinActivePointer(dataDir, 'guest-agent', '0.1.8', 'guest-agent.apk')
       const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
       await manager.init()
 
