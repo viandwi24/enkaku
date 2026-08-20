@@ -156,6 +156,33 @@ function parseDevicesLongBlock(raw: string): TrackedDevice[] {
   return out
 }
 
+/**
+ * `host:list-forward`'s response body (plan 119 §4.1, step 119.1): one
+ * "serial local remote" line per active forward. Verified live for the
+ * EMPTY case only (plan 119 §0.2: `host:list-forward` → OKAY, body "" —
+ * no device was attached, so a non-empty body was never actually seen).
+ * The whitespace-split three-field shape below is inferred from
+ * `packages/drivers/src/network/guest-agent/launcher.ts`'s existing
+ * CLI-based parsing of `adb forward --list`'s plain-text output
+ * (`line.trim().split(/\s+/)` → `[serial, local, remote]`) — the CLI
+ * flag is itself documented as a thin formatter over this exact host:
+ * service, but that is "plausible," not "measured," per plan 119 §0.2's
+ * own evidence standard. A line that does not split into exactly three
+ * fields is skipped rather than throwing, the same defensive posture
+ * `parseDevicesLongBlock` above takes with a malformed line.
+ */
+function parseListForwardBlock(raw: string): { serial: string; local: string; remote: string }[] {
+  const out: { serial: string; local: string; remote: string }[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const [serial, local, remote] = trimmed.split(/\s+/)
+    if (!serial || !local || !remote) continue
+    out.push({ serial, local, remote })
+  }
+  return out
+}
+
 function concatChunks(chunks: Uint8Array[]): Uint8Array {
   const total = chunks.reduce((n, c) => n + c.length, 0)
   const out = new Uint8Array(total)
@@ -711,6 +738,62 @@ export class AdbClient {
       socket.send(`host:disconnect:${hostPort}`)
       await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
       return await socket.readBlock({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+    })
+  }
+
+  /**
+   * `host-serial:<serial>:forward:<local>;<remote>` (plan 119 §4.1, step
+   * 119.1) — adds one forward, off the `adb.exe` process-spawn path
+   * `guest-agent/launcher.ts` and `ui-server/launcher.ts` both used before
+   * this plan. Sends bare OKAY with no body: NOT independently verified
+   * against a real device — no device was attached when step 119.1 ran, and
+   * plan 119 §0.2's only live findings for this family were `host:list-forward`'s
+   * empty-body case, a generic FAIL with an empty reason for a bogus-serial
+   * `forward` and for `host:killforward:tcp:19999`, and `host:killforward-all`'s
+   * bare OKAY with no body. This method's SUCCESS shape is inferred by
+   * analogy with that last one (every other `host:`/`host-serial:` service
+   * in this client that DOES something rather than answering a query is
+   * bare-OKAY), not measured. §0.2's own point stands either way: `OKAY` is
+   * never assumed to be followed by a block just because some other method
+   * has one — a FAIL is thrown by `readStatus()` exactly like every other
+   * method here.
+   */
+  async forward(serial: string, local: string, remote: string): Promise<void> {
+    await this.withSocket(async (socket) => {
+      socket.send(`host-serial:${serial}:forward:${local};${remote}`)
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+    })
+  }
+
+  /**
+   * `host:list-forward` (plan 119 §4.1, step 119.1) — OKAY plus a
+   * length-prefixed body (verified live for the empty case, §0.2: body "").
+   * See `parseListForwardBlock` for the per-line format, which is inferred
+   * rather than verified against a real device with active forwards.
+   */
+  async listForward(): Promise<{ serial: string; local: string; remote: string }[]> {
+    return this.withSocket(async (socket) => {
+      socket.send('host:list-forward')
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      const raw = await socket.readBlock({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
+      return parseListForwardBlock(raw)
+    })
+  }
+
+  /**
+   * `host-serial:<serial>:killforward:<local>` (plan 119 §4.1, step 119.1)
+   * — removes one forward. Bare OKAY, no body: inferred by analogy with
+   * `host:killforward-all`'s verified bare-OKAY action-reply shape (§0.2).
+   * The generic, serial-less `host:killforward:tcp:19999` FAIL case (§0.2)
+   * confirms the FAIL side of this family behaves like every other host:
+   * FAIL (empty reason, caught by `readStatus()`); the per-serial SUCCESS
+   * shape itself was not independently exercised against a real device,
+   * same caveat as `forward` above.
+   */
+  async killForward(serial: string, local: string): Promise<void> {
+    await this.withSocket(async (socket) => {
+      socket.send(`host-serial:${serial}:killforward:${local}`)
+      await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })
     })
   }
 

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
+import type { AdbClient } from '@enkaku/adb'
 import {
   DEFAULT_AGENT_STATUS,
   DevicePreparationSchema,
@@ -68,6 +69,14 @@ export interface AgentProvisionerDeps {
    * (F12), never a second concurrency mechanism.
    */
   hostAdb: (args: string[], opts?: { lane?: 'default' | 'install'; serial?: string }) => Promise<string>
+  /**
+   * The direct-socket forward/list-forward/killForward trio (plan 119 §4.1, §4.2) — threaded
+   * straight through to `createGuestAgentLauncher`'s own `adb` dep, replacing the `hostAdb`-spawned
+   * `adb.exe` calls `forward()`/`removeForward()` used to make on every `hello()` reconnect. See
+   * `GuestAgentLauncherDeps['adb']`'s doc comment for the inference caveat on two of the three wire
+   * shapes.
+   */
+  adb: Pick<AdbClient, 'forward' | 'listForward' | 'killForward'>
   apkPath: () => Promise<string>
   /**
    * The manifest's on-device expectation for the CURRENT pinned build (plan
@@ -169,6 +178,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         serial: row.serial,
         exec: (cmd) => deps.exec(row.serial, cmd),
         hostAdb: deps.hostAdb,
+        adb: deps.adb,
         apkPath: deps.apkPath,
         expectedArtifact: opts.expectedArtifact,
         onMismatch: opts.onMismatch,

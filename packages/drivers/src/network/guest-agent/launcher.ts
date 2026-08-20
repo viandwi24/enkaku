@@ -1,4 +1,4 @@
-import { shellQuote } from '@enkaku/adb'
+import { shellQuote, type AdbClient } from '@enkaku/adb'
 // `GUEST_AGENT_SOCKET` now lives in `@enkaku/protocol` (plan 44 §4.2) —
 // re-exported here so callers of this launcher don't need a second import
 // for the one constant they need alongside it.
@@ -118,6 +118,21 @@ export interface GuestAgentLauncherDeps {
    * fleet-wide admission wave must queue, not saturate one USB tree.
    */
   hostAdb: (args: string[], opts?: { lane?: 'default' | 'install'; serial?: string }) => Promise<string>
+  /**
+   * The forward/list-forward/killForward trio (plan 119 §4.1, §4.2), talking to the adb server
+   * directly over its `host:`-protocol socket instead of spawning `adb.exe` — what `forward()`/
+   * `removeForward()` below use now, replacing the `hostAdb(['forward', ...])` CLI path they used
+   * before this plan. `client.ts`'s own doc comments record that the ADD (`forward`) and REMOVE
+   * (`killForward`) success shapes were inferred by analogy, not verified against a real device (no
+   * device was attached when they were built) — this launcher does not re-derive that judgment, it
+   * only consumes the three methods.
+   *
+   * A caller may not have a live `AdbClient` yet at the point this launcher is constructed (the core
+   * builds its `AdbClient` well after `hello()`'s own dependency graph is wired, same reason
+   * `hostAdb` above is a bound function rather than an object) — a lazy, throwing wrapper satisfying
+   * this same `Pick` is expected there, not a null check inside this file.
+   */
+  adb: Pick<AdbClient, 'forward' | 'listForward' | 'killForward'>
   /** APK path from the Toolchain Manager (or `ENKAKU_GUEST_AGENT_PATH`, plan 44 §7). */
   apkPath: () => Promise<string>
   /**
@@ -431,29 +446,29 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
     },
 
     async forward(localPort) {
-      await deps.hostAdb(['-s', deps.serial, 'forward', `tcp:${localPort}`, `localabstract:${GUEST_AGENT_SOCKET}`])
+      await deps.adb.forward(deps.serial, `tcp:${localPort}`, `localabstract:${GUEST_AGENT_SOCKET}`)
 
       // A host port belongs to one device. Every device's guest agent
       // listens on the same socket name, so a host port that another
       // device already holds gets silently rebound and this driver would
-      // talk to the OTHER phone. Copied verbatim (adapted to this socket)
-      // from packages/drivers/src/inspector/ui-server/launcher.ts:57-71,
-      // per plan 44 §4.4.
-      const list = await deps.hostAdb(['forward', '--list'])
-      const owner = list
-        .split('\n')
-        .map((line) => line.trim().split(/\s+/))
-        .find(([, local]) => local === `tcp:${localPort}`)
-      if (!owner || owner[0] !== deps.serial) {
+      // talk to the OTHER phone. Same check as before plan 119 (originally
+      // copied verbatim, adapted to this socket, from
+      // packages/drivers/src/inspector/ui-server/launcher.ts:57-71, per
+      // plan 44 §4.4) — only the mechanism underneath changed, from parsing
+      // `adb forward --list`'s CLI text to reading `listForward()`'s
+      // structured result.
+      const list = await deps.adb.listForward()
+      const owner = list.find((f) => f.local === `tcp:${localPort}`)
+      if (!owner || owner.serial !== deps.serial) {
         throw new Error(
-          `tcp:${localPort} is bound to ${owner?.[0] ?? 'nothing'}, not to ${deps.serial} — refusing to drive another device's guest agent`,
+          `tcp:${localPort} is bound to ${owner?.serial ?? 'nothing'}, not to ${deps.serial} — refusing to drive another device's guest agent`,
         )
       }
       deps.onLog?.('debug', `forward tcp:${localPort} → device localabstract:${GUEST_AGENT_SOCKET}`)
     },
 
     async removeForward(localPort) {
-      await deps.hostAdb(['-s', deps.serial, 'forward', '--remove', `tcp:${localPort}`]).catch(() => undefined)
+      await deps.adb.killForward(deps.serial, `tcp:${localPort}`).catch(() => undefined)
     },
 
     async stop() {

@@ -37,13 +37,17 @@ function pmListOutput(opts: { app?: boolean; test?: boolean } = {}): string {
 }
 
 /**
- * A fake `hostAdb` good enough to drive `start()`/`stop()`: `forward` always
- * succeeds, and `forward --list` reports the port as owned by the launcher's
- * own serial — matching the real device behaviour once `adb forward` has run.
- * `exec`'s `dumpsys package` reply defaults to "installed, versionCode
- * 2003003" (the plan's own real-farm evidence) and its `pm list packages`
- * reply to "both APKs present" — tests that care about either verification
- * outcome override them via `dumpsysReply`/`pmListReply`.
+ * A fake `hostAdb`/`forward`/`listForward`/`killForward` good enough to
+ * drive `start()`/`stop()`: `forward` always succeeds, and `listForward`
+ * reports the port as owned by the launcher's own serial — matching the
+ * real device behaviour once a forward has been added (plan 119 §4.1's
+ * `AdbClient.forward`/`listForward`/`killForward`, replacing the old
+ * `hostAdb(['forward', ...])` CLI-spawn trio for JUST the forward
+ * lifecycle — `hostAdb` itself is still exercised below for install/
+ * uninstall). `exec`'s `dumpsys package` reply defaults to "installed,
+ * versionCode 2003003" (the plan's own real-farm evidence) and its `pm
+ * list packages` reply to "both APKs present" — tests that care about
+ * either verification outcome override them via `dumpsysReply`/`pmListReply`.
  */
 function fakeDeps(
   overrides: Partial<UiServerLauncherDeps> = {},
@@ -52,12 +56,16 @@ function fakeDeps(
   deps: UiServerLauncherDeps
   execCalls: string[]
   hostAdbCalls: string[][]
+  forwardCalls: Array<{ serial: string; local: string; remote: string }>
+  killForwardCalls: Array<{ serial: string; local: string }>
   streamCalls: Array<{ cmd: string; onEnd: (reason: AdbStreamEndReason, err?: unknown) => void }>
   logs: Array<{ level: string; msg: string }>
   mismatches: UiServerArtifactMismatch[]
 } {
   const execCalls: string[] = []
   const hostAdbCalls: string[][] = []
+  const forwardCalls: Array<{ serial: string; local: string; remote: string }> = []
+  const killForwardCalls: Array<{ serial: string; local: string }> = []
   const streamCalls: Array<{ cmd: string; onEnd: (reason: AdbStreamEndReason, err?: unknown) => void }> = []
   const logs: Array<{ level: string; msg: string }> = []
   const mismatches: UiServerArtifactMismatch[] = []
@@ -73,8 +81,14 @@ function fakeDeps(
     },
     hostAdb: async (args) => {
       hostAdbCalls.push(args)
-      if (args[0] === 'forward' && args[1] === '--list') return `${serial} tcp:9123 tcp:${UI_SERVER_DEVICE_PORT}\n`
       return ''
+    },
+    forward: async (fwdSerial, local, remote) => {
+      forwardCalls.push({ serial: fwdSerial, local, remote })
+    },
+    listForward: async () => [{ serial, local: 'tcp:9123', remote: `tcp:${UI_SERVER_DEVICE_PORT}` }],
+    killForward: async (fwdSerial, local) => {
+      killForwardCalls.push({ serial: fwdSerial, local })
     },
     apkPaths: async () => ({ app: '/tools/ui-server.apk', test: '/tools/ui-server-test.apk' }),
     execStream: async (cmd, opts) => {
@@ -92,7 +106,7 @@ function fakeDeps(
     onMismatch: (info) => mismatches.push(info),
     ...overrides,
   }
-  return { deps, execCalls, hostAdbCalls, streamCalls, logs, mismatches }
+  return { deps, execCalls, hostAdbCalls, forwardCalls, killForwardCalls, streamCalls, logs, mismatches }
 }
 
 describe('createUiServerLauncher (plan 34 §3.1, §3.2, §4.1)', () => {
@@ -129,6 +143,19 @@ describe('createUiServerLauncher (plan 34 §3.1, §3.2, §4.1)', () => {
     expect(streamCalls).toHaveLength(1)
     expect(execCalls).toContain(`am force-stop ${UI_SERVER_PACKAGE}`)
     expect(execCalls).toContain(`am force-stop ${UI_SERVER_TEST_PACKAGE}`)
+  })
+
+  test('start()/stop() drive the forward lifecycle through the smartsocket trio, never through hostAdb (plan 119 §4.2, §6.3)', async () => {
+    const { deps, hostAdbCalls, forwardCalls, killForwardCalls } = fakeDeps()
+    const launcher = createUiServerLauncher(deps)
+    await launcher.start(9123)
+    await launcher.stop(9123)
+
+    expect(forwardCalls).toEqual([{ serial: 'serial-1', local: 'tcp:9123', remote: `tcp:${UI_SERVER_DEVICE_PORT}` }])
+    expect(killForwardCalls).toEqual([{ serial: 'serial-1', local: 'tcp:9123' }])
+    // `hostAdb` is only ever used for install/uninstall (plan 119 §2) — this
+    // device is already correctly installed, so nothing calls it at all.
+    expect(hostAdbCalls).toHaveLength(0)
   })
 
   test('stop() before any start() is a no-op on the stream handle (nothing to tear down)', async () => {
@@ -168,11 +195,11 @@ describe('createUiServerLauncher (plan 34 §3.1, §3.2, §4.1)', () => {
         if (cmd.startsWith('dumpsys package')) return dumpsysOutput()
         return ''
       },
-      hostAdb: async (args) => {
-        // Reports a DIFFERENT serial as the owner — the race this guards against.
-        if (args[0] === 'forward' && args[1] === '--list') return `some-other-serial tcp:9123 tcp:${UI_SERVER_DEVICE_PORT}\n`
-        return ''
-      },
+      hostAdb: async () => '',
+      forward: async () => {},
+      // Reports a DIFFERENT serial as the owner — the race this guards against.
+      listForward: async () => [{ serial: 'some-other-serial', local: 'tcp:9123', remote: `tcp:${UI_SERVER_DEVICE_PORT}` }],
+      killForward: async () => {},
       apkPaths: async () => ({ app: '/tools/ui-server.apk', test: '/tools/ui-server-test.apk' }),
       execStream: async () => ({
         stop: async () => {

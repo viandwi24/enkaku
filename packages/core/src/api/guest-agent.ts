@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { AdbClient } from '@enkaku/adb'
 import type { AgentStatus, ShellResult, TransportExecOptions } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
@@ -178,8 +179,19 @@ export async function resolveGuestAgentApkPath(
 
 export interface GuestAgentRoutesDeps {
   db: Db
-  /** CLI-level adb (install/forward/uninstall) — the same helper the session/inspector wiring uses. */
+  /**
+   * CLI-level adb (install/uninstall) — the same helper the session/inspector wiring uses.
+   * `forward`/`removeForward` no longer ride this (plan 119 §4.2) — see `adb` below.
+   */
   hostAdb: (args: string[]) => Promise<string>
+  /**
+   * The direct-socket forward/list-forward/killForward trio (plan 119 §4.1, §4.2) — threaded
+   * straight through to `createGuestAgentLauncher`'s own `adb` dep, so `hello()`'s reconnect path
+   * (via `agentProvisioner`'s launcher) and this file's own launcher never spawn `adb.exe` for that
+   * trio. See `GuestAgentLauncherDeps['adb']`'s doc comment for the inference caveat on two of the
+   * three wire shapes.
+   */
+  adb: Pick<AdbClient, 'forward' | 'listForward' | 'killForward'>
   /**
    * Per-device shell exec, through the adb queue (the same shape `Transport.exec` uses).
    *
@@ -317,6 +329,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         serial: row.serial,
         exec: (cmd) => deps.exec(row.serial, cmd),
         hostAdb: deps.hostAdb,
+        adb: deps.adb,
         apkPath: deps.apkPath,
         onLog: (level, msg) => deps.log[level](msg),
       }))

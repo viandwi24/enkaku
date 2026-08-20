@@ -159,6 +159,20 @@ function fakePorts() {
   }
 }
 
+/**
+ * The forward/list-forward/killForward trio (plan 119 §4.1, §4.2) — this file's tests never drive
+ * the real `createGuestAgentLauncher`'s network calls directly (they go through `fakeLauncher`
+ * above, or the real one against a fake `exec`), so an empty-but-typed stub is enough to satisfy
+ * `GuestAgentRoutesDeps['adb']`.
+ */
+function fakeAdbForward(): GuestAgentRoutesDeps['adb'] {
+  return {
+    forward: async () => undefined,
+    listForward: async () => [],
+    killForward: async () => undefined,
+  }
+}
+
 /** A `Logger` that records every `warn` call's message instead of writing to the console — plan 90 §3.7 rule 2's breaker tests assert a warning fired exactly once, which a real logger's console output cannot be asserted against. */
 function fakeLog(): { log: Logger; warns: string[] } {
   const warns: string[] = []
@@ -247,6 +261,7 @@ function makeHarness(opts: {
   const deps: GuestAgentRoutesDeps = {
     db,
     hostAdb: async () => '',
+    adb: fakeAdbForward(),
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     apkPath: async () => '/fake/guest-agent.apk',
     ports,
@@ -2192,6 +2207,7 @@ describe('the boot-time inline-credential migration (plan 52 §5.1) — nothing 
     const deps: GuestAgentRoutesDeps = {
       db,
       hostAdb: async () => '',
+      adb: fakeAdbForward(),
       exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
       apkPath: async () => '/fake/guest-agent.apk',
       ports: fakePorts(),

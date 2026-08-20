@@ -95,6 +95,20 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
         execStream: () => {
           throw new Error('ui-server preparation component does not start the instrumentation')
         },
+        // Same reasoning as `execStream` above (plan 119 §4.1, §4.2):
+        // `ensureInstalled()` never calls `assertForward`/`stop`, which are
+        // the only callers of this trio, so these throw as proof they are
+        // never reached from a preparation pass rather than being wired to
+        // a real `AdbClient` that would never be used.
+        forward: () => {
+          throw new Error('ui-server preparation component does not forward a port')
+        },
+        listForward: () => {
+          throw new Error('ui-server preparation component does not forward a port')
+        },
+        killForward: () => {
+          throw new Error('ui-server preparation component does not forward a port')
+        },
         onLog: (level, msg) => deps.log[level](`preparation(ui-server): ${msg}`),
       })
 

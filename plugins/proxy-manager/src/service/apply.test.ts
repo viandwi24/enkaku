@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import net from 'node:net'
 import { z } from 'zod'
 import { applyAssignment, type ApplyHost } from './apply'
+import { createSupervisor, type SupervisorHost } from './supervisor'
 import { ASSIGNMENT_KEY, DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, PROXY_PROBLEM_CODES, proxyKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
 
 /**
@@ -201,5 +203,201 @@ describe('capacity — refuses only once the limit would genuinely be exceeded',
 describe('E_PROXY_CAPACITY_FULL is registered in the shared closed list this file is the producer for', () => {
   test('the code this file raises is the one shared.ts already reserves for it', () => {
     expect(PROXY_PROBLEM_CODES).toContain('E_PROXY_CAPACITY_FULL')
+  })
+})
+
+/**
+ * Plan 118 step 118.2 — the port re-apply gap (§0.2 item 3, §4.2).
+ *
+ * The hypothesis, confirmed here with a REAL supervisor and a REAL bridge on
+ * loopback rather than a mock: a record's `listen.port` is edited (the same
+ * write path Studio's `PUT …/data/entry` uses — a plain overwrite of the
+ * stored KV value, nothing more) while its bridge is `Running`, and Apply is
+ * pressed again WITHOUT an intervening Stop/Start/Restart. `applyAssignment`
+ * reads `record.listen.port` straight off storage every time it runs — it has
+ * no notion of the supervisor at all in `ApplyHost`'s original shape — so it
+ * unconditionally names the NEW port to `device.network.set`, while the
+ * bridge itself is still bound to the OLD one, because nothing in this
+ * pack's own write path or read path ever told the running listener to move.
+ * `route-service.ts`/`reverse-registry.ts` on the Core side are not at fault:
+ * `device.network.set` is asked to point the device at exactly the port this
+ * plugin told it to, correctly. The gap is entirely on this side of the
+ * boundary — the plugin does not know its own bridge's live port when it
+ * builds that request.
+ *
+ * `ApplyHost.bridgePort` is the fix: `applyAssignment` now refuses the HTTP
+ * route when it does not match what the supervisor reports listening for
+ * this record.
+ */
+describe('plan 118 step 118.2 — the port re-apply gap', () => {
+  async function freePort(): Promise<number> {
+    const server = net.createServer()
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address()
+        resolve(typeof address === 'object' && address !== null ? address.port : 0)
+      })
+    })
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    return port
+  }
+
+  /** Whether something answers a bare TCP connect on `port` — used to prove which port is actually alive, independent of anything this pack reports about itself. */
+  function isListening(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const sock = net.connect(port, '127.0.0.1')
+      sock.once('connect', () => {
+        sock.destroy()
+        resolve(true)
+      })
+      sock.once('error', () => resolve(false))
+    })
+  }
+
+  test('a record edited to a new port, without restarting the bridge, is refused rather than sent to device.network.set', async () => {
+    const proxyId = 'office-uk'
+    const portA = await freePort()
+    const portB = await freePort()
+
+    // The KV namespace both halves — the real supervisor and `applyAssignment`
+    // — read from, exactly as they do in the real plugin (one `kv_entries`
+    // table, plan 108). No fake abstraction of "the record": editing this map
+    // IS the write `PUT …/data/entry` performs.
+    const entries = new Map<string, unknown>()
+    const baseRecord = record({ listen: { proto: 'http', bindHost: '127.0.0.1', port: portA }, upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress: '', resolveThroughEgress: true }, enabled: true })
+    entries.set(proxyKeyFor(proxyId), writeProxyRecord(baseRecord))
+
+    const supervisorHost: SupervisorHost = {
+      storage: {
+        global: {
+          getRaw: async (key) => entries.get(key) ?? null,
+          list: async (opts) => ({
+            items: [...entries.entries()].filter(([key]) => (opts?.prefix ? key.startsWith(opts.prefix) : true)).map(([key, value]) => ({ key, value })),
+            nextCursor: null,
+          }),
+        },
+      },
+      log: { debug() {}, info() {}, warn() {}, error() {} },
+    }
+    const supervisor = createSupervisor(supervisorHost, { dialTimeoutMs: 2_000, idleMs: 5_000 })
+
+    try {
+      await supervisor.refresh()
+      const started = await supervisor.start(proxyId)
+      expect(started.state).toBe('running')
+      expect(started.port).toBe(portA)
+      expect(await isListening(portA)).toBe(true)
+
+      // The edit — the SAME write `PUT …/data/entry` performs, and NOTHING
+      // else: no `supervisor.refresh()`, no stop, no start, no restart. This
+      // is the exact operator sequence the owner reported: edit the port,
+      // then Apply again, having forgotten (or not known) to restart first.
+      entries.set(proxyKeyFor(proxyId), writeProxyRecord({ ...baseRecord, listen: { ...baseRecord.listen, port: portB } }))
+
+      // The bridge itself has not moved: still `running`, still bound to A.
+      expect(supervisor.runtimeOf(proxyId)?.state).toBe('running')
+      expect(supervisor.runtimeOf(proxyId)?.port).toBe(portA)
+      expect(await isListening(portA)).toBe(true)
+      expect(await isListening(portB)).toBe(false)
+
+      const networkSetCalls: unknown[] = []
+      const applyHost: ApplyHost = {
+        storage: {
+          global: { getRaw: async (key) => entries.get(key) ?? null },
+          forDevice: () => ({ getRaw: async (key) => (key === ASSIGNMENT_KEY ? { proxy: proxyKeyFor(proxyId) } : null) }),
+        },
+        farm: {
+          call: async <T>(id: string, input: unknown, schema: z.ZodType<T>): Promise<T> => {
+            if (id === 'device.list') return schema.parse({ items: [{ id: 'dev-a', stableId: 'stable-a', agent: 'ready', label: 'Phone A' }] })
+            if (id === 'device.network.set') {
+              networkSetCalls.push(input)
+              return schema.parse({ engine: 'adb-reverse-proxy', enabled: true, health: 'ok', setBy: { kind: 'plugin', id: 'proxy-manager', at: 0 } })
+            }
+            throw new Error(`unexpected capability call: ${id}`)
+          },
+        },
+        log: { info: () => {}, warn: () => {} },
+        // The fix: the record's own live listener port, read from the
+        // supervisor's runtime state — exactly what a real `setup(ctx)` wires
+        // in `index.ts`.
+        bridgePort: (id) => supervisor.runtimeOf(id)?.port ?? null,
+      }
+
+      const outcome = await applyAssignment(applyHost, { stableId: 'stable-a' })
+
+      // The guard: refused by name, naming both ports, and nothing was ever
+      // asked of the farm — a dead route was never sent.
+      expect(outcome).toMatchObject({ ok: false, code: 'E_PROXY_PORT_MISMATCH', kind: 'precondition' })
+      if (!outcome.ok) {
+        expect(outcome.message).toContain(String(portA))
+        expect(outcome.message).toContain(String(portB))
+      }
+      expect(networkSetCalls.length).toBe(0)
+    } finally {
+      await supervisor.destroyAll()
+    }
+  })
+
+  test('a record whose live port matches what would be applied is not refused by the guard', async () => {
+    const proxyId = 'office-uk'
+    const port = await freePort()
+    const entries = new Map<string, unknown>()
+    const baseRecord = record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress: '', resolveThroughEgress: true }, enabled: true })
+    entries.set(proxyKeyFor(proxyId), writeProxyRecord(baseRecord))
+
+    const supervisorHost: SupervisorHost = {
+      storage: {
+        global: {
+          getRaw: async (key) => entries.get(key) ?? null,
+          list: async (opts) => ({
+            items: [...entries.entries()].filter(([key]) => (opts?.prefix ? key.startsWith(opts.prefix) : true)).map(([key, value]) => ({ key, value })),
+            nextCursor: null,
+          }),
+        },
+      },
+      log: { debug() {}, info() {}, warn() {}, error() {} },
+    }
+    const supervisor = createSupervisor(supervisorHost, { dialTimeoutMs: 2_000, idleMs: 5_000 })
+
+    try {
+      await supervisor.refresh()
+      await supervisor.start(proxyId)
+
+      const networkSetCalls: unknown[] = []
+      const applyHost: ApplyHost = {
+        storage: {
+          global: { getRaw: async (key) => entries.get(key) ?? null },
+          forDevice: () => ({ getRaw: async (key) => (key === ASSIGNMENT_KEY ? { proxy: proxyKeyFor(proxyId) } : null) }),
+        },
+        farm: {
+          call: async <T>(id: string, input: unknown, schema: z.ZodType<T>): Promise<T> => {
+            if (id === 'device.list') return schema.parse({ items: [{ id: 'dev-a', stableId: 'stable-a', agent: 'ready', label: 'Phone A' }] })
+            if (id === 'device.network.set') {
+              networkSetCalls.push(input)
+              return schema.parse({ engine: 'adb-reverse-proxy', enabled: true, health: 'ok', setBy: { kind: 'plugin', id: 'proxy-manager', at: 0 } })
+            }
+            throw new Error(`unexpected capability call: ${id}`)
+          },
+        },
+        log: { info: () => {}, warn: () => {} },
+        bridgePort: (id) => supervisor.runtimeOf(id)?.port ?? null,
+      }
+
+      const outcome = await applyAssignment(applyHost, { stableId: 'stable-a' })
+      expect(outcome.ok).toBe(true)
+      expect(networkSetCalls.length).toBe(1)
+    } finally {
+      await supervisor.destroyAll()
+    }
+  })
+
+  test('a host that does not supply `bridgePort` at all is unaffected — the same "nobody looked" discipline `hasPassword`/`hasListenerAuth` already use elsewhere in this pack', async () => {
+    const h = harness([DEVICE_A], 'office-uk', record({ listen: { proto: 'http', bindHost: '127.0.0.1', port: 9910 } }), { [DEVICE_A.id]: proxyKeyFor('office-uk') })
+    // `harness()` above builds an `ApplyHost` with no `bridgePort` at all —
+    // every pre-118.2 test in this file exercises exactly that shape, and
+    // this one is the explicit assertion that the guard degrades to a no-op
+    // rather than refusing when nobody supplied a way to look.
+    const outcome = await applyAssignment(h.host, { stableId: DEVICE_A.stableId })
+    expect(outcome.ok).toBe(true)
   })
 })

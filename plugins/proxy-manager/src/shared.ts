@@ -867,6 +867,16 @@ export const PROXY_PROBLEM_CODES = [
   // comment it replaces gave — a code with no producer is a promise the row
   // cannot keep — and `apply.ts`'s capacity guard is now that producer.
   'E_PROXY_CAPACITY_FULL',
+  // Plan 118 §4.2, step 118.2. The confirmed gap: a record's `listen.port` is
+  // edited while its bridge is `Running`, and a running bridge does not
+  // restart itself to pick up the new port — only Stop→Start (or Restart)
+  // does. `applyAssignment`'s HTTP-mode guard is this code's producer,
+  // comparing `record.listen.port` against the supervisor's own live
+  // listener port (`ApplyHost.bridgePort`) before naming a port to
+  // `device.network.set`, the same "producer lives in `apply.ts`, not in the
+  // three pure functions" shape `E_PROXY_CAPACITY_FULL` above already
+  // established — see that entry's own comment.
+  'E_PROXY_PORT_MISMATCH',
 ] as const
 export type ProxyProblemCode = (typeof PROXY_PROBLEM_CODES)[number]
 

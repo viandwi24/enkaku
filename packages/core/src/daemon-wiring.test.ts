@@ -9,6 +9,7 @@ import { createBlobStore } from './agent/blob/store'
 import { createBatchDispatchDeps, type BatchDispatchHostDeps } from './api/batches'
 import { createPluginRoutes } from './api/plugins'
 import type { AuditLogger } from './auth/audit'
+import { createAdbServerVersionAccessor } from './daemon'
 import { openDb, runMigrations, type Db } from './db'
 import { devices } from './db/schema'
 import { createDeviceStateMachine } from './device/state-machine'
@@ -1475,5 +1476,30 @@ describe('daemon.ts — the capability broker (plan 109 §4.3, step 109.3)', () 
     const listen = daemonSource.indexOf('server = Bun.serve({')
     expect(assigned).toBeGreaterThan(-1)
     expect(listen).toBeGreaterThan(assigned)
+  })
+})
+
+/**
+ * Plan 118 §4.1, step 118.1, acceptance criterion 1 (§6) — `GET /api/health`
+ * used to call `adb.version()` on every single request, an uncached TCP
+ * round-trip that measured 3300ms in production logs on a contended Windows
+ * adb port (plan 118 §0.2 item 2). `createAdbServerVersionAccessor` is a
+ * genuine, exported unit — unlike the rest of this file's assertions, which
+ * read `daemon.ts`'s own text because `createDaemon`'s boot sequence has no
+ * seam a test can drive (this file's header comment), this one small piece
+ * was pulled out specifically so a test could drive it directly, with a fake
+ * `adb`, and actually count calls rather than merely assert the wiring text
+ * looks right.
+ */
+describe('daemon.ts — the /api/health adb-version cache (plan 118 §4.1, step 118.1)', () => {
+  test('10 calls within 5 seconds trigger exactly one underlying adb.version() call', async () => {
+    let calls = 0
+    const fakeAdb = { version: async () => { calls++; return '36.0.0' } }
+    const accessor = createAdbServerVersionAccessor(() => fakeAdb, 5_000)
+
+    for (let i = 0; i < 10; i++) {
+      expect(await accessor()).toBe('36.0.0')
+    }
+    expect(calls).toBe(1)
   })
 })

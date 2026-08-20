@@ -101,6 +101,14 @@ function fakeDeps(overrides: Partial<AgentProvisionerDeps> = {}): {
       hostAdbCalls.push({ args, opts })
       return ''
     },
+    // Plan 119 §4.1, §4.2 — every test in this file drives the launcher via `makeLauncher`'s
+    // seam (`fakeMakeLauncher` above), never the real `createGuestAgentLauncher`, so this stub is
+    // never actually called; it exists only to satisfy `AgentProvisionerDeps['adb']`.
+    adb: {
+      forward: async () => undefined,
+      listForward: async () => [],
+      killForward: async () => undefined,
+    },
     apkPath: async () => '/tools/guest-agent.apk',
     expectedArtifact: async () => ({ versionCode: 5 }),
     hello: async () => HELLO_OK,

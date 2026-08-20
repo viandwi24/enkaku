@@ -143,6 +143,28 @@ export interface ApplyHost {
     call<T>(id: string, input: unknown, schema: z.ZodType<T>): Promise<T>
   }
   log: { info(msg: string, fields?: Record<string, unknown>): void; warn(msg: string, fields?: Record<string, unknown>): void }
+  /**
+   * The record's own live listener port, read from the supervisor's runtime
+   * state (`Supervisor.runtimeOf(id)?.port`) — plan 118 step 118.2, the fix
+   * for the confirmed port re-apply gap (see the header comment above, and
+   * `service/apply.test.ts`'s repro).
+   *
+   * `record.listen.port` (the STORED value) is intent; this is OBSERVATION —
+   * the same split `supervisor.ts`'s own header draws between `enabled` and
+   * `runtime.state`. A record's port can be edited while its bridge is
+   * `Running`; a running bridge does not restart itself to pick up a new
+   * port, so the two can disagree, and only this function can say so.
+   *
+   * Optional and three-valued the same way `ProxyRouteContext.hasPassword`
+   * already is: `undefined` means *this `ApplyHost` was built without one* —
+   * every test in this file predating 118.2 supplies no such function, and
+   * must keep behaving exactly as before rather than have a guard refuse
+   * something it cannot actually check. `null` means *looked, and nothing is
+   * currently listening for this record* (stopped, failed, or genuinely
+   * mid-restart) — also a mismatch against any real port `resolved.route`
+   * would name.
+   */
+  bridgePort?: (proxyId: string) => number | null
 }
 
 /**
@@ -217,6 +239,13 @@ const E_APPLY_REFUSED = 'E_PROXY_APPLY_REFUSED'
  * stand-in for a code the shared list did not yet admit to.
  */
 const E_PROXY_CAPACITY_FULL: ProxyProblemCode = 'E_PROXY_CAPACITY_FULL'
+
+/**
+ * Plan 118 §4.2, step 118.2. Registered in `PROXY_PROBLEM_CODES` alongside
+ * `E_PROXY_CAPACITY_FULL`, for the same reason and in the same spelling-guard
+ * role — this file is its only producer.
+ */
+const E_PROXY_PORT_MISMATCH: ProxyProblemCode = 'E_PROXY_PORT_MISMATCH'
 
 /**
  * The saved credential for a record, or `null` when there is none.
@@ -440,6 +469,47 @@ export async function applyAssignment(host: ApplyHost, input: { stableId: string
   const resolved = routeForRecord(record, { id: proxyId, mode, ...(mode === 'vpn' ? { hasPassword: password !== null } : {}) })
   if ('problem' in resolved) {
     return { ok: false, mode, code: resolved.problem.code, kind: resolved.problem.kind, message: resolved.problem.message }
+  }
+
+  /**
+   * Plan 118 §4.2, step 118.2 — the port re-apply guard.
+   *
+   * `record.listen.port` is what `resolved.route.hostPort` names for HTTP
+   * mode (`adb-reverse-proxy`, the only engine this check applies to — a
+   * VENDOR VPN route never touches the bridge at all, and is out of scope
+   * unconditionally). It is INTENT: the stored value, read fresh above, and
+   * correct the instant an operator saves it. What is NOT guaranteed to be
+   * correct is whatever is actually bound on this machine right now — a
+   * `Running` bridge does not restart itself when its own record is edited
+   * (`supervisor.ts`'s own header: "Stop→Start (or Restart) is the whole of
+   * picking up a new port"). Confirmed with a real supervisor and a real
+   * loopback bridge in `service/apply.test.ts`: editing a running record's
+   * port and re-Applying with no restart sent the STALE port straight to
+   * `device.network.set`, which then correctly re-pointed the device at a
+   * port nothing on this host was listening on — Core's own re-apply
+   * behaviour (`route-service.ts`, `reverse-registry.ts`) is not the bug; it
+   * did exactly what it was asked. This is the plugin asking for the wrong
+   * thing.
+   *
+   * `host.bridgePort` is `undefined` when nobody supplied one — every test
+   * predating this step, and the guard is a no-op rather than a refusal it
+   * cannot justify (the same "nobody looked" discipline `hasPassword`/
+   * `hasListenerAuth` already use on `ProxyRouteContext`/`validateProxyRecord`).
+   */
+  if (resolved.route.engine === 'adb-reverse-proxy' && host.bridgePort) {
+    const livePort = host.bridgePort(proxyId)
+    if (livePort !== resolved.route.hostPort) {
+      return {
+        ok: false,
+        mode,
+        code: E_PROXY_PORT_MISMATCH,
+        kind: 'precondition',
+        message:
+          livePort === null
+            ? `This record's bridge is not currently listening, so this apply would route the device to port ${resolved.route.hostPort}, where nothing on this machine answers. Start or restart the bridge, then apply again.`
+            : `This record's bridge is listening on ${livePort}, but this apply would route the device to ${resolved.route.hostPort} — the port was changed after the bridge started, and a running bridge does not pick up a new port on its own. Restart the bridge, then apply again.`,
+      }
+    }
   }
 
   /**

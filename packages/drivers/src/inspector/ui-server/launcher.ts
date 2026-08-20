@@ -53,6 +53,18 @@ export interface UiServerLauncherDeps {
    * commands per device, all at once, across every device (H5).
    */
   hostAdb: (args: string[], opts?: { lane?: 'default' | 'install'; serial?: string }) => Promise<string>
+  /**
+   * `AdbClient.forward`/`listForward`/`killForward` (plan 119 §4.1, §4.2) —
+   * the smartsocket-level trio that replaces the `hostAdb(['forward', ...])`/
+   * `hostAdb(['forward', '--list'])`/`hostAdb(['forward', '--remove', ...])`
+   * process-spawn calls this launcher's `assertForward`/`stop` used before
+   * plan 119, for JUST the forward lifecycle. `hostAdb` above is unchanged
+   * and still owns install/uninstall, which has no `host:`-protocol
+   * equivalent (plan 119 §2).
+   */
+  forward: (serial: string, local: string, remote: string) => Promise<void>
+  listForward: () => Promise<{ serial: string; local: string; remote: string }[]>
+  killForward: (serial: string, local: string) => Promise<void>
   /** APK path from the Toolchain Manager. */
   apkPaths: () => Promise<{ app: string; test: string }>
   /**
@@ -261,21 +273,18 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
    * `start()` would have, not a second, slightly different implementation.
    */
   const assertForward = async (localPort: number): Promise<void> => {
-    await deps.hostAdb(['-s', deps.serial, 'forward', `tcp:${localPort}`, `tcp:${UI_SERVER_DEVICE_PORT}`])
+    await deps.forward(deps.serial, `tcp:${localPort}`, `tcp:${UI_SERVER_DEVICE_PORT}`)
 
     // A host port belongs to one device. Every phone's ui-server listens on
     // the same device port, so a host port that another device already holds
     // gets silently rebound and this inspector would answer with the OTHER
     // phone's screen. Throwing here drops us to the uiautomator-dump
     // fallback, which is slow but at least reads the right device.
-    const list = await deps.hostAdb(['forward', '--list'])
-    const owner = list
-      .split('\n')
-      .map((line) => line.trim().split(/\s+/))
-      .find(([, local]) => local === `tcp:${localPort}`)
-    if (!owner || owner[0] !== deps.serial) {
+    const list = await deps.listForward()
+    const owner = list.find((f) => f.local === `tcp:${localPort}`)
+    if (!owner || owner.serial !== deps.serial) {
       throw new Error(
-        `tcp:${localPort} is bound to ${owner?.[0] ?? 'nothing'}, not to ${deps.serial} — refusing to inspect another device`,
+        `tcp:${localPort} is bound to ${owner?.serial ?? 'nothing'}, not to ${deps.serial} — refusing to inspect another device`,
       )
     }
     deps.onLog?.('debug', `forward tcp:${localPort} → device tcp:${UI_SERVER_DEVICE_PORT}`)
@@ -415,9 +424,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
     },
 
     async stop(localPort) {
-      await deps
-        .hostAdb(['-s', deps.serial, 'forward', '--remove', `tcp:${localPort}`])
-        .catch(() => undefined)
+      await deps.killForward(deps.serial, `tcp:${localPort}`).catch(() => undefined)
       // Tears the stream down first — release order matters (plan 24 §4.2):
       // this both stops the `execStream` from reporting a spurious `onEnd`
       // reason later and best-effort kills the instrumentation's shell PID.

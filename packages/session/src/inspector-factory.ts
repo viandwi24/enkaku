@@ -24,8 +24,19 @@ export interface InspectorFactoryDeps {
   toolchain: ToolchainManager
   ports: PortAllocator
   log: Logger
-  /** adb CLI-level (install/forward) — bukan shell device. */
+  /** adb CLI-level (install) — bukan shell device. */
   hostAdb: (args: string[]) => Promise<string>
+  /**
+   * `AdbClient.forward`/`listForward`/`killForward` (plan 119 §4.1, §4.2),
+   * bound to the host's own client (`daemon.ts`/`hosts.ts`) — the
+   * smartsocket-level trio that replaces the `hostAdb(['forward', ...])`
+   * CLI-spawn calls the ui-server launcher used before plan 119, for JUST
+   * the forward lifecycle. `hostAdb` above still owns install/uninstall,
+   * which has no `host:`-protocol equivalent (plan 119 §2).
+   */
+  forward: (serial: string, local: string, remote: string) => Promise<void>
+  listForward: () => Promise<{ serial: string; local: string; remote: string }[]>
+  killForward: (serial: string, local: string) => Promise<void>
   /**
    * The Plan 24 streaming lane (plan 34 §4.1) — bound to `AdbClient.execStream`
    * by the host (`daemon.ts`). Used ONLY for the ui-server instrumentation,
@@ -77,6 +88,9 @@ export async function createInspectorForSession(
       serial: opts.transport.serial,
       exec: (cmd, execOpts) => opts.transport.exec(cmd, execOpts ?? { profile: 'appLifecycle' }).then((r) => r.stdout),
       hostAdb: deps.hostAdb,
+      forward: deps.forward,
+      listForward: deps.listForward,
+      killForward: deps.killForward,
       apkPaths,
       ...(expected ? { expectedArtifact: { versionCode: expected.versionCode, signatureSha256: expected.signatureSha256 } } : {}),
       onMismatch: (info) => deps.onArtifactMismatch?.(opts.deviceId, info),

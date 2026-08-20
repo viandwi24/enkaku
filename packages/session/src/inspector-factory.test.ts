@@ -56,10 +56,12 @@ describe('createInspectorForSession — plan 41 artifact verification wiring (§
       toolchain: fakeToolchain({ packageName: PKG, versionCode: 2003003 }),
       ports: new PortAllocator({ rangeStart: 27100, rangeEnd: 27110 }),
       log: nullLogger,
-      hostAdb: async (args) => {
-        if (args[0] === 'forward' && args[1] === '--list') return `${transport.serial} tcp:1 tcp:1\n`
-        return ''
-      },
+      hostAdb: async () => '',
+      // Never reached either — ensureInstalled() throws before assertForward()
+      // gets this far (same reasoning as execStream below).
+      forward: async () => {},
+      listForward: async () => [{ serial: transport.serial, local: 'tcp:1', remote: 'tcp:1' }],
+      killForward: async () => {},
       execStream: async (_serial: string, _cmd: string, opts: AdbStreamOptions): Promise<AdbStreamHandle> => {
         // Never reached: ensureInstalled() throws before start() gets this far.
         opts.onEnd('stopped')

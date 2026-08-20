@@ -469,6 +469,207 @@ describe('AdbClient.tcpip — the device service H1 is about (plan 88 §0.2, §5
 })
 
 /**
+ * A fake adb server for the `forward` trio (plan 119 §4.1, step 119.2):
+ * `host-serial:<serial>:forward:<local>;<remote>`, `host:list-forward`, and
+ * `host-serial:<serial>:killforward:<local>`. None of these go through
+ * `host:transport:<serial>` first — the serial is embedded directly in the
+ * request string, per §0.2's own live repro — so this fake server only ever
+ * needs to understand these three request shapes.
+ */
+function fakeForwardServer(handlers: {
+  onForward?: (s: import('bun').Socket, serial: string, local: string, remote: string) => void
+  onListForward?: (s: import('bun').Socket) => void
+  onKillForward?: (s: import('bun').Socket, serial: string, local: string) => void
+}) {
+  return Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      data(s, data) {
+        const text = new TextDecoder().decode(data)
+        const hostSerialMarker = 'host-serial:'
+        const hostSerialIdx = text.indexOf(hostSerialMarker)
+        if (hostSerialIdx !== -1) {
+          const rest = text.slice(hostSerialIdx + hostSerialMarker.length)
+          const colon = rest.indexOf(':')
+          const serial = rest.slice(0, colon)
+          const afterSerial = rest.slice(colon + 1)
+          if (afterSerial.startsWith('forward:')) {
+            const [local, remote] = afterSerial.slice('forward:'.length).split(';')
+            if (local && remote) handlers.onForward?.(s, serial, local, remote)
+            return
+          }
+          if (afterSerial.startsWith('killforward:')) {
+            handlers.onKillForward?.(s, serial, afterSerial.slice('killforward:'.length))
+            return
+          }
+        }
+        if (text.includes('host:list-forward')) {
+          handlers.onListForward?.(s)
+        }
+      },
+      close() {},
+      error() {},
+    },
+  })
+}
+
+/** OKAY + a length-prefixed body — the SAME shape `host:list-forward` uses (verified live, §0.2). */
+function okayBlock(s: import('bun').Socket, body: string): void {
+  const bodyBuf = Buffer.from(body, 'utf8')
+  const lenHex = bodyBuf.length.toString(16).padStart(4, '0')
+  s.write(Buffer.concat([Buffer.from('OKAY'), Buffer.from(lenHex, 'ascii'), bodyBuf]))
+}
+
+describe('AdbClient.forward / listForward / killForward — the forward trio, off the process-spawn path (plan 119)', () => {
+  test('forward resolves as soon as OKAY arrives, with no body read after it — the asymmetric-shape hazard §0.2 measured', async () => {
+    const requested: string[] = []
+    const listener = fakeForwardServer({
+      onForward(s, serial, local, remote) {
+        requested.push(`${serial} ${local} ${remote}`)
+        // Bare OKAY, then the connection ends immediately — no body ever
+        // follows. If `forward()` wrongly called `readBlock()` next, this
+        // would reject instead of resolving cleanly.
+        s.write(Buffer.from('OKAY'))
+        s.end()
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expect(client.forward('ZP2222RMBS', 'tcp:19999', 'localabstract:enkaku-guest-agent')).resolves.toBeUndefined()
+      expect(requested).toEqual(['ZP2222RMBS tcp:19999 localabstract:enkaku-guest-agent'])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('forward rejects E_ADB_FAIL with an empty reason for a bogus device — matching §0.2\'s own live repro', async () => {
+    const listener = fakeForwardServer({
+      onForward(s) {
+        s.write(failBuffer(''))
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(client.forward('no-such-device', 'tcp:19999', 'tcp:20000'), 'E_ADB_FAIL')
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('listForward parses a single active forward line', async () => {
+    const listener = fakeForwardServer({
+      onListForward(s) {
+        okayBlock(s, 'ZP2222RMBS tcp:19999 localabstract:enkaku-guest-agent\n')
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const list = await client.listForward()
+      expect(list).toEqual([{ serial: 'ZP2222RMBS', local: 'tcp:19999', remote: 'localabstract:enkaku-guest-agent' }])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('listForward parses multiple active forward lines', async () => {
+    const listener = fakeForwardServer({
+      onListForward(s) {
+        okayBlock(
+          s,
+          'ZP2222RMBS tcp:19999 localabstract:enkaku-guest-agent\n' + '0123456789ABCDEF tcp:20000 localabstract:enkaku-ui-server\n',
+        )
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      const list = await client.listForward()
+      expect(list).toEqual([
+        { serial: 'ZP2222RMBS', local: 'tcp:19999', remote: 'localabstract:enkaku-guest-agent' },
+        { serial: '0123456789ABCDEF', local: 'tcp:20000', remote: 'localabstract:enkaku-ui-server' },
+      ])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('listForward on no active forwards resolves to an empty array — the exact case §0.2 verified live', async () => {
+    const listener = fakeForwardServer({
+      onListForward(s) {
+        okayBlock(s, '')
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expect(client.listForward()).resolves.toEqual([])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('listForward rejects rather than hangs or silently returns [] when the server sends a bare OKAY with no body — proving it actually expects the length-prefixed block, unlike forward/killForward', async () => {
+    const listener = fakeForwardServer({
+      onListForward(s) {
+        s.write(Buffer.from('OKAY'))
+        s.end() // no length-prefixed block ever follows — a protocol violation for THIS service
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(client.listForward(), 'E_ADB_PROTOCOL')
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('listForward rejects E_ADB_FAIL when the server refuses the query', async () => {
+    const listener = fakeForwardServer({
+      onListForward(s) {
+        s.write(failBuffer(''))
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(client.listForward(), 'E_ADB_FAIL')
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('killForward resolves as soon as OKAY arrives, with no body read after it — same asymmetric shape as forward', async () => {
+    const requested: string[] = []
+    const listener = fakeForwardServer({
+      onKillForward(s, serial, local) {
+        requested.push(`${serial} ${local}`)
+        s.write(Buffer.from('OKAY'))
+        s.end()
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expect(client.killForward('ZP2222RMBS', 'tcp:19999')).resolves.toBeUndefined()
+      expect(requested).toEqual(['ZP2222RMBS tcp:19999'])
+    } finally {
+      listener.stop(true)
+    }
+  })
+
+  test('killForward rejects E_ADB_FAIL with an empty reason for a nonexistent forward — matching §0.2\'s host:killforward:tcp:19999 repro', async () => {
+    const listener = fakeForwardServer({
+      onKillForward(s) {
+        s.write(failBuffer(''))
+      },
+    })
+    try {
+      const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
+      await expectAdbError(client.killForward('ZP2222RMBS', 'tcp:19999'), 'E_ADB_FAIL')
+    } finally {
+      listener.stop(true)
+    }
+  })
+})
+
+/**
  * `execStream` (plan 24 §4.2) — the central rule of the plan: a stream must
  * NEVER go through `PerDeviceQueue`. `pending(serial)` staying 0 for a
  * stream's entire lifetime, while `exec()` on the same serial keeps

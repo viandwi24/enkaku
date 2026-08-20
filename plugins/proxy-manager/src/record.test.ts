@@ -271,8 +271,15 @@ describe('validateProxyRecord — the coded refusals (§4.2)', () => {
      * check BY NAME, with its own reachability proved separately in
      * `service/apply.test.ts` — never silently dropped from the list, and
      * never faked into `seen` here.
+     *
+     * `E_PROXY_PORT_MISMATCH` (plan 118 step 118.2) is the same shape of
+     * exclusion for the same reason: its producer is `applyAssignment`'s
+     * HTTP-mode port guard, which needs `ApplyHost.bridgePort` — the
+     * supervisor's own live listener port — that none of these three pure
+     * functions ever sees either. Reachability proved in `service/apply.test.ts`.
      */
     const CAPACITY_CODE = 'E_PROXY_CAPACITY_FULL'
+    const PORT_MISMATCH_CODE = 'E_PROXY_PORT_MISMATCH'
     const routeProblems = [
       routeForRecord(record({ listen: { proto: 'socks5', bindHost: DEFAULT_BIND_HOST, port: 9902 }, enabled: true })),
       routeForRecord(record({ enabled: false })),
@@ -311,8 +318,8 @@ describe('validateProxyRecord — the coded refusals (§4.2)', () => {
     ].map((p) => p.code)
     for (const code of seen) expect(PROXY_PROBLEM_CODES.map(String)).toContain(code)
     // And the list is not merely a superset nobody maintains: everything in it
-    // except the one named exclusion above is reachable from these calls.
-    const reachableHere = PROXY_PROBLEM_CODES.filter((c) => c !== CAPACITY_CODE)
+    // except the named exclusions above is reachable from these calls.
+    const reachableHere = PROXY_PROBLEM_CODES.filter((c) => c !== CAPACITY_CODE && c !== PORT_MISMATCH_CODE)
     expect([...new Set(seen)].sort()).toEqual([...reachableHere].sort())
   })
 

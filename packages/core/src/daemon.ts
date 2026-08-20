@@ -208,6 +208,43 @@ type WsConnectionData = { nodeId?: string; userId?: string | null; pluginSocket?
 
 export const CORE_VERSION = pkg.version
 
+/**
+ * Plan 118 §4.1 — `GET /api/health` used to call `adb.version()` on every
+ * single request: a real TCP round-trip to the adb server, unconditionally.
+ * Normally sub-50ms, but a genuine per-request cost with no reason to pay it
+ * more than once every few seconds — and, on a Windows host where something
+ * else is also contending for the shared adb-server port, this measured
+ * 3300ms in production logs (plan 118 §0.2 item 2). A short TTL cache fixes
+ * it: 5s is generous relative to how often a health poller realistically
+ * calls this, and short enough that a genuine adb-server restart is still
+ * reflected within one poll cycle either way.
+ *
+ * Pulled out as its own, exported function — rather than left inline in the
+ * `createApp({...})` object literal below (plan 118 §4.1's own illustration
+ * shows it inline) — purely so it has a seam a unit test can drive with a
+ * fake `adb`: `createDaemon`'s boot sequence opens real adb, real sockets,
+ * real timers and has no exported entry point a test can drive in isolation
+ * (see `daemon-wiring.test.ts`'s header comment). `getAdb` is a live
+ * accessor, not a bound value, because `adb` itself is reassigned during
+ * boot (null while provisioning, set once ready) — the cache must always
+ * read whatever `adb` currently is, not whatever it was at construction
+ * time.
+ */
+export function createAdbServerVersionAccessor(
+  getAdb: () => Pick<AdbClient, 'version'> | null,
+  ttlMs = 5_000,
+): () => Promise<string | null> {
+  let cached: { value: string | null; at: number } | null = null
+  return async () => {
+    const client = getAdb()
+    if (!client) return null
+    if (cached && Date.now() - cached.at < ttlMs) return cached.value
+    const value = await client.version().catch(() => null)
+    cached = { value, at: Date.now() }
+    return value
+  }
+}
+
 export interface Daemon {
   start(): Promise<void>
   stop(): Promise<void>
@@ -1977,9 +2014,34 @@ let blobGc: BlobGc | null = null
           ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         })
       }
+      // The forward/list-forward/killForward trio, off the `adb.exe`
+      // process-spawn path (plan 119 §4.1, §4.2): `guestAgentExec` above
+      // already establishes the pattern this reuses — built and wired here,
+      // before `adb` (below, inside the try-block that ends with "adb
+      // subsystem ready") is ever assigned, since both `guestAgent` and
+      // `agentProvisioner` are constructed well before that point. Each
+      // method reads the outer `adb` variable fresh on every call rather
+      // than capturing it now, so a `hello()` reconnect that lands before
+      // adb is up gets a correctly-coded `E_ADB_UNAVAILABLE` refusal
+      // instead of a call against nothing.
+      const guestAgentAdbForward: Pick<AdbClient, 'forward' | 'listForward' | 'killForward'> = {
+        forward: (serial, local, remote) => {
+          if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+          return adb.forward(serial, local, remote)
+        },
+        listForward: () => {
+          if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+          return adb.listForward()
+        },
+        killForward: (serial, local) => {
+          if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
+          return adb.killForward(serial, local)
+        },
+      }
       const guestAgent = createGuestAgentRoutes({
         db,
         hostAdb: hostAdbHandle.run,
+        adb: guestAgentAdbForward,
         exec: guestAgentExec,
         apkPath: () =>
           resolveGuestAgentApkPath({
@@ -2037,6 +2099,7 @@ let blobGc: BlobGc | null = null
         db,
         exec: guestAgentExec,
         hostAdb: hostAdbHandle.run,
+        adb: guestAgentAdbForward,
         apkPath: () =>
           resolveGuestAgentApkPath({
             toolchain,
@@ -2364,10 +2427,9 @@ let blobGc: BlobGc | null = null
         log: log.child('http'),
         audit,
         version: CORE_VERSION,
-        adbServerVersion: async () => {
-          if (!adb) return null
-          return adb.version().catch(() => null)
-        },
+        // Plan 118 §4.1 — a 5s TTL cache; see createAdbServerVersionAccessor's
+        // own doc comment above for why the round-trip needed caching at all.
+        adbServerVersion: createAdbServerVersionAccessor(() => adb),
         adbState: () => adbState,
         toolchain,
         // The "Restart adb server" button's deps (plan 88 §3.10, §4.8, §5
@@ -3592,6 +3654,13 @@ let blobGc: BlobGc | null = null
                 ports,
                 log: inspectorLog,
                 hostAdb: hostAdbHandle.run,
+                // The forward/listForward/killForward trio (plan 119 §4.1,
+                // §4.2), bound to this adb client — off the `adb.exe`
+                // process-spawn path `hostAdbHandle.run(['forward', ...])`
+                // used before this plan.
+                forward: (serial, local, remote) => adbClient.forward(serial, local, remote),
+                listForward: () => adbClient.listForward(),
+                killForward: (serial, local) => adbClient.killForward(serial, local),
                 // The Plan 24 streaming lane, bound to this adb client (plan
                 // 34 §4.1) — the ui-server instrumentation's `am instrument
                 // -w` runs here instead of through the per-device queue.

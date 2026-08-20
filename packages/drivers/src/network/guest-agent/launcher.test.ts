@@ -22,12 +22,14 @@ function dumpsysOutput(opts: { installed?: boolean; versionCode?: number } = {})
 }
 
 /**
- * A fake `exec`/`hostAdb` good enough to drive the happy path: the package
- * is already installed and matches (`dumpsysReply`'s default), `cmd package
- * path` (still used by `isInstalled()`, unchanged by plan 90) reports
- * installed, `appops get` echoes back `allow`, and `forward --list` reports
- * the port as owned by the launcher's own serial — matching real device
- * behaviour once `adb forward` has run.
+ * A fake `exec`/`hostAdb`/`adb` good enough to drive the happy path: the
+ * package is already installed and matches (`dumpsysReply`'s default), `cmd
+ * package path` (still used by `isInstalled()`, unchanged by plan 90)
+ * reports installed, `appops get` echoes back `allow`, and `adb.listForward`
+ * reports the port as owned by the launcher's own serial — matching real
+ * device behaviour once `adb.forward` has run (plan 119 §4.1, §4.2: the
+ * direct-socket trio replacing `hostAdb`'s `forward`/`forward --list`/
+ * `forward --remove` CLI spawns).
  */
 function fakeDeps(
   overrides: Partial<GuestAgentLauncherDeps> = {},
@@ -36,11 +38,15 @@ function fakeDeps(
   deps: GuestAgentLauncherDeps
   execCalls: string[]
   hostAdbCalls: Array<{ args: string[]; opts?: { lane?: 'default' | 'install'; serial?: string } }>
+  adbForwardCalls: Array<{ serial: string; local: string; remote: string }>
+  adbKillForwardCalls: Array<{ serial: string; local: string }>
   logs: Array<{ level: string; msg: string }>
   mismatches: GuestAgentArtifactMismatch[]
 } {
   const execCalls: string[] = []
   const hostAdbCalls: Array<{ args: string[]; opts?: { lane?: 'default' | 'install'; serial?: string } }> = []
+  const adbForwardCalls: Array<{ serial: string; local: string; remote: string }> = []
+  const adbKillForwardCalls: Array<{ serial: string; local: string }> = []
   const logs: Array<{ level: string; msg: string }> = []
   const mismatches: GuestAgentArtifactMismatch[] = []
   const serial = 'serial-1'
@@ -58,17 +64,23 @@ function fakeDeps(
     },
     hostAdb: async (args, hostAdbOpts) => {
       hostAdbCalls.push({ args, opts: hostAdbOpts })
-      if (args[0] === 'forward' && args[1] === '--list') {
-        return `${serial} tcp:9200 localabstract:${GUEST_AGENT_SOCKET}\n`
-      }
       return ''
+    },
+    adb: {
+      forward: async (s, local, remote) => {
+        adbForwardCalls.push({ serial: s, local, remote })
+      },
+      listForward: async () => [{ serial, local: 'tcp:9200', remote: `localabstract:${GUEST_AGENT_SOCKET}` }],
+      killForward: async (s, local) => {
+        adbKillForwardCalls.push({ serial: s, local })
+      },
     },
     apkPath: async () => '/tools/guest-agent.apk',
     onLog: (level, msg) => logs.push({ level, msg }),
     onMismatch: (info) => mismatches.push(info),
     ...overrides,
   }
-  return { deps, execCalls, hostAdbCalls, logs, mismatches }
+  return { deps, execCalls, hostAdbCalls, adbForwardCalls, adbKillForwardCalls, logs, mismatches }
 }
 
 /** Flattened arg lists — most assertions below only care about `args`, not the lane opts. */
@@ -375,38 +387,34 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     })
   })
 
-  describe('forward', () => {
-    test('forwards tcp:<port> to the localabstract socket', async () => {
-      const { deps, hostAdbCalls } = fakeDeps()
+  describe('forward (plan 119 §4.1, §4.2 — the direct-socket trio, off the `adb.exe` spawn path)', () => {
+    test('forwards tcp:<port> to the localabstract socket via AdbClient.forward, not hostAdb', async () => {
+      const { deps, adbForwardCalls, hostAdbCalls } = fakeDeps()
       const launcher = createGuestAgentLauncher(deps)
       await launcher.forward(9200)
-      expect(argLists(hostAdbCalls)).toContainEqual([
-        '-s',
-        'serial-1',
-        'forward',
-        'tcp:9200',
-        `localabstract:${GUEST_AGENT_SOCKET}`,
-      ])
+      expect(adbForwardCalls).toContainEqual({ serial: 'serial-1', local: 'tcp:9200', remote: `localabstract:${GUEST_AGENT_SOCKET}` })
+      // No `adb.exe` spawn at all for the forward/list/remove trio (acceptance criterion 3).
+      expect(hostAdbCalls).toHaveLength(0)
     })
 
-    test('throws when `forward --list` names a different serial as owner (ownership check)', async () => {
+    test('throws when `listForward` names a different serial as owner (ownership check)', async () => {
       const { deps } = fakeDeps({
-        hostAdb: async (args) => {
-          if (args[0] === 'forward' && args[1] === '--list') {
-            return `some-other-serial tcp:9200 localabstract:${GUEST_AGENT_SOCKET}\n`
-          }
-          return ''
+        adb: {
+          forward: async () => undefined,
+          listForward: async () => [{ serial: 'some-other-serial', local: 'tcp:9200', remote: `localabstract:${GUEST_AGENT_SOCKET}` }],
+          killForward: async () => undefined,
         },
       })
       const launcher = createGuestAgentLauncher(deps)
       await expect(launcher.forward(9200)).rejects.toThrow(/refusing to drive another device/)
     })
 
-    test('throws when the port is not present in `forward --list` at all', async () => {
+    test('throws when the port is not present in `listForward` at all', async () => {
       const { deps } = fakeDeps({
-        hostAdb: async (args) => {
-          if (args[0] === 'forward' && args[1] === '--list') return ''
-          return ''
+        adb: {
+          forward: async () => undefined,
+          listForward: async () => [],
+          killForward: async () => undefined,
         },
       })
       const launcher = createGuestAgentLauncher(deps)
@@ -417,9 +425,12 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
   describe('removeForward', () => {
     test('tolerates the forward already being gone', async () => {
       const { deps } = fakeDeps({
-        hostAdb: async (args) => {
-          if (args.includes('--remove')) throw new Error('adb: forward: not found')
-          return ''
+        adb: {
+          forward: async () => undefined,
+          listForward: async () => [],
+          killForward: async () => {
+            throw new Error('adb: forward: not found')
+          },
         },
       })
       const launcher = createGuestAgentLauncher(deps)

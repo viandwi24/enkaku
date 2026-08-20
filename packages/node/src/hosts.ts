@@ -74,6 +74,13 @@ export function createNodeHosts(deps: {
           ports,
           log: deps.log.child('inspector'),
           hostAdb,
+          // The forward/listForward/killForward trio (plan 119 §4.1, §4.2),
+          // bound to this node's own adb client — off the `adb.exe`
+          // process-spawn path the old `hostAdb(['forward', ...])` calls used
+          // before this plan, same as the core's local wiring in `daemon.ts`.
+          forward: (serial, local, remote) => deps.client.forward(serial, local, remote),
+          listForward: () => deps.client.listForward(),
+          killForward: (serial, local) => deps.client.killForward(serial, local),
           // The Plan 24 streaming lane, bound to this node's own adb client
           // (plan 34 §4.1) — same as the core's local wiring in `daemon.ts`.
           execStream: (serial, cmd, streamOpts) => deps.client.execStream(serial, cmd, streamOpts),

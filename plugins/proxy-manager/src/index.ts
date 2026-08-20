@@ -1,7 +1,7 @@
 import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { definePlugin, defineService, ui, type PluginMemberScript } from '@enkaku/sdk'
 import { z } from 'zod'
-import { applyAssignment } from './service/apply'
+import { applyAssignment, type ApplyHost } from './service/apply'
 import { registerProxyRoutes } from './service/handlers'
 import { resetProxyManager } from './service/reset'
 import { createSupervisor } from './service/supervisor'
@@ -401,7 +401,16 @@ export default definePlugin({
            * the exact failure plan 114 §3.4 rule 4 exists to prevent.
            */
           const mode = fields.mode === undefined ? undefined : (fields.mode as ProxyApplyMode)
-          return { body: await applyAssignment(ctx, { stableId: fields.stableId, ...(mode === undefined ? {} : { mode }) }) }
+          /**
+           * `bridgePort` (plan 118 step 118.2) is the one field `ctx` itself
+           * cannot supply — the supervisor is this file's own, not part of
+           * `PluginServiceContext` — so the host is built explicitly rather
+           * than passing `ctx` straight through as every call before this one
+           * did. `runtimeOf` is a plain, synchronous map read; nothing here
+           * touches storage a second time.
+           */
+          const applyHost: ApplyHost = { storage: ctx.storage, farm: ctx.farm, log: ctx.log, bridgePort: (proxyId) => supervisor.runtimeOf(proxyId)?.port ?? null }
+          return { body: await applyAssignment(applyHost, { stableId: fields.stableId, ...(mode === undefined ? {} : { mode }) }) }
         },
         {
           methods: ['POST'],
