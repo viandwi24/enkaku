@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import type { ToolchainManager } from '@enkaku/toolchain'
+import type { AppRestartPreview, AppRestartReport, SupervisionMode } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import type { AdbCycleOpts, AdbCycleReport, AdbServerControl } from './adb-server-control'
-import { createToolsRoutes, type AdbControlRouteDeps } from './routes'
+import type { AppRestartControl, AppRestartOpts } from './app-restart-control'
+import { createToolsRoutes, type AdbControlRouteDeps, type AppRestartRouteDeps } from './routes'
 
 /**
  * `/api/tools` (security-sweep finding, `packages/core/src/tools/routes.ts`):
@@ -370,5 +372,159 @@ describe('POST /adb/restart (plan 88 §3.10, §4.8, §5 step 88.8)', () => {
     const res = await app.request('/adb/restart', { method: 'POST' })
     expect(res.status).toBe(409)
     expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_TOOL_IN_USE')
+  })
+})
+
+/**
+ * `POST /app/restart` and `GET /app/restart-preview` (plan 120 §4) — the
+ * whole-core restart. `control.restart` is a fake here (never a real
+ * spawn/health-poll): what this file proves is the ROUTE's own behaviour —
+ * permission, the `E_APP_BUSY_FARM` guard and its `force` bypass, the audit
+ * record, and error translation — not `restart()` itself, which
+ * `app-restart-control.test.ts` already covers in full.
+ */
+function fakeAppRestartDeps(
+  overrides: Partial<{
+    preview: AppRestartPreview
+    restart: (opts: AppRestartOpts) => Promise<AppRestartReport>
+  }> = {},
+): { deps: AppRestartRouteDeps; restartCalls: AppRestartOpts[] } {
+  const restartCalls: AppRestartOpts[] = []
+  const defaultReport: AppRestartReport = {
+    mode: 'bare',
+    outcome: 'verified',
+    durationMs: 42,
+    sessionsClosed: 0,
+    leasesReleased: 0,
+    jobsFailed: [],
+  }
+  const control: AppRestartControl = {
+    restart: async (opts) => {
+      restartCalls.push(opts)
+      return overrides.restart ? overrides.restart(opts) : defaultReport
+    },
+    busy: () => false,
+  }
+  const deps: AppRestartRouteDeps = {
+    control,
+    preview: () => overrides.preview ?? { mode: 'bare' as SupervisionMode, devicesTotal: 5, sessionsActive: 2, leasesHeld: 0, jobsRunning: 0 },
+  }
+  return { deps, restartCalls }
+}
+
+describe('GET /app/restart-preview — live counts and supervision mode before the confirmation dialog (plan 120 §4)', () => {
+  test('no authenticated user is refused (403)', async () => {
+    const { deps } = fakeAppRestartDeps()
+    const app = withUser(null, createToolsRoutes(fakeManager(), { app: deps }))
+    expect((await app.request('/app/restart-preview')).status).toBe(403)
+  })
+
+  test('an operator is refused — restarting Enkaku is admin-only (tool.manage)', async () => {
+    const { deps } = fakeAppRestartDeps()
+    const app = withUser('operator', createToolsRoutes(fakeManager(), { app: deps }))
+    expect((await app.request('/app/restart-preview')).status).toBe(403)
+  })
+
+  test('with no `app` dep at all, refuses with E_APP_RESTART_UNAVAILABLE (503) rather than 404ing', async () => {
+    const app = withUser('admin', createToolsRoutes(fakeManager()))
+    const res = await app.request('/app/restart-preview')
+    expect(res.status).toBe(503)
+    expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_APP_RESTART_UNAVAILABLE')
+  })
+
+  test('reports this farm\'s live numbers AND the detected supervision mode, not a placeholder', async () => {
+    const { deps } = fakeAppRestartDeps({ preview: { mode: 'systemd', devicesTotal: 20, sessionsActive: 4, leasesHeld: 1, jobsRunning: 2 } })
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
+    const res = await app.request('/app/restart-preview')
+    expect(res.status).toBe(200)
+    expect(await asJson<Record<string, unknown>>(res)).toEqual({ mode: 'systemd', devicesTotal: 20, sessionsActive: 4, leasesHeld: 1, jobsRunning: 2 })
+  })
+})
+
+describe('POST /app/restart (plan 120 §4)', () => {
+  test('no authenticated user is refused (403), and restart() is never called', async () => {
+    const { deps, restartCalls } = fakeAppRestartDeps()
+    const app = withUser(null, createToolsRoutes(fakeManager(), { app: deps }))
+    expect((await app.request('/app/restart', { method: 'POST' })).status).toBe(403)
+    expect(restartCalls).toEqual([])
+  })
+
+  test('an operator is refused (403) — tool.manage is admin-only', async () => {
+    const { deps, restartCalls } = fakeAppRestartDeps()
+    const app = withUser('operator', createToolsRoutes(fakeManager(), { app: deps }))
+    expect((await app.request('/app/restart', { method: 'POST' })).status).toBe(403)
+    expect(restartCalls).toEqual([])
+  })
+
+  test('with no `app` dep at all, refuses with E_APP_RESTART_UNAVAILABLE (503)', async () => {
+    const app = withUser('admin', createToolsRoutes(fakeManager()))
+    const res = await app.request('/app/restart', { method: 'POST' })
+    expect(res.status).toBe(503)
+    expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_APP_RESTART_UNAVAILABLE')
+  })
+
+  test('a busy farm (running jobs or held leases) refuses with E_APP_BUSY_FARM (409) and never calls restart()', async () => {
+    const { deps, restartCalls } = fakeAppRestartDeps({
+      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, leasesHeld: 1, jobsRunning: 2 },
+    })
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
+    const res = await app.request('/app/restart', { method: 'POST' })
+    expect(res.status).toBe(409)
+    expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_APP_BUSY_FARM')
+    expect(restartCalls).toEqual([])
+  })
+
+  test('force:true bypasses the busy-farm guard and calls restart() with force:true', async () => {
+    const { deps, restartCalls } = fakeAppRestartDeps({
+      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, leasesHeld: 0, jobsRunning: 1 },
+    })
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
+    const res = await app.request('/app/restart', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    })
+    expect(res.status).toBe(200)
+    expect(restartCalls).toEqual([{ force: true }])
+  })
+
+  test('an idle farm restarts cleanly, records the audit action, and returns the report', async () => {
+    const { deps, restartCalls } = fakeAppRestartDeps()
+    const calls: Parameters<AuditLogger['record']>[0][] = []
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps, audit: { record: (input) => void calls.push(input), list: () => [] } }))
+    const res = await app.request('/app/restart', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = await asJson<AppRestartReport>(res)
+    expect(body.mode).toBe('bare')
+    expect(body.outcome).toBe('verified')
+    expect(restartCalls).toEqual([{ force: false }])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.action).toBe('app.restart')
+  })
+
+  test('restart() throwing E_TOOL_IN_USE (a restart already in flight) surfaces as 409', async () => {
+    const { EnkakuError } = await import('../util/errors')
+    const { deps } = fakeAppRestartDeps({
+      restart: async () => {
+        throw new EnkakuError('E_TOOL_IN_USE', 'a restart is already in progress')
+      },
+    })
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
+    const res = await app.request('/app/restart', { method: 'POST' })
+    expect(res.status).toBe(409)
+    expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_TOOL_IN_USE')
+  })
+
+  test('restart() throwing E_RESTART_FAILED (bare mode, the child never came up) surfaces as 500 — never a silent success', async () => {
+    const { EnkakuError } = await import('../util/errors')
+    const { deps } = fakeAppRestartDeps({
+      restart: async () => {
+        throw new EnkakuError('E_RESTART_FAILED', 'the new process never became healthy — the original process kept running')
+      },
+    })
+    const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
+    const res = await app.request('/app/restart', { method: 'POST' })
+    expect(res.status).toBe(500)
+    expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_RESTART_FAILED')
   })
 })

@@ -11,8 +11,10 @@ export type LeaseType = 'manual' | 'job'
  * adds `'adb-server-restart'` to the pre-existing three — a restart drains
  * every manual lease farm-wide, same as an idle timeout or a quarantine, and
  * the holder deserves the same honest reason on the wire and in the log).
+ * Plan 120 §4 adds `'app-restart'` for the same reason, one level up: the
+ * whole core process restarting, not just the shared adb server.
  */
-export type ManualReleaseReason = 'idle_timeout' | 'disconnected' | 'quarantined' | 'adb-server-restart'
+export type ManualReleaseReason = 'idle_timeout' | 'disconnected' | 'quarantined' | 'adb-server-restart' | 'app-restart'
 
 /**
  * What a hold is FOR (plan 93 §3.8, §4.3, §5 step 93.3) — legibility for the

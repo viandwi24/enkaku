@@ -8,7 +8,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import { HealthResponseSchema } from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { buildRegistryResponse } from '../registry/engines'
-import { createToolsRoutes, type AdbControlRouteDeps } from '../tools/routes'
+import { createToolsRoutes, type AdbControlRouteDeps, type AppRestartRouteDeps } from '../tools/routes'
 import { createStudioServer } from './studio'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -39,6 +39,13 @@ export interface HttpDeps {
    * this is absent, rather than the route not existing at all.
    */
   adbControl?: AdbControlRouteDeps
+  /**
+   * "Restart Enkaku" (plan 120 §4) — optional for the same reasons
+   * `adbControl` above is: several tests build a minimal `HttpDeps`, and
+   * this is genuinely unavailable before `daemon.ts`'s `start()` finishes
+   * constructing it.
+   */
+  appRestart?: AppRestartRouteDeps
   jobRoutes: Hono<AuthEnv>
   scriptRoutes: Hono<AuthEnv>
   /**
@@ -373,6 +380,7 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
     createToolsRoutes(deps.toolchain, {
       ...(deps.audit ? { audit: deps.audit } : {}),
       ...(deps.adbControl ? { adb: deps.adbControl } : {}),
+      ...(deps.appRestart ? { app: deps.appRestart } : {}),
     }),
   )
 

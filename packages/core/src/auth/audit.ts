@@ -136,6 +136,12 @@ export type AuditAction =
   // logcat` in a terminal), which is a materially different blast radius
   // from re-provisioning one of Enkaku's own tools.
   | 'adb.restart'
+  // The operator-triggered WHOLE-CORE restart (plan 120 §4) — a distinct
+  // action from `adb.restart` on purpose, never folded into it: this drops
+  // every live session/stream farm-wide and interrupts every in-flight job,
+  // a materially bigger blast radius than the adb server restart above,
+  // which leaves the core process (and every job's queue state) untouched.
+  | 'app.restart'
   | 'settings.update'
   | 'retention.gc'
   // AI agent records (plan 65 §4.5, §5.5) — creating/editing/deleting the

@@ -182,6 +182,8 @@ import { saveForDevice, createJobNodeTracker } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { createAdbServerControl, type AdbServerControl } from './tools/adb-server-control'
+import { createAppRestartControl, type AppRestartControl } from './tools/app-restart-control'
+import { detectSupervisionMode } from './tools/supervision'
 import { provisionRequiredTools, toolchainEventToMessage } from './tools/provision'
 import { CRITICAL_TOOLS, REQUIRED_TOOLS } from './tools/required'
 import { createToolInstallStore } from './tools/store'
@@ -249,11 +251,62 @@ export interface Daemon {
   start(): Promise<void>
   stop(): Promise<void>
   port: number
+  /**
+   * Plan 120 §4 — closes ONLY the HTTP/WS listener (a GRACEFUL
+   * `server.stop(false)`: stop accepting new connections, let any already
+   * in flight finish sending their own response), leaving every other
+   * subsystem (db, adb, sessions, plugins) running untouched. A no-op if
+   * the daemon is not currently listening. Used by the bare-process restart
+   * handoff (`tools/app-restart-control.ts`) to free the port for a
+   * health-verified child WITHOUT tearing the rest of the daemon down
+   * first — unlike `stop()`, which is a one-way trip, this can be undone by
+   * `reopenHttpPort()` if the child never comes up healthy.
+   */
+  closeHttpPort(): void
+  /**
+   * The inverse of `closeHttpPort()` — re-runs the exact bind `start()`
+   * used, reusing the same handler closures (`app`, the WS upgrade
+   * dispatch, `tlsOptions`), so this is purely a network-layer toggle, safe
+   * to call any number of times. Throws (never silently no-ops) if the
+   * port cannot be rebound — e.g. because whatever `closeHttpPort()` made
+   * room for is still holding it — since that is the one scenario `tools/app-restart-control.ts`
+   * has no further safe fallback for.
+   */
+  reopenHttpPort(): Promise<void>
 }
 
 export function createDaemon(cfg: CoreConfig): Daemon {
   const log = createLogger('core')
   let server: Server<unknown> | null = null
+  /**
+   * Plan 120 §4 — the SAME bind `start()` performs, held onto so
+   * `closeHttpPort()`/`reopenHttpPort()` (below) can re-run it later without
+   * duplicating the `Bun.serve` call or its `EADDRINUSE` handling. `null`
+   * until `start()` assigns it (mirrors `server` itself).
+   */
+  let relisten: (() => Promise<void>) | null = null
+  /**
+   * Plan 120 §4 — the two HTTP-listener toggles, declared here (rather than
+   * inline in the returned object literal) so `start()`'s own body can hand
+   * them to `appRestartControl` as plain functions with no `this` binding
+   * to worry about; the returned `Daemon`'s `closeHttpPort`/`reopenHttpPort`
+   * below are thin wrappers around these same two.
+   */
+  const closeHttpPort = (): void => {
+    // `false` (graceful), unlike `stop()`'s own `server?.stop(true)` — this
+    // stops accepting NEW connections immediately (which is what frees the
+    // port), but lets any request already in flight finish and send its own
+    // response. That matters here specifically because the request that
+    // triggers a bare-mode restart IS itself an in-flight request on this
+    // exact listener; force-closing it would sever the response to the very
+    // call asking for the restart.
+    server?.stop(false)
+    server = null
+  }
+  const reopenHttpPort = async (): Promise<void> => {
+    if (!relisten) throw new EnkakuError('E_NOT_LISTENING', 'the daemon has not started yet — nothing to reopen')
+    await relisten()
+  }
   let opened: OpenedDb | null = null
   let adb: AdbClient | null = null
   let registry: DeviceRegistry | null = null
@@ -356,7 +409,16 @@ let blobGc: BlobGc | null = null
   let stopped = false
   let adbState = 'provisioning'
 
-  return {
+  // Plan 120 §4 — a named `const` rather than an inline `return { ... }`
+  // (the pre-plan-120 shape) purely so `start()`'s own body, below, can
+  // hand `daemonHandle.stop` to `appRestartControl` as a forward reference
+  // — the same "reference the object this closure will eventually be part
+  // of" trick every other cross-cutting dep in this function already uses
+  // for a nullable `let` (`sessions`, `reconnector`, ...), just against the
+  // Daemon object itself. Safe because `start()`'s body only ever RUNS
+  // after this whole `const` statement has finished evaluating (a caller
+  // must call `daemon.start()` separately), never during it.
+  const daemonHandle: Daemon = {
     port: cfg.port,
 
     async start() {
@@ -527,6 +589,44 @@ let blobGc: BlobGc | null = null
         // elsewhere in this function, just against a `const` rather than a
         // nullable `let` — read fresh on every call, never captured.
         drainTimeoutMs: () => settingsStore.get().adbControl.drainTimeoutMs,
+      })
+
+      // "Restart Enkaku" (plan 120) — the whole core process, a materially
+      // bigger blast radius than `adbServerControl` just above, so it gets
+      // the SAME draining discipline (sessions/leases always, a running job
+      // only when the caller's own busy-farm guard already decided to
+      // proceed) rather than a second, divergent one. Deliberately does NOT
+      // touch adb's own lifecycle at all — `app-restart-control.ts` never
+      // calls the adb binary, and the workspace-wide guard
+      // (`adb-server-control.test.ts`) still finds exactly one `kill-server`
+      // call site after this file exists.
+      const appRestartControl: AppRestartControl = createAppRestartControl({
+        drain: async ({ force }) => {
+          const sessionsClosed = (await sessions?.closeAll('app-restart')) ?? 0
+          const leasesReleased = leases.releaseAll?.({ reason: 'app-restart' }) ?? 0
+          const jobsFailed: string[] = []
+          if (force) {
+            const running = jobStore.list({ status: 'running', limit: 1000 })
+            for (const job of running.rows) {
+              host.finishExternally(job.id, 'failed', 'Enkaku restarted', 'APP_RESTARTED')
+              jobsFailed.push(job.id)
+            }
+          }
+          return { sessionsClosed, leasesReleased, jobsFailed }
+        },
+        // `daemon.stop()` cannot be referenced as `this` from inside its own
+        // construction (the returned object literal is not built yet) — the
+        // exact same forward-reference shape `drainSessions`/`reattachEndpoints`
+        // above already use for `sessions`/`reconnector`/etc., just for a
+        // METHOD rather than a nullable `let`.
+        stopDaemon: async () => {
+          await daemonHandle.stop()
+        },
+        closeHttpPort,
+        reopenHttpPort,
+        port: cfg.port,
+        host: cfg.host,
+        log: log.child('app-restart-control'),
       })
 
       const toolchain = new ToolchainManager({
@@ -2479,6 +2579,22 @@ let blobGc: BlobGc | null = null
           // other "settings, read live" dep in this codebase.
           restartCooldownSec: () => settingsStore.get().adbControl.restartCooldownSec,
         },
+        // "Restart Enkaku" (plan 120 §4) — the whole core process's route
+        // deps, mirroring `adbControl` immediately above. `preview()`
+        // recomputes the supervision mode fresh on every call (cheap — a
+        // file-exists check plus one env read) rather than caching it at
+        // boot, the same "never cached" discipline `adbControl.preview`
+        // already follows for its own counts.
+        appRestart: {
+          control: appRestartControl,
+          preview: () => ({
+            mode: detectSupervisionMode(),
+            devicesTotal: db.select().from(devices).all().length,
+            sessionsActive: sessions?.activeDeviceIds?.().length ?? 0,
+            leasesHeld: db.select().from(devices).where(eq(devices.status, 'manual')).all().length,
+            jobsRunning: jobStore.list({ status: 'running', limit: 1000 }).rows.length,
+          }),
+        },
         // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
         // is written, so `jobs.scriptId` is always concrete.
         jobRoutes: createJobRoutes(jobService, {
@@ -2988,9 +3104,18 @@ let blobGc: BlobGc | null = null
           ? { tls: { cert: Bun.file(cfg.tls.certPath), key: Bun.file(cfg.tls.keyPath) } }
           : {}
 
-      try {
-        server = Bun.serve({
-          hostname: cfg.host,
+      // Plan 120 §4 — wrapped in a named closure (rather than inlined
+      // exactly as before plan 120) purely so `closeHttpPort()`/
+      // `reopenHttpPort()` on the returned `Daemon` (below) can re-run this
+      // SAME bind later, reusing the same handler closures instead of a
+      // second, drifting copy of them. Behaviourally identical to the
+      // pre-plan-120 inline version for the normal boot path: `bindHttp()`
+      // is called immediately below, exactly once, exactly where the old
+      // inline call used to be.
+      const bindHttp = async (): Promise<void> => {
+        try {
+          server = Bun.serve({
+            hostname: cfg.host,
           port: cfg.port,
           ...tlsOptions,
           async fetch(req, srv) {
@@ -3155,8 +3280,11 @@ let blobGc: BlobGc | null = null
               `        Stop it, or set ENKAKU_PORT to a free port. \`enkaku doctor\` explains more.`,
           )
         }
-        throw err
+          throw err
+        }
       }
+      relisten = bindHttp
+      await bindHttp()
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'
       log.info(`enkaku core v${CORE_VERSION} listen ${scheme}://${cfg.host}:${cfg.port}`)
 
@@ -4263,5 +4391,12 @@ let blobGc: BlobGc | null = null
       dataDirLock = null
       log.info('stopped')
     },
+
+    // Plan 120 §4 — see the `Daemon` interface's own doc comments, and the
+    // `closeHttpPort`/`reopenHttpPort` consts declared beside `server`/
+    // `relisten` near the top of this function, for the full reasoning.
+    closeHttpPort,
+    reopenHttpPort,
   }
+  return daemonHandle
 }

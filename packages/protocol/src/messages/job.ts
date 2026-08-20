@@ -405,7 +405,7 @@ export const LeaseRevokedMessage = z.object({
   type: z.literal('lease.revoked'),
   payload: z.object({
     deviceId: z.string(),
-    reason: z.enum(['idle_timeout', 'disconnected', 'quarantined', 'taken-over', 'adb-server-restart']),
+    reason: z.enum(['idle_timeout', 'disconnected', 'quarantined', 'taken-over', 'adb-server-restart', 'app-restart']),
     /**
      * Who took the lease (plan 71 §3.5) — a resolved label, e.g. "Rina" or
      * "checkout-bot". Null for every reason other than `taken-over` (an idle

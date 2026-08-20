@@ -19,6 +19,20 @@ WorkingDirectory=/opt/enkaku
 ExecStart=/usr/local/bin/bun run packages/core/src/index.ts
 Restart=on-failure
 RestartSec=5
+# Plan 120 §4 — "Restart Enkaku" (Studio's Tools page, POST /api/tools/app/restart)
+# exits 75 on a VOLUNTARY restart request, never a crash. `SuccessExitStatus=75`
+# stops that exit from being counted as a failure (journalctl/systemctl status,
+# and the StartLimitBurst crash-loop budget); `RestartForceExitStatus=75` then
+# forces the restart to happen anyway, since `Restart=on-failure` alone would
+# no longer fire once the exit is classified as a success. Both lines are
+# required together — see packages/core/src/tools/app-restart-control.ts's
+# `RESTART_SENTINEL_EXIT_CODE` doc comment for the full reasoning. An
+# ALREADY-DEPLOYED unit file predating plan 120 needs both lines added by hand
+# (docs/guide/install.md has a copy-paste upgrade snippet) — without them, a
+# systemd-mode "Restart Enkaku" click exits 75, systemd does NOT relaunch it,
+# and the farm stays down until someone notices and runs `systemctl start` by hand.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 
 # Basic hardening — the core still needs to write to the data dir and reach USB.
 NoNewPrivileges=yes

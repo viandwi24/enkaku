@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { z } from 'zod'
 import { DoctorResponseSchema, ToolsResponseSchema } from '@enkaku/protocol'
 import { AdbServerCard } from '@/components/AdbServerCard'
+import { AppRestartCard } from '@/components/AppRestartCard'
 import { ConfirmDialog, ErrorState, LoadingRows, Button, Progress, cn, api, useAction, fileSize } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { isAdmin, useAuth } from '@/lib/auth'
@@ -166,6 +167,12 @@ export default function ToolsPage() {
             says whether restarting is even likely to help, not offered on
             its own above or below it. */}
         <AdbServerCard canManage={canManage} />
+
+        {/* A separate card, visually distinct (danger-tinted border) from
+            AdbServerCard right above it — restarting the whole app is a
+            materially bigger action than restarting adb alone, and an
+            operator must never confuse the two (plan 120 §4). */}
+        <AppRestartCard canManage={canManage} />
 
         {diagnostics && (
           <div className="rounded-lg border bg-surface p-4">

@@ -379,7 +379,9 @@ function DeviceDetail() {
                 ? `${msg.payload.takenBy ?? 'Someone else'} took control from you.`
                 : msg.payload.reason === 'adb-server-restart'
                   ? 'Control was released — the adb server just restarted. Take it again once the device reconnects.'
-                  : `Control was released automatically (${msg.payload.reason}).`,
+                  : msg.payload.reason === 'app-restart'
+                    ? 'Control was released — Enkaku itself just restarted. Take it again once it is back.'
+                    : `Control was released automatically (${msg.payload.reason}).`,
           )
         }
       }

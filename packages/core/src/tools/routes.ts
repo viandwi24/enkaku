@@ -1,16 +1,26 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { AdbRestartPreviewSchema, AdbRestartReportSchema, ToolsResponseSchema } from '@enkaku/protocol'
+import {
+  AdbRestartPreviewSchema,
+  AdbRestartReportSchema,
+  AppRestartPreviewSchema,
+  AppRestartReportSchema,
+  ToolsResponseSchema,
+  type AppRestartPreview,
+} from '@enkaku/protocol'
 import { ToolchainError, type ToolchainManager } from '@enkaku/toolchain'
 import { typedJson } from '../api/typed-json'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
+import { EnkakuError } from '../util/errors'
 import type { AdbServerControl } from './adb-server-control'
+import type { AppRestartControl } from './app-restart-control'
 import { REQUIRED_TOOLS } from './required'
 
 const VersionBody = z.object({ version: z.string().min(1) })
 const AdbRestartBody = z.object({ force: z.boolean().optional() })
+const AppRestartBody = z.object({ force: z.boolean().optional() })
 
 const ERROR_STATUS: Record<string, number> = {
   E_TOOL_NOT_FOUND: 404,
@@ -51,6 +61,23 @@ export interface AdbControlRouteDeps {
 }
 
 /**
+ * "Restart Enkaku" (plan 120 §4) — the whole core process's dependencies,
+ * mirroring `AdbControlRouteDeps` above in shape and reasoning: bundled
+ * separately from `audit`, optional for the same "not ready / not this
+ * caller's job to build" reasons `adb` above already documents. No
+ * `binaryPath`/`busyFarm` here — there is no version-swap concept for the
+ * process itself, and the busy-farm guard for THIS action is the route's
+ * own body below (`force`), not a separate pre-check endpoint the way adb's
+ * `E_ADB_BUSY_FARM` needed one.
+ */
+export interface AppRestartRouteDeps {
+  /** The one restart implementation (plan 120 §4) — drains, detects the deployment mode, and acts accordingly. */
+  control: AppRestartControl
+  /** Live counts plus the detected supervision mode, fetched fresh on every call — never cached, same reasoning as `AdbControlRouteDeps.preview`. */
+  preview: () => AppRestartPreview
+}
+
+/**
  * The /api/tools routes — exactly spec §7.7, with the §7.8 guards in
  * ToolchainManager. Permission model per plan 09 §4.4's matrix: `tool.view`
  * for the list, `tool.manage` (admin-only in `auth/acl.ts`) for every
@@ -69,8 +96,17 @@ export interface AdbControlRouteDeps {
  * preview, under the SAME `tool.manage` gate. Also optional, for the same
  * "an existing caller keeps compiling" reason, and additionally because a
  * host with no adb subsystem (orchestrator mode) has nothing to restart.
+ *
+ * `app` (plan 120 §4) adds `POST /app/restart` and its preview, under the
+ * SAME `tool.manage` gate — already the strictest this ACL has (`tool.manage`
+ * is absent from `auth/acl.ts`'s `OPERATOR` set, so `can(role, 'tool.manage')`
+ * only ever admits `admin`; there is no stricter tier to reach for here).
+ * Optional for the same reasons `adb` is.
  */
-export function createToolsRoutes(manager: ToolchainManager, deps: { audit?: AuditLogger; adb?: AdbControlRouteDeps } = {}): Hono<AuthEnv> {
+export function createToolsRoutes(
+  manager: ToolchainManager,
+  deps: { audit?: AuditLogger; adb?: AdbControlRouteDeps; app?: AppRestartRouteDeps } = {},
+): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const actorId = (c: { get(k: 'user'): { id: string } | undefined }): string | null => c.get('user')?.id ?? null
 
@@ -207,6 +243,68 @@ export function createToolsRoutes(manager: ToolchainManager, deps: { audit?: Aud
     const report = await deps.adb.control.cycle({ reason: 'restart', oldBinaryPath: binaryPath, newBinaryPath: binaryPath, force })
     deps.audit?.record({ userId: actorId(c), action: 'adb.restart', meta: { force, ...report } })
     return typedJson(c, AdbRestartReportSchema, report)
+  })
+
+  // "Restart Enkaku" (plan 120 §4) — the whole core process, a materially
+  // bigger blast radius than `/adb/restart` above (every live session/stream
+  // drops, every in-flight job is interrupted, the farm is briefly fully
+  // unreachable), grouped right after it for the same readability reason
+  // `/adb/restart` is grouped beside `/adb/restart-preview`.
+  app.get('/app/restart-preview', requirePermission('tool.manage'), (c) => {
+    if (!deps.app) return c.json({ error: { code: 'E_APP_RESTART_UNAVAILABLE', message: 'the app restart control is not ready yet' } }, 503)
+    return typedJson(c, AppRestartPreviewSchema, deps.app.preview())
+  })
+
+  /**
+   * Restart the whole core process (plan 120 §4). `tool.manage` — already
+   * admin-only in `auth/acl.ts` (`tool.manage` is absent from the
+   * `OPERATOR` set, so `can(role, 'tool.manage')` only ever admits `admin`;
+   * there is no stricter permission tier in this ACL to reach for). Refused
+   * with `E_APP_BUSY_FARM` — the same shape `/adb/restart`'s
+   * `E_ADB_BUSY_FARM` guard above uses — unless `force`. No automatic
+   * restart anywhere in this codebase calls this: it is reachable from
+   * exactly one place, an operator's confirmed click on the Tools page.
+   */
+  app.post('/app/restart', requirePermission('tool.manage'), async (c) => {
+    if (!deps.app) return c.json({ error: { code: 'E_APP_RESTART_UNAVAILABLE', message: 'the app restart control is not ready yet' } }, 503)
+
+    const rawBody = await c.req.json().catch(() => ({}))
+    const parsedBody = AppRestartBody.safeParse(rawBody)
+    const force = parsedBody.success ? Boolean(parsedBody.data.force) : false
+
+    if (!force) {
+      const preview = deps.app.preview()
+      if (preview.jobsRunning > 0 || preview.leasesHeld > 0) {
+        return c.json(
+          {
+            error: {
+              code: 'E_APP_BUSY_FARM',
+              message: `restarting Enkaku now would fail ${preview.jobsRunning} running job(s) and release control on ${preview.leasesHeld} device(s) — pass force to restart anyway`,
+            },
+          },
+          409,
+        )
+      }
+    }
+
+    try {
+      // For `mode: 'docker' | 'systemd'` the process exits a short beat
+      // AFTER this resolves (see `app-restart-control.ts`'s own header) —
+      // this response is the one honest confirmation the caller ever gets
+      // for those two modes ("restart initiated", never "restart
+      // succeeded"). For `mode: 'bare'` this only resolves at all once the
+      // new process has already proven itself healthy, so `outcome:
+      // 'verified'` here means exactly what it says.
+      const report = await deps.app.control.restart({ force })
+      deps.audit?.record({ userId: actorId(c), action: 'app.restart', meta: { force, ...report } })
+      return typedJson(c, AppRestartReportSchema, report)
+    } catch (err) {
+      if (err instanceof EnkakuError) {
+        const status = err.code === 'E_TOOL_IN_USE' ? 409 : 500
+        return c.json(err.toJSON(), status)
+      }
+      throw err
+    }
   })
 
   app.onError((err, c) => {

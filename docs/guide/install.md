@@ -65,6 +65,21 @@ A non-loopback bind means `server` mode, which means **login is required and TLS
 
 Open Studio and the setup page asks for the first admin's email and password. After that the setup endpoint closes permanently.
 
+### Upgrading an already-deployed unit file (Restart Enkaku, plan 120)
+
+Studio's Tools page has a **Restart Enkaku** button — the whole core process, not just the adb server — for when a plugin or code change on disk isn't taking effect and the instinct is "just restart it." Under systemd it works by exiting a distinct code (`75`) that the unit declares as a voluntary, non-crash restart request. **If you deployed `enkaku.service` before this feature shipped, add these two lines to your already-installed unit file** — without them, clicking Restart Enkaku exits the process and systemd does **not** bring it back (a plain `exit(0)`/non-declared exit code is either ignored or misreported as a crash), leaving the farm down until someone notices:
+
+```bash
+sudo systemctl edit --full enkaku
+# Add, right after `RestartSec=5`:
+#   SuccessExitStatus=75
+#   RestartForceExitStatus=75
+sudo systemctl daemon-reload
+sudo systemctl restart enkaku
+```
+
+Or simply re-copy the current `deploy/enkaku.service` from this repo over `/etc/systemd/system/enkaku.service` and run the same `daemon-reload`/`restart` — it already has both lines.
+
 ## 3. Docker
 
 ```bash
@@ -610,6 +625,8 @@ to, by label, never just a count.
 **A device is not detected at all.** Make sure USB debugging is on and the cable carries data (many charging cables do not). On Linux, add a udev rule for your phone's vendor.
 
 **Conflicts with Android Studio.** Android Studio runs its own adb server on port 5037. Enkaku uses that same adb server, so this is usually fine — but do not run `adb kill-server` by hand while the farm is working: it disconnects every device. If the shared server itself is wedged (reachable but not answering), use **Tools → Restart adb server** in Studio instead of a manual kill: it drains live sessions and leases first, restarts the server, and dials every remembered network device back afterward — reconnecting far more of the farm than a bare `kill-server` would leave you to recover by hand. It still disconnects Android Studio's own adb connection for a few seconds, the same as a manual restart would.
+
+**Something is stuck and restarting adb didn't help — a plugin update on disk isn't taking effect, or the core itself just feels wedged.** Use **Tools → Restart Enkaku** — the whole core process, not just the adb server. It is a materially bigger action (every live session/stream drops, every in-flight job is interrupted, the farm is briefly fully unreachable), so Studio confirms it separately from the adb restart button and states, from the response, what actually happens next: on Docker or systemd the process exits and the existing supervisor relaunches it automatically; running bare (`bun run dev`, or a release binary with no systemd unit) it starts a fresh copy of itself and only switches over once that copy answers healthy — if it never does, the original process keeps running and Studio shows an honest error rather than a silent failure.
 
 **Provisioning fails (no internet).** The core stays up; set up a manifest mirror and point `ENKAKU_TOOLS_MANIFEST_URL` at it, or copy an already-populated `tools/` folder into the data dir — the core adopts it at start.
 
