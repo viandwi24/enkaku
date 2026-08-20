@@ -48,14 +48,24 @@ mock.module('@/components/wall/WallTile', () => ({
  * replaced (also covers `coreBase()`, which every `fetch` on this page
  * reads through, directly or via `@/lib/api`'s helpers).
  *
- * `on`'s callback is captured into `wsListener` (rather than the plain
+ * `on`'s callback is captured into `wsListeners` (rather than the plain
  * no-op the rest of this file used before) so the "assist.changed updates
  * live" tests below can push a broadcast at the page exactly like a real
  * `ws` message would arrive, without a real WebSocket or a refetch.
  */
-let wsListener: ((m: { type: string; payload: unknown }) => void) | null = null
 /**
- * Captured the same way `wsListener` above is, for the "reconnect resyncs
+ * A `Set`, not a single overwritable slot, matching the real `WsClient.on`
+ * (`packages/studio/src/lib/ws.ts`'s `handlers` field — a `Set`, broadcast
+ * to with `for (const cb of this.handlers) cb(msg)`): more than one
+ * component subscribes at once in this tree (the page itself, plus
+ * `EnrollmentDialog`'s own `ws.on` once it mounts) and a single-slot mock
+ * silently clobbers an earlier subscriber's callback the moment a second
+ * one subscribes — the page's own listener would then stop receiving
+ * anything for the rest of the test with no error raised anywhere.
+ */
+const wsListeners = new Set<(m: { type: string; payload: unknown }) => void>()
+/**
+ * Captured the same way `wsListeners` above is, for the "reconnect resyncs
  * via `load()`" test below (plan 99 §4.9, §4.11, step 99.10) — there is no
  * WS snapshot replay (CLAUDE.md), so a message broadcast while this tab was
  * disconnected only ever reaches the page through this callback firing.
@@ -64,9 +74,9 @@ let reconnectListener: (() => void) | null = null
 mock.module('@/lib/ws', () => ({
   ws: {
     on: (cb: (m: { type: string; payload: unknown }) => void) => {
-      wsListener = cb
+      wsListeners.add(cb)
       return () => {
-        wsListener = null
+        wsListeners.delete(cb)
       }
     },
     send: () => {},
@@ -82,10 +92,10 @@ mock.module('@/lib/ws', () => ({
   newId: () => 'test-id',
 }))
 
-/** Delivers a fake `ws` message to whatever listener the page registered, wrapped in `act` (same pattern `DeviceLog.test.tsx` uses). */
+/** Delivers a fake `ws` message to every listener currently registered, wrapped in `act` (same pattern `DeviceLog.test.tsx` uses). */
 function emit(msg: { type: string; payload: unknown }): void {
   act(() => {
-    wsListener?.(msg)
+    for (const cb of wsListeners) cb(msg)
   })
 }
 
@@ -346,7 +356,7 @@ describe('Dashboard — "Return to queue" reflects device.quarantine (admin-only
  * `heldBy` live but no equivalent for `assist.changed`, so a device being
  * assisted right now showed nothing on the Wall/list until the next full
  * `/api/devices` fetch. Same live-patch shape, proven the same way
- * `lease.changed` would be, via the captured `wsListener`.
+ * `lease.changed` would be, via the captured `wsListeners`.
  */
 describe('Dashboard — assist.changed patches assistedBy live (plan 91 §3.4 item 4, F25, gap 1)', () => {
   // The badge asserted below is `DeviceCard`'s (List); `WallTile.test.tsx`
@@ -1379,5 +1389,31 @@ describe('Dashboard — Scan network (plan 88 §5)', () => {
     // precedent this mirrors) — `ScanNetworkDialog`'s own `onScanned` is
     // this page's `onNetworkScanned`.
     await waitFor(() => expect(apiMock.calls.filter((c) => c.path.startsWith('/api/devices?')).length).toBeGreaterThan(devicesCallsBefore))
+  })
+})
+
+describe('Dashboard — device.unauthorized does not reopen the "Add device" dialog for a serial it has already shown', () => {
+  test('a repeat broadcast for the same serial (the reconciler resends this every scanIntervalSec for as long as it stays unauthorized) does not reopen a dialog the operator just closed, but a genuinely new serial does', async () => {
+    const user = userEvent.setup()
+    renderWithApi(<Dashboard />, baseResponses)
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    emit({ type: 'device.unauthorized', payload: { serial: '192.168.10.235:5555' } })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add device' })).toBeTruthy())
+    expect(screen.getByText('192.168.10.235:5555')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add device' })).toBeNull())
+
+    // The stale, already-seen serial rebroadcasting must not reopen it.
+    emit({ type: 'device.unauthorized', payload: { serial: '192.168.10.235:5555' } })
+    expect(screen.queryByRole('heading', { name: 'Add device' })).toBeNull()
+
+    // A serial this session has never seen before still must.
+    emit({ type: 'device.unauthorized', payload: { serial: '192.168.10.236:5555' } })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add device' })).toBeTruthy())
+    // Closing wiped the earlier serial too — only the new one shows.
+    expect(screen.queryByText('192.168.10.235:5555')).toBeNull()
+    expect(screen.getByText('192.168.10.236:5555')).toBeTruthy()
   })
 })

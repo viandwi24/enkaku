@@ -154,6 +154,14 @@ function DashboardView() {
   const [jobs, setJobs] = useState<JobInfo[]>([])
   const [clusters, setClusters] = useState<ClusterInfo[]>([])
   const [unauthorized, setUnauthorized] = useState<string[]>([])
+  // Mirrors `unauthorized` outside React state so the `device.unauthorized`
+  // handler below can tell a genuinely new serial apart from the
+  // reconciler's own repeating re-broadcast (every `discovery.scanIntervalSec`,
+  // default 10s, for as long as a serial STAYS unauthorized — by design, see
+  // `reconcile.ts`) without a stale closure: the `ws.on` subscription below
+  // is set up once on mount, so reading the `unauthorized` state variable
+  // directly here would always see its initial empty value.
+  const unauthorizedSeen = useRef<Set<string>>(new Set())
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -461,8 +469,15 @@ function DashboardView() {
             : prev,
         )
       } else if (m.type === 'device.unauthorized') {
-        setUnauthorized((prev) => (prev.includes(m.payload.serial) ? prev : [...prev, m.payload.serial]))
-        setEnrollOpen(true)
+        // Only pop the dialog for a serial this session hasn't already
+        // shown — the reconciler keeps re-sending this event for every
+        // serial that STAYS unauthorized, which used to reopen the dialog
+        // out from under an operator who had just closed it.
+        if (!unauthorizedSeen.current.has(m.payload.serial)) {
+          unauthorizedSeen.current.add(m.payload.serial)
+          setUnauthorized((prev) => (prev.includes(m.payload.serial) ? prev : [...prev, m.payload.serial]))
+          setEnrollOpen(true)
+        }
       } else if (m.type === 'device.readiness') {
         // One broadcast moves the Wall, the list, and (via its own
         // subscription) the device page together, with no page refresh
@@ -1566,7 +1581,21 @@ function DashboardView() {
           void load()
         }}
       />
-      <EnrollmentDialog open={enrollOpen} onOpenChange={setEnrollOpen} unauthorizedSerials={unauthorized} />
+      <EnrollmentDialog
+        open={enrollOpen}
+        onOpenChange={(v) => {
+          setEnrollOpen(v)
+          // Only the DISPLAY list is wiped on close, so a later genuinely-new
+          // serial doesn't show old stale IPs alongside it — `unauthorizedSeen`
+          // (the dedupe set) is deliberately never cleared here. Clearing it
+          // on close would make the very next repeat broadcast for the SAME
+          // serial (the reconciler resends this every `scanIntervalSec` for
+          // as long as it stays unauthorized) look "new" again and reopen the
+          // dialog the operator just closed — exactly the spam this fixes.
+          if (!v) setUnauthorized([])
+        }}
+        unauthorizedSerials={unauthorized}
+      />
       {/* Plan 104 (M69) §3.4 — `devices` (the Wall's own selection) is the
           DEFAULT, pre-filled; `allDevices` is the whole pool so the picker
           can also switch to a cluster or a different device list. */}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { WsAuthExpiredError, WsClient, type WsClientScheduler } from './ws'
+import { newId, WsAuthExpiredError, WsClient, type WsClientScheduler } from './ws'
 
 /** Flushes pending microtasks (a `fetchTicket()` promise and `connect()`'s own `.then()`/`.catch()`) without touching the fake scheduler, which is reserved for the watchdog/backoff timers under test. */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -309,5 +309,24 @@ describe('WsClient — server auth mode fetches a single-use ticket per connecti
     client.connect()
     expect(socket).not.toBeNull()
     expect(socket!.readyState).toBe(FakeSocket.CONNECTING)
+  })
+})
+
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+describe('newId', () => {
+  test('returns a v4 UUID when crypto.randomUUID is available', () => {
+    expect(newId()).toMatch(UUID_V4_RE)
+  })
+
+  test('falls back to crypto.getRandomValues when crypto.randomUUID is undefined — a plain-HTTP LAN origin is not a secure context, so browsers do not expose randomUUID there', () => {
+    const original = crypto.randomUUID
+    // @ts-expect-error simulating exactly what a non-secure-context browser has: no randomUUID at all
+    crypto.randomUUID = undefined
+    try {
+      expect(newId()).toMatch(UUID_V4_RE)
+    } finally {
+      crypto.randomUUID = original
+    }
   })
 })
