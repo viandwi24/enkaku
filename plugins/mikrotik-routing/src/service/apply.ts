@@ -56,6 +56,19 @@ import { MikrotikRestDriver, type Path, type PathHealth, type RouterDriver } fro
  * `buildPlan` (`planner.ts`'s own header, point 1) — this file never sees it
  * and never has to choose which of two rules to keep.
  *
+ * ## Previewing a write that has not happened yet (`ApplyDeps.assignmentOverrides`)
+ *
+ * `prepareApply` always reads every device's REAL `assignment` note — except
+ * for device ids present in `deps.assignmentOverrides`, whose value is used
+ * in place of the KV read. This is the one piece of plumbing `groups-
+ * service.ts`'s `previewActivateGroup` needs to answer "what would activating
+ * this group do" without writing anything: it hands `previewPlan` the exact
+ * `StoredAssignment` values `activateGroup` would otherwise persist for the
+ * group's own devices, so the SAME `prepareApply`/`buildPlan` this file
+ * already runs for a real apply computes the plan — no second plan pipeline,
+ * and a preview computed this way can never disagree with the apply that
+ * follows once those values are actually written (§4.4).
+ *
  * ## What is deliberately NOT here
  *
  * The `assignment` KV note itself (§4.9) is written by the BROWSER, directly,
@@ -104,6 +117,24 @@ export interface ApplyHost {
 export interface ApplyDeps {
   createDriver?: (config: RouterConfig) => RouterDriver
   deriveCoreAddress?: (config: { baseUrl: string; tls: boolean }) => Promise<CoreAddressResult>
+  /**
+   * Per-device `assignment` overrides — read in place of `storage.forDevice
+   * (id).getRaw('assignment')` for exactly the device ids present in the map,
+   * every other device unaffected. `undefined` (the default) changes nothing:
+   * `loadFleetState` reads every device's REAL stored note, as it always has.
+   *
+   * The one caller of this (`groups-service.ts`'s `previewActivateGroup`, gap
+   * fix to plan 122 §5 step 122.8, 2026-08-21) uses it to answer "what would
+   * `applyNow` do if this group's own `entries` were already written to their
+   * devices' `assignment` notes" WITHOUT writing anything — by handing
+   * `prepareApply` the exact same `StoredAssignment` values `activateGroup`
+   * would otherwise persist. This is deliberately the only extra plumbing
+   * added for that preview: `prepareApply`/`buildPlan` themselves are
+   * untouched, so a preview computed this way and a real apply computed after
+   * the override values are actually written can never disagree (§4.4's own
+   * guarantee, preserved rather than reimplemented in a second pipeline).
+   */
+  assignmentOverrides?: ReadonlyMap<string, StoredAssignment>
 }
 
 /**
@@ -116,12 +147,17 @@ export interface ApplyDeps {
  * Bounded by the same fleet size every other per-device loop in this
  * workspace already is.
  */
-async function loadFleetState(host: ApplyHost, driver: RouterDriver): Promise<FleetState> {
+export async function loadFleetState(host: ApplyHost, driver: RouterDriver, overrides?: ReadonlyMap<string, StoredAssignment>): Promise<FleetState> {
   const [devicesResult, inventory] = await Promise.all([host.farm.call('device.list', {}, DeviceListSchema), driver.inventory()])
   const devices: DeviceInfo[] = devicesResult.items
 
   const assignments: StoredAssignment[] = []
   for (const device of devices) {
+    const override = overrides?.get(device.id)
+    if (override) {
+      assignments.push(override)
+      continue
+    }
     const raw = await host.storage.forDevice(device.id).getRaw(ASSIGNMENT_KEY)
     assignments.push(readAssignment(raw))
   }
@@ -152,8 +188,15 @@ async function loadFleetState(host: ApplyHost, driver: RouterDriver): Promise<Fl
   return { devices: rows, paths: inventory.paths, health: inventory.health }
 }
 
-/** The devices §3.2's coverage check can actually evaluate — resolved LAN addresses only (`local-exception.ts`'s own contract: there is no `src-address` to test coverage against for a device this plugin cannot yet place). */
-function protectedDevicesFrom(rows: readonly FleetDeviceRow[]): ProtectedDevice[] {
+/**
+ * The devices §3.2's coverage check can actually evaluate — resolved LAN
+ * addresses only (`local-exception.ts`'s own contract: there is no
+ * `src-address` to test coverage against for a device this plugin cannot yet
+ * place). Exported so `reconcile.ts` (step 122.9) computes the SAME
+ * local-exception gate this file's own `applyNow` does, rather than a second
+ * implementation that could drift from it.
+ */
+export function protectedDevicesFrom(rows: readonly FleetDeviceRow[]): ProtectedDevice[] {
   const out: ProtectedDevice[] = []
   for (const row of rows) {
     if (row.lan.state === 'resolved') out.push({ id: row.deviceId, label: row.label, address: row.lan.lanIp })
@@ -167,8 +210,14 @@ function protectedDevicesFrom(rows: readonly FleetDeviceRow[]): ProtectedDevice[
  * it is named in `blocked` rather than silently dropped (a device with no
  * `endpointKey` cannot appear in a plan row at all; `planner.ts` has nothing
  * to diff it against).
+ *
+ * Exported so `reconcile.ts` (step 122.9) builds the SAME `desired` state
+ * `classifyDrift` is fed — the union of active groups' entries is, in this
+ * plugin's data model, exactly every device's own noted `assignment` (§4.9,
+ * this file's own header) — rather than a second reading of what "desired"
+ * means.
  */
-function desiredEntriesFrom(rows: readonly FleetDeviceRow[]): { desired: PlanDesiredEntry[]; blocked: BlockedAssignment[] } {
+export function desiredEntriesFrom(rows: readonly FleetDeviceRow[]): { desired: PlanDesiredEntry[]; blocked: BlockedAssignment[] } {
   const desired: PlanDesiredEntry[] = []
   const blocked: BlockedAssignment[] = []
   for (const row of rows) {
@@ -192,7 +241,8 @@ function desiredEntriesFrom(rows: readonly FleetDeviceRow[]): { desired: PlanDes
   return { desired, blocked }
 }
 
-function errorMessageOf(err: unknown): { code: string; message: string } {
+/** Exported so `reconcile.ts` (step 122.9) reports a driver failure with the SAME `E_ROUTER_<kind>` codes this file's own routes already use, rather than a second classification. */
+export function errorMessageOf(err: unknown): { code: string; message: string } {
   if (err instanceof MikrotikRestError) return { code: `E_ROUTER_${err.kind.toUpperCase()}`, message: err.message }
   return { code: 'E_ROUTER_UNKNOWN', message: messageOf(err) }
 }
@@ -218,7 +268,7 @@ async function prepareApply(host: ApplyHost, deps: ApplyDeps = {}): Promise<Prep
 
   try {
     const [fleet, rules, coreAddress] = await Promise.all([
-      loadFleetState(host, driver),
+      loadFleetState(host, driver, deps.assignmentOverrides),
       driver.listRules(),
       resolveCoreAddress({ baseUrl: loaded.config.baseUrl, tls: loaded.config.tls }),
     ])
@@ -307,7 +357,16 @@ async function executePlan(driver: RouterDriver, plan: readonly PlanRow[]): Prom
           // device that moved from one group to another still resolves to
           // 'update' here (§4.3 matches on src-address alone), and the
           // rule's comment must reflect the group that owns it NOW.
-          await driver.updateRule(row.rule['.id'], { table: row.toPathId, comment: marker.comment })
+          //
+          // `disabled: false` is always sent, not only when the row's own
+          // reason for existing was the disabled flag (planner.ts's header,
+          // point 5, step 122.8) — a device that is desired again always
+          // means "live," and a group's `onDeactivate: 'disable-rules'`
+          // policy (`groups-service.ts`) is the only place in this plugin
+          // that ever sets `disabled: true` on a managed rule. Without this,
+          // a rule disabled by one deactivation could stay disabled forever
+          // even after a later activation legitimately wants it live again.
+          await driver.updateRule(row.rule['.id'], { table: row.toPathId, comment: marker.comment, disabled: false })
         }
       } else {
         await driver.deleteRule(row.rule['.id'])

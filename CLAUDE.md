@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `docs/plans/00-overview.md` — **required reading before touching any plan**: immutable stack decisions (§3), repo/TS/API/test/commit conventions (§4), Definition of Done (§7).
 - `docs/plans/01..16-*.md` — milestone plans M0–M10 (a nine-section template, with acceptance criteria per plan).
 - `docs/design.md` — the Studio design system: tokens, screen patterns, writing rules, quality floor.
-- `docs/guide/` — user guides: `install.md`, `cloud.md`, `enrollment.md`, `redroid.md`.
+- `docs/guide/` — user guides: `install.md`, `cloud.md`, `enrollment.md`, `redroid.md`, `mikrotik-routing.md`.
 - `LICENSES.md` — the redistribution audit (adb is NOT redistributed; it is downloaded on first run and sha256-verified).
 
 ## Language

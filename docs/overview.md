@@ -851,5 +851,6 @@ All documentation, code comments, identifiers, UI copy and commit messages are *
 | Work on the guest agent | [`apps/guest-agent/README.md`](../apps/guest-agent/README.md), [`docs/research/android-guest-agent.md`](research/android-guest-agent.md) |
 | Enroll devices, label them, spoof identity | [`enrollment.md`](guide/enrollment.md), [`physical-labelling.md`](guide/physical-labelling.md), [`identity.md`](guide/identity.md) |
 | Build workflows or recordings | [`workflows.md`](guide/workflows.md), [`record-and-replay.md`](guide/record-and-replay.md) |
+| Steer a device out a chosen uplink | [`mikrotik-routing.md`](guide/mikrotik-routing.md) — **read its prerequisite section before assigning anything** |
 | Know where code and spec knowingly differ | [`docs/spec-divergences.md`](spec-divergences.md) |
 | Ship a release | [`docs/guide/release-checklist.md`](guide/release-checklist.md), [`LICENSES.md`](../LICENSES.md) |

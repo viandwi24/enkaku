@@ -8,12 +8,14 @@ import {
   loadPluginConfig,
   loadRouterPresence,
   runDoctor,
+  runReconcileNow,
   saveRouterConfig,
   savePluginConfig,
   isRefusal,
   type DoctorResult,
   type LocalExceptionResult,
   type PluginConfig,
+  type ReconcileResult,
   type RouterConfig,
   type RouterPresence,
 } from './api'
@@ -30,8 +32,9 @@ import { useLoader } from './bits'
  * position-aware, three states — see `service/local-exception.ts`'s own
  * header for why the old exact-comment match was actively dangerous) and
  * this screen follows: `missing`/`partial`/`ok`, each its own colour and
- * wording, `partial` naming every uncovered device by label rather than
- * saying "some devices."
+ * wording, `partial` naming every uncovered device by label AND LAN address
+ * rather than saying "some devices" — label alone repeats once a farm has
+ * more than one device of the same model.
  */
 
 function localExceptionTone(status: LocalExceptionResult['status']): string {
@@ -60,10 +63,40 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
       <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{localException.message}</p>
       {localException.uncoveredDevices.length > 0 && (
         <p className="text-[12px] text-fg-muted">
-          Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => d.label).join(', ')}</span>
+          {/* `label` alone is useless once a farm has more than one device of the same model — the owner's own farm printed "SM-F721U1, SM-F721U1, SM-F721U1" here. `address` is what a candidate rule's src-address actually has to cover. */}
+          Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => `${d.label} (${d.address})`).join(', ')}</span>
         </p>
       )}
       <p className="text-[12px] text-fg-muted">{coreAddressCaption(localException.coreAddress)}</p>
+      {/*
+        Why this is refused, not just flagged. The panel used to assert the
+        consequence ("would lose ADB") without explaining the mechanism, which
+        reads as an arbitrary veto to anyone who has not met policy routing
+        before — the owner asked outright what it meant. Explaining it here is
+        what turns the block into something an operator can reason about, and
+        it is the same explanation `docs/guide/mikrotik-routing.md` gives at
+        length.
+      */}
+      <details className="rounded-md border border-line bg-surface-2/40 p-3">
+        <summary className="cursor-pointer text-[12px] font-medium">Why this is required</summary>
+        <div className="mt-2 space-y-2 max-w-prose text-[12px] leading-relaxed text-fg-muted">
+          <p>
+            A rule this plugin writes matches on a device&rsquo;s <span className="font-medium text-fg">source address</span>, so it captures{' '}
+            <span className="font-medium text-fg">every packet that device sends</span> — including its replies to this controller. The egress
+            table it points into holds a default route and nothing else.
+          </p>
+          <p>
+            So the device&rsquo;s ADB reply, the Studio session and the scrcpy stream all get sent out of the uplink instead of back across the LAN.
+            The uplink has no route to a private LAN address, so they are dropped there — and the device goes unreachable until the rule is removed
+            by hand.
+          </p>
+          <p>
+            The local-exception rule sits above every device rule and sends locally-destined traffic back through the ordinary table, leaving only
+            internet-bound traffic to the uplink. This plugin cannot create it: routing rules are evaluated top-down, this one must be first, and
+            RouterOS&rsquo;s REST API has no way to position a rule.
+          </p>
+        </div>
+      </details>
       <p className="text-[12px] font-medium">Add it on the router, in this exact order:</p>
       <pre className="overflow-x-auto rounded-md bg-surface-2 p-3 text-[11px] leading-relaxed">
         <code>{localException.suggestedFixCommands.join('\n')}</code>
@@ -208,7 +241,9 @@ function PreferencesCard({ config, onSaved }: { config: PluginConfig | undefined
     <Card>
       <CardHeader>
         <CardTitle>Preferences</CardTitle>
-        <CardDescription>Reconcile cadence and the two apply-safety switches (§4.4, §4.7). Nothing here does anything yet — no apply and no reconcile loop exist in this build.</CardDescription>
+        <CardDescription>
+          Reconcile cadence and the two apply-safety switches (§4.4, §4.7). The reconcile loop (122.9) reads both "Reconcile interval" and "Auto-repair" below, fresh, on every tick — a change here takes effect on the very next tick, with nothing to invalidate. Apply and group activation still do NOT read "Require confirmation": a preview is always shown before either one writes to the router, on purpose, since an unreviewed write is the exact risk §3.2/§4.4 exist to prevent — that switch remains saved but unread.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
@@ -245,6 +280,83 @@ function PreferencesCard({ config, onSaved }: { config: PluginConfig | undefined
         >
           Save preferences
         </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+const DRIFT_KIND_LABELS: Record<string, string> = {
+  'missing-rule': 'Missing rule',
+  'wrong-path': 'Wrong path',
+  'path-missing': 'Path missing',
+  duplicate: 'Duplicate',
+  'unexpected-managed-rule': 'Orphan',
+  'stale-owner': 'Stale owner',
+}
+
+function driftKindLabel(kind: string): string {
+  return DRIFT_KIND_LABELS[kind] ?? kind
+}
+
+/** One row per drift KIND present, with its count — never a per-item list, since `Drift`'s other fields are kept loosely typed here (`api.ts`'s own header) and this screen only ever needs "how much of what", not a full render of each item (that is a future step's job, not this one's). */
+function summariseDriftKinds(drifts: readonly { kind: string }[]): { kind: string; count: number }[] {
+  const counts = new Map<string, number>()
+  for (const d of drifts) counts.set(d.kind, (counts.get(d.kind) ?? 0) + 1)
+  return [...counts.entries()].map(([kind, count]) => ({ kind, count }))
+}
+
+function ReconcileCard() {
+  const [result, setResult] = useState<ReconcileResult | null>(null)
+  const { run, isPending } = useAction()
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Reconcile</CardTitle>
+        <CardDescription>
+          Runs on its own every "Reconcile interval" seconds above (§4.7). This button runs one tick right now, sharing the SAME loop, rather than waiting. Report-only by default — a newly-detected drift item is also sent as a notification, once, not on every tick it stays standing — and nothing is repaired unless "Auto-repair" above is on, and even then only missing-rule/wrong-path; duplicates, orphans, and stale owners (§3.5) always stay a human decision.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isPending('reconcile-now')}
+          onClick={() =>
+            void run('reconcile-now', () => runReconcileNow(), {
+              success: 'Reconcile tick complete',
+              failure: 'Reconcile tick failed',
+              onSuccess: setResult,
+            })
+          }
+        >
+          Reconcile now
+        </Button>
+        {result && isRefusal(result) && <p className="text-[12px] text-led-danger">{result.message}</p>}
+        {result && !isRefusal(result) && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={result.drifts.length === 0 ? 'text-led-ok' : 'text-led-warn'}>
+                {result.drifts.length} drift item{result.drifts.length === 1 ? '' : 's'}
+              </Badge>
+              {result.newDrifts.length > 0 && (
+                <Badge variant="outline" className="text-led-warn">
+                  {result.newDrifts.length} newly detected
+                </Badge>
+              )}
+              {result.autoRepaired.length > 0 && <Badge variant="outline">{result.autoRepaired.length} auto-repaired</Badge>}
+            </div>
+            {result.drifts.length > 0 && (
+              <ul className="list-inside list-disc text-[12px] text-fg-muted">
+                {summariseDriftKinds(result.drifts).map((row) => (
+                  <li key={row.kind}>
+                    {driftKindLabel(row.kind)} × {row.count}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -290,6 +402,7 @@ export function SettingsTab() {
           />
           <DoctorSummary report={doctorReport ?? null} loading={configured && doctorLoading} error={doctorError} onRetest={reloadDoctor} />
           <PreferencesCard config={base?.config} onSaved={reloadBase} />
+          <ReconcileCard />
         </>
       )}
     </div>

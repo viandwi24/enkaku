@@ -1,6 +1,6 @@
 import { buildLocalExceptionFixCommands } from '../shared'
 import type { CoreAddressResult } from './core-address'
-import { RFC1918_BLOCKS, ipToInt, rfc1918BlockContaining, smallestCoveringCidr, specContains, specCoversBlock } from './cidr'
+import { RFC1918_BLOCKS, ipToInt, naturalCoveringCidr, rfc1918BlockContaining, specContains, specCoversBlock } from './cidr'
 import { parseMarker } from './marker'
 import type { RouterRule } from './schemas'
 
@@ -48,6 +48,24 @@ import type { RouterRule } from './schemas'
  * taking the ALREADY-derived result as a plain value, the same seam
  * `identity-bridge.ts` draws between "resolve a LAN address" (I/O, a later
  * step) and "use one" (this file, pure).
+ *
+ * ## Two more defects, found on the same router the day after this shipped
+ *
+ * - **DEFECT 1 (durability, not a snapshot).** The suggested `src-address`
+ *   used to be `smallestCoveringCidr` of the devices known AT THE MOMENT OF
+ *   THE CHECK — mathematically the tightest fit, and operationally wrong: on
+ *   the owner's farm, 3 online devices out of 40 produced a `/29` that
+ *   stopped protecting the other 37 the instant they came back online,
+ *   after the fix had already been pasted into the router. `buildSuggestedFixCommands`
+ *   now calls `cidr.ts`'s `naturalCoveringCidr` instead, which widens to the
+ *   /24 that actually contains the known addresses (still derived from
+ *   them, never a hardcoded literal — see that function's own header).
+ * - **DEFECT 2 (uncovered-device naming).** `describeUncovered` used to
+ *   print `label` alone, which is useless the moment a farm has more than
+ *   one device of the same model (the owner's own check printed
+ *   "SM-F721U1, SM-F721U1, SM-F721U1"). It now prints `label (address)` —
+ *   the address is what a candidate rule's `src-address` actually has to
+ *   cover, so it doubles as the most useful disambiguator.
  */
 
 /** One device this plugin can currently check coverage for — already resolved to a LAN address by the identity bridge (`identity-bridge.ts`, tier 1/2/3, §3.4). A device with no derivable address (`needs-address`) is not something this check can evaluate at all, and callers must filter those out before calling in — there is no address to test `src-address` against. */
@@ -121,7 +139,12 @@ function deviceIsCovered(rules: readonly RouterRule[], device: ProtectedDevice, 
 }
 
 function buildSuggestedFixCommands(devices: readonly ProtectedDevice[], coreAddress: CoreAddressResult): readonly string[] {
-  const srcAddress = smallestCoveringCidr(devices.map((d) => d.address)) ?? '<farm-subnet>'
+  // `naturalCoveringCidr`, not `smallestCoveringCidr` (defect 1, §5 step
+  // 122.12's follow-up, 2026-08-21): the tightest fit covers only the
+  // devices known AT THIS MOMENT, which under-covers a farm where devices
+  // come and go — see `cidr.ts`'s own header on this function for why a
+  // /24 derived from the known addresses is durable instead.
+  const srcAddress = naturalCoveringCidr(devices.map((d) => d.address)) ?? '<farm-subnet>'
   if (coreAddress.kind === 'derived') {
     const block = rfc1918BlockContaining(coreAddress.address)
     return buildLocalExceptionFixCommands(srcAddress, [block ?? `${coreAddress.address}/32`])
@@ -129,8 +152,9 @@ function buildSuggestedFixCommands(devices: readonly ProtectedDevice[], coreAddr
   return buildLocalExceptionFixCommands(srcAddress, RFC1918_BLOCKS)
 }
 
+/** `label` alone is useless once a farm has more than one device of the same model (defect 2, §5 step 122.12's follow-up: the owner's own farm printed "SM-F721U1, SM-F721U1, SM-F721U1") — `address` is what a candidate rule's `src-address` actually has to cover, so it is also the most relevant identifier to show beside the label. */
 function describeUncovered(devices: readonly ProtectedDevice[]): string {
-  return devices.map((d) => d.label).join(', ')
+  return devices.map((d) => `${d.label} (${d.address})`).join(', ')
 }
 
 /**

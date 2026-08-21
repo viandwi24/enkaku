@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import activateGroupScript from './activate-group'
+import discoverLanIpScript from './discover-lan-ip'
 import plugin, { checkScript } from './index'
+import verifyEgressScript from './verify-egress'
 
 /**
  * A smoke test for the plugin manifest itself. Step 122.1 only needed the
@@ -11,11 +14,11 @@ import plugin, { checkScript } from './index'
  */
 
 describe('the plugin manifest', () => {
-  test('definePlugin accepts it — id, version, and one member script', () => {
+  test('definePlugin accepts it — id, version, and four member scripts (122.10 adds three)', () => {
     expect(plugin.id).toBe('mikrotik-routing')
-    expect(plugin.version).toBe('0.3.0')
-    expect(plugin.scripts).toHaveLength(1)
-    expect(plugin.scripts[0]?.id).toBe('check')
+    expect(plugin.version).toBe('0.6.0')
+    expect(plugin.scripts).toHaveLength(4)
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['check', 'verify-egress', 'discover-lan-ip', 'activate-group'])
   })
 })
 
@@ -24,6 +27,28 @@ describe('checkScript — honest about doing nothing yet', () => {
     expect(typeof checkScript.run).toBe('function')
     expect(checkScript.params.safeParse({}).success).toBe(true)
     expect(checkScript.result?.safeParse({ ok: false })).toMatchObject({ success: true })
+  })
+})
+
+describe('the three member scripts (122.10) — real scripts the runner would accept, not stubs', () => {
+  test('verify-egress declares empty params, a real result schema, and a run function', () => {
+    expect(typeof verifyEgressScript.run).toBe('function')
+    expect(verifyEgressScript.params.safeParse({}).success).toBe(true)
+    expect(verifyEgressScript.result?.safeParse({ publicIp: '1.2.3.4', expectedPath: 'via-modem1', matches: null })).toMatchObject({ success: true })
+  })
+
+  test('discover-lan-ip declares empty params, a real result schema, and a run function', () => {
+    expect(typeof discoverLanIpScript.run).toBe('function')
+    expect(discoverLanIpScript.params.safeParse({}).success).toBe(true)
+    expect(discoverLanIpScript.result?.safeParse({ resolved: true, lanIp: '192.168.10.215', reason: null })).toMatchObject({ success: true })
+  })
+
+  test('activate-group requires a group id, defaults force to false, and declares a run function', () => {
+    expect(typeof activateGroupScript.run).toBe('function')
+    expect(activateGroupScript.params.safeParse({}).success).toBe(false)
+    const parsed = activateGroupScript.params.safeParse({ group: 'jadwal-1' })
+    expect(parsed).toMatchObject({ success: true, data: { group: 'jadwal-1', force: false } })
+    expect(activateGroupScript.result?.safeParse({ ok: true, code: null, message: null })).toMatchObject({ success: true })
   })
 })
 

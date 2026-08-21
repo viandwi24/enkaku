@@ -132,12 +132,26 @@ describe('readAssignment / writeAssignment', () => {
   test('a fresh read of nothing (undefined/null) is EMPTY_ASSIGNMENT — every field blank/zero', () => {
     expect(readAssignment(undefined)).toEqual(EMPTY_ASSIGNMENT)
     expect(readAssignment(null)).toEqual(EMPTY_ASSIGNMENT)
-    expect(EMPTY_ASSIGNMENT).toEqual({ pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0 })
+    expect(EMPTY_ASSIGNMENT).toEqual({ pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0, lastVerifiedAt: 0, lastPublicIp: '' })
   })
 
-  test('write ∘ read round-trips a valid assignment exactly', () => {
-    const assignment = { pathId: 'via-modem7-p12', groupId: 'default', lanIp: '192.168.10.215', lanIpSource: 'transport', leaseKind: 'dynamic', since: 1_700_000_000 }
+  test('write ∘ read round-trips a valid assignment exactly, including the two verification fields (122.10)', () => {
+    const assignment = {
+      pathId: 'via-modem7-p12',
+      groupId: 'default',
+      lanIp: '192.168.10.215',
+      lanIpSource: 'transport',
+      leaseKind: 'dynamic',
+      since: 1_700_000_000,
+      lastVerifiedAt: 1_700_000_500,
+      lastPublicIp: '103.186.169.250',
+    }
     expect(readAssignment(writeAssignment(assignment))).toEqual(assignment)
+  })
+
+  test('lastVerifiedAt/lastPublicIp are optional on StoredAssignment — a pre-122.10 literal missing both still writes and reads back as "never verified"', () => {
+    const assignment = { pathId: 'via-modem1', groupId: 'default', lanIp: '192.168.10.216', lanIpSource: 'manual', leaseKind: 'none', since: 1_700_000_000 }
+    expect(readAssignment(writeAssignment(assignment))).toEqual({ ...assignment, lastVerifiedAt: 0, lastPublicIp: '' })
   })
 
   test('a junk value (array, string, number) degrades to EMPTY_ASSIGNMENT rather than throwing', () => {
@@ -157,9 +171,21 @@ describe('readAssignment / writeAssignment', () => {
     expect(readAssignment({ since: 1_700_000_000 }).since).toBe(1_700_000_000)
   })
 
-  test('the write shape carries no field beyond StoredAssignment’s own six', () => {
-    const written = writeAssignment({ pathId: 'p', groupId: 'g', lanIp: '1.2.3.4', lanIpSource: 'manual', leaseKind: 'none', since: 1 })
-    expect(Object.keys(written).sort()).toEqual(['groupId', 'lanIp', 'lanIpSource', 'leaseKind', 'pathId', 'since'])
+  test('lastVerifiedAt follows the exact same non-negative-integer discipline as since', () => {
+    expect(readAssignment({ lastVerifiedAt: -5 }).lastVerifiedAt).toBe(0)
+    expect(readAssignment({ lastVerifiedAt: 1.5 }).lastVerifiedAt).toBe(0)
+    expect(readAssignment({ lastVerifiedAt: 'soon' }).lastVerifiedAt).toBe(0)
+    expect(readAssignment({ lastVerifiedAt: 1_700_000_500 }).lastVerifiedAt).toBe(1_700_000_500)
+  })
+
+  test('lastPublicIp defaults to "" for a junk value, the same discipline every other string field here uses', () => {
+    expect(readAssignment({ lastPublicIp: 42 }).lastPublicIp).toBe('')
+    expect(readAssignment({ lastPublicIp: '103.186.169.250' }).lastPublicIp).toBe('103.186.169.250')
+  })
+
+  test('the write shape carries no field beyond StoredAssignment’s own eight', () => {
+    const written = writeAssignment({ pathId: 'p', groupId: 'g', lanIp: '1.2.3.4', lanIpSource: 'manual', leaseKind: 'none', since: 1, lastVerifiedAt: 2, lastPublicIp: '5.6.7.8' })
+    expect(Object.keys(written).sort()).toEqual(['groupId', 'lanIp', 'lanIpSource', 'lastPublicIp', 'lastVerifiedAt', 'leaseKind', 'pathId', 'since'])
   })
 })
 

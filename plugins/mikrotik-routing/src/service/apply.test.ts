@@ -175,6 +175,31 @@ describe('previewPlan', () => {
     if (!result.ok) throw new Error('unreachable')
     expect(result.localException.status).toBe('missing')
   })
+
+  test('`assignmentOverrides` substitutes an in-memory value for a device’s REAL stored note, without reading or writing it — the plumbing `groups-service.ts`’s `previewActivateGroup` reuses rather than a second plan pipeline', async () => {
+    const d1 = makeDevice('d1', '192.168.10.215')
+    const d2 = makeDevice('d2', '192.168.10.216')
+    // d1's REAL stored note says via-modem1; the override says via-modem2 —
+    // the override must win, and the KV read for d1 must never happen.
+    const { host, forDeviceCalls } = fakeHost({ routerKv: ROUTER_CONFIG, devices: [d1, d2], assignments: { d1: writeAssignment(assignment({ pathId: 'via-modem1' })) } })
+    const overrides = new Map([['d1', assignment({ pathId: 'via-modem2' })]])
+
+    const result = await previewPlan(host, {
+      createDriver: () =>
+        fakeDriver({
+          listRules: async () => [protectingRule()],
+          inventory: async () => emptyInventory({ paths: [...emptyInventory().paths, { id: 'via-modem2', table: 'via-modem2', gateway: '10.0.0.2', hasDefaultRoute: true }], health: [...emptyInventory().health, { pathId: 'via-modem2', up: true, checkedAt: 1000 }] }),
+        }),
+      deriveCoreAddress: async () => OK_CORE_ADDRESS,
+      assignmentOverrides: overrides,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.rows.filter((r) => r.kind !== 'foreign')).toEqual([{ kind: 'create', endpointKey: '192.168.10.215', pathId: 'via-modem2', groupId: 'default', groupName: 'Default' }])
+    // d2 has no override — its (empty) real note is still read as normal.
+    expect(forDeviceCalls).toContain('d2')
+    expect(forDeviceCalls).not.toContain('d1')
+  })
 })
 
 describe('applyNow — the safety gate (§3.2, acceptance criterion 1)', () => {
@@ -233,7 +258,11 @@ describe('applyNow — executing the plan once the gate is `ok`', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('unreachable')
     expect(driver.calls.create).toEqual([])
-    expect(driver.calls.update).toEqual([{ id: '*6', patch: { table: 'via-modem9', comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215' } }])
+    // `disabled: false` is always sent on an update (step 122.8's fix — see
+    // `executePlan`'s own comment): a group's `onDeactivate: 'disable-rules'`
+    // policy is the only place this plugin ever sets `disabled: true`, and an
+    // update must always be able to clear a stale one.
+    expect(driver.calls.update).toEqual([{ id: '*6', patch: { table: 'via-modem9', comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215', disabled: false } }])
     expect(driver.calls.delete).toEqual([])
   })
 

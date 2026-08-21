@@ -77,9 +77,21 @@
  *    itself writes, never by inferring intent from an address collision
  *    (§4.4: "the operator can see the plugin is NOT touching them").
  * 5. **A resolved `update` whose existing `table` already equals the desired
- *    `pathId` produces no row at all** — mirrors `drift.ts`'s own "matches
- *    exactly — no drift" rule. Only an actual state change is worth showing
- *    an operator in a plan they are about to confirm.
+ *    `pathId`, AND is not `disabled`, produces no row at all** — mirrors
+ *    `drift.ts`'s own "matches exactly — no drift" rule. Only an actual state
+ *    change is worth showing an operator in a plan they are about to confirm.
+ *    **The `disabled` half of this check was added at step 122.8**, for a
+ *    case that could not previously exist: before groups' `onDeactivate:
+ *    'disable-rules'` policy, nothing in this plugin ever wrote
+ *    `disabled: true` to a managed rule, so "table matches" was the whole
+ *    story. Once a rule CAN be disabled while still desired-with-the-same-path
+ *    (a group deactivated with `disable-rules`, then reactivated onto the
+ *    identical path), treating a matching-but-disabled rule as "no drift"
+ *    would leave a device silently routed nowhere forever — the plan would
+ *    never produce a row to re-enable it. Reusing `update` for this (rather
+ *    than inventing a new kind) keeps §4.4's five-row vocabulary exactly as
+ *    it is; `apply.ts`'s `executePlan` is what actually clears the flag
+ *    (see that file's own comment on the same fix).
  * 6. **Determinism.** Rows are sorted by `(kind, endpointKey, rule id)`, in
  *    that order — `kind` first, in the same reading order §4.4's own example
  *    lists them (additions, then changes, then removals, then blocked, then
@@ -194,8 +206,10 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
     if (resolved.action === 'create') {
       rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName })
     } else if (resolved.action === 'update') {
-      if (resolved.rule.table === d.pathId) {
-        // Already correct — no row (mirrors drift.ts's "matches exactly — no drift").
+      if (resolved.rule.table === d.pathId && !resolved.rule.disabled) {
+        // Already correct and enabled — no row (mirrors drift.ts's "matches
+        // exactly — no drift"). See this file's header, point 5, for why
+        // `disabled` joined this check at step 122.8.
         continue
       }
       rows.push({

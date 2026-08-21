@@ -256,9 +256,20 @@ export interface StoredAssignment {
   leaseKind: string
   /** Unix seconds — when this assignment was first noted. Sticky: an edit that changes the path or the LAN IP does not reset it. */
   since: number
+  /**
+   * Unix seconds — when `verify-egress` (122.10) last successfully observed
+   * this device's own public IP. `0`/absent means never verified. Optional
+   * (unlike `since` above) so every EXISTING `StoredAssignment` literal —
+   * `groups-service.ts`'s `overridesFor`, the Assignments tab's own writes —
+   * stays valid without naming a field it has no reason to know about;
+   * `readAssignment` below still always returns a concrete value (`0`).
+   */
+  lastVerifiedAt?: number
+  /** The public IP `verify-egress` (122.10) last observed for this device, whatever path it was assigned to at the time. `''`/absent means never verified. Optional for the same reason as `lastVerifiedAt` above. */
+  lastPublicIp?: string
 }
 
-export const EMPTY_ASSIGNMENT: StoredAssignment = { pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0 }
+export const EMPTY_ASSIGNMENT: StoredAssignment = { pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0, lastVerifiedAt: 0, lastPublicIp: '' }
 
 function nonNegativeIntOrZero(value: unknown): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0
@@ -274,10 +285,12 @@ export function readAssignment(value: unknown): StoredAssignment {
     lanIpSource: str(source, 'lanIpSource'),
     leaseKind: str(source, 'leaseKind'),
     since: nonNegativeIntOrZero(source.since),
+    lastVerifiedAt: nonNegativeIntOrZero(source.lastVerifiedAt),
+    lastPublicIp: str(source, 'lastPublicIp'),
   }
 }
 
-/** The exact object `assignment` is stored as — the write half of `readAssignment`. */
+/** The exact object `assignment` is stored as — the write half of `readAssignment`. A pre-122.10 caller's literal (missing the two verification fields, both optional on `StoredAssignment`) still writes cleanly: `?? 0`/`?? ''` supply the same concrete defaults `readAssignment` would produce for an absent key, so a round trip through an old call site never loses the "never verified" meaning. */
 export function writeAssignment(assignment: StoredAssignment): Record<string, unknown> {
   return {
     pathId: assignment.pathId,
@@ -286,6 +299,8 @@ export function writeAssignment(assignment: StoredAssignment): Record<string, un
     lanIpSource: assignment.lanIpSource,
     leaseKind: assignment.leaseKind,
     since: assignment.since,
+    lastVerifiedAt: assignment.lastVerifiedAt ?? 0,
+    lastPublicIp: assignment.lastPublicIp ?? '',
   }
 }
 

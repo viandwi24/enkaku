@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { RFC1918_BLOCKS, intToIp, ipToInt, parseAddressSpec, rfc1918BlockContaining, sameAddressSpec, smallestCoveringCidr, specContains, specCoversBlock } from './cidr'
+import { RFC1918_BLOCKS, intToIp, ipToInt, naturalCoveringCidr, parseAddressSpec, rfc1918BlockContaining, sameAddressSpec, smallestCoveringCidr, specContains, specCoversBlock } from './cidr'
 
 /**
  * IPv4 arithmetic — plan 122 §5 step 122.12. Pure, no I/O. This is the
@@ -173,5 +173,61 @@ describe('smallestCoveringCidr — §5 step 122.12 fix 4: derive, never hardcode
 
   test('addresses spanning across an octet boundary still yield the correct minimal block', () => {
     expect(smallestCoveringCidr(['10.0.0.1', '10.0.1.1'])).toBe('10.0.0.0/23')
+  })
+})
+
+describe('naturalCoveringCidr — DEFECT 1 fix: durable, not a snapshot of who is online right now', () => {
+  // The exact regression: the owner's real router (2026-08-21) had 40 farm
+  // devices on 192.168.10.215-.254, but only 3 (.227/.228/.231) were online
+  // at the moment `doctor()` ran. `smallestCoveringCidr` on those three
+  // alone produces 192.168.10.224/29 (verified above by the arithmetic),
+  // which would silently exclude every other address in .215-.254 the
+  // moment it came back online — exactly the bug this function exists to
+  // fix.
+  test('3 online devices at .227/.228/.231 do not yield a suggestion that excludes .215-.254', () => {
+    expect(smallestCoveringCidr(['192.168.10.227', '192.168.10.228', '192.168.10.231'])).toBe('192.168.10.224/29')
+
+    const suggestion = naturalCoveringCidr(['192.168.10.227', '192.168.10.228', '192.168.10.231'])
+    expect(suggestion).toBe('192.168.10.0/24')
+
+    // The whole farm range this incident named, plus a few more within the
+    // same octet a new device might land on — every one of them must fall
+    // inside the suggested block, not just the three that were online.
+    const range = parseAddressSpec(suggestion ?? '')
+    expect(range).not.toBeNull()
+    for (const ip of ['192.168.10.215', '192.168.10.220', '192.168.10.254', '192.168.10.1', '192.168.10.99']) {
+      expect(specContains(suggestion ?? '', int(ip))).toBe(true)
+    }
+  })
+
+  test('never narrower than /24, even for a single known device', () => {
+    expect(naturalCoveringCidr(['192.168.10.221'])).toBe('192.168.10.0/24')
+  })
+
+  test('two addresses close together still widen to the /24 containing them, not the tight /29 smallestCoveringCidr would pick', () => {
+    expect(smallestCoveringCidr(['192.168.10.10', '192.168.10.12'])).toBe('192.168.10.8/29')
+    expect(naturalCoveringCidr(['192.168.10.10', '192.168.10.12'])).toBe('192.168.10.0/24')
+  })
+
+  test('addresses already spanning more than one /24 are NOT forced down to a single (wrong) /24 — the true minimal covering block is kept', () => {
+    // 192.168.10.200 and 192.168.11.50 cannot both fit in any single /24;
+    // smallestCoveringCidr already needs a broader block, and that answer
+    // must be trusted rather than silently narrowed to something incorrect.
+    const tightest = smallestCoveringCidr(['192.168.10.200', '192.168.11.50'])
+    expect(tightest).not.toBeNull()
+    const prefix = Number(tightest?.split('/')[1])
+    expect(prefix).toBeLessThan(24)
+    expect(naturalCoveringCidr(['192.168.10.200', '192.168.11.50'])).toBe(tightest)
+  })
+
+  test('a covering block already exactly /24 is returned unchanged', () => {
+    // A device at each end of one octet already needs the full /24 —
+    // widening should not push it any broader than that.
+    expect(naturalCoveringCidr(['192.168.10.0', '192.168.10.255'])).toBe('192.168.10.0/24')
+  })
+
+  test('null for an empty or entirely-unparseable list, same as smallestCoveringCidr', () => {
+    expect(naturalCoveringCidr([])).toBeNull()
+    expect(naturalCoveringCidr(['not-an-ip'])).toBeNull()
   })
 })

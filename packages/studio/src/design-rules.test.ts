@@ -142,17 +142,32 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
    * before this test existed, which is the same defect the claim warns
    * about: a guarantee written down and never wired up.
    *
-   * Asserted against `globals.css` itself (the only file allowed to define a
-   * palette value, per the hex rule above) rather than against a component,
-   * so deleting the token fails here even if every current consumer is
-   * deleted in the same change.
+   * Asserted against the stylesheet that DEFINES the palette, rather than
+   * against a component, so deleting a token fails here even if every
+   * current consumer is deleted in the same change.
+   *
+   * **That stylesheet moved, and this test did not follow it — which is the
+   * very failure mode the paragraph above describes.** The palette lived in
+   * `packages/studio/src/app/globals.css` when this test was written; commit
+   * `d1c5fa0` ("feat: plugin runtime server and plugin ui") moved the token
+   * definitions to `packages/ui/src/theme.css` so plugin surfaces could share
+   * one theme, leaving `globals.css` a CONSUMER (`var(--color-led-ok)`) with
+   * no definitions in it at all. From that commit onward this test read a
+   * file that could no longer contain what it was looking for, so it failed
+   * for a reason that had nothing to do with the guarantee it protects —
+   * every token is still defined, still distinct, and still in use.
+   *
+   * It now reads the real home. The cross-package read is deliberate: the
+   * guarantee is about the palette wherever it lives, and pinning it to the
+   * package that merely consumes the palette is exactly what broke it.
    */
   test('led-active and led-off still exist and are distinct from each other and from led-ok/led-danger (plan 101 §3.2)', () => {
-    const css = readFileSync(join(root, 'app/globals.css'), 'utf8')
+    const themeCss = join(root, '../../ui/src/theme.css')
+    const css = readFileSync(themeCss, 'utf8')
     const valueOf = (token: string): string | null => new RegExp(`--color-${token}:\\s*([^;]+);`).exec(css)?.[1]?.trim() ?? null
 
     for (const token of ['led-active', 'led-off', 'led-ok', 'led-warn', 'led-danger']) {
-      expect(valueOf(token), `--color-${token} must stay defined in globals.css`).not.toBeNull()
+      expect(valueOf(token), `--color-${token} must stay defined in packages/ui/src/theme.css`).not.toBeNull()
     }
 
     // Distinctness, not mere presence: re-pointing `led-off` at `led-ok` would

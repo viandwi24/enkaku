@@ -2,16 +2,20 @@ import { describe, expect, test } from 'bun:test'
 import {
   conflict,
   decideActivation,
+  deriveGroupId,
   describeConflicts,
   devicesOf,
+  duplicateDeviceIds,
   GROUP_KEY_PREFIX,
   GroupSchema,
   groupIdFromKey,
   groupKeyFor,
   overlappingDeviceIds,
   readGroup,
+  slugifyGroupName,
   writeGroup,
   type Group,
+  type GroupEntry,
 } from './groups'
 
 /**
@@ -324,5 +328,74 @@ describe('describeConflicts', () => {
       { group: b, overlappingDeviceIds: ['flip4-06'] },
     ]
     expect(describeConflicts('Mixed', conflicts)).toBe('Mixed conflicts with active Jadwal-1 on flip4-01; active Jadwal-3 on flip4-06')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// slugifyGroupName / deriveGroupId — step 122.8's id minting, mirroring
+// `plugins/proxy-manager/src/shared.ts`'s `slugifyProxyName`/`deriveProxyKey`
+// ---------------------------------------------------------------------------
+
+describe('slugifyGroupName', () => {
+  test("the plan's own worked examples round-trip", () => {
+    expect(slugifyGroupName('Jadwal-1')).toBe('jadwal-1')
+    expect(slugifyGroupName('Jadwal 2')).toBe('jadwal-2')
+  })
+
+  test('accents are folded, not dropped', () => {
+    expect(slugifyGroupName('Köln')).toBe('koln')
+  })
+
+  test('punctuation collapses to single dashes, and leading/trailing dashes are trimmed', () => {
+    expect(slugifyGroupName('  Team #1 (Jakarta)!! ')).toBe('team-1-jakarta')
+  })
+
+  test('an empty or all-punctuation name slugifies to an empty string', () => {
+    expect(slugifyGroupName('')).toBe('')
+    expect(slugifyGroupName('###')).toBe('')
+  })
+})
+
+describe('deriveGroupId', () => {
+  test('a fresh name mints its own slug when nothing is taken', () => {
+    expect(deriveGroupId('Jadwal-1', [])).toBe('jadwal-1')
+  })
+
+  test('a collision is suffixed -2, -3, … rather than refused', () => {
+    expect(deriveGroupId('Jadwal-1', ['jadwal-1'])).toBe('jadwal-1-2')
+    expect(deriveGroupId('Jadwal-1', ['jadwal-1', 'jadwal-1-2'])).toBe('jadwal-1-3')
+  })
+
+  test('an empty/unslugifiable name falls back to "untitled"', () => {
+    expect(deriveGroupId('', [])).toBe('untitled')
+    expect(deriveGroupId('###', ['untitled'])).toBe('untitled-2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// duplicateDeviceIds — acceptance criterion 12, the gap this step found and
+// named ("Assigned to 122.8's group-CRUD/validation work") rather than fixed
+// on the spot
+// ---------------------------------------------------------------------------
+
+describe('duplicateDeviceIds', () => {
+  function entry(deviceId: string, pathId = 'via-modem1'): GroupEntry {
+    return { deviceId, lanIp: '', pathId }
+  }
+
+  test('empty when every device claims at most one entry', () => {
+    expect(duplicateDeviceIds([entry('d1'), entry('d2'), entry('d3')])).toEqual([])
+  })
+
+  test('names a device claimed twice, at two different paths, exactly once', () => {
+    expect(duplicateDeviceIds([entry('d1', 'via-modem1'), entry('d1', 'via-modem2')])).toEqual(['d1'])
+  })
+
+  test('names every duplicated device, sorted, when more than one is duplicated', () => {
+    expect(duplicateDeviceIds([entry('d3'), entry('d1'), entry('d3'), entry('d2'), entry('d1')])).toEqual(['d1', 'd3'])
+  })
+
+  test('an empty entries array has no duplicates', () => {
+    expect(duplicateDeviceIds([])).toEqual([])
   })
 })

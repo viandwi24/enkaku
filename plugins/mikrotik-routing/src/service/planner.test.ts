@@ -71,6 +71,20 @@ describe('buildPlan — update', () => {
 
     expect(result).toEqual([])
   })
+
+  test('a matching rule at the desired table but DISABLED still produces an update row (step 122.8, header point 5)', () => {
+    const d = desired({})
+    const existing = rule({ '.id': '*1', comment: MARKER(d.groupId, d.endpointKey), 'src-address': d.endpointKey, table: d.pathId, disabled: true })
+
+    const result = buildPlan({
+      desired: [d],
+      rules: [existing],
+      pathIds: new Set([d.pathId]),
+      health: [up(d.pathId)],
+    })
+
+    expect(result).toEqual([{ kind: 'update', endpointKey: d.endpointKey, fromPathId: d.pathId, toPathId: d.pathId, groupId: d.groupId, groupName: d.groupName, rule: existing }])
+  })
 })
 
 describe('buildPlan — delete', () => {

@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
 import { AssignmentsTab } from './parts/assignments'
+import { GroupsTab } from './parts/groups'
 import { PathsTab } from './parts/paths'
 import { RulesTab } from './parts/rules'
 import { SettingsTab } from './parts/settings'
@@ -14,14 +15,16 @@ import { SettingsTab } from './parts/settings'
  * below), and the same tab-lives-in-the-URL pattern so a reload lands where
  * the operator was.
  *
- * Four tabs: Paths, Settings, Rules (read-only, stage 1) and Assignments
- * (stage 2, step 122.6) — the one tab that can change what is on the router,
- * and only through a reviewed plan the operator confirms (§4.4).
+ * Five tabs: Paths, Settings, Rules (read-only, stage 1), Assignments (stage
+ * 2, step 122.6) and Groups (stage 3, step 122.8) — the two tabs that can
+ * change what is on the router, Assignments through a reviewed §4.4 plan the
+ * operator confirms, Groups through the §4.6 activation transaction.
  */
 
 const TABS = [
   { id: 'paths', label: 'Paths' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'groups', label: 'Groups' },
   { id: 'settings', label: 'Settings' },
   { id: 'rules', label: 'Rules' },
 ] as const
@@ -65,6 +68,9 @@ function MikrotikRoutingView({ params, setParams }: PluginViewProps) {
         </TabsContent>
         <TabsContent value="assignments" className="pt-2">
           <AssignmentsTab />
+        </TabsContent>
+        <TabsContent value="groups" className="pt-2">
+          <GroupsTab />
         </TabsContent>
         <TabsContent value="settings" className="pt-2">
           <SettingsTab />

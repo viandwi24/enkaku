@@ -171,3 +171,45 @@ export function smallestCoveringCidr(ips: readonly string[]): string | null {
   // check above. Kept only so the function has a total return type.
   return '0.0.0.0/0'
 }
+
+/**
+ * The block `local-exception.ts`'s suggested fix actually uses — plan 122
+ * §5 step 122.12's own DEFECT 1, found against the owner's real router
+ * (2026-08-21): `smallestCoveringCidr` is the tightest block that covers the
+ * devices known AT THE MOMENT OF THE CHECK, which is exactly wrong for a
+ * suggestion an operator pastes into their router and walks away from — on
+ * that farm, 3 online devices out of 40 produced a `/29` that stopped
+ * protecting the other 37 the instant they came back online, after the
+ * operator had already applied it believing the job was done.
+ *
+ * This never shrinks below a /24 — the classful LAN-subnet size, not a
+ * literal this function hardcodes: when `smallestCoveringCidr` finds the
+ * known addresses fit inside something tighter (a /25 through /32), this
+ * widens to the /24 that actually CONTAINS them (derived from their own
+ * addresses via the same alignment `smallestCoveringCidr` itself uses,
+ * not an assumed octet), which is always a valid superset — a coarser
+ * aligned CIDR block that contains a finer aligned block's start address
+ * always contains that entire finer block, since one is nested inside the
+ * other by construction. That covers every device that could plausibly
+ * join the same LAN segment later, not just the ones online right now.
+ *
+ * When the known addresses already span MORE than one /24 (a farm with
+ * real, distinct subnets), the true minimal covering block is kept as-is
+ * rather than forced down to an incorrect single /24 — an operator whose
+ * farm crosses subnet lines needs to see that honestly, not have it
+ * silently misrepresented.
+ */
+export function naturalCoveringCidr(ips: readonly string[]): string | null {
+  const tightest = smallestCoveringCidr(ips)
+  if (tightest === null) return null
+
+  const slash = tightest.indexOf('/')
+  const prefix = Number(tightest.slice(slash + 1))
+  if (prefix <= 24) return tightest
+
+  const ints = ips.map(ipToInt).filter((n): n is number => n !== null)
+  const min = Math.min(...ints)
+  const size = 2 ** (32 - 24)
+  const start = Math.floor(min / size) * size
+  return `${intToIp(start)}/24`
+}

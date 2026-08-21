@@ -98,6 +98,18 @@ describe('classifyLocalException — the owner\'s real router, verbatim (2026-08
     expect(report.message).toContain('flip4-01')
   })
 
+  test('uncovered devices are named by label AND address, not label alone — DEFECT 2: a farm of identical models must still be distinguishable', () => {
+    // The exact incident: the owner's farm is three SM-F721U1 units, so
+    // `label` alone rendered "SM-F721U1, SM-F721U1, SM-F721U1" and was
+    // useless for identifying which device needed attention.
+    const identicalModels = [device('SM-F721U1', '192.168.10.227'), device('SM-F721U1', '192.168.10.228'), device('SM-F721U1', '192.168.10.231')]
+    const report = classifyLocalException(OWNER_ROUTER_RULES, identicalModels, CORE_ADDRESS)
+    expect(report.status).toBe('partial')
+    expect(report.message).toContain('192.168.10.227')
+    expect(report.message).toContain('192.168.10.228')
+    expect(report.message).toContain('192.168.10.231')
+  })
+
   test('the disabled+inactive "local exception .221" rule is never counted as a candidate — defeats defect D', () => {
     // Its own src covers exactly one device (.221) and its dst is
     // 192.168.100.0/24, not the core's own subnet — if D were not enforced
@@ -113,6 +125,23 @@ describe('classifyLocalException — the owner\'s real router, verbatim (2026-08
     const text = report.suggestedFixCommands.join('\n')
     expect(text).toContain('src-address=192.168.10.0/24')
     expect(text).toContain('dst-address=192.168.0.0/16')
+  })
+
+  // DEFECT 1, the regression fixture built from the real incident numbers:
+  // 45 modems, 40 farm devices on 192.168.10.215-.254, but only 3
+  // (.227/.228/.231) online at the moment `doctor()` ran. The OLD
+  // `smallestCoveringCidr`-based suggestion was 192.168.10.224/29 — an
+  // operator who applied it would silently exclude the other 37 devices
+  // the moment they came back online.
+  const THREE_ONLINE_DEVICES: ProtectedDevice[] = [device('.227', '192.168.10.227'), device('.228', '192.168.10.228'), device('.231', '192.168.10.231')]
+
+  test('3 online devices out of 40 must NOT yield a suggestion that silently excludes .215-.254', () => {
+    const report = classifyLocalException(OWNER_ROUTER_RULES, THREE_ONLINE_DEVICES, CORE_ADDRESS)
+    const text = report.suggestedFixCommands.join('\n')
+    // The old, buggy behaviour — must NOT appear.
+    expect(text).not.toContain('src-address=192.168.10.224/29')
+    // The durable fix: widened to the /24 containing the known devices.
+    expect(text).toContain('src-address=192.168.10.0/24')
   })
 })
 

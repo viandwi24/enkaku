@@ -315,3 +315,83 @@ export function describeConflicts(candidateName: string, conflicts: readonly Gro
   const clauses = conflicts.map((c) => `active ${c.group.name} on ${c.overlappingDeviceIds.join(', ')}`)
   return `${candidateName} conflicts with ${clauses.join('; ')}`
 }
+
+// ---------------------------------------------------------------------------
+// Minting a `group:<id>` id from an operator-typed name — step 122.8's CRUD.
+// Mirrors `plugins/proxy-manager/src/shared.ts`'s `slugifyProxyName`/
+// `deriveProxyKey` exactly (same charset, same collision-suffix rule): the
+// plan's own worked examples (`jadwal-1`, `jadwal-2`, `Jadwal-2`) are slugs of
+// an operator-chosen name, not opaque ids, and duplicating a pattern this
+// codebase already ships beats inventing a second one for the same problem.
+// Pure — the wiring step (`groups-service.ts`) supplies `taken` from a real
+// `listGroups()` read.
+// ---------------------------------------------------------------------------
+
+export const GROUP_ID_MAX = 60
+export const UNTITLED_GROUP_ID = 'untitled'
+
+/**
+ * A name → the `group:<id>` id's own half (the caller adds `GROUP_KEY_PREFIX`
+ * via `groupKeyFor`). Output charset `[a-z0-9-]`, a strict subset of the KV
+ * key charset, so a derived id can never be refused by the store for its
+ * shape. `̀-ͯ` is the combining-marks block NFKD splits accents
+ * into (`Köln` → `koln`, not `k-ln`) — the same range
+ * `slugifyProxyName` strips, written here as an escape rather than the
+ * literal combining characters to keep the source unambiguous to read.
+ */
+export function slugifyGroupName(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, GROUP_ID_MAX)
+    .replace(/-+$/g, '')
+}
+
+/**
+ * A name → a `group:<id>` id nothing in `taken` already holds — `jadwal-1`,
+ * then `jadwal-1-2`, `jadwal-1-3`, … on a collision, mirroring
+ * `deriveProxyKey`'s own suffix rule. An empty/unslugifiable name (all
+ * punctuation, or empty) falls back to {@link UNTITLED_GROUP_ID} rather than
+ * minting an empty key.
+ */
+export function deriveGroupId(name: string, taken: Iterable<string>): string {
+  const base = slugifyGroupName(name) || UNTITLED_GROUP_ID
+  const used = new Set(taken)
+  let candidate = base
+  for (let n = 2; used.has(candidate) && n < 10_000; n += 1) candidate = `${base}-${n}`
+  return candidate
+}
+
+// ---------------------------------------------------------------------------
+// Save-time validation — acceptance criterion 12, the gap 122.7 found and
+// deliberately left unfixed ("Assigned to 122.8's group-CRUD/validation
+// work"). Pure, so the CRUD wiring step and its tests can check a candidate
+// `entries` array with no I/O — the same reason every other function in this
+// file takes plain values.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every `deviceId` that appears more than once in `entries`, each named
+ * ONCE, sorted for a stable, testable, human-readable order. Empty when
+ * every device in `entries` claims at most one entry in this group.
+ *
+ * This is a DIFFERENT question from the cross-group exclusivity invariant
+ * `conflict`/`overlappingDeviceIds` answer above: those compare TWO groups;
+ * this checks ONE group's own `entries` for an internal contradiction — the
+ * same device claimed at two different paths inside a single group, which
+ * would otherwise surface only at apply time as §4.3's `duplicate` refusal
+ * (two managed rules for one endpoint) instead of here, at save time, where
+ * it is both earlier and easier to read.
+ */
+export function duplicateDeviceIds(entries: readonly GroupEntry[]): string[] {
+  const seen = new Set<string>()
+  const dupes = new Set<string>()
+  for (const entry of entries) {
+    if (seen.has(entry.deviceId)) dupes.add(entry.deviceId)
+    seen.add(entry.deviceId)
+  }
+  return [...dupes].sort()
+}
