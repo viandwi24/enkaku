@@ -121,6 +121,48 @@ function openTunnel(port: number): Promise<net.Socket> {
   })
 }
 
+/**
+ * Bounded, with a clear diagnostic — a bare `new Promise((resolve) =>
+ * sock.on('close', resolve))` with no timeout is what let a genuine hang
+ * (this socket never closing, for whatever platform-specific reason) read
+ * as bun's own generic "timed out after 5000ms" instead of a message that
+ * names what actually failed to happen. CI failing four real-socket
+ * failover tests that all passed locally is exactly the signature of an
+ * unbounded wait racing something environment-dependent (a slower/loaded
+ * runner), not a bug in the switch logic itself — this makes the NEXT
+ * failure, if the underlying timing sensitivity isn't fully gone, point
+ * straight at the real culprit instead of a generic timeout.
+ */
+function waitForClose(sock: net.Socket, timeoutMs = 2_000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`socket did not close within ${timeoutMs}ms`)), timeoutMs)
+    sock.on('close', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+/**
+ * Replaces a blind `Bun.sleep(100) // let the async switch settle` — that
+ * fixed delay is exactly the kind of assumption that holds on a quiet dev
+ * machine and does not hold on a loaded CI runner (the async switch is a KV
+ * read plus a confirmation probe, neither bounded to 100ms by design; see
+ * `docs/plans/121-m86-proxy-failover.md`'s own note on this CI failure).
+ * Polls the record's live `failover` state until `activeIndex` reaches
+ * `expected`, or reports plainly which index it was stuck at instead of a
+ * silent timeout.
+ */
+async function waitForActiveIndex(getFailover: () => { activeIndex: number } | null | undefined, expected: number, timeoutMs = 2_000): Promise<void> {
+  const start = Date.now()
+  for (;;) {
+    const current = getFailover()?.activeIndex
+    if (current === expected) return
+    if (Date.now() - start > timeoutMs) throw new Error(`failover activeIndex did not reach ${expected} within ${timeoutMs}ms (last seen: ${current})`)
+    await Bun.sleep(20)
+  }
+}
+
 describe('the state machine', () => {
   test('the five words are plan 109’s five words, and `starting` is one of them', () => {
     expect([...PROXY_STATES]).toEqual(['stopped', 'starting', 'running', 'stopping', 'failed'])
@@ -746,8 +788,8 @@ describe('per-upstream-slot secret storage (plan 121 §4.1, widened by step 121.
       // same skip-means-fail discipline `probeEntry` itself documents), and
       // the switch to the fallback happens right away.
       const first = connectAttempt(port)
-      await new Promise<void>((resolve) => first.on('close', resolve))
-      await Bun.sleep(100) // let the async switch (an await'd KV read) settle
+      await waitForClose(first)
+      await waitForActiveIndex(() => supervisor.snapshot().find((v) => v.id === 'office-uk')?.failover, 1)
 
       // The NEXT connection dials the fallback, authenticating as ITSELF.
       const second = await openTunnel(port)
@@ -782,8 +824,8 @@ describe('per-upstream-slot secret storage (plan 121 §4.1, widened by step 121.
       expect((await supervisor.start('office-uk')).state).toBe('running')
 
       const first = connectAttempt(port)
-      await new Promise<void>((resolve) => first.on('close', resolve))
-      await Bun.sleep(100)
+      await waitForClose(first)
+      await waitForActiveIndex(() => supervisor.snapshot().find((v) => v.id === 'office-uk')?.failover, 1)
 
       // Reading a missing slot secret must not throw and must not block the
       // switch — the direct upstream dials the plain fixture straight through.
@@ -824,8 +866,8 @@ describe('per-upstream-slot secret storage (plan 121 §4.1, widened by step 121.
       expect((await supervisor.start('office-uk')).state).toBe('running')
 
       const first = connectAttempt(port)
-      await new Promise<void>((resolve) => first.on('close', resolve))
-      await Bun.sleep(100)
+      await waitForClose(first)
+      await waitForActiveIndex(() => supervisor.snapshot().find((v) => v.id === 'office-uk')?.failover, 1)
 
       // The switch happened (index moved to the fallback), and the fallback's
       // own SOCKS5 server ACCEPTS the empty password it was actually sent —
@@ -891,8 +933,8 @@ describe('failover joins snapshot(), and Supervisor.resetFailover — plan 121 �
       const first = net.connect(port, '127.0.0.1')
       first.on('connect', () => first.write(`CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`))
       first.on('error', () => {})
-      await new Promise<void>((resolve) => first.on('close', resolve))
-      await Bun.sleep(100) // let the async switch settle
+      await waitForClose(first)
+      await waitForActiveIndex(() => supervisor.snapshot().find((v) => v.id === 'office-uk')?.failover, 1)
 
       const switched = supervisor.snapshot().find((v) => v.id === 'office-uk')
       expect(switched?.failover?.activeIndex).toBe(1)
