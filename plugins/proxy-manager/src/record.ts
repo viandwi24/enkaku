@@ -72,6 +72,27 @@ import {
  * mode's route at this record's own `listen.bindHost`/`.port` instead of an
  * upstream it does not have (§3.6). Nothing here in `record.ts` changed shape
  * — both steps are logic in `shared.ts`, which this file only re-exports.
+ *
+ * ## What changed in plan 121 step 121.1
+ *
+ * The record grew `fallbackUpstreams` (an ordered array of the same
+ * `ProxyUpstreamSchema` shape the primary `upstream` already uses) and
+ * `failover` (`failureThreshold`/`autoFailback`) — additive, defaulted the
+ * same way plan 117's five fields were: a row written before this plan has
+ * neither key, and `readProxyRecord` in `shared.ts` fills both in on read.
+ * `ProxyUpstream` itself is still a plain interface, not a discriminated
+ * union — `fallbackUpstreams` is simply an array of it, the same shape
+ * `upstream` already is, just more than one.
+ *
+ * ## What changed in plan 121 step 121.4
+ *
+ * No schema shape changed here — `ProxyUpstream` still carries no password
+ * field of its own. What widened is the SECRET key scheme in `shared.ts`:
+ * `proxySecretKeyFor(id)` (one password per record) stays as the read-time
+ * fallback for slot 0, and `proxySecretSlotKeyFor(id, slot)` is the new,
+ * per-upstream-slot key a fallback's own credential is stored and read
+ * under. See that function's own comment for the addressing and the
+ * backward-compatibility rule.
  */
 
 export { PROXY_KEY_PREFIX, PROXY_KINDS, PROXY_SECRET_KEY_PREFIX, PROXY_AUTH_KEY_PREFIX, PROXY_KEY_HINT, LISTEN_PROTOS } from './shared'
@@ -85,6 +106,7 @@ export {
   proxyIdFromKey,
   proxyKeyFor,
   proxySecretKeyFor,
+  proxySecretSlotKeyFor,
   proxyAuthKeyFor,
   PROXY_PROBLEM_CODES,
 } from './shared'
@@ -134,6 +156,24 @@ export const ProxyUpstreamSchema = z.object({
     .describe('For a "direct" upstream with a bindAddress: whether DNS lookups are resolved through that same address rather than the host’s default resolver. A resolver failure never falls back to the default resolver.'),
 })
 
+/**
+ * The failover behaviour a record declares for itself (plan 121 §4.1). No
+ * separate "enabled" flag — see `ProxyRecordSchema.fallbackUpstreams`'s own
+ * comment.
+ */
+export const ProxyFailoverSchema = z.object({
+  failureThreshold: z
+    .number()
+    .int()
+    .min(1)
+    .default(3)
+    .describe('Consecutive dial failures against the currently active upstream before a confirmation probe runs. No upper bound — a large, varied fleet has no one right ceiling.'),
+  autoFailback: z
+    .boolean()
+    .default(true)
+    .describe('Whether a healthy primary, confirmed by a background re-probe, is switched back to automatically. When off, the background probe still runs and only the manual reset action switches back.'),
+})
+
 export const ProxyRecordSchema = z.object({
   label: z.string().max(80).default('').describe('What you call this proxy. Shown in the table and used to name the row in a confirmation.'),
   // Spelled out rather than `.default({})`: Zod 4's `.default()` takes the
@@ -142,6 +182,10 @@ export const ProxyRecordSchema = z.object({
   // records for `z.input` vs the inferred type).
   listen: ProxyListenSchema.default({ proto: 'http', bindHost: DEFAULT_BIND_HOST, port: null }),
   upstream: ProxyUpstreamSchema.default({ proto: 'socks5', host: '', port: 0, username: '', bindAddress: '', resolveThroughEgress: true }),
+  /** Plan 121 §4.1. Any existing `ProxyUpstream` shape — another local egress via `direct`, or a third-party rotating proxy via `http`/`socks5`. Empty leaves failover provably inert; there is no separate on/off switch. */
+  fallbackUpstreams: z.array(ProxyUpstreamSchema).default([]).describe('Backup upstreams this record fails over to, in order, when the primary proves unreachable and a confirmation probe through it also fails.'),
+  /** Plan 121 §4.1. Always present, even with `fallbackUpstreams` empty. */
+  failover: ProxyFailoverSchema.default({ failureThreshold: 3, autoFailback: true }),
   /**
    * INTENT, not observation (§3.5). The supervisor starts every enabled record
    * when the plugin loads. Nothing about a RUNNING proxy — its state, uptime,

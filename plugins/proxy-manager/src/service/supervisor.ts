@@ -5,6 +5,7 @@ import {
   proxyIdFromKey,
   proxyProbeKeyFor,
   proxySecretKeyFor,
+  proxySecretSlotKeyFor,
   readProxyRecord,
   validateProxyRecord,
   type ProxyProblem,
@@ -16,10 +17,11 @@ import { ProxyError, listenerAuthSecrets, messageOf, scrubSecrets } from './erro
 import { createBridgeLogger, logServiceEvent, type BridgeLogger, type LogSink, type ProxyEvent } from './logbook'
 import { createHttpListener } from './listen-http'
 import { createSocks5Listener } from './listen-socks5'
-import type { Listener } from './listener'
+import type { Listener, UpstreamHolder } from './listener'
 import { probeUrlFromEnv, runEgressProbe } from './probe'
 import { DEFAULT_DIAL_TIMEOUT_MS, DEFAULT_IDLE_MS, createUpstream, currentGostRuntime } from './upstream'
 import type { ListenerCredential } from './auth'
+import { createFailoverController, type FailoverController, type FailoverState } from './failover'
 
 /**
  * The per-proxy state machine, and the only thing in this pack that owns a
@@ -91,6 +93,16 @@ export interface ProxyView {
   runtime: ProxyRuntime
   /** Every refusal and precondition `validateProxyRecord` finds for this record, against the rest of the catalogue. */
   problems: ProxyProblem[]
+  /**
+   * A live read of this record's failover state (plan 121 §4.5, step 121.6) —
+   * `null` when nothing is running, since there is no live `FailoverController`
+   * for a record that has no listener (`Entry.failover`'s own comment).
+   *
+   * Optional at the TYPE level only, for a test fixture written before this
+   * field existed (the same discipline `SupervisorHost.reportListener` uses)
+   * — `snapshot()` below always sets it on a real run.
+   */
+  failover?: Readonly<FailoverState> | null
 }
 
 /** What the supervisor observes about one proxy. None of it is ever written to storage. */
@@ -146,6 +158,14 @@ interface Entry {
   runtime: ProxyRuntime
   listener: Listener | null
   drainTimer: ReturnType<typeof setTimeout> | null
+  /**
+   * This record's failure counter and confirmation-probe-gated switch (plan
+   * 121 §4.2, step 121.3) — built fresh on every `startLocked`, alongside the
+   * `UpstreamHolder` it reassigns. `null` whenever nothing is running: there
+   * is no dial to count failures against, and a fresh one is built the next
+   * time this record starts.
+   */
+  failover: FailoverController | null
 }
 
 export interface Supervisor {
@@ -161,6 +181,15 @@ export interface Supervisor {
   start(id: string): Promise<ProxyRuntime>
   stop(id: string, opts?: { force?: boolean }): Promise<ProxyRuntime>
   restart(id: string): Promise<ProxyRuntime>
+  /**
+   * Force this record's active upstream back to primary right now (plan 121
+   * §4.4, step 121.6) — the manual "Reset to primary" action's own seam,
+   * wrapping `FailoverController.resetToPrimary()`. A no-op, not a refusal,
+   * when the record is not running (no live `FailoverController` — nothing to
+   * reset) or is already on primary; `resetToPrimary()` itself is already a
+   * no-op for the second case.
+   */
+  resetFailover(id: string): Promise<ProxyRuntime>
   /** Start every record whose stored intent says it should be listening. Never throws for one bad record. */
   startEnabled(): Promise<void>
   /**
@@ -285,7 +314,7 @@ export function createSupervisor(host: SupervisorHost, opts: SupervisorOptions =
         const record = readProxyRecord(item.value)
         const existing = entries.get(id)
         if (existing) existing.record = record
-        else entries.set(id, { id, record, runtime: blankRuntime(id), listener: null, drainTimer: null })
+        else entries.set(id, { id, record, runtime: blankRuntime(id), listener: null, drainTimer: null, failover: null })
       }
       cursor = page.nextCursor ?? undefined
     } while (cursor)
@@ -328,11 +357,32 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
     return [...entries.values()].map((entry) => ({ id: entry.id, record: entry.record }))
   }
 
-  async function readPassword(id: string): Promise<string> {
-    // `getRaw` rather than `get(key, schema)`: an unparseable secret must leave
-    // the proxy dialling without a password (and failing honestly on the
-    // upstream's own refusal), not throw out of `start` with a storage error
-    // that reads like a bug in the farm.
+  /**
+   * The saved credential for upstream SLOT `slot` of a record — `0` for the
+   * primary, `1..n` for `fallbackUpstreams[slot - 1]` (plan 121 §4.1, widened
+   * to a per-slot key by step 121.4). `getRaw` rather than `get(key, schema)`:
+   * an unparseable secret must leave the proxy dialling without a password
+   * (and failing honestly on the upstream's own refusal), not throw out of
+   * `start` with a storage error that reads like a bug in the farm.
+   *
+   * **Slot 0 falls back to the legacy bare `proxy-secret:<id>` key** when
+   * `proxy-secret:<id>:0` does not exist — the same read-time-default
+   * discipline `readProxyRecord` already applies to a pre-existing shape
+   * (`proxySecretSlotKeyFor`'s own comment). A fallback slot (`1..n`) has no
+   * legacy key to fall back to: no secret written for one simply means no
+   * password for that upstream, which is correct for a freshly-added fallback
+   * nobody has entered credentials for yet.
+   */
+  async function readSlotPassword(id: string, slot: number): Promise<string> {
+    try {
+      const raw = await host.storage.global.getRaw(proxySecretSlotKeyFor(id, slot))
+      const value = typeof raw === 'object' && raw !== null ? (raw as { password?: unknown }).password : undefined
+      if (typeof value === 'string') return value
+    } catch {
+      // Falls through to the legacy key (slot 0) or to "" (every other slot)
+      // below — the same fail-open discipline the bare-key read already used.
+    }
+    if (slot !== 0) return ''
     try {
       const raw = await host.storage.global.getRaw(proxySecretKeyFor(id))
       const value = typeof raw === 'object' && raw !== null ? (raw as { password?: unknown }).password : undefined
@@ -340,6 +390,11 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
     } catch {
       return ''
     }
+  }
+
+  /** The primary upstream's own password — slot 0, by the rule `readSlotPassword` documents. */
+  function readPassword(id: string): Promise<string> {
+    return readSlotPassword(id, 0)
   }
 
   /**
@@ -415,6 +470,19 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
         // this catch exists only so a truly unexpected throw (a bug, not a
         // dial failure) cannot stop the rest of the sweep either.
       })
+      // Plan 121 §4.4, step 121.5 — the SAME sweep tick also runs a
+      // background primary-recovery probe for any record currently on a
+      // backup upstream. No new timer: piggybacked on the sweep that already
+      // visits every running record once per interval. Guarded on
+      // `activeIndex !== 0` here too (redundant with the controller's own
+      // guard) so a record on primary costs nothing extra on the sweep.
+      if (entry.failover && entry.failover.state.activeIndex !== 0) {
+        await entry.failover.checkPrimaryRecovery().catch(() => {
+          // Matches the `probeEntry` catch above: `checkPrimaryRecovery`
+          // should never throw, but a bug here must not take the rest of the
+          // sweep — or this record's own ordinary probe above — down with it.
+        })
+      }
     }
   }
 
@@ -488,7 +556,51 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
     try {
       password = await readPassword(id)
       auth = listenerAuth
+      const dialTimeoutMs = opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS
       const upstream = await createUpstream(entry.record, password, opts.dialTimeoutMs === undefined ? { log: host.log } : { timeoutMs: opts.dialTimeoutMs, log: host.log })
+      // Plan 121 §4.3 — the listener reads the active upstream through this
+      // holder rather than the bare object, so a failover swap can reassign
+      // `.current` without restarting the listener's port. `failoverController`
+      // below is the only thing that reassigns it after this initial build.
+      const upstreamHolder: UpstreamHolder = { current: upstream }
+      // Plan 121 §4.2, step 121.3 — the failure counter and confirmation-probe
+      // gate for THIS run of this record. Built fresh every start, alongside
+      // `upstreamHolder`: a fresh holder with a stale failure count would let
+      // a streak from a previous run of the listener carry over into this one.
+      // `getRecord` reads `entry.record` live (not the local `entry.record` at
+      // this closure's capture time) so an edit picked up by a later
+      // `refresh()` is honoured on the very next dial result.
+      const failoverController = createFailoverController({
+        id,
+        getRecord: () => entry.record,
+        holder: upstreamHolder,
+        // Step 121.4 closes the gap this comment used to name: each slot's
+        // OWN stored credential (`readSlotPassword`, `proxySecretSlotKeyFor`)
+        // rather than always reusing the primary's `password` variable above
+        // — a fallback naming a different account (another local egress, a
+        // third-party rotating proxy like SOAX) now authenticates as itself.
+        buildUpstream: async (fallback, slot) => {
+          const slotPassword = await readSlotPassword(id, slot)
+          return createUpstream({ ...entry.record, upstream: fallback }, slotPassword, { timeoutMs: dialTimeoutMs, log: host.log })
+        },
+        // Mirrors `probeEntry`'s own skip discipline (§3.7): no configured
+        // probe endpoint means "cannot confirm", which this file's caller
+        // treats the same as a failed confirmation — a switch is still
+        // gated on the SAME `runEgressProbe` result shape either way, never a
+        // fabricated pass.
+        probe: async (dialUpstream, slot) => {
+          const probeUrl = probeUrlFromEnv()
+          if (probeUrl === null) return { at: Math.floor(Date.now() / 1000), ok: false, error: PROXY_PROBE_SKIP_REASON }
+          // The ACTIVE slot's own password, not always the primary's (step
+          // 121.4) — this only feeds `scrubSecrets` over the probe's own
+          // error text, so a stale primary password here would fail to
+          // redact a fallback's credential from a message an operator reads.
+          const slotPassword = await readSlotPassword(id, slot)
+          return runEgressProbe({ upstream: dialUpstream, probeUrl, timeoutMs: dialTimeoutMs, secrets: [slotPassword] })
+        },
+        log: host.log,
+      })
+      entry.failover = failoverController
       const emit = loggerFor(entry)
       const log = (event: ProxyEvent): void => {
         if (event.event === 'accepted') entry.runtime.totalConnections += 1
@@ -499,13 +611,22 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       const listenerOptions = {
         bindHost: entry.record.listen.bindHost,
         port,
-        upstream,
+        upstream: upstreamHolder,
         maxConnections: entry.record.maxConnections,
         log,
         idleMs: opts.idleMs ?? DEFAULT_IDLE_MS,
         onConnectionClosed: (counters: { bytesUp: number; bytesDown: number }) => {
           entry.runtime.bytesUp += counters.bytesUp
           entry.runtime.bytesDown += counters.bytesDown
+        },
+        // Plan 121 §4.2 — every dial attempt's outcome feeds the failure
+        // counter above. Fire-and-forget from the listener's own point of
+        // view (`onDialResult` never blocks a client's reply); the returned
+        // promise is deliberately not awaited here — `FailoverController.
+        // onDialResult` never throws (its own header states the discipline),
+        // so there is nothing to catch.
+        onDialResult: (ok: boolean) => {
+          void failoverController.onDialResult(ok)
         },
         // Absent rather than `undefined` on the object: `ListenerOptions.auth`
         // being present-but-undefined and being absent read the same to every
@@ -525,6 +646,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       if (torndown) {
         listener.close()
         listener.destroyLive()
+        entry.failover = null
         setState(entry, 'stopped')
         return snapshot(entry)
       }
@@ -573,6 +695,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       const message = scrubSecrets(messageOf(err), [password, ...(auth ? listenerAuthSecrets(auth) : [])])
       setState(entry, 'failed', { code, message })
       entry.listener = null
+      entry.failover = null
       entry.runtime.port = null
       say(entry, { event: 'start-failed', code, message, port })
       return snapshot(entry)
@@ -608,6 +731,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       clearDrain(entry)
       listener.destroyLive()
       entry.listener = null
+      entry.failover = null
       entry.runtime.port = null
       setState(entry, 'stopped')
       say(entry, { event: 'stop', forced: force, port: boundPort })
@@ -659,6 +783,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
         // as it is for the browser half. The refusal that actually guards a
         // bind runs at start, where the read can be awaited.
         problems: validateProxyRecord(entry.record, { id: entry.id, catalogue, hostAddresses: addresses }),
+        failover: entry.failover ? entry.failover.state : null,
       }))
     },
 
@@ -688,6 +813,17 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
         if (entry) say(entry, { event: 'restart' })
         await stopLocked(id, false)
         return await startLocked(id)
+      })
+    },
+
+    resetFailover(id) {
+      // Under the same lock start/stop/restart use: a reset racing a stop
+      // must not resurrect a `FailoverController` a teardown just nulled.
+      return withLock(id, async () => {
+        const entry = entries.get(id)
+        if (!entry) throw new ProxyError('E_PROXY_LISTEN_FAILED', `no proxy record "${id}" in this plugin's catalogue`)
+        if (entry.failover) await entry.failover.resetToPrimary()
+        return snapshot(entry)
       })
     },
 
@@ -728,6 +864,7 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
         entry.listener.close()
         entry.listener.destroyLive()
         entry.listener = null
+        entry.failover = null
         entry.runtime.port = null
         setState(entry, 'stopped')
         destroyed += 1

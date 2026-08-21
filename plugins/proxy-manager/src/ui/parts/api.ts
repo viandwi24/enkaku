@@ -281,6 +281,31 @@ export interface ProxyStatus {
   bytesUp: number
   bytesDown: number
   lastError: { code: string; message: string } | null
+  /** This record's failover state (plan 121 §4.5, step 121.6) — `null` when nothing is running, since there is no failover state for a record with no live listener. */
+  failover: ProxyFailoverSnapshot | null
+}
+
+/**
+ * What `ProxyRow.failover` (`service/handlers.ts`) narrows a record's
+ * failover state down to — `activeIndex` (`0` = primary, `1..n` =
+ * `fallbackUpstreams[i-1]`, the same addressing `failover.ts`'s own
+ * `FailoverState` uses) and `history`, most-recent-first, for the chip's
+ * detail popover.
+ */
+export interface ProxyFailoverSnapshot {
+  activeIndex: number
+  history: { at: number; from: number; to: number; reason: string }[]
+}
+
+function readFailoverSnapshot(value: unknown): ProxyFailoverSnapshot | null {
+  const source = asObject(value)
+  if (typeof source.activeIndex !== 'number') return null
+  const rawHistory = Array.isArray(source.history) ? source.history : []
+  const history = rawHistory
+    .map((raw) => asObject(raw))
+    .filter((h) => typeof h.at === 'number' && typeof h.from === 'number' && typeof h.to === 'number')
+    .map((h) => ({ at: h.at as number, from: h.from as number, to: h.to as number, reason: typeof h.reason === 'string' ? h.reason : '' }))
+  return { activeIndex: source.activeIndex, history }
 }
 
 /**
@@ -339,6 +364,7 @@ function readProxyStatus(value: unknown): ProxyStatus | null {
     bytesUp: num(runtime, 'bytesUp', 0),
     bytesDown: num(runtime, 'bytesDown', 0),
     lastError: typeof error.code === 'string' || typeof error.message === 'string' ? { code: String(error.code ?? ''), message: String(error.message ?? '') } : null,
+    failover: readFailoverSnapshot(runtime.failover),
   }
 }
 
@@ -459,6 +485,6 @@ export function logsPath(opts: { proxy: string | null; cursor: number | null; li
  * and never the sub-path, so a single handler would leave every start, stop and
  * force stop as one indistinguishable row.
  */
-export function proxyActionPath(verb: 'start' | 'stop' | 'restart', id: string): string {
+export function proxyActionPath(verb: 'start' | 'stop' | 'restart' | 'reset-failover', id: string): string {
   return `${PROXY_HTTP_API}/${verb}/${encodeURIComponent(id)}`
 }

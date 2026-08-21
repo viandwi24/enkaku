@@ -46,7 +46,7 @@ async function withListener(
   const listener = await createSocks5Listener({
     bindHost: '127.0.0.1',
     port: 0,
-    upstream: createSocks5Upstream({ host: '127.0.0.1', port: upstreamPort, username: USERNAME, password: PASSWORD, timeoutMs: 5_000 }),
+    upstream: { current: createSocks5Upstream({ host: '127.0.0.1', port: upstreamPort, username: USERNAME, password: PASSWORD, timeoutMs: 5_000 }) },
     maxConnections: 16,
     idleMs: 5_000,
     log: (event) => events.push(event),

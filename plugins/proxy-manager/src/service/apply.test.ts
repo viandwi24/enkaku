@@ -27,6 +27,8 @@ function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
     label: 'Office UK',
     listen: { proto: 'http', bindHost: '127.0.0.1', port: 9902 },
     upstream: { proto: 'socks5', host: '10.4.0.9', port: 1080, username: '', bindAddress: '', resolveThroughEgress: true },
+    fallbackUpstreams: [],
+    failover: { failureThreshold: 3, autoFailback: true },
     enabled: true,
     logDestinations: false,
     maxConnections: DEFAULT_MAX_CONNECTIONS,

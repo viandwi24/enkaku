@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import net from 'node:net'
-import { startSocks5Upstream, type Socks5Fixture } from './fixtures'
+import { reserveClosedPort, startSocks5Upstream, type Socks5Fixture } from './fixtures'
 import type { LogSink } from './logbook'
 import { PROXY_STATES, createSupervisor, type Supervisor, type SupervisorHost } from './supervisor'
-import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyAuthKeyFor, proxyKeyFor, proxySecretKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
+import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyAuthKeyFor, proxyKeyFor, proxySecretKeyFor, proxySecretSlotKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
 
 /** Plan 112 step 112.7 — the supervisor: the five states, the two-phase stop, the cap, the disposer. */
 
@@ -25,6 +25,8 @@ function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
     label: 'Office UK',
     listen: { proto: 'http', bindHost: '127.0.0.1', port: 0 },
     upstream: { proto: 'socks5', host: '127.0.0.1', port: 1, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
+    fallbackUpstreams: [],
+    failover: { failureThreshold: 3, autoFailback: true },
     enabled: false,
     logDestinations: false,
     maxConnections: DEFAULT_MAX_CONNECTIONS,
@@ -645,6 +647,286 @@ describe('the listener credential — read from `proxy-auth:<id>` and wired thro
         }, 3_000)
       })
       expect(reply).toContain('407')
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('per-upstream-slot secret storage (plan 121 §4.1, widened by step 121.4)', () => {
+  /**
+   * A bare `SupervisorHost` over a caller-supplied KV map — like `harness()`
+   * above, but without that helper's own opinion about which secret keys get
+   * written, since every test below needs to control that precisely.
+   */
+  function slotHost(entries: Map<string, unknown>): { host: SupervisorHost; lines: Harness['lines'] } {
+    const lines: Harness['lines'] = []
+    const push = (level: string) => (message: string, fields?: Record<string, unknown>) => {
+      lines.push({ level, message, ...(fields ? { fields } : {}) })
+    }
+    const log: LogSink = { debug: push('debug'), info: push('info'), warn: push('warn'), error: push('error') }
+    return {
+      lines,
+      host: {
+        storage: {
+          global: {
+            getRaw: async (key) => entries.get(key) ?? null,
+            list: async (listOpts) => ({
+              items: [...entries.entries()].filter(([key]) => (listOpts?.prefix ? key.startsWith(listOpts.prefix) : true)).map(([key, value]) => ({ key, value })),
+              nextCursor: null,
+            }),
+          },
+        },
+        log,
+      },
+    }
+  }
+
+  /** A client socket that sends a CONNECT for the shared plain-HTTP fixture, and nothing else. */
+  function connectAttempt(port: number): net.Socket {
+    const sock = net.connect(port, '127.0.0.1')
+    sock.on('connect', () => sock.write(`CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`))
+    sock.on('error', () => {})
+    return sock
+  }
+
+  test('slot 0 (the primary) falls back to the legacy bare proxy-secret:<id> key when no proxy-secret:<id>:0 row exists', async () => {
+    const port = await freePort()
+    const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(record({ listen: { proto: 'http', bindHost: '127.0.0.1', port }, upstream: { proto: 'socks5', host: '127.0.0.1', port: upstream.port, username: USERNAME, bindAddress: '', resolveThroughEgress: true } }))],
+      // Deliberately the LEGACY bare key only — no `proxy-secret:office-uk:0`
+      // row at all, which is exactly what a record saved before step 121.4
+      // looks like.
+      [proxySecretKeyFor('office-uk'), { password: PASSWORD }],
+    ])
+    const { host } = slotHost(entries)
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.refresh()
+      expect((await supervisor.start('office-uk')).state).toBe('running')
+      const tunnel = await openTunnel(port)
+      expect(upstream.authAccepted).toBe(true)
+      tunnel.destroy()
+    } finally {
+      supervisor.destroyAll()
+      await upstream.close()
+    }
+  })
+
+  test('a fallback resolves ITS OWN stored password, not the primary\'s', async () => {
+    const port = await freePort()
+    const closedPort = await reserveClosedPort() // primary: nothing is listening, so every dial fails immediately
+    const FALLBACK_USERNAME = 'fallback-account'
+    const FALLBACK_PASSWORD = 'fallback-only-DISTINCT-password'
+    const fallback = await startSocks5Upstream({ username: FALLBACK_USERNAME, password: FALLBACK_PASSWORD })
+    const rec = record({
+      listen: { proto: 'http', bindHost: '127.0.0.1', port },
+      upstream: { proto: 'socks5', host: '127.0.0.1', port: closedPort, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
+      fallbackUpstreams: [{ proto: 'socks5', host: '127.0.0.1', port: fallback.port, username: FALLBACK_USERNAME, bindAddress: '', resolveThroughEgress: true }],
+      failover: { failureThreshold: 1, autoFailback: true },
+    })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(rec)],
+      // Two DIFFERENT passwords, on two DIFFERENT slot keys — if the code
+      // reused slot 0's password for slot 1, the fallback's own SOCKS5 auth
+      // would reject it and `openTunnel` below would never see a 200.
+      [proxySecretSlotKeyFor('office-uk', 0), { password: PASSWORD }],
+      [proxySecretSlotKeyFor('office-uk', 1), { password: FALLBACK_PASSWORD }],
+    ])
+    const { host } = slotHost(entries)
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.refresh()
+      expect((await supervisor.start('office-uk')).state).toBe('running')
+
+      // First connection dials the (unreachable) primary, fails, and reaches
+      // `failureThreshold` of 1 — the confirmation probe has no configured
+      // endpoint in this test process, so it "fails" immediately too (the
+      // same skip-means-fail discipline `probeEntry` itself documents), and
+      // the switch to the fallback happens right away.
+      const first = connectAttempt(port)
+      await new Promise<void>((resolve) => first.on('close', resolve))
+      await Bun.sleep(100) // let the async switch (an await'd KV read) settle
+
+      // The NEXT connection dials the fallback, authenticating as ITSELF.
+      const second = await openTunnel(port)
+      expect(fallback.authAccepted).toBe(true)
+      expect(fallback.usernamesSeen).toContain(FALLBACK_USERNAME)
+      second.destroy()
+    } finally {
+      supervisor.destroyAll()
+      await fallback.close()
+    }
+  })
+
+  test('a fallback with no secret at all still works when its own kind needs none — a direct upstream', async () => {
+    const port = await freePort()
+    const closedPort = await reserveClosedPort()
+    const rec = record({
+      listen: { proto: 'http', bindHost: '127.0.0.1', port },
+      upstream: { proto: 'socks5', host: '127.0.0.1', port: closedPort, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
+      fallbackUpstreams: [{ proto: 'direct', host: '', port: 0, username: '', bindAddress: '', resolveThroughEgress: true }],
+      failover: { failureThreshold: 1, autoFailback: true },
+    })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(rec)],
+      [proxySecretSlotKeyFor('office-uk', 0), { password: PASSWORD }],
+      // No `proxy-secret:office-uk:1` row at all — a freshly-added fallback
+      // nobody has entered credentials for, and `direct` needs none anyway.
+    ])
+    const { host } = slotHost(entries)
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.refresh()
+      expect((await supervisor.start('office-uk')).state).toBe('running')
+
+      const first = connectAttempt(port)
+      await new Promise<void>((resolve) => first.on('close', resolve))
+      await Bun.sleep(100)
+
+      // Reading a missing slot secret must not throw and must not block the
+      // switch — the direct upstream dials the plain fixture straight through.
+      const second = await openTunnel(port)
+      second.destroy()
+    } finally {
+      supervisor.destroyAll()
+    }
+  })
+
+  test('a fallback with no secret at all does NOT silently authenticate as the primary', async () => {
+    const port = await freePort()
+    const closedPort = await reserveClosedPort()
+    const FALLBACK_USERNAME = 'fallback-account'
+    // The fixture requires this exact username with an EMPTY password — the
+    // correct reading of "no secret saved for this slot" (`readSlotPassword`
+    // resolves to `''`, never `undefined`, never a throw). If the code instead
+    // reused the primary's own (non-empty) `PASSWORD`, this auth would be
+    // REJECTED — the discriminator this test is actually built on, stronger
+    // than merely observing a rejection either way would be.
+    const fallback = await startSocks5Upstream({ username: FALLBACK_USERNAME, password: '' })
+    const rec = record({
+      listen: { proto: 'http', bindHost: '127.0.0.1', port },
+      upstream: { proto: 'socks5', host: '127.0.0.1', port: closedPort, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
+      fallbackUpstreams: [{ proto: 'socks5', host: '127.0.0.1', port: fallback.port, username: FALLBACK_USERNAME, bindAddress: '', resolveThroughEgress: true }],
+      failover: { failureThreshold: 1, autoFailback: true },
+    })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(rec)],
+      // Only the PRIMARY has a saved secret, and it is NOT empty — no
+      // `proxy-secret:office-uk:1` row exists for the fallback at all.
+      [proxySecretSlotKeyFor('office-uk', 0), { password: PASSWORD }],
+    ])
+    const { host } = slotHost(entries)
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.refresh()
+      expect((await supervisor.start('office-uk')).state).toBe('running')
+
+      const first = connectAttempt(port)
+      await new Promise<void>((resolve) => first.on('close', resolve))
+      await Bun.sleep(100)
+
+      // The switch happened (index moved to the fallback), and the fallback's
+      // own SOCKS5 server ACCEPTS the empty password it was actually sent —
+      // proving the primary's real password was NOT silently substituted.
+      const second = await openTunnel(port)
+      expect(fallback.usernamesSeen).toContain(FALLBACK_USERNAME)
+      expect(fallback.authAccepted).toBe(true)
+      second.destroy()
+    } finally {
+      supervisor.destroyAll()
+      await fallback.close()
+    }
+  })
+})
+
+describe('failover joins snapshot(), and Supervisor.resetFailover — plan 121 §4.5, step 121.6', () => {
+  test('snapshot() reports failover: null for a record with no live listener', async () => {
+    const h = await harness({ 'office-uk': record() })
+    try {
+      await h.supervisor.refresh()
+      const view = h.supervisor.snapshot().find((v) => v.id === 'office-uk')
+      expect(view?.failover).toBeNull()
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('a running record with no configured backups reports failover: activeIndex 0, empty history — provably inert, not merely absent', async () => {
+    const port = await freePort()
+    const h = await harness({ 'office-uk': record({ listen: { proto: 'http', bindHost: '127.0.0.1', port } }) })
+    try {
+      await h.supervisor.refresh()
+      await h.supervisor.start('office-uk')
+      const view = h.supervisor.snapshot().find((v) => v.id === 'office-uk')
+      expect(view?.failover).toEqual({ activeIndex: 0, consecutiveFailures: 0, primaryRecoveryStreak: 0, history: [] })
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('after a real threshold-triggered switch, snapshot() reports the new activeIndex and history, and resetFailover() puts it back', async () => {
+    const port = await freePort()
+    const closedPort = await reserveClosedPort() // primary: nothing listening, every dial fails
+    const fallback = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
+    const rec = record({
+      listen: { proto: 'http', bindHost: '127.0.0.1', port },
+      upstream: { proto: 'socks5', host: '127.0.0.1', port: closedPort, username: USERNAME, bindAddress: '', resolveThroughEgress: true },
+      fallbackUpstreams: [{ proto: 'socks5', host: '127.0.0.1', port: fallback.port, username: USERNAME, bindAddress: '', resolveThroughEgress: true }],
+      failover: { failureThreshold: 1, autoFailback: true },
+    })
+    const entries = new Map<string, unknown>([
+      [proxyKeyFor('office-uk'), writeProxyRecord(rec)],
+      [proxySecretSlotKeyFor('office-uk', 0), { password: PASSWORD }],
+      [proxySecretSlotKeyFor('office-uk', 1), { password: PASSWORD }],
+    ])
+    const log: LogSink = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+    const host: SupervisorHost = { storage: { global: { getRaw: async (key) => entries.get(key) ?? null, list: async (opts) => ({ items: [...entries.entries()].filter(([key]) => (opts?.prefix ? key.startsWith(opts.prefix) : true)).map(([key, value]) => ({ key, value })), nextCursor: null }) } }, log }
+    const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000 })
+    try {
+      await supervisor.refresh()
+      expect((await supervisor.start('office-uk')).state).toBe('running')
+
+      const first = net.connect(port, '127.0.0.1')
+      first.on('connect', () => first.write(`CONNECT 127.0.0.1:${PLAIN_PORT} HTTP/1.1\r\n\r\n`))
+      first.on('error', () => {})
+      await new Promise<void>((resolve) => first.on('close', resolve))
+      await Bun.sleep(100) // let the async switch settle
+
+      const switched = supervisor.snapshot().find((v) => v.id === 'office-uk')
+      expect(switched?.failover?.activeIndex).toBe(1)
+      expect(switched?.failover?.history.length).toBeGreaterThanOrEqual(1)
+      expect(switched?.failover?.history[0]).toMatchObject({ from: 0, to: 1 })
+
+      const runtime = await supervisor.resetFailover('office-uk')
+      expect(runtime.state).toBe('running') // resetFailover never stops the listener
+
+      const reset = supervisor.snapshot().find((v) => v.id === 'office-uk')
+      expect(reset?.failover?.activeIndex).toBe(0)
+      expect(reset?.failover?.history[0]).toMatchObject({ from: 1, to: 0, reason: expect.stringContaining('manual') })
+    } finally {
+      supervisor.destroyAll()
+      await fallback.close()
+    }
+  })
+
+  test('resetFailover() on a record that is not running is a no-op, not a throw', async () => {
+    const h = await harness({ 'office-uk': record() })
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.resetFailover('office-uk')
+      expect(runtime.state).toBe('stopped')
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('resetFailover() on an unknown id throws, same as start/stop/restart', async () => {
+    const h = await harness({ 'office-uk': record() })
+    try {
+      await h.supervisor.refresh()
+      await expect(h.supervisor.resetFailover('no-such-record')).rejects.toThrow()
     } finally {
       await h.close()
     }

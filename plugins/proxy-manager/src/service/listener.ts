@@ -102,10 +102,36 @@ export interface NegotiationApi {
 
 export type Negotiator = (client: BridgeSocket, api: NegotiationApi) => void
 
+/**
+ * The one level of indirection that makes a listener's upstream swappable
+ * without restarting the listener's port (plan 121 §3.3, §4.3).
+ *
+ * Before plan 121, `ListenerOptions.upstream` was a bare `Upstream`, captured
+ * in `createListener`'s closure for the listener's whole lifetime — every
+ * accepted connection's dial read the SAME object forever (plan 121 §0.2).
+ * Wrapping it in a holder that the per-connection dial reads through
+ * (`opts.upstream.current.connect(dest)`) means the supervisor can later
+ * reassign `.current` to a freshly built `Upstream` — an ALREADY-OPEN
+ * connection is a live pipe to the old socket by then, not a lookup, so it is
+ * untouched; only the NEXT accepted connection sees the new upstream.
+ *
+ * Plan 121.2 built only this mechanism and proved it with a test — nothing
+ * reassigned `.current` outside of `startLocked`'s own initial build. Plan
+ * 121.3 (`service/failover.ts`) is the first live reassigner: it counts
+ * dial failures fed through `ListenerOptions.onDialResult` and, once a
+ * confirmation probe agrees the active upstream is actually down, builds a
+ * fresh `Upstream` for the next configured fallback and reassigns
+ * `.current` to it — through this exact holder, with this exact
+ * already-open-connections-untouched guarantee.
+ */
+export interface UpstreamHolder {
+  current: Upstream
+}
+
 export interface ListenerOptions {
   bindHost: string
   port: number
-  upstream: Upstream
+  upstream: UpstreamHolder
   maxConnections: number
   log: ConnectionLogger
   /**
@@ -121,6 +147,19 @@ export interface ListenerOptions {
   onConnectionClosed?: (counters: RelayCounters) => void
   /** Written to a client turned away by `maxConnections`, when the protocol has something to say. */
   writeOverflowRefusal?: (client: BridgeSocket) => void
+  /**
+   * Called once per dial ATTEMPT through `opts.upstream.current` — `true` when
+   * it resolved, `false` when it rejected (plan 121 §4.2's failure-counting
+   * trigger). This is the SAME success/failure boundary `hooks.onReady`/
+   * `hooks.onFailure` already fire at, one level down: those are the
+   * NEGOTIATOR's protocol reply, this is the supervisor's failover counter,
+   * and neither substitutes for the other. Fired even when the client has
+   * already disconnected (`client.destroyed`) — the dial itself either
+   * reached the upstream or it did not, independent of whether anyone is
+   * still there to use it. Never awaited: a slow or async subscriber must not
+   * delay the client's own reply.
+   */
+  onDialResult?: (ok: boolean) => void
 }
 
 /**
@@ -180,9 +219,10 @@ export function createListener(opts: ListenerOptions, negotiate: Negotiator): Pr
       connId,
 
       open(dest, hooks) {
-        opts.upstream
+        opts.upstream.current
           .connect(dest)
           .then((upstream) => {
+            opts.onDialResult?.(true)
             if (client.destroyed || destroyed) {
               upstream.destroy()
               return
@@ -221,6 +261,7 @@ export function createListener(opts: ListenerOptions, negotiate: Negotiator): Pr
           .catch((err: unknown) => {
             const failure = classifyDialError(err, [])
             opts.log({ event: 'refused', conn: connId, reason: 'upstream', code: failure.code, destPort: dest.port, destHost: dest.host })
+            opts.onDialResult?.(false)
             hooks.onFailure(failure)
             untrack()
             client.destroy()

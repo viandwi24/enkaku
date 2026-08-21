@@ -5,6 +5,7 @@ import {
   proxyAuthKeyFor,
   proxyIdFromKey,
   proxySecretKeyFor,
+  proxySecretSlotKeyFor,
   readProxyRecord,
   routeForRecord,
   vpnAgentProblem,
@@ -248,15 +249,33 @@ const E_PROXY_CAPACITY_FULL: ProxyProblemCode = 'E_PROXY_CAPACITY_FULL'
 const E_PROXY_PORT_MISMATCH: ProxyProblemCode = 'E_PROXY_PORT_MISMATCH'
 
 /**
- * The saved credential for a record, or `null` when there is none.
+ * The saved credential for a record's PRIMARY upstream (slot 0), or `null`
+ * when there is none.
  *
  * `getRaw` rather than `get(key, schema)`, and a `catch` around it, for the same
- * reason `supervisor.ts`'s own `readPassword` has both: an unreadable secret row
- * must not throw out of Apply as a storage error that reads like a bug in the
- * farm. It is the difference between "no password is saved" and "something is
- * wrong with the row", and the caller words the first case itself.
+ * reason `supervisor.ts`'s own `readSlotPassword` has both: an unreadable secret
+ * row must not throw out of Apply as a storage error that reads like a bug in
+ * the farm. It is the difference between "no password is saved" and "something
+ * is wrong with the row", and the caller words the first case itself.
+ *
+ * Always slot 0: VPN mode dials the record's own primary `upstream` directly
+ * (plan 117 §3.6) and has no failover of its own (plan 121 §3.4, an explicit
+ * non-goal) — there is no OTHER slot Apply could ever need. Reads
+ * `proxy-secret:<id>:0` first and falls back to the legacy bare
+ * `proxy-secret:<id>` key when that row does not exist yet — the same
+ * read-time compatibility rule `proxySecretSlotKeyFor` documents (plan 121
+ * §4.1, widened by step 121.4), so a record saved before that step keeps
+ * authenticating exactly as it did before.
  */
 async function readPassword(host: ApplyHost, proxyId: string): Promise<string | null> {
+  try {
+    const raw = await host.storage.global.getRaw(proxySecretSlotKeyFor(proxyId, 0))
+    const value = typeof raw === 'object' && raw !== null ? (raw as { password?: unknown }).password : undefined
+    if (typeof value === 'string' && value.length > 0) return value
+  } catch {
+    // Falls through to the legacy key below, the same fail-open discipline
+    // this function already used for the bare key alone.
+  }
   try {
     const raw = await host.storage.global.getRaw(proxySecretKeyFor(proxyId))
     const value = typeof raw === 'object' && raw !== null ? (raw as { password?: unknown }).password : undefined

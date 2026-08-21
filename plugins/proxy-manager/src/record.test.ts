@@ -12,6 +12,7 @@ import {
   proxyIdFromKey,
   proxyKeyFor,
   proxySecretKeyFor,
+  proxySecretSlotKeyFor,
   readProxyRecord,
   routeForRecord,
   validateProxyRecord,
@@ -31,6 +32,8 @@ function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
     label: 'Office UK',
     listen: { proto: 'http', bindHost: '127.0.0.1', port: 9902 },
     upstream: { proto: 'socks5', host: '10.4.0.9', port: 1080, username: 'country-id-r9931204', bindAddress: '', resolveThroughEgress: true },
+    fallbackUpstreams: [],
+    failover: { failureThreshold: 3, autoFailback: true },
     enabled: false,
     logDestinations: false,
     maxConnections: DEFAULT_MAX_CONNECTIONS,
@@ -125,6 +128,66 @@ describe('the read-time migration of the shipped shape (§4.3)', () => {
     const v2 = writeProxyRecord(record({ enabled: true }))
     expect(readProxyRecord(v2).enabled).toBe(true)
     expect(readProxyRecord(v2).listen.port).toBe(9902)
+  })
+})
+
+describe('plan 121 — fallbackUpstreams and failover (§4.1)', () => {
+  /**
+   * A value shaped exactly like what `writeProxyRecord` actually wrote to KV
+   * before this plan existed: a full v2 record — every plan 112 and plan 117
+   * field present — with `fallbackUpstreams` and `failover` genuinely absent,
+   * not merely `undefined`. The same discipline the plan 117 fields' own
+   * acceptance criterion 1 used for THIS catalogue, one plan earlier.
+   */
+  function captured(): Record<string, unknown> {
+    const stored = writeProxyRecord(record())
+    const { fallbackUpstreams, failover, ...pre121 } = stored
+    return pre121
+  }
+
+  test('a record captured before this plan has neither key, and both default on read', () => {
+    const pre121 = captured()
+    expect(pre121).not.toHaveProperty('fallbackUpstreams')
+    expect(pre121).not.toHaveProperty('failover')
+    const migrated = readProxyRecord(pre121)
+    expect(migrated.fallbackUpstreams).toEqual([])
+    expect(migrated.failover).toEqual({ failureThreshold: 3, autoFailback: true })
+    // Everything else survives untouched, exactly like a fresh record — the
+    // record behaves byte-for-byte as it did before this plan (§6 criterion 1).
+    expect(migrated).toEqual(record())
+  })
+
+  test('a record captured before this plan still parses against the schema, with the new fields defaulted', () => {
+    const parsed = ProxyRecordSchema.safeParse(captured())
+    expect(parsed.error?.issues ?? []).toEqual([])
+    expect(parsed.data?.fallbackUpstreams).toEqual([])
+    expect(parsed.data?.failover).toEqual({ failureThreshold: 3, autoFailback: true })
+  })
+
+  test('a configured backup list and non-default failover settings round-trip exactly', () => {
+    const typed = record({
+      fallbackUpstreams: [
+        { proto: 'direct', host: '', port: 0, username: '', bindAddress: '192.168.100.12', resolveThroughEgress: true },
+        { proto: 'socks5', host: 'soax.example', port: 1080, username: 'soax-user', bindAddress: '', resolveThroughEgress: true },
+      ],
+      failover: { failureThreshold: 5, autoFailback: false },
+    })
+    const stored = writeProxyRecord(typed)
+    expect(Object.keys(stored)).toEqual(Object.keys(ProxyRecordSchema.shape))
+    const parsed = ProxyRecordSchema.safeParse(stored)
+    expect(parsed.error?.issues ?? []).toEqual([])
+    expect(readProxyRecord(stored)).toEqual(typed)
+  })
+
+  test('a junk fallbackUpstreams reads as no backups, rather than throwing', () => {
+    for (const junk of [null, 'nonsense', 42, { not: 'an array' }]) {
+      expect(readProxyRecord({ ...captured(), fallbackUpstreams: junk }).fallbackUpstreams).toEqual([])
+    }
+  })
+
+  test('a junk failover reads as the plain defaults, rather than throwing', () => {
+    const migrated = readProxyRecord({ ...captured(), failover: { failureThreshold: -3, autoFailback: 'yes' } })
+    expect(migrated.failover).toEqual({ failureThreshold: 3, autoFailback: true })
   })
 })
 
@@ -476,5 +539,19 @@ describe('the two-key split (§3.6)', () => {
     expect(ProxySecretSchema.safeParse({ password: 'hunter2hunter2' }).success).toBe(true)
     expect(ProxySecretSchema.safeParse('hunter2hunter2').success).toBe(false)
     expect(Object.keys(ProxySecretSchema.shape)).toEqual(['password'])
+  })
+
+  test('plan 121.4 — the per-slot secret key widens the bare key rather than replacing it', () => {
+    expect(proxySecretSlotKeyFor('office-uk', 0)).toBe('proxy-secret:office-uk:0')
+    expect(proxySecretSlotKeyFor('office-uk', 1)).toBe('proxy-secret:office-uk:1')
+    expect(proxySecretSlotKeyFor('office-uk', 2)).toBe('proxy-secret:office-uk:2')
+    // Still starts with the bare key — the legacy key is a genuine PREFIX of
+    // every slotted one, not a coincidence of spelling, which is what makes
+    // `proxySecretKeyFor` remain a valid fallback lookup on its own.
+    expect(proxySecretSlotKeyFor('office-uk', 0).startsWith(proxySecretKeyFor('office-uk'))).toBe(true)
+    // Still disjoint from the record prefix, the same property every other
+    // key in the "two-key split" above already holds.
+    expect(proxySecretSlotKeyFor('office-uk', 0).startsWith(PROXY_KEY_PREFIX)).toBe(false)
+    expect(proxySecretSlotKeyFor('office-uk', 0)).toMatch(/^[A-Za-z0-9._:-]+$/)
   })
 })

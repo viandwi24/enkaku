@@ -42,7 +42,6 @@ import {
 } from '@enkaku/ui'
 import {
   CATALOGUE_EMPTY_HINT,
-  CREDENTIAL_NOT_STORED,
   DEFAULT_BIND_HOST,
   DEFAULT_DRAIN_MS,
   DEFAULT_LOCAL_PORT_BASE,
@@ -50,9 +49,7 @@ import {
   LISTEN_PROTOS,
   LISTEN_PROTO_LABELS,
   LOG_DESTINATIONS_HINT,
-  PASSWORD_ABSENT_HINT,
   PASSWORD_MASK,
-  PASSWORD_SAVED_HINT,
   PROXY_KEY_COLLISION_HINT,
   PROXY_KEY_DERIVED_HINT,
   PROXY_KEY_HINT,
@@ -78,6 +75,7 @@ import {
   proxyIdFromKey,
   proxyProbeState,
   proxySecretKeyFor,
+  proxySecretSlotKeyFor,
   slugifyProxyName,
   suggestProxyName,
   validateProxyRecord,
@@ -87,6 +85,9 @@ import {
   type ProxyPasteLine,
   type ProxyProblem,
 } from '../../shared'
+import { BackupUpstreamsEditor } from './backup-upstreams'
+import { FailoverChip } from './failover-chip'
+import { UpstreamFieldGroup } from './upstream-fields'
 import {
   IgnoredSchema,
   KvPageSchema,
@@ -185,6 +186,15 @@ interface Draft extends ProxyRecord {
    */
   password: string
   clearPassword: boolean
+  /**
+   * Per-backup-slot (1..n) passwords as typed (plan 121 §4.1/§4.5, step
+   * 121.4/121.6) — mirrors `password`'s own "empty means leave the stored
+   * one alone" rule, one entry per `fallbackUpstreams` index (slot = index +
+   * 1, `proxySecretSlotKeyFor`'s own addressing).
+   */
+  fallbackPasswords: Record<number, string>
+  /** Per-backup-slot "remove the saved password" flags — mirrors `clearPassword`. */
+  clearFallbackPasswords: Record<number, boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +234,23 @@ async function putSecret(id: string, password: string): Promise<void> {
   })
 }
 
+/**
+ * The credential half for ONE BACKUP SLOT (plan 121 §4.1, widened by step
+ * 121.4; wired into this screen by step 121.6) — `putSecret`'s own twin,
+ * against `proxySecretSlotKeyFor(id, slot)` (`<id>:<slot>`, `slot` 1..n)
+ * rather than the bare, primary-only key. Same two flags, same reason: a
+ * fallback's own account (another local egress, a third-party rotating
+ * proxy like SOAX) must authenticate as ITSELF, not as whatever the primary
+ * happens to use — the exact gap step 121.4 closed at the storage layer,
+ * which this is the write side of.
+ */
+async function putSecretSlot(id: string, slot: number, password: string): Promise<void> {
+  await api(`${PLUGIN_API}/data/entry`, IgnoredSchema, {
+    method: 'PUT',
+    json: { scope: 'global', key: proxySecretSlotKeyFor(id, slot), value: { password }, secret: true, hint: false },
+  })
+}
+
 /** Either half, gone. */
 async function deleteEntry(key: string): Promise<void> {
   await api(`${PLUGIN_API}/data/entry?scope=global&key=${encodeURIComponent(key)}`, IgnoredSchema, { method: 'DELETE' })
@@ -244,7 +271,7 @@ const EMPTY_PROBES = new Map<string, ProxyProbeResult>()
  * Force stop gets its own key so the confirmation's button can spin without
  * disabling the plain Stop on the row behind it.
  */
-function actionKey(id: string, verb: 'start' | 'stop' | 'restart', force?: boolean): string {
+function actionKey(id: string, verb: 'start' | 'stop' | 'restart' | 'reset-failover', force?: boolean): string {
   return `${verb}${force ? ':force' : ''}:${id}`
 }
 
@@ -262,9 +289,18 @@ const BLANK: Draft = {
   keyTouched: false,
   password: '',
   clearPassword: false,
+  fallbackPasswords: {},
+  clearFallbackPasswords: {},
   label: '',
   listen: { proto: 'http', bindHost: DEFAULT_BIND_HOST, port: null },
   upstream: { proto: 'socks5', host: '', port: 1080, username: '', bindAddress: '', resolveThroughEgress: true },
+  // Plan 121 §1 — a fresh record starts with no backups and the plain
+  // failover defaults, same as `readProxyRecord`'s own defaulting for a
+  // pre-plan-121 row (`shared.ts`). The backup-upstreams editor
+  // (`BackupUpstreamsEditor` below) is what actually wires these into real
+  // UI — see this step's own instruction not to stop at patching the type.
+  fallbackUpstreams: [],
+  failover: { failureThreshold: 3, autoFailback: true },
   enabled: false,
   logDestinations: false,
   maxConnections: DEFAULT_MAX_CONNECTIONS,
@@ -396,6 +432,24 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
   }
 
   /**
+   * The manual "Reset to primary" action (plan 121 §4.5, step 121.6) —
+   * `FailoverChip`'s own button. Always available while a record is on a
+   * backup, regardless of `autoFailback` (§4.5's own wording — an operator
+   * may want to force it back sooner than the auto-recovery streak would),
+   * so this is not gated on anything the row itself does not already gate:
+   * the chip that calls it only renders when `activeIndex !== 0` in the
+   * first place.
+   */
+  function resetFailover(row: Row): void {
+    const name = row.record.label || row.key
+    void run(actionKey(row.id, 'reset-failover'), () => api(proxyActionPath('reset-failover', row.id), IgnoredSchema, { method: 'POST' }), {
+      success: `“${name}” reset to primary`,
+      failure: `Could not reset “${name}” to primary`,
+      onSuccess: () => reload(),
+    })
+  }
+
+  /**
    * The filter is a plain client-side `includes` over the page already
    * fetched, and says so in its placeholder rather than implying a search of
    * the whole namespace: the list route is capped at 200 rows, so a farm with
@@ -417,11 +471,22 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
    * on the word `stopping` until an operator pressed something — which is
    * exactly the moment they are watching to see whether it finished.
    *
+   * A record currently on a BACKUP upstream joins this same condition (plan
+   * 121 §4.5, step 121.6) — it too is something that can change on its own
+   * (a background primary-recovery probe, another operator's manual reset)
+   * without anybody pressing anything here, and `FailoverChip` has no other
+   * way to learn that: there is no WS surface this pack's UI can reach (see
+   * `failover-chip.tsx`'s own header for the full account of why). Reusing
+   * this existing poll rather than adding a second one keeps the "settled
+   * catalogue is not polled" property true for the far more common case —
+   * this only fires while a record's own failover state is genuinely
+   * interesting.
+   *
    * `null` when nothing is in flight: a settled catalogue is not polled.
    */
   const transitional = rows.some((row) => {
-    const state = statuses.get(row.id)?.state
-    return state === 'starting' || state === 'stopping'
+    const status = statuses.get(row.id)
+    return status?.state === 'starting' || status?.state === 'stopping' || (status?.failover != null && status.failover.activeIndex !== 0)
   })
   usePoll(reload, transitional ? 1500 : null)
 
@@ -461,6 +526,16 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
       const id = proxyIdFromKey(next.key) ?? next.key
       if (next.password.length > 0) await putSecret(id, next.password)
       else if (next.clearPassword) await deleteEntry(proxySecretKeyFor(id))
+      // Every configured backup's own credential, one slot at a time (plan
+      // 121 §4.1/§4.5, step 121.4/121.6) — the same "type to replace, tick to
+      // remove, empty means leave it alone" rule the primary's password
+      // already follows, just addressed by slot instead of by the bare key.
+      for (let index = 0; index < next.fallbackUpstreams.length; index += 1) {
+        const slot = index + 1
+        const password = next.fallbackPasswords[slot] ?? ''
+        if (password.length > 0) await putSecretSlot(id, slot, password)
+        else if (next.clearFallbackPasswords[slot]) await deleteEntry(proxySecretSlotKeyFor(id, slot))
+      }
       setDraft(null)
       reload()
     } catch (e: unknown) {
@@ -650,6 +725,13 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
 
                     <TableCell className="min-w-0 align-top">
                       <StateCell state={state} status={status} refusals={refusals} preconditions={preconditions} />
+                      {/* Per-item, quiet-by-default (plan 121 §4.5, step 121.6) — renders nothing while this record is dialling its own primary. */}
+                      <FailoverChip
+                        label={row.record.label || row.key}
+                        failover={status?.failover ?? null}
+                        resetting={isPending(actionKey(row.id, 'reset-failover'))}
+                        onReset={() => resetFailover(row)}
+                      />
                     </TableCell>
 
                     <TableCell className="hidden @3xl:table-cell">
@@ -768,7 +850,13 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
                               Force stop
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem onSelect={() => setDraft({ ...row.record, key: row.key, isNew: false, keyTouched: true, password: '', clearPassword: false })}>Edit</DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                setDraft({ ...row.record, key: row.key, isNew: false, keyTouched: true, password: '', clearPassword: false, fallbackPasswords: {}, clearFallbackPasswords: {} })
+                              }
+                            >
+                              Edit
+                            </DropdownMenuItem>
                             <DropdownMenuItem variant="destructive" onSelect={() => setPendingDelete(row)}>
                               Delete
                             </DropdownMenuItem>
@@ -1290,170 +1378,45 @@ function ProxyDialog({
               className="readout"
             />
 
-            <Label htmlFor="pm-kind" className="text-[13px] font-normal">
-              Upstream type
-            </Label>
-            <Select value={local.upstream.proto} onValueChange={(v) => setLocal({ ...local, upstream: { ...local.upstream, proto: v as ProxyKind } })}>
-              <SelectTrigger id="pm-kind" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROXY_KINDS.map((kind) => (
-                  <SelectItem key={kind} value={kind}>
-                    {PROXY_KIND_LABELS[kind]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {/*
-              §3.1 point 2 and this step's own item 1: `direct` names no
-              remote party at all, so its fields replace host/port/username/
-              password rather than sitting beside them shown-and-ignored — the
-              exact trap `describeDirectUpstream` (`service/upstream.ts`) was
-              written to avoid describing.
-            */}
-            {local.upstream.proto === 'direct' ? (
-              <>
-                <Label htmlFor="pm-bind-address" className="text-[13px] font-normal">
-                  Bind address
-                </Label>
-                <Input
-                  id="pm-bind-address"
-                  value={local.upstream.bindAddress}
-                  onChange={(e) => setLocal({ ...local, upstream: { ...local.upstream, bindAddress: e.target.value } })}
-                  placeholder="Empty = this host's default route"
-                  className="readout"
-                />
-              </>
-            ) : (
-              <>
-                <Label htmlFor="pm-host" className="text-[13px] font-normal">
-                  Upstream host
-                </Label>
-                <Input
-                  id="pm-host"
-                  value={local.upstream.host}
-                  onChange={(e) => setLocal({ ...local, upstream: { ...local.upstream, host: e.target.value } })}
-                  placeholder="10.4.0.9"
-                  className="readout"
-                />
-
-                <Label htmlFor="pm-port" className="text-[13px] font-normal">
-                  Upstream port
-                </Label>
-                <Input
-                  id="pm-port"
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={local.upstream.port || ''}
-                  onChange={(e) => setLocal({ ...local, upstream: { ...local.upstream, port: Number.parseInt(e.target.value, 10) || 0 } })}
-                  className="readout"
-                />
-
-                <Label htmlFor="pm-username" className="text-[13px] font-normal">
-                  Upstream user
-                </Label>
-                <Input
-                  id="pm-username"
-                  value={local.upstream.username}
-                  onChange={(e) => setLocal({ ...local, upstream: { ...local.upstream, username: e.target.value } })}
-                  placeholder="Leave empty if the upstream needs no account"
-                  className="readout"
-                />
-
-                {/*
-                  The password field, unblocked by step 112.2.
-
-                  `type="password"` so it is masked in the box, and
-                  `autoComplete="new-password"` so a browser does not helpfully
-                  offer somebody's saved site login into a proxy credential. It is
-                  EMPTY on edit even when one is stored, and the hint beside it says
-                  which of *keep* and *there is none* the emptiness means — there is
-                  no read path that could prefill it (`list()` never decrypts), and a
-                  placeholder implying otherwise would be exactly the wording rule
-                  `docs/design.md` sets out.
-                */}
-                <Label htmlFor="pm-password" className="text-[13px] font-normal">
-                  Upstream password
-                </Label>
-                <Input
-                  id="pm-password"
-                  type="password"
-                  value={local.password}
-                  onChange={(e) => setLocal({ ...local, password: e.target.value, clearPassword: false })}
-                  placeholder={hasStoredPassword ? 'Saved — type to replace it' : 'Leave empty if the upstream needs no password'}
-                  autoComplete="new-password"
-                  spellCheck={false}
-                />
-              </>
-            )}
           </div>
 
-          {local.upstream.proto === 'direct' ? (
-            <p className="text-[11.5px] leading-relaxed text-fg-muted">
-              Binds the outgoing connection to one of this host's own addresses — `net.connect`'s own <span className="readout">localAddress</span> and
-              nothing more. Empty means dial out however this host normally would, which is a plain local bridge and needs no proxy account at all. What a
-              bind address maps to physically — a NIC, a route, a link — is set up on this host outside this screen; the plugin only checks the address
-              exists, it never adds one.
-            </p>
-          ) : null}
+          {/*
+            The primary upstream's own fields, drawn through the SAME shared
+            component the backup-upstreams editor below draws each of ITS rows
+            with (plan 121 §4.5, step 121.6's own instruction: extract the
+            per-kind field switch rather than keep a second copy of it here).
+            `idPrefix="pm"` keeps every input's `id` byte-for-byte what it was
+            before this extraction (`pm-kind`, `pm-host`, `pm-password`, …), so
+            nothing about this dialog's own DOM contract moved.
+          */}
+          <UpstreamFieldGroup
+            idPrefix="pm"
+            upstream={local.upstream}
+            onChange={(next) => setLocal({ ...local, upstream: next })}
+            password={local.password}
+            onPasswordChange={(next) => setLocal({ ...local, password: next, clearPassword: false })}
+            hasStoredPassword={hasStoredPassword}
+            clearPassword={local.clearPassword}
+            onClearPasswordChange={(next) => setLocal({ ...local, clearPassword: next, password: next ? '' : local.password })}
+          />
 
           {/*
-            Meaningless with an empty bind address (§3.4), so it is not offered
-            then — an operator cannot toggle a setting that would do nothing.
+            Backup upstreams (plan 121 §1, §4.5, step 121.6) — an ordered list
+            a record fails over to, plus the two failure-detection settings.
+            Sits right below the primary's own fields, in the same form.
+            `hasStoredPassword` checks the SLOTTED key (`<id>:<slot>`, step
+            121.4's own addressing) for a record that already exists; a new,
+            unsaved record has no id to check against yet, so every slot
+            reads "nothing stored" — correct, since nothing could have been
+            saved for a record that has never been written.
           */}
-          {local.upstream.proto === 'direct' && local.upstream.bindAddress.trim().length > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2">
-              <div className="min-w-0">
-                <Label htmlFor="pm-resolve-through-egress" className="text-[13px] font-normal">
-                  Resolve names through this address
-                </Label>
-                <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
-                  On: a hostname is looked up through the bind address's own path before connecting, so the lookup leaves the same way the connection does.
-                  Off: this host's ordinary resolver answers it instead — a different path than the packets, and worth knowing which one this record uses. A
-                  lookup that fails through the bind address is reported, never silently retried through the host's default resolver.
-                </p>
-              </div>
-              <Switch
-                id="pm-resolve-through-egress"
-                checked={local.upstream.resolveThroughEgress}
-                onCheckedChange={(next) => setLocal({ ...local, upstream: { ...local.upstream, resolveThroughEgress: next } })}
-              />
-            </div>
-          ) : null}
-
-          {local.upstream.proto === 'direct' ? null : (
-            <div className="space-y-1.5 rounded-md border border-border px-3 py-2">
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">{hasStoredPassword ? PASSWORD_SAVED_HINT : PASSWORD_ABSENT_HINT}</p>
-              {hasStoredPassword ? (
-                local.clearPassword ? (
-                  <p className="text-[11.5px] leading-relaxed text-destructive">
-                    The saved password will be deleted when you save.{' '}
-                    <Button variant="ghost" size="sm" className="h-5 px-1 text-[11.5px]" onClick={() => setLocal({ ...local, clearPassword: false })}>
-                      Keep it instead
-                    </Button>
-                  </p>
-                ) : (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1 text-[11.5px] text-fg-muted"
-                    disabled={local.password.length > 0}
-                    title={local.password.length > 0 ? 'Clear the field above first — typing in it replaces the saved password rather than removing it.' : undefined}
-                    onClick={() => setLocal({ ...local, clearPassword: true, password: '' })}
-                  >
-                    Remove the saved password
-                  </Button>
-                )
-              ) : null}
-              {/* Declared in `shared.ts`, narrowed by step 112.2 rather than
-                  deleted: what is stored, that it is never shown back, and what
-                  the farm's secret box does and does not claim. */}
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">{CREDENTIAL_NOT_STORED}</p>
-            </div>
-          )}
+          <BackupUpstreamsEditor
+            value={{ upstreams: local.fallbackUpstreams, passwords: local.fallbackPasswords, clearPasswords: local.clearFallbackPasswords }}
+            onChange={(next) => setLocal({ ...local, fallbackUpstreams: next.upstreams, fallbackPasswords: next.passwords, clearFallbackPasswords: next.clearPasswords })}
+            failover={local.failover}
+            onFailoverChange={(next) => setLocal({ ...local, failover: next })}
+            hasStoredPassword={(slot) => editingId !== null && secrets.has(`${editingId}:${slot}`)}
+          />
 
           {/*
             Intent, and the two bounds that belong to the record rather than to
@@ -1705,6 +1668,11 @@ function PasteDialog({
         label: name,
         listen: { proto: listenProto, bindHost: DEFAULT_BIND_HOST, port },
         upstream: { proto: proxy.proto, host: proxy.host, port: proxy.port, username: proxy.username, bindAddress: '', resolveThroughEgress: true },
+        // A bulk-created row starts with no backups and the plain failover
+        // defaults — same as a fresh single record (`BLANK`) — an operator
+        // configures failover per record afterwards, from the edit dialog.
+        fallbackUpstreams: [],
+        failover: { failureThreshold: 3, autoFailback: true },
         // Never enabled. See this component's own header.
         enabled: false,
         logDestinations: false,
@@ -2116,6 +2084,10 @@ function GenerateDialog({
         // Every generated row is `direct` by construction — the range steps a
         // BIND address, which is meaningless for the other three kinds.
         upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress, resolveThroughEgress: true },
+        // Same rule as `PasteDialog`'s own literal above: no backups, plain
+        // failover defaults, configured per record afterwards.
+        fallbackUpstreams: [],
+        failover: { failureThreshold: 3, autoFailback: true },
         // Never enabled. Same rule as `PasteDialog`'s own header states.
         enabled: false,
         logDestinations: false,

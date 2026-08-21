@@ -110,7 +110,19 @@ async function readUi(file: string): Promise<string> {
  * silently stops being checked on the file most likely to have dropped it.
  * `parts/logs.tsx` is step 112.10's own.
  */
-const UI_FILES = ['index.tsx', 'parts/catalogue.tsx', 'parts/assignments.tsx', 'parts/logs.tsx', 'parts/runs.tsx']
+const UI_FILES = [
+  'index.tsx',
+  'parts/catalogue.tsx',
+  'parts/assignments.tsx',
+  'parts/logs.tsx',
+  'parts/runs.tsx',
+  // Plan 121 step 121.6: the shared upstream-field-group, the backup-upstreams
+  // editor, and the per-record failover chip — three new files the primary
+  // dialog and the catalogue's own row now call into.
+  'parts/upstream-fields.tsx',
+  'parts/backup-upstreams.tsx',
+  'parts/failover-chip.tsx',
+]
 
 async function readAllUi(): Promise<string> {
   return (await Promise.all(UI_FILES.map(readUi))).join('\n')
@@ -495,15 +507,28 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
    * left the pack with no assertion about its credential path at all, so it is
    * turned around instead: the same two anchors, now proving the field exists
    * AND that the only write it can reach carries both flags.
+   *
+   * **Plan 121 step 121.6 moved the FIELD, not the WRITE.** The password
+   * input, `pm-username` and `Upstream host` now live in `upstream-fields.tsx`
+   * (`UpstreamFieldGroup`, extracted out of `catalogue.tsx`'s primary-upstream
+   * editor so the backup-upstreams editor can reuse the same field switch);
+   * `putSecret` and its `secret: true, hint: false` write are unchanged and
+   * still the only credential write in `catalogue.tsx` itself.
    */
   test('the screen has a password field, and the one write it reaches carries `secret: true, hint: false`', async () => {
     const catalogue = await readUi('parts/catalogue.tsx')
-    expect(catalogue).toMatch(/type="password"/)
+    const upstreamFields = await readUi('parts/upstream-fields.tsx')
+    expect(upstreamFields).toMatch(/type="password"/)
     expect(catalogue).toContain('proxySecretKeyFor')
-    // Control — the search is looking at the real dialog, which has the other
-    // upstream fields too.
-    expect(catalogue).toContain('pm-username')
-    expect(catalogue).toContain('Upstream host')
+    // Control — the search is looking at the real field group, which has the
+    // other upstream fields too. `${idPrefix}-username`, not the literal
+    // `pm-username`, because the id is now built from a caller-supplied
+    // prefix (`catalogue.tsx`'s primary editor passes `idPrefix="pm"`, which
+    // is asserted separately below) so the SAME component can also draw a
+    // fallback row's fields under a different prefix.
+    expect(upstreamFields).toContain('${idPrefix}-username')
+    expect(upstreamFields).toContain('Upstream host')
+    expect(catalogue).toContain('idPrefix="pm"')
 
     /**
      * **Both flags, on one line, in ONE function.** `hint` is per write and not
@@ -807,8 +832,14 @@ describe('a pasted proxy, in the shapes providers actually hand out', () => {
     // and never saves on its own.
     expect(source).toContain('PROXY_PASTE_SINGLE_HINT')
     expect(source).toContain('Fill fields')
-    expect(source).toContain('pm-host')
-    expect(source).toContain('pm-username')
+    // Plan 121 step 121.6 moved the actual host/username fields into the
+    // shared `UpstreamFieldGroup` (`upstream-fields.tsx`) — `catalogue.tsx`
+    // now only supplies the prefix (`idPrefix="pm"`) the fields it renders
+    // are addressed under.
+    expect(source).toContain('idPrefix="pm"')
+    const upstreamFields = await readUi('parts/upstream-fields.tsx')
+    expect(upstreamFields).toContain('${idPrefix}-host')
+    expect(upstreamFields).toContain('${idPrefix}-username')
   })
 })
 
@@ -1200,6 +1231,8 @@ describe('the shape the screen writes is the shape a record is', () => {
       label: 'Office UK',
       listen: { proto: 'http' as const, bindHost: '127.0.0.1', port: 9902 },
       upstream: { proto: 'socks5' as const, host: '10.4.0.9', port: 1080, username: 'country-id-r9931204', bindAddress: '', resolveThroughEgress: true },
+      fallbackUpstreams: [],
+      failover: { failureThreshold: 3, autoFailback: true },
       enabled: false,
       logDestinations: false,
       maxConnections: DEFAULT_MAX_CONNECTIONS,

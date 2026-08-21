@@ -20,6 +20,8 @@ function record(over: Partial<ProxyRecord> = {}): ProxyRecord {
     label: 'Office UK',
     listen: { proto: 'http', bindHost: '127.0.0.1', port: 9902 },
     upstream: { proto: 'socks5', host: 'up.example', port: 1080, username: 'country-id-r9931204', bindAddress: '', resolveThroughEgress: true },
+    fallbackUpstreams: [],
+    failover: { failureThreshold: 3, autoFailback: true },
     enabled: true,
     logDestinations: false,
     maxConnections: DEFAULT_MAX_CONNECTIONS,
@@ -91,6 +93,10 @@ function rig(opts: { views?: ProxyView[]; logs?: () => Promise<PluginLogPage> } 
       calls.push(`restart:${id}`)
       return runtime({ state: 'running', port: 9902 })
     },
+    resetFailover: async (id) => {
+      calls.push(`reset-failover:${id}`)
+      return runtime({ state: 'running', port: 9902 })
+    },
     startEnabled: async () => {},
     destroyAll: async () => {},
   }
@@ -140,17 +146,17 @@ function rig(opts: { views?: ProxyView[]; logs?: () => Promise<PluginLogPage> } 
 }
 
 describe('the route table, and the permission each one declares', () => {
-  test('five routes, and they are the five plan 112 §4.6 asked for', () => {
+  test('six routes — plan 112 §4.6’s five, plus 121.6’s manual failover reset', () => {
     const { routes } = rig()
-    expect([...routes.keys()].sort()).toEqual(['logs', 'proxies', 'restart', 'start', 'stop'])
+    expect([...routes.keys()].sort()).toEqual(['logs', 'proxies', 'reset-failover', 'restart', 'start', 'stop'])
     expect(Object.values(PROXY_ROUTES).map(String).sort()).toEqual([...routes.keys()].sort())
   })
 
-  test('the two that READ are gated on script.view; the three that ACT are gated on plugin.runtime', () => {
+  test('the two that READ are gated on script.view; the four that ACT are gated on plugin.runtime', () => {
     const { routes } = rig()
     expect(routes.get('proxies')?.opts?.permission).toBe('script.view')
     expect(routes.get('logs')?.opts?.permission).toBe('script.view')
-    for (const id of ['start', 'stop', 'restart']) {
+    for (const id of ['start', 'stop', 'restart', 'reset-failover']) {
       // `plugin.runtime` is the farm's own answer to "may this person start and
       // stop a plugin's long-lived half" — the same permission
       // `POST /api/plugins/:name/runtime/restart` requires. Deliberately not
@@ -160,14 +166,21 @@ describe('the route table, and the permission each one declares', () => {
     }
     // The exported table is the same table, so a screen and a test read the
     // declaration rather than the implementation's memory of it.
-    expect(PROXY_ROUTE_PERMISSIONS).toEqual({ list: 'script.view', start: 'plugin.runtime', stop: 'plugin.runtime', restart: 'plugin.runtime', logs: 'script.view' })
+    expect(PROXY_ROUTE_PERMISSIONS).toEqual({
+      list: 'script.view',
+      start: 'plugin.runtime',
+      stop: 'plugin.runtime',
+      restart: 'plugin.runtime',
+      resetFailover: 'plugin.runtime',
+      logs: 'script.view',
+    })
   })
 
   test('the reads answer GET and the actions answer POST — never both', () => {
     const { routes } = rig()
     expect(routes.get('proxies')?.opts?.methods).toEqual(['GET'])
     expect(routes.get('logs')?.opts?.methods).toEqual(['GET'])
-    for (const id of ['start', 'stop', 'restart']) expect(routes.get(id)?.opts?.methods).toEqual(['POST'])
+    for (const id of ['start', 'stop', 'restart', 'reset-failover']) expect(routes.get(id)?.opts?.methods).toEqual(['POST'])
   })
 
   test('every route describes itself, because the description is what the runtime panel shows an operator', () => {
@@ -301,6 +314,59 @@ describe('start, stop and restart drive the supervisor — there is no second li
     // the verb — but its target is `<plugin>/<handler>` and it carries neither
     // the sub-path nor the body, so WHICH proxy is only ever knowable from here.
     expect(line?.fields).toEqual({ subject: 'proxy:office-uk', by: 'ada@example' })
+  })
+})
+
+describe('POST …/http/reset-failover/:id — the manual "reset to primary" action, plan 121 §4.5, step 121.6', () => {
+  test('calls Supervisor.resetFailover once, with the id from the path, and answers ok:true', async () => {
+    const harness = rig()
+    const response = await harness.call('reset-failover', { method: 'POST', path: '/office-uk' })
+    expect(harness.calls).toEqual(['refresh', 'reset-failover:office-uk'])
+    expect(response.body).toMatchObject({ ok: true, id: 'office-uk' })
+  })
+
+  test('a proxy id that names no record is a 404 about the RECORD, same as start/stop/restart', async () => {
+    const harness = rig()
+    const response = await harness.call('reset-failover', { method: 'POST', path: '/deleted-yesterday' })
+    expect(response.status).toBe(404)
+    expect(response.body).toMatchObject({ ok: false, code: 'E_PROXY_UNKNOWN' })
+  })
+
+  test('who pressed it is recorded on this proxy’s own line', async () => {
+    const harness = rig()
+    await harness.call('reset-failover', { method: 'POST', path: '/office-uk', caller: { id: 'ada@example', role: 'admin' } })
+    const line = harness.lines.find((l) => l.message.includes('reset'))
+    expect(line?.fields).toEqual({ subject: 'proxy:office-uk', by: 'ada@example' })
+  })
+})
+
+describe('GET …/http/proxies — the failover snapshot joins the row, plan 121 §4.5, step 121.6', () => {
+  test('a running record with a live failover controller reports activeIndex and history', async () => {
+    const harness = rig({
+      views: [
+        {
+          id: 'office-uk',
+          record: record(),
+          runtime: runtime({ state: 'running', port: 9902 }),
+          problems: [],
+          failover: { activeIndex: 1, consecutiveFailures: 0, primaryRecoveryStreak: 0, history: [{ at: 100, from: 0, to: 1, reason: 'confirmation probe failed against the active upstream' }] },
+        },
+      ],
+    })
+    const row = ((await harness.call('proxies')).body as { items: { failover: { activeIndex: number; history: unknown[] } | null }[] }).items[0]
+    expect(row?.failover).toEqual({ activeIndex: 1, history: [{ at: 100, from: 0, to: 1, reason: 'confirmation probe failed against the active upstream' }] })
+  })
+
+  test('a stopped record (no live controller) reports failover: null, not an empty object', async () => {
+    const harness = rig({ views: [{ id: 'office-uk', record: record(), runtime: runtime(), problems: [], failover: null }] })
+    const row = ((await harness.call('proxies')).body as { items: { failover: unknown }[] }).items[0]
+    expect(row?.failover).toBeNull()
+  })
+
+  test('a view built before this field existed (an older fixture) still reads failover: null, not undefined leaking onto the wire', async () => {
+    const harness = rig({ views: [{ id: 'office-uk', record: record(), runtime: runtime(), problems: [] }] })
+    const row = ((await harness.call('proxies')).body as { items: { failover: unknown }[] }).items[0]
+    expect(row?.failover).toBeNull()
   })
 })
 

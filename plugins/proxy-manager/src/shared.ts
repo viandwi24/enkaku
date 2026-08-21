@@ -79,6 +79,33 @@ export function proxySecretKeyFor(id: string): string {
 }
 
 /**
+ * `office-uk`, slot 2 → `proxy-secret:office-uk:2` — the credential half of
+ * ONE UPSTREAM SLOT (plan 121 §4.1, widened by step 121.4). Slot `0` is the
+ * record's own primary `upstream`; `1..n` is `fallbackUpstreams[slot - 1]` —
+ * mirroring `readFallbackUpstreams`' own index-based addressing below.
+ *
+ * Widened from one password per RECORD to one per upstream SLOT because
+ * `ProxyUpstream` itself has no password field of its own: a fallback naming
+ * a different account (another local egress, a third-party rotating proxy
+ * like SOAX) needs its own credential, and reusing the primary's for every
+ * slot — the gap step 121.3 named rather than silently got wrong — is
+ * exactly what this key scheme closes.
+ *
+ * **`proxySecretKeyFor(id)` (the bare, pre-121.4 key) is unchanged and stays
+ * the read-time fallback for slot 0** — the same "read-time default for a
+ * pre-existing shape" discipline this file already applies to
+ * `fallbackUpstreams`/`failover` themselves (`readProxyRecord`'s own comment):
+ * a record written before this step has no `:0`/`:1`/… key at all, so reading
+ * slot 0 falls through to the legacy bare key rather than reading as "no
+ * password saved". Fallback slots (`1..n`) have no legacy key to fall back
+ * to — no secret written for a slot is a real absence, not a fault, for a
+ * freshly-added fallback nobody has entered credentials for yet.
+ */
+export function proxySecretSlotKeyFor(id: string, slot: number): string {
+  return `${proxySecretKeyFor(id)}:${slot}`
+}
+
+/**
  * The INBOUND credential — `{ username, password }` for whoever is allowed to
  * dial IN to this bridge, never confused with `proxySecretKeyFor`'s outbound
  * one, which is who this bridge dials OUT as (plan 117 §3.5, §4.5).
@@ -456,11 +483,74 @@ export interface ProxyUpstream {
   resolveThroughEgress: boolean
 }
 
+/**
+ * The failover behaviour a record declares for itself (plan 121 §4.1).
+ *
+ * No separate "enabled" flag: failover logic (`service/failover.ts`) is
+ * simply inert when `fallbackUpstreams` is empty, matching the same rule
+ * `ProxyRecord.listenerAuth` already follows for its own credential — 00-
+ * overview §4.3's "don't add fields beyond what's needed." Both fields
+ * therefore always have a value, even on a record with no backups
+ * configured at all.
+ */
+/**
+ * The `fields.event` marker a `service/failover.ts` switch's log line carries
+ * (plan 121 §4.5, step 121.6) — `service/logbook.ts`'s `LogSink` is the only
+ * broadcast channel a plugin service has (`plugin.log`, `@enkaku/protocol`'s
+ * `messages/plugin.ts`); there is no separate, plugin-specific WS message
+ * type, because the core's protocol package must not carry one entry per
+ * optional plugin (00-overview §4.3's "no second, weaker way", applied to the
+ * wire rather than to storage). A switch's `warn`/`info` line therefore
+ * carries this marker plus `recordId`/`from`/`to`/`reason`/`at` in its
+ * `fields` bag, so a reader of the plugin's log (today: the Logs tab; in
+ * principle, anything that reads `plugin.log`) can tell a failover event from
+ * an ordinary line without parsing prose. `ui/parts/catalogue.tsx`'s own
+ * failover chip does NOT read this — see that file's own note on why it polls
+ * the ordinary `GET …/http/proxies` row instead.
+ */
+export const PROXY_FAILOVER_EVENT = 'proxy.failover'
+
+export interface ProxyFailoverConfig {
+  /**
+   * Consecutive dial failures against the currently active upstream before a
+   * confirmation probe runs and, if it also fails, a switch happens (plan
+   * 121 §3.2, §4.2). Counted per-(record, active upstream) — switching
+   * upstream always resets the count to zero.
+   */
+  failureThreshold: number
+  /**
+   * Whether a healthy PRIMARY, confirmed by a background re-probe reaching
+   * the anti-flap recovery streak, is switched back to automatically (plan
+   * 121 §4.4). Default on. When off, the background probe still runs so
+   * Studio can show "primary looks healthy again," but only the manual
+   * "reset to primary" action switches back.
+   */
+  autoFailback: boolean
+}
+
 /** One proxy, as this plugin stores it. Field order is the storage order — `index.test.ts` holds it to `ProxyRecordSchema`'s. */
 export interface ProxyRecord {
   label: string
   listen: ProxyListen
   upstream: ProxyUpstream
+  /**
+   * Backup upstreams this record fails over to, in order, when the primary
+   * proves unreachable — confirmed by a generic probe through the SAME
+   * upstream first, so a flaky target site never burns through backups
+   * (plan 121 §1, §4.2). Any existing `ProxyUpstream` shape: another local
+   * egress via `direct`, or a third-party rotating proxy (e.g. SOAX) via
+   * `http`/`socks5` — nothing new to build for either case (plan 121 §0.2).
+   *
+   * Empty is the ordinary case, and leaves failover provably inert — see
+   * `ProxyFailoverConfig`'s own comment for why there is no separate on/off
+   * switch.
+   */
+  fallbackUpstreams: ProxyUpstream[]
+  /**
+   * How aggressively this record fails over, and whether it fails back on
+   * its own. Always present, even with `fallbackUpstreams` empty.
+   */
+  failover: ProxyFailoverConfig
   /**
    * INTENT, never observation (plan 112 §3.5). The supervisor starts every
    * enabled record when the plugin loads. A running proxy's state, uptime,
@@ -593,6 +683,55 @@ function oneOf<T extends string>(allowed: readonly T[], value: unknown, fallback
 }
 
 /**
+ * A positive integer, or `fallback` — for `failover.failureThreshold` (plan
+ * 121 §4.1), which has no upper bound: the owner runs a large, varied fleet
+ * and a blanket ceiling would be guessing at a number nobody asked for (plan
+ * 121 §9 Q2).
+ */
+function positiveInt(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : fallback
+}
+
+/**
+ * A single upstream object from storage → `ProxyUpstream`, the same per-field
+ * discipline `readProxyRecord`'s v2 branch already applied to the primary
+ * `upstream` inline. Factored out (plan 121 §4.1) so `fallbackUpstreams` can
+ * read every entry through the identical defaults, rather than a second copy
+ * of this shape that could drift from the primary's.
+ */
+function readUpstream(value: unknown): ProxyUpstream {
+  const upstream = asObject(value)
+  return {
+    proto: oneOf(PROXY_KINDS, upstream.proto, 'socks5'),
+    host: str(upstream, 'host'),
+    port: port(upstream.port) ?? 0,
+    username: str(upstream, 'username'),
+    bindAddress: str(upstream, 'bindAddress'),
+    resolveThroughEgress: bool(upstream, 'resolveThroughEgress', true),
+  }
+}
+
+/**
+ * A stored value → the ordered backup-upstream list (plan 121 §4.1). Not an
+ * array at all (absent, `null`, junk) reads as empty rather than throwing —
+ * the same defensive-reader discipline `asObject` already applies to the
+ * record as a whole, so a malformed `fallbackUpstreams` renders as "no
+ * backups configured" instead of taking the row down.
+ */
+function readFallbackUpstreams(value: unknown): ProxyUpstream[] {
+  return Array.isArray(value) ? value.map(readUpstream) : []
+}
+
+/** A stored value → `ProxyFailoverConfig`, defaulted the same defensive way (plan 121 §4.1). */
+function readFailover(value: unknown): ProxyFailoverConfig {
+  const source = asObject(value)
+  return {
+    failureThreshold: positiveInt(source.failureThreshold, 3),
+    autoFailback: bool(source, 'autoFailback', true),
+  }
+}
+
+/**
  * A stored value → a `ProxyRecord`, upgrading the shipped shape on the way.
  *
  * Three properties this has to have, and each one is a decision (plan 112 §4.3):
@@ -625,7 +764,8 @@ export function readProxyRecord(value: unknown): ProxyRecord {
     // `bindAddress`, `resolveThroughEgress`, `capacity`, `exclusive` and
     // `listenerAuth` are plan 117 additions with no shipped-shape equivalent
     // at all — a row this old never named any of them — so they get their
-    // plain defaults rather than anything read off `source`.
+    // plain defaults rather than anything read off `source`. `fallbackUpstreams`
+    // and `failover` are plan 121's own additions, defaulted the same way.
     return {
       label: str(source, 'label'),
       listen: { proto: 'http', bindHost: DEFAULT_BIND_HOST, port: null },
@@ -637,6 +777,8 @@ export function readProxyRecord(value: unknown): ProxyRecord {
         bindAddress: '',
         resolveThroughEgress: true,
       },
+      fallbackUpstreams: [],
+      failover: { failureThreshold: 3, autoFailback: true },
       enabled: false,
       logDestinations: false,
       maxConnections: DEFAULT_MAX_CONNECTIONS,
@@ -649,7 +791,6 @@ export function readProxyRecord(value: unknown): ProxyRecord {
   }
 
   const listen = asObject(source.listen)
-  const upstream = asObject(source.upstream)
   return {
     label: str(source, 'label'),
     listen: {
@@ -657,17 +798,13 @@ export function readProxyRecord(value: unknown): ProxyRecord {
       bindHost: str(listen, 'bindHost', DEFAULT_BIND_HOST) || DEFAULT_BIND_HOST,
       port: port(listen.port),
     },
-    upstream: {
-      proto: oneOf(PROXY_KINDS, upstream.proto, 'socks5'),
-      host: str(upstream, 'host'),
-      port: port(upstream.port) ?? 0,
-      username: str(upstream, 'username'),
-      // Plan 117 additions. A record written before this plan has neither
-      // key on its `upstream` object, so `str`/`bool` fall through to the
-      // same defaults a brand-new `direct` record gets.
-      bindAddress: str(upstream, 'bindAddress'),
-      resolveThroughEgress: bool(upstream, 'resolveThroughEgress', true),
-    },
+    upstream: readUpstream(source.upstream),
+    // Plan 121 additions. A record written before this plan has neither key
+    // at all, so `readFallbackUpstreams`/`readFailover` fall through to the
+    // same defaults a brand-new record gets — the identical discipline the
+    // plan 117 additions just below already established for this record.
+    fallbackUpstreams: readFallbackUpstreams(source.fallbackUpstreams),
+    failover: readFailover(source.failover),
     enabled: bool(source, 'enabled', false),
     logDestinations: bool(source, 'logDestinations', false),
     maxConnections: bounded(source.maxConnections, 1, 10_000, DEFAULT_MAX_CONNECTIONS),
@@ -691,18 +828,25 @@ export function readProxyRecord(value: unknown): ProxyRecord {
  * and nothing anywhere reports a fault. `index.test.ts` runs a value through
  * both and checks the result against `ProxyRecordSchema`.
  */
+/** One upstream → the exact object it is stored as — the write half of `readUpstream`, shared by the primary `upstream` and every entry of `fallbackUpstreams` (plan 121 §4.1). */
+function writeUpstream(upstream: ProxyUpstream): Record<string, unknown> {
+  return {
+    proto: upstream.proto,
+    host: upstream.host,
+    port: upstream.port,
+    username: upstream.username,
+    bindAddress: upstream.bindAddress,
+    resolveThroughEgress: upstream.resolveThroughEgress,
+  }
+}
+
 export function writeProxyRecord(record: ProxyRecord): Record<string, unknown> {
   return {
     label: record.label,
     listen: { proto: record.listen.proto, bindHost: record.listen.bindHost, port: record.listen.port },
-    upstream: {
-      proto: record.upstream.proto,
-      host: record.upstream.host,
-      port: record.upstream.port,
-      username: record.upstream.username,
-      bindAddress: record.upstream.bindAddress,
-      resolveThroughEgress: record.upstream.resolveThroughEgress,
-    },
+    upstream: writeUpstream(record.upstream),
+    fallbackUpstreams: record.fallbackUpstreams.map(writeUpstream),
+    failover: { failureThreshold: record.failover.failureThreshold, autoFailback: record.failover.autoFailback },
     enabled: record.enabled,
     logDestinations: record.logDestinations,
     maxConnections: record.maxConnections,

@@ -1,6 +1,7 @@
 import type { PluginLogPage } from '@enkaku/protocol'
 import type { PluginRequest, PluginResponse } from '@enkaku/sdk'
 import { PROXY_LOGS_DEFAULT_LIMIT, proxyKeyFor, type ProxyProblem, type ProxyRecord } from '../shared'
+import type { FailoverHistoryEntry } from './failover'
 import { proxySubject, type LogSink } from './logbook'
 import type { ProxyRuntime, ProxyState, Supervisor } from './supervisor'
 
@@ -83,6 +84,14 @@ export const PROXY_ROUTES = {
   start: 'start',
   stop: 'stop',
   restart: 'restart',
+  /**
+   * Plan 121 §4.5, step 121.6 — the manual "Reset to primary" action's own
+   * route, wrapping `Supervisor.resetFailover`. Gated the same way
+   * start/stop/restart are: it is an action that changes what a bridge is
+   * actually dialling, not a record edit, so `plugin.runtime` and not
+   * `plugin.data`.
+   */
+  resetFailover: 'reset-failover',
   logs: 'logs',
 } as const
 
@@ -92,6 +101,7 @@ export const PROXY_ROUTE_PERMISSIONS: Record<keyof typeof PROXY_ROUTES, string> 
   start: 'plugin.runtime',
   stop: 'plugin.runtime',
   restart: 'plugin.runtime',
+  resetFailover: 'plugin.runtime',
   logs: 'script.view',
 }
 
@@ -136,6 +146,15 @@ export interface ProxyRow {
   problems: ProxyProblem[]
   /** Convenience for the screen, decided here so two halves cannot disagree about what "startable" means. */
   startable: boolean
+  /**
+   * This record's failover state (plan 121 §4.5, step 121.6) — `null` when
+   * nothing is running, since there is no live `FailoverController` for a
+   * stopped record. Narrowed to what the screen actually draws (`activeIndex`,
+   * `history`) rather than the controller's full internal state — the same
+   * "narrow the wire to the fields a screen draws" rule `ProxyRow` itself
+   * already follows for the record and the runtime.
+   */
+  failover: { activeIndex: number; history: FailoverHistoryEntry[] } | null
 }
 
 /** A refusal this file made itself. Always `200`-shaped `{ ok: false }` except for the one below, which is genuinely a 404. */
@@ -170,7 +189,10 @@ export function proxyIdFromPath(path: string): string {
   return trimmed.split('/')[0] ?? ''
 }
 
-export function toRow(view: { id: string; record: ProxyRecord; runtime: ProxyRuntime; problems: ProxyProblem[] }, now: number): ProxyRow {
+export function toRow(
+  view: { id: string; record: ProxyRecord; runtime: ProxyRuntime; problems: ProxyProblem[]; failover?: Readonly<{ activeIndex: number; history: FailoverHistoryEntry[] }> | null },
+  now: number,
+): ProxyRow {
   const { runtime } = view
   return {
     id: view.id,
@@ -188,6 +210,7 @@ export function toRow(view: { id: string; record: ProxyRecord; runtime: ProxyRun
     lastError: runtime.lastError,
     problems: view.problems,
     startable: view.problems.length === 0,
+    failover: view.failover ? { activeIndex: view.failover.activeIndex, history: view.failover.history } : null,
   }
 }
 
@@ -267,6 +290,32 @@ export function registerProxyRoutes(host: HandlerHost, supervisor: Supervisor): 
     'Stop this bridge. The port is released at once; live tunnels are given the record’s own drain window unless `{ "force": true }` skips it.',
   )
   action('restart', (id) => supervisor.restart(id), 'Stop then start, under one lock, so nothing interleaves. Live tunnels get the drain.')
+
+  /**
+   * Plan 121 §4.5, step 121.6 — the manual "Reset to primary" action. Unlike
+   * start/stop/restart, `ok` here is not "the state that was reached": a
+   * record already on primary, or a record that is not running at all, both
+   * answer `ok: true` with nothing changed — `Supervisor.resetFailover` is
+   * explicitly a no-op rather than a refusal in both cases (its own doc
+   * comment), so there is no failure shape for this route to report either.
+   */
+  host.onRequest(
+    PROXY_ROUTES.resetFailover,
+    async (request) => {
+      await fresh()
+      const id = proxyIdFromPath(request.path)
+      if (!id || !supervisor.has(id)) return unknownProxy(id)
+      host.log.info('proxy failover reset to primary requested', { subject: proxySubject(id), by: request.caller.id })
+      const runtime = await supervisor.resetFailover(id)
+      const result: ProxyActionResult = { ok: true, id, runtime }
+      return { body: result }
+    },
+    {
+      methods: ['POST'],
+      permission: PROXY_ROUTE_PERMISSIONS.resetFailover,
+      description: 'Force this record’s active upstream back to primary right now, regardless of auto failback. A no-op when the record is already on primary or is not running.',
+    },
+  )
 
   host.onRequest(
     PROXY_ROUTES.logs,
