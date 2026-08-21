@@ -84,7 +84,8 @@ async function resolveThroughBind(hostname: string, bindAddress: string, timeout
   } catch (err) {
     throw new ProxyError(
       'E_PROXY_DNS_EGRESS_FAILED',
-      `resolving "${hostname}" through the resolver bound to ${bindAddress} failed: ${messageOf(err)} — this is not retried through the host's default resolver`,
+      `resolving "${hostname}" through the resolver bound to ${bindAddress} failed: ${messageOf(err)} — this is not retried through the host's default resolver. ` +
+        `This is expected when ${bindAddress}'s own routing carries only a default route with no path to a DNS server: either turn "Resolve names through this address" off for this record, so lookups leave by the host's ordinary resolver instead, or point that resolver at a public address reachable through ${bindAddress}'s own path.`,
     )
   }
 }

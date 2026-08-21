@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // This pack now has TWO halves that run in two different places (plan 122
+    // step 122.3, mirroring `plugins/proxy-manager`'s own tsconfig): `src/index.ts`
+    // runs in the core's Bun runtime, and `src/ui/**` runs in a browser inside
+    // Studio's page. So the DOM lib is added to the base's `ES2022` — without it
+    // a `<script>`-side file cannot name `window`, and every `e.target.value` in
+    // a form handler is an error. `types: ["bun"]` stays, because the server half
+    // still needs it.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // The AUTOMATIC JSX runtime, so a `.tsx` file needs no `import React`. This
+    // setting governs `tsc` only — Bun's bundler ignores a tsconfig entirely,
+    // which is why `enkaku publish` passes `--production` on the command line
+    // instead (see `packages/sdk/src/cli/build-ui.ts`). Both halves have to be
+    // right; neither implies the other.
+    "jsx": "react-jsx"
+  },
+  "include": ["."]
+}

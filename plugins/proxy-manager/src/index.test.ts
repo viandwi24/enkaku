@@ -160,7 +160,12 @@ describe('the plugin definition', () => {
     // `name@version`) actually restages an already-provisioned install onto
     // the new bundle, instead of silently keeping the pre-121 one forever
     // under an unchanged version string.
-    expect(plugin.version).toBe('0.9.0')
+    // 0.10.0 (plan 123, the bind capability probe) is the same mechanical
+    // bump, with a sharper cost for forgetting it: 0.9.0 had already SHIPPED
+    // (tag v0.1.19), so leaving the string alone would have made the fix for
+    // a silent wrong-egress bug itself silently fail to arrive on every
+    // install that had already seeded 0.9.0.
+    expect(plugin.version).toBe('0.10.0')
     expect(plugin.scripts.length).toBe(1)
   })
 

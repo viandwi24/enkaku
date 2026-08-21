@@ -411,3 +411,39 @@ Run through Studio in a real browser against the running dev farm (`proxy-manage
 2. **Should a `direct` record be able to name its own DNS servers?** §3.4 uses the host's configured servers. A farm whose links each have their own resolver would want per-record servers. Proposal: not in this plan; the field is additive and nothing here forecloses it.
 3. **What would have to be true to add a router integration?** An operator with two independent sources of health that can disagree needs a rule for which wins (`docs/plans/114-m79-device-proxy.md` records exactly this defect for the guest agent's two vocabularies). Until such a rule is written, one measured source is better than two unreconciled ones.
 4. **Rotating an egress** — re-dialling a link to obtain a new public address — is the extension most likely to be asked for next. It is out of scope here and it is not vendor-neutral: every link type rotates differently. It belongs in a pack of its own that drives whatever hardware is present, and calls this pack's probe to confirm the address actually changed.
+
+---
+
+## 12. The Windows `gost` workaround
+
+**`net.connect({ localAddress })` silently ignores the option on Windows under Bun.** Measured on
+the owner's farm host on 2026-08-19: the record's `bindAddress` was correct, the routing rule was
+correct, `curl.exe --interface` and a raw `.NET Socket.Bind` both egressed through the intended
+link — only the Bun-built bridge kept leaving through the default one. Tracked upstream
+(`oven-sh/bun#6888`, `#11570`, `#23486`; a fix landed as `#23464` on 2025-10-12 and was reverted
+three days later).
+
+So on `win32` **only**, and only for a `direct` record with a **non-empty** `bindAddress`:
+`gost-provision.ts` downloads a **pinned** `gost` 3.2.6 Windows zip with a sha256 read off the real
+release asset, into `<dataDir>/plugins/proxy-manager/gost/`; `gost-runtime.ts` supervises **one**
+process for every Windows `direct` record at once, not one per record; each gost service binds
+`127.0.0.1` only, speaks plain HTTP CONNECT (so `dial-http.ts`, already written and tested for
+vendor HTTP upstreams, is the *only* dialler needed on the Bun→gost hop), and has no `chain`: gost
+dials the destination itself, bound to `interface: <bindAddress>`. `resolveThroughEgress` has no
+effect through this runtime — gost resolves through its own default resolver, matching the real
+topology this workaround was proven against, where `bindAddress`'s own routing carried only a
+default route with no path back to the LAN's DNS server.
+
+**Correction, recorded here rather than rewritten into the paragraphs above (they describe what was
+true when this plan shipped, against the evidence available on 2026-08-19): the gate above is too
+narrow.** `docs/plans/123-m88-bind-capability-probe.md` §0 reproduced the identical failure on
+macOS 15 under Bun 1.3.14 — including a bogus-address test proving Bun's `net.connect` never calls
+`bind()` at all — and it was independently reported from a live Ubuntu 24.04 farm
+(`refs/tmp-bug-proxy-mikrotik.md`). `process.platform === 'win32'` encoded a guess about *where*
+the bug lived rather than a check of *whether the bind works*. Plan 123 replaces the platform gate
+with a per-boot capability probe, `bindIsEffective()` (`service/bind-probe.ts`), and reuses the
+`gost` mechanism recorded above **unchanged** — only the condition that reaches for it moved, and
+it is now reachable on any platform once `gost` itself is provisioned there (still Windows-only by
+construction as of plan 123; widening it is plan 123 §9 Q4, an open question for the owner). See
+that plan for the measurement, the probe's design, and the operational consequence of the corrected
+gate on a live Linux/macOS farm.

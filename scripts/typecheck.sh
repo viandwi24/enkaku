@@ -13,7 +13,7 @@ fail=0
 # release, and the two do not deserve the same level of scrutiny by accident.
 for dir in packages/protocol packages/ui packages/adb packages/toolchain packages/drivers packages/scrcpy packages/sdk \
            packages/session packages/harness packages/core packages/node packages/studio packages/probe-server \
-           plugins/networking plugins/proxy-manager plugins/tiktok-automation-pack \
+           plugins/networking plugins/proxy-manager plugins/tiktok-automation-pack plugins/mikrotik-routing \
            examples; do
   p="${dir##*/}"
   printf '%-10s ' "$p"

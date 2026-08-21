@@ -376,6 +376,11 @@ describe('validateProxyRecord — the coded refusals (§4.2)', () => {
       ...validateProxyRecord(record({ upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress: 'not-an-ip', resolveThroughEgress: true } })),
       ...validateProxyRecord(record({ upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress: '192.168.100.11', resolveThroughEgress: true } }), { hostAddresses: [] }),
       ...validateProxyRecord(record({ listen: { proto: 'http', bindHost: '127.0.0.1', port: 9902 }, listenerAuth: true }), { hasListenerAuth: false }),
+      // Plan 123 §4.3, step 123.3.
+      ...validateProxyRecord(record({ upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress: '192.168.100.11', resolveThroughEgress: true } }), {
+        hostAddresses: ['192.168.100.11'],
+        bindWorkaroundUnavailable: true,
+      }),
       ...routeProblems,
       ...agentProblems,
     ].map((p) => p.code)
@@ -442,6 +447,61 @@ describe('the `bindAddress` checks (plan 117 §4.2, both codes)', () => {
     // own doc comment — so a non-empty one on a vendor record raises nothing.
     const vendor = record({ upstream: { proto: 'socks5', host: 'h', port: 1080, username: '', bindAddress: 'not-an-ip', resolveThroughEgress: true } })
     expect(validateProxyRecord(vendor)).toEqual([])
+  })
+})
+
+describe('E_PROXY_BIND_INEFFECTIVE — the bind-workaround precondition (plan 123 §4.3, step 123.3)', () => {
+  function direct(bindAddress: string): ProxyRecord {
+    return record({
+      listen: { proto: 'http', bindHost: '127.0.0.1', port: 9902 },
+      upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress, resolveThroughEgress: true },
+    })
+  }
+
+  test('bindWorkaroundUnavailable: true — a PRECONDITION (storable, not startable), naming all three facts', () => {
+    const problems = validateProxyRecord(direct('192.168.50.11'), { hostAddresses: ['192.168.50.11'], bindWorkaroundUnavailable: true })
+    expect(problems.map((p) => p.code)).toEqual(['E_PROXY_BIND_INEFFECTIVE'])
+    expect(problems[0]?.kind).toBe('precondition')
+    expect(isStorableRecord(problems)).toBe(true)
+    expect(isStartableRecord(problems)).toBe(false)
+    const message = problems[0]?.message ?? ''
+    // Fact 1: the host DOES hold the address — must not read like the
+    // address itself is the problem (that would send an operator to their
+    // router, which is the exact mistake §0.1's own field report made).
+    expect(message).toContain('does hold 192.168.50.11')
+    // Fact 2: the RUNTIME is what ignores the bind, not the record or the address.
+    expect(message.toLowerCase()).toContain('runtime')
+    expect(message.toLowerCase()).toContain('ignores the bind')
+    // Fact 3: what to do about it — the external-binder workaround, or a runtime upgrade.
+    expect(message.toLowerCase()).toContain('gost')
+    expect(message.toLowerCase()).toContain('runtime upgrade')
+  })
+
+  test('bindWorkaroundUnavailable: false raises nothing — the bind works, or gost covers it', () => {
+    expect(validateProxyRecord(direct('192.168.50.11'), { hostAddresses: ['192.168.50.11'], bindWorkaroundUnavailable: false })).toEqual([])
+  })
+
+  test('bindWorkaroundUnavailable: undefined ("nobody looked") never becomes a refusal it cannot justify', () => {
+    // The browser half — and `snapshot()`'s own synchronous read — cannot run
+    // an actual socket probe. This is their honest answer, and must not be
+    // read as "the bind is broken".
+    expect(validateProxyRecord(direct('192.168.50.11'), { hostAddresses: ['192.168.50.11'] })).toEqual([])
+  })
+
+  test('an EMPTY bindAddress is completely unaffected, even with bindWorkaroundUnavailable: true (plan 123 §6 criterion 4)', () => {
+    // Nothing to bind — this field must never fire for the common case,
+    // regardless of what a (nonsensical, for this record) upstream caller
+    // passes in.
+    expect(validateProxyRecord(direct(''), { bindWorkaroundUnavailable: true })).toEqual([])
+  })
+
+  test('is only ever raised for a `direct` upstream', () => {
+    const vendor = record({ upstream: { proto: 'socks5', host: 'h', port: 1080, username: '', bindAddress: '192.168.50.11', resolveThroughEgress: true } })
+    expect(validateProxyRecord(vendor, { hostAddresses: ['192.168.50.11'], bindWorkaroundUnavailable: true })).toEqual([])
+  })
+
+  test('`PROXY_PROBLEM_CODES` carries the code, so a screen can switch on it', () => {
+    expect(PROXY_PROBLEM_CODES).toContain('E_PROXY_BIND_INEFFECTIVE')
   })
 })
 

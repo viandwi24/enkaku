@@ -1,0 +1,26 @@
+{
+  "name": "@enkaku/plugin-mikrotik-routing",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "MikroTik routing — assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Stage 1 (plan 122 §5): a read-only REST driver, inventory, and a tier-C Studio screen (Paths, Settings, Rules); zero write capability exists yet.",
+  "enkaku": {
+    "plugin": "mikrotik-routing",
+    "entry": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "dev": "bun run ../../packages/sdk/src/cli/index.ts dev src/index.ts",
+    "publish:farm": "bun run ../../packages/sdk/src/cli/index.ts publish src/index.ts"
+  },
+  "dependencies": {
+    "@enkaku/protocol": "workspace:*",
+    "@enkaku/sdk": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@enkaku/ui": "workspace:*",
+    "@types/react": "^19",
+    "react": "^19.0.0"
+  }
+}

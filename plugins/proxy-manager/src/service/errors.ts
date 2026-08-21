@@ -57,6 +57,28 @@ export const PROXY_ERROR_CODES = [
   'E_PROXY_GOST_ARCHIVE_UNEXPECTED',
   /** The local `gost` helper process this pack spawned (Windows-only, plan 117 §12) exited, or never started, before a `direct` upstream could reach it. */
   'E_PROXY_GOST_UNAVAILABLE',
+  /**
+   * Plan 123 §4.2 row 4 / §4.3. `bindIsEffective()` (`./bind-probe.ts`)
+   * measured that this runtime silently ignores the `direct` record's
+   * `bindAddress`, and no `gost` workaround is reachable either —
+   * `gost-provision.ts` refused it as `E_PROXY_GOST_UNSUPPORTED_PLATFORM`
+   * (Windows-only by construction; widening it is plan 123 §9 Q4, explicitly
+   * out of scope here).
+   *
+   * Thrown here (`upstream.ts`'s `createUpstream`, step 123.2) as a plain
+   * `ProxyError` — this closed list is the dialler's own vocabulary, and
+   * `createUpstream` has no way to stop a record reaching `starting`, only
+   * `supervisor.ts`'s `startLocked` does. Step 123.3 is the OTHER half of
+   * this code's story: `startLocked` catches this exact code specially and
+   * re-runs `shared.ts`'s `validateProxyRecord` with
+   * `bindWorkaroundUnavailable: true`, which is where the SAME code also
+   * lives as a `PROXY_PROBLEM_CODES` entry — the pack's PRECONDITION
+   * vocabulary (§3.3/§4.3), not a refusal-after-attempt. Two homes for one
+   * code because two different vocabularies both need it: this file's is
+   * "what the dialler threw", `shared.ts`'s is "what the record cannot yet
+   * do and why".
+   */
+  'E_PROXY_BIND_INEFFECTIVE',
 ] as const
 
 export type ProxyErrorCode = (typeof PROXY_ERROR_CODES)[number]

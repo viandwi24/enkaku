@@ -171,7 +171,10 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
             <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
               On: a hostname is looked up through the bind address's own path before connecting, so the lookup leaves the same way the connection does.
               Off: this host's ordinary resolver answers it instead — a different path than the packets, and worth knowing which one this record uses. A
-              lookup that fails through the bind address is reported, never silently retried through the host's default resolver.
+              lookup that fails through the bind address is reported, never silently retried through the host's default resolver. If this address's own
+              routing carries only a default route with no path to a DNS server, name a public resolver reachable through it, or turn this off — DNS will
+              then leave by the host's ordinary link while the connection still leaves from this address, which is fine for most farm work and not for
+              anything geo-sensitive.
             </p>
           </div>
           <Switch

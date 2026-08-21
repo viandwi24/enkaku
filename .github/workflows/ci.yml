@@ -66,6 +66,7 @@ jobs:
       - run: bun run --cwd plugins/networking test
       - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
+      - run: bun run --cwd plugins/mikrotik-routing test
       - run: bun run --cwd examples test
       # A plan can typecheck and pass every test while its own `> Status:`
       # header is stale or self-contradicting (a shipped plan still marked
@@ -143,6 +144,7 @@ jobs:
       - run: bun run --cwd plugins/networking test
       - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
+      - run: bun run --cwd plugins/mikrotik-routing test
       - run: bun run --cwd examples test
       # `scripts/spec-check.ts` parses filesystem paths into spec-divergence
       # keys (see its `[\\/]`-aware regex) — real path-separator logic, unlike

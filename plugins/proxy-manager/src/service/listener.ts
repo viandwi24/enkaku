@@ -135,6 +135,17 @@ export interface ListenerOptions {
   maxConnections: number
   log: ConnectionLogger
   /**
+   * This record's own configured `ProxyUpstream.bindAddress` (plan 123 §3.4,
+   * §4.4) — absent or empty means "nothing to compare", which is the common
+   * case (most upstreams are not `direct`, and most `direct` records bind
+   * nothing) and must cost nothing beyond the one falsy check that decides it.
+   * It is the PRIMARY upstream's own bind, read once at listener build time —
+   * the same scope `entry.record.upstream.*` already has on the `listening`
+   * event below, unrelated to plan 121's failover, which this step does not
+   * touch.
+   */
+  bindAddress?: string
+  /**
    * The inbound credential a client must present to be served — absent means
    * this listener authenticates nobody (plan 117 §3.5, §4.4). `supervisor.ts`
    * is the only place that reads `proxy-auth:<id>` and fills this in;
@@ -175,6 +186,18 @@ export function createListener(opts: ListenerOptions, negotiate: Negotiator): Pr
   const live = new Set<BridgeConn>()
   let nextConnId = 1
   let destroyed = false
+  /**
+   * "Have we already warned for THIS record on THIS start" (plan 123 §3.4,
+   * §4.4, criterion 7). A plain closure variable is enough to reset correctly
+   * on a restart, for the same reason plan 121's `FailoverController` needs no
+   * extra plumbing to reset its own failure count on one: `supervisor.ts`'s
+   * `startLocked` builds a brand-new listener — a fresh call to
+   * `createListener`, a fresh closure — on every start, and `stopLocked`
+   * drops the old one entirely (`entry.listener = null`). There is structurally
+   * no way for this flag to survive a stop; it dies with the listener that
+   * owns it, exactly like `nextConnId` and `destroyed` above it.
+   */
+  let warnedBindMismatch = false
 
   const server = net.createServer((client) => {
     const connId = nextConnId++
@@ -227,7 +250,22 @@ export function createListener(opts: ListenerOptions, negotiate: Negotiator): Pr
               upstream.destroy()
               return
             }
-            opts.log({ event: 'upstream-connected', conn: connId, destPort: dest.port, destHost: dest.host })
+            // Read HERE, not later: `socket.localAddress` is live and accurate
+            // only while the socket is connected (plan 123 §0.3, measured —
+            // read after close it is empty). This is the earliest point the
+            // dial has resolved, so it is also the correct one.
+            const egressAddress = upstream.localAddress ?? ''
+            opts.log({ event: 'upstream-connected', conn: connId, destPort: dest.port, destHost: dest.host, egressAddress })
+
+            // Plan 123 §3.4, §4.4, criterion 7 — once per START, per record,
+            // never per connection. Nothing to compare against, and nothing
+            // paid beyond this one falsy check, when the record has no
+            // `bindAddress` (criterion 4) or nothing was actually observed.
+            if (!warnedBindMismatch && opts.bindAddress && upstream.localAddress !== undefined && upstream.localAddress !== opts.bindAddress) {
+              warnedBindMismatch = true
+              opts.log({ event: 'bind-mismatch', conn: connId, bindAddress: opts.bindAddress, egressAddress: upstream.localAddress })
+            }
+
             hooks.onReady(upstream)
 
             // Anything the negotiator read past its own framing belongs to the

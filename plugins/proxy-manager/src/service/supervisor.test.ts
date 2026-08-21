@@ -1,8 +1,11 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import net from 'node:net'
+import { ProxyError } from './errors'
 import { reserveClosedPort, startSocks5Upstream, type Socks5Fixture } from './fixtures'
+import type { GostRuntime, GostRuntimeHost } from './gost-runtime'
 import type { LogSink } from './logbook'
-import { PROXY_STATES, createSupervisor, type Supervisor, type SupervisorHost } from './supervisor'
+import { PROXY_STATES, createSupervisor, type Supervisor, type SupervisorHost, type SupervisorOptions } from './supervisor'
+import { resetGostRuntimeForTests } from './upstream'
 import { DEFAULT_DRAIN_MS, DEFAULT_MAX_CONNECTIONS, proxyAuthKeyFor, proxyKeyFor, proxySecretKeyFor, proxySecretSlotKeyFor, writeProxyRecord, type ProxyRecord } from '../shared'
 
 /** Plan 112 step 112.7 — the supervisor: the five states, the two-phase stop, the cap, the disposer. */
@@ -60,7 +63,10 @@ interface Harness {
   close(): Promise<void>
 }
 
-async function harness(records: Record<string, ProxyRecord>, opts: { password?: string } = {}): Promise<Harness> {
+async function harness(
+  records: Record<string, ProxyRecord>,
+  opts: { password?: string; checkBindEffective?: SupervisorOptions['checkBindEffective']; buildGostRuntime?: SupervisorOptions['buildGostRuntime'] } = {},
+): Promise<Harness> {
   const upstream = await startSocks5Upstream({ username: USERNAME, password: PASSWORD })
   const lines: Harness['lines'] = []
   const reported: Harness['reported'] = []
@@ -95,7 +101,15 @@ async function harness(records: Record<string, ProxyRecord>, opts: { password?: 
     },
   }
 
-  const supervisor = createSupervisor(host, { dialTimeoutMs: 2_000, idleMs: 5_000 })
+  const supervisor = createSupervisor(host, {
+    dialTimeoutMs: 2_000,
+    idleMs: 5_000,
+    // Plan 123 step 123.3 — `undefined` on every existing call site, so the
+    // real, process-cached `bindIsEffective()`/`gost` machinery is untouched
+    // for every test that does not name these.
+    ...(opts.checkBindEffective ? { checkBindEffective: opts.checkBindEffective } : {}),
+    ...(opts.buildGostRuntime ? { buildGostRuntime: opts.buildGostRuntime } : {}),
+  })
   return {
     supervisor,
     lines,
@@ -969,6 +983,161 @@ describe('failover joins snapshot(), and Supervisor.resetFailover — plan 121 �
     try {
       await h.supervisor.refresh()
       await expect(h.supervisor.resetFailover('no-such-record')).rejects.toThrow()
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+/**
+ * Plan 123 §4.3, step 123.3 — `E_PROXY_BIND_INEFFECTIVE` as a PRECONDITION,
+ * not a refusal-after-attempt: when `createUpstream` (`./upstream.ts`)
+ * measures the bind broken and finds no `gost` workaround, `startLocked`
+ * re-validates through `shared.ts`'s `validateProxyRecord` and exits through
+ * the SAME `problems` path every other `PROXY_PROBLEM_CODES` entry uses
+ * (`start-refused`, `warn`) rather than the generic dial-failure catch
+ * (`start-failed`, `error`) — and, above all, the listener is never opened.
+ *
+ * `checkBindEffective`/`buildGostRuntime` are the test-only seams threaded
+ * onto `SupervisorOptions` for exactly this file — the same seam
+ * `upstream.test.ts` already exercises directly on `createUpstream` itself,
+ * one level down.
+ */
+describe('E_PROXY_BIND_INEFFECTIVE — the bind-workaround precondition (plan 123 §4.3, step 123.3)', () => {
+  // `gostRuntime` is a module-level singleton in `upstream.ts` (its own
+  // header explains why: one real process backs every `direct` record's
+  // workaround at once). It is set the moment `buildGostRuntime` is called —
+  // even on the branch where `ensurePort` then throws — so without a reset
+  // between tests, whichever fake this describe block builds FIRST would
+  // silently outlive the test that built it and answer for every test after.
+  beforeEach(() => {
+    resetGostRuntimeForTests()
+  })
+
+  function directRecord(bindAddress: string, over: Partial<ProxyRecord> = {}): ProxyRecord {
+    return record({
+      upstream: { proto: 'direct', host: '', port: 0, username: '', bindAddress, resolveThroughEgress: true },
+      ...over,
+    })
+  }
+
+  function unsupportedPlatformGostRuntime(): (host: GostRuntimeHost) => GostRuntime {
+    return () => ({
+      ensurePort: async () => {
+        throw new ProxyError('E_PROXY_GOST_UNSUPPORTED_PLATFORM', 'gost provisioning was reached on a platform this workaround does not cover')
+      },
+      stopAll: async () => {},
+    })
+  }
+
+  function succeedingGostRuntime(port: number): (host: GostRuntimeHost) => GostRuntime {
+    return () => ({
+      ensurePort: async () => port,
+      stopAll: async () => {},
+    })
+  }
+
+  test('bind broken, no gost — the record does NOT start (criterion 3): `failed`, `E_PROXY_BIND_INEFFECTIVE`, `start-refused`/warn (not `start-failed`/error), and the port stays free', async () => {
+    const port = await freePort()
+    const h = await harness(
+      { 'egress-1': directRecord('127.0.0.1', { listen: { proto: 'socks5', bindHost: '127.0.0.1', port } }) },
+      { checkBindEffective: async () => false, buildGostRuntime: unsupportedPlatformGostRuntime() },
+    )
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('egress-1')
+
+      expect(runtime.state).toBe('failed')
+      expect(runtime.port).toBeNull()
+      expect(runtime.lastError?.code).toBe('E_PROXY_BIND_INEFFECTIVE')
+      // The message must name the host DOES hold the address (never read like
+      // the address is wrong — §0.1's own field report is exactly the mistake
+      // this text exists to prevent) and the workaround.
+      expect(runtime.lastError?.message).toContain('127.0.0.1')
+      expect(runtime.lastError?.message).toContain('does hold')
+      expect(runtime.lastError?.message.toLowerCase()).toContain('gost')
+
+      // PRECONDITION, not refusal-after-attempt: `start-refused` (warn), never
+      // `start-failed` (error) — `logbook.ts`'s own severity split for this.
+      const refused = h.lines.find((l) => l.fields?.code === 'E_PROXY_BIND_INEFFECTIVE')
+      expect(refused?.level).toBe('warn')
+      expect(refused?.message).toBe('proxy cannot start with this record')
+      expect(h.lines.some((l) => l.level === 'error')).toBe(false)
+
+      // Never reported as a listener, and the port genuinely never bound.
+      expect(h.reported).toEqual([])
+      const probe = net.createServer()
+      const stillFree = await new Promise<boolean>((resolve) => {
+        probe.on('error', () => resolve(false))
+        probe.listen(port, '127.0.0.1', () => resolve(true))
+      })
+      expect(stillFree).toBe(true)
+      await new Promise<void>((resolve) => probe.close(() => resolve()))
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('an EMPTY bindAddress is completely unaffected (plan 123 §6 criterion 4) — no probe, no gost, starts normally', async () => {
+    const port = await freePort()
+    let probeCalls = 0
+    const h = await harness(
+      { 'office-uk': directRecord('', { listen: { proto: 'http', bindHost: '127.0.0.1', port } }) },
+      {
+        checkBindEffective: async () => {
+          probeCalls++
+          return false
+        },
+        buildGostRuntime: () => {
+          throw new Error('gost must not be built for a record with nothing to bind')
+        },
+      },
+    )
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('office-uk')
+      expect(runtime.state).toBe('running')
+      expect(runtime.port).toBe(port)
+      expect(runtime.lastError).toBeNull()
+      expect(probeCalls).toBe(0)
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('bind works — a `direct` record with `bindAddress` starts normally, and gost is never attempted', async () => {
+    const port = await freePort()
+    const h = await harness(
+      { 'egress-1': directRecord('127.0.0.1', { listen: { proto: 'http', bindHost: '127.0.0.1', port } }) },
+      {
+        checkBindEffective: async () => true,
+        buildGostRuntime: () => {
+          throw new Error('gost must not be built when the bind works')
+        },
+      },
+    )
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('egress-1')
+      expect(runtime.state).toBe('running')
+      expect(runtime.lastError).toBeNull()
+    } finally {
+      await h.close()
+    }
+  })
+
+  test('bind broken but gost IS available — the record still starts, through the gost hop (§6 criterion 2, at the supervisor level)', async () => {
+    const port = await freePort()
+    const h = await harness(
+      { 'egress-1': directRecord('127.0.0.1', { listen: { proto: 'http', bindHost: '127.0.0.1', port } }) },
+      { checkBindEffective: async () => false, buildGostRuntime: succeedingGostRuntime(40321) },
+    )
+    try {
+      await h.supervisor.refresh()
+      const runtime = await h.supervisor.start('egress-1')
+      expect(runtime.state).toBe('running')
+      expect(runtime.lastError).toBeNull()
+      expect(h.reported[0]?.description).toContain('http://127.0.0.1:40321')
     } finally {
       await h.close()
     }

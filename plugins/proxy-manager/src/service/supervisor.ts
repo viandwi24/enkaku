@@ -20,6 +20,7 @@ import { createSocks5Listener } from './listen-socks5'
 import type { Listener, UpstreamHolder } from './listener'
 import { probeUrlFromEnv, runEgressProbe } from './probe'
 import { DEFAULT_DIAL_TIMEOUT_MS, DEFAULT_IDLE_MS, createUpstream, currentGostRuntime } from './upstream'
+import type { GostRuntime, GostRuntimeHost } from './gost-runtime'
 import type { ListenerCredential } from './auth'
 import { createFailoverController, type FailoverController, type FailoverState } from './failover'
 
@@ -150,6 +151,19 @@ export interface SupervisorOptions {
   dialTimeoutMs?: number
   /** Overridable so a test does not have to wait `PROBE_INTERVAL_MS` for the probe sweep to prove it runs at all. */
   probeIntervalMs?: number
+  /**
+   * Test-only seam (plan 123 step 123.3), threaded to every `createUpstream`
+   * call this file makes — the same seam `upstream.test.ts` already uses
+   * directly on `createUpstream` itself. Needed here, one level up, so a
+   * SUPERVISOR test can force the `E_PROXY_BIND_INEFFECTIVE` precondition (or
+   * prove it does NOT fire) deterministically, without depending on whether
+   * this host's own Bun build happens to honour `localAddress` today. Real
+   * callers never set either field — production always measures with the
+   * real, process-cached `bindIsEffective()` and the real, Windows-only-by-
+   * construction `gost` runtime.
+   */
+  checkBindEffective?: () => Promise<boolean>
+  buildGostRuntime?: (host: GostRuntimeHost) => GostRuntime
 }
 
 interface Entry {
@@ -529,12 +543,17 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
     // below rather than fetched a second time, so the credential the gate was
     // decided on is the credential the listener is actually given.
     const listenerAuth = await readAuth(id)
-    const problems = validateProxyRecord(entry.record, {
+    // Kept apart from `problems` below so the `E_PROXY_BIND_INEFFECTIVE`
+    // catch further down (plan 123 step 123.3) can re-run `validateProxyRecord`
+    // with the SAME base facts plus the one it just measured, rather than
+    // re-reading `hostAddresses()`/`listenerAuth` a second time.
+    const baseContext = {
       id,
       catalogue: catalogueForValidation(),
       hostAddresses: hostAddresses(),
       hasListenerAuth: listenerAuth !== undefined,
-    })
+    }
+    let problems = validateProxyRecord(entry.record, baseContext)
     if (problems.length > 0) {
       const err = problemError(problems)
       const code = problems[0]?.code ?? err.code
@@ -557,7 +576,14 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
       password = await readPassword(id)
       auth = listenerAuth
       const dialTimeoutMs = opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS
-      const upstream = await createUpstream(entry.record, password, opts.dialTimeoutMs === undefined ? { log: host.log } : { timeoutMs: opts.dialTimeoutMs, log: host.log })
+      const upstream = await createUpstream(entry.record, password, {
+        ...(opts.dialTimeoutMs === undefined ? {} : { timeoutMs: opts.dialTimeoutMs }),
+        log: host.log,
+        // Test-only seams (plan 123 step 123.3) — `undefined` on a real run,
+        // so `createUpstream` falls through to its own real defaults.
+        ...(opts.checkBindEffective ? { checkBindEffective: opts.checkBindEffective } : {}),
+        ...(opts.buildGostRuntime ? { buildGostRuntime: opts.buildGostRuntime } : {}),
+      })
       // Plan 121 §4.3 — the listener reads the active upstream through this
       // holder rather than the bare object, so a failover swap can reassign
       // `.current` without restarting the listener's port. `failoverController`
@@ -614,6 +640,12 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
         upstream: upstreamHolder,
         maxConnections: entry.record.maxConnections,
         log,
+        // Plan 123 §3.4, §4.4 — the PRIMARY upstream's own configured bind,
+        // same scope as `upstreamHost`/`upstreamPort` on the `listening` event
+        // below. Empty for every record whose upstream is not `direct`, and
+        // for a `direct` record that binds nothing — `listener.ts`'s own
+        // once-per-start warn costs nothing beyond a falsy check in that case.
+        bindAddress: entry.record.upstream.bindAddress,
         idleMs: opts.idleMs ?? DEFAULT_IDLE_MS,
         onConnectionClosed: (counters: { bytesUp: number; bytesDown: number }) => {
           entry.runtime.bytesUp += counters.bytesUp
@@ -683,6 +715,28 @@ function catalogueForValidation(): { id: string; record: ProxyRecord }[] {
 
       return snapshot(entry)
     } catch (err: unknown) {
+      if (err instanceof ProxyError && err.code === 'E_PROXY_BIND_INEFFECTIVE') {
+        // Plan 123 §3.3/§4.3 — the other half of the handoff `upstream.ts`'s
+        // own comment on this throw site describes. `createUpstream` cannot
+        // stop a record reaching `starting` itself (only this function can),
+        // so it is caught HERE, specially, and turned into the SAME
+        // `problems`/PRECONDITION exit the block above uses for every other
+        // `PROXY_PROBLEM_CODES` entry — `start-refused`, not `start-failed` —
+        // rather than falling into the generic dial-failure handling below.
+        // `bindIsEffective()` and the `gost` attempt that produced this are
+        // both already cached (`resetGostRuntimeForTests`'s own header, and
+        // `bind-probe.ts`'s), so re-validating costs nothing new.
+        problems = validateProxyRecord(entry.record, { ...baseContext, bindWorkaroundUnavailable: true })
+        const problemErr = problemError(problems)
+        const code = problems[0]?.code ?? problemErr.code
+        const message = problems[0]?.message ?? problemErr.message
+        setState(entry, 'failed', { code, message })
+        entry.listener = null
+        entry.failover = null
+        entry.runtime.port = null
+        say(entry, { event: 'start-refused', code, message })
+        return snapshot(entry)
+      }
       const code = err instanceof ProxyError ? err.code : 'E_PROXY_LISTEN_FAILED'
       // `scrubSecrets` over the password even though no path here interpolates
       // one: this is the last place a message from somebody else's library

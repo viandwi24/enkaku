@@ -26,8 +26,9 @@ import { proxyKeyFor } from '../shared'
  * | event | level | fields |
  * |---|---|---|
  * | `accepted` | debug | — |
- * | `upstream-connected` | debug | `destPort`, and `destHost` only when `logDestinations` is on |
+ * | `upstream-connected` | debug | `destPort`, `egressAddress`, and `destHost` only when `logDestinations` is on |
  * | `closed` | debug | `durationMs`, `bytesUp`, `bytesDown` |
+ * | `bind-mismatch` | warn | `bindAddress`, `egressAddress` — plan 123 §4.4, once per start per record, never per connection |
  * | `refused` | warn | `reason`, `code`, `destPort`, `destHost` only when `logDestinations` is on, and `clientAddress` for a listener-authentication refusal (plan 117 §4.4) |
  * | `start` | info | — |
  * | `listening` | info | `port`, `listen`, `upstreamProto`, `upstreamHost`, `upstreamPort` |
@@ -42,6 +43,24 @@ import { proxyKeyFor } from '../shared'
  * deliberately **untagged**, because they belong to the supervisor rather than
  * to any one proxy, and an untagged line appears in "all" and in no per-proxy
  * view: `service-started` and `service-stopped`.
+ *
+ * ## `egressAddress` and `bind-mismatch` are a deliberate exception, not an oversight (plan 123 §3.4, §4.4)
+ *
+ * Plan 123 found that `net.connect({ localAddress })` is silently ignored by
+ * Bun on every platform tested — a `direct` record with a `bindAddress` could
+ * egress from the host's default address while reporting `running` and
+ * logging a clean `upstream-connected` line, with nothing anywhere to show it.
+ * `socket.localAddress`, read at the moment `upstream-connected` already fires
+ * (dial resolution, while the socket is live — plan 123 §0.3 measured that
+ * this is the one moment the property is accurate), is an address of the
+ * **host itself** — not a destination and not a credential — so it clears
+ * every rule in the section below and is added to that line as
+ * `egressAddress`. A second, new event, `bind-mismatch`, fires once per
+ * **start**, not per connection, the first time a record's observed egress
+ * disagrees with its own configured `bindAddress`: a farm doing steady traffic
+ * must not have this line flood a ring shared with every other proxy, and
+ * once is enough to be noticed. A record with no `bindAddress` has nothing to
+ * compare against and never fires it.
  *
  * ## What a line NEVER records, at any setting
  *
@@ -123,10 +142,10 @@ export function proxySubject(proxyId: string): string {
   return proxyKeyFor(proxyId).slice(0, SUBJECT_MAX_LENGTH)
 }
 
-/** The four things that can happen to one connection, and the only four. */
+/** The five things that can happen to one connection, and the only five. */
 export type BridgeEvent =
   | { event: 'accepted'; conn: number }
-  | { event: 'upstream-connected'; conn: number; destPort: number; destHost: string }
+  | { event: 'upstream-connected'; conn: number; destPort: number; destHost: string; egressAddress: string }
   | { event: 'closed'; conn: number; durationMs: number; bytesUp: number; bytesDown: number }
   | {
       event: 'refused'
@@ -138,6 +157,15 @@ export type BridgeEvent =
       /** Plan 117 §4.4: which address a refused authentication attempt came from — never the credential it offered. */
       clientAddress?: string
     }
+  /**
+   * Plan 123 §3.4, §4.4: once per START, per record, not per connection — the
+   * first connection after start whose observed `egressAddress` disagrees
+   * with the record's own configured `bindAddress`. `conn` names which
+   * connection first revealed it; the fact itself is about the record, not
+   * about that one connection, which is why it fires only once regardless of
+   * how many more connections follow.
+   */
+  | { event: 'bind-mismatch'; conn: number; bindAddress: string; egressAddress: string }
 
 /** What can happen to one proxy, as opposed to one connection through it. */
 export type LifecycleEvent =
@@ -191,8 +219,16 @@ export function bridgeLogFields(event: ProxyEvent, opts: { proxyId: string; logD
     case 'accepted':
       return { ...base, conn: event.conn }
     case 'upstream-connected':
-      // The port always; the host only when the operator asked for it.
-      return { ...base, conn: event.conn, destPort: event.destPort, ...(opts.logDestinations ? { destHost: event.destHost } : {}) }
+      // The port always; the host only when the operator asked for it. The
+      // egress address always — it is this HOST's own address, not a
+      // destination (plan 123 §3.4, §4.4).
+      return {
+        ...base,
+        conn: event.conn,
+        destPort: event.destPort,
+        egressAddress: event.egressAddress,
+        ...(opts.logDestinations ? { destHost: event.destHost } : {}),
+      }
     case 'closed':
       return { ...base, conn: event.conn, durationMs: event.durationMs, bytesUp: event.bytesUp, bytesDown: event.bytesDown }
     case 'refused':
@@ -205,6 +241,8 @@ export function bridgeLogFields(event: ProxyEvent, opts: { proxyId: string; logD
         ...(opts.logDestinations && event.destHost !== undefined ? { destHost: event.destHost } : {}),
         ...(event.clientAddress === undefined ? {} : { clientAddress: event.clientAddress }),
       }
+    case 'bind-mismatch':
+      return { ...base, conn: event.conn, bindAddress: event.bindAddress, egressAddress: event.egressAddress }
     case 'start':
     case 'restart':
       return base
@@ -236,6 +274,10 @@ export function bridgeLogMessage(event: ProxyEvent): string {
       return 'proxy connection closed'
     case 'refused':
       return 'proxy refused a connection'
+    case 'bind-mismatch':
+      // Names the fact once, per start, per record — the sentence a person
+      // greps for instead of a packet capture (plan 123 §0.4, §3.4).
+      return 'proxy egress address does not match its configured bind address'
     case 'start':
       return 'proxy is starting'
     case 'listening':
@@ -270,6 +312,7 @@ export function bridgeLogLevel(event: ProxyEvent): 'debug' | 'info' | 'warn' | '
       return 'debug'
     case 'refused':
     case 'start-refused':
+    case 'bind-mismatch':
       return 'warn'
     case 'start-failed':
       return 'error'

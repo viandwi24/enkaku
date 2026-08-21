@@ -40,7 +40,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.10",
+      "version": "0.1.19",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -220,6 +220,20 @@
         "react-dom": "^19.0.0",
       },
     },
+    "plugins/mikrotik-routing": {
+      "name": "@enkaku/plugin-mikrotik-routing",
+      "version": "0.2.0",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@enkaku/ui": "workspace:*",
+        "@types/react": "^19",
+        "react": "^19.0.0",
+      },
+    },
     "plugins/networking": {
       "name": "@enkaku/plugin-networking",
       "version": "2.2.0",
@@ -231,7 +245,7 @@
     },
     "plugins/proxy-manager": {
       "name": "@enkaku/plugin-proxy-manager",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -301,6 +315,8 @@
     "@enkaku/harness": ["@enkaku/harness@workspace:packages/harness"],
 
     "@enkaku/node": ["@enkaku/node@workspace:packages/node"],
+
+    "@enkaku/plugin-mikrotik-routing": ["@enkaku/plugin-mikrotik-routing@workspace:plugins/mikrotik-routing"],
 
     "@enkaku/plugin-networking": ["@enkaku/plugin-networking@workspace:plugins/networking"],
 

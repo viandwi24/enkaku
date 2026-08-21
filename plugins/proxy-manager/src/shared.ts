@@ -1021,6 +1021,18 @@ export const PROXY_PROBLEM_CODES = [
   // three pure functions" shape `E_PROXY_CAPACITY_FULL` above already
   // established — see that entry's own comment.
   'E_PROXY_PORT_MISMATCH',
+  // Plan 123 §4.3, step 123.3. `bindIsEffective()` (`service/bind-probe.ts`)
+  // measured that this runtime silently drops `direct`'s `bindAddress`, and
+  // the local `gost` workaround (`service/gost-runtime.ts`) is not reachable
+  // either — both facts only an actual probe and an actual attempt can
+  // answer, which is why this is a PRECONDITION rather than a REFUSAL (§3.3):
+  // nothing about the record is wrong, and the fact can change (a runtime
+  // upgrade, or a provisioned `gost`). `service/upstream.ts`'s own header
+  // names the producer: `createUpstream` throwing this code, caught by
+  // `service/supervisor.ts`'s `startLocked`, which re-validates with
+  // `bindWorkaroundUnavailable: true` so the record is refused through this
+  // SAME `problems` mechanism rather than the generic dial-failure catch.
+  'E_PROXY_BIND_INEFFECTIVE',
 ] as const
 export type ProxyProblemCode = (typeof PROXY_PROBLEM_CODES)[number]
 
@@ -1088,6 +1100,21 @@ export function validateProxyRecord(
      * cannot justify. `false` means *looked, and there is none*.
      */
     hasListenerAuth?: boolean
+    /**
+     * Whether THIS host's runtime can actually honour `direct`'s
+     * `bindAddress` — plan 123 §4.3. Answering it needs an actual socket
+     * probe (`bindIsEffective()`, `service/bind-probe.ts`) and, only if that
+     * probe finds the bind broken, an actual attempt at the local `gost`
+     * workaround (`service/upstream.ts`) — both are Node-only, real I/O this
+     * file cannot perform (it imports nothing) and the browser half
+     * structurally cannot perform either. Three-valued for the same reason
+     * `hostAddresses` and `hasListenerAuth` already are: `undefined` means
+     * *nobody looked*, and must never be turned into a refusal it cannot
+     * justify. Only `true` — bind measurably broken AND no `gost` workaround
+     * reachable on this host — blocks a start; `false` and `undefined` both
+     * raise nothing.
+     */
+    bindWorkaroundUnavailable?: boolean
   } = {},
 ): ProxyProblem[] {
   const problems: ProxyProblem[] = []
@@ -1137,6 +1164,24 @@ export function validateProxyRecord(
         code: 'E_PROXY_BIND_ADDRESS_UNAVAILABLE',
         kind: 'precondition',
         message: `This host does not currently hold the address ${record.upstream.bindAddress}. The record is stored exactly as written — nothing here changes what you typed — but it cannot start until this machine has that address, whether that means plugging in a link, bringing up an interface, or fixing a typo.`,
+      })
+    }
+
+    /**
+     * Plan 123 §3.3/§4.3. Deliberately a SEPARATE check from the two above,
+     * not an `else if` on them: this is a different axis (does the RUNTIME
+     * honour a bind this host genuinely holds), decided by an actual probe
+     * rather than by anything readable off the record. `bindWorkaroundUnavailable`
+     * is `true` only once BOTH facts are measured — bind broken, no `gost`
+     * reachable — so this never fires ahead of the cheaper, sync checks
+     * above finding a more basic problem first (`service/supervisor.ts`'s
+     * `startLocked` does not even attempt the probe until those pass).
+     */
+    if (context.bindWorkaroundUnavailable === true) {
+      problems.push({
+        code: 'E_PROXY_BIND_INEFFECTIVE',
+        kind: 'precondition',
+        message: `This host does hold ${record.upstream.bindAddress} — that part is fine. The runtime this build is running on silently ignores the bind when it dials out (a known upstream limitation, not a bug in this record), so a "direct" upstream would egress from this machine's default address instead, without saying so. No local gost workaround is available to cover that on this platform yet. Until a runtime upgrade fixes this, point this record's upstream at a local SOCKS5 or HTTP proxy that IS known to honour the bind — for example gost or 3proxy, bound to ${record.upstream.bindAddress} on a loopback port — instead of "direct".`,
       })
     }
   }

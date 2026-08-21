@@ -239,8 +239,24 @@ export default definePlugin({
    * force a reseed, but this is a feature an operator will notice using
    * (a Studio editor, a chip, a new route), not "nothing more" — the
    * distinction 0.5.1's own note above draws.
+   *
+   * **0.10.0 — plan 123 (M88), the bind capability probe.** Same mechanical
+   * reason as 0.9.0, and this time the cost of forgetting it would have been
+   * severe. `proxy-manager@0.9.0` SHIPPED (tag `v0.1.19`) and is running on
+   * the owner's farm; plan 123 then changed twelve files in this pack —
+   * `net.connect({ localAddress })` is silently ignored by Bun on every
+   * platform tested, so the Windows-only gate around the `gost` workaround
+   * was replaced by a per-boot capability probe, and a record whose bind
+   * provably does not work now refuses to start (`E_PROXY_BIND_INEFFECTIVE`)
+   * instead of egressing from the wrong address while reporting `running`.
+   * Left at `0.9.0`, `seedEmbeddedPacks` would have skipped restaging every
+   * install that already seeded that version — which is every install of
+   * `v0.1.19` — so the fix for a silent wrong-egress bug would itself have
+   * silently failed to arrive. Minor, not patch: a record that used to serve
+   * traffic now refuses to start on Linux and macOS, which is a behaviour
+   * change an operator meets immediately.
    */
-  version: '0.9.0',
+  version: '0.10.0',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],

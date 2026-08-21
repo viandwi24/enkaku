@@ -25,6 +25,9 @@ import {
 const PASSWORD = 'Sup3rSecretUpstreamPassword'
 const HOST = 'secret.example'
 const PORT = 443
+/** Plan 123 §4.4 — the record's own configured bind, and what was actually observed. Deliberately distinct so a mismatch test proves something. */
+const BIND_ADDRESS = '192.168.50.11'
+const EGRESS_ADDRESS = '118.99.123.20'
 
 function recorder(): { sink: LogSink; lines: { level: string; message: string; fields?: Record<string, unknown> }[] } {
   const lines: { level: string; message: string; fields?: Record<string, unknown> }[] = []
@@ -37,10 +40,19 @@ function recorder(): { sink: LogSink; lines: { level: string; message: string; f
 /** The four connection events. */
 const CONNECTION_EVENTS: ProxyEvent[] = [
   { event: 'accepted', conn: 1 },
-  { event: 'upstream-connected', conn: 1, destPort: PORT, destHost: HOST },
+  { event: 'upstream-connected', conn: 1, destPort: PORT, destHost: HOST, egressAddress: EGRESS_ADDRESS },
   { event: 'closed', conn: 1, durationMs: 1234, bytesUp: 512, bytesDown: 4096 },
   { event: 'refused', conn: 2, reason: 'upstream', code: 'E_PROXY_UPSTREAM_TIMEOUT', destPort: PORT, destHost: HOST },
 ]
+
+/**
+ * Plan 123 §4.4 — the one-off event, kept OUT of `CONNECTION_EVENTS` on
+ * purpose: it is not one of the four things that can happen to a connection,
+ * it is a fact about the record that a connection happened to reveal, and
+ * folding it into that array would break the level test just below, which
+ * asserts on exactly those four.
+ */
+const BIND_MISMATCH_EVENT: ProxyEvent = { event: 'bind-mismatch', conn: 3, bindAddress: BIND_ADDRESS, egressAddress: EGRESS_ADDRESS }
 
 /** The eight lifecycle events — everything the supervisor can say about one proxy. */
 const LIFECYCLE_EVENTS: LifecycleEvent[] = [
@@ -54,7 +66,7 @@ const LIFECYCLE_EVENTS: LifecycleEvent[] = [
   { event: 'teardown', port: 9902 },
 ]
 
-const ALL_EVENTS: ProxyEvent[] = [...CONNECTION_EVENTS, ...LIFECYCLE_EVENTS]
+const ALL_EVENTS: ProxyEvent[] = [...CONNECTION_EVENTS, BIND_MISMATCH_EVENT, ...LIFECYCLE_EVENTS]
 
 describe('the tag that makes “logs all” and “logs per proxy” ONE stream', () => {
   test('every line about a proxy carries that proxy’s subject, and nothing else identifies it', () => {
@@ -157,6 +169,24 @@ describe('what a log line records', () => {
   })
 })
 
+describe('plan 123 §4.4 — egressAddress and bind-mismatch, a deliberate extension of the field allowlist', () => {
+  test('`upstream-connected` always carries the observed egress address — it is this host’s own address, not a destination', () => {
+    const fields = bridgeLogFields(CONNECTION_EVENTS[1] as ProxyEvent, { proxyId: 'office-uk', logDestinations: false })
+    expect(fields.egressAddress).toBe(EGRESS_ADDRESS)
+    // Unaffected by `logDestinations` — that switch widens the destination
+    // HOST only, and never gated the egress address in the first place.
+    const withDestinations = bridgeLogFields(CONNECTION_EVENTS[1] as ProxyEvent, { proxyId: 'office-uk', logDestinations: true })
+    expect(withDestinations.egressAddress).toBe(EGRESS_ADDRESS)
+  })
+
+  test('`bind-mismatch` is a warn naming both addresses, once — the sentence a person greps for instead of a packet capture', () => {
+    expect(bridgeLogLevel(BIND_MISMATCH_EVENT)).toBe('warn')
+    const fields = bridgeLogFields(BIND_MISMATCH_EVENT, { proxyId: 'office-uk', logDestinations: false })
+    expect(fields).toEqual({ subject: 'proxy:office-uk', conn: 3, bindAddress: BIND_ADDRESS, egressAddress: EGRESS_ADDRESS })
+    expect(bridgeLogMessage(BIND_MISMATCH_EVENT)).toContain('bind address')
+  })
+})
+
 describe('the destination PORT is always recorded, and the destination HOST is not (criterion 14)', () => {
   test('with logDestinations off, the port survives and the host does not', () => {
     for (const event of ALL_EVENTS) {
@@ -215,6 +245,14 @@ describe('a path, a query string and a password never reach a line, at any setti
       'drainMs',
       'forced',
       'message',
+      // Plan 123 §4.4 — added deliberately, not incidentally: both are an
+      // address of the HOST ITSELF (never a destination, never a credential),
+      // added specifically so a wrongly-bound egress becomes greppable
+      // instead of requiring a packet capture on the router (plan 123 §0.4).
+      // See this file's own header, "egressAddress and bind-mismatch are a
+      // deliberate exception, not an oversight", for the full reasoning.
+      'egressAddress',
+      'bindAddress',
     ]
     const seen = new Set<string>()
     for (const logDestinations of [false, true]) {
