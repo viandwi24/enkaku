@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { MikrotikRestDriver } from './router-driver'
 import { MikrotikRestError } from './errors'
-import { LOCAL_EXCEPTION_COMMENT, LOCAL_EXCEPTION_FIX_COMMANDS } from '../shared'
+import { LOCAL_EXCEPTION_COMMENT } from '../shared'
 
 /**
  * `MikrotikRestDriver`'s `inventory()`, `listRules()` and `doctor()` against
@@ -153,8 +153,8 @@ describe('MikrotikRestDriver.listRules — every rule, managed and foreign, unfi
   })
 })
 
-describe('MikrotikRestDriver.doctor — §3.2 acceptance criterion 1', () => {
-  test('local-exception rule present: reported present, with the matching rule and the fix commands still populated', async () => {
+describe('MikrotikRestDriver.doctor — reachability/auth/version/rule counts; the local-exception CHECK itself moved to local-exception.ts (§5 step 122.12)', () => {
+  test('reachable and authenticated: rules handed back unfiltered (so a caller can classify local-exception coverage itself), counts and version populated', async () => {
     const rules = [
       { '.id': '*1', comment: LOCAL_EXCEPTION_COMMENT, table: 'main', disabled: false, inactive: false },
       { '.id': '*2', comment: 'enkaku:mikrotik-routing:v1:g:1', table: 'via-modem7-p12', disabled: false, inactive: false },
@@ -165,26 +165,11 @@ describe('MikrotikRestDriver.doctor — §3.2 acceptance criterion 1', () => {
       const report = await driverFor(fixture.port).doctor()
       expect(report.reachable).toBe(true)
       expect(report.authenticated).toBe(true)
-      expect(report.localException.present).toBe(true)
-      expect(report.localException.rule?.['.id']).toBe('*1')
+      expect(report.rules.map((r) => r['.id'])).toEqual(['*1', '*2', '*3'])
       expect(report.managedRuleCount).toBe(1)
       expect(report.foreignRuleCount).toBe(2)
       expect(report.restVersion).toBe('7.24 (stable)')
-      expect(report.fixCommands).toEqual(LOCAL_EXCEPTION_FIX_COMMANDS)
       expect(report.errors).toEqual([])
-    } finally {
-      fixture.stop()
-    }
-  })
-
-  test('local-exception rule ABSENT: reported absent, so a later step can block every apply on it — acceptance criterion 1', async () => {
-    const rules = [{ '.id': '*2', comment: 'enkaku:mikrotik-routing:v1:g:1', table: 'via-modem7-p12', disabled: false, inactive: false }]
-    const fixture = startFixtureRouter({ rules })
-    try {
-      const report = await driverFor(fixture.port).doctor()
-      expect(report.localException.present).toBe(false)
-      expect(report.localException.rule).toBeNull()
-      expect(report.fixCommands.join('\n')).toContain('action=lookup table=main comment="farm: local exception"')
     } finally {
       fixture.stop()
     }
@@ -206,23 +191,169 @@ describe('MikrotikRestDriver.doctor — §3.2 acceptance criterion 1', () => {
     }
   })
 
-  test('an unreachable router: neither reachable nor authenticated, and the report still comes back rather than throwing', async () => {
+  test('an unreachable router: neither reachable nor authenticated, and the report still comes back (empty rules) rather than throwing', async () => {
     const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
     const deadPort = boundPort(probe)
     probe.stop(true)
     const report = await driverFor(deadPort).doctor()
     expect(report.reachable).toBe(false)
     expect(report.authenticated).toBe(false)
-    expect(report.localException.present).toBe(false)
+    expect(report.rules).toEqual([])
     expect(report.errors.length).toBeGreaterThan(0)
   })
 })
 
-describe('MikrotikRestDriver write methods — deliberately unbuilt in this step (plan 122 §5, "zero write capability existing yet")', () => {
-  test('createRule/updateRule/deleteRule all refuse rather than silently doing nothing or reaching the router', async () => {
-    const driver = driverFor(1) // no server needed — these must throw before any network call
-    await expect(driver.createRule({ srcAddress: '192.168.10.215/32', table: 'via-modem7-p12', comment: 'enkaku:mikrotik-routing:v1:g:1' })).rejects.toThrow(/not implemented/)
-    await expect(driver.updateRule('*6', { table: 'via-modem9' })).rejects.toThrow(/not implemented/)
-    await expect(driver.deleteRule('*6')).rejects.toThrow(/not implemented/)
+describe('MikrotikRestDriver write methods — step 122.6', () => {
+  test('createRule PUTs src-address as an explicit /32 and returns the router\'s own .id', async () => {
+    let capturedMethod = ''
+    let capturedPath = ''
+    let capturedBody: unknown = null
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        capturedMethod = req.method
+        capturedPath = new URL(req.url).pathname
+        capturedBody = await req.json().catch(() => null)
+        return Response.json({ '.id': '*99', ...(capturedBody as object) })
+      },
+    })
+    try {
+      const result = await driverFor(boundPort(server)).createRule({ srcAddress: '192.168.10.215', table: 'via-modem7-p12', comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215' })
+      expect(capturedMethod).toBe('PUT')
+      expect(capturedPath).toBe('/rest/routing/rule')
+      // Corrected after a review found the original bare-address write
+      // (betting the router would echo it back unchanged) broke the very
+      // next apply's match against the real router's CIDR-form response —
+      // see this method's own header comment. `resolve.ts`/`planner.ts` now
+      // match by parsed address range, so either spelling matches; `/32` is
+      // written because it matches what hand-made rules already look like.
+      expect(capturedBody).toMatchObject({
+        'src-address': '192.168.10.215/32',
+        table: 'via-modem7-p12',
+        action: 'lookup-only-in-table',
+        comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215',
+      })
+      expect(result).toEqual({ id: '*99' })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('updateRule PATCHes a patched src-address as an explicit /32 too', async () => {
+    let capturedBody: unknown = null
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        capturedBody = await req.json().catch(() => null)
+        return Response.json({})
+      },
+    })
+    try {
+      await driverFor(boundPort(server)).updateRule('*6', { srcAddress: '192.168.10.216' })
+      expect(capturedBody).toEqual({ 'src-address': '192.168.10.216/32' })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('createRule includes disabled only when the caller passed it', async () => {
+    let capturedBody: unknown = null
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        capturedBody = await req.json().catch(() => null)
+        return Response.json({ '.id': '*1' })
+      },
+    })
+    try {
+      await driverFor(boundPort(server)).createRule({ srcAddress: '192.168.10.215', table: 'via-modem1', comment: 'x' })
+      expect(capturedBody).not.toHaveProperty('disabled')
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('createRule throws a named parse error when the router\'s response carries no .id', async () => {
+    const server = Bun.serve({ port: 0, fetch: () => Response.json({ ok: true }) })
+    try {
+      const driver = driverFor(boundPort(server))
+      await expect(driver.createRule({ srcAddress: '192.168.10.215', table: 'via-modem1', comment: 'x' })).rejects.toThrow(MikrotikRestError)
+      try {
+        await driver.createRule({ srcAddress: '192.168.10.215', table: 'via-modem1', comment: 'x' })
+        throw new Error('should have thrown')
+      } catch (err) {
+        expect(err).toBeInstanceOf(MikrotikRestError)
+        expect((err as MikrotikRestError).kind).toBe('parse')
+      }
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('updateRule PATCHes only the given fields to /routing/rule/<id>, with the leading * unescaped', async () => {
+    let capturedMethod = ''
+    let capturedPath = ''
+    let capturedBody: unknown = null
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        capturedMethod = req.method
+        capturedPath = new URL(req.url).pathname
+        capturedBody = await req.json().catch(() => null)
+        return new Response('{}')
+      },
+    })
+    try {
+      await driverFor(boundPort(server)).updateRule('*6', { table: 'via-modem9' })
+      expect(capturedMethod).toBe('PATCH')
+      expect(capturedPath).toBe('/rest/routing/rule/*6')
+      expect(capturedBody).toEqual({ table: 'via-modem9' })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('updateRule sends every provided field, including comment (a group change re-derives the marker)', async () => {
+    let capturedBody: unknown = null
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        capturedBody = await req.json().catch(() => null)
+        return new Response('{}')
+      },
+    })
+    try {
+      await driverFor(boundPort(server)).updateRule('*6', { table: 'via-modem9', comment: 'enkaku:mikrotik-routing:v1:jadwal-2:192.168.10.215' })
+      expect(capturedBody).toEqual({ table: 'via-modem9', comment: 'enkaku:mikrotik-routing:v1:jadwal-2:192.168.10.215' })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('deleteRule DELETEs /routing/rule/<id>', async () => {
+    let capturedMethod = ''
+    let capturedPath = ''
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        capturedMethod = req.method
+        capturedPath = new URL(req.url).pathname
+        return new Response('')
+      },
+    })
+    try {
+      await driverFor(boundPort(server)).deleteRule('*6')
+      expect(capturedMethod).toBe('DELETE')
+      expect(capturedPath).toBe('/rest/routing/rule/*6')
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('a write against an unreachable router throws a MikrotikRestError("network"), never silently doing nothing', async () => {
+    const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
+    const deadPort = boundPort(probe)
+    probe.stop(true)
+    await expect(driverFor(deadPort).deleteRule('*6')).rejects.toThrow(MikrotikRestError)
   })
 })

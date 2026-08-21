@@ -58,6 +58,18 @@
  *    still ours to delete (§4.2: "the plugin only ever creates/patches/
  *    deletes rules whose comment starts with `enkaku:mikrotik-routing:`") —
  *    its identity being unreadable does not make it foreign.
+ *
+ *    **"Claimed by the desired set" is decided by parsed address RANGE
+ *    (`cidr.ts`'s `sameAddressSpec`), never by raw string equality against
+ *    `rule['src-address']`.** A correctness bug found by review immediately
+ *    after step 122.6 landed: a router that echoes `src-address` back in
+ *    CIDR form (`192.168.10.215/32`) for an endpoint the desired set spells
+ *    bare (`192.168.10.215`) would otherwise fail this membership check even
+ *    though `resolveTarget` above (once it carries the same fix) correctly
+ *    resolves the very same rule to `update` — producing the same rule as
+ *    BOTH an `update` row and a `delete` row in one plan. Matching by range
+ *    keeps this loop and the create/update loop above in agreement about
+ *    which rules are claimed.
  * 4. **`foreign` is classified purely by the absence of the write-scope
  *    prefix — never by `src-address`.** A foreign rule whose `src-address`
  *    happens to equal a managed endpoint's address stays `foreign` and can
@@ -81,6 +93,7 @@
  */
 
 import { MANAGED_COMMENT_PREFIX } from '../shared'
+import { sameAddressSpec } from './cidr'
 import type { DesiredAssignment } from './drift'
 import { parseMarker } from './marker'
 import type { PathHealth } from './router-driver'
@@ -166,8 +179,6 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
   const healthByPath = new Map<string, boolean>()
   for (const h of input.health) healthByPath.set(h.pathId, h.up)
 
-  const desiredEndpoints = new Set(input.desired.map((d) => d.endpointKey))
-
   // create / update / skip — one row per desired entry, at most.
   for (const d of input.desired) {
     if (!input.pathIds.has(d.pathId)) {
@@ -210,7 +221,12 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
     }
 
     const endpointKey = rule['src-address'] ?? ''
-    if (desiredEndpoints.has(endpointKey)) {
+    // Claimed by a desired entry iff some desired endpoint denotes the SAME
+    // address range as this rule's own src-address (§4.3's fix — see this
+    // file's header, point 3) — never raw string equality, which is what let
+    // a CIDR-echoed rule be produced as both `update` (above) and `delete`
+    // (here) in the same plan.
+    if (endpointKey !== '' && input.desired.some((d) => sameAddressSpec(endpointKey, d.endpointKey))) {
       // Claimed by a desired entry — already handled above (create/update/skip), never also a delete.
       continue
     }

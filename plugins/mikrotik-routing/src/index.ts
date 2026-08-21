@@ -1,6 +1,7 @@
 import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { definePlugin, defineService, type PluginMemberScript } from '@enkaku/sdk'
 import { z } from 'zod'
+import { registerApplyRoutes } from './service/apply-routes'
 import { registerRouterRoutes } from './service/handlers'
 
 /**
@@ -46,6 +47,40 @@ import { registerRouterRoutes } from './service/handlers'
  * (plan 109 §4.1). A pack that quietly gained a running service and four
  * capabilities under a version somebody had already approved would make that
  * consent screen a formality. Minor, not patch, for the same reason.
+ *
+ * **0.2.0 → 0.3.0 — step 122.6, the write path.** `service.permissions` is
+ * UNCHANGED (`device.list`/`device.get`/`job.run`/`notify.send` already
+ * covered everything this step reads), so this is not a consent bump the way
+ * `proxy-manager`'s own 0.5.0/0.6.0/0.8.0 rows are — it is
+ * `proxy-manager`'s OTHER reason, the mechanical one 0.9.0/0.10.0's notes
+ * spell out: `packages/core/src/plugins/seed-embedded.ts`'s
+ * `seedEmbeddedPacks` keys on `${pack.name}@${pack.version}` and skips
+ * restaging a version already present in `<dataDir>/seeded-packs.json`. An
+ * install that already seeded `mikrotik-routing@0.2.0` (stage 1, read-only)
+ * would silently keep running that bundle forever after a binary upgrade —
+ * `createRule`/`updateRule`/`deleteRule` went from an unconditional reject to
+ * real REST writes, and three new routes (`fleet`/`plan`/`apply`) now exist
+ * for a service that used to answer only three read-only ones. Left at
+ * `0.2.0`, the fix for "this plugin cannot change a router yet" would itself
+ * silently fail to arrive on an already-provisioned farm. Minor, not patch:
+ * an operator meets this immediately, on the new Assignments tab.
+ *
+ * **Still `0.3.0` — a correctness bug in this same write path, found by
+ * review immediately after 122.6 landed and fixed before this version ever
+ * shipped**, so it is folded into this entry rather than earning its own
+ * bump: `resolve.ts`/`planner.ts` matched a router rule's `src-address` to
+ * an endpoint by raw string equality, and `createRule` wrote a bare address
+ * specifically so that comparison would line up. The owner's real router
+ * echoes `src-address` back in CIDR form regardless of what was written
+ * (`192.168.10.221/32`, not `192.168.10.221`), so the exact-string match
+ * never found the rule it had just created — every apply after the first
+ * would silently add a duplicate rule for the same device instead of
+ * updating it. Fixed by matching on parsed address RANGE
+ * (`cidr.ts`'s `sameAddressSpec`) everywhere a router-supplied `src-address`
+ * is compared against an endpoint we produced, and `createRule`/`updateRule`
+ * now write an explicit `/32` to match what an operator already sees for
+ * hand-made rules in Winbox — see `resolve.ts`, `planner.ts`, and
+ * `router-driver.ts`'s own `createRule`/`updateRule` comments for the detail.
  */
 
 const checkParams = z.object({})
@@ -70,10 +105,10 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.2.0',
+  version: '0.3.0',
   title: 'MikroTik routing',
   description:
-    'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Stage 1, read-only: Paths, Settings and Rules can be read from Studio; nothing is ever written to the router yet.',
+    'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Stage 2: single assignments from the Assignments tab, applied through a reviewed plan and refused (§3.2) while every device is not provably still reachable over adb. Named groups (activate/deactivate as a unit) are not built yet.',
   scripts: [checkScript],
 
   /**
@@ -99,8 +134,12 @@ export default definePlugin({
       // The three read-only routes (`inventory`/`rules`/`doctor`) the
       // Paths/Rules/Settings tabs call — see `service/handlers.ts`'s own
       // header for why each is its own `onRequest` registration rather than
-      // one shared handler, and why none of them may write anything yet.
+      // one shared handler.
       registerRouterRoutes(ctx)
+      // The write half (step 122.6): `fleet`/`plan` (read) and `apply` (the
+      // one route in this plugin that reaches the router) — see
+      // `service/apply-routes.ts`'s own header for the permission split.
+      registerApplyRoutes(ctx)
     },
   }),
 

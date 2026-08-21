@@ -1,14 +1,21 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  ASSIGNMENT_KEY,
   CONFIG_KEY,
+  DEFAULT_GROUP_ID,
+  DEFAULT_GROUP_NAME,
   DEFAULT_PLUGIN_CONFIG,
   DEFAULT_ROUTER_CONFIG,
   DEFAULT_RECONCILE_INTERVAL_SEC,
   DEFAULT_ROUTER_TIMEOUT_MS,
+  EMPTY_ASSIGNMENT,
   ROUTER_KEY,
+  isAssignmentEmpty,
   isRouterConfigured,
+  readAssignment,
   readPluginConfig,
   readRouterConfig,
+  writeAssignment,
   writePluginConfig,
   writeRouterConfig,
 } from './shared'
@@ -105,5 +112,64 @@ describe('isRouterConfigured', () => {
 
   test('true once all three are present — tls/timeoutMs never gate this', () => {
     expect(isRouterConfigured({ baseUrl: 'r', username: 'u', password: 'p', tls: false, timeoutMs: 1000 })).toBe(true)
+  })
+})
+
+describe('the assignment KV (§4.9, step 122.6)', () => {
+  test('the key is the plain string §4.9 names, and is disjoint from config/router', () => {
+    expect(ASSIGNMENT_KEY).toBe('assignment')
+    expect(ASSIGNMENT_KEY).not.toBe(CONFIG_KEY)
+    expect(ASSIGNMENT_KEY).not.toBe(ROUTER_KEY)
+  })
+
+  test('the implicit default group id/name a standalone assignment carries (§9 Q1)', () => {
+    expect(DEFAULT_GROUP_ID).toBe('default')
+    expect(DEFAULT_GROUP_NAME).toBe('Default')
+  })
+})
+
+describe('readAssignment / writeAssignment', () => {
+  test('a fresh read of nothing (undefined/null) is EMPTY_ASSIGNMENT — every field blank/zero', () => {
+    expect(readAssignment(undefined)).toEqual(EMPTY_ASSIGNMENT)
+    expect(readAssignment(null)).toEqual(EMPTY_ASSIGNMENT)
+    expect(EMPTY_ASSIGNMENT).toEqual({ pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0 })
+  })
+
+  test('write ∘ read round-trips a valid assignment exactly', () => {
+    const assignment = { pathId: 'via-modem7-p12', groupId: 'default', lanIp: '192.168.10.215', lanIpSource: 'transport', leaseKind: 'dynamic', since: 1_700_000_000 }
+    expect(readAssignment(writeAssignment(assignment))).toEqual(assignment)
+  })
+
+  test('a junk value (array, string, number) degrades to EMPTY_ASSIGNMENT rather than throwing', () => {
+    expect(readAssignment([1, 2, 3])).toEqual(EMPTY_ASSIGNMENT)
+    expect(readAssignment('nope')).toEqual(EMPTY_ASSIGNMENT)
+    expect(readAssignment(42)).toEqual(EMPTY_ASSIGNMENT)
+  })
+
+  test('a per-field junk value defaults just that field, not the whole record', () => {
+    expect(readAssignment({ pathId: 'via-modem1', since: 'soon' })).toEqual({ ...EMPTY_ASSIGNMENT, pathId: 'via-modem1' })
+  })
+
+  test('since is never negative and never fractional — a junk value falls back to 0', () => {
+    expect(readAssignment({ since: -5 }).since).toBe(0)
+    expect(readAssignment({ since: 1.5 }).since).toBe(0)
+    expect(readAssignment({ since: 0 }).since).toBe(0)
+    expect(readAssignment({ since: 1_700_000_000 }).since).toBe(1_700_000_000)
+  })
+
+  test('the write shape carries no field beyond StoredAssignment’s own six', () => {
+    const written = writeAssignment({ pathId: 'p', groupId: 'g', lanIp: '1.2.3.4', lanIpSource: 'manual', leaseKind: 'none', since: 1 })
+    expect(Object.keys(written).sort()).toEqual(['groupId', 'lanIp', 'lanIpSource', 'leaseKind', 'pathId', 'since'])
+  })
+})
+
+describe('isAssignmentEmpty', () => {
+  test('true for EMPTY_ASSIGNMENT', () => {
+    expect(isAssignmentEmpty(EMPTY_ASSIGNMENT)).toBe(true)
+  })
+
+  test('false once either pathId or lanIp is set — a device can be noted with an address and no path yet', () => {
+    expect(isAssignmentEmpty({ ...EMPTY_ASSIGNMENT, lanIp: '192.168.10.215' })).toBe(false)
+    expect(isAssignmentEmpty({ ...EMPTY_ASSIGNMENT, pathId: 'via-modem1' })).toBe(false)
   })
 })

@@ -1,7 +1,13 @@
 import type { PluginRequest, PluginResponse } from '@enkaku/sdk'
-import { LOCAL_EXCEPTION_COMMENT, ROUTER_KEY, isRouterConfigured, readRouterConfig, type RouterConfig } from '../shared'
+import { DeviceInfoSchema } from '@enkaku/protocol'
+import { z } from 'zod'
+import { LOCAL_EXCEPTION_COMMENT, type RouterConfig } from '../shared'
+import { deriveCoreAddress, type CoreAddressResult } from './core-address'
 import { messageOf, MikrotikRestError } from './errors'
+import { buildIdentityBridge } from './identity-bridge'
+import { classifyLocalException, type LocalExceptionReport, type ProtectedDevice } from './local-exception'
 import { parseMarker } from './marker'
+import { loadRouterConfig } from './router-config'
 import { MikrotikRestDriver, type RouterDriver } from './router-driver'
 import type { RouterRule } from './schemas'
 
@@ -24,9 +30,18 @@ import type { RouterRule } from './schemas'
  * router."
  */
 
-/** The narrow slice of `PluginServiceContext` this file needs — so a test supplies a fake `getRaw` and a fake `onRequest` rather than a whole runtime, the same trade `proxy-manager`'s own `HandlerHost` makes. */
+/**
+ * The narrow slice of `PluginServiceContext` this file needs — so a test
+ * supplies a fake `getRaw`/`onRequest`/`farm.call` rather than a whole
+ * runtime, the same trade `proxy-manager`'s own `HandlerHost`/`ApplyHost`
+ * makes. `farm` was added in step 122.12: the corrected local-exception
+ * check is per-DEVICE (§5 step 122.12 fix 1), and `device.list` is the only
+ * way this file learns a device exists — the manifest has declared it since
+ * step 122.3, unused until now.
+ */
 export interface HandlerHost {
   storage: { global: { getRaw(key: string): Promise<unknown> } }
+  farm: { call<T>(id: string, input: unknown, schema: z.ZodType<T>): Promise<T> }
   onRequest(
     id: string,
     handler: (request: PluginRequest, signal: AbortSignal) => PluginResponse | void | Promise<PluginResponse | void>,
@@ -123,6 +138,9 @@ export function toRuleRow(rule: RouterRule): RuleRow {
   }
 }
 
+/** `device.list`'s own output shape (`packages/core/src/capability/device-state.ts`'s `ListOutput`) — the full `DeviceInfoSchema`, not a loose subset, because `identity-bridge.ts`'s `buildIdentityBridge` takes real `DeviceInfo` values. */
+const DeviceListSchema = z.object({ items: z.array(DeviceInfoSchema) })
+
 /**
  * Register the three routes on a live service context.
  *
@@ -132,21 +150,54 @@ export function toRuleRow(rule: RouterRule): RuleRow {
  * driver, constructed fresh per request from whatever `router` KV currently
  * holds — no cached instance, no module-scope state, so a Settings save
  * takes effect on the very next read with nothing to invalidate.
+ *
+ * `deps.deriveCoreAddress` (step 122.12) is the same trade for the raw TCP
+ * probe `core-address.ts` opens — a test supplies a fixed `CoreAddressResult`
+ * rather than opening a socket, mirroring `createDriver`'s own reasoning.
  */
-export function registerRouterRoutes(host: HandlerHost, deps: { createDriver?: (config: RouterConfig) => RouterDriver } = {}): void {
+export function registerRouterRoutes(
+  host: HandlerHost,
+  deps: { createDriver?: (config: RouterConfig) => RouterDriver; deriveCoreAddress?: (config: { baseUrl: string; tls: boolean }) => Promise<CoreAddressResult> } = {},
+): void {
   const createDriver = deps.createDriver ?? ((config: RouterConfig) => new MikrotikRestDriver(config))
+  const resolveCoreAddress = deps.deriveCoreAddress ?? deriveCoreAddress
 
-  /** Read `router` KV fresh, build a driver, or explain exactly why there is none — never a driver constructed from half a config. */
-  async function loadDriver(): Promise<{ ok: true; driver: RouterDriver } | { ok: false; body: RouterActionRefusal }> {
-    const raw = await host.storage.global.getRaw(ROUTER_KEY)
-    if (raw === null || raw === undefined) {
-      return { ok: false, body: notConfigured('No router connection has been saved yet. Open the Settings tab and save one.') }
+  /**
+   * Read `router` KV fresh, build a driver, or explain exactly why there is
+   * none — never a driver constructed from half a config. `loadRouterConfig`
+   * (`router-config.ts`, factored out at step 122.6) is the single source of
+   * both refusal messages, shared with the write path (`apply.ts`).
+   */
+  async function loadDriver(): Promise<{ ok: true; driver: RouterDriver; config: RouterConfig } | { ok: false; body: RouterActionRefusal }> {
+    const loaded = await loadRouterConfig((key) => host.storage.global.getRaw(key))
+    if (!loaded.ok) return { ok: false, body: notConfigured(loaded.message) }
+    return { ok: true, driver: createDriver(loaded.config), config: loaded.config }
+  }
+
+  /**
+   * The devices this plugin can currently check local-exception coverage
+   * for (§5 step 122.12 fix 1) — `device.list` joined through the identity
+   * bridge (`identity-bridge.ts`, §3.4), narrowed to `state: 'resolved'`
+   * only: a device with no derivable address has no `src-address` to test
+   * coverage against, and is never silently treated as covered OR uncovered.
+   * Leases are passed as `[]` deliberately — this check only needs an
+   * address, not lease-kind classification, and skipping `inventory()` saves
+   * a full extra round trip to the router on every doctor run.
+   *
+   * Never throws: a `device.list` failure (permission not granted, farm
+   * unavailable) degrades to an empty device list plus an entry in the
+   * returned `errors`, the same "downgrade, do not throw" discipline
+   * `MikrotikRestDriver.doctor()` itself follows.
+   */
+  async function knownDeviceAddresses(): Promise<{ devices: ProtectedDevice[]; errors: string[] }> {
+    try {
+      const result = await host.farm.call('device.list', {}, DeviceListSchema)
+      const bridge = buildIdentityBridge(result.items, [])
+      const devices = bridge.filter((d) => d.state === 'resolved').map((d) => ({ id: d.deviceId, label: d.label, address: d.lanIp }))
+      return { devices, errors: [] }
+    } catch (err) {
+      return { devices: [], errors: [`could not read the device list to check local-exception coverage: ${messageOf(err)}`] }
     }
-    const config = readRouterConfig(raw)
-    if (!isRouterConfigured(config)) {
-      return { ok: false, body: notConfigured('The saved router connection is missing an address, a username, or a password. Open the Settings tab and save a complete connection.') }
-    }
-    return { ok: true, driver: createDriver(config) }
   }
 
   host.onRequest(
@@ -196,12 +247,31 @@ export function registerRouterRoutes(host: HandlerHost, deps: { createDriver?: (
       // downgrades every failure into the report itself, so there is no
       // `catch` needed here the way the other two routes have.
       const report = await loaded.driver.doctor()
-      return { body: { ok: true, ...report } }
+
+      // Step 122.12: the local-exception check moved OUT of `doctor()` (it
+      // needs `device.list`, which the driver has no access to) and is
+      // composed here instead, reusing the rules `doctor()` already fetched
+      // rather than a second `listRules()` round trip.
+      const [{ devices, errors: deviceErrors }, coreAddress] = await Promise.all([knownDeviceAddresses(), resolveCoreAddress({ baseUrl: loaded.config.baseUrl, tls: loaded.config.tls })])
+      const localException: LocalExceptionReport = classifyLocalException(report.rules, devices, coreAddress)
+
+      return {
+        body: {
+          ok: true,
+          reachable: report.reachable,
+          authenticated: report.authenticated,
+          restVersion: report.restVersion,
+          managedRuleCount: report.managedRuleCount,
+          foreignRuleCount: report.foreignRuleCount,
+          errors: [...report.errors, ...deviceErrors],
+          localException,
+        },
+      }
     },
     {
       methods: ['POST'],
       permission: ROUTER_ROUTE_PERMISSIONS.doctor,
-      description: 'Reachability, auth, the local-exception rule’s presence (§3.2), and managed/foreign rule counts — a read-only diagnostic, never a write.',
+      description: 'Reachability, auth, the local-exception check (§3.2, behaviour-based and per-device since step 122.12), and managed/foreign rule counts — a read-only diagnostic, never a write.',
     },
   )
 }

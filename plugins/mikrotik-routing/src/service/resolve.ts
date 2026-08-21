@@ -5,7 +5,7 @@
  * (§3.3), so every write re-resolves its target by marker prefix +
  * `src-address` rather than trusting a remembered id:
  *
- *   rules where comment starts with marker prefix AND src-address == endpoint
+ *   rules where comment starts with marker prefix AND src-address matches endpoint
  *     → 0 matches : create   (PUT)
  *     → 1 match   : update   (PATCH)
  *     → 2+ matches: refuse-duplicate — never guess which to keep
@@ -16,12 +16,30 @@
  * that literal rule rather than silently requiring a fully well-formed
  * marker before a rule counts as "ours."
  *
+ * **`src-address` is compared by parsed address RANGE (`cidr.ts`'s
+ * `sameAddressSpec`), never by raw string equality.** This was originally
+ * `r['src-address'] === endpoint`, matching §4.3's literal wording and step
+ * 122.6's choice to write `src-address` as a bare address specifically so
+ * that string compare would line up. A correctness bug found by review
+ * immediately after 122.6 landed: the owner's real router echoes every
+ * `src-address` back in CIDR form (`192.168.10.215/32`, not
+ * `192.168.10.215`), which the exact-string check never matches — so every
+ * apply after the first would find zero matches for an endpoint that
+ * already has a rule, and create a second one instead of updating the
+ * first. Comparing by the address range both spellings parse to (a bare
+ * host and its `/32` form cover the identical single address) makes the
+ * match immune to which spelling the router happens to hand back, rather
+ * than betting on one. A rule whose `src-address` does not parse at all
+ * (`undefined`, or a value `cidr.ts` cannot read) simply never matches —
+ * never a guess, never a throw.
+ *
  * No I/O — `RouterDriver.createRule`/`updateRule`/`deleteRule` (step 122.6)
  * call this to decide which of the three to do; this module never calls
  * them itself.
  */
 
 import { MANAGED_COMMENT_PREFIX } from '../shared'
+import { sameAddressSpec } from './cidr'
 import type { RouterRule } from './schemas'
 
 export type ResolveResult =
@@ -36,7 +54,11 @@ export type ResolveResult =
  * per §4.3's literal wording, not against the comment's embedded copy.
  */
 export function resolveTarget(rules: readonly RouterRule[], endpoint: string): ResolveResult {
-  const matches = rules.filter((r) => r.comment.startsWith(MANAGED_COMMENT_PREFIX) && r['src-address'] === endpoint)
+  const matches = rules.filter((r) => {
+    if (!r.comment.startsWith(MANAGED_COMMENT_PREFIX)) return false
+    const src = r['src-address']
+    return src !== undefined && sameAddressSpec(src, endpoint)
+  })
 
   const [only, ...rest] = matches
   if (!only) {

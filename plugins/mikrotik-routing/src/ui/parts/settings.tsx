@@ -12,6 +12,7 @@ import {
   savePluginConfig,
   isRefusal,
   type DoctorResult,
+  type LocalExceptionResult,
   type PluginConfig,
   type RouterConfig,
   type RouterPresence,
@@ -24,19 +25,48 @@ import { useLoader } from './bits'
  * running `doctor()`. This is where §3.2's local-exception precondition has
  * to be impossible to miss: "the most important paragraph in this plan," and
  * this is the one screen that reads `doctor()`'s own report of it.
+ *
+ * Step 122.12 corrected the check itself (behaviour-based, per device,
+ * position-aware, three states — see `service/local-exception.ts`'s own
+ * header for why the old exact-comment match was actively dangerous) and
+ * this screen follows: `missing`/`partial`/`ok`, each its own colour and
+ * wording, `partial` naming every uncovered device by label rather than
+ * saying "some devices."
  */
 
+function localExceptionTone(status: LocalExceptionResult['status']): string {
+  if (status === 'ok') return 'text-led-ok'
+  if (status === 'partial') return 'text-led-warn'
+  return 'text-led-danger'
+}
+
+function localExceptionLabel(status: LocalExceptionResult['status']): string {
+  if (status === 'ok') return 'Local exception OK'
+  if (status === 'partial') return 'Local exception PARTIAL'
+  return 'Local exception MISSING'
+}
+
+function coreAddressCaption(coreAddress: LocalExceptionResult['coreAddress']): string {
+  if (coreAddress.kind === 'derived') return `The controller's own address toward the router was observed as ${coreAddress.address}.`
+  return `The controller's own address toward the router could not be observed (${coreAddress.reason}) — falling back to requiring coverage of every RFC1918 private range.`
+}
+
 function LocalExceptionWarning({ report }: { report: DoctorResult }) {
-  if (isRefusal(report) || report.localException.present) return null
+  if (isRefusal(report) || report.localException.status === 'ok') return null
+  const { localException } = report
   return (
     <div className="space-y-2 rounded-lg border border-led-danger/40 bg-led-danger/5 p-4">
-      <p className="text-[13px] font-medium text-led-danger">The local-exception rule is missing (§3.2)</p>
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
-        Without it, a device rule this plugin writes would drag that device's own traffic to the controller — ADB, Studio, the scrcpy stream — into the assigned modem's routing table, and control of that device would be lost until the rule is added by hand. This plugin cannot create it (RouterOS's REST API has no way to position a rule), so it only ever checks for it. No apply exists in this build yet, but this check is what will block one the moment it does.
-      </p>
+      <p className="text-[13px] font-medium text-led-danger">{localException.status === 'missing' ? 'No local-exception rule protects any device (§3.2)' : 'The local-exception rule does not protect every device (§3.2)'}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{localException.message}</p>
+      {localException.uncoveredDevices.length > 0 && (
+        <p className="text-[12px] text-fg-muted">
+          Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => d.label).join(', ')}</span>
+        </p>
+      )}
+      <p className="text-[12px] text-fg-muted">{coreAddressCaption(localException.coreAddress)}</p>
       <p className="text-[12px] font-medium">Add it on the router, in this exact order:</p>
       <pre className="overflow-x-auto rounded-md bg-surface-2 p-3 text-[11px] leading-relaxed">
-        <code>{report.fixCommands.join('\n')}</code>
+        <code>{localException.suggestedFixCommands.join('\n')}</code>
       </pre>
     </div>
   )
@@ -69,8 +99,8 @@ function DoctorSummary({ report, loading, error, onRetest }: { report: DoctorRes
                 {report.authenticated ? 'Authenticated' : 'Not authenticated'}
               </Badge>
               {report.restVersion && <Badge variant="secondary">RouterOS {report.restVersion}</Badge>}
-              <Badge variant="outline" className={report.localException.present ? 'text-led-ok' : 'text-led-danger'}>
-                {report.localException.present ? 'Local exception present' : 'Local exception MISSING'}
+              <Badge variant="outline" className={localExceptionTone(report.localException.status)}>
+                {localExceptionLabel(report.localException.status)}
               </Badge>
             </div>
             <p className="text-[12px] text-fg-muted">

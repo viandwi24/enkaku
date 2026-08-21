@@ -28,24 +28,41 @@
 export const MANAGED_COMMENT_PREFIX = 'enkaku:mikrotik-routing:'
 
 /**
- * The exact comment the operator's local-exception rule must carry (§3.2).
- * The plugin never creates or edits this rule — REST has no `move`, so it
- * could not position it correctly even if it wanted to — it only checks for
- * it and reports its absence.
+ * The comment `buildLocalExceptionFixCommands` below suggests for a NEW
+ * local-exception rule. It is a friendly default label only, since step
+ * 122.12's fix (A) — reading `docs/plans/122-m87-mikrotik-routing.md` — is
+ * exactly that DETECTING the rule may never rely on this text matching:
+ * `local-exception.ts`'s `classifyLocalException` decides by behaviour
+ * (action/table/disabled/inactive/address coverage/position), never by
+ * comment. This constant is only ever used to WRITE a suggested comment into
+ * the fix commands below, never to read one back.
  */
 export const LOCAL_EXCEPTION_COMMENT = 'farm: local exception'
 
 /**
- * The exact commands `doctor()` names when the local-exception rule is
- * missing, copied verbatim from plan 122 §3.2 (`<farm-subnet>` is a
- * placeholder the operator fills in themselves — the plugin has no way to
- * know the farm's own subnet, and must not guess one).
+ * The `/routing rule add` + `move` commands `local-exception.ts` suggests
+ * when its local-exception check is not `ok` — plan 122 §5 step 122.12 fix
+ * (4), replacing the old hardcoded `dst-address=192.168.0.0/16` +
+ * `<farm-subnet>` placeholder this function used to be a static array of.
+ * `srcAddress` and every `dstAddress` are DERIVED by the caller (from the
+ * device addresses this plugin actually knows, and the core's own observed
+ * — or RFC1918-fallback — address) rather than assumed here; this function
+ * only ever formats them into the same command shape §3.2 always used. One
+ * `add` per `dstAddress` (more than one only in the fallback case, where the
+ * core's own address could not be observed and every RFC1918 block is
+ * suggested instead of one guessed at), followed by a single `move` that
+ * relies on RouterOS's `[find comment=...]` matching every rule this batch
+ * just added.
  */
-export const LOCAL_EXCEPTION_FIX_COMMANDS = [
-  '/routing rule add src-address=<farm-subnet> dst-address=192.168.0.0/16 \\',
-  '    action=lookup table=main comment="farm: local exception"',
-  '/routing rule move [find comment="farm: local exception"] destination=0',
-] as const
+export function buildLocalExceptionFixCommands(srcAddress: string, dstAddresses: readonly string[]): readonly string[] {
+  const lines: string[] = []
+  for (const dstAddress of dstAddresses) {
+    lines.push(`/routing rule add src-address=${srcAddress} dst-address=${dstAddress} \\`)
+    lines.push(`    action=lookup table=main comment="${LOCAL_EXCEPTION_COMMENT}"`)
+  }
+  lines.push(`/routing rule move [find comment="${LOCAL_EXCEPTION_COMMENT}"] destination=0`)
+  return lines
+}
 
 /**
  * The `router` connection is only acceptable on a trusted management
@@ -199,4 +216,80 @@ export function writeRouterConfig(config: RouterConfig): Record<string, unknown>
 /** Whether a `RouterConfig` has enough to attempt a connection at all — the three fields a `MikrotikRestClient` cannot do without. */
 export function isRouterConfigured(config: RouterConfig): boolean {
   return config.baseUrl.trim().length > 0 && config.username.trim().length > 0 && config.password.length > 0
+}
+
+// ---------------------------------------------------------------------------
+// The per-device `assignment` KV (§4.9) — step 122.6. Device-scoped via
+// `storage.forDevice`, so Forget deletes it for free in the same transaction
+// (§3.5, verified against `lifecycle.ts:278`).
+//
+// A single assignment made from the Assignments tab (this step) is modelled
+// as living in the IMPLICIT group named `default` (§9 Q1: "standalone
+// assignments live in an implicit group named `default`, so one invariant
+// covers both cases with no special-casing"). No `group:default` KV row is
+// ever created for this — `default` is simply the marker `groupId` these
+// rules carry until named groups (122.7's algebra, 122.8's CRUD) exist to
+// supersede it.
+// ---------------------------------------------------------------------------
+
+export const ASSIGNMENT_KEY = 'assignment'
+
+export const DEFAULT_GROUP_ID = 'default'
+export const DEFAULT_GROUP_NAME = 'Default'
+
+/**
+ * The plugin's own per-device record. `lanIpSource`/`leaseKind` are kept as
+ * plain strings rather than importing `identity-bridge.ts`'s unions — this
+ * file imports nothing (this file's own header) so the UI bundle never
+ * inlines service code. Values are `identity-bridge.ts`'s own spellings
+ * (`'transport' | 'probe' | 'manual'` and `'static' | 'dynamic' | 'none'`), or
+ * `''` when nothing has been resolved yet.
+ */
+export interface StoredAssignment {
+  /** The routing table (egress path) this device is assigned to. `''` means "no path chosen yet" — a device can carry a noted LAN IP with no path, or nothing at all. */
+  pathId: string
+  /** Always {@link DEFAULT_GROUP_ID} until named groups (122.8) exist to be assigned instead. `''` for an empty/never-written record. */
+  groupId: string
+  /** The device's LAN IP, per §3.4's identity bridge. `''` when none is known. */
+  lanIp: string
+  lanIpSource: string
+  leaseKind: string
+  /** Unix seconds — when this assignment was first noted. Sticky: an edit that changes the path or the LAN IP does not reset it. */
+  since: number
+}
+
+export const EMPTY_ASSIGNMENT: StoredAssignment = { pathId: '', groupId: '', lanIp: '', lanIpSource: '', leaseKind: '', since: 0 }
+
+function nonNegativeIntOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+/** A stored value → `StoredAssignment`, defaulting a missing/junk field rather than throwing — this is the plugin's own scratch space, the same discipline `readRouterConfig`/`readPluginConfig` above already use. */
+export function readAssignment(value: unknown): StoredAssignment {
+  const source = asObject(value)
+  return {
+    pathId: str(source, 'pathId'),
+    groupId: str(source, 'groupId'),
+    lanIp: str(source, 'lanIp'),
+    lanIpSource: str(source, 'lanIpSource'),
+    leaseKind: str(source, 'leaseKind'),
+    since: nonNegativeIntOrZero(source.since),
+  }
+}
+
+/** The exact object `assignment` is stored as — the write half of `readAssignment`. */
+export function writeAssignment(assignment: StoredAssignment): Record<string, unknown> {
+  return {
+    pathId: assignment.pathId,
+    groupId: assignment.groupId,
+    lanIp: assignment.lanIp,
+    lanIpSource: assignment.lanIpSource,
+    leaseKind: assignment.leaseKind,
+    since: assignment.since,
+  }
+}
+
+/** Whether a `StoredAssignment` carries nothing worth showing — an empty/never-written record. */
+export function isAssignmentEmpty(assignment: StoredAssignment): boolean {
+  return assignment.pathId === '' && assignment.lanIp === ''
 }

@@ -1,5 +1,6 @@
 import { api, z } from '@enkaku/ui'
 import {
+  ASSIGNMENT_KEY,
   CONFIG_KEY,
   DEFAULT_PLUGIN_CONFIG,
   DEFAULT_ROUTER_CONFIG,
@@ -11,6 +12,7 @@ import {
   writeRouterConfig,
   type PluginConfig,
   type RouterConfig,
+  type StoredAssignment,
 } from '../../shared'
 
 /**
@@ -177,16 +179,41 @@ export type RuleRow = z.infer<typeof RuleRowSchema>
 export const RulesResultSchema = z.union([z.looseObject({ ok: z.literal(true), items: z.array(RuleRowSchema) }), RefusalSchema])
 export type RulesResult = z.infer<typeof RulesResultSchema>
 
+/**
+ * `CoreAddressResult` (`service/core-address.ts`) — which path derived the
+ * address the device reaches the core at, so the Settings tab can say so
+ * (§5 step 122.12 fix 2) rather than silently assuming a subnet.
+ */
+const CoreAddressResultSchema = z.union([z.looseObject({ kind: z.literal('derived'), address: z.string() }), z.looseObject({ kind: z.literal('rfc1918-fallback'), reason: z.string() })])
+export type CoreAddressResult = z.infer<typeof CoreAddressResultSchema>
+
+/**
+ * `LocalExceptionReport` (`service/local-exception.ts`) — the corrected,
+ * behaviour-based, per-device §3.2 check (step 122.12), replacing the old
+ * `{ present, rule }` shape that matched on comment text alone. Three
+ * states, not two (fix 3): `missing` (no candidate rule at all), `partial`
+ * (a candidate exists but leaves devices uncovered or mis-positioned — the
+ * state that LOOKS safe and is not), `ok`.
+ */
+const ProtectedDeviceSchema = z.looseObject({ id: z.string(), label: z.string(), address: z.string() })
+const LocalExceptionResultSchema = z.looseObject({
+  status: z.union([z.literal('missing'), z.literal('partial'), z.literal('ok')]),
+  message: z.string(),
+  uncoveredDevices: z.array(ProtectedDeviceSchema),
+  suggestedFixCommands: z.array(z.string()),
+  coreAddress: CoreAddressResultSchema,
+})
+export type LocalExceptionResult = z.infer<typeof LocalExceptionResultSchema>
+
 const DoctorReportSchema = z.looseObject({
   ok: z.literal(true),
   reachable: z.boolean(),
   authenticated: z.boolean(),
   restVersion: z.string().nullable(),
-  localException: z.looseObject({ present: z.boolean(), rule: z.unknown().nullable() }),
   managedRuleCount: z.number(),
   foreignRuleCount: z.number(),
-  fixCommands: z.array(z.string()),
   errors: z.array(z.string()),
+  localException: LocalExceptionResultSchema,
 })
 export const DoctorResultSchema = z.union([DoctorReportSchema, RefusalSchema])
 export type DoctorResult = z.infer<typeof DoctorResultSchema>
@@ -206,3 +233,125 @@ export async function fetchRules(): Promise<RulesResult> {
 export async function runDoctor(): Promise<DoctorResult> {
   return api(`${ROUTER_HTTP_API}/doctor`, DoctorResultSchema, { method: 'POST', json: {} })
 }
+
+// ---------------------------------------------------------------------------
+// Assignments — step 122.6. The `fleet`/`plan`/`apply` routes
+// (`service/apply-routes.ts`), plus the assignment KV note itself, written
+// straight from the browser (never touching the router — see `apply.ts`'s
+// own header for why that is the right split).
+// ---------------------------------------------------------------------------
+
+const StoredAssignmentSchema = z.looseObject({
+  pathId: z.string(),
+  groupId: z.string(),
+  lanIp: z.string(),
+  lanIpSource: z.string(),
+  leaseKind: z.string(),
+  since: z.number(),
+})
+
+/** `identity-bridge.ts`'s `DeviceLanAddress` — a discriminated union on `state`, mirrored here loosely (`.passthrough()`) so an added field never breaks this screen. */
+const DeviceLanAddressSchema = z.union([
+  z.looseObject({
+    deviceId: z.string(),
+    stableId: z.string(),
+    label: z.string(),
+    state: z.literal('resolved'),
+    lanIp: z.string(),
+    lanIpSource: z.string(),
+    leaseKind: z.string(),
+  }),
+  z.looseObject({ deviceId: z.string(), stableId: z.string(), label: z.string(), state: z.literal('needs-address') }),
+])
+export type DeviceLanAddress = z.infer<typeof DeviceLanAddressSchema>
+
+const FleetDeviceRowSchema = z.looseObject({
+  deviceId: z.string(),
+  stableId: z.string(),
+  label: z.string(),
+  lan: DeviceLanAddressSchema,
+  assignment: StoredAssignmentSchema,
+})
+export type FleetDeviceRow = z.infer<typeof FleetDeviceRowSchema>
+
+const FleetStateSchema = z.looseObject({
+  devices: z.array(FleetDeviceRowSchema),
+  paths: z.array(PathSchema),
+  health: z.array(PathHealthSchema),
+})
+
+export const FleetResultSchema = z.union([z.looseObject({ ok: z.literal(true), fleet: FleetStateSchema }), RefusalSchema])
+export type FleetResult = z.infer<typeof FleetResultSchema>
+
+/**
+ * One row of `planner.ts`'s `PlanRow` — a five-kind discriminated union with
+ * different fields per kind. Modelled loosely (every field optional except
+ * `kind`) rather than the full union: this screen only ever reads a handful
+ * of fields to render one line per row, and a `.passthrough()` per-kind
+ * schema would buy nothing a plain read cannot already do safely.
+ */
+const PlanRowSchema = z.looseObject({
+  kind: z.union([z.literal('create'), z.literal('update'), z.literal('delete'), z.literal('skip'), z.literal('foreign')]),
+  endpointKey: z.string().nullable().optional(),
+  pathId: z.string().nullable().optional(),
+  fromPathId: z.string().optional(),
+  toPathId: z.string().optional(),
+  groupId: z.string().nullable().optional(),
+  groupName: z.string().optional(),
+  reason: z.string().optional(),
+  rule: z.looseObject({ '.id': z.string(), comment: z.string() }).optional(),
+})
+export type PlanRow = z.infer<typeof PlanRowSchema>
+
+const BlockedAssignmentSchema = z.looseObject({ deviceId: z.string(), label: z.string(), reason: z.string() })
+export type BlockedAssignment = z.infer<typeof BlockedAssignmentSchema>
+
+const PlanPreviewOkSchema = z.looseObject({ ok: z.literal(true), rows: z.array(PlanRowSchema), localException: LocalExceptionResultSchema, blocked: z.array(BlockedAssignmentSchema) })
+export const PlanPreviewResultSchema = z.union([PlanPreviewOkSchema, RefusalSchema])
+export type PlanPreviewResult = z.infer<typeof PlanPreviewResultSchema>
+
+const RowOutcomeSchema = z.looseObject({ row: PlanRowSchema, outcome: z.union([z.literal('applied'), z.literal('error')]), message: z.string().optional() })
+
+const ApplyOkSchema = z.looseObject({
+  ok: z.literal(true),
+  rows: z.array(PlanRowSchema),
+  outcomes: z.array(RowOutcomeSchema),
+  localException: LocalExceptionResultSchema,
+  blocked: z.array(BlockedAssignmentSchema),
+})
+const ApplyRefusalSchema = z.looseObject({ ok: z.literal(false), code: z.string(), message: z.string(), localException: LocalExceptionResultSchema.optional() })
+export const ApplyResultSchema = z.union([ApplyOkSchema, ApplyRefusalSchema])
+export type ApplyResult = z.infer<typeof ApplyResultSchema>
+
+export async function fetchFleet(): Promise<FleetResult> {
+  return api(`${ROUTER_HTTP_API}/fleet`, FleetResultSchema)
+}
+
+export async function previewApplyPlan(): Promise<PlanPreviewResult> {
+  return api(`${ROUTER_HTTP_API}/plan`, PlanPreviewResultSchema, { method: 'POST', json: {} })
+}
+
+export async function runApply(): Promise<ApplyResult> {
+  return api(`${ROUTER_HTTP_API}/apply`, ApplyResultSchema, { method: 'POST', json: {} })
+}
+
+/**
+ * The `assignment` note itself — a plain (non-secret), device-scoped KV
+ * write straight from the browser through the core's generic
+ * `PUT .../data/entry?scope=device&...` route, the same door
+ * `plugins/proxy-manager`'s own Assignments tab writes its `assigned` note
+ * through. This changes nothing on the router: `apply.ts`'s own header
+ * explains why the note and the write are deliberately two different acts.
+ */
+export async function saveAssignment(stableId: string, assignment: StoredAssignment): Promise<void> {
+  await api(`${PLUGIN_API}/data/entry`, IgnoredSchema, {
+    method: 'PUT',
+    json: { scope: 'device', stableId, key: ASSIGNMENT_KEY, value: assignment, secret: false },
+  })
+}
+
+export async function clearAssignment(stableId: string): Promise<void> {
+  await api(`${PLUGIN_API}/data/entry?scope=device&stableId=${encodeURIComponent(stableId)}&key=${encodeURIComponent(ASSIGNMENT_KEY)}`, IgnoredSchema, { method: 'DELETE' })
+}
+
+export type { StoredAssignment }

@@ -16,34 +16,89 @@ import { z } from 'zod'
  * reflects exactly that.
  *
  * `RoutingTableSchema`, `IpRouteSchema`, `InterfaceSchema` and
- * `DhcpLeaseSchema` were **not** exercised against a real router in this
- * change — there was no hardware available. Their field names follow
+ * `DhcpLeaseSchema` were **not** exercised against a real router when they
+ * were written — there was no hardware available. Their field names follow
  * RouterOS's well-documented REST convention (the JSON key is the same
- * hyphenated name the CLI's `print` output uses), but that is inference from
- * public documentation, not a verified fact the way the rule shape is. Every
- * one of them is `.passthrough()` (unknown fields are kept, never rejected)
- * and treats booleans defensively (`boolish`, below) precisely because of
- * that gap — a field arriving as `"true"`/`"yes"` instead of a native JSON
- * `true` should still parse, while a genuinely different SHAPE (a missing
- * `.id`, a renamed identifying field) still fails loudly rather than being
- * coerced into something plausible-looking. The end-to-end integration test
- * gated behind `ENKAKU_TEST_DEVICE=1` (plan 122 §7) is where a real
- * disagreement with a live router is meant to surface.
+ * hyphenated name the CLI's `print` output uses), but that was inference
+ * from public documentation, not a verified fact the way the rule shape is.
+ *
+ * **That inference has since been tested, and it was wrong.** Pointed at the
+ * owner's real lab router (RouterOS 7.24, 46 routing tables, 2026-08-21),
+ * `/routing/table` returned `fib` in a string spelling the boolean
+ * preprocessor did not recognise, and the ORIGINAL design — where any
+ * declared field could reject the row — failed all 46 rows and rendered the
+ * Paths tab as nothing but a wall of `invalid_type`. For a field this plugin
+ * has never read. Two rules came out of that and both are now enforced
+ * below:
+ *
+ * 1. **Only a field this plugin actually READS belongs in the object body.**
+ *    `fib` and `host-name` were declared, never read, and removed;
+ *    `.passthrough()` still carries their values for anything that ever
+ *    needs them. A field nobody reads must never get a vote on whether the
+ *    response parses.
+ * 2. **An unrecognised boolean spelling falls back to a per-field SAFE
+ *    value, never a throw** — see `boolish` below for each field's chosen
+ *    direction and why. An unreadable answer degrades one field toward
+ *    caution instead of taking down the whole endpoint.
+ *
+ * A genuinely different SHAPE — a missing `.id`, a renamed identifying field
+ * — still fails loudly rather than being coerced into something
+ * plausible-looking. That distinction is the point: identity must be right,
+ * decoration must not be load-bearing. `/rest/ip/route`, `/rest/interface`
+ * and `/rest/ip/dhcp-server/lease` are still unproven against hardware —
+ * the `/routing/table` failure happened first and stopped inventory before
+ * they were ever reached. The `ENKAKU_TEST_DEVICE=1`-gated integration test
+ * (plan 122 §7) is still where a real disagreement is meant to surface.
  */
 
 /**
- * RouterOS's REST API is known to render some boolean-valued properties as
- * native JSON booleans and others as the strings `"true"`/`"false"` depending
- * on version and endpoint — not verified against hardware in this change, so
- * this accepts either spelling (plus `"yes"`/`"no"`, the CLI's own boolean
- * vocabulary) rather than assuming one and failing on the other.
+ * RouterOS's REST API renders boolean-valued properties inconsistently —
+ * native JSON booleans on some endpoints, `"true"`/`"false"` strings on
+ * others, and (measured on the owner's own RouterOS 7.24 lab router,
+ * 2026-08-21) at least one property in some **other** string spelling
+ * entirely: `/routing/table`'s `fib` rejected all 46 rows with
+ * `expected boolean, received string`, which took the Paths tab down
+ * completely.
+ *
+ * **So an unrecognised spelling must not be able to reject the response.**
+ * The original version returned the raw value through to `z.boolean()`,
+ * which threw — one unknown string on a field nobody reads killed the whole
+ * endpoint. This version falls back to an explicit, per-field `safe` value
+ * instead, and the caller has to choose that value deliberately.
+ *
+ * **`absent` and `unreadable` are two different questions and must not share
+ * one answer.** A first version of this collapsed them and immediately broke
+ * the common case: RouterOS OMITS a false-valued flag rather than sending
+ * `false`, so on the owner's own router only the two genuinely-disabled
+ * rules carried `disabled: "true"` and the five live ones carried no
+ * `disabled` key at all. Treating "absent" as the cautious value made every
+ * live rule read as disabled — which would have made the §3.2
+ * local-exception check reject a rule that was working fine. Caught by this
+ * file's own test against that captured router output, not by inspection.
+ *
+ * - **absent** means the router is telling us the flag is not set. That is
+ *   an answer, not a gap, and it takes the field's ordinary default.
+ * - **unreadable** means the router said something we could not parse. That
+ *   is a gap, and it takes the direction that fails toward caution:
+ *   - `active` (is this path up?) → `false`. Reporting a dead path as
+ *     healthy is the one outcome §4.5 exists to prevent.
+ *   - `disabled`/`inactive` → `true`. We cannot confirm the rule or route
+ *     is live, so the local-exception check refuses rather than crediting a
+ *     rule that may do nothing (§3.2).
+ *   - `dynamic` (DHCP lease) → `true`, so §3.4's stale-IP warning fires when
+ *     we cannot prove the lease is static — a moving IP silently steers the
+ *     wrong device.
+ *   - `running` (interface) → `false`. Decorative; nothing routes on it.
  */
-const boolish = z.preprocess((v) => {
-  if (typeof v === 'boolean') return v
-  if (v === 'true' || v === 'yes') return true
-  if (v === 'false' || v === 'no') return false
-  return v
-}, z.boolean())
+function boolish(opts: { absent: boolean; unreadable: boolean }) {
+  return z.preprocess((v) => {
+    if (v === undefined || v === null) return opts.absent
+    if (typeof v === 'boolean') return v
+    if (v === 'true' || v === 'yes' || v === '1') return true
+    if (v === 'false' || v === 'no' || v === '0') return false
+    return opts.unreadable
+  }, z.boolean())
+}
 
 /** `GET /rest/routing/rule` — hardware-verified field set (plan 122 §0, §4.1). */
 export const RouterRuleSchema = z
@@ -54,8 +109,8 @@ export const RouterRuleSchema = z
     action: z.string().optional(),
     table: z.string().optional(),
     comment: z.string().default(''),
-    disabled: boolish.default(false),
-    inactive: boolish.default(false),
+    disabled: boolish({ absent: false, unreadable: true }),
+    inactive: boolish({ absent: false, unreadable: true }),
   })
   .passthrough()
 
@@ -65,15 +120,30 @@ export const RouterRuleListSchema = z.array(RouterRuleSchema)
 
 /**
  * `GET /rest/routing/table` — one row per user-defined routing table, which
- * this plugin treats as one row per egress path (§4.1, §4.5). Not
- * hardware-verified in this change (see this file's header).
+ * this plugin treats as one row per egress path (§4.1, §4.5).
+ *
+ * **`fib` was declared here and is not any more, and the reason is a rule
+ * worth keeping: a field this plugin never reads must not be able to reject
+ * the whole response.** It was declared `fib: boolish.optional()` on the
+ * inference that RouterOS renders it as a boolean or one of the `"true"`/
+ * `"yes"`/`"false"`/`"no"` spellings `boolish` accepts. Pointed at the
+ * owner's real lab router (2026-08-21, RouterOS 7.24, 46 routing tables) it
+ * came back as some OTHER string, so every single row failed
+ * `invalid_type: expected boolean, received string` and the Paths tab
+ * rendered nothing at all — for a field no code path in this plugin has ever
+ * looked at. `.passthrough()` keeps the raw value available to anything that
+ * ever needs it, without giving it a vote on whether the response parses.
+ *
+ * The general form of the rule, for whoever extends these schemas next:
+ * only a field this plugin actually READS belongs in the object body.
+ * Identity fields (`.id`, `name`) should fail loudly when absent, because a
+ * row we cannot identify is useless. Everything else rides `.passthrough()`.
  */
 export const RoutingTableSchema = z
   .object({
     '.id': z.string(),
     name: z.string(),
-    fib: boolish.optional(),
-    disabled: boolish.default(false),
+    disabled: boolish({ absent: false, unreadable: true }),
   })
   .passthrough()
 
@@ -98,8 +168,8 @@ export const IpRouteSchema = z
     gateway: z.string().optional(),
     'routing-table': z.string().optional(),
     table: z.string().optional(),
-    active: boolish.default(false),
-    disabled: boolish.default(false),
+    active: boolish({ absent: false, unreadable: false }),
+    disabled: boolish({ absent: false, unreadable: true }),
   })
   .passthrough()
 
@@ -113,8 +183,8 @@ export const InterfaceSchema = z
     '.id': z.string(),
     name: z.string(),
     type: z.string().optional(),
-    running: boolish.default(false),
-    disabled: boolish.default(false),
+    running: boolish({ absent: false, unreadable: false }),
+    disabled: boolish({ absent: false, unreadable: true }),
   })
   .passthrough()
 
@@ -134,10 +204,12 @@ export const DhcpLeaseSchema = z
     '.id': z.string(),
     address: z.string().optional(),
     'mac-address': z.string().optional(),
-    'host-name': z.string().optional(),
+    // `host-name` was declared here and never read by any code path — the
+    // same latent defect `fib` turned into a real outage above. Removed for
+    // the same reason; `.passthrough()` still carries it.
     status: z.string().optional(),
-    dynamic: boolish.default(true),
-    disabled: boolish.default(false),
+    dynamic: boolish({ absent: true, unreadable: true }),
+    disabled: boolish({ absent: false, unreadable: true }),
   })
   .passthrough()
 

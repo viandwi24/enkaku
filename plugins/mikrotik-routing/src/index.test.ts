@@ -13,7 +13,7 @@ import plugin, { checkScript } from './index'
 describe('the plugin manifest', () => {
   test('definePlugin accepts it — id, version, and one member script', () => {
     expect(plugin.id).toBe('mikrotik-routing')
-    expect(plugin.version).toBe('0.2.0')
+    expect(plugin.version).toBe('0.3.0')
     expect(plugin.scripts).toHaveLength(1)
     expect(plugin.scripts[0]?.id).toBe('check')
   })

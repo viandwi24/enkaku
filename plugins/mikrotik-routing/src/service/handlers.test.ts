@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { DeviceInfoSchema, type DeviceInfo } from '@enkaku/protocol'
 import { LOCAL_EXCEPTION_COMMENT } from '../shared'
+import type { CoreAddressResult } from './core-address'
 import { MikrotikRestError } from './errors'
 import { toRuleRow, registerRouterRoutes, ROUTER_ROUTE_PERMISSIONS, ROUTER_ROUTES, type HandlerHost } from './handlers'
 import type { DoctorReport, RouterDriver, RouterInventory } from './router-driver'
-import type { RouterRule } from './schemas'
+import { RouterRuleListSchema, type RouterRule } from './schemas'
 
 /**
  * The three read-only routes step 122.3 registers, against a fake host and a
@@ -27,13 +29,31 @@ function okDoctorReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
     reachable: true,
     authenticated: true,
     restVersion: '7.24 (stable)',
-    localException: { present: true, rule: null },
+    rules: [],
     managedRuleCount: 0,
     foreignRuleCount: 0,
-    fixCommands: ['cmd1', 'cmd2', 'cmd3'],
     errors: [],
     ...overrides,
   }
+}
+
+function makeDevice(id: string, address: string | null): DeviceInfo {
+  return DeviceInfoSchema.parse({
+    id,
+    stableId: `stable-${id}`,
+    serial: address ? `${address}:5555` : 'usbserial-1',
+    label: id,
+    androidVersion: null,
+    apiLevel: null,
+    screenW: null,
+    screenH: null,
+    density: null,
+    status: 'idle',
+    lastSeen: null,
+    connection: address
+      ? { kind: 'tcp', medium: 'wired', mediumSource: 'declared', address, port: 5555, networkLabel: null }
+      : { kind: 'usb', medium: null, mediumSource: 'unknown', address: null, port: null, networkLabel: null },
+  })
 }
 
 /** A `RouterDriver` whose every method is swappable per test — the write three still reject, exactly like `MikrotikRestDriver`'s own (this step ships no write path). */
@@ -60,10 +80,11 @@ interface Registered {
   opts?: { permission?: string; methods?: readonly string[]; timeoutMs?: number; description?: string }
 }
 
-function fakeHost(routerKv: unknown): { host: HandlerHost; registered: Map<string, Registered> } {
+function fakeHost(routerKv: unknown, devices: DeviceInfo[] = []): { host: HandlerHost; registered: Map<string, Registered> } {
   const registered = new Map<string, Registered>()
   const host: HandlerHost = {
     storage: { global: { getRaw: async () => routerKv } },
+    farm: { call: async (_id, _input, schema) => schema.parse({ items: devices }) },
     onRequest: (id, handler, opts) => {
       registered.set(id, { handler: handler as Registered['handler'], opts })
     },
@@ -199,15 +220,79 @@ describe('registerRouterRoutes — rules, classified via parseMarker (§4.2)', (
   })
 })
 
-describe('registerRouterRoutes — doctor', () => {
+describe('registerRouterRoutes — doctor (§5 step 122.12: local-exception is now composed here, per device, not inside the driver)', () => {
   const routerKv = { baseUrl: '192.168.1.1', username: 'admin', password: 'x', tls: false, timeoutMs: 2000 }
+  const okCoreAddress: CoreAddressResult = { kind: 'derived', address: '10.0.0.5' }
 
-  test('returns the driver’s report verbatim, wrapped in ok:true — never throws even on a "bad" report, since doctor() itself never throws', async () => {
-    const report = okDoctorReport({ localException: { present: false, rule: null }, errors: ['could not read REST version'] })
+  test('composes the driver report with a localException computed from device.list + the derived core address', async () => {
+    const rules: RouterRule[] = RouterRuleListSchema.parse([
+      { '.id': '*1', action: 'lookup', table: 'main', comment: 'x', 'src-address': '10.0.0.0/8', 'dst-address': '10.0.0.0/8', disabled: false, inactive: false },
+    ])
+    const report = okDoctorReport({ rules })
+    const { host, registered } = fakeHost(routerKv, [makeDevice('d1', '10.0.0.20')])
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => okCoreAddress })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as {
+      body: { ok: true; localException: { status: string; coreAddress: CoreAddressResult } }
+    }
+    expect(result.body.ok).toBe(true)
+    expect(result.body.localException.status).toBe('ok')
+    expect(result.body.localException.coreAddress).toEqual(okCoreAddress)
+  })
+
+  test('a device on adb-tcp NOT covered by the router\'s rule is named as uncovered — status partial, never silently ok', async () => {
+    const rules: RouterRule[] = RouterRuleListSchema.parse([
+      { '.id': '*1', action: 'lookup', table: 'main', comment: 'proxy: local exception', 'src-address': '192.168.50.0/24', 'dst-address': '192.168.0.0/16', disabled: false, inactive: false },
+    ])
+    const report = okDoctorReport({ rules })
+    const { host, registered } = fakeHost(routerKv, [makeDevice('flip4-01', '192.168.10.15')])
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => ({ kind: 'derived', address: '192.168.50.10' }) })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as {
+      body: { ok: true; localException: { status: string; uncoveredDevices: { id: string }[] } }
+    }
+    expect(result.body.localException.status).toBe('partial')
+    expect(result.body.localException.uncoveredDevices.map((d) => d.id)).toEqual(['flip4-01'])
+  })
+
+  test('a USB device with no derivable address is excluded from the check entirely, never guessed at', async () => {
+    const rules: RouterRule[] = RouterRuleListSchema.parse([
+      { '.id': '*1', action: 'lookup', table: 'main', comment: 'x', 'src-address': '0.0.0.0/0', 'dst-address': '10.0.0.0/8', disabled: false, inactive: false },
+    ])
+    const report = okDoctorReport({ rules })
+    const { host, registered } = fakeHost(routerKv, [makeDevice('usb-1', null)])
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => okCoreAddress })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as { body: { ok: true; localException: { status: string } } }
+    // No devices with a known address at all ⇒ nothing to be uncovered ⇒ ok, not partial and not missing-because-of-the-USB-device.
+    expect(result.body.localException.status).toBe('ok')
+  })
+
+  test('a device.list failure degrades to an empty device list plus an entry in `errors`, never a thrown handler', async () => {
+    const report = okDoctorReport()
+    const { registered } = fakeHost(routerKv)
+    const host: HandlerHost = {
+      storage: { global: { getRaw: async () => routerKv } },
+      farm: {
+        call: async () => {
+          throw new Error('E_FORBIDDEN')
+        },
+      },
+      onRequest: (id, handler, opts) => registered.set(id, { handler: handler as Registered['handler'], opts }),
+    }
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => okCoreAddress })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as { body: { ok: true; errors: string[]; localException: { status: string } } }
+    expect(result.body.errors.join(' ')).toContain('E_FORBIDDEN')
+    // `okDoctorReport()`'s default `rules: []` has no candidate rule at all,
+    // independent of the device-list failure — `missing` here proves the
+    // check still ran rather than silently no-oping when devices could not
+    // be read.
+    expect(result.body.localException.status).toBe('missing')
+  })
+
+  test('never throws even when the driver\'s own report carries errors — doctor() itself never throws, and neither does this composition', async () => {
+    const report = okDoctorReport({ errors: ['could not read REST version'] })
     const { host, registered } = fakeHost(routerKv)
-    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }) })
-    const result = await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)
-    expect(result).toEqual({ body: { ok: true, ...report } })
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => okCoreAddress })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as { body: { ok: true; errors: string[] } }
+    expect(result.body.errors).toContain('could not read REST version')
   })
 })
 

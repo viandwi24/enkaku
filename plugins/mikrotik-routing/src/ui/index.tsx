@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
+import { AssignmentsTab } from './parts/assignments'
 import { PathsTab } from './parts/paths'
 import { RulesTab } from './parts/rules'
 import { SettingsTab } from './parts/settings'
@@ -13,16 +14,14 @@ import { SettingsTab } from './parts/settings'
  * below), and the same tab-lives-in-the-URL pattern so a reload lands where
  * the operator was.
  *
- * Three tabs, all read-only (plan 122 §5 step 122.3's own scope — "Nothing
- * in this step may apply anything to the router"): Paths, Settings, Rules.
- * There is no write-mode banner the way `proxy-manager`'s screen carries
- * one, because there is nothing here that could ever look more finished
- * than it is — every tab either shows what the router already has, or a
- * form that saves to this plugin's own KV, never to the router.
+ * Four tabs: Paths, Settings, Rules (read-only, stage 1) and Assignments
+ * (stage 2, step 122.6) — the one tab that can change what is on the router,
+ * and only through a reviewed plan the operator confirms (§4.4).
  */
 
 const TABS = [
   { id: 'paths', label: 'Paths' },
+  { id: 'assignments', label: 'Assignments' },
   { id: 'settings', label: 'Settings' },
   { id: 'rules', label: 'Rules' },
 ] as const
@@ -63,6 +62,9 @@ function MikrotikRoutingView({ params, setParams }: PluginViewProps) {
         */}
         <TabsContent value="paths" className="pt-2">
           <PathsTab />
+        </TabsContent>
+        <TabsContent value="assignments" className="pt-2">
+          <AssignmentsTab />
         </TabsContent>
         <TabsContent value="settings" className="pt-2">
           <SettingsTab />

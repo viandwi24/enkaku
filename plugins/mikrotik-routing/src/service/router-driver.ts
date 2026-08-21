@@ -1,5 +1,5 @@
-import type { z } from 'zod'
-import { LOCAL_EXCEPTION_COMMENT, LOCAL_EXCEPTION_FIX_COMMANDS, MANAGED_COMMENT_PREFIX } from '../shared'
+import { z } from 'zod'
+import { MANAGED_COMMENT_PREFIX } from '../shared'
 import { messageOf, MikrotikRestError } from './errors'
 import { MikrotikRestClient, type MikrotikRestConfig } from './rest-client'
 import {
@@ -19,13 +19,17 @@ import {
  * `rest-client.ts`) the only file in this plugin that knows the words
  * `src-address`, `lookup-only-in-table`, or `/rest/`.
  *
- * **`createRule`/`updateRule`/`deleteRule` are declared here but NOT built in
- * this step.** Step 122.1 (this file) is stage 1 of plan 122 §5 — read-only —
- * and ships "with zero write capability existing yet." Step 122.6 owns their
- * bodies, behind §4.3's resolve-before-write and §3.2's local-exception
- * block. Declaring them now, throwing rather than existing nowhere, is what
- * lets the interface be reviewed and the driver be a real, complete seam
- * before anything is wired to write through it.
+ * **`createRule`/`updateRule`/`deleteRule` are built as of step 122.6.** Every
+ * write is a thin REST call — `PUT`, `PATCH .../*<id>`, `DELETE .../*<id>` —
+ * and this driver itself never decides WHICH of the three to use for a given
+ * endpoint: that is §4.3's resolve-before-write (`resolve.ts`), and it is the
+ * caller's job (`service/apply.ts`, via `planner.ts`'s `buildPlan`) to call
+ * `resolveTarget` against freshly-fetched rules before choosing which method
+ * to call, and to gate every call on §3.2's local-exception check first. No
+ * router `.id` is ever persisted to KV anywhere in this plugin (§3.3) — the
+ * `id` a caller passes to `updateRule`/`deleteRule` always comes from a
+ * `RouterRule` that was fetched fresh in the same request, never a remembered
+ * one.
  */
 export interface RouterDriver {
   inventory(): Promise<RouterInventory>
@@ -92,15 +96,23 @@ export interface DoctorReport {
   authenticated: boolean
   /** Best-effort, from `/system/resource`. `null` when unreachable, unauthenticated, or the field could not be read — never a guess. */
   restVersion: string | null
-  localException: {
-    present: boolean
-    rule: RouterRule | null
-  }
+  /**
+   * Every rule on the router, unfiltered (empty when `reachable` is false) —
+   * this driver already fetched them to answer `reachable`/`authenticated`,
+   * and handing them back here is what lets a caller with device knowledge
+   * (`service/handlers.ts`, which alone can reach `device.list`) run the
+   * corrected local-exception check (`local-exception.ts`,
+   * `classifyLocalException`, plan 122 §5 step 122.12) without a second
+   * `listRules()` round trip. `MikrotikRestDriver` deliberately does NOT
+   * compute local-exception coverage itself any more — that check is
+   * per-device, and this driver has no device list to be per-device against
+   * (§4.1: this file is the vendor seam, not the place identity or fleet
+   * knowledge belongs).
+   */
+  rules: RouterRule[]
   /** A coarse comment-prefix count (§4.2) — not the full marker parser, which is step 122.2's job. */
   managedRuleCount: number
   foreignRuleCount: number
-  /** Always populated, even when `localException.present` is true, so a caller never has to know the commands itself. */
-  fixCommands: readonly string[]
   /** Human-readable, scrubbed of the router password, describing anything that went wrong while gathering this report. */
   errors: string[]
 }
@@ -113,8 +125,24 @@ function parseOrThrow<T>(schema: z.ZodType<T>, raw: unknown, path: string): T {
   return result.data
 }
 
-const NOT_IMPLEMENTED = (method: string): Error =>
-  new Error(`MikrotikRestDriver.${method} is not implemented yet — writes are step 122.6's job (plan 122 §5); this build ships with zero write capability`)
+/**
+ * The `action` every rule this plugin creates carries — §0.1's own worked
+ * example (`action=lookup-only-in-table`). Fixed, not a `DesiredRule` field:
+ * nothing above this driver has a reason to ever ask for a different action,
+ * and a device rule that used plain `lookup` would fall through to the
+ * routing table's own default rather than being confined to the assigned
+ * path's table.
+ */
+const MANAGED_RULE_ACTION = 'lookup-only-in-table'
+
+/**
+ * `PUT /rest/routing/rule`'s response, narrowed to the one field a write
+ * needs back (§4.1: "PUT returns the created object incl. `.id`"). `.passthrough()`
+ * keeps every other field the router echoes without giving any of them a
+ * vote on whether the write succeeded — the same discipline `schemas.ts`'s
+ * own header lays out for every read shape in this plugin.
+ */
+const CreatedRuleSchema = z.object({ '.id': z.string() }).passthrough()
 
 export class MikrotikRestDriver implements RouterDriver {
   private readonly client: MikrotikRestClient
@@ -168,29 +196,76 @@ export class MikrotikRestDriver implements RouterDriver {
     }
   }
 
-  // `async` here is load-bearing, not stylistic: it turns the synchronous
-  // `throw` below into a REJECTED PROMISE, matching the interface's
-  // `Promise<...>` return type — a bare (non-async) `throw` would instead
-  // throw synchronously out of the call itself, which every caller written
-  // against `RouterDriver`'s promise-returning contract (including a plain
-  // `await driver.createRule(...)`) would still catch correctly, but which
-  // `expect(driver.createRule(...)).rejects` in a test would not.
-  async createRule(_rule: DesiredRule): Promise<{ id: string }> {
-    throw NOT_IMPLEMENTED('createRule')
-  }
+  /**
+   * `PUT /routing/rule` — §4.1's verified behaviour: returns the created
+   * object including its `.id`. `action` is always {@link MANAGED_RULE_ACTION};
+   * `src-address` is written as `${rule.srcAddress}/32` — an explicit `/32`,
+   * not a bare address.
+   *
+   * **Corrected by review immediately after step 122.6 landed, before it
+   * shipped.** 122.6 originally wrote a bare address specifically so
+   * `resolve.ts`'s then-exact-string match would line up. That bet on which
+   * form the router hands back was wrong: the owner's real router echoes
+   * every `src-address` in CIDR form regardless of what was written
+   * (`192.168.10.221/32`, `192.168.50.11/32`, `192.168.100.230/32`,
+   * `192.168.50.0/24` — a real `curl`, not a guess), so a bare write was
+   * silently becoming a `/32` on the router's own side anyway, and the next
+   * apply's exact-string match against the bare form it had just written
+   * would fail regardless — creating a duplicate rule on every apply.
+   * `resolve.ts`/`planner.ts` now match `src-address` by parsed address
+   * RANGE (`cidr.ts`'s `sameAddressSpec`), not by raw string equality, so a
+   * bare write and a `/32` write are both matched correctly either way — the
+   * written form is no longer load-bearing for correctness, only for how it
+   * reads. `/32` is chosen because it is what an operator already sees for
+   * every hand-made rule in Winbox (the owner's own farm's existing rules
+   * all carry an explicit prefix); a managed rule spelled differently from a
+   * hand-made one for no functional reason is its own small, avoidable
+   * confusion.
+   */
+  async createRule(rule: DesiredRule): Promise<{ id: string }> {
+    const body: Record<string, unknown> = {
+      'src-address': `${rule.srcAddress}/32`,
+      table: rule.table,
+      action: MANAGED_RULE_ACTION,
+      comment: rule.comment,
+    }
+    if (rule.disabled !== undefined) body.disabled = rule.disabled
 
-  async updateRule(_id: string, _patch: Partial<DesiredRule>): Promise<void> {
-    throw NOT_IMPLEMENTED('updateRule')
-  }
-
-  async deleteRule(_id: string): Promise<void> {
-    throw NOT_IMPLEMENTED('deleteRule')
+    const raw = await this.client.put('/routing/rule', body)
+    const parsed = CreatedRuleSchema.safeParse(raw)
+    if (!parsed.success) {
+      throw new MikrotikRestError('parse', `the router's response to PUT /routing/rule did not include a rule .id: ${parsed.error.message}`)
+    }
+    return { id: parsed.data['.id'] }
   }
 
   /**
-   * Reachability, auth, REST version, presence of the local-exception rule
-   * (§3.2 — the single most important safety check in the plugin, and
-   * acceptance criterion 1) and managed-vs-foreign rule counts.
+   * `PATCH /routing/rule/<id>` — §4.1's verified behaviour: takes effect
+   * immediately, and the leading `*` in a RouterOS `.id` needs no
+   * URL-encoding (`rest-client.ts`'s own `urlFor`). Only the fields present on
+   * `patch` are sent, so a caller updating just `table` never touches
+   * `src-address`/`comment` it did not mean to change. When `src-address` IS
+   * patched, it is written as `${patch.srcAddress}/32`, for the same reason
+   * and to the same explicit form as `createRule` above.
+   */
+  async updateRule(id: string, patch: Partial<DesiredRule>): Promise<void> {
+    const body: Record<string, unknown> = {}
+    if (patch.srcAddress !== undefined) body['src-address'] = `${patch.srcAddress}/32`
+    if (patch.table !== undefined) body.table = patch.table
+    if (patch.comment !== undefined) body.comment = patch.comment
+    if (patch.disabled !== undefined) body.disabled = patch.disabled
+    await this.client.patch(`/routing/rule/${id}`, body)
+  }
+
+  /** `DELETE /routing/rule/<id>` — §4.1's verified behaviour: empty response. */
+  async deleteRule(id: string): Promise<void> {
+    await this.client.delete(`/routing/rule/${id}`)
+  }
+
+  /**
+   * Reachability, auth, REST version, every rule (unfiltered — see
+   * `DoctorReport.rules`'s own doc comment for why the local-exception check
+   * itself moved out of this method) and managed-vs-foreign rule counts.
    *
    * Never throws: every failure downgrades the report rather than raising,
    * because a caller two steps from now (122.6's apply gate) needs a value
@@ -217,7 +292,6 @@ export class MikrotikRestDriver implements RouterDriver {
       }
     }
 
-    const exceptionRule = rules.find((r) => r.comment === LOCAL_EXCEPTION_COMMENT) ?? null
     const managedRuleCount = rules.filter((r) => r.comment.startsWith(MANAGED_COMMENT_PREFIX)).length
     const foreignRuleCount = rules.length - managedRuleCount
 
@@ -236,10 +310,9 @@ export class MikrotikRestDriver implements RouterDriver {
       reachable,
       authenticated,
       restVersion,
-      localException: { present: exceptionRule !== null, rule: exceptionRule },
+      rules,
       managedRuleCount,
       foreignRuleCount,
-      fixCommands: LOCAL_EXCEPTION_FIX_COMMANDS,
       errors,
     }
   }

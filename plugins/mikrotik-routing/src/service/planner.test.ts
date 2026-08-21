@@ -276,3 +276,48 @@ describe('buildPlan — determinism', () => {
     expect(ids).toEqual(['*1', '*2'])
   })
 })
+
+describe('buildPlan — REGRESSION: applying the same assignment twice against a router that echoes src-address in CIDR form (step 122.6 correction)', () => {
+  // 122.6 wrote a bare src-address betting the router would echo it back
+  // unchanged; the owner's real router echoes CIDR form regardless. Before
+  // this fix, the SECOND buildPlan call below would produce a second
+  // `create` for the same endpoint (resolveTarget never found its own rule)
+  // AND would also flag that same rule as `delete` (the desired-set
+  // membership check in the delete/foreign loop had the identical raw
+  // string-equality bug) — i.e. one router rule showing up as both created
+  // again and marked for deletion in the same plan.
+
+  test('same device, same path: create, then nothing (already correct) — never a second create, never a spurious delete', () => {
+    const d = desired({ endpointKey: '192.168.10.215', pathId: 'via-modem7-p12' })
+    const pathIds = new Set([d.pathId])
+    const health = [up(d.pathId)]
+
+    const firstPlan = buildPlan({ desired: [d], rules: [], pathIds, health })
+    expect(firstPlan).toEqual([{ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName }])
+
+    // The router now holds the rule we just created, echoed back with
+    // src-address in CIDR form — exactly the owner's real router's shape.
+    const routerRuleAfterApply = rule({ '.id': '*10', comment: MARKER(d.groupId, d.endpointKey), 'src-address': `${d.endpointKey}/32`, table: d.pathId })
+
+    const secondPlan = buildPlan({ desired: [d], rules: [routerRuleAfterApply], pathIds, health })
+    expect(secondPlan).toEqual([])
+  })
+
+  test('same device, path changed on the second apply: create, then update — never create twice', () => {
+    const first = desired({ endpointKey: '192.168.10.215', pathId: 'via-modem7-p12' })
+    const pathIds = new Set(['via-modem7-p12', 'via-modem9'])
+    const health = [up('via-modem7-p12'), up('via-modem9')]
+
+    const firstPlan = buildPlan({ desired: [first], rules: [], pathIds, health })
+    expect(firstPlan).toEqual([{ kind: 'create', endpointKey: first.endpointKey, pathId: first.pathId, groupId: first.groupId, groupName: first.groupName }])
+
+    const routerRuleAfterApply = rule({ '.id': '*10', comment: MARKER(first.groupId, first.endpointKey), 'src-address': `${first.endpointKey}/32`, table: 'via-modem7-p12' })
+
+    const second = desired({ endpointKey: '192.168.10.215', pathId: 'via-modem9' })
+    const secondPlan = buildPlan({ desired: [second], rules: [routerRuleAfterApply], pathIds, health })
+
+    expect(secondPlan).toEqual([
+      { kind: 'update', endpointKey: second.endpointKey, fromPathId: 'via-modem7-p12', toPathId: 'via-modem9', groupId: second.groupId, groupName: second.groupName, rule: routerRuleAfterApply },
+    ])
+  })
+})
