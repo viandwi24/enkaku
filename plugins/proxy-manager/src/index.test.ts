@@ -154,7 +154,13 @@ describe('the plugin definition', () => {
     // change as the three before it.
     // None of them is a patch, because in every case what changed is what
     // the operator is agreeing to.
-    expect(plugin.version).toBe('0.8.0')
+    // 0.9.0 (plan 121, backup upstreams and failover) breaks that pattern on
+    // purpose: `service.permissions` is unchanged, so this bump is NOT a
+    // consent change — it exists so `seedEmbeddedPacks` (which keys on
+    // `name@version`) actually restages an already-provisioned install onto
+    // the new bundle, instead of silently keeping the pre-121 one forever
+    // under an unchanged version string.
+    expect(plugin.version).toBe('0.9.0')
     expect(plugin.scripts.length).toBe(1)
   })
 

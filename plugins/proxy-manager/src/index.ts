@@ -221,8 +221,26 @@ export default definePlugin({
    * pack that quietly gained the ability to un-route phones under a version
    * somebody had already approved is exactly the consent problem 0.6.0's note
    * describes. A minor bump, for the same reason all three before it were.
+   *
+   * **0.9.0 — plan 121 (M86), backup upstreams and failover.** Not a consent
+   * change like the four bumps above it — `service.permissions` is
+   * unchanged, and a record's upstream (including a fallback) is still
+   * exactly what it always was: an address the OPERATOR types in, the same
+   * class of thing a `socks5`/`http` primary upstream already let them point
+   * anywhere. This bump exists for a different, purely mechanical reason:
+   * `packages/core/src/plugins/seed-embedded.ts`'s `seedEmbeddedPacks` keys
+   * on `${pack.name}@${pack.version}` and SKIPS restaging a version already
+   * present in `<dataDir>/seeded-packs.json` — an install that had already
+   * seeded `proxy-manager@0.8.0` would silently keep running the PRE-121
+   * bundle forever after a binary upgrade, because the version string
+   * (which is what identity is keyed on, not the code) never changed. Ship
+   * a real, sizeable feature under an unchanged version number and no
+   * existing install ever sees it. A bare patch bump would technically also
+   * force a reseed, but this is a feature an operator will notice using
+   * (a Studio editor, a chip, a new route), not "nothing more" — the
+   * distinction 0.5.1's own note above draws.
    */
-  version: '0.8.0',
+  version: '0.9.0',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],
