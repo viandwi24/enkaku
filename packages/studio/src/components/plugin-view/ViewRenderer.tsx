@@ -6,7 +6,7 @@ import { ActionRunner, type ActionInvocation } from '@/components/plugin-view/Ac
 import { fetchPluginRows } from '@/components/plugin-view/data'
 import { planColumn } from '@/components/plugin-view/planColumn'
 import { readRowField, type PluginViewRow } from '@/components/plugin-view/rows'
-import { EmptyState, ErrorState, LoadingRows, Button, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, api } from '@enkaku/ui'
+import { EmptyState, ErrorState, Input, LoadingRows, Button, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, api, deviceSearchTerms } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**
@@ -34,6 +34,13 @@ import { useNow } from '@/lib/useNow'
  * floor for any screen that fetches), and the empty state prefers the view's
  * OWN `empty` copy — an author who wrote "Run Sync accounts to read the
  * switch-account sheet on each device" knows something generic text cannot.
+ *
+ * Plan 124 §4.5 added a third thing this file owns: **the filter box**, which
+ * is not part of the declared vocabulary at all (see `SEARCH_MIN_ROWS` below
+ * for why it is not a `ViewSpec` flag). It filters the rows already loaded,
+ * client-side, and its empty state says exactly that — a plugin table is a page
+ * of a keyset scan, so "no match" here can only ever mean "no match in what is
+ * loaded".
  */
 
 /** Written out in full — Tailwind v4 never generates a class built from a
@@ -98,6 +105,61 @@ function errorCode(err: unknown): string | null {
   return err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : null
 }
 
+/** The declared columns of a tier-A table, named locally — `@enkaku/protocol`
+ *  exports `ViewSpec` but not the column shape inside it. */
+type TableColumns = NonNullable<ViewSpec['table']>['columns']
+
+/**
+ * Plan 124 §4.5 — **when this renderer draws its filter box, and why it is not
+ * something a plugin author opts into.**
+ *
+ * The alternative considered was a `search` flag on `ViewSpec.table`. It was
+ * rejected on two counts. It is a change to the WIRE — `ViewSpecSchema` is
+ * `.strict()`, so the field would have to land in `@enkaku/protocol`, in the
+ * SDK's author-facing types and in `validatePluginSurface` — for something that
+ * is purely a client-side convenience over rows already in the browser; and
+ * every plugin already published, including the four packs embedded in the
+ * release binary, would render without a filter until its author republished.
+ * A declared surface should say what the data IS, not how the operator hunts
+ * through it.
+ *
+ * So the box is on by default, gated on one thing: how many rows are actually
+ * loaded. Ten is plan 124 §3.3's own number — *"a search box below ten items is
+ * noise; above ten it is the whole feature"* — and a plugin table is exactly
+ * the surface that swings between both, being one row per device on one screen
+ * and three global entries on the next.
+ *
+ * The gate reads the TOTAL loaded rows and never the filtered count, so the box
+ * cannot vanish out from under the operator's cursor the moment their query
+ * narrows the table below the threshold.
+ */
+const SEARCH_MIN_ROWS = 10
+
+/**
+ * Everything in one row that an operator can legitimately search by, lowercased.
+ *
+ * It is built from the SAME `planColumn` call the cells are drawn with, which
+ * is the point: what you can type is what you can see. A boolean column that
+ * reads `Yes` is findable by typing `yes`, and a timestamp that reads
+ * `2 minutes ago` is findable by typing `minutes` — neither would be if this
+ * matched the raw stored value instead.
+ *
+ * The device's own terms are appended on top (`deviceSearchTerms`, plan 124
+ * §4.1) because they are searchable whether or not the author declared a column
+ * for them: a view that shows only `$device.label` is still one row per phone,
+ * and typing a number or a stableId is how an operator finds the phone in front
+ * of them. `#7` and `7` both appear there, so both find `#7`.
+ */
+function rowSearchText(row: PluginViewRow, columns: TableColumns, rowKey: string, now: number): string {
+  const parts: string[] = []
+  const key = readRowField(row, rowKey)
+  if (key !== undefined && key !== null) parts.push(String(key))
+  for (const column of columns) parts.push(planColumn(column.schema, readRowField(row, column.field), now).text)
+  if (row.device) parts.push(...deviceSearchTerms({ number: row.device.number, label: row.device.label ?? '', stableId: row.device.stableId }))
+  if (row.entry) parts.push(row.entry.key)
+  return parts.join(' ').toLowerCase()
+}
+
 export interface ViewRendererProps {
   plugin: string
   view: ViewSpec
@@ -112,6 +174,12 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
   const [restarting, setRestarting] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [invocation, setInvocation] = useState<ActionInvocation | null>(null)
+  /**
+   * The table filter. Client-side over the rows already loaded (plan 124 §2 —
+   * no server-side search anywhere in this plan), never persisted, and reset by
+   * nothing: a reload keeps it, because the operator was mid-hunt.
+   */
+  const [query, setQuery] = useState('')
   // One interval for the whole table, so every `kind: 'timestamp'` cell ticks
   // together instead of each freezing at its own first render (plan 17 §4.6).
   const now = useNow(30_000)
@@ -157,6 +225,41 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
       .finally(() => setRestarting(false))
   }, [plugin, load])
 
+  /**
+   * The rows the table actually draws. `null` while loading, exactly as `rows`
+   * is, so the three fetch states below are unchanged by the filter existing.
+   *
+   * An empty query short-circuits to the same array identity, which keeps the
+   * pruning effect below (and every memo downstream) from firing on a table
+   * nobody is filtering.
+   */
+  const visible = useMemo(() => {
+    if (rows === null) return null
+    const q = query.trim().toLowerCase()
+    if (!q || !table) return rows
+    return rows.filter((row) => rowSearchText(row, table.columns, table.rowKey, now).includes(q))
+  }, [rows, query, table, now])
+
+  /**
+   * A row hidden by the filter cannot stay selected.
+   *
+   * This is the same rule `load()` above already applies when a refetch drops a
+   * row — *"keeping its id would silently target a device that is no longer on
+   * screen"* — and the filter is the other way a row leaves the screen. Without
+   * it, the toolbar's own "3 rows selected · 3 devices" could count rows the
+   * operator cannot see, and a batch would then run on a device they had
+   * filtered away.
+   */
+  useEffect(() => {
+    if (visible === null) return
+    setSelected((prev) => {
+      if (prev.size === 0) return prev
+      const shown = new Set(visible.map((row) => row.id))
+      const kept = [...prev].filter((id) => shown.has(id))
+      return kept.length === prev.size ? prev : new Set(kept)
+    })
+  }, [visible])
+
   const selectedRows = useMemo(() => (rows ?? []).filter((row) => selected.has(row.id)), [rows, selected])
   const selectedDeviceIds = useMemo(
     () => [...new Set(selectedRows.map((row) => row.device?.id).filter((id): id is string => typeof id === 'string' && id.length > 0))],
@@ -181,8 +284,14 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
   const toolbarActions = named(view.toolbar)
   const rowActions = named(view.rowActions)
 
-  const allSelected = rows !== null && rows.length > 0 && rows.every((row) => selected.has(row.id))
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set((rows ?? []).map((row) => row.id)))
+  // Select-all is scoped to what the filter SHOWS (plan 124 §4.5's own rule for
+  // the agent grants list: "'Select all' applies to the filtered set and says
+  // so" — here it says so in the checkbox's accessible name). The selection is
+  // pruned to the visible rows above, so this stays a plain replace.
+  const filtering = query.trim().length > 0
+  const shownRows = visible ?? []
+  const allSelected = shownRows.length > 0 && shownRows.every((row) => selected.has(row.id))
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shownRows.map((row) => row.id)))
   const toggleRow = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev)
@@ -251,66 +360,113 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
           description={view.empty?.hint ?? `The plugin “${plugin}” has not written anything for this screen yet.`}
         />
       ) : (
-        <div className="overflow-hidden rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                {table.selectable && (
-                  <TableHead className="w-10">
-                    <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select every row" />
-                  </TableHead>
-                )}
-                {table.columns.map((column) => (
-                  <TableHead key={column.field} className={WIDTH_CLASS[column.width]}>
-                    {column.header}
-                  </TableHead>
-                ))}
-                {rowActions.length > 0 && <TableHead className="text-right">Actions</TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.id} data-state={selected.has(row.id) ? 'selected' : undefined}>
-                  {table.selectable && (
-                    <TableCell>
-                      <input
-                        type="checkbox"
-                        checked={selected.has(row.id)}
-                        onChange={() => toggleRow(row.id)}
-                        aria-label={`Select ${String(readRowField(row, table.rowKey) ?? row.id)}`}
-                      />
-                    </TableCell>
-                  )}
-                  {table.columns.map((column) => {
-                    const cell = planColumn(column.schema, readRowField(row, column.field), now)
-                    return (
-                      <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-fg-muted' : 'text-[12.5px]'}>
-                        {cell.text}
-                      </TableCell>
-                    )
-                  })}
-                  {rowActions.length > 0 && (
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1.5">
-                        {rowActions.map(({ id, action }) => (
-                          <Button
-                            key={id}
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 text-[12px]"
-                            onClick={() => setInvocation({ actionId: id, action, row, selectedDeviceIds })}
-                          >
-                            {action.label}
-                          </Button>
-                        ))}
-                      </div>
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <>
+          {/* `|| filtering` is not redundant: a reload can return fewer rows than
+              the threshold while a query is still typed in, and a box that
+              disappeared then would leave rows hidden by a filter the operator
+              can no longer see, let alone clear. */}
+          {(rows.length > SEARCH_MIN_ROWS || filtering) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter the rows below"
+                aria-label="Filter rows"
+                className="h-8 max-w-xs text-[12.5px]"
+              />
+              <span className="readout text-[11.5px] text-fg-muted">
+                {shownRows.length} of {rows.length} row{rows.length === 1 ? '' : 's'}
+              </span>
+            </div>
+          )}
+
+          {shownRows.length === 0 ? (
+            /*
+              **The one thing this empty state may not do is imply the farm was
+              asked.** Plan 124 §4.5: the filter runs over the rows already in
+              the browser, and `fetchPluginRows` walks at most 25 pages — so
+              "no match" here means "no match in what is loaded", and a row the
+              cap never fetched is neither shown nor searched. Saying "nothing
+              matches" full stop would be a claim about the plugin's stored data
+              that this component is in no position to make.
+            */
+            <EmptyState
+              title="No match in the rows loaded"
+              description={`Nothing in the ${rows.length} row${rows.length === 1 ? '' : 's'} already loaded matches “${query.trim()}”. This filter searches what is on this screen — it does not ask “${plugin}” for anything more, so a row that has not been loaded is not searched.`}
+              action={
+                <Button size="sm" variant="outline" onClick={() => setQuery('')}>
+                  Clear the filter
+                </Button>
+              }
+            />
+          ) : (
+            <div className="overflow-hidden rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    {table.selectable && (
+                      <TableHead className="w-10">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          onChange={toggleAll}
+                          aria-label={filtering ? 'Select every row the filter shows' : 'Select every row'}
+                        />
+                      </TableHead>
+                    )}
+                    {table.columns.map((column) => (
+                      <TableHead key={column.field} className={WIDTH_CLASS[column.width]}>
+                        {column.header}
+                      </TableHead>
+                    ))}
+                    {rowActions.length > 0 && <TableHead className="text-right">Actions</TableHead>}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {shownRows.map((row) => (
+                    <TableRow key={row.id} data-state={selected.has(row.id) ? 'selected' : undefined}>
+                      {table.selectable && (
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={selected.has(row.id)}
+                            onChange={() => toggleRow(row.id)}
+                            aria-label={`Select ${String(readRowField(row, table.rowKey) ?? row.id)}`}
+                          />
+                        </TableCell>
+                      )}
+                      {table.columns.map((column) => {
+                        const cell = planColumn(column.schema, readRowField(row, column.field), now)
+                        return (
+                          <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-fg-muted' : 'text-[12.5px]'}>
+                            {cell.text}
+                          </TableCell>
+                        )
+                      })}
+                      {rowActions.length > 0 && (
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1.5">
+                            {rowActions.map(({ id, action }) => (
+                              <Button
+                                key={id}
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[12px]"
+                                onClick={() => setInvocation({ actionId: id, action, row, selectedDeviceIds })}
+                              >
+                                {action.label}
+                              </Button>
+                            ))}
+                          </div>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
       )}
 
       {invocation && (

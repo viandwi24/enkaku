@@ -320,6 +320,40 @@ export interface SessionManagerDeps {
    * behaviour rather than an arbitrary default throttling it.
    */
   maxConcurrentBuilds?: () => number
+  /**
+   * Is this device's screen already being held awake by something OUTSIDE this
+   * session build? (plan 125 §3.7, §4.5, §5 step 125.7 — "one wake per session
+   * start, and the readiness manager is the authority".)
+   *
+   * Read fresh at the moment the build lane actually grants a permit — the
+   * same freshness discipline every accessor above uses, and it matters more
+   * here than for most: a build queued behind the farm-wide lane may sit for a
+   * while, and the answer that decides whether to skip a 1422 ms `svc power
+   * stayon` has to be the one true when the build runs, not when it was
+   * requested.
+   *
+   * `daemon.ts`'s `createSessionManager({...})` wires it to the readiness
+   * manager, written the long way on purpose:
+   * `(deviceId) => (readiness ? readiness.actual(deviceId) !== 'asleep' : false)`.
+   * **Not** `readiness?.actual(deviceId) !== 'asleep'` — with no readiness
+   * manager wired that reads `undefined !== 'asleep'`, i.e. `true`, and would
+   * skip the wake on precisely the builds that most need it.
+   * `readiness.actual` is `hot` when a session is open and `awake` when the
+   * readiness manager has itself run `wakeDevice` for the device (the
+   * `keepAwakeApplied` set, `packages/core/src/device/readiness.ts`) — so it
+   * is precisely "the wake already happened, and something is still holding
+   * it". `stream.start` calls `readiness.hold(deviceId, 'viewer')` immediately
+   * before `acquire`, which is what made the duplicate wake plan 125 §0.7
+   * measured (≈3.2 s of a ≈4.3 s cold start) and what makes this accessor
+   * true by the time the build runs.
+   *
+   * Undefined — a test/fixture `SessionManager`, or the node package's own
+   * mini-core, neither of which runs a readiness manager — means every build
+   * wakes exactly as it did before this plan. That is the safe default in the
+   * only direction that matters: an unnecessary wake costs a second, a missing
+   * one costs a phone in a sealed box its screen (§0.2).
+   */
+  deviceIsAwake?: (deviceId: string) => boolean
 }
 
 /**
@@ -532,6 +566,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // this device's own override), so `createSession`/`makeScrcpy` never
         // need to look `quality` up in a table themselves.
         ...(videoProfile ? { videoProfile } : {}),
+        // plan 125 §3.7, §4.5, §5 step 125.7 — asked HERE, not at `acquire`
+        // time, so a build that waited behind the farm-wide lane decides on
+        // the device's state as it is now. Only ever set to `true`: the
+        // absence of a `deviceIsAwake` accessor must leave the wake exactly
+        // where it was, never skip it (see the dep's own doc comment).
+        ...(deps.deviceIsAwake?.(deviceId) ? { skipWake: true } : {}),
         // plan 100 §3.2, §4.2, §5 step 100.4 — see this function's own doc
         // comment above for what these two do and when they are set.
         ...(fastOpts?.skipDevicePrep ? { skipDevicePrep: true } : {}),

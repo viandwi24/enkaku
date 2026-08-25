@@ -228,6 +228,24 @@ describe('DeviceCard — the device number (plan 89 §3.3, plan 92 §4.8, plan 4
     const h3 = container.querySelector('h3')
     expect(h3?.textContent).toContain('#7')
   })
+
+  /**
+   * Plan 124 §4.4 Group B, step 124.2 — line 1 above was already right; the
+   * card's own "More actions" menu was not, and on a fleet grid of twenty
+   * identically modelled phones that menu's accessible name was the same
+   * string twenty times over.
+   */
+  test('the "More actions" menu is labelled with the number too', () => {
+    const { getByLabelText } = renderWithApi(
+      <DeviceCard device={{ ...BASE_DEVICE, number: 7 }} onRequestForget={() => {}} />,
+    )
+    expect(getByLabelText(`More actions for #7 ${BASE_DEVICE.label}`)).toBeTruthy()
+  })
+
+  test('a device with no number labels that menu with the bare label — no `#`, no `#null` (criterion 7)', () => {
+    const { getByLabelText } = renderWithApi(<DeviceCard device={BASE_DEVICE} onRequestForget={() => {}} />)
+    expect(getByLabelText(`More actions for ${BASE_DEVICE.label}`)).toBeTruthy()
+  })
 })
 
 describe('DeviceCard — assistedBy (plan 91 §3.4 item 4, §4.4, F25)', () => {

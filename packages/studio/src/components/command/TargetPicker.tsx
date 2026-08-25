@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn } from '@enkaku/ui'
+import { DeviceName, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn, formatDeviceName } from '@enkaku/ui'
 import { computeTargetPreview } from './target-preview'
 
 /**
@@ -146,16 +146,23 @@ function TargetPreviewSummary({ preview }: { preview: ReturnType<typeof computeT
           </span>
         )}
       </p>
+      {/* Plan 124 §4.4 Group D, step 124.4 — this preview is the guard that
+          "stops the mistake most often" (target-preview.ts's own header), and
+          it can only do that if the names identify individual phones. Two
+          forms, per §3.2: the caution line is a `.join(', ')` sentence and
+          takes the composed string, while the excluded list is a real list of
+          rows and takes `<DeviceName>`, so its numbers dim into a scannable
+          column instead of competing with the reasons beside them. */}
       {preview.caution.length > 0 && (
         <p className="text-led-warn">
-          {preview.caution.length} may be skipped — {preview.caution.map((c) => c.device.label).join(', ')}
+          {preview.caution.length} may be skipped — {preview.caution.map((c) => formatDeviceName(c.device.number, c.device.label)).join(', ')}
         </p>
       )}
       {preview.excluded.length > 0 && (
         <ul className="space-y-0.5 text-fg-subtle">
           {preview.excluded.map((e) => (
             <li key={e.device.id}>
-              {e.device.label} — {e.reason}
+              <DeviceName number={e.device.number} label={e.device.label} /> — {e.reason}
             </li>
           ))}
         </ul>

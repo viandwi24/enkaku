@@ -77,10 +77,28 @@ describe('DeviceSettingsSchema.prep — legacy stayAwake transform (Plan 17 §4.
     expect(parsed.prep.keepAwake).toBe('off')
   })
 
-  test('an absent prep.stayAwake / keepAwake parses to the default (while-charging)', () => {
+  // Plan 125 §3.3 moved this default off `while-charging`, which maps to `svc
+  // power stayon usb` — a documented no-op for a device attached over
+  // `adb-tcp`, and so a default that would have made plan 125's new
+  // awake-by-default a lie on exactly the farm it was chosen for.
+  test('an absent prep.stayAwake / keepAwake parses to the default (always)', () => {
     const parsed = DeviceSettingsSchema.parse({})
-    expect(parsed.prep.keepAwake).toBe('while-charging')
-    expect(defaultDeviceSettings().prep.keepAwake).toBe('while-charging')
+    expect(parsed.prep.keepAwake).toBe('always')
+    expect(defaultDeviceSettings().prep.keepAwake).toBe('always')
+  })
+
+  // The `prep` block's own `.default()` is a LITERAL object (Zod 4 does not
+  // re-parse it), so a field added to the block and forgotten there reads
+  // `undefined` at runtime on every farm that never saved this block. These
+  // two assertions are what catch that.
+  test('prep.screenOffTimeoutMs defaults to 30 minutes, through both the field and the block default', () => {
+    expect(DeviceSettingsSchema.parse({}).prep.screenOffTimeoutMs).toBe(1800000)
+    expect(defaultDeviceSettings().prep.screenOffTimeoutMs).toBe(1800000)
+    expect(DeviceSettingsSchema.parse({ prep: {} }).prep.screenOffTimeoutMs).toBe(1800000)
+  })
+
+  test('prep.screenOffTimeoutMs accepts null — "leave the device’s own timeout alone" (plan 125 §4.2)', () => {
+    expect(DeviceSettingsSchema.parse({ prep: { screenOffTimeoutMs: null } }).prep.screenOffTimeoutMs).toBeNull()
   })
 
   test('a fresh row already carrying keepAwake is left alone (not re-derived from stayAwake)', () => {
@@ -102,6 +120,10 @@ describe('DeviceSettingsSchema.prep — legacy stayAwake transform (Plan 17 §4.
     expect(Object.keys(jsonSchema.properties.prep.properties)).toEqual([
       'disableAnimations',
       'keepAwake',
+      // Plan 125 §4.2 — a nullable number, and it must survive
+      // `z.toJSONSchema` like the rest, since the settings form is generated
+      // from exactly this output (spec §17.7).
+      'screenOffTimeoutMs',
       'standbyScreenOff',
       'rotation',
       'textInput',
@@ -1219,6 +1241,33 @@ describe('FarmSettingsSchema.session.maxConcurrentBuilds — the build lane budg
 describe('FarmSettingsSchema.readiness.maxHot — unchanged by plan 92, only its doc comment was corrected (§3.7)', () => {
   test('still defaults to 8 — plan 92 did not touch the number, only decoupled it from wall.maxTiles conceptually', () => {
     expect(defaultFarmSettings().readiness.maxHot).toBe(8)
+  })
+
+  // Plan 125 §3.1: the owner's instruction was direct — the default must be
+  // on. A fleet that goes dark five minutes after you look away optimises for
+  // a battery cost a permanently-powered rack does not pay.
+  test('readiness.defaultDesired is `awake` on a fresh farm (plan 125 §3.1)', () => {
+    expect(defaultFarmSettings().readiness.defaultDesired).toBe('awake')
+    expect(FarmSettingsSchema.parse({}).readiness.defaultDesired).toBe('awake')
+    // Through the BLOCK default too, not only the field default — the block's
+    // `.default()` is a literal object Zod 4 does not re-parse.
+    expect(FarmSettingsSchema.parse({ readiness: {} }).readiness.defaultDesired).toBe('awake')
+  })
+
+  // Plan 125 §8's "flipping a product default surprises an existing farm"
+  // risk, and §5 step 125.2's migration note. `createFarmSettingsStore` writes
+  // a FULLY MATERIALISED FarmSettings into the `farm_settings` row the first
+  // time a farm boots, so an existing farm always has its own literal value
+  // stored — this asserts the parse honours it rather than re-defaulting.
+  test('an existing farm’s stored `asleep` is never rewritten by the new default', () => {
+    expect(FarmSettingsSchema.parse({ readiness: { maxHot: 8, defaultDesired: 'asleep' } }).readiness.defaultDesired).toBe('asleep')
+  })
+
+  // The same guarantee, one level down, for the other default plan 125 §3.3
+  // flipped: a device row is written with a fully materialised DeviceSettings
+  // at admission, so a device enrolled before the flip re-reads its own value.
+  test('an existing device’s stored `while-charging` is never rewritten by the new default', () => {
+    expect(DeviceSettingsSchema.parse({ prep: { keepAwake: 'while-charging' } }).prep.keepAwake).toBe('while-charging')
   })
 })
 

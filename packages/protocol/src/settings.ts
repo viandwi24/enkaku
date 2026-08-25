@@ -439,10 +439,66 @@ export const DeviceSettingsSchema = z
             .default(true)
             .describe('Turn off system animations before a job runs')
             .meta({ title: 'Disable animations' }),
-          /** Replaces the old `stayAwake` boolean (Plan 17 §3.4). */
-          keepAwake: KeepAwakeModeSchema.default('while-charging')
+          /**
+           * Replaces the old `stayAwake` boolean (Plan 17 §3.4).
+           *
+           * **The default moved `'while-charging'` → `'always'` in plan 125
+           * §3.3.** `'while-charging'` maps to `svc power stayon usb`, and
+           * this file's own `KeepAwakeModeSchema` comment (above) already
+           * records the consequence: `usb` only holds the screen while
+           * plugged into USB, *which does nothing for a device attached over
+           * `adb-tcp`* — which is exactly the shape of farm plan 125 is for.
+           * Leaving it would have made plan 125's new awake-by-default
+           * (`readiness.defaultDesired`, below) a lie on the very hardware it
+           * was chosen for.
+           *
+           * **An existing farm is not touched by this.** Every device row is
+           * written with a FULLY MATERIALISED `DeviceSettings`
+           * (`defaultDeviceSettings()` → `DeviceSettingsSchema.parse({})`, via
+           * `registry/admission.ts`'s `baseFields`), so a device enrolled
+           * before this change has its own literal `keepAwake` stored in the
+           * `devices.settings` JSON column and re-reads that value, never this
+           * default. The default is consulted only for a row that has no
+           * `prep` at all — a fresh device, or one predating the block
+           * entirely (plan 125 §8's "flipping a product default surprises an
+           * existing farm" risk, and §5 step 125.2's migration note).
+           */
+          keepAwake: KeepAwakeModeSchema.default('always')
             .describe('Keep the device awake while a session is open')
             .meta({ title: 'Keep the screen awake' }),
+          /**
+           * Plan 125 §3.3, §4.2 — the PERSISTED half of the awake policy, and
+           * the piece that keeps a boxed phone awake **even when the core is
+           * not running at all**.
+           *
+           * `svc power stayon` (`keepAwake` above) is reverted by
+           * `releaseAwake`/`close()` and only holds while the device is
+           * plugged in; `Settings.System.screen_off_timeout` is the phone's
+           * own setting and survives a core restart, a core crash, and a
+           * reboot. Both are read back before either is reported as applied,
+           * and both revert over adb alone — the two rules plan 125 §0.2
+           * imposes because the owner's phones are sealed in a box where the
+           * recovery cost of a bad write is hardware disassembly.
+           *
+           * `null` means "leave the device's own value alone" and issues no
+           * write at all. The default, 30 minutes, is long enough that a
+           * device is still reachable across a lunch break and short enough
+           * that a phone which somehow falls out of the farm's management
+           * still eventually parks its panel (plan 125 §8's burn-in and
+           * thermal risk, which H4 measures rather than assumes).
+           *
+           * Applied by `wakeDevice` (`packages/session/src/wake.ts`) and by
+           * `packages/core/src/device/awake-policy.ts`; never applied without
+           * a capture of the device's prior value first (§3.3).
+           */
+          screenOffTimeoutMs: z
+            .number()
+            .int()
+            .min(0)
+            .nullable()
+            .default(1800000)
+            .describe('How long the device’s own screen timeout is set to while it is in the farm. Leave empty to keep whatever the device already had. This setting is written to the phone and survives a restart of the core, which is what keeps a device awake and reachable while nothing is watching it.')
+            .meta(ui({ title: 'Screen timeout on the device', kind: 'duration', unit: 'ms' })),
           /**
            * Blank the device's physical panel while mirroring continues (§3.5).
            * The video stream is unaffected.
@@ -474,7 +530,15 @@ export const DeviceSettingsSchema = z
             .meta({ title: 'Text input' }),
         }),
       )
-      .default({ disableAnimations: true, keepAwake: 'while-charging', standbyScreenOff: false, rotation: 'device', textInput: 'auto' })
+      // A LITERAL default, not a thunk — because the `z.preprocess` wrapper
+      // above has no inner schema to re-parse `{}` through the way `timing`
+      // does. Zod 4 does not validate a `.default()` value, so this object
+      // must be kept in lockstep with the fields above BY HAND: a field added
+      // there and forgotten here reads `undefined` at runtime on every farm
+      // that has never saved this block. `screenOffTimeoutMs` (plan 125 §4.2)
+      // and `keepAwake: 'always'` (plan 125 §3.3) are here for exactly that
+      // reason.
+      .default({ disableAnimations: true, keepAwake: 'always', screenOffTimeoutMs: 1800000, standbyScreenOff: false, rotation: 'device', textInput: 'auto' })
       .meta(ui({ title: 'Before a job runs', group: 'Power & readiness' })),
     autoReconnect: z
       .boolean()
@@ -2228,11 +2292,44 @@ export const FarmSettingsSchema = z.object({
         .default(8)
         .describe('How many devices may be held hot (session alive, encoder running) at once. Hot devices open instantly but the encoder costs device CPU and battery.')
         .meta(ui({ title: 'Max hot devices', kind: 'count' })),
-      defaultDesired: ReadinessSchema.default('asleep')
+      /**
+       * **The default moved `'asleep'` → `'awake'` in plan 125 §3.1.** The
+       * owner's instruction was direct: the default must be on.
+       *
+       * This is a genuine change of product character and is worth defending.
+       * A device farm's phones exist to be looked at and driven; a fleet that
+       * goes dark five minutes after you look away optimises for a cost
+       * (battery) that a permanently-powered rack does not pay, and against
+       * the thing the product is for. Plan 45 §3.7 described the old
+       * behaviour approvingly — "sleeps five minutes after you navigate away"
+       * — and it reads very differently from inside a sealed phone-farm box
+       * where waking a device by hand means opening the box.
+       *
+       * `'awake'` and not `'hot'` (plan 125 §3.2): `maxHot` above defaults to
+       * 8, so a `'hot'` default on a 12-device farm would leave four phones
+       * `blocked: 'hot_budget_full'` — a farm that boots into a partly-failed
+       * state, with the failure worded as a budget error. `'awake'` has no
+       * cap.
+       *
+       * **An existing farm is not touched by this**, by the same mechanism as
+       * `prep.keepAwake` above: `createFarmSettingsStore`
+       * (`packages/core/src/settings/farm-settings.ts`) writes a FULLY
+       * MATERIALISED `FarmSettings` into the `farm_settings` row the first
+       * time a farm boots, so every farm that already exists has its own
+       * literal `'asleep'` stored and re-reads that, never this default. And
+       * a device already enrolled keeps the `desiredReadiness` column it was
+       * admitted with — `desiredOf`/`staticReadinessFallback`
+       * (`packages/core/src/device/readiness.ts`) still read a NULL column as
+       * `'asleep'`, so a row predating readiness entirely is left where it is
+       * rather than being woken by a schema edit. Only a fresh farm's freshly
+       * admitted device gets `'awake'` (plan 125 §5 step 125.2's migration
+       * note, §8's "flipping a product default" risk).
+       */
+      defaultDesired: ReadinessSchema.default('awake')
         .describe('Readiness a newly enrolled device starts at.')
         .meta({ title: 'Default device readiness' }),
     })
-    .default({ maxHot: 8, defaultDesired: 'asleep' })
+    .default({ maxHot: 8, defaultDesired: 'awake' })
     .meta({
       title: 'Device readiness',
       description: 'How many devices may be held warm at once, and what a newly enrolled device starts at.',

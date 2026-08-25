@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { eq } from 'drizzle-orm'
 import type { AdbClient } from '@enkaku/adb'
 import type { SessionManager } from '@enkaku/session'
-import type { DeviceReadiness } from '@enkaku/protocol'
+import { CapturedPowerStateSchema, type DeviceReadiness } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../db'
 import { devices } from '../db/schema'
 import { createLogger } from '../util/logger'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createAwakePolicy } from './awake-policy'
 import { createDeviceStateMachine } from './state-machine'
 import { createReadinessManager, type ReadinessManager } from './readiness'
 
@@ -25,17 +27,80 @@ function seedDevice(db: ReturnType<typeof openDb>['db'], overrides: Partial<{ st
     .run()
 }
 
-/** Every adb call succeeds instantly — nothing here touches a real device. */
-function fakeAdbClient(execCalls: string[]): AdbClient {
+interface FakeAdbOpts {
+  /**
+   * What `dumpsys power | grep -m1 mWakefulness` reports (plan 125 §3.6).
+   * `null` makes the probe THROW, which is how acceptance criterion 5 gets
+   * exercised: an unanswerable question must answer `unknown`, never `off`.
+   */
+  wakefulness?: string | null
+  /** Every exec parks here before answering — the barrier the boot-sweep concurrency test counts arrivals on. */
+  park?: () => Promise<void>
+}
+
+/**
+ * Every adb call succeeds instantly — nothing here touches a real device.
+ *
+ * It keeps per-serial STATE for the two power settings, because plan 125's
+ * writes are only honest if a `settings put` changes what the next `settings
+ * get` returns: `applyScreenOffTimeout`/`applyStayOn` (`@enkaku/session`'s
+ * `power.ts`) report `applied` only after reading the value back, so a fake
+ * with no state would report every write `refused` and the wake path here
+ * would prove nothing.
+ */
+function fakeAdbClient(execCalls: string[], opts: FakeAdbOpts = {}): AdbClient {
+  const state = new Map<string, { timeout: string; stayOn: string }>()
+  const stateFor = (serial: string) => {
+    let s = state.get(serial)
+    if (!s) {
+      s = { timeout: '60000', stayOn: '0' }
+      state.set(serial, s)
+    }
+    return s
+  }
+  const ok = (stdout = '') => ({ stdout, stderr: '', exitCode: 0 })
   return {
-    exec: async (_serial: string, cmd: string) => {
+    exec: async (serial: string, cmd: string) => {
       execCalls.push(cmd)
-      if (cmd.startsWith('dumpsys window')) return 'isKeyguardShowing=false'
-      return ''
+      if (opts.park) await opts.park()
+      const s = stateFor(serial)
+      if (cmd.startsWith('settings get system screen_off_timeout')) return ok(s.timeout)
+      if (cmd.startsWith('settings get global stay_on_while_plugged_in')) return ok(s.stayOn)
+      if (cmd.startsWith('settings put system screen_off_timeout')) {
+        // `shellQuote`d on the wire; a real device shell strips the quotes.
+        s.timeout = (cmd.split(' ').pop() ?? '').replace(/'/g, '') || s.timeout
+        return ok()
+      }
+      if (cmd.startsWith('svc power stayon')) {
+        const token = cmd.split(' ').pop()
+        s.stayOn = token === 'true' ? '7' : token === 'usb' ? '2' : '0'
+        return ok()
+      }
+      if (cmd.startsWith('dumpsys power')) {
+        const w = opts.wakefulness === undefined ? 'Awake' : opts.wakefulness
+        if (w === null) throw new Error('adb: device offline')
+        return ok(`  mWakefulness=${w}`)
+      }
+      if (cmd.startsWith('dumpsys window')) return ok('isKeyguardShowing=false')
+      return ok()
     },
     execOut: async () => new Uint8Array(),
     connectDevice: async () => '',
+    listDevices: async () => [],
+    // Read by the boot sweep to clamp its own ceiling against the live adb
+    // lane width (plan 125 §4.4) — the same `client.stats()` shape
+    // `battery.ts`/`health.ts` already read for their bounded passes.
+    stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
   } as unknown as AdbClient
+}
+
+/**
+ * Drains every pending microtask chain. Nothing in these tests uses a real
+ * timer, so one macrotask boundary is enough to run a fire-and-forget chain
+ * (`start()`'s boot sweep, a `release()`'s reconcile) to completion.
+ */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 /**
@@ -79,13 +144,36 @@ function fakeSessionManager() {
   return { sessions, acquireCalls, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
 }
 
-function setUp(opts: { maxHot?: number; withSessions?: boolean } = {}) {
+function setUp(
+  opts: {
+    maxHot?: number
+    withSessions?: boolean
+    /**
+     * Plan 125 §5 step 125.3 wired `awakePolicy` into the real manager
+     * (`daemon.ts`), so it is ON by default here too — a test fixture that
+     * differed from production on the one dependency this step added would
+     * hide exactly the defects it exists to catch. `false` selects the
+     * deliberately-degraded no-policy path documented on
+     * `ReadinessManagerDeps.awakePolicy`.
+     */
+    withAwakePolicy?: boolean
+    adb?: FakeAdbOpts
+    /** Mirrors `daemon.ts`'s device-status hook: every state transition reconciles (plan 125 §4.4's reconnect path). */
+    reconcileOnStatusChange?: boolean
+  } = {},
+) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const execCalls: string[] = []
-  const client = fakeAdbClient(execCalls)
-  const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+  const client = fakeAdbClient(execCalls, opts.adb)
+  const states = createDeviceStateMachine({
+    db,
+    log: createLogger('test'),
+    onChange: (deviceId) => {
+      if (opts.reconcileOnStatusChange) void readiness.reconcile(deviceId)
+    },
+  })
   const leases: LeaseManager = createLeaseManager({
     states,
     jobStore: { expiredRunning: () => [] } as never,
@@ -97,12 +185,14 @@ function setUp(opts: { maxHot?: number; withSessions?: boolean } = {}) {
   const events: { deviceId: string; actor: string | null; from: string; to: string }[] = []
   const { sessions, acquireCalls, isLive } = fakeSessionManager()
   const maxHot = opts.maxHot ?? 8
+  const awakePolicy = createAwakePolicy({ db, client: () => client, log: createLogger('test') })
   const readiness: ReadinessManager = createReadinessManager({
     db,
     client: () => client,
     sessions: () => (opts.withSessions === false ? null : sessions),
     leases,
     maxHot: () => maxHot,
+    awakePolicy: () => (opts.withAwakePolicy === false ? null : awakePolicy),
     broadcast: (deviceId, r) => broadcasts.push({ deviceId, readiness: r }),
     record: (e) => events.push(e),
     log: createLogger('test'),
@@ -110,12 +200,17 @@ function setUp(opts: { maxHot?: number; withSessions?: boolean } = {}) {
   return { db, states, leases, readiness, execCalls, broadcasts, events, acquireCalls, isLive }
 }
 
+/** The observation a healthy fake device produces — spelled out once so the expectations below stay readable. */
+const OBSERVED_ON = { state: 'on' as const, reason: 'mWakefulness=Awake', observedAt: expect.any(Number) as unknown as number }
+
 describe('ReadinessManager.get / actual — derivation order (plan 43 §4.3, §7)', () => {
   test('offline beats everything: asleep, blocked offline, even if desired is hot', () => {
     const { db, readiness } = setUp()
     seedDevice(db, { status: 'offline', desiredReadiness: 'hot' })
     const r = readiness.get(D1)
-    expect(r).toEqual({ desired: 'hot', actual: 'asleep', blocked: 'offline', since: expect.any(Number) })
+    // `observed: null` — nothing has probed this device, which is a different
+    // statement from a probe that ran and found the panel dark (plan 125 §4.2).
+    expect(r).toEqual({ desired: 'hot', actual: 'asleep', blocked: 'offline', since: expect.any(Number), observed: null })
   })
 
   test('a live session means hot, regardless of desired', async () => {
@@ -230,7 +325,7 @@ describe('ReadinessManager — the hot budget (plan 43 §3.5, §7)', () => {
     db.insert(devices).values({ id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'idle' }).run()
 
     const r1 = await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
-    expect(r1).toEqual({ desired: 'hot', actual: 'hot', blocked: null, since: expect.any(Number) })
+    expect(r1).toEqual({ desired: 'hot', actual: 'hot', blocked: null, since: expect.any(Number), observed: OBSERVED_ON })
 
     const r2 = await readiness.set('d2', 'hot', { userId: 'u1', clientId: null })
     expect(r2.desired).toBe('hot')
@@ -350,5 +445,336 @@ describe('ReadinessManager — the readiness hold counts as a Plan 42 session su
     await Promise.resolve()
     await Promise.resolve()
     expect(readiness.actual(D1)).toBe('asleep')
+  })
+})
+
+/* ------------------------------------------------------------------------ *
+ * Plan 125 step 125.3 — readiness observes, reconnects, and sweeps at boot.
+ * ------------------------------------------------------------------------ */
+
+describe('ReadinessManager — the awake policy is WIRED, so the persisted writes happen (plan 125 §3.3, §0.2)', () => {
+  test('a wake issues the persisted screen_off_timeout write AND records the device’s original first', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'idle' })
+
+    await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
+
+    // The order is the whole point of §0.2 rule 1: the phone is in a sealed
+    // box, so what it had BEFORE we touched it is captured before the first
+    // write, or the write does not happen at all.
+    const readIdx = execCalls.indexOf('settings get system screen_off_timeout')
+    const writeIdx = execCalls.indexOf("settings put system screen_off_timeout '1800000'")
+    expect(readIdx).toBeGreaterThanOrEqual(0)
+    expect(writeIdx).toBeGreaterThan(readIdx)
+    // `svc power stayon` (the pre-125 runtime hold) still rides along.
+    expect(execCalls).toContain('svc power stayon true')
+
+    // And the capture landed in the column `restore` reads (plan 125 §4.2).
+    const stored = db.select().from(devices).where(eq(devices.id, D1)).get()?.powerCapture
+    expect(CapturedPowerStateSchema.parse(stored)).toMatchObject({ screenOffTimeoutMs: 60_000, stayOnWhilePluggedIn: '0' })
+  })
+
+  test('with NO policy wired the persisted timeout write is withheld — a refusal, not a silent degradation', async () => {
+    const { db, readiness, execCalls } = setUp({ withAwakePolicy: false })
+    seedDevice(db, { status: 'idle' })
+
+    await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
+
+    // Nothing owns the capture, so nothing may overwrite the device's own
+    // value (`wakeDevice`'s own `refused` branch). The pre-125 behaviour —
+    // the runtime nudge and `svc power stayon` — is untouched.
+    expect(execCalls.some((c) => c.startsWith('settings put system screen_off_timeout'))).toBe(false)
+    expect(execCalls).toContain('svc power stayon true')
+    expect(db.select().from(devices).where(eq(devices.id, D1)).get()?.powerCapture ?? null).toBeNull()
+  })
+})
+
+describe('ReadinessManager — `observed`, beside `actual` and never instead of it (plan 125 §3.6, §4.2, acceptance #5)', () => {
+  test('nothing has been probed yet: `observed` is null, and `actual` keeps its own meaning', () => {
+    const { db, readiness } = setUp()
+    seedDevice(db, { status: 'idle' })
+    const r = readiness.get(D1)
+    expect(r.observed).toBeNull()
+    expect(r.actual).toBe('asleep')
+  })
+
+  test('reconcile probes the phone and carries the answer on the wire, beside `actual`', async () => {
+    const { db, readiness, broadcasts } = setUp()
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+
+    await readiness.reconcile(D1)
+
+    const last = broadcasts.at(-1)!.readiness
+    expect(last.observed).toEqual(OBSERVED_ON)
+    // Both fields survive: `actual` is still the bookkeeping value every other
+    // module reasons about, and it is NOT replaced by the observation (§4.2).
+    expect(last.actual).toBe('awake')
+  })
+
+  test('a probe that cannot run reaches the client as `unknown` WITH a reason — never collapsed into `off` (acceptance #5)', async () => {
+    const { db, readiness, broadcasts } = setUp({ adb: { wakefulness: null } })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+
+    await readiness.reconcile(D1)
+
+    const observed = broadcasts.at(-1)!.readiness.observed!
+    expect(observed.state).toBe('unknown')
+    expect(observed.reason).toContain('probe')
+    // The assertion that matters: `unknown` must never be worded, stored or
+    // broadcast as `off`, the same discipline plan 89 §3.5 applies to
+    // `unavailable` and `deriveHealth` applies to `unverified`.
+    expect(observed.state).not.toBe('off')
+    expect(broadcasts.every((b) => b.readiness.observed?.state !== 'off')).toBe(true)
+  })
+
+  test('an unrecognised wakefulness token is `unknown`, not `off`', async () => {
+    const { db, readiness } = setUp({ adb: { wakefulness: 'Bananas' } })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(readiness.get(D1).observed?.state).toBe('unknown')
+  })
+
+  test('a genuinely dark panel DOES read `off` — `unknown` is not a blanket excuse for never answering', async () => {
+    const { db, readiness } = setUp({ adb: { wakefulness: 'Asleep' } })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+    await readiness.reconcile(D1)
+    expect(readiness.get(D1).observed?.state).toBe('off')
+  })
+
+  test('a device that goes offline loses its stale observation to `unknown`, never to `off`', async () => {
+    const { db, readiness, states } = setUp()
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(readiness.get(D1).observed?.state).toBe('on')
+
+    states.apply(D1, 'DEVICE_DISCONNECTED')
+    await readiness.reconcile(D1)
+
+    // Keeping the previous `on` would be an inference presented as fact about
+    // a phone that has left the farm (plan 125 §0.3); `off` would be a claim
+    // nobody checked. `unknown` with the reason is the only honest answer.
+    expect(readiness.get(D1).observed).toEqual({ state: 'unknown', reason: 'the device is offline', observedAt: expect.any(Number) })
+  })
+
+  test('observe() is on demand and ignores the reconcile cache — an operator who asks gets a fresh answer', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    const afterReconcile = execCalls.filter((c) => c.startsWith('dumpsys power')).length
+    expect(afterReconcile).toBe(1)
+
+    // A second reconcile inside the cache window costs nothing...
+    await readiness.reconcile(D1)
+    expect(execCalls.filter((c) => c.startsWith('dumpsys power')).length).toBe(1)
+
+    // ...but an explicit ask always pays for a fresh probe.
+    const observed = await readiness.observe(D1)
+    expect(observed.state).toBe('on')
+    expect(execCalls.filter((c) => c.startsWith('dumpsys power')).length).toBe(2)
+  })
+
+  test('with no policy wired, `observed` stays null (never asked) and observe() still answers `unknown`, never `off`', async () => {
+    const { db, readiness } = setUp({ withAwakePolicy: false })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(readiness.get(D1).observed).toBeNull()
+
+    const observed = await readiness.observe(D1)
+    expect(observed.state).toBe('unknown')
+    expect(observed.reason).toContain('no awake policy')
+  })
+})
+
+describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §4.4, §0.2)', () => {
+  test('an awake device that blips offline and comes back is woken again, driven ONLY by the status transition daemon.ts hooks', async () => {
+    // `reconcileOnStatusChange` is the fixture's copy of `daemon.ts`'s
+    // device-status hook. Nothing in this test calls `reconcile` by hand
+    // after the setup wake, because nothing in production does either: if the
+    // wiring were missing, the phone would simply stay dark — and it lives in
+    // a sealed box where staying dark is unrecoverable (§0.2).
+    const { db, readiness, states, execCalls } = setUp({ reconcileOnStatusChange: true })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+
+    await readiness.reconcile(D1)
+    expect(readiness.actual(D1)).toBe('awake')
+    const wakesAfterFirst = execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length
+    expect(wakesAfterFirst).toBe(1)
+
+    states.apply(D1, 'DEVICE_DISCONNECTED')
+    await flush()
+    expect(readiness.get(D1)).toMatchObject({ desired: 'awake', actual: 'asleep', blocked: 'offline' })
+
+    states.apply(D1, 'DEVICE_CONNECTED')
+    await flush()
+
+    expect(readiness.get(D1)).toMatchObject({ desired: 'awake', actual: 'awake', blocked: null })
+    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(2)
+  })
+
+  test('a device desired asleep is NOT woken when it reconnects', async () => {
+    const { db, readiness, states, execCalls } = setUp({ reconcileOnStatusChange: true })
+    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+
+    states.apply(D1, 'DEVICE_DISCONNECTED')
+    await flush()
+    states.apply(D1, 'DEVICE_CONNECTED')
+    await flush()
+
+    expect(readiness.actual(D1)).toBe('asleep')
+    expect(execCalls).not.toContain('input keyevent KEYCODE_WAKEUP')
+  })
+})
+
+describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', () => {
+  function seedFarm(db: ReturnType<typeof openDb>['db'], specs: { id: string; status: string; desired: string | null }[]) {
+    for (const spec of specs) {
+      db.insert(devices)
+        .values({
+          id: spec.id,
+          stableId: `stable-${spec.id}`,
+          serial: `SER-${spec.id}`,
+          label: `Phone ${spec.id}`,
+          status: spec.status,
+          desiredReadiness: spec.desired,
+        })
+        .run()
+    }
+  }
+
+  test('wakes every device whose desired is not asleep, and leaves the asleep ones alone', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedFarm(db, [
+      { id: 'a', status: 'idle', desired: 'awake' },
+      { id: 'b', status: 'idle', desired: 'hot' },
+      { id: 'c', status: 'idle', desired: 'asleep' },
+      { id: 'd', status: 'idle', desired: null }, // never set — `desiredOf` reads it as asleep
+    ])
+
+    readiness.start()
+    await flush()
+
+    expect(readiness.actual('a')).toBe('awake')
+    expect(readiness.actual('b')).toBe('hot')
+    expect(readiness.actual('c')).toBe('asleep')
+    expect(readiness.actual('d')).toBe('asleep')
+    // Exactly one phone was physically nudged: `a`. `b` reached `hot` through
+    // a session, and `c`/`d` were never touched at all.
+    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(1)
+  })
+
+  test('an offline or quarantined device is SKIPPED with a reason, and no adb call is made against it', async () => {
+    const { db, readiness, execCalls, broadcasts } = setUp()
+    seedFarm(db, [
+      { id: 'off', status: 'offline', desired: 'awake' },
+      { id: 'quar', status: 'quarantined', desired: 'hot' },
+    ])
+
+    readiness.start()
+    await flush()
+
+    expect(readiness.get('off')).toMatchObject({ desired: 'awake', actual: 'asleep', blocked: 'offline' })
+    expect(readiness.get('quar')).toMatchObject({ desired: 'hot', actual: 'asleep', blocked: 'quarantined' })
+    // The reason is on the wire, not only in a log line.
+    expect(readiness.get('off').observed).toEqual({ state: 'unknown', reason: 'the device is offline', observedAt: expect.any(Number) })
+    expect(readiness.get('quar').observed).toEqual({ state: 'unknown', reason: 'the device is quarantined', observedAt: expect.any(Number) })
+    expect(execCalls).toEqual([])
+    // Skipped once and reported once — not retried in a loop, which is the
+    // timer this module refuses to grow (§3.7).
+    expect(broadcasts.filter((b) => b.deviceId === 'off').length).toBe(1)
+  })
+
+  test('it is bounded: never more than four devices in flight, however big the farm', async () => {
+    // A barrier every fake exec parks on, so "how many devices is the sweep
+    // working on right now" is directly countable rather than inferred.
+    let waiters: (() => void)[] = []
+    const park = () => new Promise<void>((resolve) => waiters.push(resolve))
+    const releaseAll = () => {
+      const pending = waiters
+      waiters = []
+      for (const resolve of pending) resolve()
+    }
+
+    const { db, readiness } = setUp({ adb: { park } })
+    seedFarm(
+      db,
+      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'idle', desired: 'awake' })),
+    )
+
+    readiness.start()
+    let peak = 0
+    for (let i = 0; i < 2000; i++) {
+      await flush()
+      if (waiters.length === 0) break
+      peak = Math.max(peak, waiters.length)
+      releaseAll()
+    }
+
+    // Each parked exec is one device's reconcile mid-flight, so this IS the
+    // concurrency. An unbounded `Promise.all` over ten devices would read 10.
+    expect(peak).toBeLessThanOrEqual(4)
+    expect(peak).toBeGreaterThan(1)
+    expect(Array.from({ length: 10 }, (_, i) => readiness.actual(`p${i}`))).toEqual(Array(10).fill('awake'))
+  })
+
+  test('it runs ONCE: a second start() sweeps nothing', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedFarm(db, [{ id: 'a', status: 'idle', desired: 'awake' }])
+
+    readiness.start()
+    await flush()
+    const after = execCalls.length
+    expect(after).toBeGreaterThan(0)
+
+    readiness.start()
+    await flush()
+    expect(execCalls.length).toBe(after)
+  })
+
+  test('stop() during a sweep stops waking phones the core is walking away from', async () => {
+    let waiters: (() => void)[] = []
+    const park = () => new Promise<void>((resolve) => waiters.push(resolve))
+    const releaseAll = () => {
+      const pending = waiters
+      waiters = []
+      for (const resolve of pending) resolve()
+    }
+
+    const { db, readiness } = setUp({ adb: { park } })
+    seedFarm(
+      db,
+      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'idle', desired: 'awake' })),
+    )
+
+    readiness.start()
+    await flush()
+    readiness.stop()
+    for (let i = 0; i < 2000; i++) {
+      releaseAll()
+      await flush()
+      if (waiters.length === 0) break
+    }
+
+    // The four devices already in flight finish; the rest are abandoned.
+    const woken = Array.from({ length: 10 }, (_, i) => readiness.actual(`p${i}`)).filter((r) => r !== 'asleep').length
+    expect(woken).toBeLessThanOrEqual(4)
+  })
+})
+
+describe('ReadinessManager — the no-timer rule survives plan 125 (readiness.ts’s own §3.7 claim)', () => {
+  test('the module source contains no setTimeout/setInterval', () => {
+    // A structural assertion against the source, the way
+    // `adb-server-control.test.ts` asserts its one-call-site rule: the
+    // module's header comment CLAIMS "This module starts no
+    // `setTimeout`/`setInterval` of its own anywhere below — search it and
+    // there is none", and plan 125 §4.4 added a boot sweep that would have
+    // been very natural to write as an interval. This is that search, run on
+    // every CI push instead of by hand.
+    const source = readFileSync(new URL('./readiness.ts', import.meta.url), 'utf8')
+    const code = source
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('*') && !line.trimStart().startsWith('//') && !line.trimStart().startsWith('/*'))
+      .join('\n')
+    expect(code).not.toMatch(/setTimeout\s*\(/)
+    expect(code).not.toMatch(/setInterval\s*\(/)
   })
 })

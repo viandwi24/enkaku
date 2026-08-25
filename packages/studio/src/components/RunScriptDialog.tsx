@@ -25,6 +25,7 @@ import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import {
   Button,
+  DeviceName,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -1033,8 +1034,16 @@ export function RunScriptDialog({
           {locked ? (
             <div className="rounded-lg border bg-surface-2 px-3 py-2">
               <p className="rack-label mb-0.5">running on</p>
-              <p className="text-[13px]">
-                {locked.label}
+              {/* Plan 124 §4.4, step 124.3 — the locked-device readout. This
+                  is the one line telling the operator which phone the script
+                  is about to run on, and it sat one row above a stableId that
+                  nobody reads off a rack; the number is the identifier they
+                  DO read, off the phone's own label. `<DeviceName>` keeps it
+                  a dimmed span rather than folding it into the label (§3.2).
+                  The script `<Select>` above is deliberately untouched here —
+                  plan 124 §4.5 converts it to a `Combobox` in its own step. */}
+              <p className="flex items-center text-[13px]">
+                <DeviceName number={locked.number} label={locked.label} />
                 <span className="readout ml-2 text-[11.5px] text-fg-subtle">{locked.stableId}</span>
               </p>
             </div>

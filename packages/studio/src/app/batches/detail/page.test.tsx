@@ -345,3 +345,76 @@ describe('BatchDetailPage — outcome, skipped, and retry (plan 93 step 93.11)',
     expect(screen.queryByText('Download all')).toBeNull()
   })
 })
+
+/**
+ * Plan 124 §3.7, §4.4 Group D, step 124.4 — this page names a device in three
+ * places and each takes a different form of the rule, which is the whole
+ * reason it resolves through one `deviceNameOf` helper:
+ *
+ * - the jobs table's device cell, `<DeviceName>`'s two spans (§3.2);
+ * - `SkippedGroups`, which takes `{ number, label }` apart because
+ *   `NamedOutcome` composes them itself (step 124.3);
+ * - the artifacts table, whose `deviceLabel` arrives ALREADY composed from
+ *   `api/batches.ts` (step 124.5) and must therefore be rendered verbatim.
+ *
+ * That last one is the trap this file pins: wrapping it again reads
+ * `#7 #7 Galaxy A15`.
+ */
+describe('BatchDetail — the device number (plan 124 §4.4 Group D)', () => {
+  const devices = [
+    { id: 'device-1', label: 'Galaxy A15', stableId: 'stable-1', status: 'idle', tags: [], number: 7 },
+  ]
+
+  test('the jobs table names the device with its number, as two nodes', async () => {
+    setSearchParams({ id: 'batch-1' })
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+      '/api/devices*': { body: { items: devices, nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('Galaxy A15')).toBeTruthy())
+    expect(screen.getAllByText('#7').length).toBe(1)
+  })
+
+  test('an artifact row renders the SERVER-composed label verbatim — never "#7 #7 …"', async () => {
+    setSearchParams({ id: 'batch-1' })
+    const pullBatch = { ...batch, scriptId: 'internal:pull', scriptName: null, scriptVersion: null }
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch: pullBatch, jobs: [job] } },
+      '/api/devices*': { body: { items: devices, nextCursor: null, total: 1 } },
+      '/api/batches/batch-1/artifacts': {
+        body: {
+          items: [
+            {
+              artifactId: 'art-1',
+              jobId: 'job-1',
+              deviceId: 'device-1',
+              // Exactly what `formatDeviceLabel` puts on the wire.
+              deviceLabel: '#7 Galaxy A15',
+              stableId: 'stable-1',
+              filename: 'report.txt',
+              sizeBytes: 128,
+              createdAt: 0,
+              contentUrl: '/api/artifacts/art-1/content',
+            },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('report.txt')).toBeTruthy())
+    expect(screen.getByText('#7 Galaxy A15')).toBeTruthy()
+    expect(screen.queryAllByText(/#7 #7/).length).toBe(0)
+  })
+
+  test('a device with no number renders its bare label — no stray "#" (criterion 7)', async () => {
+    setSearchParams({ id: 'batch-1' })
+    renderWithApi(<BatchDetailPage />, {
+      '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+      '/api/devices*': { body: { items: [{ ...devices[0], number: null }], nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('Galaxy A15')).toBeTruthy())
+    // `/^#\d/`, not `/^#/`: a batch's jobs table opts into the `seq` column,
+    // whose HEADER is the literal `#`. That is a column title, not a device
+    // number, and it is there whether or not any device has one.
+    expect(screen.queryAllByText(/^#\d/).length).toBe(0)
+  })
+})

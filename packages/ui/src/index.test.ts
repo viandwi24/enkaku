@@ -44,6 +44,16 @@ describe('the barrel keeps the behaviour layer §3.3 promises', () => {
     'formatUsd',
     // The one helper 111.1 did ship.
     'cn',
+    // Naming a device, and finding one (plan 124 §4.1–§4.3). These are on the
+    // list for the same reason as everything above it: a plugin's tab names
+    // devices, and if these three stop resolving from `@enkaku/ui` the plugin
+    // does not fail to build — it fails in an operator's browser, on a farm
+    // that has already accepted the package.
+    'formatDeviceName',
+    'deviceSearchTerms',
+    'matchesDeviceQuery',
+    'DeviceName',
+    'Combobox',
   ] as const
 
   for (const name of REQUIRED) {

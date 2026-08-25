@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  Combobox,
   ConfirmDialog,
+  DeviceName,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -26,6 +28,8 @@ import {
   TableRow,
   Textarea,
   cn,
+  deviceSearchTerms,
+  formatDeviceName,
   useAction,
 } from '@enkaku/ui'
 import {
@@ -48,7 +52,7 @@ import {
   type Path,
   type PlanRow,
 } from './api'
-import { useLoader } from './bits'
+import { pathOptions, useLoader } from './bits'
 
 /**
  * Groups — plan 122 §5 step 122.8, "the tab itself": group CRUD, the §4.6
@@ -93,8 +97,25 @@ function activeConflictsFor(group: Group, allGroups: readonly Group[]): { group:
   return out
 }
 
+/**
+ * The one place this screen turns a device id into something an operator can
+ * read — the duplicate-device refusal, the conflict sentences, the deactivate
+ * report and the conflict matrix's tooltip all go through it.
+ *
+ * It composes the number (plan 124 §3.2's string half, `formatDeviceName`)
+ * because every one of those call sites needs a `string`: they are prose and
+ * `.join(', ')` lists, not table cells. Before this, a group that overlapped
+ * two of the owner's identically-named phones said *"Jadwal-1 conflicts with
+ * active Jadwal-2 on SM-F721U1, SM-F721U1"*, which names the collision
+ * without naming either device in it.
+ *
+ * The id remains the fallback for a device the fleet no longer lists (one
+ * that has been forgotten since the group was written) — an unresolvable id
+ * shown raw is honest; inventing a name for it would not be.
+ */
 function labelFor(deviceId: string, devices: readonly FleetDeviceRow[]): string {
-  return devices.find((d) => d.deviceId === deviceId)?.label ?? deviceId
+  const device = devices.find((d) => d.deviceId === deviceId)
+  return device ? formatDeviceName(device.number, device.label || device.stableId) : deviceId
 }
 
 /** `describeConflicts` (`service/groups.ts`) — §4.6's own sentence, reproduced client-side for the preview's `decision.conflicts` (which carries no pre-built message, unlike `ActivateConflict`). Kept local for the same reason `conflictingDeviceIds`/`activeConflictsFor` above are: no service module import into the UI bundle. */
@@ -263,18 +284,36 @@ function EditGroupDialog({
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
               <div className="flex gap-1.5">
-                <Select value={newDeviceId} onValueChange={setNewDeviceId}>
-                  <SelectTrigger className="h-8 w-56 text-[12px]">
-                    <SelectValue placeholder="Add a device…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {addableDevices.map((d) => (
-                      <SelectItem key={d.deviceId} value={d.deviceId}>
-                        {d.label || d.stableId}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {/*
+                  Plan 124 §0.2 called this "the worst surface in the product",
+                  and it was: the ONE dropdown in the whole repo that lists
+                  every enrolled device without going through `DevicePicker`.
+                  It was a Radix `Select` of `{d.label || d.stableId}` at
+                  `w-56` — no number, and no search beyond Radix's
+                  single-keystroke jump, so finding one phone among the
+                  owner's 45 near-identically named ones was a scroll hunt.
+
+                  Now a `Combobox` (§4.5): the row reads `#7 Galaxy A15` with
+                  the stableId as its hint, and `deviceSearchTerms` feeds the
+                  filter every string the device can legitimately be
+                  recognised by — so typing `7` finds `#7` (and not `#17`),
+                  and so does `#7`, `Galaxy` or a fragment of the stableId.
+                */}
+                <Combobox
+                  value={newDeviceId}
+                  onValueChange={setNewDeviceId}
+                  options={addableDevices.map((d) => ({
+                    value: d.deviceId,
+                    label: formatDeviceName(d.number, d.label || d.stableId),
+                    hint: d.stableId,
+                    keywords: deviceSearchTerms(d),
+                  }))}
+                  placeholder="Add a device…"
+                  searchPlaceholder="Search number, label, or stable id…"
+                  emptyText={addableDevices.length === 0 ? 'Every enrolled device is already in this group.' : 'No device matches.'}
+                  ariaLabel="Add a device to this group"
+                  triggerClassName="h-8 w-56 text-[12px]"
+                />
                 <Button size="sm" variant="outline" disabled={newDeviceId === ''} onClick={addEntry}>
                   Add
                 </Button>
@@ -294,33 +333,57 @@ function EditGroupDialog({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {entries.map((e) => (
-                      <TableRow key={e.deviceId} className={cn(dupes.includes(e.deviceId) && 'bg-led-danger/5')}>
-                        <TableCell>
-                          <div className="font-medium">{labelFor(e.deviceId, devices)}</div>
-                          {e.lanIp === '' ? <div className="text-[11px] text-led-warn">No LAN address known — this entry will be blocked until one is (§3.4).</div> : <div className="readout text-[11px] text-fg-muted">{e.lanIp}</div>}
-                        </TableCell>
-                        <TableCell>
-                          <Select value={e.pathId} onValueChange={(v) => updatePath(e.deviceId, v)}>
-                            <SelectTrigger className="h-8 w-full text-[12px]">
-                              <SelectValue placeholder="Choose a path" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {paths.map((p) => (
-                                <SelectItem key={p.id} value={p.id}>
-                                  {p.table}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          <Button variant="ghost" size="sm" onClick={() => removeEntry(e.deviceId)}>
-                            Remove
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {entries.map((e) => {
+                      // The fleet row behind this entry, or `undefined` for a device
+                      // that has been forgotten since the group was written — the
+                      // one case that has no number and no label to render.
+                      const deviceRow = devices.find((d) => d.deviceId === e.deviceId)
+                      return (
+                        <TableRow key={e.deviceId} className={cn(dupes.includes(e.deviceId) && 'bg-led-danger/5')}>
+                          <TableCell>
+                            {/*
+                              `DeviceName` (the two-span visual form, plan 124
+                              §3.2) rather than `labelFor`'s string, because this
+                              IS a table cell — the number reads as a quiet
+                              identifier beside the name. `deviceRow` is
+                              `undefined` for a device the fleet no longer lists,
+                              which is the one case that falls back to the raw
+                              id and renders no number at all.
+                            */}
+                            <DeviceName number={deviceRow?.number ?? null} label={deviceRow ? deviceRow.label || deviceRow.stableId : e.deviceId} className="font-medium" />
+                            {e.lanIp === '' ? <div className="text-[11px] text-led-warn">No LAN address known — this entry will be blocked until one is (§3.4).</div> : <div className="readout text-[11px] text-fg-muted">{e.lanIp}</div>}
+                          </TableCell>
+                          <TableCell>
+                            {/*
+                              A `Combobox`, not a `Select` (plan 124 §4.5) — this
+                              picker is rendered once per group entry, and a real
+                              router carries 10–50 egress paths, so a 20-device
+                              group rendered 20 unsearchable lists of them.
+                              `pathOptions` is shared with the Assignments tab so
+                              the two cannot drift; `unassigned` is deliberately
+                              NOT offered here, because `save()` below refuses an
+                              entry with no path — an option that cannot survive
+                              saving has no business in the list.
+                            */}
+                            <Combobox
+                              value={e.pathId}
+                              onValueChange={(v) => updatePath(e.deviceId, v)}
+                              options={pathOptions({ paths, selectedPathId: e.pathId })}
+                              placeholder="Choose a path"
+                              searchPlaceholder="Filter paths…"
+                              emptyText="No path matches."
+                              ariaLabel={`Egress path for ${labelFor(e.deviceId, devices)}`}
+                              triggerClassName="h-8 w-full text-[12px]"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button variant="ghost" size="sm" onClick={() => removeEntry(e.deviceId)}>
+                              Remove
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               </div>

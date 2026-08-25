@@ -132,6 +132,36 @@ Tailwind v4 generates utilities straight from the token names: `--color-surface`
 
 **A `provisioning` row gets a live indicator and elapsed time, plus a matching overlay on the device popup's screen panel (plan 106 §5 step 106.7, 2026-08-17)** — the owner's own follow-up: *"bisa ngga kalau preparation lagi diinstall itu ada loadingnya di screen castingnya? terus di popupnya juga ada gitu... progress installing preparationnya?"* Closing this honestly required fixing a real, pre-existing gap first: `devices.preparation[componentId].state` never actually became `'provisioning'` in either install engine (`preparation/runner.ts`/`agent-provisioner.ts` both wrote only the settled FINAL state), despite the schema's own doc comment describing that value as "a pass is in flight right now" since 106.1. Fixed with an in-memory-only `runningSince` map on each engine — deliberately never persisted to `devices.preparation` and never routed through the transition-event contract (reverting a persisted intermediate value on a deferred pass, or a stale row left behind by a core crash mid-install, is exactly the "two writers, one fact" hazard 106.5's own migration exists to avoid) — overlaid onto `GET /:id/preparation` at READ time only. **No byte progress exists for an install and none was invented**: `ui-server-component.ts` installs through one opaque `hostAdb(['install', …])` CLI call with no `onProgress`, and `agent-provisioner.ts`'s own pass has no tick either — both surfaces show an indeterminate spinner plus elapsed time, never a percentage, and both say so directly in their own code comments so a future pass does not "improve" this into a fabricated number. `packages/studio/src/lib/use-preparation.ts` (new, shared by this panel and the screen-panel overlay so the two surfaces read one source, never two independently-computed ideas of "is this installing right now") polls `GET /:id/preparation` every 3s — the stated fallback interval, because there is a real WS event for a pass FINISHING (`device.preparation`/`device.agent`) but deliberately none for one STARTING — and additionally refetches immediately on that completion event. The screen-panel overlay (`LiveView.tsx`'s new `provisioning` prop, set only by `DevicePopup.tsx`, never by a Wall tile or `DeviceCard`) is a small, non-blocking pill (`pointer-events-none`, no `bg-bg/95` cover, nothing disabled) naming the component and its elapsed time — plan 106 §2's "a readiness signal, never a gate" applies to how it is DISPLAYED as much as to how the device behaves, since a phone streams fine while a component installs and an operator may be watching for exactly that reason. It disappears the instant nothing is `provisioning` any more, including a landing on `failed` — deliberately: the overlay never restates a multi-line adb error over the video, it just stops, which is what points an operator at this very Preparation section for the reason.
 
+## Naming a device — the number and the name, always both
+
+*(plan 124 §1, §3.1, §3.2, §3.8; the number itself is plan 89 §3.3)*
+
+**A device is never named without its number.** Every dialog title, toast, table cell, tile, list row, `aria-label` and joined list renders `#7 Galaxy A15`, not `Galaxy A15`. This is not decoration: a farm buys twenty of the same phone, so `label` alone identifies nothing. The plugin that first hit this wrote the complaint down in its own source — the owner's farm printed `SM-F721U1, SM-F721U1, SM-F721U1` and the operator could not tell which one had failed.
+
+Two symbols, both from `@enkaku/ui`, and no third way:
+
+- `formatDeviceName(number, label)` → `'#7 Galaxy A15'` — for anything that needs a `string`: titles, toasts, `aria-label`s, `.join(', ')` lists, search haystacks.
+- `<DeviceName number label />` — for anything visual: rows, cells, tiles. Two spans, so the number reads as a quiet identifier beside the name rather than competing with it.
+
+Three rules that follow, each of which has already been broken once:
+
+1. **The number composes; it never enters the label.** Nothing writes `#7` into `devices.label`, and nothing parses it back out. A payload that names a device carries `number` as its own nullable field beside `label` — never a pre-baked string — because a pre-baked string double-renders the moment a caller also holds a `DeviceInfo`, and `#7 #7 Galaxy A15` is worse than no number at all.
+2. **Compose exactly once, at the render site.** If you are unsure whether a value arrived composed, check what builds the row. Two payloads whose field is spelled `label` are not thereby the same payload.
+3. **`number` is nullable and the formatter is total.** A device whose reservation was released renders its bare label — no stray `#`, no `#null`, no layout shift.
+
+`packages/studio/src/design-rules.test.ts` asserts mechanically that the device-naming files import one of the two symbols. It cannot prove every render site is right, and it is not meant to — it stops a file silently losing the import during a refactor, which is exactly how the rule drifted the first time.
+
+## Long lists get a search box
+
+*(plan 124 §1, §3.3, §4.5)*
+
+**A control that can list more entries than a farm has clusters carries a search box.** In practice: every list of devices, every list of proxies, every list of scripts. Not the cluster pickers, not a connection-medium select, not a four-value schema enum — below ten items a search box is noise.
+
+- A `Select` over a growing set is the wrong control. Use `<Combobox>` from `@enkaku/ui` (cmdk over a popover): type-to-filter, arrow keys, Enter to choose, Escape to dismiss and change nothing. Radix `Select` has no type-ahead — only a single-keystroke jump — so a fleet-sized `Select` is a scroll hunt.
+- A table or a checkbox column gets a plain `Input` above it, filtering client-side, with a live `N of M` count.
+- **A device search matches four ways**: the number (both `7` and `#7`), the label, the stableId, and a tag. Use `matchesDeviceQuery` rather than writing a fifth version of that predicate — an operator standing at the rack reads the number off the phone, not the label off the screen.
+- **A filter must not lie about its scope.** "Select all" beside an active filter means the filtered set, and says so. A search over a paginated list says it searched what is loaded, and does not imply the server was asked.
+
 ## Multi-device reports — outcome first, grouped by reason
 
 Every report that shows what happened across more than one device — the Mirror rail's `ok/total`, a batch's `skipped`/`failed` split, the fleet command console's `RunReport`, `POST /:id/stop`'s `refusedDeviceIds` — has converged on one shape by trial rather than by plan, and it is worth stating as a rule so the next one does not invent a fourth style:

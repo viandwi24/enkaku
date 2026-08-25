@@ -26,9 +26,27 @@ import { cleanup, renderWithApi } from '@/lib/test/render'
  */
 mock.module('@/components/LiveView', () => ({
   LiveView: () => <div data-testid="live-view-stub" />,
+  // `WallTile` and `DevicePopup` both import this named binding (plan 125
+  // §4.7, step 125.11 — the click→first-paint mark), and both are in this
+  // file's real module graph, so the mock has to export it or the dynamic
+  // `import('./page')` below fails to link. A no-op: nothing here measures.
+  markLiveViewIntent: () => {},
 }))
 
-let wsListener: ((m: { type: string; payload: unknown }) => void) | null = null
+/**
+ * A SET, not a single slot. The real `ws.on` fans every message out to every
+ * registered handler, and as of plan 125 §4.3 this page has two of them:
+ * `page.tsx`'s own, and `Wall.tsx`'s `stream.ended` latch.
+ *
+ * The single-slot double this file used to keep silently broke the moment the
+ * second subscriber appeared — the later `ws.on` overwrote the earlier
+ * listener, so `emit()` reached only `Wall`'s handler (which ignores every
+ * type but `stream.ended`) and the page's own `job.status` handler was never
+ * called. The production code was right; the double was too simple, and it
+ * failed in the one direction a test double must never fail: quietly, and
+ * looking like a product bug.
+ */
+const wsListeners = new Set<(m: { type: string; payload: unknown }) => void>()
 mock.module('@/lib/ws', () => ({
   // `page.tsx` also statically imports `DevicePopup`, which imports
   // `AssistDialog` (`instanceof` check in its own catch branch) — the whole
@@ -45,9 +63,10 @@ mock.module('@/lib/ws', () => ({
   },
   ws: {
     on: (cb: (m: { type: string; payload: unknown }) => void) => {
-      wsListener = cb
+      wsListeners.add(cb)
+      // Unsubscribe removes ONLY this handler — the real `ws.on`'s contract.
       return () => {
-        wsListener = null
+        wsListeners.delete(cb)
       }
     },
     send: () => {},
@@ -58,10 +77,10 @@ mock.module('@/lib/ws', () => ({
   newId: () => 'test-id',
 }))
 
-/** Delivers a fake `ws` message to whatever listener the page registered, wrapped in `act` (same pattern `page.test.tsx` uses). */
+/** Delivers a fake `ws` message to EVERY listener currently registered, wrapped in `act` (same pattern `page.test.tsx` uses). */
 function emit(msg: { type: string; payload: unknown }): void {
   act(() => {
-    wsListener?.(msg)
+    for (const listener of [...wsListeners]) listener(msg)
   })
 }
 
@@ -69,6 +88,10 @@ const { default: Dashboard } = await import('./page')
 
 afterEach(() => {
   cleanup()
+  // Unmounting runs every effect cleanup, so the set should already be empty;
+  // clearing it anyway keeps one test's leaked subscriber from reaching the
+  // next one's `emit`.
+  wsListeners.clear()
 })
 
 const device = {

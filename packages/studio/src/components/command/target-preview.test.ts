@@ -111,4 +111,35 @@ describe('describeCommandTarget', () => {
     expect(describeCommandTarget({ deviceIds: ['a', 'b'] }, devices, [])).toBe('A, B')
     expect(describeCommandTarget({ deviceIds: ['a', 'b', 'x', 'y'] }, devices, [])).toBe('A, B, x +1 more')
   })
+
+  /**
+   * Plan 124 §4.4 Group D, §3.2, criterion 6, step 124.4 — this summary is
+   * what a command-history row and a saved command are LABELLED with, so two
+   * identically modelled phones produced two history rows an operator could
+   * not tell apart. It is a `.join(', ')` sentence, hence the `string` form of
+   * the rule rather than `<DeviceName>`.
+   */
+  test('each device name carries its number (plan 124 §4.4)', () => {
+    const devices = [
+      device({ id: 'a', label: 'SM-F721U1', number: 7 } as Partial<DeviceInfo>),
+      device({ id: 'b', label: 'SM-F721U1', number: 12 } as Partial<DeviceInfo>),
+    ]
+    expect(describeCommandTarget({ deviceIds: ['a', 'b'] }, devices, [])).toBe('#7 SM-F721U1, #12 SM-F721U1')
+  })
+
+  test('a device with no number keeps its bare label — no stray "#", no "#null" (criterion 7)', () => {
+    const devices = [device({ id: 'a', label: 'A', number: null } as Partial<DeviceInfo>), device({ id: 'b', label: 'B', number: 3 } as Partial<DeviceInfo>)]
+    expect(describeCommandTarget({ deviceIds: ['a', 'b'] }, devices, [])).toBe('A, #3 B')
+  })
+
+  test('an id no loaded device answers to stays a bare id — never "#undefined"', () => {
+    const devices = [device({ id: 'a', label: 'A', number: 7 } as Partial<DeviceInfo>)]
+    expect(describeCommandTarget({ deviceIds: ['a', 'gone'] }, devices, [])).toBe('#7 A, gone')
+  })
+
+  test('the cluster and tag branches are untouched — neither names a device', () => {
+    const clusters = [{ id: 'c1', name: 'Rack A', description: null, createdAt: 0, deviceCount: 3, usableCount: 3 }]
+    expect(describeCommandTarget({ clusterId: 'c1' }, [device({ id: 'a', number: 7 } as Partial<DeviceInfo>)], clusters)).toBe('cluster Rack A')
+    expect(describeCommandTarget({ tags: ['pool:smoke'] }, [device({ id: 'a', number: 7 } as Partial<DeviceInfo>)], [])).toBe('pool:smoke')
+  })
 })

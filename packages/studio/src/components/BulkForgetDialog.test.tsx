@@ -21,6 +21,7 @@ function makeDevice(id: string, label: string): DeviceInfo {
     id,
     stableId: id,
     serial: id,
+    number: Number(id.replace(/\D/g, '')) || null,
     label,
     androidVersion: '15',
     apiLevel: 35,
@@ -65,6 +66,11 @@ describe('BulkForgetDialog', () => {
     )
     fireEvent.click(getByText('Forget selected'))
     await waitFor(() => expect(getByText('forgotten')).toBeTruthy())
+    // Plan 124 §4.4, step 124.3 — the per-device result row names the phone
+    // with its number, since that row is the ONLY place a bulk forget says
+    // which of several identical handsets actually left the fleet.
+    expect(getByText('#1')).toBeTruthy()
+    expect(getByText('Phone A')).toBeTruthy()
   })
 })
 

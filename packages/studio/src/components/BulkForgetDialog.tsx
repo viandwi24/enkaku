@@ -6,7 +6,7 @@ import { z } from 'zod'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, api } from '@enkaku/ui'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, DeviceName, api } from '@enkaku/ui'
 
 interface Outcome {
   ok: boolean
@@ -131,7 +131,14 @@ export function BulkForgetDialog({
               const r = results[d.id]
               return (
                 <li key={d.id} className="flex items-center justify-between gap-3 px-3 py-1.5">
-                  <span className="min-w-0 truncate">{d.label}</span>
+                  {/* Plan 124 §4.4, step 124.3 — the per-device result list.
+                      `<DeviceName>` rather than `formatDeviceName` because
+                      this is a row with room for the two-span form, and the
+                      number should read as the quiet identifier beside the
+                      name (§3.2). It is the ONLY thing distinguishing the
+                      three `forgotten`/`skipped` lines a rack of identical
+                      phones produces. */}
+                  <DeviceName number={d.number} label={d.label} className="min-w-0" />
                   {!r ? (
                     <span className="shrink-0 text-fg-subtle">{busy ? 'working…' : 'pending'}</span>
                   ) : r.ok ? (

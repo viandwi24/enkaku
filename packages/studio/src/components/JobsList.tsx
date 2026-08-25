@@ -5,7 +5,7 @@ import { useMemo } from 'react'
 import { JobCancelResponseSchema, JobsPageResponseSchema, type JobInfo } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button, TableCell, TableHead, Tooltip, TooltipContent, TooltipTrigger, api, useAction, duration, relativeTime } from '@enkaku/ui'
+import { Button, DeviceName, TableCell, TableHead, Tooltip, TooltipContent, TooltipTrigger, api, useAction, duration, relativeTime } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**
@@ -76,8 +76,21 @@ export interface JobsListProps {
    * data shape, because that is what actually differs between the call sites:
    * the Jobs page holds `DeviceInfo[]`, the job detail page holds `DeviceRef`,
    * and a batch holds its own map. Defaults to the raw id.
+   *
+   * Plan 124 §4.4 Group D, step 124.4 — `number` was added here rather than
+   * pre-composing `'#7 Galaxy A15'` into `name` at the two call sites that
+   * pass this. The device cell below is a TABLE CELL, and §3.2 is explicit
+   * that a cell renders the two-part `<DeviceName>` form so the number can be
+   * dimmed beside the label; a pre-composed string would have flattened both
+   * halves into one weight and lost that. It is also what keeps this file
+   * honest against §3.8's import check — the composition happens here, in the
+   * component that owns the cell, through the one shared symbol.
+   *
+   * Optional and nullable so the shape stays lenient for a caller resolving
+   * an id it has no device for (a forgotten device, a raw id): `null` renders
+   * the bare label, no `#`, no layout shift (criterion 7).
    */
-  deviceLabel?: (id: string) => { name: string; ident: string }
+  deviceLabel?: (id: string) => { number?: number | null; name: string; ident: string }
   empty: { icon?: React.ReactNode; title: string; description: string; action?: React.ReactNode }
   /** Re-fetches from the first page when this changes (a status filter, a search box). */
   resetKey?: unknown
@@ -266,19 +279,33 @@ export function JobsList({
               </TableCell>
             )}
 
-            {columns.device && (
-              <TableCell className="text-[12.5px]">
-                <Link
-                  href={`/device?id=${encodeURIComponent(j.deviceId)}`}
-                  className="group inline-flex flex-col leading-tight hover:text-accent"
-                >
-                  <span className="group-hover:underline">{(deviceLabel?.(j.deviceId) ?? { name: j.deviceId.slice(0, 8) }).name}</span>
-                  <span className="readout text-[10.5px] text-fg-subtle">
-                    {deviceLabel?.(j.deviceId).ident ?? j.deviceId}
-                  </span>
-                </Link>
-              </TableCell>
-            )}
+            {columns.device && (() => {
+              // Resolved ONCE per row (plan 124 §4.4 Group D): the previous
+              // shape called `deviceLabel` twice for the same id — once for
+              // the name, once for the ident — and every call site walks its
+              // whole `DeviceInfo[]` with a `.find`. Three fields now come
+              // off one lookup instead of two.
+              const resolved = deviceLabel?.(j.deviceId)
+              return (
+                <TableCell className="text-[12.5px]">
+                  <Link
+                    href={`/device?id=${encodeURIComponent(j.deviceId)}`}
+                    className="group inline-flex flex-col leading-tight hover:text-accent"
+                  >
+                    {/* `<DeviceName>` rather than a joined string (plan 124
+                        §3.2): this is a cell, so the number reads as a quiet
+                        identifier beside the label, and a device with no
+                        number renders the bare label with no stray `#`. */}
+                    <DeviceName
+                      number={resolved?.number ?? null}
+                      label={resolved?.name ?? j.deviceId.slice(0, 8)}
+                      className="group-hover:underline"
+                    />
+                    <span className="readout text-[10.5px] text-fg-subtle">{resolved?.ident ?? j.deviceId}</span>
+                  </Link>
+                </TableCell>
+              )
+            })()}
 
             <TableCell>
               <div className="flex flex-wrap items-center gap-1.5">

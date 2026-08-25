@@ -255,6 +255,95 @@ describe('ViewRenderer — selection', () => {
   })
 })
 
+/**
+ * Plan 124 §4.5, step 124.8 — the table filter.
+ *
+ * Two things are being pinned here and they matter in different ways. The
+ * first is ordinary: it filters, it counts, and it finds a device by number,
+ * label or stableId whether or not the author declared a column for them. The
+ * second is the one the plan singles out — **the empty state must say the
+ * filter ran over the rows already LOADED**, because a plugin table is a page
+ * of a keyset scan and "nothing matches" would be a claim about the plugin's
+ * stored data that this component cannot make.
+ */
+describe('ViewRenderer — the table filter (plan 124 §4.5)', () => {
+  /** One device per row, `rows: 'entry'`, so N devices is exactly N rows. */
+  const FLEET_VIEW = view({
+    title: 'Accounts',
+    data: { kind: 'kv.scan', key: 'accounts', rows: 'entry', includeMissing: true },
+    table: { rowKey: '$device.label', selectable: true, columns: [{ field: '$device.label', header: 'Device' }] },
+    // A toolbar action, only because the "N rows selected" readout lives in the
+    // toolbar row — without one there is no place for the count to render.
+    toolbar: ['sync'],
+  })
+
+  function fleet(count: number) {
+    return {
+      items: Array.from({ length: count }, (_, i) => ({
+        deviceId: `dev-${i + 1}`,
+        stableId: `SER${i + 1}`,
+        label: 'SM-F721U1',
+        status: 'online',
+        clusterId: null,
+        number: i + 1,
+        entry: null,
+      })),
+      nextCursor: null,
+    }
+  }
+
+  test('a small table gets no filter box at all — below ten rows it is noise (§3.3)', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy())
+    expect(screen.queryAllByLabelText('Filter rows').length).toBe(0)
+  })
+
+  test('above ten rows the box appears, with a live N of M count', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={FLEET_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: fleet(12) } })
+    await waitFor(() => expect(screen.getAllByText('SM-F721U1').length).toBe(12))
+    expect(screen.getByText('12 of 12 rows')).toBeTruthy()
+
+    // The device number is searchable even though no column declares it, and
+    // `7` finds `#7` — the whole point of the plan (§1 goal 3, criterion 1).
+    fireEvent.change(screen.getByLabelText('Filter rows'), { target: { value: '#7' } })
+    await waitFor(() => expect(screen.getByText('1 of 12 rows')).toBeTruthy())
+    expect(screen.getAllByText('SM-F721U1').length).toBe(1)
+
+    // The stableId matches too, as a substring.
+    fireEvent.change(screen.getByLabelText('Filter rows'), { target: { value: 'ser1' } })
+    await waitFor(() => expect(screen.getByText('4 of 12 rows')).toBeTruthy())
+  })
+
+  test('no match says it searched the rows LOADED, never that the plugin has nothing', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={FLEET_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: fleet(12) } })
+    await waitFor(() => expect(screen.getByText('12 of 12 rows')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('Filter rows'), { target: { value: 'nothing-like-this' } })
+    await waitFor(() => expect(screen.getByText('No match in the rows loaded')).toBeTruthy())
+    expect(screen.getByText(/already loaded/)).toBeTruthy()
+    expect(screen.getByText(/does not ask/)).toBeTruthy()
+
+    // The box survives its own empty result, or the filter could not be cleared.
+    fireEvent.click(screen.getByText('Clear the filter'))
+    await waitFor(() => expect(screen.getByText('12 of 12 rows')).toBeTruthy())
+  })
+
+  test('select-all covers the FILTERED set and says so, and a row the filter hides leaves the selection', async () => {
+    renderWithApi(<ViewRenderer plugin="tiktok" view={FLEET_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: fleet(12) } })
+    await waitFor(() => expect(screen.getByText('12 of 12 rows')).toBeTruthy())
+
+    fireEvent.click(screen.getByLabelText('Select every row'))
+    await waitFor(() => expect(screen.getByText(/12 rows selected/)).toBeTruthy())
+
+    // Narrowing to one row drops the other eleven from the selection: an
+    // action must never run on a device the operator has filtered away.
+    fireEvent.change(screen.getByLabelText('Filter rows'), { target: { value: '#7' } })
+    await waitFor(() => expect(screen.getByText(/1 row selected/)).toBeTruthy())
+    expect(screen.queryAllByLabelText('Select every row').length).toBe(0)
+    expect(screen.getAllByLabelText('Select every row the filter shows').length).toBe(1)
+  })
+})
+
 describe('ViewRenderer — the toolbar and the row actions', () => {
   test('a toolbar button carries the action’s own label', async () => {
     renderWithApi(<ViewRenderer plugin="tiktok" view={ACCOUNTS_VIEW} actions={ACTIONS} />, { [SCAN_PATH]: { body: TWO_DEVICES } })

@@ -89,3 +89,25 @@ describe('AskAnAgentDialog — smoke render', () => {
     await waitFor(() => expect(screen.getByText('No agents yet')).toBeTruthy())
   })
 })
+
+
+  /**
+   * Plan 124 §4.4, step 124.3 — `deviceLabel` stays a plain `string` prop and
+   * the caller composes it with `formatDeviceName()`. What this pins is the
+   * other half of that contract: the value is rendered VERBATIM at every
+   * mention, so a composed name never arrives twice (`#7 #7 Galaxy A15`),
+   * which is exactly the failure plan 124 §10's note on `MirrorMember`
+   * records for the popup's own member list.
+   */
+describe('AskAnAgentDialog — the device name arrives composed (plan 124 §4.4)', () => {
+  test('the title, the scope sentence and the prompt placeholder all name the device verbatim', async () => {
+    renderWithApi(
+      <AskAnAgentDialog deviceId="dev-1" deviceLabel="#7 Galaxy A15" open={true} onOpenChange={() => undefined} />,
+      { '/api/agents': { body: { agents: [] } } },
+    )
+    await waitFor(() => expect(screen.getByText('Ask an agent about #7 Galaxy A15')).toBeTruthy())
+    expect(screen.getByText(/can touch #7 Galaxy A15 and no other phone/)).toBeTruthy()
+    expect(screen.getByPlaceholderText(/What should it check on #7 Galaxy A15\?/)).toBeTruthy()
+    expect(document.body.textContent).not.toContain('#7 #7')
+  })
+})

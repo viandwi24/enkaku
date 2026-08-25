@@ -63,6 +63,8 @@ import {
   api,
   cn,
   describeApiError,
+  formatDeviceName,
+  matchesDeviceQuery,
   useAction,
 } from '@enkaku/ui'
 import { Wall } from '@/components/wall/Wall'
@@ -76,6 +78,7 @@ import { fetchAllPages, fetchDevices, fetchDiscoveredDevices, type DiscoveredDev
 import { isAdmin, useAuth } from '@/lib/auth'
 import { summariseSweepReport } from '@/lib/network-scan'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
+import { setWallpaperLabelMode, summariseLabelApply } from '@/lib/labelling'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { ws } from '@/lib/ws'
 
@@ -246,7 +249,21 @@ function DashboardView() {
   // now reports through the same `OutcomeSummary`/`SkippedGroups` shape
   // every other bulk surface in this plan uses, held here rather than in a
   // toast so the names stay on screen until dismissed.
-  const [wakeSleepReport, setWakeSleepReport] = useState<{ verb: string; okCount: number; total: number; refused: NamedOutcome[] } | null>(null)
+  // `skipped` (plan 125 §3.5, §4.3) is for devices never even asked —
+  // "Wake N devices" on the Wall refuses an offline or quarantined phone up
+  // front, since the core would refuse it anyway (plan 43 §3.4, corrected by
+  // plan 49 §3.1). They are REPORTED rather than filtered away:
+  // `docs/design.md`'s "no count without names" applies to the ones we chose
+  // not to try just as much as to the ones that failed. Empty for every
+  // caller that has no such set, which is why `OutcomeSummary`'s `skipped`
+  // count below reads from it instead of a hardcoded 0.
+  const [wakeSleepReport, setWakeSleepReport] = useState<{
+    verb: string
+    okCount: number
+    total: number
+    refused: NamedOutcome[]
+    skipped: NamedOutcome[]
+  } | null>(null)
   // Removal (plan 47 §4.5): a single-device dialog (row menu, offers Block
   // instead on refusal) and a bulk one for the multi-select toolbar.
   const [forgetTarget, setForgetTarget] = useState<DeviceInfo | null>(null)
@@ -312,7 +329,16 @@ function DashboardView() {
   // "stays open, shows what happened" shape `InstallBatchDialog` uses via
   // `OutcomeSummary`/`SkippedGroups` (docs/design.md's "Multi-device
   // reports" rule: outcome first, grouped by exact reason, always named).
-  const [labelsApplyReport, setLabelsApplyReport] = useState<{ counts: OutcomeCounts; failed: NamedOutcome[]; skipped: NamedOutcome[] } | null>(null)
+  // Plan 124 §4.6, step 124.6 — `title` was added when a SECOND action ("Set
+  // number as wallpaper") started reporting through this same dialog. Two
+  // dialogs rendering the identical `OutcomeSummary`/`SkippedGroups` pair
+  // under two different headings would be a copy; one field is not.
+  const [labelsApplyReport, setLabelsApplyReport] = useState<{
+    title: string
+    counts: OutcomeCounts
+    failed: NamedOutcome[]
+    skipped: NamedOutcome[]
+  } | null>(null)
   const { run, isPending } = useAction()
 
   const loadDiscovered = () => void fetchDiscoveredDevices().then(setDiscovered).catch(() => undefined)
@@ -329,6 +355,17 @@ function DashboardView() {
     loadDiscovered()
   }
 
+  /**
+   * The name and number of one selected device, for a bulk report row. The
+   * label stays BARE and the number rides beside it (plan 124 §4.4 Group F,
+   * and §10's `MirrorMember` note): `SkippedGroups` composes the two itself,
+   * so pre-composing here would print `#7` twice.
+   */
+  const outcomeNameOf = (id: string) => {
+    const found = devices?.find((d) => d.id === id)
+    return { label: found?.label ?? id, number: found?.number ?? null }
+  }
+
   const applyLabelsToSelected = () =>
     run(
       'apply-labels',
@@ -336,21 +373,73 @@ function DashboardView() {
       {
         failure: 'Could not apply labels',
         onSuccess: (res) => {
-          const deviceLabel = (id: string) => devices?.find((d) => d.id === id)?.label ?? id
-          const ok = res.results.filter((r) => r.state !== null && (r.state.state === 'applied' || r.state.state === 'off')).length
-          const failed: NamedOutcome[] = res.results
-            .filter((r) => r.state === null)
-            .map((r) => ({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: r.error ?? 'unknown error' }))
-          // `partial`/`unavailable`/`stale`/`unknown` are real, reported
-          // outcomes from the labelling service — not thrown errors — so
-          // they group under `skipped`, each carrying the service's OWN
-          // reason text verbatim (never invented here, plan 93 §3.15's rule).
-          const skipped: NamedOutcome[] = res.results
-            .filter((r) => r.state !== null && r.state.state !== 'applied' && r.state.state !== 'off')
-            .map((r) => ({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: r.state?.reason ?? (r.state?.state ?? 'not applied') }))
-          setLabelsApplyReport({ counts: { ok, failed: failed.length, skipped: skipped.length, total: res.total }, failed, skipped })
+          // Plan 124 §0.4, §4.6, step 124.6 — **this report used to count
+          // `state: 'off'` as ok.** The farm default IS `off`, so pressing
+          // "Apply labels" on 45 phones that had never been switched on wrote
+          // nothing, changed nothing, and reported 45 successes. The button
+          // keeps its meaning (apply each device's OWN current mode — it is
+          // not a mode switch, that is "Set number as wallpaper" below); what
+          // changed is that an `off` device is now a SKIPPED row saying
+          // `labelling is off for this device`, which is both true and
+          // actionable. The mapping itself moved to `lib/labelling.ts` so
+          // this page and the popup's own bulk report cannot disagree.
+          setLabelsApplyReport({ title: 'Apply labels', ...summariseLabelApply(res.results, res.total, outcomeNameOf) })
         },
       },
+    )
+
+  /**
+   * "Set number as wallpaper" over the whole selection (plan 124 §3.5, §4.6,
+   * step 124.6) — the fleet twin of the device popup's own row, and a
+   * different action from "Apply labels" beside it: this one CHANGES each
+   * selected device's labelling mode to `wallpaper` and then applies, where
+   * "Apply labels" applies whatever mode each device already has.
+   *
+   * One press is necessarily N+1 requests, because `PATCH /api/devices/:id`
+   * replaces the whole `settings` blob and there is no per-key patch (§3.5).
+   * `setWallpaperLabelMode` therefore reads each device before writing it —
+   * this page holds `DeviceInfo`s, which carry no `settings` at all — and
+   * `Promise.allSettled` keeps one device's refusal from blocking the rest,
+   * exactly as `wakeOrSleepSelected` below already does. Then ONE
+   * `POST /api/devices/labels/apply` for everything that got its mode set.
+   *
+   * Outcomes are grouped by the state the server reported, never flattened:
+   * `applied` is the only ok, and `partial`/`unavailable` keep the labelling
+   * service's own reason text.
+   */
+  const setWallpaperOnSelected = () =>
+    run(
+      'wallpaper-selected',
+      async () => {
+        const ids = selectedIds
+        const patched = await Promise.allSettled(ids.map((id) => setWallpaperLabelMode(id)))
+        const patchFailed: NamedOutcome[] = patched.flatMap((r, i) => {
+          const id = ids[i]
+          if (r.status === 'fulfilled' || !id) return []
+          return [{ deviceId: id, ...outcomeNameOf(id), reason: describeApiError(r.reason) }]
+        })
+        const applicable = ids.filter((_, i) => patched[i]?.status === 'fulfilled')
+        // `DeviceLabelsApplyBodySchema` requires at least one id — a run where
+        // every PATCH failed reports those failures instead of sending a
+        // request the server would reject for being empty.
+        const report =
+          applicable.length === 0
+            ? { counts: { ok: 0, failed: 0, skipped: 0, total: 0 }, failed: [] as NamedOutcome[], skipped: [] as NamedOutcome[] }
+            : summariseLabelApply(
+                (await api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: applicable } }))
+                  .results,
+                applicable.length,
+                outcomeNameOf,
+              )
+        setLabelsApplyReport({
+          title: 'Set number as wallpaper',
+          counts: { ...report.counts, failed: report.counts.failed + patchFailed.length, total: ids.length },
+          failed: [...report.failed, ...patchFailed],
+          skipped: report.skipped,
+        })
+        void load()
+      },
+      { failure: 'Could not set the number as wallpaper' },
     )
 
   const renumberFleet = () =>
@@ -569,9 +658,19 @@ function DashboardView() {
     // is exactly the "permanent tile space is the wrong place for it, search
     // is" trade the tile layout makes. `null` (USB, or a TCP device with no
     // known address yet) never matches, same as every other optional field here.
+    //
+    // The NUMBER joins it too, as of plan 124 §1 criterion 1 — and this box,
+    // of all of them, is the one that had been missing it. Every tile and row
+    // on this screen has led with `#7` since plan 89, so an operator reading a
+    // number off the phone in their hand and typing it here got "no devices"
+    // from the most-used search in the product. `matchesDeviceQuery` is the
+    // shared four-way predicate (number as `7` or `#7`, label, stableId, tag),
+    // so this box and `DevicePicker`'s can no longer disagree about what a
+    // query means; `serial` and `address` stay here beside it because they are
+    // this screen's own additions and belong to no other picker.
     if (q)
       list = list.filter(
-        (d) => d.label.toLowerCase().includes(q) || d.serial.toLowerCase().includes(q) || d.connection.address?.toLowerCase().includes(q),
+        (d) => matchesDeviceQuery(d, q) || d.serial.toLowerCase().includes(q) || d.connection.address?.toLowerCase().includes(q),
       )
     // AND semantics (plan 19 §4.3, §9.3) — the same rule GET /api/devices?tag=
     // applies server-side, so filtering here and filtering there never disagree.
@@ -809,7 +908,9 @@ function DashboardView() {
     // `device.status` broadcast the unquarantine triggers is what actually
     // updates the list, via `load()` below).
     run('unq-' + d.id, () => api(`/api/devices/${d.id}/unquarantine`, DeviceResponseSchema, { method: 'POST' }), {
-      success: `${d.label} is back in the queue`,
+      // Plan 124 §1 goal 1, §4.4 Group F — every toast that names a device
+      // names it with its number.
+      success: `${formatDeviceName(d.number, d.label)} is back in the queue`,
       failure: 'Could not return the device to the queue',
       onSuccess: () => void load(),
     })
@@ -817,12 +918,15 @@ function DashboardView() {
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
   const reconnectDevice = (d: DeviceInfo) =>
     run('reconnect-' + d.id, () => api(`/api/devices/${d.id}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }), {
-      failure: `Could not reconnect ${d.label}`,
+      // Plan 124 §1 goal 1, §4.4 Group F — the same four outcomes the popup's
+      // own Reconnect row reports, named the same way, with the number.
+      failure: `Could not reconnect ${formatDeviceName(d.number, d.label)}`,
       onSuccess: (outcome) => {
-        if (outcome.result === 'already-connected') toast.success(`${d.label} is already connected`)
-        else if (outcome.result === 'connected') toast.success(`${d.label} reconnected from ${outcome.address}`)
-        else if (outcome.result === 'not-found') toast.error(`Could not find ${d.label} on the network`, { description: 'It did not answer at any remembered address.' })
-        else toast.error(`Could not reconnect ${d.label}`, { description: outcome.detail })
+        const name = formatDeviceName(d.number, d.label)
+        if (outcome.result === 'already-connected') toast.success(`${name} is already connected`)
+        else if (outcome.result === 'connected') toast.success(`${name} reconnected from ${outcome.address}`)
+        else if (outcome.result === 'not-found') toast.error(`Could not find ${name} on the network`, { description: 'It did not answer at any remembered address.' })
+        else toast.error(`Could not reconnect ${name}`, { description: outcome.detail })
         void load()
       },
     })
@@ -841,17 +945,36 @@ function DashboardView() {
    * refused, with the server's own reason (`describeApiError`), never
    * invented or paraphrased.
    */
-  const wakeOrSleepSelected = async (desired: Readiness) => {
-    const ids = selectedIds
+  const wakeOrSleepSelected = (desired: Readiness) => wakeOrSleepDevices(desired, selectedIds, [])
+
+  /**
+   * The body of the above, taking its device set explicitly so the Wall's
+   * "Wake N devices" (plan 125 §3.5, §4.3 — the answer to plan 92 §9 Q2)
+   * reports through the SAME dialog rather than growing a fourth bulk
+   * pattern beside the three F15 already named. `skipped` are devices
+   * deliberately never asked (the Wall refuses an offline or quarantined
+   * phone up front); they count toward `total` because they were part of
+   * what the operator acted on, and they carry their own reason so the
+   * report names them instead of quietly shrinking.
+   */
+  const wakeOrSleepDevices = async (desired: Readiness, ids: readonly string[], skipped: NamedOutcome[]) => {
     const results = await Promise.allSettled(ids.map((id) => setDeviceReadiness(id, desired)))
     const okCount = results.filter((r) => r.status === 'fulfilled').length
     const refused: NamedOutcome[] = results.flatMap((r, i) => {
       if (r.status === 'fulfilled') return []
       const id = ids[i]
       if (!id) return []
-      return [{ deviceId: id, label: devices?.find((d) => d.id === id)?.label ?? id, reason: describeApiError(r.reason) }]
+      // Plan 124 §4.4 Group F — bare label plus the number as its own field;
+      // `SkippedGroups` composes the pair (see `outcomeNameOf` above).
+      return [{ deviceId: id, ...outcomeNameOf(id), reason: describeApiError(r.reason) }]
     })
-    setWakeSleepReport({ verb: desired === 'asleep' ? 'Sleep' : 'Wake', okCount, total: ids.length, refused })
+    setWakeSleepReport({
+      verb: desired === 'asleep' ? 'Sleep' : 'Wake',
+      okCount,
+      total: ids.length + skipped.length,
+      refused,
+      skipped,
+    })
   }
 
   return (
@@ -890,7 +1013,7 @@ function DashboardView() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name or serial…"
+                placeholder="Search number, name, or serial…"
                 aria-label="Search devices"
                 className="h-auto border-0 bg-transparent p-0 text-[12.5px] shadow-none focus-visible:ring-0"
               />
@@ -1298,6 +1421,21 @@ function DashboardView() {
             onDeviceContextMenu={handleDeviceContextMenu}
             focusId={focusId}
             onFocus={setFocus}
+            // "Wake N devices" (plan 125 §3.5, §4.3, answering plan 92 §9
+            // Q2). `Wall` owns the button and the target set — it is the
+            // component that knows which devices are on screen — and this
+            // page owns the requests and the report, so the outcome lands in
+            // the SAME `OutcomeSummary`/`SkippedGroups` dialog "Wake
+            // selected" already uses (plan 93 §3.15, step 93.11) rather than
+            // a second report shape. `target.wake` is the identical array
+            // the button counted.
+            onWakeVisible={(target) =>
+              void wakeOrSleepDevices(
+                'awake',
+                target.wake.map((d) => d.id),
+                target.skipped.map((s) => ({ deviceId: s.device.id, number: s.device.number ?? null, label: s.device.label, reason: s.reason })),
+              )
+            }
             minTileWidthPx={TILE_SIZE_PX[tileSize]}
           />
         ) : groups ? (
@@ -1471,6 +1609,26 @@ function DashboardView() {
               <Button size="sm" variant="outline" disabled={isPending('apply-labels')} onClick={() => void applyLabelsToSelected()}>
                 <Hash className="size-3.5" aria-hidden />
                 {isPending('apply-labels') ? 'Applying…' : 'Apply labels'}
+              </Button>
+              {/* The fleet twin of the device popup's own row (plan 124 §0.4,
+                  §4.6, step 124.6) — and a DIFFERENT action from "Apply
+                  labels" beside it, which is why both are here rather than
+                  one replacing the other: this one switches each selected
+                  device's labelling mode to `wallpaper` and then applies,
+                  while "Apply labels" applies whatever mode each device is
+                  already set to. Setting the mode is what an operator with a
+                  rack of unlabelled phones actually wants, and until this
+                  button it took six clicks per phone (§0.4).
+
+                  Never disabled on the selection's contents. The three local
+                  refusals the single-device row states (no number, offline,
+                  no guest agent) are knowable for ONE device; across N the
+                  server answers each one by name, in its own words, and the
+                  grouped report shows them — a client-side skip would replace
+                  those exact words with a guess. */}
+              <Button size="sm" variant="outline" disabled={isPending('wallpaper-selected')} onClick={() => void setWallpaperOnSelected()}>
+                <Hash className="size-3.5" aria-hidden />
+                {isPending('wallpaper-selected') ? 'Setting…' : 'Set number as wallpaper'}
               </Button>
               {/* Run command / Push file / Pull file (plan 93 §3.16, §4.8,
                   F15, step 93.11) — beside the existing Install, attaching
@@ -1689,12 +1847,12 @@ function DashboardView() {
                 counts={{
                   ok: wakeSleepReport.okCount,
                   failed: wakeSleepReport.refused.length,
-                  skipped: 0,
+                  skipped: wakeSleepReport.skipped.length,
                   total: wakeSleepReport.total,
                 }}
                 label={`${wakeSleepReport.verb} progress`}
               />
-              <SkippedGroups failed={wakeSleepReport.refused} skipped={[]} />
+              <SkippedGroups failed={wakeSleepReport.refused} skipped={wakeSleepReport.skipped} />
             </div>
           )}
           <DialogFooter>
@@ -1704,20 +1862,22 @@ function DashboardView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {/* "Apply labels"' own report (plan 89 §5 step 89.8) — the same
-          `OutcomeSummary`/`SkippedGroups` pair `InstallBatchDialog` uses,
-          stays open so nothing is lost the instant the call resolves.
-          `partial`/`unavailable`/`stale`/`unknown` group under `skipped`
-          with the labelling service's own reason text, never rounded up
-          into `ok`. */}
+      {/* The labelling report (plan 89 §5 step 89.8; plan 124 §4.6, step
+          124.6) — the same `OutcomeSummary`/`SkippedGroups` pair
+          `InstallBatchDialog` uses, stays open so nothing is lost the instant
+          the call resolves. `partial`/`unavailable`/`stale`/`unknown` group
+          under `skipped` with the labelling service's own reason text, and
+          `off` groups there too (plan 124's "Apply labels stops lying" fix) —
+          never rounded up into `ok`. Shared by BOTH toolbar actions that end
+          in a labelling apply; `title` says which one ran. */}
       <Dialog open={labelsApplyReport !== null} onOpenChange={(o) => !o && setLabelsApplyReport(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Apply labels — result</DialogTitle>
+            <DialogTitle>{labelsApplyReport?.title ?? 'Apply labels'} — result</DialogTitle>
           </DialogHeader>
           {labelsApplyReport && (
             <div className="space-y-3">
-              <OutcomeSummary counts={labelsApplyReport.counts} label="Apply labels progress" />
+              <OutcomeSummary counts={labelsApplyReport.counts} label={`${labelsApplyReport.title} progress`} />
               <SkippedGroups failed={labelsApplyReport.failed} skipped={labelsApplyReport.skipped} />
             </div>
           )}

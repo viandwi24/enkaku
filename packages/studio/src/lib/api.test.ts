@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { z } from 'zod'
 import { JobNodesResponseSchema, type WorkflowDoc } from '@enkaku/protocol'
 import { BadResponseError } from '@enkaku/ui'
-import { estimateWorkflowDuration, fetchAllPages } from './api'
+import { deviceRefLabel, estimateWorkflowDuration, fetchAllPages, type DeviceRef } from './api'
 
 /**
  * `fetchAllPages`'s optional parser (plan 95 §5 step 95.5, fixes F8): an
@@ -163,5 +163,51 @@ describe('estimateWorkflowDuration (plan 99 §3.11, §4.11, step 99.10)', () => 
     const est = await estimateWorkflowDuration(doc, () => 'id-a')
     expect(est.unknownNodes).toEqual(['a'])
     expect(est.totalMs).toBe(0)
+  })
+})
+
+/**
+ * Plan 124 §3.7, §4.4 Group D, step 124.4 — `deviceRefLabel` calls itself
+ * "the one place this formatting rule lives", and until step 124.5 put
+ * `number` on `DeviceRefSchema` it could not obey the rule it claimed to own.
+ * These pin the composition, including the two cases plan 124 criterion 7
+ * names as failures (`#null`, a stray `#`).
+ */
+describe('deviceRefLabel — the number composes (plan 124 §3.7)', () => {
+  const ref = (over: Partial<DeviceRef> = {}): DeviceRef => ({
+    id: 'dev-1',
+    label: 'Galaxy A15',
+    stableId: 'R5CW1234',
+    deleted: false,
+    number: 7,
+    ...over,
+  })
+
+  test('a live device reads "#7 Galaxy A15"', () => {
+    expect(deviceRefLabel(ref(), 'dev-1')).toBe('#7 Galaxy A15')
+  })
+
+  test('two identically labelled devices are told apart (criterion 6)', () => {
+    expect(deviceRefLabel(ref({ number: 7 }), 'x')).not.toBe(deviceRefLabel(ref({ number: 12 }), 'x'))
+  })
+
+  test('number null renders the bare label — no stray "#", no "#null" (criterion 7)', () => {
+    expect(deviceRefLabel(ref({ number: null }), 'dev-1')).toBe('Galaxy A15')
+  })
+
+  test('a device with no label falls back to its stableId, still numbered', () => {
+    expect(deviceRefLabel(ref({ label: null }), 'dev-1')).toBe('#7 R5CW1234')
+  })
+
+  test('a deleted device keeps its number — device_numbers survives forget() (plan 89 §3.2)', () => {
+    expect(deviceRefLabel(ref({ deleted: true }), 'dev-1')).toBe('#7 deleted device (R5CW1234)')
+  })
+
+  test('a deleted device that never had a number keeps the plan 47 wording verbatim', () => {
+    expect(deviceRefLabel(ref({ deleted: true, number: null }), 'dev-1')).toBe('deleted device (R5CW1234)')
+  })
+
+  test('an unresolved id still truncates, and never grows a "#"', () => {
+    expect(deviceRefLabel(undefined, 'abcdefgh-ijkl')).toBe('abcdefgh')
   })
 })

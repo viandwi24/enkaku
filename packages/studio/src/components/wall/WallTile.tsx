@@ -1,15 +1,17 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Ref } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { MoonStar, Play, ScreenShare } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
-import { LiveView } from '@/components/LiveView'
+import { LiveView, markLiveViewIntent } from '@/components/LiveView'
 import { explainQuarantine } from '@/components/DeviceCard'
 import { HolderBadge } from '@/components/HolderBadge'
-import { cn } from '@enkaku/ui'
+import { setDeviceReadiness } from '@/lib/readiness'
+import { Button, cn, describeApiError, formatDeviceName } from '@enkaku/ui'
 
 /**
  * How long a single click waits before it commits (plan 91 §3.11, F13). The
@@ -80,7 +82,28 @@ function isModifiedClick(e: React.MouseEvent): boolean {
  * through `wakeOrSleepSelected` before this step, so removing the on-tile
  * control cost no functionality, only the chrome duplicating it.
  *
- * Four screen states (Plan 92 §4.7):
+ * **Plan 125 §0.6, §3.5, §4.3 partially reverses that** — and it is worth
+ * being precise about which half. 101.8's rule was "no PERSISTENT chrome on
+ * a tile that is showing a picture", and that rule stands untouched: a live
+ * tile still carries nothing but the picture, the number, the name and the
+ * rail. What 125 restores is a Wake button **inside the screen-off
+ * placeholder**, where there is no picture to compete with and the tile is
+ * otherwise an inert rectangle. The field report this fixes (plan 125 §0.1
+ * report 1, owner, after three days on a real 12-device farm) is exactly the
+ * cost of relying on the context menu alone: *"I have to double-click each
+ * device to make it wake up … Do I really have to trigger a wake-up one by
+ * one? That takes forever."* Plan 92 §8 had promised this affordance was
+ * there — *"The tiles are explicitly 'Screen off' with a working Wake"* —
+ * and 101.8 made that sentence false without noticing. The context menu and
+ * the selection bar keep working exactly as they do today; this is a third
+ * route to the same `setDeviceReadiness(id, 'awake')`, not a replacement.
+ *
+ * Five screen states (Plan 92 §4.7; the first added by plan 125 §4.3):
+ *  - **stream error** — this device's session died server-side
+ *    (`stream.ended`, latched by `Wall.tsx` and handed down as
+ *    `streamError`): the picture STAYS mounted so `LiveView`'s own "Stream
+ *    stopped … Try again" overlay is what the operator sees. Checked before
+ *    `asleep`, which is the whole of the fix — see `rendersPicture` below.
  *  - `live`: streaming, at the `wall` quality profile (or shared as-is at
  *    `control` quality if a colleague is already driving the device — the
  *    server decides that, never this component).
@@ -88,8 +111,9 @@ function isModifiedClick(e: React.MouseEvent): boolean {
  *    neutral screen area, the whole tile already the "Show live" target
  *    (`onClick` below), with a small "Show live" glyph revealed on
  *    hover/focus.
- *  - **asleep** — a screen-off placeholder; waking it is reached through the
- *    context menu or the selection bar, not a button on the tile (see above).
+ *  - **asleep** — a screen-off placeholder carrying a compact Wake button
+ *    (plan 125 §3.5); the context menu and the selection bar still offer
+ *    the same action for a whole selection.
  *  - offline / quarantined: a static picture with the reason, never a blank
  *    rectangle.
  *
@@ -125,6 +149,7 @@ export function WallTile({
   focused = false,
   onFocus,
   rootRef,
+  streamError = null,
 }: {
   device: DeviceInfo
   runningJob?: JobInfo | null
@@ -158,6 +183,21 @@ export function WallTile({
    * already forwards `ref` to the underlying `<a>`.
    */
   rootRef?: Ref<HTMLAnchorElement>
+  /**
+   * The reason this device's session last died server-side, or `null`
+   * (plan 125 §0.5, §3.5, §4.3). Latched by `Wall.tsx` from the ONE
+   * `stream.ended` subscription it owns for the whole grid — never a
+   * per-tile WS listener, because a 40-tile wall would then register 40
+   * handlers for a message that concerns one of them.
+   *
+   * It is deliberately only a HINT, never an instruction: this component
+   * honours it solely to KEEP a picture that is already mounted (see
+   * `rendersPicture` below), never to mount one. That distinction is what
+   * stops the fix from becoming plan 92 F11/F12 all over again — a tile
+   * must never start a stream, and so never wake a phone, as a side effect
+   * of being looked at.
+   */
+  streamError?: string | null
 }) {
   const router = useRouter()
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -171,7 +211,112 @@ export function WallTile({
   const offline = device.status === 'offline'
   const quarantined = device.status === 'quarantined'
   const asleep = device.readiness.actual === 'asleep'
+  /**
+   * `readiness.observed` (plan 125 §3.6, §4.2, criterion 5), wired now that
+   * step 125.3 has landed the field.
+   *
+   * Surfaced ONLY where it DISAGREES with `actual`, and worded as an
+   * observation rather than a state. The disagreement is not hypothetical:
+   * `actual` is bookkeeping — `rawActual` returns `asleep` whenever no
+   * session is open and no keep-awake is applied — so a phone whose panel is
+   * genuinely lit reads `asleep` here. Plan 125 §0.3 is the whole finding.
+   *
+   * `unknown` is NOT rendered. It means "no probe succeeded", and showing it
+   * beside a tile that already says "Screen off" would read as confirmation
+   * of exactly the thing nobody checked — the lie `deriveHealth` refuses to
+   * tell when it reports `unverified`. Silence is the honest rendering of
+   * "we do not know"; the tile's own `actual`-derived state stands alone.
+   *
+   * `actual` still drives every decision (the live-set policy, this tile's
+   * own branches). `observed` is only ever shown to a human.
+   */
+  const observedDisagrees = asleep && device.readiness.observed?.state === 'on'
   const href = `/device?id=${encodeURIComponent(device.id)}`
+  // Plan 124 §3.1/§3.2, docs/design.md "Naming a device" — the number and the
+  // name, always both, for anything that needs a `string` (this tile's own
+  // toasts and the Wake button's `aria-label` below). `device.number` is
+  // `null` for a device with no reservation yet, which `formatDeviceName`
+  // already renders as the bare label rather than inventing a `#0`.
+  const deviceName = formatDeviceName(device.number ?? null, device.label)
+
+  /**
+   * Plan 125 §0.5, §3.5, §4.3 — **the branch order, and the whole of the
+   * "casting suddenly stops" fix.**
+   *
+   * What went wrong before this: a display error closes the session entry
+   * even while a tile is still subscribed (`packages/session/src/manager.ts`
+   * `onDisplayError` → `closeEntry`), the core broadcasts `stream.ended`,
+   * readiness reconciles the device down to `asleep`
+   * (`packages/core/src/device/readiness.ts`'s `rawActual`: no session open
+   * and no keep-awake applied ⇒ `asleep`), and this component's `asleep`
+   * branch — which used to be checked BEFORE `live` and before anything
+   * else — swapped the picture for an inert "Screen off" rectangle.
+   * `LiveView` already had a perfectly good "Stream stopped … Try again"
+   * overlay for precisely this; nobody ever saw it, because the component
+   * holding it was unmounted in the same commit. The operator was left with
+   * a dead end and no way back but a per-device double-click.
+   *
+   * The fix is ONE boolean, deliberately, rather than a second copy of
+   * `LiveView`'s overlay inside this file. `rendersPicture` is true when
+   * EITHER
+   *
+   *  a) the live set says this tile streams (`!asleep && live` — the
+   *     pre-existing rule, unchanged, including the F12 guard that an
+   *     `asleep` device never mounts a decoder), OR
+   *  b) a stream error is latched for this device AND the previous commit
+   *     was already showing the picture.
+   *
+   * Collapsing the two cases into one boolean — instead of two sibling
+   * ternary branches each rendering their own `<LiveView>` — is what makes
+   * the fix work at all. There is exactly ONE `<LiveView>` element in the
+   * tree below, at one position, with one set of props, so React reconciles
+   * it as an update rather than an unmount-and-remount when the device flips
+   * to `asleep`: the existing instance survives, keeps its own `stopped`
+   * state, and draws its own retry. The retry the product already shipped is
+   * what appears — not a paraphrase of it maintained in two places, and not
+   * a fresh `stream.start` that would wake a phone nobody asked to wake.
+   *
+   * Clause (b)'s second half is not belt-and-braces, it is the safety rule:
+   * a latched error may only ever KEEP a picture, never create one. Without
+   * it, a `stream.ended` for a device whose tile is budgeted (or one that
+   * went offline and came back with the latch still set) would MOUNT
+   * `LiveView` on a sleeping phone and start a session — exactly plan 92
+   * F11/F12, reintroduced through the back door.
+   */
+  const pictureMountedRef = useRef(false)
+  const rendersPicture = !focused && !offline && !quarantined && ((streamError !== null && pictureMountedRef.current) || (!asleep && live))
+  useEffect(() => {
+    pictureMountedRef.current = rendersPicture
+  })
+
+  const [waking, setWaking] = useState(false)
+  /**
+   * Plan 125 §3.5, §4.3 — the compact Wake on the screen-off placeholder.
+   * Calls the SAME server-authoritative endpoint the context menu and the
+   * selection bar already use (`setDeviceReadiness`, `@/lib/readiness`), so
+   * every refusal rule (plan 43 §3.4, corrected by plan 49 §3.1) stays in
+   * one place: the core's, not this tile's.
+   *
+   * No success toast. The tile itself is the feedback — "Screen off"
+   * becomes a picture — and a farm-sized wall that emits one toast per woken
+   * phone is the anonymous-summary problem plan 93 F15 already fixed once.
+   * A refusal DOES toast, named (`deviceName`) and carrying the server's own
+   * reason verbatim (`describeApiError`), never a paraphrase.
+   *
+   * `e.preventDefault()`/`stopPropagation()` because this button sits inside
+   * the tile's root `next/link`: without them a Wake would also fire the
+   * tile's click-to-select and navigate. Same guard the budgeted "Show live"
+   * button below has always carried.
+   */
+  const handleWake = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (waking) return
+    setWaking(true)
+    void setDeviceReadiness(device.id, 'awake')
+      .catch((err: unknown) => toast.error(`Could not wake ${deviceName}`, { description: describeApiError(err) }))
+      .finally(() => setWaking(false))
+  }
 
   // Plan 101 §5 step 101.7's own note: `AgentAlertChip` left this tile, but
   // the fact it flagged — an agent that failed, or one pinned to an outdated
@@ -235,6 +380,16 @@ export function WallTile({
       clearTimeout(clickTimer.current)
       clickTimer.current = null
     }
+    // Plan 125 §4.7, §5 step 125.11 — this is the click the cold-cast number
+    // is measured FROM, and this line is the only place in the product that
+    // knows when it happened. Everything after it (clearing `?focus=`,
+    // mounting `DevicePopup`, its own `<LiveView>` mount, `stream.start`,
+    // the session build on the phone, the first decoded frame) is what the
+    // number counts. Marked BEFORE `onFocus()` so the popup's own
+    // `onlyIfAbsent` mark cannot win the race and shave the popup-mount leg
+    // off a wall-originated reading. Costs one `Map.set` on a deliberate
+    // double-click — nothing per tile, per frame, or per render.
+    markLiveViewIntent(device.id)
     onFocus()
   }
 
@@ -298,19 +453,43 @@ export function WallTile({
               {device.quarantineReason ? explainQuarantine(device.quarantineReason) : 'Quarantined'}
             </span>
           </div>
+        ) : rendersPicture ? (
+          // Streaming — or holding a dead stream's own retry overlay open
+          // (plan 125 §4.3). `rendersPicture` above is the single place both
+          // of those decisions are made, and the reason there is exactly one
+          // `<LiveView>` element here rather than two.
+          <LiveView deviceId={device.id} inputEnabled={false} quality="wall" compact />
         ) : asleep ? (
           // The screen-off placeholder (Plan 92 §3.2 rule 1, §4.7, fixes
-          // F12): checked BEFORE `live` so an asleep device that is still
-          // (incorrectly, or before Plan 92's live-set policy lands in
-          // 92.4) sitting in the live set never mounts `LiveView` — the
-          // wall shows the farm, it does not change the farm by being
-          // opened.
+          // F12): still checked BEFORE the live set's own `live` flag (that
+          // ordering lives inside `rendersPicture`'s `!asleep && live`, not
+          // in this chain), so an asleep device that is still — incorrectly,
+          // or through some future caller's own bookkeeping — sitting in the
+          // live set never mounts `LiveView`. The wall shows the farm; it
+          // does not change the farm by being opened.
+          //
+          // Plan 125 §3.5, §4.3: the placeholder is no longer a dead end.
+          // Compact by design — one small button under the glyph, on a tile
+          // that has no picture to compete with, which is the half of
+          // 101.8's rule this deliberately does not touch (see the file
+          // header). Nothing here is blurred or composited: `docs/design.md`
+          // "Blur: nothing that scales with device count", and
+          // `design-rules.test.ts` asserts it against this exact file.
           <div className="flex size-full flex-col items-center justify-center gap-1.5 px-3 text-center text-[11px] text-fg-subtle">
             <MoonStar className="size-4" aria-hidden />
             <span>Screen off</span>
+            {observedDisagrees && <span className="text-[10px] text-fg-subtle">Screen reported on</span>}
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-0.5 h-6 px-2 text-[10px]"
+              disabled={waking}
+              aria-label={`Wake ${deviceName}`}
+              onClick={handleWake}
+            >
+              {waking ? 'Waking…' : 'Wake'}
+            </Button>
           </div>
-        ) : live ? (
-          <LiveView deviceId={device.id} inputEnabled={false} quality="wall" compact />
         ) : (
           // Budgeted (outside `wall.maxTiles`): a quiet neutral screen area
           // — the whole tile is already the "Show live" target via the

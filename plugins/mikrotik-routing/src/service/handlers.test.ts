@@ -37,12 +37,15 @@ function okDoctorReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
   }
 }
 
-function makeDevice(id: string, address: string | null): DeviceInfo {
+function makeDevice(id: string, address: string | null, extra: Partial<{ label: string; number: number }> = {}): DeviceInfo {
   return DeviceInfoSchema.parse({
     id,
     stableId: `stable-${id}`,
     serial: address ? `${address}:5555` : 'usbserial-1',
-    label: id,
+    label: extra.label ?? id,
+    // Left out unless a test asks for one, so the schema's own `.default(null)`
+    // keeps standing in for "this device has no number" (plan 124 criterion 7).
+    ...(extra.number === undefined ? {} : { number: extra.number }),
     androidVersion: null,
     apiLevel: null,
     screenW: null,
@@ -251,6 +254,31 @@ describe('registerRouterRoutes — doctor (§5 step 122.12: local-exception is n
     }
     expect(result.body.localException.status).toBe('partial')
     expect(result.body.localException.uncoveredDevices.map((d) => d.id)).toEqual(['flip4-01'])
+  })
+
+  /**
+   * Plan 124 §4.4 Group G. `local-exception.ts`'s own `describeUncovered`
+   * records why this matters in the owner's own words: the farm printed
+   * "SM-F721U1, SM-F721U1, SM-F721U1" into the Uncovered sentence. The
+   * address it already appends says which rule must cover the device; the
+   * number says which phone on the rack it is. Both are asserted here, along
+   * with criterion 7 — a device with no number gets its bare label, never
+   * `#null`.
+   */
+  test('an uncovered device is NAMED with its number beside its label, and a numberless one is not', async () => {
+    const rules: RouterRule[] = RouterRuleListSchema.parse([
+      { '.id': '*1', action: 'lookup', table: 'main', comment: 'proxy: local exception', 'src-address': '192.168.50.0/24', 'dst-address': '192.168.0.0/16', disabled: false, inactive: false },
+    ])
+    const report = okDoctorReport({ rules })
+    const devices = [makeDevice('flip4-01', '192.168.10.15', { label: 'SM-F721U1', number: 7 }), makeDevice('flip4-02', '192.168.10.16', { label: 'SM-F721U1' })]
+    const { host, registered } = fakeHost(routerKv, devices)
+    registerRouterRoutes(host, { createDriver: () => fakeDriver({ doctor: async () => report }), deriveCoreAddress: async () => ({ kind: 'derived', address: '192.168.50.10' }) })
+    const result = (await registered.get('doctor')?.handler(FAKE_REQUEST, new AbortController().signal)) as {
+      body: { ok: true; localException: { status: string; message: string; uncoveredDevices: { label: string }[] } }
+    }
+    expect(result.body.localException.uncoveredDevices.map((d) => d.label)).toEqual(['#7 SM-F721U1', 'SM-F721U1'])
+    // And the composed sentence an operator actually reads, addresses intact.
+    expect(result.body.localException.message).toContain('#7 SM-F721U1 (192.168.10.15)')
   })
 
   test('a USB device with no derivable address is excluded from the check entirely, never guessed at', async () => {

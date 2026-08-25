@@ -7,7 +7,7 @@ import { UsageSparkline } from './UsageSparkline'
 import type { Agent, CapabilityInfo } from '@/lib/agents'
 import { capabilityGroup } from '@/lib/agents'
 import { fetchAgentUsage, type DailyUsage } from '@/lib/agent-usage'
-import { formatUsd } from '@enkaku/ui'
+import { DeviceName, formatUsd } from '@enkaku/ui'
 
 /**
  * The right column (plan 69 §3.1, step 69.4) — what distinguishes a
@@ -54,7 +54,12 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
             {grantedDevices.slice(0, 12).map((d) => (
               <li key={d.id}>
                 <Link href={`/device?id=${encodeURIComponent(d.id)}`} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-[12px] hover:bg-surface-2/60">
-                  <span className="truncate">{d.label}</span>
+                  {/* Plan 124 §4.4 Group D, step 124.4 — a list row, so the
+                      two-span `<DeviceName>` (§3.2). This rail answers "which
+                      phones may this agent touch"; on a rack of identically
+                      modelled devices the bare label answered it with the same
+                      word repeated twelve times. */}
+                  <DeviceName number={d.number} label={d.label} className="min-w-0" />
                   <span className="readout shrink-0 text-[10.5px] text-fg-subtle">{d.status}</span>
                 </Link>
               </li>

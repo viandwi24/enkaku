@@ -14,9 +14,9 @@
  *
  * The per-file `export *` is the whole surface by construction: adding a
  * component is one line here, and no name can be silently dropped from the
- * package while its file still exports it. The 28 modules have no colliding
- * export names (checked at extraction time), which is what makes the flat
- * re-export safe.
+ * package while its file still exports it. The modules have no colliding
+ * export names (checked at extraction time, and re-checked whenever one is
+ * added), which is what makes the flat re-export safe.
  */
 
 export * from './components/alert-dialog'
@@ -25,8 +25,10 @@ export * from './components/button'
 export * from './components/button-group'
 export * from './components/card'
 export * from './components/collapsible'
+export * from './components/combobox'
 export * from './components/confirm-dialog'
 export * from './components/command'
+export * from './components/device-name'
 export * from './components/dialog'
 export * from './components/dropdown-menu'
 export * from './components/hover-card'
@@ -85,6 +87,18 @@ export { cn } from './lib/utils'
 export * from './lib/actions'
 export * from './lib/core-base'
 export * from './lib/format'
+
+/**
+ * Naming a device, and finding one (plan 124 §4.1, §1 goals 1–3).
+ *
+ * `formatDeviceName` / `<DeviceName>` are the ONLY way any surface — Studio's
+ * or a plugin's — composes `#7 Galaxy A15`, and `matchesDeviceQuery` is the
+ * only definition of what a device search box matches. They are here rather
+ * than in `packages/studio/src/lib` for the reason that governs this whole
+ * package: a plugin can reach `@enkaku/ui` and nothing else, and the Mikrotik
+ * and Proxy Manager tabs name devices too.
+ */
+export * from './lib/device-name'
 
 /**
  * `z` — Zod itself, re-exported as one name.

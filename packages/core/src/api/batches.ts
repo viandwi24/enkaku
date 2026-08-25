@@ -34,6 +34,7 @@ import { artifacts, batches, devices, scripts, type BatchRow, type JobRow } from
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import { rowToJobInfo, type JobStore } from '../queue/job-store'
+import { formatDeviceLabel, loadDeviceNumbers } from '../registry/device-number'
 import type { Scheduler } from '../queue/scheduler'
 import type { ScriptRegistry } from '../scripts/registry'
 import type { JobService } from '../services/job-service'
@@ -644,6 +645,22 @@ const slugLabel = (label: string): string =>
 /** One collected-files row (before it is shaped into the wire `BatchArtifactInfo`) — carries the artifact's stored RELATIVE `path` too, which the metadata route (`GET /:id/artifacts`) never returns but the archive route (`GET /:id/artifacts.zip`) needs to actually open the file. */
 interface CollectedArtifact extends BatchArtifactInfo {
   path: string
+  /**
+   * `devices.label` VERBATIM — no number, no `#` (plan 124 §3.7).
+   *
+   * The wire `deviceLabel` above is now the composed, human form (`#7 Pixel
+   * 6`), which is what every UI naming this row should show. The ZIP route
+   * below must NOT use it: its entry names are `<label-slug>-<stableId>/…`,
+   * and slugging `#7 Pixel 6` would rewrite every archive path the moment a
+   * farm allocated numbers — silently changing filenames operators and
+   * scripts already depend on, for no gain (`stableId`, which is already in
+   * the path, is the disambiguator there, and it is exact). Plan 124 §3.7
+   * names this one site explicitly: "a `#` in a filename is a new problem."
+   *
+   * Internal only — like `path`, it is destructured off before the metadata
+   * route answers, so it never reaches `BatchArtifactSchema`.
+   */
+  rawDeviceLabel: string
 }
 
 /**
@@ -668,17 +685,35 @@ function collectBatchArtifacts(db: Db, jobStore: JobStore, batchId: string): Col
     ? db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, deviceIds)).all()
     : []
   const deviceById = new Map(deviceRows.map((d) => [d.id, d]))
+  // stableId → number for the WHOLE fleet, in ONE statement (plan 124 §3.7,
+  // plan 19 §4.3's no-N+1 rule) — a batch of 45 devices producing four
+  // artifacts each would otherwise take 180 `lookupDeviceNumber` calls to
+  // answer one listing. Loaded only when there is at least one device to name;
+  // a batch whose artifacts are all non-device-scoped never touches
+  // `device_numbers` at all.
+  const numbers = deviceIds.length ? loadDeviceNumbers(db) : new Map<string, number>()
 
   const out: CollectedArtifact[] = []
   for (const row of artifactRows) {
     const deviceId = row.deviceId ?? deviceIdByJobId.get(row.jobId ?? '') ?? null
     if (!row.jobId || !deviceId) continue // not a device-scoped pull artifact — nothing this route reports on
     const device = deviceById.get(deviceId)
+    // The device id is the last-resort name for a device row that is GONE —
+    // a forgotten device's artifacts outlive it, and a blank cell would be
+    // worse than a uuid. It has no number by definition, so the composed and
+    // the raw forms are the same string in that case.
+    const rawLabel = device?.label ?? deviceId
     out.push({
       artifactId: row.id,
       jobId: row.jobId,
       deviceId,
-      deviceLabel: device?.label ?? deviceId,
+      // Composed here, on the server, rather than shipped as a second
+      // `deviceNumber` field for the UI to compose (plan 124 §3.7): this row
+      // outlives the device that produced it, so a Studio table rendering an
+      // artifact from a forgotten device holds no `DeviceInfo` to compose
+      // against — a split field would be null exactly where it is needed.
+      deviceLabel: formatDeviceLabel(device ? (numbers.get(device.stableId) ?? null) : null, rawLabel),
+      rawDeviceLabel: rawLabel,
       stableId: device?.stableId ?? deviceId,
       filename: row.label ?? row.path.split('/').pop() ?? 'file',
       sizeBytes: row.sizeBytes,
@@ -908,7 +943,9 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   app.get('/:id/artifacts', requirePermission('job.view'), (c) => {
     const row = mustGet(c.req.param('id'))
     const collected = collectBatchArtifacts(db, deps.jobStore, row.id)
-    const items: BatchArtifactInfo[] = collected.map(({ path: _path, ...rest }) => rest)
+    // `path` and `rawDeviceLabel` are internal to `CollectedArtifact` (see its
+    // own comment) — destructured off here so neither can reach the wire.
+    const items: BatchArtifactInfo[] = collected.map(({ path: _path, rawDeviceLabel: _rawDeviceLabel, ...rest }) => rest)
     return typedJson(c, BatchArtifactsResponseSchema, { items })
   })
 
@@ -920,6 +957,17 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
    * (never shortened — two phones sharing a label is exactly the case this
    * exists for) because that is what keeps two same-labelled, same-filename
    * pulls from landing in the same directory.
+   *
+   * The label slugged into those names is `rawDeviceLabel` — `devices.label`
+   * verbatim — NEVER the wire `deviceLabel`, which since plan 124 §3.7
+   * carries the composed `#7 Pixel 6` form. That section names this exact
+   * site as the one place in the plan to leave alone: the number belongs in
+   * every surface that NAMES a device to a human, and in no filename. Slugging
+   * it here would rewrite every archive path as soon as a farm allocated
+   * numbers (`pixel-6-…` → `7-pixel-6-…`), breaking whatever an operator or a
+   * downstream script already unpacks by name, and buying nothing — the FULL
+   * `stableId` already sits in the same path and is exact where a number is
+   * merely short. Keep these two `slugLabel(...)` calls on `rawDeviceLabel`.
    *
    * The `maxArchiveBytes` refusal happens INSIDE `createZipStream`, before
    * this handler writes a single byte of the response — `zip-stream.ts`'s
@@ -940,10 +988,10 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
       // first become exploitable.
       const rel = normalize(item.path)
       if (!dataDir || rel.startsWith('..')) {
-        return { name: `${slugLabel(item.deviceLabel)}-${item.stableId}/${item.filename}`, size: 0, open: () => new ReadableStream({ start: (c2) => c2.close() }) }
+        return { name: `${slugLabel(item.rawDeviceLabel)}-${item.stableId}/${item.filename}`, size: 0, open: () => new ReadableStream({ start: (c2) => c2.close() }) }
       }
       return {
-        name: `${slugLabel(item.deviceLabel)}-${item.stableId}/${item.filename}`,
+        name: `${slugLabel(item.rawDeviceLabel)}-${item.stableId}/${item.filename}`,
         size: item.sizeBytes ?? 0,
         open: () => Bun.file(join(dataDir, rel)).stream(),
       }

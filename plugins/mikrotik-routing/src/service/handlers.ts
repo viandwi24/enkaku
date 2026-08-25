@@ -1,7 +1,7 @@
 import type { PluginRequest, PluginResponse } from '@enkaku/sdk'
 import { DeviceInfoSchema } from '@enkaku/protocol'
 import { z } from 'zod'
-import { LOCAL_EXCEPTION_COMMENT, type RouterConfig } from '../shared'
+import { LOCAL_EXCEPTION_COMMENT, deviceNameWithNumber, type RouterConfig } from '../shared'
 import { deriveCoreAddress, type CoreAddressResult } from './core-address'
 import { messageOf, MikrotikRestError } from './errors'
 import { buildIdentityBridge } from './identity-bridge'
@@ -193,7 +193,24 @@ export function registerRouterRoutes(
     try {
       const result = await host.farm.call('device.list', {}, DeviceListSchema)
       const bridge = buildIdentityBridge(result.items, [])
-      const devices = bridge.filter((d) => d.state === 'resolved').map((d) => ({ id: d.deviceId, label: d.label, address: d.lanIp }))
+      /**
+       * The number, keyed by device id (plan 124 §4.4 Group G). The bridge's
+       * `DeviceLanAddress` carries only `deviceId`/`stableId`/`label` — it is
+       * an addressing record, not a naming one, and widening it would push a
+       * presentation concern into `identity-bridge.ts`. The `DeviceInfo` list
+       * that produced the bridge is still in hand one line above, so the
+       * number is looked up from there instead.
+       */
+      const numbers = new Map(result.items.map((d) => [d.id, d.number]))
+      const devices = bridge
+        .filter((d) => d.state === 'resolved')
+        // Same composition as `apply.ts`'s `protectedDevicesFrom`, and it has
+        // to be: both feed `local-exception.ts`'s `describeUncovered`, whose
+        // own comment records the owner's farm printing "SM-F721U1,
+        // SM-F721U1, SM-F721U1" into this exact sentence. The address stays —
+        // it is what a candidate rule's `src-address` must cover — and the
+        // number is what tells the operator which phone that is.
+        .map((d) => ({ id: d.deviceId, label: deviceNameWithNumber(numbers.get(d.deviceId) ?? null, d.label), address: d.lanIp }))
       return { devices, errors: [] }
     } catch (err) {
       return { devices: [], errors: [`could not read the device list to check local-exception coverage: ${messageOf(err)}`] }

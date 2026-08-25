@@ -71,6 +71,19 @@ export const AdbStatsResponseSchema = z.object({
   devices: z.array(
     z.object({
       deviceId: z.string(),
+      /**
+       * The device's human name, already composed with its number — `#7 Pixel
+       * 6`, or the bare label when it has no reservation (plan 124 §3.7, via
+       * the core's `formatDeviceLabel`).
+       *
+       * Pre-composed rather than split into `label` + `number` because this
+       * is a diagnostics table and nothing else: every consumer
+       * (`app/tools/page.tsx`'s adb pool rows, `AdbRestartDialog`'s
+       * "devices with queued work" list) renders the name as one string it
+       * never takes apart, and none of them holds a `DeviceInfo` to compose
+       * a number from. Two fields here would buy a composition nobody
+       * performs.
+       */
       label: z.string(),
       queueDepth: z.number(),
       execMsP50: z.number().nullable(),
@@ -263,8 +276,23 @@ export const AdbRestartReportSchema = z.object({
   /** How many `stableId`s with a remembered network address were re-dialled after the server came back up. */
   reattachAttempted: z.number(),
   reattachSucceeded: z.number(),
-  /** Named, not just counted (plan 88 §3.10's report obligation: "the report names anything that did not come back"). */
-  reattachFailed: z.array(z.object({ stableId: z.string(), label: z.string() })),
+  /**
+   * Named, not just counted (plan 88 §3.10's report obligation: "the report names anything that did not come back").
+   *
+   * `number` rides alongside `label` rather than being baked into it (plan
+   * 124 §3.1, §3.7) — a farm of identical models reports three rows reading
+   * `SM-F721U1` otherwise, which names nothing. It is a SEPARATE field, not a
+   * pre-composed string, for the reason plan 124 §10 records against
+   * `MirrorMember`: the renderer composes once, so a caller that also holds a
+   * `DeviceInfo` cannot end up rendering `#7 #7 SM-F721U1`. `null` for a
+   * device whose reservation was explicitly released.
+   *
+   * Note this is a DIFFERENT payload from the adb pool stats
+   * (`AdbStatsResponseSchema` above), whose `label` plan 124 step 124.5 did
+   * pre-compose server-side. The two were conflated once during that step;
+   * they are not the same object and do not follow the same rule.
+   */
+  reattachFailed: z.array(z.object({ stableId: z.string(), label: z.string(), number: z.number().int().nullable() })),
   serverVersion: z.string().nullable(),
 })
 export type AdbRestartReport = z.infer<typeof AdbRestartReportSchema>

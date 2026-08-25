@@ -33,6 +33,19 @@ export function AskAnAgentDialog({
   onOpenChange,
 }: {
   deviceId: string
+  /**
+   * The device's ALREADY-COMPOSED operator-facing name — `#7 Galaxy A15`, or
+   * the bare label for a device with no number.
+   *
+   * Plan 124 §4.4, step 124.3 — this prop is deliberately NOT widened into a
+   * `{ number, label }` object or a `DeviceInfo`. Every caller
+   * (`DeviceHeader`, `DevicePopup`, `ActionsList`, `DeviceContextMenu`) holds
+   * the whole device already and passes `formatDeviceName(...)`, so widening
+   * would move the same composition into four call sites instead of removing
+   * it from any. The rule that matters here is the other half: **nothing in
+   * this file may re-compose or decorate the value** — every mention below
+   * renders it verbatim, or the number arrives twice.
+   */
   deviceLabel: string
   open: boolean
   onOpenChange(open: boolean): void

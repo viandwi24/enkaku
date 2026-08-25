@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { DeviceInfoSchema, type DeviceInfo } from '@enkaku/protocol'
-import { ASSIGNMENT_KEY, DEFAULT_GROUP_ID, DEFAULT_GROUP_NAME, EMPTY_ASSIGNMENT, readAssignment, type RouterConfig, type StoredAssignment } from '../shared'
+import { ASSIGNMENT_KEY, DEFAULT_GROUP_ID, DEFAULT_GROUP_NAME, EMPTY_ASSIGNMENT, deviceNameWithNumber, readAssignment, type RouterConfig, type StoredAssignment } from '../shared'
 import { deriveCoreAddress, type CoreAddressResult } from './core-address'
 import { messageOf, MikrotikRestError } from './errors'
 import { buildIdentityBridge, type DeviceLanAddress, type StoredLanCandidates } from './identity-bridge'
@@ -87,6 +87,20 @@ export interface FleetDeviceRow {
   deviceId: string
   stableId: string
   label: string
+  /**
+   * The device's operator-facing number (plan 89 §3.1), `null` when it has
+   * none — put on the wire by plan 124 §3.7's table, which names this row as
+   * one of five payloads that named a device and carried no number.
+   *
+   * It is not decoration. The owner's farm is 45 physically identical modems
+   * and phones, so the Assignments tab and the group editor were listing
+   * `SM-F721U1, SM-F721U1, SM-F721U1` and an operator could not tell which
+   * row was the phone in their hand. The number is the ONLY field that tells
+   * them apart, which is why it is carried here rather than composed into
+   * `label` — nothing in this product writes `#7` into `devices.label`, and
+   * nothing parses it back out (plan 124 §3.1).
+   */
+  number: number | null
   lan: DeviceLanAddress
   assignment: StoredAssignment
 }
@@ -181,6 +195,11 @@ export async function loadFleetState(host: ApplyHost, driver: RouterDriver, over
     deviceId: device.id,
     stableId: device.stableId,
     label: device.label,
+    // Plan 124 §0.2: this row was built from a real `DeviceInfo` — which has
+    // carried `number` since plan 89 — and dropped it on the floor, which is
+    // why no Mikrotik screen could show it. The whole payload change is this
+    // one line plus the field on `FleetDeviceRowSchema` (`ui/parts/api.ts`).
+    number: device.number,
     lan: bridge[i] ?? { deviceId: device.id, stableId: device.stableId, label: device.label, state: 'needs-address' as const },
     assignment: assignments[i] ?? EMPTY_ASSIGNMENT,
   }))
@@ -199,7 +218,13 @@ export async function loadFleetState(host: ApplyHost, driver: RouterDriver, over
 export function protectedDevicesFrom(rows: readonly FleetDeviceRow[]): ProtectedDevice[] {
   const out: ProtectedDevice[] = []
   for (const row of rows) {
-    if (row.lan.state === 'resolved') out.push({ id: row.deviceId, label: row.label, address: row.lan.lanIp })
+    // The number goes into the label here for the same reason
+    // `local-exception.ts`'s `describeUncovered` already appends the address
+    // (its own comment, defect 2 of step 122.12): this list is read as prose
+    // ("Uncovered: …"), and the owner's own farm printed "SM-F721U1,
+    // SM-F721U1, SM-F721U1" into it. The address says which rule has to cover
+    // the device; the number says which phone on the rack it is. Both.
+    if (row.lan.state === 'resolved') out.push({ id: row.deviceId, label: deviceNameWithNumber(row.number, row.label), address: row.lan.lanIp })
   }
   return out
 }
@@ -225,7 +250,14 @@ export function desiredEntriesFrom(rows: readonly FleetDeviceRow[]): { desired: 
     if (row.lan.state !== 'resolved') {
       blocked.push({
         deviceId: row.deviceId,
-        label: row.label,
+        // `blocked` is rendered as a plain sentence list in BOTH the Apply
+        // dialog and the group Activate dialog, so it is a `string` and the
+        // number has to be composed into it here (plan 124 §3.2's "for
+        // toasts, aria-labels, dialog titles and joined lists" half). A bare
+        // label in this list is the exact failure the plan exists to fix:
+        // "3 devices cannot be applied yet — SM-F721U1, SM-F721U1, SM-F721U1"
+        // tells an operator nothing about which three.
+        label: deviceNameWithNumber(row.number, row.label),
         reason: 'No LAN IP is known for this device yet — enter one manually on the Assignments tab, or wait for it to appear on adb-tcp (§3.4).',
       })
       continue

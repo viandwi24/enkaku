@@ -4,7 +4,7 @@
 >
 > **105.5/105.6 (2026-08-17), closing §0.4's two new owner-reported defects.** `free` now renders its own session-state block ("Nobody holds this device." + "Take control") — before this pass it rendered nothing, so release → re-take had no visible path back except the Inspector tab's inline prompt. "Release control" no longer sends `lease.release` immediately: it starts a 4-second (`RELEASE_UNDO_MS`) undo window during which the lease has not moved, deliberately NOT a `ConfirmDialog` (`docs/design.md`'s rule is aimed at instant-irreversible actions; a confirm on every ordinary release would have been its own annoyance, the task's own explicit warning). `leaseOrigin` (`'auto-claim' | 'explicit' | null`) tracks WHY this client holds the lease, and only an `'auto-claim'` hold is released when the popup unmounts or on a `pagehide`/`beforeunload` — an explicit Take-control or a pre-existing hold survives closing the popup, per the owner's own narrower framing ("reasonnya karena buka popup"). A real bug was found and fixed by this same pass's own tests: a pending undo timer was a bare `setTimeout`, uncancelled on unmount, which leaked into and corrupted a later test's assertions before a dedicated cleanup effect was added.
 >
-> **§9 Q1 (`held-by-human`) is still open** — implemented as designed-undecided: both Assist and Take control… are offered, weighted equally, with an explicit caption ("Join them, or take over — not decided which should be the default here") rather than a silently guessed primary. This is why acceptance criterion 1 below is left unticked rather than claimed on a technicality (see its own note).
+> **§9 Q1 (`held-by-human`) is ANSWERED (2026-08-25, plan 125 §3.11, step 125.6).** It shipped in this plan as designed-undecided — both Assist and Take control… offered, weighted equally, with an explicit caption ("Join them, or take over — not decided which should be the default here") rather than a silently guessed primary. That caption then reached a real operator's screen and was reported as a defect (plan 125 §0.8, report 3): `docs/design.md`'s writing rules do not permit handing an operator our own indecision, whatever the caption's internal honesty. The answer, recorded in full at §9 Q1 below: **for a person, Take control is primary and Assist secondary; for an agent holder the two stay equal.** Acceptance criterion 1 below is ticked as of that change.
 >
 > **Every surface enumerated (per this pass's own audit obligation):** `DevicePopup.tsx` reads the full `useControlState` hook, including its actions. `DeviceCard.tsx`, `WallTile.tsx`, `DevicePicker.tsx` and `DeviceHeader.tsx` (the legacy device page) all render a holder/assist badge through `HolderBadge`, which shares `deriveAssistActivity` — the one thing §3.2 actually requires to be shared — but none of them calls the full discriminated hook, each with a doc-comment explaining why: none of the three list/tile surfaces tracks a per-client "do I hold this device" fact of its own (only the popup ever acquires a lease or an assist grant), so there is nothing for the rest of `ControlState` to compute there beyond what `heldBy`/`assistedBy` already say. This is a deliberate, documented exclusion, not an oversight — recorded here so acceptance criterion 5 can be evaluated honestly rather than assumed. 105.5/105.6 do not change this: `free`'s new block and `leaseOrigin` both live only in `DevicePopup.tsx`, the one surface that ever tracks "do I personally hold this."
 >
@@ -83,9 +83,11 @@ Replace both with **one primary action, named for the current state**:
 |---|---|---|
 | nobody holds | **Take control** | — |
 | **a job** holds | **Assist** — the owner's ruling: a warning, not a permission request (G8) | — |
-| **another human** holds | *see §9 Q1* | *see §9 Q1* |
+| **another human** holds | **Take control** — answered 2026-08-25 (plan 125 §3.11) | **Assist** |
+| **an agent** holds | **Assist** and **Take control**, equally weighted (plan 125 §3.11) | — |
+| **you** hold it, in another tab | **Resume control here** — never a takeover (plan 125 §3.10) | — |
 
-The third row is deliberately unfilled. G8 records that the original decision covered the job case only, and "join them" versus "take it from them" carry different social consequences. Guessing here is how the current collision was built in the first place.
+The third row was deliberately unfilled when this plan shipped: G8 records that the original decision covered the job case only, and "join them" versus "take it from them" carry different social consequences. Guessing there is how the original collision was built. It was filled in on 2026-08-25 by plan 125 §3.11, after the placeholder caption reached an operator — see §9 Q1. The last two rows are plan 125's own additions in the same pass.
 
 ### 3.2 A badge must mean one thing
 
@@ -131,7 +133,7 @@ The activity/authorization split (§3.2) is derived here too, from the same gran
 ## 5. Implementation steps
 
 ### 105.1 — `useControlState`, and one rendered primary action (§3.1)
-The `held-by-human` branch stays behind §9 Q1 — implement the other four, and make that one state say plainly that it is undecided rather than guessing.
+The `held-by-human` branch stayed behind §9 Q1 — implement the other four, and make that one state say plainly that it is undecided rather than guessing. **Superseded 2026-08-25**: §9 Q1 is answered (plan 125 §3.11) and that state now has a decided primary; the "say plainly that it is undecided" caption is deleted.
 
 ### 105.2 — The badge split (§3.2)
 Activity versus authorization, with the wording rule from `docs/design.md`: a degraded or partial state is never worded as the full one.
@@ -166,7 +168,7 @@ Verifiable result: `DevicePopup.test.tsx`'s new tests — an auto-claimed lease 
 
 ## 6. Acceptance criteria
 
-- [ ] Exactly one primary control action is rendered per device state (§3.1). **Not ticked, honestly**: true for `free`/`held-by-job`/`i-hold`/`i-assist` (each resolves exactly one `ControlAction`, proven by `ControlState.test.ts`'s own precedence tests), but `held-by-human` deliberately renders ZERO primaries — two co-equal options with a caption saying the choice is undecided — rather than picking one. That satisfies the criterion's actual purpose (no state ever offers two *competing* primaries) but not its literal wording, and §9 Q1 is what would resolve it either way.
+- [x] Exactly one primary control action is rendered per device state (§3.1). Ticked on 2026-08-25 by plan 125 step 125.6, which answered §9 Q1: `held-by-human` now names Take control as its primary and Assist as its secondary for a person, so every state resolves one primary. The one deliberate exception is an **agent** holder, where §3.11's answer is that the two acts are genuinely co-equal — recorded as a decision (`weighting: 'equal'`) rather than an undecided placeholder, which is what this criterion was really guarding against. `held-by-me-elsewhere` (plan 125 §3.10) resolves one primary too: Resume control here.
 - [x] No surface renders "assisting" from an idle grant (§3.2). `HolderBadge.tsx`'s `deriveAssistActivity` (`ControlState.tsx`) computes "Assisting" only within `ASSIST_ACTIVITY_WINDOW_SEC` of the grant's last touch, derived from `LeaseHolder.expiresAt` — no core/protocol change needed. Every caller (`DeviceCard`, `WallTile`, `DevicePicker`, `DeviceHeader`) shares it; proven in `HolderBadge.test.tsx` and `ControlState.test.ts`.
 - [x] Every `AssistEndReason` produces its own wording; none is silent (§3.4). `assistEndCopy` — `released` is the one deliberately silent case (§3.4's own words: "they stopped — no message needed"), the other four each read distinctly, proven in `ControlState.test.ts` including a test that every non-`released` message is textually distinct from every other.
 - [x] `primary_ended` offers Take control in the same place the assist ended (§3.3) — in `DevicePopup.tsx`, the notice that reports it carries a real "Take control" button, proven in `DevicePopup.test.tsx`. **Not backported to the legacy `app/device/page.tsx`**: that page's `notice` is a plain string shared with an unrelated `lease.revoked` message; only the wording (`assistEndCopy`'s `.message`) was reused there, not the actionable button — the header's own Take control button already appears the moment the device becomes free, one click away rather than inline. Recorded rather than silently left, since the page is still live pending plan 103's own deletion condition.
@@ -188,11 +190,11 @@ Verifiable result: `DevicePopup.test.tsx`'s new tests — an auto-claimed lease 
 | # | What | How | Outcome |
 |---|---|---|---|
 | H-1 | The TTL, measured (§H1). | Lower it, work ten minutes, count mid-task lapses. | *(owner to fill in)* |
-| H-2 | The `held-by-human` decision (§9 Q1, H2). | Judgement. | *(owner to fill in)* |
+| H-2 | The `held-by-human` decision (§9 Q1, H2). | Judgement. | **Answered 2026-08-25** (plan 125 §3.11): a person's hold makes Take control primary and Assist secondary; an agent's hold keeps them equal. Forced by the placeholder caption reaching an operator (plan 125 §0.8, report 3). |
 
 ## 8. Risks and mitigations
 
-- **Collapsing two buttons into one hides an action an operator wanted.** Mitigated by §3.1's table being explicit per state, and by the `held-by-human` row staying open rather than being decided here.
+- **Collapsing two buttons into one hides an action an operator wanted.** Mitigated by §3.1's table being explicit per state, and (originally) by the `held-by-human` row staying open rather than being decided here. Since 2026-08-25 that row is decided (§9 Q1) but nothing is hidden: both actions still render for a human holder — one is merely weighted above the other, and each says what it does.
 - **A shorter TTL lapses mid-task**, trading one complaint for its opposite. Mitigated by H1 measuring before the default moves.
 - **The activity window becomes its own guess.** State the number where it lives and let H1's session inform it.
 - **"Release on close" gets simplified into an unconditional rule later**, silently breaking the explicit-hold case §0.4 defect 2 exists to protect. Mitigated by naming the rule (`leaseOrigin`) at both the state declaration and the cleanup effect, and by a negative test (`DevicePopup.test.tsx`) that fails the moment that simplification happens.
@@ -200,5 +202,13 @@ Verifiable result: `DevicePopup.test.tsx`'s new tests — an auto-claimed lease 
 
 ## 9. Open questions
 
-1. **When another HUMAN holds a device, what is the primary action?** Take control (displacing them), Assist (joining them), or both with one clearly primary? G8 records that the original ruling covered only the job case. This is the decision that produces the collision the owner reported, and it is theirs. **Still open** — step 105.1 implements the state as designed-undecided (`held-by-human`, `ControlState.tsx`): both actions offered, weighted equally, with an explicit caption saying the choice is not yet made. Answering this question changes that state's shape, not this plan's other four.
+1. **When another HUMAN holds a device, what is the primary action?** Take control (displacing them), Assist (joining them), or both with one clearly primary? G8 records that the original ruling covered only the job case. This is the decision that produces the collision the owner reported, and it is theirs.
+
+   **ANSWERED 2026-08-25 (plan 125 §3.11, step 125.6): Take control is the primary action and Assist is the secondary one — for a PERSON. For an AGENT holder the two stay equally weighted.**
+
+   The reasoning: this product's normal operator is one person driving a rack of their own devices, so the overwhelmingly common intent behind opening a device someone else has is "I want this phone"; Assist is the specialised case and reads better as the deliberate second choice than as a co-equal coin flip. An agent's hold is genuinely different — joining a running automation to watch or nudge it is at least as likely as displacing it — so `held-by-human.weighting` is `'equal'` there. `ControlState.tsx` keeps `holder.takeable` as the discriminator for WHICH STATE this is (a person and an agent are one state, not two) and uses `holder.kind` only for the weighting inside it.
+
+   What forced the answer: step 105.1's designed-undecided implementation carried a caption reading *"Join them, or take over — not decided which should be the default here"*, and that sentence was rendered verbatim to a real operator (plan 125 §0.8, report 3). Internally honest, externally indefensible — `docs/design.md`'s writing rules do not allow an operator to be handed our own open question. The caption is deleted; both buttons now carry their own plain line saying what they do ("Ends their control and gives the device to you." / "Drive alongside them — they keep control."), which is what the caption never did.
+
+   The same pass added a state this question did not anticipate: `held-by-me-elsewhere` (plan 125 §3.10), for a holder who is the operator themselves in another tab. It is not a weighting question at all — its one action is **Resume control here**, and it is never worded or confirmed as a takeover.
 2. **Should `maxConcurrentPerDevice` stay 1?** (G7.) A second assistant currently gets `assist_taken`; nobody has said whether two is wanted.

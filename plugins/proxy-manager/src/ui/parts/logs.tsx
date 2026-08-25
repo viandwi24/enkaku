@@ -1,20 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Badge,
-  Button,
-  EmptyState,
-  ErrorState,
-  Label,
-  LoadingRows,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Switch,
-  api,
-  cn,
-} from '@enkaku/ui'
+import { Badge, Button, Combobox, EmptyState, ErrorState, Label, LoadingRows, Switch, api, cn, type ComboboxOption } from '@enkaku/ui'
 import { LOGS_CONTENT_NOTE, LOGS_SHARED_RING_NOTE, PROXY_KEY_PREFIX, PROXY_LOGS_DEFAULT_LIMIT, proxyIdFromKey } from '../../shared'
 import { KvPageSchema, LogPageSchema, PLUGIN_API, logsPath, readProxy, type LogLine } from './api'
 import { useLoader, usePoll } from './bits'
@@ -69,7 +54,16 @@ const POLL_MS = 3000
 /** How many lines a page asks for — the pack's own constant, so the note about a truncated page can name the same number the request used. */
 const PAGE_LIMIT = PROXY_LOGS_DEFAULT_LIMIT
 
-/** The `<Select>` value meaning "every proxy" — Radix refuses an empty string as an item value. */
+/**
+ * The picker value meaning "every proxy".
+ *
+ * The leading space survives the move from `<Select>` to `<Combobox>` (plan 124
+ * §4.5) and is now load-bearing for a different reason than Radix's refusal of
+ * an empty item value: a proxy id is a storage key with its `proxy:` prefix
+ * removed and an operator can genuinely name one `all`, so a bare `'all'`
+ * sentinel would make that record's own lines unreachable — selecting it would
+ * be read as "show every proxy". No id can begin with a space.
+ */
 const ALL = ' all'
 
 export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProxyChange: (next: string | null) => void }) {
@@ -85,7 +79,7 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
       return { id, label: readProxy(entry.value).label || id }
     })
   }, [])
-  const { data: catalogue } = useLoader(loadCatalogue, [])
+  const { data: catalogue, error: catalogueError } = useLoader(loadCatalogue, [])
 
   const [lines, setLines] = useState<LogLine[]>([])
   const [truncated, setTruncated] = useState(false)
@@ -158,6 +152,26 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
   }, [catalogue, proxy])
 
   /**
+   * The picker's rows (plan 124 §4.5): "All proxies", the catalogue, and — when
+   * a deep link names a record that is no longer in it — that id too.
+   *
+   * The id rides along as a `hint` and as a `keyword` rather than only as an
+   * opaque value: a record's LOG LINES are tagged with its id (`logbook.ts`
+   * tags with the storage key), so the id is the string an operator reading a
+   * line has in front of them, and it must be the string that finds the record
+   * in this list.
+   */
+  const options = useMemo<ComboboxOption[]>(() => {
+    const rows: ComboboxOption[] = [{ value: ALL, label: 'All proxies' }]
+    for (const row of catalogue ?? []) rows.push({ value: row.id, label: row.label, hint: row.id === row.label ? undefined : row.id, keywords: [row.id] })
+    // A deep link can name a proxy that is no longer in the catalogue. Its lines
+    // may well still be in the ring, and dropping the selection would silently
+    // show every proxy's instead.
+    if (proxy !== null && !(catalogue ?? []).some((row) => row.id === proxy)) rows.push({ value: proxy, label: proxy, hint: 'Not in the catalogue' })
+    return rows
+  }, [catalogue, proxy])
+
+  /**
    * The filter was asked for and the farm answered with an unfiltered page.
    *
    * The farm echoes the tag it filtered on, and this checks it rather than
@@ -173,23 +187,29 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
   return (
     <div className="@container space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={proxy ?? ALL} onValueChange={(v) => onProxyChange(v === ALL ? null : v)}>
-          <SelectTrigger className="w-full @md:w-64" aria-label="Which proxy's lines to show">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All proxies</SelectItem>
-            {(catalogue ?? []).map((row) => (
-              <SelectItem key={row.id} value={row.id}>
-                {row.label}
-              </SelectItem>
-            ))}
-            {/* A deep link can name a proxy that is no longer in the catalogue.
-                Its lines may well still be in the ring, and dropping the
-                selection would silently show every proxy's instead. */}
-            {proxy !== null && !(catalogue ?? []).some((row) => row.id === proxy) ? <SelectItem value={proxy}>{proxy} (not in the catalogue)</SelectItem> : null}
-          </SelectContent>
-        </Select>
+        {/*
+          A `<Combobox>` rather than a `<Select>` (plan 124 §0.3, §4.5): this
+          lists the WHOLE catalogue, which on the owner's farm is ~45 records of
+          near-identical names, and a Radix `Select` over that is a scroll hunt
+          with no way to type-to-find.
+
+          `error` is passed for the reason the primitive has it: a catalogue read
+          that failed and a catalogue that is genuinely empty render identically
+          otherwise, and this dropdown showing only "All proxies" would read as
+          "this plugin has no proxies" — a claim a failed read cannot make. It is
+          the same fail-closed rule the lines themselves already follow below.
+        */}
+        <div className="w-full @md:w-64">
+          <Combobox
+            value={proxy ?? ALL}
+            onValueChange={(v) => onProxyChange(v === ALL ? null : v)}
+            options={options}
+            error={catalogueError}
+            ariaLabel="Which proxy's lines to show"
+            searchPlaceholder="Filter proxies…"
+            emptyText="No proxy in the catalogue matches."
+          />
+        </div>
 
         <div className="flex items-center gap-2">
           <Switch id="pm-follow" checked={follow} onCheckedChange={setFollow} />

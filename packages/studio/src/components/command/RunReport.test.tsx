@@ -200,3 +200,63 @@ describe('RunReport', () => {
     await waitFor(() => expect(getByText('hello from dev-a')).toBeTruthy())
   })
 })
+
+/**
+ * Plan 124 §4.4, step 124.4 — the contract of the `deviceLabel` prop, pinned.
+ *
+ * It hands back a name the CALLER has already composed with the device's
+ * number (§4.4's rule for the string-shaped device labels), and this component
+ * renders that string verbatim at all three of its naming sites. The trap this
+ * pins is the obvious-looking "fix" of wrapping it in `formatDeviceName` here,
+ * which would print `#7 #7 Galaxy A15` on every row.
+ */
+describe('RunReport — the device label is rendered verbatim (plan 124 §4.4)', () => {
+  const composed = (id: string) => (id === 'd1' ? '#7 Galaxy A15' : '#12 Galaxy A15')
+
+  test('the collapsed group preview and the expanded rows both show the caller\'s string, once', async () => {
+    const members = [member({ deviceId: 'd1' }), member({ deviceId: 'd2' })]
+    const { getByText, getAllByText, queryAllByText } = renderWithApi(
+      <RunReport
+        run={run({ counts: { total: 2, pending: 0, running: 0, ok: 2, failed: 0, skipped: 0, cancelled: 0 } })}
+        members={members}
+        outputs={[]}
+        deviceLabel={composed}
+        onCancel={noop}
+        onContinue={noop}
+        onRetryFailed={noop}
+        onRetrySkipped={noop}
+        fetchFullOutput={async () => ''}
+        busy={null}
+      />,
+    )
+    // Collapsed: one joined preview line naming both, numbers included.
+    expect(getByText('#7 Galaxy A15, #12 Galaxy A15')).toBeTruthy()
+    expect(queryAllByText(/#7 #7/).length).toBe(0)
+
+    // Expanded: one row each, still verbatim.
+    fireEvent.click(getAllByText(/device/)[0]!.closest('button')!)
+    await waitFor(() => expect(getAllByText('#7 Galaxy A15').length).toBe(1))
+    expect(getAllByText('#12 Galaxy A15').length).toBe(1)
+  })
+
+  test('the output drawer title uses the same composed name', async () => {
+    const { getAllByText, getByText } = renderWithApi(
+      <RunReport
+        run={run({ counts: { total: 1, pending: 0, running: 0, ok: 1, failed: 0, skipped: 0, cancelled: 0 } })}
+        members={[member({ deviceId: 'd1' })]}
+        outputs={[]}
+        deviceLabel={composed}
+        onCancel={noop}
+        onContinue={noop}
+        onRetryFailed={noop}
+        onRetrySkipped={noop}
+        fetchFullOutput={async () => 'body'}
+        busy={null}
+      />,
+    )
+    fireEvent.click(getAllByText(/device/)[0]!.closest('button')!)
+    await waitFor(() => expect(getByText('output')).toBeTruthy())
+    fireEvent.click(getByText('output'))
+    await waitFor(() => expect(getByText('#7 Galaxy A15 — full output')).toBeTruthy())
+  })
+})

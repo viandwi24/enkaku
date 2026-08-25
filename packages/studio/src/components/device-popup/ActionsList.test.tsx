@@ -13,6 +13,27 @@ import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
  * its own assertion.
  */
 let wsSendCalls: { type: string; payload?: unknown }[] = []
+
+/**
+ * Plan 124 §4.6, step 124.6, acceptance criterion 9 — the wallpaper row's
+ * whole point is that it reports the server's `state` VERBATIM, so the toast
+ * copy has to be asserted, and toast copy is only visible from a spy:
+ * `Toaster` is mounted by the app shell, never by a component test (the
+ * convention `AdmitDeviceDialog.test.tsx`/`ActionRunner.test.tsx` established).
+ *
+ * `Toaster` is part of the stub because `@enkaku/ui` is a single barrel (plan
+ * 111 step 111.1) — importing ANY component from it evaluates the wrapper that
+ * re-exports sonner's `Toaster`, and a `toast`-only stub makes the whole module
+ * graph fail to link rather than just these assertions.
+ */
+const toastSuccess = mock((_message: string, _opts?: { description?: string }) => {})
+const toastWarning = mock((_message: string, _opts?: { description?: string }) => {})
+const toastError = mock((_message: string, _opts?: { description?: string }) => {})
+mock.module('sonner', () => ({
+  toast: { success: toastSuccess, warning: toastWarning, error: toastError },
+  Toaster: () => null,
+}))
+
 mock.module('@/lib/ws', () => ({
   WsRequestError: class WsRequestError extends Error {
     code: string
@@ -37,6 +58,9 @@ const { ActionsList } = await import('./ActionsList')
 afterEach(() => {
   cleanup()
   wsSendCalls = []
+  toastSuccess.mockClear()
+  toastWarning.mockClear()
+  toastError.mockClear()
 })
 
 const usbDevice = {
@@ -404,10 +428,15 @@ describe('ActionsList — the row count fits without scrolling at a plausible pa
       </TooltipProvider>,
     )
     const rows = [...getAllByRole('button'), ...getAllByRole('link')]
-    expect(rows).toHaveLength(13)
+    // Plan 124 §3.6, step 124.6 — thirteen became fourteen when "Set number
+    // as wallpaper" was added. The fit was measured, not assumed: see
+    // `ActionsList.tsx`'s own file header for the arithmetic, and for the
+    // stronger point that a USB device with a live multi-selection behind the
+    // popup already rendered fourteen rows before this row existed.
+    expect(rows).toHaveLength(14)
   })
 
-  test('a tcp device renders exactly twelve rows — no "Move to the network…" row, nothing left to move to', () => {
+  test('a tcp device renders exactly thirteen rows — no "Move to the network…" row, nothing left to move to', () => {
     const { getAllByRole } = renderWithApi(
       <TooltipProvider>
         <ActionsList
@@ -423,7 +452,7 @@ describe('ActionsList — the row count fits without scrolling at a plausible pa
       </TooltipProvider>,
     )
     const rows = [...getAllByRole('button'), ...getAllByRole('link')]
-    expect(rows).toHaveLength(12)
+    expect(rows).toHaveLength(13)
   })
 })
 
@@ -518,5 +547,272 @@ describe('ActionsList — Wake/Sleep and Forget act on the whole candidate set (
     // §5 step 103.10) — the same row must not behave inconsistently only
     // because the candidate count changed.
     expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull()
+  })
+})
+
+/**
+ * "Set number as wallpaper" (plan 124 §0.4, §3.5, §4.6, step 124.6) — the
+ * one-click way in to a mechanism that has worked end to end since plan 89
+ * and until now cost six clicks through two nested dialogs.
+ *
+ * The load-bearing assertions in this block are the `partial` and
+ * `unavailable` ones (acceptance criterion 9). The black wallpaper is a
+ * PHYSICAL change to a phone an operator is not looking at; a toast that
+ * rounds `unavailable` up to "Done" is worse than no row at all, because the
+ * operator then walks to a rack believing forty-five phones are labelled.
+ */
+const labelled = {
+  ...usbDevice,
+  number: 7,
+  agent: 'ready',
+  // A real settings blob, because the single-device flow deliberately does NOT
+  // re-fetch: the popup already holds `device.settings`, and the read-modify-
+  // write goes against that copy (plan 124 §3.5). The `proxy` key is here to
+  // prove it survives the whole-blob PATCH.
+  settings: { proxy: { mode: 'off' }, labelling: { mode: 'off', showName: true } },
+} as unknown as DeviceDetailInfo
+
+/** A body that satisfies BOTH `DeviceDetailResponseSchema` (the GET) and `DeviceResponseSchema` (the PATCH) — Zod strips the extra keys for the narrower one. */
+function detailBody(id: string, label: string) {
+  return {
+    device: {
+      id,
+      stableId: `stable-${id}`,
+      serial: `serial-${id}`,
+      label,
+      androidVersion: '15',
+      apiLevel: 35,
+      screenW: 720,
+      screenH: 1600,
+      density: 280,
+      status: 'idle',
+      lastSeen: 1,
+      number: 7,
+      agent: 'ready',
+      transport: 'adb-usb',
+      display: 'scrcpy',
+      liveDisplay: null,
+      input: 'adb-input',
+      inspection: 'ui-server',
+      settings: { proxy: { mode: 'off' }, labelling: { mode: 'off', showName: true } },
+      nodeId: null,
+    },
+  }
+}
+
+function labelState(state: string, reason: string | null) {
+  return { mode: 'wallpaper', state, reason, fingerprint: 'fp', appliedAt: 1, originalCaptured: true, capturedLockScreen: null }
+}
+
+describe('ActionsList — Set number as wallpaper, single device (plan 124 §3.5, §4.6, step 124.6)', () => {
+  test('one press sends the whole-blob PATCH and then the apply — and preserves every other settings key', async () => {
+    const { getByRole, apiMock } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={labelled} devices={[labelled]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-1/label/apply': { body: labelState('applied', null) },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(apiMock.calls.some((c) => c.path === '/api/devices/dev-1/label/apply' && c.method === 'POST')).toBe(true))
+
+    const patch = apiMock.calls.find((c) => c.method === 'PATCH')
+    expect(patch).toBeTruthy()
+    const settings = (patch?.body as { settings: Record<string, unknown> }).settings
+    // `PATCH /api/devices/:id` REPLACES the whole blob — plan 124 §3.5's
+    // reason the action is two requests at all. A patch body carrying only
+    // `labelling` would silently wipe this device's proxy settings.
+    expect(settings.proxy).toEqual({ mode: 'off' })
+    expect(settings.labelling).toEqual({ mode: 'wallpaper', showName: true })
+    // And no GET first — the popup already holds this device's settings, so a
+    // re-fetch would be a request paid for nothing (§3.5).
+    expect(apiMock.calls.some((c) => c.method === 'GET' && c.path === '/api/devices/dev-1')).toBe(false)
+  })
+
+  test('`applied` is a success toast naming the device with its number', async () => {
+    const { getByRole } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={labelled} devices={[labelled]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-1/label/apply': { body: labelState('applied', null) },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+    expect(toastSuccess.mock.calls[0]?.[0]).toContain('#7 moto g06')
+    expect(toastError).not.toHaveBeenCalled()
+    expect(toastWarning).not.toHaveBeenCalled()
+  })
+
+  test('`partial` is a WARNING carrying the service’s own reason — never worded as success', async () => {
+    const reason = 'only the home screen accepted the label — the other surface likely refused it (an OEM skin, plan 89 §0.2 H5)'
+    const { getByRole } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={labelled} devices={[labelled]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-1/label/apply': { body: labelState('partial', reason) },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(toastWarning).toHaveBeenCalled())
+    // Acceptance criterion 9: no state is rounded up.
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(toastWarning.mock.calls[0]?.[0]).toContain('#7 moto g06')
+    // The reason is the SERVER's, verbatim — it is what names which surface took.
+    expect(toastWarning.mock.calls[0]?.[1]?.description).toBe(reason)
+  })
+
+  test('`unavailable` is an ERROR carrying the reason — never worded as success', async () => {
+    const reason = "this device's guest agent has no screen-label capability"
+    const { getByRole } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={labelled} devices={[labelled]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-1/label/apply': { body: labelState('unavailable', reason) },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(toastError.mock.calls[0]?.[1]?.description).toBe(reason)
+  })
+
+  test('`stale` is reported as itself — neither success nor error', async () => {
+    const { getByRole } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={labelled} devices={[labelled]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-1/label/apply': { body: labelState('stale', null) },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(toastWarning).toHaveBeenCalled())
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(toastWarning.mock.calls[0]?.[0]).toContain('stale')
+  })
+})
+
+describe('ActionsList — Set number as wallpaper is disabled with a stated reason (plan 124 §4.6, criterion 10)', () => {
+  // Every one of these is checked LOCALLY, before any request — a dead click
+  // is worse than a stated refusal, and each of these facts is already in hand.
+  const cases: Array<[string, DeviceDetailInfo]> = [
+    ['no number', { ...usbDevice, number: null, agent: 'ready' } as unknown as DeviceDetailInfo],
+    ['offline', { ...usbDevice, number: 7, agent: 'ready', status: 'offline' } as unknown as DeviceDetailInfo],
+    ['no guest agent', { ...usbDevice, number: 7, agent: 'absent' } as unknown as DeviceDetailInfo],
+  ]
+  for (const [name, device] of cases) {
+    test(`${name}: the row does not fire a request`, async () => {
+      const { getByRole, apiMock } = renderWithApi(
+        <TooltipProvider>
+          <ActionsList deviceId="dev-1" device={device} devices={[device]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+        </TooltipProvider>,
+      )
+      fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+      // The click is intercepted by `preventDefault` (the `Row` component's
+      // styling-only disabled path, kept so the tooltip explaining WHY still
+      // fires) — nothing reaches the network.
+      expect(apiMock.calls.some((c) => c.path.includes('label'))).toBe(false)
+      expect(apiMock.calls.some((c) => c.method === 'PATCH')).toBe(false)
+    })
+  }
+
+  test('a quarantined device is refused for the same reason an offline one is', () => {
+    const quarantined = { ...usbDevice, number: 7, agent: 'ready', status: 'quarantined' } as unknown as DeviceDetailInfo
+    const { getByRole, apiMock } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList deviceId="dev-1" device={quarantined} devices={[quarantined]} assistState="unavailable" canUseLive onAssistSelect={noop} onDeviceReloaded={noop} onForgotten={noop} />
+      </TooltipProvider>,
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    expect(apiMock.calls.some((c) => c.method === 'PATCH')).toBe(false)
+  })
+})
+
+describe('ActionsList — Set number as wallpaper over the whole candidate set (plan 124 §4.6, criterion 11)', () => {
+  const other = { ...labelled, id: 'dev-2', label: 'moto g07', number: 8 } as unknown as DeviceDetailInfo
+
+  test('sets the mode on every candidate, applies ONCE, and groups the outcomes by state', async () => {
+    const { getByRole, getByText, apiMock } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList
+          deviceId="dev-1"
+          device={labelled}
+          devices={[labelled, other]}
+          selectedIds={['dev-1', 'dev-2']}
+          assistState="unavailable"
+          canUseLive
+          onAssistSelect={noop}
+          onDeviceReloaded={noop}
+          onForgotten={noop}
+        />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-2': { body: detailBody('dev-2', 'moto g07') },
+        '/api/devices/labels/apply': {
+          body: {
+            total: 2,
+            results: [
+              { deviceId: 'dev-1', state: labelState('applied', null), error: null },
+              { deviceId: 'dev-2', state: labelState('unavailable', "this device's guest agent has no screen-label capability"), error: null },
+            ],
+          },
+        },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(getByText('Set number as wallpaper — result')).toBeTruthy())
+
+    // One PATCH per device, and exactly ONE fleet apply — never one apply per
+    // device (plan 124 §4.6).
+    expect(apiMock.calls.filter((c) => c.method === 'PATCH').length).toBe(2)
+    expect(apiMock.calls.filter((c) => c.path === '/api/devices/labels/apply').length).toBe(1)
+
+    // `applied` is the only ok. The refusal is named, with the server's own
+    // words — never a flattened "1 failed".
+    expect(getByText('1 ok · 0 failed · 1 skipped (2/2)')).toBeTruthy()
+    expect(getByText("this device's guest agent has no screen-label capability")).toBeTruthy()
+  })
+
+  test('a device whose mode PATCH fails is reported as failed and is left out of the apply', async () => {
+    const { getByRole, getByText, apiMock } = renderWithApi(
+      <TooltipProvider>
+        <ActionsList
+          deviceId="dev-1"
+          device={labelled}
+          devices={[labelled, other]}
+          selectedIds={['dev-1', 'dev-2']}
+          assistState="unavailable"
+          canUseLive
+          onAssistSelect={noop}
+          onDeviceReloaded={noop}
+          onForgotten={noop}
+        />
+      </TooltipProvider>,
+      {
+        '/api/devices/dev-1': { body: detailBody('dev-1', 'moto g06') },
+        '/api/devices/dev-2': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'settings write failed' } } },
+        '/api/devices/labels/apply': {
+          body: { total: 1, results: [{ deviceId: 'dev-1', state: labelState('applied', null), error: null }] },
+        },
+      },
+    )
+    fireEvent.click(getByRole('button', { name: 'Set number as wallpaper' }))
+    await waitFor(() => expect(getByText('Set number as wallpaper — result')).toBeTruthy())
+
+    const apply = apiMock.calls.find((c) => c.path === '/api/devices/labels/apply')
+    expect((apply?.body as { deviceIds: string[] }).deviceIds).toEqual(['dev-1'])
+    expect(getByText('1 ok · 1 failed · 0 skipped (2/2)')).toBeTruthy()
+    expect(getByText('settings write failed')).toBeTruthy()
   })
 })

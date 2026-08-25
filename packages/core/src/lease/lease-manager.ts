@@ -286,7 +286,27 @@ export function createLeaseManager(deps: LeaseManagerDeps): LeaseManager {
         if (!opts?.takeOverFrom) {
           throw new EnkakuError('device_held_by_other', `the device is controlled by ${currentHolder?.label ?? 'another client'}`)
         }
-        if (!current || opts.takeOverFrom !== current.holder) {
+        // The CAS accepts EITHER id the holder can be known by — the WS
+        // `holder` (clientId) or the authenticated `holderUserId` — because
+        // those are the two things a client could have been shown.
+        //
+        // Comparing against `current.holder` alone was a real bug, and a
+        // total one: `toHolder` above publishes `lease.holderUserId ??
+        // lease.holder`, so on any farm with auth ON, every `LeaseHolder.id`
+        // that ever reached a browser was a **userId**, while this line only
+        // ever accepted a **clientId**. They can never be equal, so EVERY
+        // takeover on an authenticated farm was refused with
+        // `lease_holder_changed` — plan 71 §3.4's whole path, dead since auth
+        // shipped, and reported from the field as "take control keeps getting
+        // in the way" (plan 125 §0.8). Found by plan 125 step 125.5, whose
+        // "Resume control here" runs through this same CAS.
+        //
+        // Widening it does not weaken the check: both ids identify the SAME
+        // lease this branch already read, so a stale dialog drawn against a
+        // holder who has since been replaced still fails, which is the
+        // property §3.4 actually asks for.
+        const matchesHolder = current !== null && (opts.takeOverFrom === current.holder || opts.takeOverFrom === current.holderUserId)
+        if (!matchesHolder) {
           // The CAS failed: the dialog was drawn against a holder who is no
           // longer the real one (plan 71 §3.4, §8) — refused, naming whoever
           // holds it NOW, never silently displacing them.

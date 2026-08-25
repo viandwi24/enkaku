@@ -22,6 +22,10 @@ function makeDevice(id: string, label: string, overrides: Partial<DeviceInfo> = 
     id,
     stableId: id,
     serial: id,
+    // Plan 124 step 124.3 — every fixture here carries a number, because the
+    // report `SkippedGroups` renders is precisely the surface that has to tell
+    // two identically labelled phones apart.
+    number: Number(id.replace(/\D/g, '')) || null,
     label,
     androidVersion: '15',
     apiLevel: 35,

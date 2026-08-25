@@ -24,6 +24,7 @@ const device = {
   id: 'device-1',
   stableId: 'stable-1',
   serial: 'serial-1',
+  number: 7,
   label: 'Pixel 7',
   androidVersion: '14',
   apiLevel: 34,
@@ -63,6 +64,24 @@ describe('RunScriptDialog — smoke render', () => {
     )
     await waitFor(() => expect(screen.getByText('Run checkout')).toBeTruthy())
     expect(screen.getByRole('button', { name: 'Run' })).toBeTruthy()
+  })
+
+  /**
+   * Plan 124 §4.4, step 124.3 — the locked-device readout. `lockedDevice` is
+   * the popup/device-page path where the target is fixed and the script is
+   * the question; that one line is the only thing telling the operator which
+   * phone the script is about to touch, and it named a model until now. The
+   * script `<Select>` above it is deliberately NOT converted here — plan 124
+   * §4.5 turns it into a `Combobox` in its own step.
+   */
+  test('a locked device is named with its number in the "running on" readout', async () => {
+    renderWithApi(
+      <RunScriptDialog script={script} devices={[device]} lockedDevice={device} onClose={() => {}} />,
+      { '/api/clusters*': { body: { items: [], nextCursor: null, total: 0 } } },
+    )
+    await waitFor(() => expect(screen.getByText('running on')).toBeTruthy())
+    expect(screen.getByText('#7')).toBeTruthy()
+    expect(screen.getByText('Pixel 7')).toBeTruthy()
   })
 
   test('no scripts published: shows the "nothing published" message', () => {

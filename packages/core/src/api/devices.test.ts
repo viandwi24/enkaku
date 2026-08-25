@@ -2045,11 +2045,56 @@ describe('GET /api/devices/refs — dangling-reference resolution (plan 47 §4.5
     const res = await app.request('/refs?ids=a,gone-1,never-existed')
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
-      refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean }>
+      refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean; number: number | null }>
     }
-    expect(body.refs.a).toEqual({ id: 'a', label: 'Test Phone', stableId: 'stable-a', deleted: false })
-    expect(body.refs['gone-1']).toEqual({ id: 'gone-1', label: 'Old Phone', stableId: 'stable-gone-1', deleted: true })
+    // `number: null` for both — neither seeded device holds a `device_numbers`
+    // reservation (plan 89 §3.3: a missing number is a real state, never an
+    // error, and never `0` or `undefined` on the wire).
+    expect(body.refs.a).toEqual({ id: 'a', label: 'Test Phone', stableId: 'stable-a', deleted: false, number: null })
+    expect(body.refs['gone-1']).toEqual({ id: 'gone-1', label: 'Old Phone', stableId: 'stable-gone-1', deleted: true, number: null })
     expect(body.refs['never-existed']).toBeUndefined()
+  })
+
+  /**
+   * Plan 124 §3.7, §3.1 — the highest-value of that section's five payloads.
+   * Studio's `deviceRefLabel` (`packages/studio/src/lib/api.ts`) calls itself
+   * "the one place this formatting rule lives", and it could not obey the
+   * rule while `DeviceRef` carried no number at all: a jobs list naming three
+   * phones all labelled `SM-F721U1` was unreadable.
+   *
+   * The number rides as its own field, NOT composed into `label` — plan 124
+   * §3.1's rule that the number composes at render time and never enters the
+   * stored label, so nothing downstream has to parse `#7` back out.
+   */
+  test('a live ref carries its allocated number as its own field, leaving label untouched (plan 124 §3.7)', async () => {
+    const { db, app } = makeApp()
+    seedDevice(db, 'a')
+    allocateDeviceNumber(db, 'stable-a')
+
+    const res = await app.request('/refs?ids=a')
+    const body = (await res.json()) as { refs: Record<string, { label: string | null; number: number | null }> }
+    expect(body.refs.a?.number).toBe(1)
+    expect(body.refs.a?.label).toBe('Test Phone')
+  })
+
+  /**
+   * `forget()` deliberately leaves the `device_numbers` row standing (plan 89
+   * §3.2's sticky-reservation guarantee), and `device_numbers` is keyed on
+   * `stableId` — which `deleted_devices` also carries. So a forgotten device
+   * keeps its number in every historical reference to it, rather than losing
+   * half the identity that made a job row findable in the first place. This
+   * asserts the deleted half of the route reads the SAME map as the live half.
+   */
+  test('a deleted ref keeps the number its stableId still reserves (plan 89 §3.2 + plan 124 §3.7)', async () => {
+    const { db, app } = makeApp()
+    db.insert(deletedDevices).values({ id: 'gone-1', stableId: 'stable-gone-1', label: 'Old Phone', deletedAt: new Date() }).run()
+    allocateDeviceNumber(db, 'stable-gone-1')
+
+    const res = await app.request('/refs?ids=gone-1')
+    const body = (await res.json()) as {
+      refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean; number: number | null }>
+    }
+    expect(body.refs['gone-1']).toEqual({ id: 'gone-1', label: 'Old Phone', stableId: 'stable-gone-1', deleted: true, number: 1 })
   })
 
   test('no permission required — the same "reads stay open" rule as GET /:id', async () => {

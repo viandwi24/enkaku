@@ -106,7 +106,10 @@ import verifyEgressScript from './verify-egress'
  * `describeUncovered` printed `label` alone, which repeats uselessly once a
  * farm has more than one device of the same model (the owner's farm printed
  * "SM-F721U1, SM-F721U1, SM-F721U1"); it now prints `label (address)`, and
- * the Settings tab's own separate "Uncovered:" line does the same. (3) Two
+ * the Settings tab's own separate "Uncovered:" line does the same — and as
+ * of plan 124 step 124.7 that `label` also carries the device NUMBER, which
+ * is the answer the owner's complaint was actually asking for (`#7 SM-F721U1
+ * (192.168.10.15)`). (3) Two
  * UI strings still claimed this plugin could not write to the router — the
  * view description below, and the Preferences card's description in
  * `ui/parts/settings.tsx` — stale since 122.6 shipped the write path;

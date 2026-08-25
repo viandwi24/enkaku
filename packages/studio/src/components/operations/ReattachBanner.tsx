@@ -23,6 +23,19 @@ export function ReattachBanner({
   verb,
 }: {
   reattach: ReattachResult
+  /**
+   * Plan 124 §4.4, step 124.3 — this must already produce the COMPOSED name
+   * (`#7 Galaxy A15`), not a bare label. Both callers build it with
+   * `deviceLabelIn()` (`components/bulk/SkippedGroups.tsx`), which is the one
+   * definition of that composition for the bulk dialogs.
+   *
+   * The number is not composed here, inside the banner, because the banner
+   * only ever has device *ids* — the pool that knows a device's number lives
+   * in the calling dialog. Widening this prop into an object lookup would have
+   * pushed that pool through a component that has no other use for it, which
+   * is the "never a widened object" half of §3.7 applied to a prop rather than
+   * a payload.
+   */
   deviceLabel: (id: string) => string
   /** e.g. "installing", "pushing", "pulling" — the ongoing-tense verb this banner names. */
   verb: string

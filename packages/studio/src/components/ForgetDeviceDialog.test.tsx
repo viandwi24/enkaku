@@ -20,6 +20,7 @@ const device: DeviceInfo = {
   id: 'dev-1',
   stableId: 'ZP2222RMBS',
   serial: 'ZP2222RMBS',
+  number: 7,
   label: 'moto g06',
   androidVersion: '15',
   apiLevel: 35,
@@ -42,7 +43,21 @@ describe('ForgetDeviceDialog', () => {
       <ForgetDeviceDialog device={device} open={true} onOpenChange={() => {}} onDone={() => {}} />,
       {},
     )
+    // Plan 124 §0.1, criterion 5, step 124.3 — the most destructive confirm in
+    // the product names the PHONE, not the model. `moto g06` alone is what
+    // three identical handsets in a rack all answer to.
+    expect(getByText('Forget #7 moto g06?')).toBeTruthy()
+  })
+
+  // Criterion 7 — a device with no number keeps its bare label, with no stray
+  // `#` and no `#null`.
+  test('a device with no number is named by its bare label', () => {
+    const { getByText } = renderWithApi(
+      <ForgetDeviceDialog device={{ ...device, number: null }} open={true} onOpenChange={() => {}} onDone={() => {}} />,
+      {},
+    )
     expect(getByText('Forget moto g06?')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('#null')
   })
 
   test('"also delete history" fetches and shows the real counts', async () => {

@@ -1,6 +1,19 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, waitFor } from '@testing-library/react'
 import { cleanup, renderWithApi } from '@/lib/test/render'
+
+/**
+ * The success toast is the ONLY place this dialog names a device, so plan 124
+ * §4.4's rule is only testable through it. Stubbing the whole `sonner` module
+ * — `Toaster` included — rather than `toast` alone: `@enkaku/ui` re-exports
+ * `Toaster`, and a `toast`-only stub makes the module graph fail to link.
+ */
+const toastSuccess = mock((_message: string, _opts?: { description?: string }) => {})
+const toastError = mock((_message: string, _opts?: { description?: string }) => {})
+mock.module('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}))
 
 // See `AdbEndpointCard.test.tsx` for why `@/lib/ws` needs mocking even
 // though this component never subscribes to it directly: `api()` reads
@@ -15,6 +28,11 @@ mock.module('@/lib/ws', () => ({
 const { AdbRestartDialog } = await import('./AdbRestartDialog')
 
 afterEach(cleanup)
+
+beforeEach(() => {
+  toastSuccess.mockClear()
+  toastError.mockClear()
+})
 
 const IDLE_PREVIEW = {
   devicesTotal: 20,
@@ -130,5 +148,47 @@ describe('AdbRestartDialog', () => {
     await waitFor(() => expect(apiMock.calls.some((c) => c.path === '/api/tools/adb/restart')).toBe(true))
     const call = apiMock.calls.find((c) => c.path === '/api/tools/adb/restart')
     expect(call?.body).toEqual({ force: true })
+  })
+  /**
+   * Plan 124 §4.4 Group D, criterion 6. `reattachFailed` carries `number` as
+   * its own field and this dialog composes it exactly once — a farm of
+   * identical models otherwise reports `SM-F721U1, SM-F721U1`, which names
+   * nothing and is the exact complaint plan 124 was opened from. The second
+   * row has `number: null` and must come back BARE: no `#`, no `#null`
+   * (criterion 7).
+   */
+  test('names every device that did not reconnect by number, and a numberless one bare', async () => {
+    const { getByText, apiMock } = renderWithApi(<AdbRestartDialog trigger={<button>open</button>} />, {
+      '/api/tools/adb/restart-preview': { body: IDLE_PREVIEW },
+      '/api/tools/adb/restart': {
+        body: {
+          reason: 'restart',
+          durationMs: 8000,
+          sessionsClosed: 0,
+          leasesReleased: 0,
+          jobsFailed: [],
+          devicesBefore: 20,
+          devicesAfter: 18,
+          reattachAttempted: 12,
+          reattachSucceeded: 10,
+          reattachFailed: [
+            { stableId: 'stable-a', label: 'SM-F721U1', number: 7 },
+            { stableId: 'stable-b', label: 'SM-F721U1', number: null },
+          ],
+          serverVersion: '0041',
+        },
+      },
+    })
+    fireEvent.click(getByText('open'))
+    await waitFor(() => expect(getByText(/all 20 devices/)).toBeTruthy())
+    fireEvent.click(getByText('Restart adb server'))
+    await waitFor(() => expect(apiMock.calls.some((c) => c.path === '/api/tools/adb/restart')).toBe(true))
+    await waitFor(() => expect(toastSuccess.mock.calls.length).toBe(1))
+    const description = toastSuccess.mock.calls[0]?.[1]?.description ?? ''
+    expect(description).toContain('#7 SM-F721U1')
+    // The numberless device is named bare — asserted on the joined string so a
+    // stray `#null` or a doubled `#7 #7` fails here rather than shipping.
+    expect(description).toContain('#7 SM-F721U1, SM-F721U1')
+    expect(description).not.toContain('#null')
   })
 })

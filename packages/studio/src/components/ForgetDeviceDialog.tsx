@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { DeviceHistoryCountsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import { z } from 'zod'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, Switch, api, type ApiError } from '@enkaku/ui'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, Switch, api, formatDeviceName, type ApiError } from '@enkaku/ui'
 import { toast } from 'sonner'
 
 interface HistoryCounts {
@@ -68,6 +68,14 @@ export function ForgetDeviceDialog({
 
   if (!device) return null
 
+  // Plan 124 §0.1, §4.4, step 124.3 — the composed name, used for EVERY
+  // mention of this device below. This is the most destructive confirm in the
+  // product, and until now it read `Forget SM-F721U1?` on a rack holding three
+  // of them: the title named a model, and the operator had no way to tell from
+  // the dialog which phone was about to leave the fleet. One `const` rather
+  // than three call sites so the title and both toasts can never drift apart.
+  const name = formatDeviceName(device.number, device.label)
+
   // The confirm button stays disabled until the promised counts are actually
   // on screen (plan 47 §3.4, §6.6) — nobody should discover that number
   // afterwards.
@@ -82,7 +90,7 @@ export function ForgetDeviceDialog({
       // body (only success/failure matters here), so a permissive ad-hoc "some object came back"
       // schema rather than a new export for a value nothing reads.
       await api(`/api/devices/${device.id}?deleteHistory=${deleteHistory}`, z.object({}).passthrough(), { method: 'DELETE' })
-      toast.success(`${device.label} forgotten`)
+      toast.success(`${name} forgotten`)
       onOpenChange(false)
       onDone()
     } catch (err) {
@@ -101,7 +109,7 @@ export function ForgetDeviceDialog({
     try {
       // Same reasoning as the DELETE above: `POST /:id/block` returns `{ blocked: {...} }`, unread here.
       await api(`/api/devices/${device.id}/block`, z.object({}).passthrough(), { method: 'POST', json: {} })
-      toast.success(`${device.label} blocked`)
+      toast.success(`${name} blocked`)
       onOpenChange(false)
       onDone()
     } catch (err) {
@@ -115,7 +123,7 @@ export function ForgetDeviceDialog({
     <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
       <DialogContent overlay={!nonModal}>
         <DialogHeader>
-          <DialogTitle>Forget {device.label}?</DialogTitle>
+          <DialogTitle>Forget {name}?</DialogTitle>
           <DialogDescription>
             Removes it from the fleet: the device row, its tags, and its cluster membership. Its jobs, artifacts, and
             events are kept — they still show up wherever they already do, labelled as a deleted device.

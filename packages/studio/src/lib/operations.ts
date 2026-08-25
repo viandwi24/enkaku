@@ -13,7 +13,7 @@ import {
   type TransferKind,
   type TransferRecord,
 } from '@enkaku/protocol'
-import { api } from '@enkaku/ui'
+import { api, formatDeviceName } from '@enkaku/ui'
 import { fetchDevices } from './api'
 import { ws } from './ws'
 
@@ -700,6 +700,18 @@ export interface UseOperationsResult {
   operations: Operation[]
   devices: DeviceInfo[]
   loading: boolean
+  /**
+   * A device's operator-facing name — `#7 Galaxy A15`, or the bare label when
+   * it has no number (plan 124 §4.4, step 124.3). Composed here rather than at
+   * each render site because `OperationTray` is mounted at the shell and is
+   * visible on EVERY screen: it is the one surface an operator sees while
+   * looking at something else entirely, which is exactly when a row reading
+   * `SM-F721U1, SM-F721U1 +3` tells them nothing about which phones are busy.
+   *
+   * Falls back to the raw id for a device that is not (or no longer) in the
+   * store's snapshot, unnumbered — an operation can outlive the device row it
+   * targets, and inventing a `#` for it would be a lie about identity.
+   */
   deviceLabel: (id: string) => string
 }
 
@@ -714,6 +726,9 @@ export interface UseOperationsResult {
  */
 export function useOperations(store: OperationsStore = operationsStore): UseOperationsResult {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot)
-  const deviceLabel = (id: string): string => state.devices.find((d) => d.id === id)?.label ?? id
+  const deviceLabel = (id: string): string => {
+    const d = state.devices.find((x) => x.id === id)
+    return d ? formatDeviceName(d.number, d.label) : id
+  }
   return { operations: state.operations, devices: state.devices, loading: state.loading, deviceLabel }
 }

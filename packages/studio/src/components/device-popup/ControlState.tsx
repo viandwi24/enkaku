@@ -79,25 +79,48 @@ export function humanTtl(seconds: number): string {
  *   "Close" instead. Reaching the dialog is the fix; the dialog's own,
  *   already-correct per-kind behaviour needed no change.
  *
- * `held-by-human` is deliberately left **undecided** (plan 105 §9 Q1): the
- * owner's original ruling (plan 91 §0.3) covered a JOB holding the device —
- * a warning, not a permission request, because the lease was never going to
- * move. Nothing in that ruling says whether "join them" (Assist) or "take it
- * from them" (a forced takeover) should be the DEFAULT act when the holder is
- * a PERSON instead — the two carry different social consequences, and
- * guessing here is exactly how the reported collision was built the first
- * time. So this state offers both, weighted equally, with a caption saying
- * plainly that the choice is not yet made for the operator — never a silent
- * pick of one over the other.
+ * **`held-by-human` was left undecided for one milestone; plan 125 §3.11
+ * decides it (2026-08-25).** The owner's original ruling (plan 91 §0.3)
+ * covered a JOB holding the device — a warning, not a permission request,
+ * because the lease was never going to move. Nothing in that ruling said
+ * whether "join them" (Assist) or "take it from them" (a forced takeover)
+ * should be the DEFAULT act when the holder is a PERSON instead, so plan 105
+ * step 105.1 shipped the state as designed-undecided: both actions, equal
+ * weight, and a caption in the popup saying the choice was not yet made.
+ * That caption reached a real operator's screen (plan 125 §0.8, report 3),
+ * which `docs/design.md`'s writing rules do not allow — we do not hand an
+ * operator our own indecision. The answer, plan 125 §3.11: **for a person,
+ * Take control is primary and Assist is secondary** — this product's normal
+ * operator is one person driving a rack, so the overwhelmingly common intent
+ * is "I want this phone", and Assist is the specialised second choice. Both
+ * actions still carry their own plain explanation (`ControlAction.description`
+ * below); what is gone is the caption that explained nothing.
  *
  * `held-by-human` also covers an **agent** holder, not only a person: an
  * agent's lease is `takeable: true` (`lease-manager.ts`'s `toHolder`) exactly
- * like a person's, and the plan's own open question is scoped to "who holds
- * it, not what kind of actor it is" — the discriminator used below is
- * `holder.takeable`, matching the lease manager's own semantics, not a
- * literal `kind === 'user'` check. A JOB's hold is the one kind that is
- * never takeable, which is what makes `held-by-job` the one state the owner
- * already ruled on.
+ * like a person's, so the discriminator for the STATE stays `holder.takeable`,
+ * matching the lease manager's own semantics rather than a literal
+ * `kind === 'user'` check. A JOB's hold is the one kind that is never
+ * takeable, which is what makes `held-by-job` the one state the owner already
+ * ruled on. **Within** the state, though, the holder's `kind` is what decides
+ * the WEIGHTING (`held-by-human.weighting`, §3.11): joining a running
+ * automation is a genuinely likely intent, so an agent holder keeps the two
+ * actions equal, while a person holder promotes Take control. Two different
+ * questions — "is this one state or two" (takeable) and "which act is the
+ * likely one" (kind) — deliberately answered by two different fields.
+ *
+ * **A device you already hold somewhere else is not held by a stranger
+ * (plan 125 §3.10, step 125.5).** `held-by-me-elsewhere` sits between
+ * `i-hold` and `free`, for the case that produced report 3 verbatim: take
+ * control in one tab, close it (an explicitly-taken lease is deliberately
+ * NOT released on close — `DevicePopup.tsx`'s own rule), reopen or open a
+ * second tab, and the fresh popup has no `myLeaseExpiresAt` of its own while
+ * the device is `manual` and held by *you*. Before this state existed that
+ * fell through to `held-by-human` and the popup told the operator their own
+ * email address was using the device. Its one action is **Resume control
+ * here**, never a takeover: you cannot take a device from yourself, and a
+ * confirmation dialog asking you to seize your own phone is worse than
+ * useless.
  *
  * **One hook, three surfaces (§4).** `DevicePopup.tsx` is the only surface
  * that ever tracks "do I personally hold this device's lease/assist grant" —
@@ -195,7 +218,7 @@ export function assistEndCopy(reason: AssistEndReason, grantTtlSec: number): { m
   }
 }
 
-export type ControlActionKind = 'take-control' | 'assist' | 'release-control' | 'stop-assisting' | 'take-over'
+export type ControlActionKind = 'take-control' | 'assist' | 'release-control' | 'stop-assisting' | 'take-over' | 'resume-control'
 
 /**
  * Metadata for the one action a state offers — deliberately NOT a bound
@@ -211,16 +234,51 @@ export interface ControlAction {
   kind: ControlActionKind
   label: string
   disabledReason: string | null
+  /**
+   * One plain line saying what this action DOES, or `null` where the state's
+   * own sentence already says it (plan 125 §3.11, step 125.6).
+   *
+   * Non-null exactly where a state offers a real CHOICE between two acts with
+   * different consequences for someone else — today that is `held-by-human`'s
+   * Take control / Assist pair, which used to be captioned "Join them, or
+   * take over — not decided which should be the default here": our own open
+   * design question, rendered verbatim to an operator (plan 125 §0.8). The
+   * caption is gone; each button now explains itself instead.
+   *
+   * Deliberately `null` for a state whose one action is unambiguous from the
+   * sentence above it (`free` → "Nobody holds this device.", `i-hold` → a
+   * countdown, `held-by-me-elsewhere` → "You are already controlling this
+   * device somewhere else."). Repeating the obvious beside a lone button is
+   * noise, and `docs/design.md`'s writing rules are as much about what not
+   * to say.
+   */
+  description: string | null
 }
 
 export type ControlState =
   | { kind: 'free'; primary: ControlAction }
   /** A job holds it — the owner's own ruling (plan 91 §0.3): Assist is a warning, not a permission request, because the lease was never going to move. `secondary` reaches `TakeControlDialog` (audit row 26) — which, for a job, shows "View job"/"Close" rather than an actual takeover button, since a job's hold is never takeable. */
   | { kind: 'held-by-job'; holder: LeaseHolder; primary: ControlAction; secondary: ControlAction }
-  /** A person (or an agent — see the file header) holds it. Deliberately undecided (§9 Q1): both actions are offered, neither is primary. */
-  | { kind: 'held-by-human'; holder: LeaseHolder; undecided: true; options: ControlAction[] }
+  /**
+   * A person (or an agent — see the file header) who is NOT you holds it.
+   * `options` is always ordered most-prominent-first; `weighting` says
+   * whether that order means anything (plan 105 §9 Q1, answered by plan 125
+   * §3.11): `'take-over-first'` for a person — Take control is the primary
+   * action and Assist the secondary — and `'equal'` for an agent, where
+   * joining a running automation is a genuinely likely intent and neither
+   * act is the obvious default.
+   */
+  | { kind: 'held-by-human'; holder: LeaseHolder; weighting: 'take-over-first' | 'equal'; options: ControlAction[] }
   /** This client holds the manual lease. */
   | { kind: 'i-hold'; expiresAt: number; primary: ControlAction }
+  /**
+   * YOU hold it — in another tab, window, or browser, not in this client
+   * (plan 125 §3.10, step 125.5). Reached only when `myLeaseExpiresAt` says
+   * nothing (this client never acquired the lease itself) AND the holder's
+   * authenticated `userId` is yours. Its one action moves the lease here; it
+   * is never worded, weighted, or confirmed as a takeover.
+   */
+  | { kind: 'held-by-me-elsewhere'; holder: LeaseHolder; primary: ControlAction }
   /** This client holds an assist grant. */
   | { kind: 'i-assist'; expiresAt: number; primaryHolder: LeaseHolder; primary: ControlAction }
 
@@ -228,24 +286,96 @@ export interface UseControlStateInput {
   status: DeviceStatus | null
   heldBy: LeaseHolder | null
   /**
-   * THIS client's own manual lease, as an epoch-ms expiry, or `null`. Never
-   * derived by comparing `heldBy.id` to a session id: once a farm has real
-   * auth, `toHolder` (`lease-manager.ts`) resolves a person's `id` to their
-   * authenticated `userId`, not the WS `clientId` — the same reason the
-   * legacy device page tracks this from its own presence/viewer list rather
-   * than an id comparison. The popup tracks it from its own `lease.acquire`
-   * response instead, which is unambiguous regardless of auth.
+   * THIS client's own manual lease, as an epoch-ms expiry, or `null`. The
+   * popup tracks it from its own `lease.acquire` response, which is
+   * unambiguous regardless of auth — it is a fact about this client, not an
+   * inference about a person.
+   *
+   * **This comment used to end with a prohibition that has since expired,
+   * and the correction is worth keeping visible** (plan 125 §0.8): it said
+   * this must be "never derived by comparing `heldBy.id` to a session id:
+   * once a farm has real auth, `toHolder` (`lease-manager.ts`) resolves a
+   * person's `id` to their authenticated `userId`, not the WS `clientId`."
+   * The observation was right and the conclusion aged out. Comparing
+   * `heldBy.id` to a SESSION id is still wrong, for exactly that reason —
+   * but auth shipped, `GET /api/auth/me` returns a `user.id`, and comparing
+   * `heldBy.id` to THAT is now precisely the correct check. It is what
+   * `myUserId` below does, and what stops the popup naming the operator to
+   * themselves as the device's current holder. What has NOT changed is which
+   * of the two is authoritative: this field stays the first check, because
+   * "one of my clients holds it" and "THIS client holds it" are different
+   * facts and only one of them licenses input.
    */
   myLeaseExpiresAt: number | null
   /** THIS client's own assist grant, or `null`. */
   myAssistGrant: { expiresAt: number; primary: LeaseHolder } | null
   coControlMode: CoControlMode
+  /**
+   * The signed-in user's `id` (`GET /api/auth/me` → `user.id`, read from
+   * `useAuth()`), or `null` when nobody is signed in — plan 125 §3.10, step
+   * 125.5.
+   *
+   * **Optional on purpose.** Three surfaces call this hook only to read
+   * `state.kind`/`state.holder` for a badge and never render an action at
+   * all (a Wall tile, a device card, `wall/DeviceContextMenu.tsx` — see the
+   * file header's "one hook, three surfaces"); none of them has, or needs,
+   * an auth context, and an omitted value behaves exactly like `null`, which
+   * is exactly today's behaviour. `DevicePopup.tsx` — the one surface that
+   * offers control actions — always passes it explicitly.
+   *
+   * `null` (auth disabled, or a local farm with no signed-in user) must
+   * change NOTHING about how this function behaves — plan 125 acceptance
+   * criterion 10, pinned by its own test in `ControlState.test.ts`.
+   */
+  myUserId?: string | null
 }
 
-const TAKE_OVER: ControlAction = { kind: 'take-over', label: 'Take control…', disabledReason: null }
+/**
+ * Shared by `held-by-job` (where it is a quiet secondary link with no
+ * description — the owner's ruling, plan 91 §0.3, already settled that case
+ * and `TakeControlDialog` shows "View job"/"Close" for it anyway) and by
+ * `held-by-human`, which re-describes it below: "ends their control" is the
+ * honest sentence for a person or an agent and a plainly wrong one for a
+ * job's untakeable hold, so the wording lives with the state that renders
+ * it rather than on the shared constant.
+ */
+const TAKE_OVER: ControlAction = { kind: 'take-over', label: 'Take control…', disabledReason: null, description: null }
+
+/** §3.11's own answer, worded for the operator: what each of the two buttons actually does to the person already on the device. */
+const TAKE_OVER_DESCRIPTION = 'Ends their control and gives the device to you.'
+const ASSIST_DESCRIPTION = 'Drive alongside them — they keep control.'
 
 function assistUnavailableReason(coControlMode: CoControlMode): string | null {
   return coControlMode === 'off' ? 'Assisting is turned off for this farm.' : null
+}
+
+/**
+ * "Is the person holding this device the person reading this screen?" — plan
+ * 125 §3.10, step 125.5. The ONE definition of that comparison: both
+ * `computeControlState` below (which turns it into `held-by-me-elsewhere`)
+ * and `DevicePopup.tsx`'s widened auto-claim (§4.6: "idle, or held by me")
+ * read it here rather than each spelling out their own, so the state the
+ * popup renders and the claim it decides to make can never disagree.
+ *
+ * Returns the holder itself, not a boolean, so a caller that needs the id
+ * (the auto-claim's `takeOverFrom`) does not have to re-narrow `heldBy`.
+ *
+ * Every clause is load-bearing:
+ * - `myUserId` truthy, not merely non-null — an empty string would match any
+ *   holder whose id failed to resolve, and "everyone is me" is the one wrong
+ *   answer this whole idea has to avoid.
+ * - `kind === 'user'` — an agent's `id` is an agentId from an entirely
+ *   different id space (`toHolder`, `lease-manager.ts`), and a job's is a
+ *   jobId.
+ * - the id equality itself — `LeaseHolderSchema.id` is "clientId for a user
+ *   (or the authenticated userId when known)", and `toHolder` writes
+ *   `holderUserId ?? holder`, so a match here is always an AUTHENTICATED
+ *   match: an unauthenticated hold carries a bare clientId, which can never
+ *   equal a real `user.id`.
+ */
+export function heldByMe(heldBy: LeaseHolder | null, myUserId: string | null | undefined): LeaseHolder | null {
+  if (!myUserId || !heldBy) return null
+  return heldBy.kind === 'user' && heldBy.id === myUserId ? heldBy : null
 }
 
 /**
@@ -260,19 +390,30 @@ function assistUnavailableReason(coControlMode: CoControlMode): string | null {
  * 1. I hold an assist grant (`i-assist`) — the narrowest, most specific fact
  *    about THIS client.
  * 2. I hold the manual lease (`i-hold`).
- * 3. Nobody holds it (`free`).
- * 4. A job holds it (`held-by-job`).
- * 5. Someone else (person or agent) holds it (`held-by-human`).
+ * 3. I hold it somewhere else (`held-by-me-elsewhere`) — plan 125 §3.10.
+ * 4. Nobody holds it (`free`).
+ * 5. A job holds it (`held-by-job`).
+ * 6. Someone else (person or agent) holds it (`held-by-human`).
+ *
+ * **Steps 2 and 3 are ordered, not interchangeable, and must stay that way**
+ * (plan 125 §3.10, and its own §8 risk row). `myLeaseExpiresAt` is the
+ * unambiguous fact about THIS client — it came from this client's own
+ * `lease.acquire` response — and it is correct even with auth off, and even
+ * when two clients share one identity. The `myUserId` comparison is a
+ * second, weaker signal (it can only ever say "one of your clients holds
+ * it", never "this one does"), used exclusively when the first says nothing.
+ * Reordering them would make a client that genuinely holds the lease render
+ * "Resume control here" for a lease it is already holding.
  */
 export function computeControlState(input: UseControlStateInput): ControlState {
-  const { status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode } = input
+  const { status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode, myUserId = null } = input
 
   if (myAssistGrant) {
     return {
       kind: 'i-assist',
       expiresAt: myAssistGrant.expiresAt,
       primaryHolder: myAssistGrant.primary,
-      primary: { kind: 'stop-assisting', label: 'Stop assisting', disabledReason: null },
+      primary: { kind: 'stop-assisting', label: 'Stop assisting', disabledReason: null, description: null },
     }
   }
 
@@ -280,7 +421,20 @@ export function computeControlState(input: UseControlStateInput): ControlState {
     return {
       kind: 'i-hold',
       expiresAt: myLeaseExpiresAt,
-      primary: { kind: 'release-control', label: 'Release control', disabledReason: null },
+      primary: { kind: 'release-control', label: 'Release control', disabledReason: null, description: null },
+    }
+  }
+
+  // Plan 125 §3.10 (step 125.5) — report 3, at its source: this client did
+  // not acquire the lease, but the person who did is the person reading this
+  // screen. `heldByMe` above is the whole comparison, and why each half of
+  // it is there.
+  const mine = heldByMe(heldBy, myUserId)
+  if (mine) {
+    return {
+      kind: 'held-by-me-elsewhere',
+      holder: mine,
+      primary: { kind: 'resume-control', label: 'Resume control here', disabledReason: null, description: null },
     }
   }
 
@@ -291,6 +445,7 @@ export function computeControlState(input: UseControlStateInput): ControlState {
         kind: 'take-control',
         label: 'Take control',
         disabledReason: status && status !== 'idle' ? (UNAVAILABLE_REASON[status] ?? 'The device is unavailable') : null,
+        description: null,
       },
     }
   }
@@ -304,26 +459,40 @@ export function computeControlState(input: UseControlStateInput): ControlState {
     return {
       kind: 'held-by-job',
       holder: heldBy,
-      primary: { kind: 'assist', label: 'Assist', disabledReason: assistUnavailableReason(coControlMode) },
+      primary: { kind: 'assist', label: 'Assist', disabledReason: assistUnavailableReason(coControlMode), description: null },
       secondary: TAKE_OVER,
     }
   }
 
-  // A person or an agent — both takeable, both left undecided by §9 Q1.
-  return {
-    kind: 'held-by-human',
-    holder: heldBy,
-    undecided: true,
-    options: [{ kind: 'assist', label: 'Assist', disabledReason: assistUnavailableReason(coControlMode) }, TAKE_OVER],
+  // A person or an agent — both takeable (the file header has why the state
+  // is one, not two). Plan 105 §9 Q1, answered by plan 125 §3.11: a person's
+  // hold promotes Take control, because a single operator driving a rack
+  // overwhelmingly means "I want this phone"; an agent's hold keeps the pair
+  // equal, because joining a running automation is a genuinely likely intent.
+  // `options` is ordered most-prominent-first either way, so a renderer never
+  // has to re-derive the ranking from `weighting`.
+  const assist: ControlAction = {
+    kind: 'assist',
+    label: 'Assist',
+    disabledReason: assistUnavailableReason(coControlMode),
+    description: ASSIST_DESCRIPTION,
   }
+  const takeOver: ControlAction = { ...TAKE_OVER, description: TAKE_OVER_DESCRIPTION }
+  return heldBy.kind === 'agent'
+    ? { kind: 'held-by-human', holder: heldBy, weighting: 'equal', options: [assist, takeOver] }
+    : { kind: 'held-by-human', holder: heldBy, weighting: 'take-over-first', options: [takeOver, assist] }
 }
 
 /** `packages/studio/src/components/device-popup/ControlState.tsx` — plan 105's own declared artefact. See the file header for the full design. */
 export function useControlState(input: UseControlStateInput): ControlState {
-  const { status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode } = input
+  // `myUserId` is normalised to `null` here (not left `undefined`) so the
+  // memo key is stable across a caller that omits the field entirely and one
+  // that passes `null` — plan 125 §3.10; see `UseControlStateInput` for why
+  // the field is optional at all.
+  const { status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode, myUserId = null } = input
   return useMemo(
-    () => computeControlState({ status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode }),
-    [status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode],
+    () => computeControlState({ status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode, myUserId }),
+    [status, heldBy, myLeaseExpiresAt, myAssistGrant, coControlMode, myUserId],
   )
 }
 
@@ -344,5 +513,10 @@ export function assistRowState(state: ControlState): 'unavailable' | 'off' | 'bu
     const assist = state.options.find((o) => o.kind === 'assist')
     return assist?.disabledReason ? 'off' : 'available'
   }
+  // `held-by-me-elsewhere` (plan 125 §3.10) falls through to `'unavailable'`
+  // with `free`/`i-hold`, and that is the correct answer rather than a missed
+  // case: `co-control.ts`'s `grant()` throws `device_not_held` unless someone
+  // ELSE holds the device, and "someone else" is precisely what this state
+  // rules out. Assisting yourself is not a thing to offer.
   return 'unavailable'
 }

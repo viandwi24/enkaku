@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { AdbRestartPreviewSchema, AdbRestartReportSchema } from '@enkaku/protocol'
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, api, describeApiError } from '@enkaku/ui'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, api, describeApiError, formatDeviceName } from '@enkaku/ui'
 
 /**
  * The adb restart confirmation (plan 88 §3.10, §4.8, §5 step 88.8).
@@ -61,9 +61,21 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
     setBusy(true)
     try {
       const report = await api('/api/tools/adb/restart', AdbRestartReportSchema, { method: 'POST', json: { force } })
+      // Plan 124 §4.4 Group D, closed 2026-08-25. This is
+      // `AdbRestartReport.reattachFailed` (`AdbRestartReportSchema`,
+      // `@enkaku/protocol/api/adb.ts`) — a DIFFERENT payload from the adb
+      // POOL STATS (`api/adb-stats.ts`), whose `label` step 124.5 composed
+      // server-side. The two were conflated once; this one carries `number`
+      // as its own field and is composed HERE, exactly once, so a caller
+      // that also holds a `DeviceInfo` cannot render `#7 #7 SM-F721U1`
+      // (plan 124 §10's `MirrorMember` lesson).
+      //
+      // A device with no number composes to its bare label, which is the
+      // point: `formatDeviceName` is total, so the "did not reconnect" list
+      // never grows a stray `#` for a phone whose reservation was released.
       toast.success(`adb restarted — ${report.devicesAfter}/${report.devicesBefore} device(s) back online`, {
         ...(report.reattachFailed.length > 0
-          ? { description: `${plural(report.reattachFailed.length, 'network device')} did not reconnect: ${report.reattachFailed.map((d) => d.label).join(', ')}` }
+          ? { description: `${plural(report.reattachFailed.length, 'network device')} did not reconnect: ${report.reattachFailed.map((d) => formatDeviceName(d.number, d.label)).join(', ')}` }
           : {}),
       })
       setOpen(false)

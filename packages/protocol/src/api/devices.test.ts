@@ -8,6 +8,8 @@ import {
   DeviceNetworkApplyResultSchema,
   DeviceNetworkConfigSchema,
   DeviceNetworkStatusResponseSchema,
+  DeviceRefSchema,
+  DeviceRefsResponseSchema,
   DeviceReverseProxyNetworkConfigSchema,
   DeviceVpnNetworkConfigSchema,
   GuestAgentStatusResponseSchema,
@@ -373,5 +375,44 @@ describe('the bulk apply envelope round-trips (plan 114 §3.9, step 114.8)', () 
 
   test('an empty deviceIds list is refused', () => {
     expect(DeviceNetworkApplyBodySchema.safeParse({ deviceIds: [], route: {} }).success).toBe(false)
+  })
+})
+
+/**
+ * Plan 124 §3.7, §3.1 — `GET /api/devices/refs` is the highest-value of the
+ * five payloads that named a device and carried no number, because Studio's
+ * `deviceRefLabel` (`packages/studio/src/lib/api.ts`) is by its own comment
+ * "the one place this formatting rule lives" and every dangling reference in
+ * the product is named through it.
+ *
+ * This is also the first Zod home the route's response has had: it answered
+ * with a hand-written inline TS shape before this step, which is exactly how
+ * a field like `number` goes missing without anything failing.
+ */
+describe('DeviceRefSchema / DeviceRefsResponseSchema (plan 47 §4.5, plan 124 §3.7)', () => {
+  test('a live ref carries the number as its own field — never `#7` pre-composed into label', () => {
+    const parsed = DeviceRefSchema.parse({ id: 'd1', label: 'Galaxy A15', stableId: 'R5CW', deleted: false, number: 7 })
+    expect(parsed.number).toBe(7)
+    expect(parsed.label).toBe('Galaxy A15')
+  })
+
+  test('`number` is required and nullable: an unnumbered device states `null`, an omitted field is refused', () => {
+    const base = { id: 'd1', label: 'Galaxy A15', stableId: 'R5CW', deleted: false }
+    expect(DeviceRefSchema.safeParse({ ...base, number: null }).success).toBe(true)
+    expect(DeviceRefSchema.safeParse(base).success).toBe(false)
+    expect(DeviceRefSchema.safeParse({ ...base, number: 7.5 }).success).toBe(false)
+  })
+
+  test('`label` stays nullable — a device row can genuinely have no label, and that is not the same as having no number', () => {
+    expect(DeviceRefSchema.safeParse({ id: 'd1', label: null, stableId: 'R5CW', deleted: true, number: 7 }).success).toBe(true)
+  })
+
+  test('the response is a MAP keyed by requested id — an id neither table knows is simply absent, never a null entry', () => {
+    const parsed = DeviceRefsResponseSchema.parse({
+      refs: { d1: { id: 'd1', label: 'Galaxy A15', stableId: 'R5CW', deleted: false, number: 7 } },
+    })
+    expect(Object.keys(parsed.refs)).toEqual(['d1'])
+    expect(DeviceRefsResponseSchema.safeParse({ refs: {} }).success).toBe(true)
+    expect(DeviceRefsResponseSchema.safeParse({ refs: { d1: null } }).success).toBe(false)
   })
 })

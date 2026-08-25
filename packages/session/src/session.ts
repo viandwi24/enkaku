@@ -18,7 +18,7 @@ import { applyFarmTag } from './farm-tag'
 import { createInputArbiter, type InputArbiter } from './input-arbiter'
 import type { Logger } from './logger'
 import { applyRotation, type RotationLock } from './orientation'
-import { applyTextInput } from './text-input'
+import { applyTextInput, type TextInputSetup } from './text-input'
 import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
 
@@ -127,6 +127,45 @@ export interface DeviceSession {
    */
   whenInspectorReady(): Promise<void>
   /**
+   * Resolves once this session's text-input keyboard has been set up — and
+   * STARTS that setup if nothing has yet (plan 125 §3.8, §4.5, §5 step 125.8).
+   *
+   * ### The contract this replaces, stated plainly
+   *
+   * Before 125.8, `applyTextInput` ran inside `createSession` on the
+   * pre-video chain, so "the session resolved" implied "the IME is set". Plan
+   * 125 §3.8 moves that work after the first frame, which means `acquire()`
+   * resolving no longer carries that implication — and plan 125 §8's risk row
+   * says the guarantee must not simply be dropped ("a job that needs text
+   * input awaits the session's `ready`, which still gates on the same work
+   * completing"). **This method is where that guarantee now lives.** Every
+   * caller that is about to type awaits it first:
+   * `packages/session/src/device-executor.ts`'s `type()` and
+   * `packages/core/src/server/ws-handlers.ts`'s `input.text`, both
+   * immediately before they call `resolveTextRoute` — which is exactly the
+   * point at which `agentCapabilities`/`imeCurrent` are read and must be
+   * true. A script therefore still cannot start typing before the IME is
+   * set; the wait simply moved off the path where nobody was typing.
+   *
+   * The cost is not new work, only relocated work: the same bootstrap, paid
+   * by the first caller who actually needs a keyboard rather than by every
+   * viewer who only wanted a picture.
+   *
+   * Idempotent and start-once, like `whenInspectorReady` above. Never
+   * rejects: a failed setup leaves `textInput.agentCapabilities: null` /
+   * `imeCurrent: false`, which `resolveTextRoute` already reads as "rung 1
+   * unavailable" and falls below.
+   *
+   * Optional for the same fixture-compatibility reason `requestKeyframe`,
+   * `videoProfile` and `rotation` are: dozens of hand-built `DeviceSession`
+   * literals across `packages/session`/`packages/core` exist for scenarios
+   * with nothing to do with typing. `createSession` (the only production
+   * implementation) always sets it, and both real callers reach it through
+   * `?.()` so a fixture without one behaves exactly as it did before this
+   * plan.
+   */
+  whenTextInputReady?(): Promise<void>
+  /**
    * Gives the inspector engine back (plan 56 §3.2, §4.3) — releases the
    * handle's own `release()` (stops the watchdog, frees its port/lock) and
    * resets `inspector`/`inspectorEngineId` so the NEXT `whenInspectorReady()`
@@ -153,8 +192,17 @@ export interface DeviceSession {
     set(text: string, opts?: { paste?: boolean }): Promise<void>
   } | null
   /**
-   * Text-input routing facts (plan 90 §3.2, §3.3, §4.5) — computed once at session start by
-   * `applyTextInput()`, mirroring `clipboard`'s shape above. `resolveTextRoute` (`./text-input.ts`)
+   * Text-input routing facts (plan 90 §3.2, §3.3, §4.5), mirroring `clipboard`'s shape above.
+   *
+   * **Filled in asynchronously since plan 125 §3.8 (step 125.8).** They used to be computed
+   * before the session was even returned; they are now written in place when the deferred
+   * `applyTextInput` completes (see `whenTextInputReady` above). Until then they read
+   * `null`/`false` — the same values an install with no guest agent has always reported, which
+   * `resolveTextRoute` already treats as "rung 1 unavailable". Read them FRESH off the session
+   * at each call, never captured into a local at session start, or a caller pins the
+   * pre-bootstrap answer for the session's whole life.
+   *
+   * `resolveTextRoute` (`./text-input.ts`)
    * is the one place that turns these fields plus a candidate string into a rung; the WS handler
    * and the script executor both call it rather than re-deriving any of this themselves.
    */
@@ -331,6 +379,47 @@ export interface CreateSessionOpts {
    */
   skipDevicePrep?: boolean
   /**
+   * Plan 125 §3.7, §4.5, §5 step 125.7 — "one wake per session start, and the
+   * readiness manager is the authority".
+   *
+   * **The defect this closes.** On a cold `stream.start` the wake block ran
+   * TWICE, serially: `ws-handlers.ts`'s `readiness.hold(deviceId, 'viewer')`
+   * → `ensureAwake` → `wakeDevice`, and then `sessions.acquire` →
+   * `createSession` → `wakeDevice` again, because this function never
+   * consulted the readiness manager and `skipDevicePrep` above only covers
+   * the narrow "a `control` build beside an already-open `wall` entry" case.
+   * Plan 96 §22 measured `svc power stayon` alone at **1422 ms** on the
+   * owner's hardware, so the duplicate cost ≈3.2 s — burned before
+   * `starting-video` was even entered (plan 125 §0.7).
+   *
+   * **What sets it.** `SessionManagerDeps.deviceIsAwake` (`./manager.ts`),
+   * read fresh at build time and wired in `daemon.ts` to the readiness
+   * manager's own `actual(deviceId) !== 'asleep'`. That is the authority
+   * §3.7 names: readiness is the thing that woke the device, so it is the
+   * thing that knows the wake already happened. A device readiness reports
+   * `awake` or `hot` gets zero wakes here; anything else gets exactly one.
+   *
+   * **Why this is not `skipDevicePrep` with a different name.** It skips the
+   * wake ONLY — rotation, text input and the farm tag are unaffected,
+   * because none of them can be inferred from "the screen is on". Nor does
+   * it imply another entry owns the device's prep.
+   *
+   * **The revert half is what makes it safe** (`close()` below, and the
+   * `requireScrcpy` bail-out): a session that did not claim `stayon` must
+   * not release it either. Releasing a hold this session never took would
+   * hand the screen back to the device's own timeout out from under the
+   * readiness manager that IS holding it — and the owner's phones live in a
+   * sealed box where a dark, unreachable phone costs hardware disassembly
+   * (§0.2). The skip therefore REMOVES two adb writes per session (the wake
+   * and its matching release); it adds none, and it can only ever leave a
+   * phone more awake than before, never less.
+   *
+   * The fallback when this is wrong is unchanged and one layer up:
+   * `readiness.ensureAwake`'s own early-out (`packages/core/src/device/
+   * readiness.ts`) still re-wakes any device whose `actual` reads `asleep`.
+   */
+  skipWake?: boolean
+  /**
    * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.4 — set only alongside
    * `skipDevicePrep` above. A fast-path `control` build must produce a
    * REAL scrcpy session or fail outright: silently falling back to
@@ -446,7 +535,20 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * a session at all — behaviour here is unchanged from before the extraction.
    */
   const keepAwake: KeepAwakeMode = opts.keepAwake ?? 'while-charging'
-  if (!skipDevicePrep) await wakeDevice(transport, { keepAwake, log })
+  /**
+   * Plan 125 §3.7, §4.5, §5 step 125.7 — see `CreateSessionOpts.skipWake` for
+   * the whole argument. Two independent reasons to skip, kept as two booleans
+   * rather than one because they mean different things and revert differently:
+   * `skipDevicePrep` says "another open entry owns this device's prep",
+   * `skipWake` says "the readiness manager already has this screen on".
+   *
+   * `wakeDevice` itself is not free even when it changes nothing: it is a
+   * `settings get` pair, `svc power stayon` (1422 ms measured — plan 96 §22),
+   * a `KEYCODE_WAKEUP`, and a `dumpsys window` keyguard probe. Skipping it is
+   * the single largest saving on the cold cast path.
+   */
+  const skipWake = skipDevicePrep || (opts.skipWake ?? false)
+  if (!skipWake) await wakeDevice(transport, { keepAwake, log })
 
   /**
    * Rotation lock (Plan 85 §3.7, §4.1, step 85.8): the identical shape to
@@ -473,22 +575,96 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   const revertRotation = () => rotationLock.revert()
 
   /**
-   * Text-input keyboard (plan 90 §3.2, §3.3, §4.5, §5 step 90.5): the identical shape to
-   * `applyRotation` right above. `mode: 'device'` (or no guest-agent client wired for this
-   * session) touches nothing and the revert thunk is a no-op. Otherwise reads the device's
-   * current `secure default_input_method`, switches to the agent's IME, and confirms the switch
-   * actually took by reading the setting back — `agentCapabilities`/`imeCurrent` below are what
-   * `resolveTextRoute` (`./text-input.ts`) reads on every `input.text`/`type()` call, so the
-   * ladder never needs a live round trip per keystroke.
+   * Text-input keyboard (plan 90 §3.2, §3.3, §4.5, §5 step 90.5) — **no longer on the critical
+   * line** (plan 125 §3.8, §4.5, §5 step 125.8).
+   *
+   * `applyTextInput` reads the device's current `secure default_input_method`, switches to the
+   * agent's IME, and confirms the switch by reading the setting back; `agentCapabilities`/
+   * `imeCurrent` are what `resolveTextRoute` (`./text-input.ts`) consults on every
+   * `input.text`/`type()` call, so the ladder never needs a live round trip per keystroke.
+   *
+   * ### Why it moved (plan 125 §0.7's cost table, §3.8)
+   *
+   * It ran on EVERY ordinary session build, because `DeviceSettings.prep.textInput` defaults to
+   * `'auto'`, and it is not a couple of shell calls — it triggers a full guest-agent app
+   * bootstrap: 3 `appops` calls, an `am start` with a ~500 ms measured handover
+   * (`packages/drivers/src/network/guest-agent/launcher.ts`), an 8 × 500 ms `hello()` ladder
+   * (`client.ts`), up to `PAIRING_ROUNDS = 3` full repeats (`packages/core/src/api/
+   * guest-agent.ts`), then 4 more `ime`/`settings` calls. **And text input is not needed to
+   * paint a frame.** Every millisecond of it sat between the operator's click and the picture.
+   *
+   * ### What it is now
+   *
+   * A lazily-started, start-once promise, kicked off from TWO places and never from a third:
+   *
+   * 1. **The first frame** (`session.display.onFrame` below, right after `onPhase('ready')`) —
+   *    §3.8's "runs after the first frame". This is the ordinary path: the device is visible in
+   *    a fraction of the time, and the IME arrives a moment later, which is when a human could
+   *    first type anyway.
+   * 2. **`whenTextInputReady()`** — on demand, for a caller that genuinely needs the keyboard.
+   *    That second trigger is not a nicety: a session whose display never produces a frame (a
+   *    dead encoder, a screencap loop that cannot read the panel) must not leave a script
+   *    blocked forever on work that was never started.
+   *
+   * Its failure stays exactly as non-fatal as it already was (§3.8's own requirement).
+   * `applyTextInput` already swallows every device-side failure internally — each `exec` there
+   * carries its own `.catch` — and reports the outcome honestly as `agentCapabilities: null` /
+   * `imeCurrent: false`, which `resolveTextRoute` reads as "rung 1 unavailable" and falls below.
+   * The `.catch` added below is belt-and-braces for the one thing deferral changes: this promise
+   * is no longer awaited by `createSession` itself, so an unhandled rejection would surface as a
+   * process-level warning rather than at a call site — and `whenTextInputReady()` must never
+   * reject on a caller who only wanted to know whether the keyboard was ready.
+   *
+   * `skipDevicePrep` short-circuits it to the no-op setup exactly as before (plan 100 §4.2): the
+   * still-open wall entry already owns this device's keyboard, and this entry reverts nothing.
    */
   const textInputMode: TextInputMode = opts.textInput ?? 'auto'
-  const textInputSetup = skipDevicePrep
-    ? { revert: async () => {}, agentCapabilities: null, imeCurrent: false }
-    : await applyTextInput(transport, {
-        mode: textInputMode,
-        ...(deps.withGuestAgentClient ? { withGuestAgentClient: deps.withGuestAgentClient } : {}),
-        log,
+  const NO_TEXT_INPUT: TextInputSetup = { revert: async () => {}, agentCapabilities: null, imeCurrent: false }
+  let textInputSetup: TextInputSetup = NO_TEXT_INPUT
+  let textInputPromise: Promise<void> | null = null
+  const startTextInput = (): Promise<void> => {
+    if (skipDevicePrep) return Promise.resolve()
+    textInputPromise ??= applyTextInput(transport, {
+      mode: textInputMode,
+      ...(deps.withGuestAgentClient ? { withGuestAgentClient: deps.withGuestAgentClient } : {}),
+      log,
+    })
+      .then((setup) => {
+        textInputSetup = setup
+        // Published onto the live session object, not returned: both readers
+        // (`ws-handlers.ts`'s `input.text` and `device-executor.ts`'s `type()`)
+        // read `session.textInput.*` fresh at call time, so mutating in place
+        // is what makes the deferred answer reach them at all.
+        session.textInput.agentCapabilities = setup.agentCapabilities
+        session.textInput.imeCurrent = setup.imeCurrent
       })
+      .catch((err) => {
+        // Identical swallow to the pre-125.8 call site's own `.catch` — a
+        // keyboard that could not be set up must never take the video with it.
+        log.warn(`text input could not be set up: ${String(err)} — typing falls back to the remaining rungs`)
+      })
+    return textInputPromise
+  }
+  /**
+   * Undo whatever `startTextInput` managed to apply — awaiting a setup still
+   * in flight FIRST.
+   *
+   * That await is the load-bearing half. Deferring the setup opens a window
+   * that did not exist before 125.8: `close()` can now land while the IME
+   * switch is mid-write, and reverting the no-op `NO_TEXT_INPUT` in that
+   * window would leave the device's default input method pinned to the agent's
+   * keyboard **permanently** — a device-scoped setting outliving the session
+   * that made it, on a phone nobody can reach (§0.2). Waiting out an in-flight
+   * bootstrap costs a close some time; it can never cost a phone its keyboard.
+   *
+   * `textInputPromise` cannot reject (see the `.catch` above), so this needs no
+   * guard of its own. `revert()` itself is idempotent by contract, so calling
+   * this twice is safe — the same rule rotation and the farm tag already keep.
+   */
+  const revertTextInput = async (): Promise<void> => {
+    if (textInputPromise) await textInputPromise
+    await textInputSetup.revert()
+  }
 
   /**
    * Farm-traffic marker (spec §9.4/§17, plan 87 §4.12, §5 step 87.13): the
@@ -535,9 +711,14 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // that ever set `requireScrcpy` WITHOUT `skipDevicePrep` must not leak
     // an applied rotation/IME/farm-tag/stayon on a session that is about to
     // vanish with no `close()` ever called on it.
-    if (keepAwake !== 'off') await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+    // `!skipWake` (plan 125 §3.7, step 125.7), not merely `keepAwake !== 'off'`:
+    // a build that skipped the wake never claimed `stayon`, so releasing it
+    // here would hand the screen back to the device's own timeout out from
+    // under whoever IS holding it (the readiness manager, or the open wall
+    // entry). Same rule, same reason, as `close()`'s own release below.
+    if (keepAwake !== 'off' && !skipWake) await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
     await revertRotation()
-    await textInputSetup.revert()
+    await revertTextInput()
     await revertFarmTag()
     await transport.disconnect().catch(() => undefined)
     throw new SessionError(
@@ -672,6 +853,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
+    whenTextInputReady: startTextInput,
     releaseInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,
@@ -708,13 +890,21 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // screencap-loop fallback is now backed by a DIFFERENT scrcpy session.
       if (liveScrcpy && opts.standbyScreenOff) liveScrcpy.control.setDisplayPower(true)
       await session.display.stop()
-      // Hand the screen back to the device's own timeout. Skipped for a
-      // fast-path control entry (§4.2): this session never claimed
-      // stayon in the first place (skipDevicePrep skipped wakeDevice
-      // entirely) — releasing it here would hand the screen back to its
-      // own timeout out from under the still-open wall entry that DID
-      // claim it and is relying on it staying awake.
-      if (keepAwake !== 'off' && !skipDevicePrep)
+      // Hand the screen back to the device's own timeout. Skipped whenever
+      // this session did not claim `stayon` in the first place — releasing a
+      // hold we never took would hand the screen back out from under whoever
+      // IS holding it and relying on it staying awake.
+      //
+      // `skipWake` covers BOTH cases (plan 125 §3.7, step 125.7): a
+      // fast-path control entry beside a still-open wall entry (plan 100
+      // §4.2, the original reason this condition existed), and — new — a
+      // build the readiness manager told us was already awake. The second
+      // case also closes a pre-existing leak: before step 125.7 a session on
+      // a `desired: 'awake'` device wrote `stayon false` here on close,
+      // while `readiness.keepAwakeApplied` still believed it held the device
+      // awake, so `ensureAwake`'s early-out declined to put it back. A phone
+      // in a sealed box then went dark with nothing left to notice (§0.2).
+      if (keepAwake !== 'off' && !skipWake)
         await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
       // Hand rotation back the same way — stateless and idempotent (see
       // `orientation.ts`): `close()` can run more than once (a timeout kill
@@ -728,7 +918,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // next process's own `close()` (or the next session's `applyTextInput`
       // read-first step) re-issues the exact restore command captured at
       // apply time, never a fresh mutation of some remembered flag.
-      await textInputSetup.revert()
+      //
+      // `revertTextInput()` rather than `textInputSetup.revert()` since plan
+      // 125 step 125.8 moved the setup off the critical line: it awaits a
+      // bootstrap still in flight before reverting, so a close racing the
+      // deferred setup cannot leave the agent's IME pinned as the device's
+      // default. See `revertTextInput`'s own comment.
+      await revertTextInput()
       // Same idempotent-thunk contract as rotation right above — safe to
       // call more than once (a timeout kill followed by a normal close).
       await revertFarmTag()
@@ -796,6 +992,12 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     if (!firstFrameSeen) {
       firstFrameSeen = true
       onPhase('ready')
+      // Plan 125 §3.8, §4.5, §5 step 125.8 — the guest-agent bootstrap starts
+      // HERE, after the first frame, instead of blocking it. Fire-and-forget:
+      // `startTextInput` swallows its own failure (see its `.catch`), and this
+      // callback is on the frame dispatch path, which must never await device
+      // work of any kind.
+      void startTextInput()
     }
     deps.onFrame?.(chunk, meta)
   })

@@ -397,6 +397,23 @@ export function createDeviceExecutor(deps: {
         // `AdbInput.text()` and died inside it as `INPUT_TEXT_UNSUPPORTED`. `resolveTextRoute`
         // decides ONCE, up front, whether this string can be carried at all before any engine is
         // touched, and by which rung.
+        //
+        // Plan 125 §3.8, §8, §5 step 125.8 — the guest-agent IME bootstrap no
+        // longer blocks the first video frame, so a script can now reach this
+        // line while it is still in flight. This await is what keeps the
+        // contract §8's risk row demands: "a job that needs text input awaits
+        // the session's `ready`, which still gates on the same work
+        // completing". Without it a `type()` issued milliseconds after
+        // `acquire` would read `imeCurrent: false`, silently drop to rung 2,
+        // and the operator would see a real behaviour change from a change
+        // that was only supposed to move WHEN the work happens.
+        //
+        // Costs nothing once the setup has completed (a resolved promise), and
+        // starts it on demand when no frame ever arrived to trigger it. `?.()`
+        // for the fixture sessions that carry no such method (see
+        // `DeviceSession.whenTextInputReady`).
+        await deps.session.whenTextInputReady?.()
+
         const decision = resolveTextRoute({
           text: call.args.text,
           agentCapabilities: deps.session.textInput.agentCapabilities,

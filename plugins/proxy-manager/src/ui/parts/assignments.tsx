@@ -1,8 +1,11 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   Button,
+  Combobox,
+  DeviceName,
   EmptyState,
   ErrorState,
+  Input,
   LoadingRows,
   Select,
   SelectContent,
@@ -16,7 +19,10 @@ import {
   TableHeader,
   TableRow,
   api,
+  formatDeviceName,
+  matchesDeviceQuery,
   relativeTime,
+  type ComboboxOption,
 } from '@enkaku/ui'
 import {
   ASSIGNMENT_KEY,
@@ -56,6 +62,12 @@ import { StatusDot, useLoader } from './bits'
 interface DeviceRow {
   stableId: string
   label: string | null
+  /**
+   * The short human-facing number, straight off the scan row (plan 124 §0.5 —
+   * the join was always there, this tab just dropped the field on the floor).
+   * `null` is ordinary and renders as the bare label, never as `#null`.
+   */
+  number: number | null
   /** Null for a device the farm has a row for but no status on — rendered as `unknown`, never as an empty cell. */
   status: string | null
   /** The catalogue key noted against this device, or `''` for none. */
@@ -98,7 +110,22 @@ function capacityLabel(catalogue: Catalogue, key: string): string | null {
   return null
 }
 
-/** The `<Select>` value that means "no assignment" — Radix refuses an empty string as an item value. */
+/**
+ * The picker value that means "no assignment".
+ *
+ * A sentinel rather than `''` for two reasons that outlived the Radix `<Select>`
+ * this row used to be (plan 124 §4.5 made it a `<Combobox>`): an empty value
+ * makes the trigger show its *placeholder*, which reads as "nothing chosen yet"
+ * rather than as the deliberate state "this device is noted as using no proxy" —
+ * and "no proxy noted" has to be a real, selectable row, because clearing an
+ * assignment is a thing an operator does on purpose.
+ *
+ * The leading space is kept deliberately: a catalogue key is a storage key
+ * (`proxy:<id>`) and cannot begin with one, so this sentinel can never collide
+ * with a real record. `<Combobox>` hands `onValueChange` the exact string this
+ * file put in (its own `onSelect` closes over `o.value` rather than trusting
+ * cmdk's normalised copy), so the round trip is byte-exact.
+ */
 const NONE = ' none'
 
 /**
@@ -215,6 +242,7 @@ export function AssignmentsTab() {
       devices: scan.items.map((row) => ({
         stableId: row.stableId,
         label: row.label,
+        number: row.number,
         status: row.status,
         assigned: row.entry ? readAssignment(row.entry.value) : '',
         updatedAt: row.entry?.updatedAt ?? null,
@@ -226,6 +254,13 @@ export function AssignmentsTab() {
 
   const [busy, setBusy] = useState<string | null>(null)
   const [writeError, setWriteError] = useState<string | null>(null)
+  /**
+   * The table filter (plan 124 §4.5). Client-side over the rows already loaded,
+   * which is what §2 asks for — the scan is one page of 200 and there is no
+   * server-side device search to reach for. Never persisted: it is a hunt, not
+   * a setting.
+   */
+  const [query, setQuery] = useState('')
   /**
    * The last Apply outcome, per device. Kept in memory and never stored: it is
    * an observation of one press, and the durable answer to "what is this phone
@@ -322,11 +357,54 @@ export function AssignmentsTab() {
     }
   }
 
-  if (loading) return <LoadingRows />
-  if (error) return <ErrorState message={error} onRetry={reload} />
-
   const devices = data?.devices ?? []
   const catalogue = data?.catalogue ?? { labels: {}, keys: [], counts: {}, capacities: {}, exclusives: {} }
+
+  /**
+   * The four-way match every device list in the product now shares —
+   * `@enkaku/ui`'s `matchesDeviceQuery` (plan 124 §4.1), not a predicate of
+   * this pack's own. Typing `7` finds `#7` and not `#17`; the label and the
+   * stableId match as substrings.
+   *
+   * The row is handed as a structural `{ number, label, stableId }` because
+   * that is all this projection has — a scan row is not a `DeviceInfo`, and
+   * §4.1's parameter types are structural precisely so it does not have to be.
+   * `label` falls back to the stableId for the same reason the cell below
+   * does: a device with no label is still findable by the string it displays.
+   */
+  const shown = useMemo(
+    () => devices.filter((device) => matchesDeviceQuery({ number: device.number, label: device.label ?? device.stableId, stableId: device.stableId }, query)),
+    [devices, query],
+  )
+
+  /**
+   * The catalogue as picker rows, built once for the whole table rather than
+   * once per device: the owner's farm has ~45 records and ~100 phones, and this
+   * list is identical on every row.
+   *
+   * The capacity badge moves from an inline `<span>` inside the item to
+   * `ComboboxOption.hint`, which renders it dimmed under the label — the same
+   * sentence in the place the primitive keeps for exactly this.
+   */
+  const proxyOptions = useMemo<ComboboxOption[]>(
+    () => [
+      { value: NONE, label: 'No proxy noted' },
+      ...catalogue.keys.map((key) => ({
+        value: key,
+        label: catalogue.labels[key] ?? key,
+        hint: capacityLabel(catalogue, key) ?? undefined,
+        // The storage key itself is searchable even though the label is what
+        // is drawn: an operator who knows a record as `proxy:soax-surabaya`
+        // types that, and a filter that only matched the display name would
+        // silently have no hit for a string they can read off the Catalogue tab.
+        keywords: [key],
+      })),
+    ],
+    [catalogue],
+  )
+
+  if (loading) return <LoadingRows />
+  if (error) return <ErrorState message={error} onRetry={reload} />
 
   return (
     /*
@@ -346,81 +424,145 @@ export function AssignmentsTab() {
       ) : catalogue.keys.length === 0 ? (
         <EmptyState title="No proxies to assign yet" description="Add a record on the Catalogue tab first — an assignment points at a catalogue key, so there has to be one." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Device</TableHead>
-                <TableHead className="@2xl:w-32">Status</TableHead>
-                <TableHead className="@2xl:w-72">Noted proxy</TableHead>
-                <TableHead className="hidden @4xl:table-cell @4xl:w-40">Noted at</TableHead>
-                <TableHead className="@2xl:w-64">Apply as</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {devices.map((device) => (
-                <TableRow key={device.stableId}>
-                  <TableCell>
-                    <div className="font-medium">{device.label || device.stableId}</div>
-                    <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{device.stableId}</div>
-                  </TableCell>
-                  <TableCell className="text-[12px] text-fg-muted">
-                    <StatusDot status={device.status ?? 'unknown'} />
-                  </TableCell>
-                  <TableCell>
-                    <Select value={device.assigned || NONE} disabled={busy === device.stableId} onValueChange={(v) => void assign(device.stableId, v)}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE}>No proxy noted</SelectItem>
-                        {catalogue.keys.map((key) => {
-                          const badge = capacityLabel(catalogue, key)
-                          return (
-                            <SelectItem key={key} value={key}>
-                              {catalogue.labels[key] ?? key}
-                              {badge ? <span className="text-fg-muted"> — {badge}</span> : null}
-                            </SelectItem>
-                          )
-                        })}
-                        {/* A note pointing at a record that has since been deleted still
-                            has to be shown, or the row would silently read as unassigned
-                            while the entry is still there. */}
-                        {device.assigned && !catalogue.keys.includes(device.assigned) ? (
-                          <SelectItem value={device.assigned}>{device.assigned} (no longer in the catalogue)</SelectItem>
+        <>
+          {/*
+            The filter, and the count beside it (plan 124 §4.5) — the same shape
+            `catalogue.tsx` already uses one tab over, deliberately, so the two
+            tables of this pack are filtered the same way.
+
+            **No `Search` icon**, unlike Studio's own `DevicePicker`: `lucide-react`
+            is not in `UI_EXTERNALS` (`packages/sdk/src/cli/build-ui.ts`) and is not
+            a dependency of this pack, so an icon here would mean bundling an icon
+            library into `ui/index.js` for one glyph. `failover-chip.tsx` records
+            the same constraint for the same reason. The `aria-label` is what
+            actually names the control, and it is present.
+
+            The count says `N of M devices` and it is live: it is what tells an
+            operator that a filter is on at all when the box has scrolled out of
+            view, and it counts DEVICES rather than rows because that is what one
+            row is here.
+          */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by number, label or stable id"
+              aria-label="Filter devices"
+              className="h-8 max-w-xs text-[12.5px]"
+            />
+            <span className="readout text-[11.5px] text-fg-muted">
+              {shown.length} of {devices.length} device{devices.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          {shown.length === 0 ? (
+            <EmptyState
+              title="No device matches this filter"
+              description="Nothing in the list matches what you typed. The filter matches a device's number, its label and its stable id."
+              action={
+                <Button variant="outline" size="sm" onClick={() => setQuery('')}>
+                  Clear the filter
+                </Button>
+              }
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Device</TableHead>
+                    <TableHead className="@2xl:w-32">Status</TableHead>
+                    <TableHead className="@2xl:w-72">Noted proxy</TableHead>
+                    <TableHead className="hidden @4xl:table-cell @4xl:w-40">Noted at</TableHead>
+                    <TableHead className="@2xl:w-64">Apply as</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {shown.map((device) => (
+                    <TableRow key={device.stableId}>
+                      <TableCell>
+                        {/*
+                          `<DeviceName>` rather than a hand-composed string (plan
+                          124 §3.2, §4.2): the number is a quiet identifier beside
+                          the name, in its own span so it can be dimmed, and a
+                          device with `number === null` renders the bare label with
+                          no `#` and no gap (criterion 7). The stableId stays
+                          underneath exactly as it was — it is the identity an
+                          operator matches to hardware, and the number does not
+                          replace it.
+                        */}
+                        <DeviceName number={device.number} label={device.label || device.stableId} className="max-w-full font-medium" />
+                        <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{device.stableId}</div>
+                      </TableCell>
+                      <TableCell className="text-[12px] text-fg-muted">
+                        <StatusDot status={device.status ?? 'unknown'} />
+                      </TableCell>
+                      <TableCell>
+                        {/*
+                          A `<Combobox>`, not a `<Select>` (plan 124 §0.2, §4.5).
+                          This control is rendered ONCE PER DEVICE — a hundred
+                          phones each carrying an unsearchable list of ~45 records
+                          — and Radix `Select` has no type-ahead filtering, only a
+                          single-keystroke jump. Everything the old markup did is
+                          preserved: "No proxy noted" is still a real row, the
+                          capacity badge is still shown (as the option's `hint`),
+                          and a note pointing at a DELETED record is still listed
+                          rather than silently reading as unassigned.
+                        */}
+                        <Combobox
+                          value={device.assigned || NONE}
+                          onValueChange={(v) => void assign(device.stableId, v)}
+                          disabled={busy === device.stableId}
+                          ariaLabel={`Noted proxy for ${formatDeviceName(device.number, device.label || device.stableId)}`}
+                          searchPlaceholder="Filter proxies…"
+                          emptyText="No proxy in the catalogue matches."
+                          options={
+                            device.assigned && !catalogue.keys.includes(device.assigned)
+                              ? [
+                                  ...proxyOptions,
+                                  // Kept from the `<Select>` this replaced, and it
+                                  // matters more here than it did there: `<Combobox>`
+                                  // would otherwise synthesise a bare row labelled
+                                  // with the raw key alone, and an operator would
+                                  // have no way to tell "a record called this" from
+                                  // "a record that no longer exists".
+                                  { value: device.assigned, label: device.assigned, hint: 'No longer in the catalogue' },
+                                ]
+                              : proxyOptions
+                          }
+                        />
+                        {device.assigned && capacityLabel(catalogue, device.assigned) ? (
+                          <p className="mt-1 text-[11px] leading-relaxed text-fg-muted">{capacityLabel(catalogue, device.assigned)}</p>
                         ) : null}
-                      </SelectContent>
-                    </Select>
-                    {device.assigned && capacityLabel(catalogue, device.assigned) ? (
-                      <p className="mt-1 text-[11px] leading-relaxed text-fg-muted">{capacityLabel(catalogue, device.assigned)}</p>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="readout hidden text-[11.5px] text-fg-muted @4xl:table-cell">{relativeTime(device.updatedAt)}</TableCell>
-                  <TableCell className="space-y-2 text-left align-top">
-                    {/*
-                      Apply is a SEPARATE press from choosing a proxy (plan 114
-                      §9 Q6), and now a separate press from choosing a MODE.
-                      Choosing a proxy above writes a note and changes nothing on
-                      the phone; the picker below says which of the two routes to
-                      ask for; this asks the farm for it, through the farm's own
-                      Network → Proxy and under this plugin's own principal.
-                    */}
-                    <ModePicker mode={modeFor(device.stableId)} disabled={!device.assigned || busy === device.stableId} onChange={(mode) => chooseMode(device.stableId, mode)} />
-                    <div className="flex flex-wrap gap-1">
-                      <Button variant="secondary" size="sm" disabled={!device.assigned || busy === device.stableId} onClick={() => void apply(device.stableId)}>
-                        Apply
-                      </Button>
-                      <Button variant="ghost" size="sm" disabled={!device.assigned || busy === device.stableId} onClick={() => void assign(device.stableId, NONE)}>
-                        Clear
-                      </Button>
-                    </div>
-                    <ApplyOutcome result={applied[device.stableId]} />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+                      </TableCell>
+                      <TableCell className="readout hidden text-[11.5px] text-fg-muted @4xl:table-cell">{relativeTime(device.updatedAt)}</TableCell>
+                      <TableCell className="space-y-2 text-left align-top">
+                        {/*
+                          Apply is a SEPARATE press from choosing a proxy (plan 114
+                          §9 Q6), and now a separate press from choosing a MODE.
+                          Choosing a proxy above writes a note and changes nothing on
+                          the phone; the picker below says which of the two routes to
+                          ask for; this asks the farm for it, through the farm's own
+                          Network → Proxy and under this plugin's own principal.
+                        */}
+                        <ModePicker mode={modeFor(device.stableId)} disabled={!device.assigned || busy === device.stableId} onChange={(mode) => chooseMode(device.stableId, mode)} />
+                        <div className="flex flex-wrap gap-1">
+                          <Button variant="secondary" size="sm" disabled={!device.assigned || busy === device.stableId} onClick={() => void apply(device.stableId)}>
+                            Apply
+                          </Button>
+                          <Button variant="ghost" size="sm" disabled={!device.assigned || busy === device.stableId} onClick={() => void assign(device.stableId, NONE)}>
+                            Clear
+                          </Button>
+                        </div>
+                        <ApplyOutcome result={applied[device.stableId]} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

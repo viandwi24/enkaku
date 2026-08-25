@@ -42,6 +42,7 @@ import { createLocalShellPort, createRemoteShellPort, type ShellPort } from '../
 import { createShellSessionStore } from '../device/shell-session'
 import { redactShellCommand } from '../device/redact'
 import { createMirrorManager } from '../mirror/group'
+import { lookupDeviceNumber } from '../registry/device-number'
 import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
 import { EnkakuError } from '../util/errors'
@@ -778,6 +779,27 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     deps.db.select({ label: devices.label }).from(devices).where(eq(devices.id, deviceId)).get()?.label ?? deviceId
 
   /**
+   * The other half of a `MirrorMember`'s identity (plan 124 §3.7) — the
+   * device's `device_numbers` reservation, or `null`.
+   *
+   * Two reads rather than one joined statement, deliberately: `device_numbers`
+   * is keyed on `stableId` (plan 89 §3.1 — never on `devices.id`, which is
+   * what a mirror group resolves members by), so naming the number for a
+   * `deviceId` means going through the device row regardless. Both reads are
+   * indexed primary/unique-key lookups, they happen at most `mirror.maxDevices`
+   * times per reconciliation (20 by default, 64 at the ceiling), and only
+   * while an operator is actively mirroring — this is not the per-row, per-
+   * request path `loadDeviceNumbers` exists to keep out of the fleet queries.
+   *
+   * `null` for an unknown device id, matching `deviceLabelOf` above: a member
+   * whose row vanished mid-group still renders, just without a number.
+   */
+  const deviceNumberOf = (deviceId: string): number | null => {
+    const row = deps.db.select({ stableId: devices.stableId }).from(devices).where(eq(devices.id, deviceId)).get()
+    return row ? lookupDeviceNumber(deps.db, row.stableId) : null
+  }
+
+  /**
    * Mirror groups (plan 91 §3.8, §3.9, §4.7, §5 step 91.7) — constructed
    * only when BOTH `coControl` and `states` are wired, the same "omitted
    * means it does not exist here" convention every other optional dep in
@@ -798,6 +820,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           jobs: deps.jobs,
           nodeIdFor: (deviceId) => deps.remote?.nodeIdFor(deviceId) ?? null,
           deviceLabel: deviceLabelOf,
+          deviceNumber: deviceNumberOf,
           // The SAME `canAssist(role, mode)` gate `assist.start` enforces
           // (plan 91 §3.6, §4.6) — checked once per MEMBER that would need a
           // fresh assist grant, not once for the whole `mirror.start` call,
@@ -1787,6 +1810,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 })
                 return
               }
+
+              // Plan 125 §3.8, §8, §5 step 125.8 — the guest-agent IME
+              // bootstrap moved off the pre-video chain and now runs after the
+              // first frame, so an operator typing the instant a device opens
+              // can reach this line while it is still in flight. Awaiting it
+              // here is where the old "the session resolved, so the IME is
+              // set" guarantee now lives: the facts `resolveTextRoute` reads
+              // on the next line are exactly the ones this produces, and
+              // routing on the pre-bootstrap `null`/`false` would silently
+              // demote rung 1 to rung 2 for the first keystrokes of every
+              // session. Resolved-and-free once the setup has completed, and
+              // it starts the setup on demand for a session whose display
+              // never produced a frame to trigger it.
+              await session.whenTextInputReady?.()
 
               const decision = resolveTextRoute({
                 text,

@@ -21,7 +21,7 @@ import {
   type RegistryResponse,
   type Viewer,
 } from '@enkaku/protocol'
-import { LiveView } from '@/components/LiveView'
+import { LiveView, markLiveViewIntent } from '@/components/LiveView'
 import { AskAnAgentDialog } from '@/components/AskAnAgentDialog'
 import { AssistDialog } from '@/components/device/AssistDialog'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
@@ -44,17 +44,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
-  LoadingRows,
+  DeviceName,
   Switch,
   api,
+  formatDeviceName,
   useAction,
 } from '@enkaku/ui'
 import { TakeControlDialog } from '@/components/TakeControlDialog'
 import { fetchGuestAgentStatus } from '@/lib/api'
 import { newId, ws } from '@/lib/ws'
+import { useAuth } from '@/lib/auth'
 import { useNow } from '@/lib/useNow'
 import { usePreparation } from '@/lib/use-preparation'
-import { assistEndCopy, assistRowState, useControlState } from './ControlState'
+import { assistEndCopy, assistRowState, heldByMe, useControlState } from './ControlState'
 import { HardwareRail } from './HardwareRail'
 import { componentLabel } from './PreparationPanel'
 import { SidePanel } from './SidePanel'
@@ -180,6 +182,19 @@ export const RELEASE_UNDO_MS = 4_000
  * device already held by a job or another person is never AUTO-claimed from
  * here.
  *
+ * **…and a device already held by YOU is claimed too (plan 125 §3.10, step
+ * 125.5).** The condition widened from `status === 'idle'` to "idle, or held
+ * by me", because the two were indistinguishable to an operator and only one
+ * of them worked. An explicitly-taken lease is deliberately not released
+ * when this popup closes (see 105.6 below), so take control once, close,
+ * reopen — or just open a second tab — and the device is `manual`, held by
+ * you, while the fresh popup holds no lease of its own. That fell through to
+ * `held-by-human` and told the operator that their own email address was
+ * using the device (plan 125 §0.8, report 3). Nobody is displaced by this
+ * claim; the lease moves between two clients of the same person. Where the
+ * claim does not land, `held-by-me-elsewhere` offers the same act as a
+ * button ("Resume control here") instead of a takeover dialog.
+ *
  * **One control state, not two competing buttons (plan 105, M70).** This
  * component used to dead-end at Assist the moment someone else held the
  * device (plan 103 step 103.11's audit, row 26: *"A device already held by a
@@ -191,10 +206,12 @@ export const RELEASE_UNDO_MS = 4_000
  * ruling, plan 91 §0.3: a warning, not a permission request) with a
  * `TakeControlDialog` reachable beside it (which, for a job, correctly shows
  * "View job"/"Close" rather than a takeover button — a job's hold is never
- * takeable), `held-by-human` → both Assist and Take control, deliberately
- * weighted equally because plan 105 §9 Q1 is still open, `i-hold` → Release
- * control (row 27's own fix — `lease.release` is sent from THIS popup for
- * the first time), `i-assist` → Stop assisting. See `./ControlState.tsx`'s
+ * takeable), `held-by-human` → Take control primary and Assist secondary for
+ * a person, the two equal for an agent (plan 105 §9 Q1, answered by plan 125
+ * §3.11 — see that branch's own comment for the old caption this replaced),
+ * `held-by-me-elsewhere` → Resume control here (plan 125 §3.10), `i-hold` →
+ * Release control (row 27's own fix — `lease.release` is sent from THIS popup
+ * for the first time), `i-assist` → Stop assisting. See `./ControlState.tsx`'s
  * own file header for the full design and for why the wall tile and the
  * device card read the SAME hook rather than inventing their own notion of
  * what is on offer.
@@ -335,6 +352,26 @@ export function DevicePopup({
   const now = useNow()
   const { run, isPending } = useAction()
 
+  // Plan 125 §3.10, step 125.5 — WHO is reading this popup. `useAuth()` is
+  // the same context `AuthGate` populates from `GET /api/auth/me`; `null`
+  // whenever nobody is signed in (auth disabled, or a component test with no
+  // `AuthContext.Provider` above it), which must change NOTHING about how
+  // control behaves (plan 125 acceptance criterion 10 — `myLeaseExpiresAt`
+  // remains the first and strongest check either way).
+  const { user } = useAuth()
+  const myUserId = user?.id ?? null
+  // Read by the device-detail effect's own `.then`, which resolves after
+  // that effect's closures are already stale — the same reason
+  // `leaseOriginRef`/`mirrorGroupIdRef` exist. A ref rather than an effect
+  // dependency on purpose: adding `myUserId` to the effect's deps would
+  // re-run the whole detail fetch (and reset `controlExpiresAt`,
+  // `leaseOrigin`, the assist state and the notice with it) the moment
+  // `/api/auth/me` resolves a moment after the popup opened — a visible
+  // flicker, and a lease reset, to learn something the `.then` can simply
+  // read at the instant it needs it.
+  const myUserIdRef = useRef(myUserId)
+  myUserIdRef.current = myUserId
+
   const mirrorGroupIdRef = useRef(mirrorGroupId)
   mirrorGroupIdRef.current = mirrorGroupId
 
@@ -350,7 +387,36 @@ export function DevicePopup({
   // and neither needs a re-render to do so.
   const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /**
+   * Plan 125 §4.7, §5 step 125.11 — "the popup open" half of the click→paint
+   * mark. Deliberately in the render body behind a ref guard, not in an
+   * effect: React runs CHILD effects before parent ones, so a mount effect
+   * here would fire after `<LiveView>`'s own stream effect had already looked
+   * for a mark and found none — the measurement would silently never happen
+   * for any popup opened by something other than a tile double-click.
+   * `onlyIfAbsent` because `WallTile`'s double-click already recorded the
+   * earlier, truer timestamp on the path that matters most (§0.7's cold cast);
+   * this only supplies a start for the other ways a popup opens.
+   *
+   * Writing a ref during render is the pattern this file already uses for
+   * `leaseOriginRef`/`controlExpiresAtRef` above; the guard also makes the
+   * whole thing idempotent under StrictMode's double render.
+   */
+  const intentMarkedForRef = useRef<string | null>(null)
+  if (intentMarkedForRef.current !== deviceId) {
+    intentMarkedForRef.current = deviceId
+    markLiveViewIntent(deviceId, { onlyIfAbsent: true })
+  }
+
   const label = deviceDetail?.label ?? deviceId
+  // Plan 124 §4.4 Group B, step 124.2 — every place in this popup that needs
+  // the device as a `string` (the region's `aria-label`, the "End task"
+  // confirm, and the three `deviceLabel` props handed to `AssistDialog` /
+  // `AskAnAgentDialog` / `TakeControlDialog`) reads this, so the popup names
+  // the device exactly one way. `deviceDetail` is `null` until the detail
+  // fetch lands, and `formatDeviceName` treats the resulting `undefined`
+  // number the same as `null` — the bare label, never `#undefined`.
+  const deviceName = formatDeviceName(deviceDetail?.number, label)
   const status: DeviceStatus | null = deviceDetail?.status ?? null
   const busy = status === 'busy'
   const iHoldControl = controlExpiresAt !== null
@@ -384,27 +450,57 @@ export function DevicePopup({
       .then((b) => {
         if (cancelled) return
         setDeviceDetail(b.device)
-        if (b.device.status === 'idle') {
-          void ws
-            .request({ type: 'lease.acquire', id: newId(), payload: { deviceId } })
-            .then((res) => {
-              if (cancelled) return
-              // Plan 105 §5 step 105.6 — the ONE place `leaseOrigin` becomes
-              // `'auto-claim'`: this is the popup claiming an idle device for
-              // itself on open ("Quick control, not a takeover" — the file
-              // header), never something the operator asked for directly.
-              if (res.type === 'lease.acquired') {
-                setControlExpiresAt(res.payload.expiresAt * 1000)
-                setLeaseOrigin('auto-claim')
-              }
-            })
-            .catch(() => {
-              // Lost a race to someone else on a busy wall — not an error
-              // worth a red banner. The `lease.changed`/`device.status`
-              // handlers below pick up the real holder the moment the
-              // broadcast lands, and the Assist row picks it up from there.
-            })
-        }
+        // Plan 125 §3.10, §4.6 (step 125.5) — the auto-claim condition
+        // widened from `status === 'idle'` to "idle, OR already held by me".
+        // This is the half of report 3 that makes the new
+        // `held-by-me-elsewhere` state rare rather than routine: an
+        // explicitly-taken lease is deliberately NOT released when the popup
+        // closes (the file header's own rule), so take control once, close,
+        // reopen — or simply open a second tab — and the device is `manual`,
+        // held by you, while this fresh popup has no `controlExpiresAt` of
+        // its own. Before this, that fell through to `held-by-human` and the
+        // popup told the operator their own email was using the device.
+        // Nobody is displaced by this claim: the lease moves from one of
+        // your own clients to another.
+        const mine = heldByMe(b.device.heldBy, myUserIdRef.current)
+        if (b.device.status !== 'idle' && !mine) return
+        void ws
+          .request({
+            type: 'lease.acquire',
+            id: newId(),
+            // `takeOverFrom` is the compare-and-swap the server needs before
+            // it will move a lease that someone still holds (plan 71 §3.4) —
+            // required here even though "someone" is this same person, and
+            // omitted entirely for the idle case, which has no holder to
+            // swap against.
+            payload: { deviceId, ...(mine ? { takeOverFrom: mine.id } : {}) },
+          })
+          .then((res) => {
+            if (cancelled) return
+            if (res.type === 'lease.acquired') {
+              setControlExpiresAt(res.payload.expiresAt * 1000)
+              // Plan 105 §5 step 105.6 — `'auto-claim'` is the popup claiming
+              // an IDLE device for itself on open ("Quick control, not a
+              // takeover" — the file header), and it is given up again when
+              // the popup closes. Resuming a lease you already held is the
+              // other rule, and the file header states it explicitly: "if the
+              // operator pressed Take control, or ALREADY HELD THE DEVICE
+              // BEFORE THIS POPUP OPENED, closing it must NOT take the device
+              // from them — they may be about to run something." So a resumed
+              // lease is `'explicit'`: glancing at a device you had taken
+              // must never be what loses it for you.
+              setLeaseOrigin(mine ? 'explicit' : 'auto-claim')
+            }
+          })
+          .catch(() => {
+            // Lost a race to someone else on a busy wall — not an error
+            // worth a red banner. The `lease.changed`/`device.status`
+            // handlers below pick up the real holder the moment the
+            // broadcast lands, and the Assist row picks it up from there.
+            // A refused resume lands here too, and degrades to exactly the
+            // state that offers the operator the same act as a button:
+            // `held-by-me-elsewhere`'s "Resume control here" (§3.10).
+          })
       })
       .catch((e) => {
         if (!cancelled) setFetchError(e instanceof Error ? e.message : String(e))
@@ -633,21 +729,54 @@ export function DevicePopup({
   // the operator switches to Inspector (Assist does not grant `inspect.*` —
   // plan 91 §3.4 lists exactly five input verbs, and inspecting is not one
   // of them — so Assist alone can never satisfy this button).
-  function claimControl() {
+  function acquireControl(takeOverFrom: string | null) {
     void ws
-      .request({ type: 'lease.acquire', id: newId(), payload: { deviceId } })
+      .request({ type: 'lease.acquire', id: newId(), payload: { deviceId, ...(takeOverFrom ? { takeOverFrom } : {}) } })
       .then((res) => {
         // Plan 105 §5 step 105.6 — an operator-initiated acquire is always
         // `'explicit'`: this button only exists because the operator pressed
-        // it (the free-state row, or the Inspector tab's inline prompt), so
-        // closing the popup afterward must not take the device back from
-        // them (the file header has the full rule).
+        // it (the free-state row, the Inspector tab's inline prompt, or —
+        // plan 125 §3.10 — "Resume control here"), so closing the popup
+        // afterward must not take the device back from them (the file header
+        // has the full rule).
         if (res.type === 'lease.acquired') {
           setControlExpiresAt(res.payload.expiresAt * 1000)
           setLeaseOrigin('explicit')
         }
       })
       .catch((err) => setNotice({ message: err instanceof Error ? err.message : String(err), offerTakeControl: false }))
+  }
+
+  // Deliberately a zero-argument wrapper rather than `acquireControl` with a
+  // default: it is passed straight to `onClick`/`onClaimControl`, and a bare
+  // `onClick={acquireControl}` would hand React's `MouseEvent` in as
+  // `takeOverFrom`.
+  function claimControl() {
+    acquireControl(null)
+  }
+
+  /**
+   * Plan 125 §3.10, step 125.5 — "Resume control here". Not a takeover: the
+   * lease being moved is this operator's own, held by another tab, window or
+   * browser of theirs. `holderId` is `heldBy.id`, which for an authenticated
+   * person is their `userId` (`toHolder`, `lease-manager.ts`, writes
+   * `holderUserId ?? holder`) — the compare-and-swap value the server needs
+   * before it will move a lease somebody still holds.
+   *
+   * **Known server-side gap, reported with this step and NOT fixable from
+   * Studio:** `acquireManual` compares `takeOverFrom` against
+   * `Lease.holder` — the internal WS clientId — while every wire holder id a
+   * client can possibly see is `holderUserId` once a farm has auth. The two
+   * never match, so on an authenticated farm this request is refused with
+   * `lease_holder_changed` today, exactly like `TakeControlDialog`'s own
+   * long-standing takeover path (the same mismatch, the same one-line CAS
+   * fix in `packages/core/src/lease/lease-manager.ts`). The refusal is shown
+   * to the operator rather than swallowed, and this state is still strictly
+   * better than what it replaced: it no longer describes the operator to
+   * themselves as a stranger.
+   */
+  function resumeControlHere(holderId: string) {
+    acquireControl(holderId)
   }
 
   // Audit row 27 (plan 105 §5 step 105.1) — the first thing in this popup
@@ -700,15 +829,24 @@ export function DevicePopup({
   // action this device's current state offers (`./ControlState.tsx`'s own
   // file header has the full design). `myLeaseExpiresAt`/`myAssistGrant` are
   // THIS client's own tracked facts (`controlExpiresAt`/`assisting` above),
-  // never derived from comparing `deviceDetail.heldBy.id` to anything — see
-  // `UseControlStateInput`'s own doc comment for why that comparison is
-  // unreliable once a farm has real auth.
+  // and they stay the FIRST checks: they are unambiguous about this client,
+  // and correct with auth off or with two clients sharing one identity.
+  //
+  // Plan 125 §3.10, step 125.5 — `myUserId` is the second, weaker signal
+  // underneath them: it can only ever say "one of your clients holds this",
+  // never "this one does", which is exactly why it is checked after
+  // `myLeaseExpiresAt` and never instead of it. It is what stops the popup
+  // telling the operator that their own email address is using the device
+  // (report 3, plan 125 §0.8) once a farm has real auth — the comparison
+  // `UseControlStateInput`'s doc comment used to forbid, correctly, back
+  // when there was no `userId` to compare against.
   const controlState = useControlState({
     status,
     heldBy: deviceDetail?.heldBy ?? null,
     myLeaseExpiresAt: controlExpiresAt,
     myAssistGrant: assisting,
     coControlMode,
+    myUserId,
   })
   // `ActionsList`'s own pre-existing "Assist" row shape (`SidePanel.tsx`'s
   // `assistState` prop) — still derived from the SAME `controlState` above,
@@ -791,7 +929,21 @@ export function DevicePopup({
   }, [candidateKey, canStartMirror])
 
   function labelFor(id: string): string {
-    return mirrorMembers.find((m) => m.deviceId === id)?.label ?? devices.find((d) => d.id === id)?.label ?? id
+    // Plan 124 §4.4 Group B + §10's note from step 124.5: `MirrorMember` now
+    // carries a `number` FIELD and its `label` stays BARE — deliberately the
+    // opposite of §3.7's original table, precisely so this function can
+    // compose. Had the server pre-baked `#7` into `member.label`, the
+    // fallback branch below (a `DeviceInfo`, which has always carried
+    // `number`) would have composed a second time and this row would read
+    // `#7 #7 Galaxy A15` for a mirror member but `#7 Galaxy A15` for a
+    // device that has dropped out of the group.
+    const member = mirrorMembers.find((m) => m.deviceId === id)
+    if (member) return formatDeviceName(member.number, member.label)
+    const device = devices.find((d) => d.id === id)
+    if (device) return formatDeviceName(device.number, device.label)
+    // Neither list knows this id — a member that left the group mid-run. The
+    // raw device id is the honest answer; there is no label to compose with.
+    return id
   }
 
   const activeMemberCount = mirrorMembers.filter((m) => m.mode !== 'skipped').length
@@ -820,7 +972,7 @@ export function DevicePopup({
     <div className="pointer-events-none fixed inset-x-[4vw] top-1/2 z-40 -translate-y-1/2 @container">
       <div
         role="region"
-        aria-label={`Focused control — ${label}`}
+        aria-label={`Focused control — ${deviceName}`}
         // The TRANSPARENT popup box (plan 103's layout restructure, landed
         // alongside 103.4–103.7): no background, no border, no shadow of its
         // own. Three independently chromed panels sit inside it, the Wall
@@ -929,30 +1081,47 @@ export function DevicePopup({
             otherwise takes from its content — without it, `LiveView`'s
             explicit pixel width becomes an un-shrinkable floor and the
             actions panel is pushed off-screen. */}
+        {/* **Plan 125 §0.7, §4.5, §5 step 125.10 — the video no longer waits
+            on an HTTP round trip.** This used to read `{deviceDetail ?
+            <LiveView …/> : <LoadingRows/>}`, which meant `stream.start` could
+            not leave the browser until `GET /api/devices/:id` had answered.
+            §0.7's cold-path table names it: *"`stream.start` gated behind an
+            HTTP RTT … The video request does not need that payload."* And it
+            genuinely does not — `LiveView` needs a `deviceId`, which this
+            component has at mount, and every other prop below either comes
+            from elsewhere or is allowed to arrive late:
+             - `inputEnabled` is derived from the LEASE, which is claimed by
+               the detail effect and so was already late even before this
+               change; until it lands the canvas is read-only and says so
+               ("Input is off — watching only"). The server refuses input
+               without a lease regardless, so nothing here is a safety gate.
+             - `mirror` is `undefined` until the operator starts a Mirror
+               group, which is a deliberate action minutes into a session.
+             - `provisioning` comes from `usePreparation`, its own subscription,
+               never from the detail fetch.
+            The picture is now the FIRST thing this popup asks for and the
+            chrome fills in around it. `LoadingRows` is gone rather than moved:
+            there is nothing left to wait for in this panel, and `LiveView`
+            draws its own, better wake-up progress (the four-step
+            `session.progress` panel) over the same area.
+            Rendered UNCONDITIONALLY — never behind `fetchError` or any other
+            flag — so React reconciles one element at one position and the
+            instance survives every state change around it. `WallTile.tsx`'s
+            `rendersPicture` comment records what a second, conditional
+            `<LiveView>` position costs: an unmount takes the component's own
+            retry overlay down with it. A failed detail fetch still reports
+            itself, in the side panel's own `fetchError` line. */}
         <div className="flex min-h-0 min-w-0 max-w-max flex-1 flex-col @max-[600px]:max-w-full">
-          {deviceDetail ? (
-            <LiveView
-              deviceId={deviceId}
-              inputEnabled={inputEnabled}
-              onActivity={noteActivity}
-              quality="control"
-              rail={false}
-              fitContainer
-              mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo, onResult: setMirrorLastResults } : undefined}
-              provisioning={provisioningOverlay}
-            />
-          ) : (
-            !fetchError && (
-              // A plausible fixed width before the device's own detail (and so
-              // `LiveView`'s own aspect-ratio-derived width) exists yet.
-              // `max-w-full` for the same reason `LiveView`'s own root has it:
-              // on a narrow band even this placeholder must give way rather
-              // than push the actions panel out of the popup.
-              <div className="w-80 max-w-full flex-1 rounded-lg border border-line-strong bg-surface p-3 shadow-2xl">
-                <LoadingRows rows={2} />
-              </div>
-            )
-          )}
+          <LiveView
+            deviceId={deviceId}
+            inputEnabled={inputEnabled}
+            onActivity={noteActivity}
+            quality="control"
+            rail={false}
+            fitContainer
+            mirror={mirrorGroupId ? { groupId: mirrorGroupId, solo, onResult: setMirrorLastResults } : undefined}
+            provisioning={provisioningOverlay}
+          />
         </div>
 
         {/* Panel 3 — identity, session state, and the tabs. Its own header
@@ -968,7 +1137,13 @@ export function DevicePopup({
           <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <ScreenShare className="size-4 shrink-0 text-accent-strong" aria-hidden />
-              <span className="truncate text-[13px] font-medium">{label}</span>
+              {/* Plan 124 §3.2, step 124.2 — the header the comment above
+                  describes as `#01 - moto g06  X` in the owner's own
+                  reference actually rendered the bare label. `<DeviceName>`
+                  is the visual form: the number in its own dimmed span, the
+                  label truncating beside it, and nothing at all rendered for
+                  a device whose reservation was released (criterion 7). */}
+              <DeviceName number={deviceDetail?.number} label={label} className="text-[13px] font-medium" />
               {busy && <span className="rack-label text-led-active">busy</span>}
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -1006,7 +1181,16 @@ export function DevicePopup({
               loaded — there is nothing to look up before then. */}
           {deviceDetail && (
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
-              <AgentAlertChip agent={deviceDetail.agent ?? 'absent'} deviceId={deviceId} deviceLabel={deviceDetail.label} />
+              {/* `deviceNumber` (plan 124 §4.4 Group B) — the chip's panel
+                  writes outcome sentences naming the device ("The guest
+                  agent is ready on … now."), which on a rack of identical
+                  models named nothing at all until the number came with it. */}
+              <AgentAlertChip
+                agent={deviceDetail.agent ?? 'absent'}
+                deviceId={deviceId}
+                deviceLabel={deviceDetail.label}
+                deviceNumber={deviceDetail.number}
+              />
               <LabelStateBadge state={labelState} />
               <BatteryTempInline battery={battery ?? deviceDetail.battery ?? null} />
               <span className="ml-auto flex items-center gap-0.5">
@@ -1093,42 +1277,70 @@ export function DevicePopup({
               </div>
             )}
 
+            {/* Plan 125 §3.10, step 125.5 — YOU hold it, in another tab,
+                window or browser. Reached only when the widened auto-claim
+                above did not already resume the lease on open (it is refused
+                if someone genuinely raced you for it in between, and — see
+                `resumeControlHere` — by a server-side CAS gap this step
+                reports rather than fixes). Never a takeover, never a
+                confirmation dialog: you cannot take a device from yourself,
+                and the old fall-through to `held-by-human` here is exactly
+                what told the owner their own email address was using the
+                device (report 3, plan 125 §0.8). */}
+            {controlState.kind === 'held-by-me-elsewhere' && (
+              <div className="flex shrink-0 items-center justify-between gap-2 rounded-lg border p-2.5">
+                <span className="text-[11.5px] leading-relaxed text-fg-muted">You are already controlling this device somewhere else.</span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-6 shrink-0 px-2 text-[11px]"
+                  onClick={() => resumeControlHere(controlState.holder.id)}
+                >
+                  {controlState.primary.label}
+                </Button>
+              </div>
+            )}
+
             {controlState.kind === 'held-by-human' && (
-              <div className="shrink-0 space-y-1.5 rounded-lg border p-2.5">
+              <div className="shrink-0 space-y-2 rounded-lg border p-2.5">
                 <p className="text-[11.5px] leading-relaxed text-fg-muted">
                   <span className="readout text-fg">{controlState.holder.label}</span> is using this device now.
                 </p>
-                {/* Plan 105 §9 Q1 — deliberately undecided: both actions are
-                    offered, weighted equally, and the caption says so plainly
-                    rather than silently picking one for the operator. */}
-                <p className="text-[11px] text-fg-subtle">Join them, or take over — not decided which should be the default here.</p>
-                <div className="flex gap-2">
-                  {controlState.options.map((opt) =>
-                    opt.kind === 'assist' ? (
-                      <Button
-                        key={opt.kind}
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[11px]"
-                        disabled={Boolean(opt.disabledReason)}
-                        title={opt.disabledReason ?? undefined}
-                        onClick={() => setAssistOpen(true)}
-                      >
-                        {opt.label}
-                      </Button>
-                    ) : (
-                      <Button
-                        key={opt.kind}
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[11px]"
-                        onClick={() => setTakeOverOpen(true)}
-                      >
-                        {opt.label}
-                      </Button>
-                    ),
-                  )}
-                </div>
+                {/* Plan 105 §9 Q1, ANSWERED by plan 125 §3.11 (step 125.6).
+                    What used to sit here was a caption reading "Join them, or
+                    take over — not decided which should be the default here"
+                    — our own open design question, rendered verbatim to an
+                    operator, which `docs/design.md`'s writing rules do not
+                    allow. The answer: for a PERSON, Take control is primary
+                    (a single operator driving a rack overwhelmingly means "I
+                    want this phone") and Assist is the secondary choice; for
+                    an AGENT holder the two stay equal, because joining a
+                    running automation genuinely is the likely intent.
+                    `options` arrives ordered most-prominent-first, so this
+                    only has to render it in order — and each button now
+                    carries its own plain line saying what it does, which is
+                    what the caption never did. */}
+                {controlState.options.map((opt, i) => (
+                  <div key={opt.kind} className="space-y-1">
+                    <Button
+                      size="sm"
+                      variant={controlState.weighting === 'take-over-first' && i === 0 ? 'secondary' : 'outline'}
+                      className="h-6 px-2 text-[11px]"
+                      disabled={Boolean(opt.disabledReason)}
+                      title={opt.disabledReason ?? undefined}
+                      onClick={() => (opt.kind === 'assist' ? setAssistOpen(true) : setTakeOverOpen(true))}
+                    >
+                      {opt.label}
+                    </Button>
+                    {/* A disabled action explains ITSELF first — "Assisting is
+                        turned off for this farm" is what the operator needs
+                        when the button cannot be pressed, and what it would
+                        have done is beside the point (`docs/design.md`'s
+                        quality floor: a control that cannot be used says
+                        why). */}
+                    <p className="text-[11px] leading-tight text-fg-subtle">{opt.disabledReason ?? opt.description}</p>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -1269,7 +1481,9 @@ export function DevicePopup({
         {deviceDetail?.heldBy && (
           <AssistDialog
             deviceId={deviceId}
-            deviceLabel={label}
+            // Plan 124 §4.4 — the four `deviceLabel: string` props are not
+            // widened into objects; their callers compose (here and below).
+            deviceLabel={deviceName}
             primary={deviceDetail.heldBy}
             grantTtlSec={assistGrantTtlSec}
             open={assistOpen}
@@ -1283,7 +1497,9 @@ export function DevicePopup({
             header's own Bot-icon button above. Modal (the component has no
             `nonModal` path, and it is outside this plan's own file list to add
             one) — the header comment above has the full reasoning. */}
-        {deviceDetail && <AskAnAgentDialog deviceId={deviceId} deviceLabel={label} open={askAgentOpen} onOpenChange={setAskAgentOpen} />}
+        {deviceDetail && (
+          <AskAnAgentDialog deviceId={deviceId} deviceLabel={deviceName} open={askAgentOpen} onOpenChange={setAskAgentOpen} />
+        )}
 
         {/* Take over (plan 105 §5 step 105.1, audit row 26) — reuses
             `TakeControlDialog` unchanged (per this plan's own instruction: "do
@@ -1294,7 +1510,7 @@ export function DevicePopup({
         {deviceDetail?.heldBy && (
           <TakeControlDialog
             deviceId={deviceId}
-            deviceLabel={label}
+            deviceLabel={deviceName}
             holder={deviceDetail.heldBy}
             open={takeOverOpen}
             onOpenChange={setTakeOverOpen}
@@ -1314,7 +1530,7 @@ export function DevicePopup({
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>
-                  End {deviceDetail?.heldBy?.label ?? 'this job'} on {label}?
+                  End {deviceDetail?.heldBy?.label ?? 'this job'} on {deviceName}?
                 </AlertDialogTitle>
                 <AlertDialogDescription>The job stops immediately. This cannot be undone.</AlertDialogDescription>
               </AlertDialogHeader>

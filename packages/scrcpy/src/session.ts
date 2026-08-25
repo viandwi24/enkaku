@@ -33,7 +33,16 @@ export interface LongLivedAdbChild {
 export interface AdbExecutor {
   /** Per-device shell exec (through the Plan 01 queue). */
   exec(cmd: string): Promise<string>
-  /** adb CLI-level, one-shot: push jar, forward port. */
+  /**
+   * adb CLI-level, one-shot: push jar, forward port. **The fallback**, not the
+   * first choice, since plan 125 step 125.9: `push`/`forward`/`listForward`/
+   * `killForward` below do the same four things over the adb server's own
+   * `host:` protocol with no `adb.exe` process spawn at all. A caller that
+   * supplies none of them still works exactly as it did before that step —
+   * every use of this field below sits one `if` away from the protocol path,
+   * deliberately (plan 125 §8's "the fallback to `hostAdb.run` stays one line
+   * away"). `packages/node/src/hosts.ts` is that caller today.
+   */
   hostAdb(args: string[]): Promise<string>
   /**
    * adb CLI-level, long-lived: the `adb shell` that runs the scrcpy server
@@ -45,6 +54,40 @@ export interface AdbExecutor {
    * launch when this is absent, so that caller keeps working unchanged.
    */
   spawnLongLived?(args: string[], opts?: { onExit?: (code: number, tail: string) => void }): LongLivedAdbChild
+  /**
+   * Push a local file to the device over the adb server's own `sync:` service
+   * — `adb push` without the `adb.exe` process (plan 125 §3.9, step 125.9).
+   * `packages/adb`'s `pushFile` is the implementation the core hands in here;
+   * this package declares the shape structurally rather than importing it,
+   * for the same reason `LongLivedAdbChild` above is declared locally.
+   *
+   * This replaces the SPAWN around the jar push, never the push itself: plan
+   * 100 G13 is explicit that scrcpy-server `unlinkSelf()`s the jar as it
+   * starts, so EVERY session must push it fresh, and a cached/skipped push
+   * shows up as an `Aborted` with no further output from the next
+   * `app_process` launch — a signature that already cost two false diagnoses.
+   * Nothing below caches, conditionalises, or skips it.
+   */
+  push?(localPath: string, remotePath: string): Promise<void>
+  /**
+   * The forward trio, protocol-level: `host-serial:<serial>:forward:...`,
+   * `host:list-forward` and `host-serial:<serial>:killforward:...` (plan 119
+   * §4.1). Plan 119 built and shipped these on `AdbClient` and wired them into
+   * the guest-agent and ui-server launchers; plan 125 step 125.9 brings the
+   * video path — the one hot path 119 left out — onto the same mechanism
+   * rather than reimplementing it. Supplied together or not at all: the CLI
+   * fallback in `openForward` needs both `forward` and `listForward` to be
+   * absent to make sense, and it checks for exactly that.
+   *
+   * `client.ts`'s own doc comments record which of these wire shapes were
+   * verified against a real device and which were inferred by analogy (plan
+   * 119 acceptance criterion 5). This file does not re-derive that judgment,
+   * it only consumes the three methods — the same stance
+   * `guest-agent/launcher.ts` takes.
+   */
+  forward?(serial: string, local: string, remote: string): Promise<void>
+  listForward?(): Promise<{ serial: string; local: string; remote: string }[]>
+  killForward?(serial: string, local: string): Promise<void>
   serial: string
 }
 
@@ -142,7 +185,12 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     SCID_MARKER_PREFIX + Array.from(scidRandomBytes, (b) => b.toString(16).padStart(2, '0')).join('')
 
   // 1. Push the jar (its version is pinned to the core).
-  await adb.hostAdb(['-s', adb.serial, 'push', opts.jarPath, DEVICE_JAR_PATH])
+  //
+  // EVERY session pushes it, unconditionally — see `AdbExecutor.push`'s own
+  // comment and plan 100 G13. What changed in plan 125 step 125.9 is only HOW
+  // the bytes get there: the `sync:` service over the adb server's existing
+  // socket when the caller supplied `push`, an `adb.exe` spawn when it did not.
+  await pushJar(adb, opts.jarPath)
 
   // 2. Start the server (key=value arguments since scrcpy 2.x).
   const args = [
@@ -192,9 +240,46 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     void adb.hostAdb(['-s', adb.serial, 'shell', cmd]).catch((err) => log('warn', `the scrcpy server exited: ${String(err)}`))
   }
 
+  /**
+   * Everything this session owns OFF the host: the device-side `app_process`,
+   * the host-side `adb` child holding its shell, and (once there is one) the
+   * forward. Called from `close()` on the normal route and from BOTH failure
+   * routes below — plan 125's own constraint is that a session gives its
+   * device-side resources back on every exit route, not only the happy one.
+   *
+   * Before this, anything thrown between the server launch above and the
+   * returned object below leaked all three. A `connectVideoSocket` that
+   * exhausts its 40-attempt ladder is not a hypothetical: it is the exact
+   * failure class behind the screencap-loop fallback (§96.22), and it threw
+   * straight out of `startScrcpySession` with nothing killing the server,
+   * nothing removing the forward, and nothing running `stopDeviceSide`. The
+   * caller had no handle to run `close()` with either — `close()` is part of
+   * the object this function never got to return. That is precisely the leak
+   * §96.23 measured on real hardware: a server still alive 7m42s after the
+   * core had given up on it, encoding video into a socket nobody was reading.
+   * In a sealed phone-farm box (plan 125 §0.2) that is not recoverable by hand.
+   *
+   * `port` is null on the one route where no forward exists yet. Every step is
+   * best-effort and must never throw: it runs on a path already carrying
+   * someone else's error, and a second failure here would replace the real
+   * diagnosis with a worse one.
+   */
+  const releaseDeviceResources = async (port: number | null): Promise<void> => {
+    closedDeliberately = true
+    serverChild?.kill()
+    await stopDeviceSide(adb, scid)
+    if (port !== null) await removeForward(adb, port)
+  }
+
   // 3. Forward localabstract → host port, and prove it belongs to this device.
   const socketName = `localabstract:scrcpy_${scid}`
-  const port = await openForward(adb, socketName, opts.port)
+  // `openForward` already removes any forward IT created on the routes where
+  // it knows the port; what it cannot reach is the server spawned in step 2,
+  // which by now is running on the device with nobody left to stop it.
+  const port = await openForward(adb, socketName, opts.port, log).catch(async (err: unknown) => {
+    await releaseDeviceResources(null)
+    throw err
+  })
 
   // 4. Connect the two sockets: video first, then control.
   const packetHandlers = new Set<(p: ScrcpyPacket) => void>()
@@ -213,14 +298,6 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     },
   })
 
-  const videoSocket = await connectVideoSocket(
-    port,
-    (data) => demuxer.push(data),
-    (reason) => {
-      for (const cb of closeHandlers) cb(reason)
-    },
-    log,
-  )
   // Device→host messages (plan 38 §3.2): the control socket was write-only
   // until now — GET_CLIPBOARD is the first message that gets an answer back.
   // A parser error must never close this socket (plan 38 §8): input already
@@ -233,9 +310,39 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     (err) => log('warn', `device message reader stopped: ${String(err)}`),
   )
 
-  // Safe now: the server has accepted the video socket, so it is listening and
-  // the next connection lands on it rather than on a half-open forward.
-  const controlSocket = await connectWithRetry(port, (data) => deviceMessageReader(data), () => {})
+  const connectSockets = async (): Promise<{ video: Socket; control: Socket }> => {
+    const video = await connectVideoSocket(
+      port,
+      (data) => demuxer.push(data),
+      (reason) => {
+        for (const cb of closeHandlers) cb(reason)
+      },
+      log,
+    )
+    try {
+      // Safe now: the server has accepted the video socket, so it is listening
+      // and the next connection lands on it rather than on a half-open forward.
+      const control = await connectWithRetry(port, (data) => deviceMessageReader(data), () => {})
+      return { video, control }
+    } catch (err) {
+      // The video socket is live and the server is streaming into it; a
+      // control socket we never got means this session is dead, so hand the
+      // video half back too rather than leaving the encoder fed.
+      try {
+        video.end()
+      } catch {
+        // already closed
+      }
+      throw err
+    }
+  }
+
+  const opened = await connectSockets().catch(async (err: unknown) => {
+    await releaseDeviceResources(port)
+    throw err
+  })
+  const videoSocket = opened.video
+  const controlSocket = opened.control
 
   const write = (bytes: Uint8Array) => {
     try {
@@ -281,10 +388,7 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       } catch {
         // already closed
       }
-      closedDeliberately = true
-      serverChild?.kill()
-      await stopDeviceSide(adb, scid)
-      await adb.hostAdb(['-s', adb.serial, 'forward', '--remove', `tcp:${port}`]).catch(() => undefined)
+      await releaseDeviceResources(port)
     },
   }
 }
@@ -412,6 +516,47 @@ export async function sweepStrayScrcpyServers(
 }
 
 /**
+ * Push the version-locked scrcpy-server jar to the device (plan 125 §3.9,
+ * step 125.9).
+ *
+ * The protocol path (`adb.push`, the adb server's own `sync:` service) when
+ * the caller supplied one; the `adb.exe` spawn otherwise. The fallback is
+ * deliberately kept exactly one `if` away and is what
+ * `packages/node/src/hosts.ts` still runs on — plan 125 §8's mitigation for
+ * "the protocol forward path regresses video where it worked for the agent"
+ * is that the old mechanism stays reachable, not that it is deleted.
+ *
+ * The push itself is unconditional on both paths. Plan 100 G13: scrcpy-server
+ * calls `unlinkSelf()` on `/data/local/tmp/scrcpy-server.jar` as it starts, so
+ * a second session finds no jar and its `app_process` dies with a bare
+ * `Aborted` and no further output — a signature that cost two false diagnoses
+ * during the investigation plan 100 was built on. Nothing here caches it,
+ * skips it, or checks whether it is "already there".
+ */
+async function pushJar(adb: AdbExecutor, jarPath: string): Promise<void> {
+  if (adb.push) {
+    await adb.push(jarPath, DEVICE_JAR_PATH)
+    return
+  }
+  await adb.hostAdb(['-s', adb.serial, 'push', jarPath, DEVICE_JAR_PATH])
+}
+
+/**
+ * Drop this session's forward. Best-effort on both paths and on every exit
+ * route: a forward that is already gone (the device vanished, the adb server
+ * was cycled) is not an error worth surfacing — the same tolerate-failure
+ * behaviour `guest-agent/launcher.ts`'s `removeForward` keeps, and the same
+ * reasoning `stopDeviceSide` above documents.
+ */
+async function removeForward(adb: AdbExecutor, port: number): Promise<void> {
+  if (adb.killForward) {
+    await adb.killForward(adb.serial, `tcp:${port}`).catch(() => undefined)
+    return
+  }
+  await adb.hostAdb(['-s', adb.serial, 'forward', '--remove', `tcp:${port}`]).catch(() => undefined)
+}
+
+/**
  * Bind a host port to this device's scrcpy socket, and refuse to continue
  * unless adb agrees the binding is ours.
  *
@@ -424,9 +569,138 @@ export async function sweepStrayScrcpyServers(
  * `tcp:0` asks adb to choose the port, which removes the collision at the
  * source. The listing check after it is what turns any remaining surprise into
  * a loud failure instead of a wrong phone reacting.
+ *
+ * Two mechanisms, one meaning (plan 125 §3.9, step 125.9): the protocol path
+ * when the caller supplied `forward` + `listForward` (plan 119's own methods,
+ * reused rather than reimplemented), the two `adb.exe` spawns otherwise. The
+ * ownership check is not weakened by the swap — see `openForwardOverProtocol`.
  */
-async function openForward(adb: AdbExecutor, socketName: string, preferred?: number): Promise<number> {
+async function openForward(
+  adb: AdbExecutor,
+  socketName: string,
+  preferred: number | undefined,
+  log: (level: 'debug' | 'info' | 'warn', msg: string) => void,
+): Promise<number> {
   const requested = preferred ?? 0
+  const { forward, listForward } = adb
+  if (forward && listForward) {
+    return openForwardOverProtocol(adb, { forward, listForward }, socketName, requested, log)
+  }
+  return openForwardOverCli(adb, socketName, requested)
+}
+
+/**
+ * The protocol path: `host-serial:<serial>:forward:...` + `host:list-forward`,
+ * no process spawned (plan 119 §4.1, brought here by plan 125 step 125.9).
+ *
+ * The ephemeral port is read back OUT OF THE LISTING rather than out of the
+ * ADD reply, and that is the one real design decision in this function.
+ * `adb forward tcp:0 <socket>` prints the port the server picked because the
+ * CLI reads an OPTIONAL extra protocol string after the reply; plan 119's
+ * `client.forward()` deliberately reads the status and nothing else (its own
+ * doc comment: "`OKAY` is never assumed to be followed by a block just because
+ * some other method has one"), and its success shape is inferred rather than
+ * device-verified. Teaching it to read a body this file happens to want would
+ * be building on the least-verified part of that plan. The listing carries the
+ * same number, on the one service of the family plan 119 §0.2 confirmed live
+ * really is `OKAY` + a length-prefixed body — and it is the call the ownership
+ * check needs anyway, so the port costs no extra round trip. Its PER-LINE
+ * format is still inferred from the CLI's own `--list` output (plan 119 §0.2's
+ * named gap: no device was attached when that plan ran, and none is attached
+ * here either), which is why a listing that does not name this session's own
+ * forward fails loudly below rather than being guessed past.
+ *
+ * `remote` is the lookup key, not `local`: `localabstract:scrcpy_<scid>` is
+ * minted fresh per session from `crypto.getRandomValues`, so it names THIS
+ * session's socket and nothing else. The CLI path below has to search by port
+ * because that is all it knows; here, finding the entry that carries our
+ * serial AND our socket name makes "the port belongs to another device"
+ * unrepresentable rather than merely detected. The extra scan for a second
+ * entry on the same local port is belt-and-braces: adb cannot bind one port
+ * twice, but "video from one phone, taps landing on the other" is expensive
+ * enough to check for anyway.
+ */
+async function openForwardOverProtocol(
+  adb: AdbExecutor,
+  client: {
+    forward: (serial: string, local: string, remote: string) => Promise<void>
+    listForward: () => Promise<{ serial: string; local: string; remote: string }[]>
+  },
+  socketName: string,
+  requested: number,
+  log: (level: 'debug' | 'info' | 'warn', msg: string) => void,
+): Promise<number> {
+  // The ADD is the one call in this file whose wire shape nobody has exercised
+  // against a real device in THIS form: plan 119 §0.2 verified `forward`'s FAIL
+  // reply live and inferred its success reply, and no launcher before this one
+  // ever asked for `tcp:0` (both existing callers name a fixed port). A server
+  // that refuses the request outright therefore falls back to the CLI ADD once,
+  // loudly, instead of costing the farm its video — plan 125 §8's mitigation
+  // taken literally. The fallback covers THIS call only: an ownership check
+  // that fails below is a safety refusal (plan 44 §4.4) and must never be
+  // retried by another mechanism until it happens to pass.
+  try {
+    await client.forward(adb.serial, `tcp:${requested}`, socketName)
+  } catch (err) {
+    log('warn', `the adb server refused a protocol-level forward (${String(err)}) — falling back to the adb CLI for this session`)
+    return openForwardOverCli(adb, socketName, requested)
+  }
+  // From here on a forward exists on the host. Anything thrown below has to
+  // give it back before it leaves, or the session that never started keeps a
+  // port bound to a device forever (plan 125's every-exit-route rule).
+  let bound: number | null = requested !== 0 ? requested : null
+  try {
+    const list = await client.listForward()
+    const mine = list.filter((f) => f.serial === adb.serial && f.remote === socketName)
+    if (mine.length === 0) {
+      // `bound` is still null on the `tcp:0` route here, so this one throw
+      // cannot clean up after itself: the port adb chose is exactly what the
+      // listing failed to tell us. Removing whatever OTHER entry claims this
+      // socket name instead would mean killing a forward the listing says
+      // belongs to a different device, which is the failure this whole
+      // function exists to prevent — and a leaked ephemeral forward is the
+      // smaller harm by a wide margin: the caller's own catch around
+      // `openForward` still kills the server child and `pkill`s the device-side
+      // process, so nothing is left listening at the far end of it, and
+      // `daemon.ts`'s boot-time forward cleanup deliberately leaves
+      // `tcp:0`-allocated scrcpy entries alone anyway (plan 85 §4.8) precisely
+      // because it cannot tell them from another tool's.
+      const others = list.filter((f) => f.remote === socketName)
+      throw new Error(
+        others.length > 0
+          ? `${socketName} is bound to ${others.map((f) => f.serial).join(', ')}, not to ${adb.serial}; refusing to drive another device`
+          : `adb lost the forward for ${adb.serial} → ${socketName} right after creating it`,
+      )
+    }
+    if (mine.length > 1) {
+      throw new Error(`adb reports ${mine.length} forwards for ${adb.serial} → ${socketName}; refusing to guess which one is this session's`)
+    }
+    const local = mine[0]!.local
+    const port = Number.parseInt(/^tcp:(\d+)$/.exec(local)?.[1] ?? '', 10)
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(`adb did not report a forwarded port for ${socketName} (got ${JSON.stringify(local)})`)
+    }
+    bound = port
+    const conflict = list.find((f) => f.local === local && (f.serial !== adb.serial || f.remote !== socketName))
+    if (conflict) {
+      throw new Error(
+        `${local} is bound to ${conflict.serial} → ${conflict.remote} as well as to ${adb.serial} → ${socketName}; ` +
+          'refusing to drive another device',
+      )
+    }
+    return port
+  } catch (err) {
+    if (bound !== null) await removeForward(adb, bound)
+    throw err
+  }
+}
+
+/**
+ * The `adb.exe` path, unchanged in behaviour since before plan 125 step 125.9
+ * — kept as the fallback for a caller with no protocol client (today:
+ * `packages/node/src/hosts.ts`), not as dead code.
+ */
+async function openForwardOverCli(adb: AdbExecutor, socketName: string, requested: number): Promise<number> {
   const out = await adb.hostAdb(['-s', adb.serial, 'forward', `tcp:${requested}`, socketName])
   const port = requested !== 0 ? requested : Number.parseInt(out.trim().split(/\s+/).pop() ?? '', 10)
   if (!Number.isInteger(port) || port <= 0) {
@@ -440,7 +714,7 @@ async function openForward(adb: AdbExecutor, socketName: string, preferred?: num
     .find(([, local]) => local === `tcp:${port}`)
   if (!owner) throw new Error(`adb lost the forward for tcp:${port} right after creating it`)
   if (owner[0] !== adb.serial || owner[2] !== socketName) {
-    await adb.hostAdb(['-s', adb.serial, 'forward', '--remove', `tcp:${port}`]).catch(() => undefined)
+    await removeForward(adb, port)
     throw new Error(
       `tcp:${port} is bound to ${owner[0]} → ${owner[2]}, not to ${adb.serial} → ${socketName}; ` +
         'refusing to drive another device',

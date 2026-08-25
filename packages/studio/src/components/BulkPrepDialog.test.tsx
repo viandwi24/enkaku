@@ -18,6 +18,10 @@ function makeDevice(id: string, label: string): DeviceInfo {
     id,
     stableId: id,
     serial: id,
+    // Plan 124 step 124.3 — a number on every fixture, because the report
+    // these tests read is exactly the surface that has to tell two
+    // identically labelled phones apart.
+    number: Number(id.replace(/\D/g, '')) || null,
     label,
     androidVersion: '15',
     apiLevel: 35,
@@ -160,6 +164,9 @@ describe('BulkPrepDialog — a mixed twenty-device result', () => {
     fireEvent.click(groups[0]?.querySelector('button') as HTMLButtonElement)
     await waitFor(() => expect(r.getByText('Phone 01')).toBeTruthy())
     expect(r.getByText('Phone 02')).toBeTruthy()
+    // Plan 124 §4.4, step 124.3 — named WITH the number, not just the label.
+    expect(r.getByText('#1')).toBeTruthy()
+    expect(r.getByText('#2')).toBeTruthy()
   })
 
   test('the devices with no session open are counted honestly, not reported as screens that moved', async () => {

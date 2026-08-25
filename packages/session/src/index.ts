@@ -81,7 +81,25 @@ export { SessionError } from './errors'
 export type { Logger } from './logger'
 export type { DeviceSnapshot, DeviceSnapshotSource, ArtifactSink, SavedArtifact, TransferPort } from './types'
 export { probeDeviceIdentity, parseWmSize, parseWmDensity, pickStableId, type DeviceProbeResult } from './probe'
-export { wakeDevice, STAYON } from './wake'
+export { wakeDevice, STAYON, type WakeDeviceOpts } from './wake'
+/**
+ * Plan 125 (M90) step 125.1 — the transport-level awake policy: the two
+ * PERSISTED device settings that keep a boxed phone awake and the read-only
+ * screen probe. `packages/core/src/device/awake-policy.ts` is the device-scoped
+ * caller that owns the capture persistence, exactly as `labelling.ts` is to
+ * `screen-label.ts` above.
+ */
+export {
+  readPowerState,
+  applyScreenOffTimeout,
+  applyStayOn,
+  restoreStayOn,
+  observeScreen,
+  satisfiesStayOn,
+  firstPowerReason,
+  type PowerReadback,
+  type PowerWrite,
+} from './power'
 /**
  * Plan 85 §3.7 — the rotation lock's own types. `applyRotation` itself stays
  * internal to this package (`session.ts` is its only caller); the two TYPES

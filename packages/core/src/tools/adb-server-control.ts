@@ -17,7 +17,14 @@ export interface DrainResult {
 export interface ReattachResult {
   attempted: number
   succeeded: number
-  failed: Array<{ stableId: string; label: string }>
+  /**
+   * `number` travels beside `label`, never composed into it (plan 124 §3.1,
+   * §3.7 and §10's `MirrorMember` note): `AdbRestartDialog` is the one place
+   * this list is rendered and it composes exactly once, so a pre-baked
+   * `#7 …` here would double up the moment that dialog also holds a
+   * `DeviceInfo`. `null` for a device whose reservation was released.
+   */
+  failed: Array<{ stableId: string; label: string; number: number | null }>
 }
 
 export interface AdbCycleReport {
@@ -30,7 +37,7 @@ export interface AdbCycleReport {
   devicesAfter: number
   reattachAttempted: number
   reattachSucceeded: number
-  reattachFailed: Array<{ stableId: string; label: string }>
+  reattachFailed: Array<{ stableId: string; label: string; number: number | null }>
   serverVersion: string | null
 }
 
@@ -214,7 +221,7 @@ export function createAdbServerControl(deps: AdbServerControlDeps): AdbServerCon
     // and the restart button are one plan (plan 88 §3.10).
     let reattachAttempted = 0
     let reattachSucceeded = 0
-    let reattachFailed: Array<{ stableId: string; label: string }> = []
+    let reattachFailed: Array<{ stableId: string; label: string; number: number | null }> = []
     if (client && deps.reattachEndpoints) {
       emit('reattaching', 'dialling remembered network addresses')
       const r = await deps.reattachEndpoints()

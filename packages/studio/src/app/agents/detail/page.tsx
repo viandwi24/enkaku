@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft, RotateCcw } from 'lucide-react'
+import { ArrowLeft, RotateCcw, Search } from 'lucide-react'
 import { z } from 'zod'
 import type { AgentRun, AgentThread, AgentTreeNode } from '@enkaku/protocol'
 import type { DeviceInfo } from '@enkaku/protocol'
@@ -30,6 +30,7 @@ import {
   Badge,
   Button,
   ConfirmDialog,
+  DeviceName,
   EmptyState,
   ErrorState,
   Input,
@@ -43,6 +44,7 @@ import {
   Switch,
   Textarea,
   api,
+  matchesDeviceQuery,
   useAction,
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -752,6 +754,32 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
   // their own dot-prefix (`device.*`, `agent.*`, …), same as capabilities.
   const deviceIds = useMemo(() => devices.map((d) => d.id), [devices])
   const deviceBulk = useBulkSelection(deviceIds, draft.deviceGrants, (ids) => setDraft({ ...draft, deviceGrants: ids }))
+  /**
+   * Plan 124 §4.5, step 124.4 — this list is the WHOLE fleet and it decides
+   * which phones an agent may touch. It had no search at all: on a 100-device
+   * farm, granting three specific phones meant scrolling a 100-row checkbox
+   * column of repeated model names. `matchesDeviceQuery` is the same four-way
+   * match (number both `7` and `#7`, label, stableId, tag) every other device
+   * search in the product now uses (§1 goal 3), so the box behaves identically
+   * to `DevicePicker`'s.
+   *
+   * Filtering is client-side over the already-loaded `devices` (§2's explicit
+   * non-goal: no server-side keyset search in this plan).
+   */
+  const [deviceQuery, setDeviceQuery] = useState('')
+  const filteredDevices = useMemo(() => devices.filter((d) => matchesDeviceQuery(d, deviceQuery)), [devices, deviceQuery])
+  const filtering = deviceQuery.trim().length > 0
+  /**
+   * The bulk button acts on the FILTERED set, and says so in its own label
+   * (§4.5's requirement, and the reason this is `toggleGroup` and not
+   * `toggleAll`). The difference is not cosmetic: `toggleAll` REPLACES the
+   * whole selection with `allIds`, so a "Select all" pressed under a filter
+   * would have silently dropped every grant outside it, and "Clear all" would
+   * have wiped grants the operator could not even see. `toggleGroup` merges
+   * into — or subtracts from — whatever is already granted, which is the only
+   * safe meaning of a scoped bulk action.
+   */
+  const deviceGroupState = deviceBulk.groupState(filteredDevices.map((d) => d.id))
   const permissionGroups = useMemo(() => {
     const byGroup = new Map<string, string[]>()
     for (const p of ALL_PERMISSIONS) {
@@ -764,14 +792,43 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
 
   return (
     <SectionCard title="Access" description="Which devices, tools' permissions, and workspace paths this agent may touch.">
-      <div>
+      {/* `data-testid` (plan 124 §4.5, step 124.4) so a test can scope to THIS
+          device list. The workbench's own `ContextPanel` rail stays mounted
+          beside this panel and lists granted devices too, so an unscoped
+          query for a device name finds both and proves nothing about either. */}
+      <div data-testid="device-grants">
         <div className="mb-2 flex items-center justify-between">
-          <Label className="text-[13px] font-normal">Device grants</Label>
+          <Label className="text-[13px] font-normal">
+            Device grants
+            {/* The live count plan 124 §4.5 requires beside every table/list
+                filter: without it "Select these 3" is a number with nothing
+                to compare against. */}
+            {filtering && (
+              <span className="readout ml-1.5 text-[11px] text-fg-subtle">
+                {filteredDevices.length} of {devices.length}
+              </span>
+            )}
+          </Label>
           <div className="flex items-center gap-2">
             {draft.deviceGrants.length === 0 && <Badge variant="outline">All devices (no restriction)</Badge>}
-            {devices.length > 0 && (
-              <Button type="button" variant="ghost" size="sm" onClick={deviceBulk.toggleAll} className="h-6 px-1.5 text-[11.5px]">
-                {deviceBulk.allChecked ? 'Clear all' : 'Select all'}
+            {filteredDevices.length > 0 && (
+              // The wording carries the scope, always — "Select all" that
+              // silently meant "all 200, not the 3 you filtered to" would be
+              // worse than having no filter at all (plan 124 §4.5).
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => deviceBulk.toggleGroup(filteredDevices.map((d) => d.id))}
+                className="h-6 px-1.5 text-[11.5px]"
+              >
+                {deviceGroupState === 'all'
+                  ? filtering
+                    ? `Clear these ${filteredDevices.length}`
+                    : 'Clear all'
+                  : filtering
+                    ? `Select these ${filteredDevices.length}`
+                    : 'Select all'}
               </Button>
             )}
           </div>
@@ -779,14 +836,40 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
         <p className="mb-2 text-[11.5px] text-fg-muted">
           An agent with no grants may reach every device — this is deliberate (plan 65 §3.5). Check specific devices to narrow it.
         </p>
+        {devices.length > 0 && (
+          // Plan 124 §4.5 — the search input's shape follows `DevicePicker`'s
+          // (`DevicePicker.tsx:143-152`) so the two boxes are the same control
+          // to look at and to type into. The live count beside the label is
+          // what makes the scoped bulk button above legible.
+          <div className="relative mb-2">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
+            <Input
+              value={deviceQuery}
+              onChange={(e) => setDeviceQuery(e.target.value)}
+              placeholder="Search number, label, stable id, or tag…"
+              aria-label="Search devices to grant"
+              className="h-8 pl-8 text-[12.5px]"
+            />
+          </div>
+        )}
         <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
           {devices.length === 0 ? (
             <p className="px-1 py-2 text-[12px] text-fg-subtle">No devices enrolled yet.</p>
+          ) : filteredDevices.length === 0 ? (
+            // Never an empty box: an operator who filtered to nothing must be
+            // told it was the filter, not the farm (§4.5's own rule for the
+            // plugin table search, applied here for the same reason).
+            <p className="px-1 py-2 text-[12px] text-fg-subtle">
+              No device matches “{deviceQuery.trim()}” — {devices.length} enrolled.
+            </p>
           ) : (
-            devices.map((d) => (
+            filteredDevices.map((d) => (
               <label key={d.id} className="flex items-center gap-2 rounded px-1 py-1 text-[12.5px] hover:bg-surface-2/50">
                 <input type="checkbox" checked={draft.deviceGrants.includes(d.id)} onChange={() => toggleDevice(d.id)} />
-                <span>{d.label}</span>
+                {/* A checkbox row, so the two-span form (plan 124 §3.2) — the
+                    number dims beside the label rather than being read as
+                    part of it. */}
+                <DeviceName number={d.number} label={d.label} />
                 <span className="readout text-fg-subtle">{d.stableId}</span>
               </label>
             ))

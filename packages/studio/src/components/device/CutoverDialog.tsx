@@ -23,6 +23,7 @@ import {
   SelectValue,
   api,
   cn,
+  formatDeviceName,
   type ApiError,
 } from '@enkaku/ui'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
@@ -99,6 +100,12 @@ export function CutoverDialog({
 
   if (!device) return null
 
+  // Plan 124 §4.4, step 124.3 — one composed name for the wizard's title, its
+  // arm-failure toast and the "already on the network" warning. A cutover is
+  // a physical action on one chassis port: the dialog has to name the phone
+  // the operator is about to walk over to, not the model it happens to be.
+  const name = formatDeviceName(device.number, device.label)
+
   const start = async () => {
     setBusy(true)
     setRefusal(null)
@@ -109,7 +116,7 @@ export function CutoverDialog({
       if (address.trim()) body.address = address.trim()
       const res = await api(`/api/devices/${device.id}/connection/cutover`, CutoverResponseSchema, { method: 'POST', json: body })
       setState(res.cutover)
-      if (res.cutover.step === 'failed') toast.error(`Could not arm ${device.label}`, { description: res.cutover.detail })
+      if (res.cutover.step === 'failed') toast.error(`Could not arm ${name}`, { description: res.cutover.detail })
     } catch (err) {
       if (isApiError(err)) setRefusal({ code: err.code, message: err.message })
       else toast.error('Could not start the cutover wizard', { description: err instanceof Error ? err.message : String(err) })
@@ -149,7 +156,7 @@ export function CutoverDialog({
     <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
       <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
         <DialogHeader>
-          <DialogTitle>Move {device.label} to the network</DialogTitle>
+          <DialogTitle>Move {name} to the network</DialogTitle>
           {step === 'check' && (
             <DialogDescription>
               Enkaku enables Wi-Fi/OTG mode over the CURRENT USB cable, then watches for the phone on the network once
@@ -209,7 +216,7 @@ export function CutoverDialog({
 
             {device.connection.kind !== 'usb' && (
               <p className="rounded-md border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
-                {device.label} is already on the network — this wizard is for the USB→network move itself.
+                {name} is already on the network — this wizard is for the USB→network move itself.
               </p>
             )}
           </div>

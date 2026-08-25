@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BatchResponseSchema, type BatchOrder, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
 import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
-import { SkippedGroups } from '@/components/bulk/SkippedGroups'
+import { SkippedGroups, deviceLabelIn, deviceNameIn } from '@/components/bulk/SkippedGroups'
 import { batchOutcomeCounts, batchOutcomeGroups, useBatchReport } from '@/components/bulk/use-batch-report'
 import { ReattachBanner } from '@/components/operations/ReattachBanner'
 import { TransferProgressBar } from '@/components/operations/TransferProgressBar'
@@ -92,7 +92,11 @@ export function BulkTransferDialog({
   const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
   const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
-  const deviceLabel = (id: string) => pool.find((d) => d.id === id)?.label ?? id
+  // Plan 124 §4.4, step 124.3 — one lookup, two shapes; see
+  // `InstallBatchDialog`'s identical pair for why the number stays apart from
+  // the label in the `NamedOutcome` form and composed in the prose form.
+  const deviceName = (id: string) => deviceNameIn(pool, id)
+  const deviceLabel = (id: string) => deviceLabelIn(pool, id)
 
   // Plan 107 §3.6 — resolved against the CURRENT picker state so editing
   // the target while the dialog is open re-checks for an overlap.
@@ -184,7 +188,7 @@ export function BulkTransferDialog({
   }
 
   const counts = report.batch ? batchOutcomeCounts(report.batch) : null
-  const groups = report.batch ? batchOutcomeGroups(report.batch, report.jobs, deviceLabel) : null
+  const groups = report.batch ? batchOutcomeGroups(report.batch, report.jobs, deviceName) : null
   const title = mode === 'push' ? 'Push file to' : 'Pull file from'
 
   return (

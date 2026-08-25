@@ -132,6 +132,11 @@ describe('PhysicalLabellingPanel', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /Clear label/ }))
     expect(screen.getByText('Restore the original')).toBeTruthy()
+    // Plan 124 §4.4, step 124.3 — the confirm names the phone with its number.
+    // The label being cleared IS the black wallpaper carrying that number, so
+    // a title omitting it asks the operator to confirm wiping the one thing
+    // currently telling this handset from its neighbours.
+    expect(screen.getByText("Clear #7 Pixel 5's label?")).toBeTruthy()
   })
 
   test('Clear label states plainly it resets to the system default when nothing was captured (originalCaptured: false)', () => {

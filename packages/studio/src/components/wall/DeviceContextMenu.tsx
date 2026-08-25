@@ -7,7 +7,7 @@ import { AssistDialog } from '@/components/device/AssistDialog'
 import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
 import { assistRowState, useControlState } from '@/components/device-popup/ControlState'
 import { SidePanel } from '@/components/device-popup/SidePanel'
-import { LoadingRows, Button, api } from '@enkaku/ui'
+import { LoadingRows, Button, DeviceName, api, formatDeviceName } from '@enkaku/ui'
 
 /** `w-72` (288px) plus the panel's own border — kept in sync with `SidePanel`'s wrapper below rather than measured, so the viewport clamp below never has to guess at a number the JSX also hardcodes. */
 const PANEL_WIDTH_PX = 290
@@ -187,7 +187,15 @@ export function DeviceContextMenu({
   }
 
   const label = deviceDetail?.label ?? deviceId
-  const header = selectedIds.length > 1 ? `${selectedIds.length} devices selected` : label
+  // Plan 124 §4.4 Group B, step 124.2 — the composed `#7 Galaxy A15` string.
+  // This menu is opened by right-clicking one tile in a rack of physically
+  // identical phones, which is precisely the case where naming it by label
+  // alone identifies nothing. `deviceDetail?.number` is `undefined` until the
+  // detail fetch above lands (and `null` for a device whose reservation was
+  // released); `formatDeviceName` treats both as "no number" and renders the
+  // bare label, so this never flashes `#undefined` on open (criterion 7).
+  const deviceName = formatDeviceName(deviceDetail?.number, label)
+  const header = selectedIds.length > 1 ? `${selectedIds.length} devices selected` : deviceName
 
   // Never `'i-hold'`/`'i-assist'` here (both fixed `null` above) — see the
   // file header. `ControlState.tsx`'s own file header documents this exact
@@ -244,7 +252,19 @@ export function DeviceContextMenu({
         <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
             <ScreenShare className="size-4 shrink-0 text-accent-strong" aria-hidden />
-            <span className="truncate text-[13px] font-medium">{header}</span>
+            {/* Plan 124 §3.2 — the multi-device header is a plain count and
+                names no device, so it stays a bare span; the single-device
+                header is a name and therefore renders through `<DeviceName>`,
+                which dims the number into its own span instead of running it
+                into the label. The two branches cannot share one element:
+                `<DeviceName>` is the flex item that has to shrink here, and
+                nesting it inside a `truncate` span would leave it sized by
+                its own content and overflowing rather than ellipsised. */}
+            {selectedIds.length > 1 ? (
+              <span className="truncate text-[13px] font-medium">{header}</span>
+            ) : (
+              <DeviceName number={deviceDetail?.number} label={label} className="text-[13px] font-medium" />
+            )}
           </div>
           <Button variant="ghost" size="sm" aria-label="Close" onClick={onClose} className="shrink-0">
             <X className="size-4" aria-hidden />
@@ -279,7 +299,9 @@ export function DeviceContextMenu({
       {deviceDetail?.heldBy && (
         <AssistDialog
           deviceId={deviceId}
-          deviceLabel={label}
+          // Plan 124 §4.4's rule for the four `deviceLabel: string` props: the
+          // prop is NOT widened into an object — the caller composes.
+          deviceLabel={deviceName}
           primary={deviceDetail.heldBy}
           grantTtlSec={assistGrantTtlSec}
           open={assistOpen}

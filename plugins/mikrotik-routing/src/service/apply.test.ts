@@ -17,12 +17,16 @@ import type { RouterRule } from './schemas'
 
 const ROUTER_CONFIG: RouterConfig = { baseUrl: '192.168.1.1', username: 'admin', password: 'x', tls: false, timeoutMs: 2000 }
 
-function makeDevice(id: string, address: string | null, extra: Partial<{ label: string }> = {}): DeviceInfo {
+function makeDevice(id: string, address: string | null, extra: Partial<{ label: string; number: number | null }> = {}): DeviceInfo {
   return DeviceInfoSchema.parse({
     id,
     stableId: `stable-${id}`,
     serial: address ? `${address}:5555` : 'usbserial-1',
     label: extra.label ?? id,
+    // Omitted (rather than `null`) unless a test asks for one, so the schema's
+    // own `.default(null)` keeps covering the "no number allocated" case —
+    // which is the case plan 124 criterion 7 is about.
+    ...(extra.number === undefined ? {} : { number: extra.number }),
     androidVersion: null,
     apiLevel: null,
     screenW: null,
@@ -117,6 +121,24 @@ describe('loadFleet', () => {
     expect(d2?.assignment.pathId).toBe('') // never written → EMPTY_ASSIGNMENT
   })
 
+  /**
+   * Plan 124 §3.7/§0.2 — this row was built from a real `DeviceInfo` and
+   * dropped `number` on the floor, which is why no Mikrotik screen could show
+   * it and why the group editor listed 45 identically named phones. The field
+   * is nullable and both cases matter: a numbered device carries its number,
+   * and one with none carries `null` rather than being omitted (the UI's own
+   * `FleetDeviceRowSchema` requires the key).
+   */
+  test('carries each device NUMBER onto the row — null when the device has none', async () => {
+    const devices = [makeDevice('d1', '192.168.10.215', { number: 7 }), makeDevice('d2', null)]
+    const { host } = fakeHost({ routerKv: ROUTER_CONFIG, devices, assignments: {} })
+    const result = await loadFleet(host, { createDriver: () => fakeDriver() })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.fleet.devices.find((d) => d.deviceId === 'd1')?.number).toBe(7)
+    expect(result.fleet.devices.find((d) => d.deviceId === 'd2')?.number).toBeNull()
+  })
+
   test('a driver failure (e.g. unreachable router) degrades to a named refusal, never a throw', async () => {
     const { host } = fakeHost({ routerKv: ROUTER_CONFIG, devices: [] })
     const result = await loadFleet(host, {
@@ -154,6 +176,27 @@ describe('previewPlan', () => {
     expect(result.rows.filter((r) => r.kind !== 'foreign')).toEqual([])
     expect(result.blocked).toHaveLength(1)
     expect(result.blocked[0]).toMatchObject({ deviceId: 'usb-1' })
+  })
+
+  /**
+   * Plan 124 §3.2 — `blocked` is rendered as a prose list in the Apply dialog
+   * and the group Activate dialog, so its `label` is the string form and has
+   * to carry the number: "3 devices cannot be applied yet — SM-F721U1,
+   * SM-F721U1, SM-F721U1" names the failure without naming any of the three
+   * phones. Criterion 7's other half is asserted with it: a device with no
+   * number is named by its bare label, never `#null`.
+   */
+  test('a blocked entry is NAMED with its device number, and a numberless device gets its bare label', async () => {
+    const devices = [makeDevice('usb-1', null, { label: 'SM-F721U1', number: 7 }), makeDevice('usb-2', null, { label: 'SM-F721U1' })]
+    const { host } = fakeHost({
+      routerKv: ROUTER_CONFIG,
+      devices,
+      assignments: { 'usb-1': writeAssignment(assignment({ pathId: 'via-modem1' })), 'usb-2': writeAssignment(assignment({ pathId: 'via-modem1' })) },
+    })
+    const result = await previewPlan(host, { createDriver: () => fakeDriver({ listRules: async () => [protectingRule()] }), deriveCoreAddress: async () => OK_CORE_ADDRESS })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.blocked.map((b) => b.label)).toEqual(['#7 SM-F721U1', 'SM-F721U1'])
   })
 
   test('a resolved device with a noted path yields exactly one create row', async () => {

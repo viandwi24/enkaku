@@ -9,7 +9,7 @@ import type {
   WorkflowDoc,
   WorkflowFinding,
 } from '@enkaku/protocol'
-import { BadResponseError } from '@enkaku/ui'
+import { BadResponseError, formatDeviceName } from '@enkaku/ui'
 import { coreBase } from './ws'
 
 interface ItemsPage<T> {
@@ -76,6 +76,21 @@ export interface DeviceRef {
   label: string | null
   stableId: string
   deleted: boolean
+  /**
+   * The device's reservation from `device_numbers`, or `null` when it has
+   * none (plan 89 §3.2 — a missing number is a real state, not an error).
+   *
+   * Plan 124 §3.7, step 124.5 put this on the wire (`DeviceRefSchema`,
+   * `@enkaku/protocol`) precisely so `deviceRefLabel` below could compose
+   * it. It arrives BARE, never pre-baked into `label` (§3.1: the number
+   * composes at the render site and never enters the label), which is why
+   * this is a separate field here rather than a widened `label`.
+   *
+   * A deleted device keeps its number: `device_numbers` is keyed on
+   * `stableId` and `forget()` leaves the reservation standing, so a job's
+   * history still names the phone the operator knew as `#7`.
+   */
+  number: number | null
 }
 
 /**
@@ -93,11 +108,31 @@ export async function fetchDeviceRefs(ids: string[]): Promise<Record<string, Dev
   return body.refs
 }
 
-/** The label a UI should show for a device reference — the one place this formatting rule lives (plan 47 §3.4). */
+/**
+ * The label a UI should show for a device reference — the one place this
+ * formatting rule lives (plan 47 §3.4).
+ *
+ * Plan 124 §3.7, step 124.4 — it now composes the number through
+ * `formatDeviceName`, the same helper the core's `formatDeviceLabel` mirrors
+ * character for character, rather than hand-writing `#N ` here. That comment
+ * above was true of the *deleted-vs-live* rule and false of the naming rule:
+ * this function named `SM-F721U1` three times over on a rack of three, which
+ * is exactly the drift plan 124 §0.1 catalogued.
+ *
+ * The number rides onto the DELETED branch too. It reads
+ * `#7 deleted device (R5CW…)` — deliberately, because the number is the
+ * handle an operator has for a phone that is no longer in the farm, and a
+ * job's history row is the one place they still go looking for it. The
+ * `deleted device (…)` wording itself is unchanged (plan 47 §3.4 owns it).
+ *
+ * Returns a `string` rather than a `<DeviceName>` because that is what its
+ * callers need — a joined list, a `title`, a cell that is already inside
+ * other text (plan 124 §3.2's split between the two symbols).
+ */
 export function deviceRefLabel(ref: DeviceRef | undefined, fallbackId: string): string {
   if (!ref) return fallbackId.slice(0, 8)
-  if (ref.deleted) return `deleted device (${ref.stableId})`
-  return ref.label ?? ref.stableId
+  if (ref.deleted) return formatDeviceName(ref.number, `deleted device (${ref.stableId})`)
+  return formatDeviceName(ref.number, ref.label ?? ref.stableId)
 }
 
 // ---- Discovered devices (plan 56 §4.3, §4.5) ----

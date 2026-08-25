@@ -36,6 +36,7 @@ import {
   TooltipContent,
   TooltipTrigger,
   cn,
+  formatDeviceName,
 } from '@enkaku/ui'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { LabelStateBadge } from '@/components/device/LabelStateBadge'
@@ -365,11 +366,20 @@ export function DeviceHeader({
   // a real parse, so `undefined` only ever happens off a fixture, never a
   // real response.
   const number = device.number ?? null
+  // Plan 124 §4.4 Group B, step 124.2 — the SAME composition `PageHeader`'s
+  // `title` below already did inline since plan 89, hoisted so the rest of
+  // this header stops re-deriving it three different ways. Everything on this
+  // page that names the device as a `string` now reads this one value: the
+  // "More actions" `aria-label`, the guest-agent alert panel, the take-over
+  // dialog and the ask-an-agent dialog. A second spelling of the same rule in
+  // the same file is exactly how the number went missing from most of the UI
+  // in the first place (plan 124 §0.1).
+  const deviceName = formatDeviceName(number, device.label)
 
   return (
     <>
       <PageHeader
-      title={number !== null ? `#${number} ${device.label}` : device.label}
+      title={deviceName}
       description={`${device.serial} · ${device.androidVersion ? `Android ${device.androidVersion}` : 'Android version unknown'}`}
       meta={
         <div className="flex flex-wrap items-center gap-2.5">
@@ -396,7 +406,7 @@ export function DeviceHeader({
               visible chip only when it needs a look). The version itself
               lives in the `ⓘ` popover below, per this file's placement
               rule for looked-up facts. */}
-          <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} />
+          <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} deviceNumber={number} />
 
           {/* Physical labelling (plan 89 §3.5, §5 step 89.8) — the one place
               this page shows whether the phone's own screen actually says
@@ -560,7 +570,7 @@ export function DeviceHeader({
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${device.label}`}>
+              <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${deviceName}`}>
                 <MoreVertical className="size-4" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -639,14 +649,16 @@ export function DeviceHeader({
       {heldBy && (
         <TakeControlDialog
           deviceId={device.id}
-          deviceLabel={device.label}
+          // Plan 124 §4.4 — `deviceLabel: string` props are not widened into
+          // objects; the caller composes.
+          deviceLabel={deviceName}
           holder={heldBy}
           open={takeOverOpen}
           onOpenChange={onTakeOverOpenChange}
           onTaken={onControlTaken}
         />
       )}
-      <AskAnAgentDialog deviceId={device.id} deviceLabel={device.label} open={askAgentOpen} onOpenChange={onAskAgentOpenChange} />
+      <AskAnAgentDialog deviceId={device.id} deviceLabel={deviceName} open={askAgentOpen} onOpenChange={onAskAgentOpenChange} />
     </>
   )
 }

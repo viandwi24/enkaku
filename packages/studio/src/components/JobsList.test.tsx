@@ -179,3 +179,77 @@ describe('JobsList — linkToDetail={false} with onOpenDetail (plan 103 §9 Q2)'
     expect(screen.queryByRole('link', { name: 'my-pipeline@1.0.0' })).toBeNull()
   })
 })
+
+/**
+ * Plan 124 §4.4 Group D, §3.2, step 124.4 — the device cell.
+ *
+ * `deviceLabel` gained `number` rather than the two call sites pre-composing
+ * `'#7 Galaxy A15'` into `name`, because a table cell renders the two-span
+ * `<DeviceName>` form so the number can be dimmed. That is exactly what these
+ * assert: the number and the label are present as SEPARATE text nodes, and a
+ * device without one grows no `#` at all (criterion 7).
+ *
+ * Counts, never nodes: a failing `expect(node).toBeNull()` inside a retrying
+ * `waitFor` serialises a happy-dom element into a report large enough to look
+ * like a hang, so every negative here is a length assertion.
+ */
+describe('JobsList — the device cell names the device with its number (plan 124 §4.4)', () => {
+  const page = async () => ({ items: [job], nextCursor: null, total: 1 })
+
+  test('renders "#7" and the label as two nodes, not one composed string', async () => {
+    renderWithApi(
+      <Wrapped
+        empty={{ title: 'none', description: '' }}
+        fetchPage={page}
+        deviceLabel={() => ({ number: 7, name: 'Galaxy A15', ident: 'R5CW1234' })}
+      />,
+      {},
+    )
+    await waitFor(() => expect(screen.getByText('Galaxy A15')).toBeTruthy())
+    expect(screen.getAllByText('#7').length).toBe(1)
+    // Composed into one string it would be a single node reading "#7 Galaxy
+    // A15" and there would be no bare "Galaxy A15" to find — the assertion
+    // above is what distinguishes the two forms.
+    expect(screen.queryAllByText('#7 Galaxy A15').length).toBe(0)
+  })
+
+  test('two identically labelled phones are distinguishable (criterion 6)', async () => {
+    const two = async () => ({
+      items: [job, { ...job, jobId: 'job-2', deviceId: 'device-2' }],
+      nextCursor: null,
+      total: 2,
+    })
+    renderWithApi(
+      <Wrapped
+        empty={{ title: 'none', description: '' }}
+        fetchPage={two}
+        deviceLabel={(id) => ({ number: id === 'device-1' ? 7 : 12, name: 'SM-F721U1', ident: id })}
+      />,
+      {},
+    )
+    await waitFor(() => expect(screen.getAllByText('SM-F721U1').length).toBe(2))
+    expect(screen.getAllByText('#7').length).toBe(1)
+    expect(screen.getAllByText('#12').length).toBe(1)
+  })
+
+  test('number null renders the bare label — no stray "#", no "#null" (criterion 7)', async () => {
+    renderWithApi(
+      <Wrapped
+        empty={{ title: 'none', description: '' }}
+        fetchPage={page}
+        deviceLabel={() => ({ number: null, name: 'Galaxy A15', ident: 'R5CW1234' })}
+      />,
+      {},
+    )
+    await waitFor(() => expect(screen.getByText('Galaxy A15')).toBeTruthy())
+    expect(screen.queryAllByText(/^#/).length).toBe(0)
+  })
+
+  test('no deviceLabel at all still falls back to the truncated id, unnumbered (unchanged)', async () => {
+    renderWithApi(<Wrapped empty={{ title: 'none', description: '' }} fetchPage={page} />, {})
+    // The name falls back to the truncated id and the ident line to the full
+    // id — both are 'device-1' here, hence the count rather than getByText.
+    await waitFor(() => expect(screen.getAllByText('device-1').length).toBe(2))
+    expect(screen.queryAllByText(/^#/).length).toBe(0)
+  })
+})

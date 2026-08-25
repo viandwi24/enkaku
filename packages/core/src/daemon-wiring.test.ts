@@ -743,6 +743,76 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
   })
 
+  describe('the wake skip (plan 125 §3.7, step 125.7): the ~1.6 s that only disappears if daemon.ts actually wires deviceIsAwake', () => {
+    /**
+     * The same defect class this whole file exists for, and 125.7 is a
+     * textbook instance: `SessionManagerDeps.deviceIsAwake` is OPTIONAL, so
+     * every test in `packages/session` passes with it supplied and production
+     * passes with it absent — silently paying the wake twice, which is the
+     * ~3.2 s plan 125 §0.7 measured and the exact thing step 125.7 removed.
+     * Nothing else fails when this line is dropped in a refactor.
+     *
+     * The long-form ternary is asserted, not just the key, because the
+     * shorthand is a real and tempting bug: `readiness?.actual(id) !==
+     * 'asleep'` evaluates `undefined !== 'asleep'` — `true` — while readiness
+     * is still unset during early boot, so it would skip the wake on exactly
+     * the builds that most need one. A missing readiness manager has to mean
+     * "wake it", never "assume it is awake".
+     */
+    test('createSessionManager is handed deviceIsAwake, and it fails CLOSED when readiness is unset', () => {
+      // The LEADING newline-plus-indent is load-bearing, and `extractCall`
+      // requires the marker to END in the region's own '{'. A comment forty
+      // lines earlier writes `sessions = createSessionManager({ onEvent, ... })`
+      // in prose, and `extractCall` takes the FIRST match — so the bare name
+      // would extract that sentence instead of the call.
+      const call = extractCall(daemonSource, '\n        sessions = createSessionManager({')
+      expect(call).toContain('deviceIsAwake:')
+      expect(call).toContain("readiness ? readiness.actual(deviceId) !== 'asleep' : false")
+      // Comment lines are stripped before the negative check, because the
+      // comment at the call site QUOTES the shorthand in order to explain why
+      // it is wrong — the same reason `readiness.test.ts`'s no-timer assertion
+      // strips them. Without this the guard fails on its own documentation.
+      const code = call
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n')
+      expect(code).not.toContain("readiness?.actual(deviceId) !== 'asleep'")
+    })
+  })
+
+  describe('the video path on the protocol client (plan 125 §3.9, §4.5, step 125.9): the four adb.exe spawns per session that only disappear if daemon.ts actually passes it', () => {
+    /**
+     * This is that defect class again, and plan 119 is the one that left it:
+     * it built `forward`/`listForward`/`killForward` on `AdbClient`, wired
+     * them into the guest-agent and ui-server launchers, and left `makeScrcpy`
+     * on `hostAdb.run` — so the VIDEO path, the hottest one in the product,
+     * kept spawning `adb.exe` four times per session while the plan read as
+     * shipped. `@enkaku/scrcpy` chooses the protocol path purely by which
+     * fields it was handed (its own test file counts the spawns for both
+     * shapes), which makes this call site the whole difference.
+     */
+    test('makeScrcpy hands startScrcpySession the push and the forward trio, not just hostAdb', () => {
+      const call = extractCall(daemonSource, 'makeScrcpy: async (deviceId, transport, profile) => {')
+      expect(call).toContain("adbClient.openRaw(transport.serial, 'sync:')")
+      expect(call).toContain('pushFileOverSync(stream, { localPath, remotePath })')
+      expect(call).toContain('forward: (serial, local, remote) => adbClient.forward(serial, local, remote)')
+      expect(call).toContain('listForward: () => adbClient.listForward()')
+      expect(call).toContain('killForward: (serial, local) => adbClient.killForward(serial, local)')
+      // The fifth spawn stays: `app_process` is a process, and this is the
+      // long-lived `adb shell` holding it (plan 85 §3.4, §4.5).
+      expect(call).toContain('spawnLongLived: hostAdbHandle.spawnLongLived')
+    })
+
+    test('the `sync:` stream is closed on both routes, the error one included — a leaked stream holds an adb connection open for a session that never started', () => {
+      const call = extractCall(daemonSource, 'push: async (localPath, remotePath) => {')
+      expect(call).toContain('stream.close()')
+      expect(call).toContain('stream.close(true)')
+      // `transfer.ts`'s `performInstall` has pushed APKs this exact way since
+      // plan 39; the jar is the same mechanism on a much smaller file.
+      expect(call).toContain('throw err')
+    })
+  })
+
   describe('the command console runner (plan 93 §4.5, §5 step 93.3)', () => {
     test('createCommandRunner(...) is actually constructed, wired to the SAME `leases` this file builds, a real shellPortFor, and the live shell settings — not just declared and left uncalled', () => {
       const call = extractCall(daemonSource, 'createCommandRunner({')

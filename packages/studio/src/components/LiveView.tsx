@@ -57,6 +57,78 @@ const SLOW_PHASE_AFTER_SEC = 10
  */
 const MIN_FIT_CONTAINER_WIDTH_PX = 240
 
+/**
+ * **Click → first paint (plan 125 §4.7, §5 step 125.11) — and what it is NOT.**
+ *
+ * This measures the BROWSER half of opening a device: the moment the operator
+ * clicked (a Wall tile's double-click, or the device popup opening any other
+ * way) to the moment this component painted its first real video frame
+ * (`markPainted` below). Nothing else in the product measured that half at
+ * all — `scripts/bench-device-nfrs.ts`'s own header says a real number
+ * *"needs a browser-driving harness (Studio e2e, Playwright + WebCodecs),
+ * which does not exist in this repo."* The SERVER half already has its own
+ * instrumentation (`logSlowCommand`'s `ws command stream.start took Xms`,
+ * `packages/core/src/server/ws-handlers.ts`, and `transport.controlReplyMsP95`
+ * on `/api/adb/stats`), so this closes the one leg nobody could see.
+ *
+ * **It is not glass-to-glass.** Spec §16's < 150 ms NFR is measured from a
+ * change on the phone's own panel to that change appearing on the operator's
+ * monitor, which needs a camera pointed at both and an on-device stopwatch —
+ * `docs/plans/08-m6-scrcpy.md:540-548` has the real procedure. Plan 125 §2
+ * puts that measurement explicitly out of scope. So neither the readout below
+ * nor the console line may ever be worded as glass-to-glass, and neither is:
+ * both say "click→paint" and the tooltip says what it excludes.
+ *
+ * The mark is a module-level map rather than a prop because the click and the
+ * mount are in different components, with `<Wall>`/`app/page.tsx` in between
+ * (a `WallTile` double-click sets `?focus=`, which is what mounts
+ * `DevicePopup`, which is what renders this) — threading a timestamp through
+ * two intermediate components that have no other use for it would be worse
+ * for every reader of those files than one keyed handoff here.
+ */
+const clickIntentMarks = new Map<string, number>()
+/**
+ * Past this, a mark is stale and is discarded rather than reported. It exists
+ * because a mark can survive its click without ever being consumed — a popup
+ * closed before the first frame arrives hands its mark back (see the stream
+ * effect's cleanup) so a React StrictMode double-mount still measures, and
+ * without an upper bound that returned mark could later be picked up by an
+ * unrelated mount for the same device and reported as a real, wildly inflated
+ * reading. A wrong number is worse than no number for something whose whole
+ * purpose is measurement.
+ */
+const CLICK_INTENT_TTL_MS = 30_000
+
+/**
+ * Record "the operator asked for this device's picture, now" (plan 125 §4.7).
+ * Called by `wall/WallTile.tsx`'s double-click and by `device-popup/
+ * DevicePopup.tsx` when it opens; the next `LiveView` that mounts for
+ * `deviceId` consumes it exactly once.
+ *
+ * `onlyIfAbsent` is what keeps the two call sites from fighting: the popup
+ * marks its own open, but when the popup was opened BY a tile double-click
+ * that tile already recorded the earlier — and more truthful — timestamp, and
+ * overwriting it would silently subtract the whole popup-mount leg from every
+ * wall-originated measurement.
+ */
+export function markLiveViewIntent(deviceId: string, opts?: { onlyIfAbsent?: boolean }): void {
+  if (opts?.onlyIfAbsent && clickIntentMarks.has(deviceId)) return
+  clickIntentMarks.set(deviceId, performance.now())
+}
+
+/** Consumes the pending mark for `deviceId`, or `null` when there is none / it is stale. */
+function takeClickIntentMark(deviceId: string): number | null {
+  const at = clickIntentMarks.get(deviceId)
+  if (at === undefined) return null
+  clickIntentMarks.delete(deviceId)
+  return performance.now() - at > CLICK_INTENT_TTL_MS ? null : at
+}
+
+/** Milliseconds under a second, one decimal of a second above it — a cold cast is seconds, a warm one is not. */
+function formatClickToPaint(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
+}
+
 /** The static step list shown while a session wakes up (Plan 17 §4.7). No fake percentage — just where we are. */
 const PHASE_STEPS: { key: SessionPhase; label: string }[] = [
   { key: 'connecting', label: 'Connecting' },
@@ -303,10 +375,34 @@ export function LiveView({
    * sizing effect below for how it is derived. */
   const [idealWidthPx, setIdealWidthPx] = useState<number | null>(null)
 
+  /**
+   * The click that asked for this picture, claimed once per stream attempt by
+   * the effect below (plan 125 §4.7, step 125.11). `null` means "nobody
+   * clicked for this mount" — a Wall tile that came up on its own as the live
+   * set grew, or a retry — and in that case nothing is reported at all rather
+   * than a number measured from an arbitrary moment.
+   */
+  const clickIntentRef = useRef<number | null>(null)
+  const [clickToPaintMs, setClickToPaintMs] = useState<number | null>(null)
+
   const markPainted = () => {
     if (paintedRef.current) return
     paintedRef.current = true
     setPainted(true)
+    // Plan 125 §4.7, step 125.11 — the browser half of the cold cast path,
+    // closed here because this is the single line in Studio that knows a real
+    // frame reached the screen. Read the module header above for what this
+    // number is and, more importantly, what it is not: it is click→first
+    // paint in this browser, never glass-to-glass.
+    const startedAt = clickIntentRef.current
+    if (startedAt === null) return
+    clickIntentRef.current = null
+    const ms = Math.round(performance.now() - startedAt)
+    setClickToPaintMs(ms)
+    // Logged as well as rendered, because the readout below lives in a status
+    // line the operator is not looking at while a device opens, and plan 125
+    // criterion 14 asks for a number the owner can read off a real farm.
+    console.info(`[enkaku] click→first paint ${ms} ms — ${deviceId} (${quality}); browser half only, not glass-to-glass`)
   }
 
   // stream.start on mount, plus automatic resubscribe after a reconnect.
@@ -324,6 +420,14 @@ export function LiveView({
     // — carrying a stale one across a retry would say "still unavailable"
     // before the new `stream.start` has even answered.
     setControlUnavailable(null)
+    // Plan 125 §4.7, step 125.11 — claim the click that asked for this
+    // picture, if there was one. A RETRY finds nothing here (the mark was
+    // consumed by the first attempt) and so reports no number, which is
+    // correct: the operator clicked once, and timing the second attempt from
+    // that first click would report a figure nobody experienced. The previous
+    // attempt's reading is cleared for the same reason.
+    clickIntentRef.current = takeClickIntentMark(deviceId)
+    setClickToPaintMs(null)
 
     async function startStream() {
       try {
@@ -460,6 +564,17 @@ export function LiveView({
       offReconnect()
       rendererRef.current?.close()
       rendererRef.current = null
+      // Plan 125 §4.7, step 125.11 — an unconsumed mark goes back where it
+      // came from. This mount never painted, so the click it belongs to has
+      // still not been answered: React StrictMode's development
+      // mount-unmount-remount (`reactStrictMode: true` in `next.config.ts`)
+      // would otherwise swallow every measurement taken in `bun run
+      // dev:studio`, which is exactly where they will be read. `CLICK_INTENT_TTL_MS`
+      // bounds what a genuinely abandoned mark can later be reported as.
+      if (clickIntentRef.current !== null) {
+        clickIntentMarks.set(deviceId, clickIntentRef.current)
+        clickIntentRef.current = null
+      }
       if (streamIdRef.current !== null) {
         ws.send({ type: 'stream.stop', payload: { streamId: streamIdRef.current } })
         streamIdRef.current = null
@@ -958,6 +1073,32 @@ export function LiveView({
                 the one transport worth naming. */}
             {transport === 'webrtc' && <span className="rack-label ml-auto">webrtc</span>}
           </>
+        )}
+        {/* Click → first paint (plan 125 §4.7, §5 step 125.11).
+            **Why it is here and not in the wake panel below**, which is what
+            §4.7 calls "the existing `session.progress` readout": that panel's
+            own visibility condition is `phase !== null && !painted`, so it is
+            gone at the exact instant this number comes into existence — a
+            reading rendered there could never be seen. This status line is the
+            same readout family (fps, resolution, codec: the numbers that
+            describe the picture being watched), it is the one surface that
+            outlives the first frame, and it is where an operator already looks
+            for how this stream is doing.
+            Shown only when a click actually started this view, so a Wall tile
+            that came up on its own never invents one. */}
+        {clickToPaintMs !== null && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help border-b border-dotted border-fg-subtle">
+                click→paint <span className="readout">{formatClickToPaint(clickToPaintMs)}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              From your click to the first frame painted in this browser. This is the browser half only — it does not
+              include the phone&rsquo;s own display, so it is not a glass-to-glass figure. Measuring that needs a camera
+              pointed at the device and an on-device stopwatch.
+            </TooltipContent>
+          </Tooltip>
         )}
       </div>
       )}

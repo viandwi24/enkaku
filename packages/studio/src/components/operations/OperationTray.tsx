@@ -96,6 +96,11 @@ const KIND_ICON: Record<OperationKind, LucideIcon> = {
 
 function OperationRow({ op, deviceLabel, now }: { op: Operation; deviceLabel: (id: string) => string; now: number }) {
   const Icon = op.kind === 'transfer' && op.transfer?.kind === 'push' ? Upload : KIND_ICON[op.kind]
+  // Plan 124 §4.4, step 124.3 — `deviceLabel` comes from `useOperations()`
+  // and already composes `#7 Galaxy A15` (see its doc comment in
+  // `lib/operations.ts`), so nothing is re-composed here. It stays a joined
+  // STRING rather than `<DeviceName>` because this line truncates to one row
+  // and elides the tail as `+N`: a per-name element would break both.
   const names = op.deviceIds.map(deviceLabel)
   const namesText = names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`
   const content = (

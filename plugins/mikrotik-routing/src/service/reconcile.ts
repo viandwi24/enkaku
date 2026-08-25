@@ -1,6 +1,6 @@
 import { NotifySendOutputSchema } from '@enkaku/protocol'
 import { z } from 'zod'
-import { CONFIG_KEY, DEFAULT_RECONCILE_INTERVAL_SEC, readPluginConfig, type RouterConfig } from '../shared'
+import { CONFIG_KEY, DEFAULT_RECONCILE_INTERVAL_SEC, deviceNameWithNumber, readPluginConfig, type RouterConfig } from '../shared'
 import {
   desiredEntriesFrom,
   errorMessageOf,
@@ -301,8 +301,16 @@ export async function computeReconcileTick(host: ReconcileHost, deps: ApplyDeps 
 
     const drifts = classifyDrift({ desired, rules, pathIds, activeDeviceIds })
 
+    // Named WITH the device number (plan 124 §3.2's string half) — not in
+    // that plan's Group G list, but the same defect and now a one-line fix,
+    // because `FleetDeviceRow` carries `number` as of step 124.7. These
+    // strings become `describeDrift` sentences and the drift NOTIFICATION an
+    // operator reads away from the screen ("SM-F721U1 (192.168.10.15) is
+    // routed via …"); on a farm of identically modelled phones the address
+    // was the only thing telling three of those lines apart, and an address
+    // is not what anyone has written on the back of the phone.
     const deviceLabels: Record<string, string> = {}
-    for (const row of fleet.devices) deviceLabels[row.deviceId] = row.label
+    for (const row of fleet.devices) deviceLabels[row.deviceId] = deviceNameWithNumber(row.number, row.label)
 
     // autoRepair (§4.7): opt-in, and even then covers ONLY missing-rule/
     // wrong-path — never duplicate/unexpected-managed-rule/stale-owner/

@@ -18,7 +18,7 @@ import {
   type ServerMessage,
 } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState, LoadingRows, Button, Input, Label, Switch, api, useAction } from '@enkaku/ui'
+import { EmptyState, LoadingRows, Button, Input, Label, Switch, api, formatDeviceName, useAction } from '@enkaku/ui'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
 import { coreBase, ws } from '@/lib/ws'
 import { CommandHistory } from '@/components/command/CommandHistory'
@@ -307,8 +307,22 @@ function ConsolePageInner() {
     return res.text()
   }
 
+  /**
+   * Plan 124 §4.4 Group D, step 124.4 — the ONE lookup behind every name in
+   * the run report: the staged "will run on: …" preview, each member row, and
+   * the output drawer's title (`RunReport.tsx:160,206,219`). It composes here
+   * rather than in `RunReport`, because that component's prop is a
+   * `(deviceId) => string` and §4.4 keeps the four `string`-shaped device
+   * labels as strings, with the caller composing — a run report over 45
+   * identically-modelled phones is exactly the "no count without names"
+   * surface (plan 93 §3.15) that names nothing at all without the number.
+   *
+   * A device the console has not loaded (forgotten mid-run) still falls back
+   * to its raw id, unnumbered and unchanged.
+   */
   function deviceLabel(deviceId: string): string {
-    return devices.find((d) => d.id === deviceId)?.label ?? deviceId
+    const d = devices.find((dev) => dev.id === deviceId)
+    return d ? formatDeviceName(d.number, d.label) : deviceId
   }
 
   const gated = shellMode === 'off' || !fanoutEnabled

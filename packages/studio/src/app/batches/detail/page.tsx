@@ -19,6 +19,7 @@ import { JobStatusBadge } from '@/components/StatusBadge'
 import {
   Button,
   ConfirmDialog,
+  DeviceName,
   ErrorState,
   LoadingRows,
   Progress,
@@ -201,7 +202,25 @@ function BatchDetail() {
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={loadBatch} /></div>
   if (!batch) return <div className="px-5 py-4"><LoadingRows rows={3} /></div>
 
-  const deviceLabel = (id: string) => devices.find((d) => d.id === id)?.label ?? deviceRefLabel(refs[id], id)
+  /**
+   * The two halves of a device's name, kept apart (plan 124 §3.1, §4.4 Group
+   * D, step 124.4). Every consumer below needs a different form of it — the
+   * jobs table wants `<DeviceName>`'s two spans, `batchOutcomeGroups` wants
+   * `{ number, label }` because `NamedOutcome` now carries them apart too
+   * (step 124.3), and the progress rail wants one composed line — so this
+   * resolves once and each site composes what it needs.
+   *
+   * Two sources, in order, both already present before this plan: a live
+   * `DeviceInfo` from `GET /api/devices`, or a `DeviceRef` for a device the
+   * batch outlived (plan 47 §3.4). `deviceRefLabel` composes the number
+   * itself, so the ref branch hands back a name that is ALREADY composed and
+   * a `number` of `null` — never re-wrapped, which would read `#7 #7 …`.
+   */
+  const deviceNameOf = (id: string): { number: number | null; label: string } => {
+    const d = devices.find((dev) => dev.id === id)
+    if (d) return { number: d.number, label: d.label }
+    return { number: null, label: deviceRefLabel(refs[id], id) }
+  }
   const scriptName = batch.scriptName ? `${batch.scriptName}${batch.scriptVersion ? `@${batch.scriptVersion}` : ''}` : batch.scriptId
   const done = batch.counts.success + batch.counts.failed + batch.counts.cancelled
   const pct = batch.counts.total > 0 ? Math.round((done / batch.counts.total) * 100) : 0
@@ -329,7 +348,7 @@ function BatchDetail() {
             <h2 className="rack-label mb-2.5">outcome</h2>
             <OutcomeSummary counts={batchOutcomeCounts(batch)} label="Batch outcome" />
             <div className="mt-3">
-              <SkippedGroups {...batchOutcomeGroups(batch, jobs, deviceLabel)} />
+              <SkippedGroups {...batchOutcomeGroups(batch, jobs, deviceNameOf)} />
             </div>
           </div>
 
@@ -344,7 +363,10 @@ function BatchDetail() {
             fetchPage={fetchJobs}
             resetKey={batchId}
             columns={{ seq: true, device: true, pacing: isPaced }}
-            deviceLabel={(id) => ({ name: deviceLabel(id), ident: id })}
+            deviceLabel={(id) => {
+              const n = deviceNameOf(id)
+              return { number: n.number, name: n.label, ident: id }
+            }}
             waiting={waiting}
             empty={{
               title: 'No jobs in this batch',
@@ -420,7 +442,7 @@ function BatchDetail() {
                   return (
                     <li key={r.deviceId} className="text-[12px]">
                       <div className="flex items-baseline justify-between gap-3">
-                        <span className="min-w-0 truncate">{deviceLabel(r.deviceId)}</span>
+                        <DeviceName {...deviceNameOf(r.deviceId)} className="min-w-0" />
                         <span className="readout shrink-0 text-fg-muted">
                           {r.completed}/{r.planned}
                         </span>
@@ -510,6 +532,14 @@ function CollectedFiles({ batchId }: { batchId: string }) {
             {items.map((it) => (
               <TableRow key={it.artifactId}>
                 <TableCell>
+                  {/* Plan 124 §3.7, §4.4 Group D — `deviceLabel` arrives
+                      ALREADY COMPOSED (`api/batches.ts` wraps it in the core's
+                      `formatDeviceLabel` before it reaches the wire, step
+                      124.5). Rendered verbatim on purpose: wrapping it again
+                      would print `#7 #7 Galaxy A15`. Note this is the
+                      METADATA path only — the ZIP entry names built from the
+                      same artifact use a separate `rawDeviceLabel` precisely
+                      so a `#` never lands in a filename (§3.7). */}
                   {it.deviceLabel} <span className="readout text-fg-subtle">{it.stableId}</span>
                 </TableCell>
                 <TableCell className="readout">{it.filename}</TableCell>

@@ -122,6 +122,59 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
     expect(offenders).toEqual([])
   })
 
+  /**
+   * Plan 124 §3.8, §5 step 124.9 — a device is never named without its number.
+   *
+   * This check is narrow ON PURPOSE, and it is worth saying what it does and
+   * does not prove. It cannot prove that every render site inside these files
+   * composes correctly; a regex over source text never could. What it stops is
+   * the specific regression this plan was opened to repair: plan 89 §5 step
+   * 89.3 already claimed "the number and the name in Studio", and by the time
+   * plan 124 swept the UI the number reached FOUR render sites out of roughly
+   * seventy. Nobody noticed, because nothing checked. A file in this list that
+   * loses its import has stopped composing anything at all, and that is the
+   * shape the drift actually took.
+   *
+   * The list is the device-naming surfaces an operator hits hourly. Adding to
+   * it is cheap and welcome; removing from it means that screen stopped naming
+   * devices, which is a claim worth defending in review.
+   *
+   * NOT on this list, deliberately: `TakeControlDialog`, `AssistDialog` and
+   * `AskAnAgentDialog` (plan 124 §4.4 Group C). They take a `deviceLabel:
+   * string` that their CALLERS compose, so they correctly import nothing from
+   * this module — listing them would fail the check for doing the right thing.
+   */
+  test('every device-naming surface imports the shared name formatter (plan 124 §3.8)', () => {
+    const deviceNamingFiles = [
+      join(root, 'components/DevicePicker.tsx'),
+      join(root, 'components/DeviceCard.tsx'),
+      join(root, 'components/wall/DeviceContextMenu.tsx'),
+      join(root, 'components/device/DeviceHeader.tsx'),
+      join(root, 'components/device-popup/DevicePopup.tsx'),
+      join(root, 'components/device-popup/ActionsList.tsx'),
+      join(root, 'components/device-popup/SettingsPopup.tsx'),
+      join(root, 'components/topology/DeviceTile.tsx'),
+      join(root, 'components/ForgetDeviceDialog.tsx'),
+      join(root, 'components/DisconnectDeviceDialog.tsx'),
+      join(root, 'components/ClusterMembersDialog.tsx'),
+      join(root, 'components/BulkForgetDialog.tsx'),
+      join(root, 'components/bulk/SkippedGroups.tsx'),
+      join(root, 'components/operations/OperationTray.tsx'),
+      join(root, 'components/JobsList.tsx'),
+      join(root, 'components/AdbRestartDialog.tsx'),
+      join(root, 'components/plugin-view/ActionRunner.tsx'),
+      join(root, 'app/page.tsx'),
+      join(root, 'app/jobs/page.tsx'),
+      join(root, 'app/device/page.tsx'),
+    ]
+    for (const f of deviceNamingFiles) expect(files).toContain(f) // the list itself must not silently go stale
+    // `formatDeviceName` (a string, for titles/toasts/aria-labels) or
+    // `DeviceName` (the two-span visual form) — §3.2's two contexts. A file
+    // may legitimately use only one of them.
+    const offenders = deviceNamingFiles.filter((f) => !/\b(formatDeviceName|DeviceName|matchesDeviceQuery)\b/.test(readFileSync(f, 'utf8')))
+    expect(offenders).toEqual([])
+  })
+
   test('AppShell.tsx carries the one permitted backdrop-filter — the sidebar (plan 101 §3.6, §4.2)', () => {
     const appShell = join(root, 'components/layout/AppShell.tsx')
     expect(files).toContain(appShell)

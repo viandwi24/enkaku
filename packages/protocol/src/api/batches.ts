@@ -51,6 +51,23 @@ export const BatchArtifactSchema = z.object({
   artifactId: z.string(),
   jobId: z.string(),
   deviceId: z.string(),
+  /**
+   * The device's HUMAN name, already composed with its number — `#7 Pixel 6`,
+   * or the bare label for a device with no reservation (plan 124 §3.7, via
+   * the core's `formatDeviceLabel`).
+   *
+   * Pre-composed here, unlike `DeviceRef.number`/`MirrorMember.number` which
+   * carry the number as their own field, because this row has no other
+   * identity a caller could compose against: a batch artifact outlives the
+   * device that produced it, and the Studio table rendering it holds no
+   * `DeviceInfo` for a device that has since been forgotten. A second
+   * `deviceNumber` field would therefore be null exactly when it was needed.
+   *
+   * The archive route deliberately does NOT slug this string into its ZIP
+   * entry names — see `collectBatchArtifacts` in
+   * `packages/core/src/api/batches.ts`, which keeps the raw label for that
+   * path (plan 124 §3.7: "a `#` in a filename is a new problem").
+   */
   deviceLabel: z.string(),
   stableId: z.string(),
   /** The original remote filename (`artifacts.label`), never the on-disk epoch-prefixed name. */

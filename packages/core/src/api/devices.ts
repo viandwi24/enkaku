@@ -11,6 +11,8 @@ import {
   DeviceLabelsApplyResponseSchema,
   type DeviceLabelsApplyResult,
   DeviceNumberCompactResponseSchema,
+  type DeviceRef,
+  DeviceRefsResponseSchema,
   DEVICE_PREP_KEYS,
   DevicePrepApplyBodySchema,
   DevicePrepApplyResponseSchema,
@@ -378,22 +380,41 @@ export function createDeviceRoutes(deps: {
   // is forgotten (§3.4), so any UI rendering one needs a label to show —
   // `deleted device (<stableId>)` rather than a blank. Mounted as a static
   // route BEFORE `/:id` below so it is never shadowed by the param route.
+  //
+  // Each ref carries `number` (plan 124 §3.7, §3.1) — the device's own
+  // reservation from `device_numbers`, NOT pre-composed into `label`. This is
+  // the highest-value of that section's five payloads: Studio's
+  // `deviceRefLabel` (`packages/studio/src/lib/api.ts`) is, by its own
+  // comment, "the one place this formatting rule lives", and it could not
+  // compose a number the wire never carried. A deleted device keeps its
+  // number too — `device_numbers` is keyed on `stableId` and `forget()`
+  // leaves the reservation standing (plan 89 §3.2), so a job's history reads
+  // `#7 Old Phone` rather than losing half the identity that made the row
+  // findable.
+  //
+  // ONE statement for the numbers, never one lookup per ref: `loadDeviceNumbers`
+  // exists for exactly this (its own comment cites plan 19 §4.3's rule), and
+  // this route is called with every distinct deviceId a jobs page or a batch
+  // detail holds — the N+1 shape `api/plugins.ts`'s scan route documents at
+  // length would land here first and hardest. The map is read for both the
+  // live and the deleted half, so it is loaded once, above both.
   app.get('/refs', (c) => {
     const ids = (c.req.query('ids') ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-    const refs: Record<string, { id: string; label: string | null; stableId: string; deleted: boolean }> = {}
+    const refs: Record<string, DeviceRef> = {}
     if (ids.length > 0) {
+      const numbers = loadDeviceNumbers(db)
       const liveRows = db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, ids)).all()
-      for (const r of liveRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: false }
+      for (const r of liveRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: false, number: numbers.get(r.stableId) ?? null }
       const missing = ids.filter((id) => !(id in refs))
       if (missing.length > 0) {
         const deletedRows = db.select().from(deletedDevices).where(inArray(deletedDevices.id, missing)).all()
-        for (const r of deletedRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: true }
+        for (const r of deletedRows) refs[r.id] = { id: r.id, label: r.label, stableId: r.stableId, deleted: true, number: numbers.get(r.stableId) ?? null }
       }
     }
-    return c.json({ refs })
+    return typedJson(c, DeviceRefsResponseSchema, { refs })
   })
 
   // GET /blocked, DELETE /blocked/:stableId (plan 47 §4.4) — the Blocked

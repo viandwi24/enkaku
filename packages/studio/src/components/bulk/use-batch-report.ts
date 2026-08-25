@@ -85,16 +85,28 @@ export function batchOutcomeCounts(batch: BatchInfo): OutcomeCounts {
   }
 }
 
-/** `SkippedGroups`' two named lists, derived from the batch's jobs (failed, with the job's own error as the reason) and its skipped devices (with the dispatch-time reason). */
+/**
+ * `SkippedGroups`' two named lists, derived from the batch's jobs (failed, with the job's own error as the reason) and its skipped devices (with the dispatch-time reason).
+ *
+ * Plan 124 §4.4, step 124.3 — the lookup callback returns the device's number
+ * and its BARE label as two fields rather than one pre-composed string,
+ * because `NamedOutcome` now carries them apart (see its own doc comment: the
+ * number is composed at the render site so it can be dimmed, and pre-baking
+ * `#7 ` into `label` here would have rendered `#7 #7 Galaxy A15` the moment
+ * `SkippedGroups` composed it again). The dialogs that call this build the
+ * callback from the same `pool` they already hold, so no extra fetch and no
+ * widened payload — plan 124 §3.7's "one nullable field, never a widened
+ * object", applied to a client-side lookup.
+ */
 export function batchOutcomeGroups(
   batch: BatchInfo,
   jobs: JobInfo[],
-  deviceLabel: (id: string) => string,
+  deviceName: (id: string) => { number: number | null; label: string },
 ): { failed: NamedOutcome[]; skipped: NamedOutcome[] } {
   return {
     failed: jobs
       .filter((j) => j.status === 'failed')
-      .map((j) => ({ deviceId: j.deviceId, label: deviceLabel(j.deviceId), reason: j.error ?? 'failed' })),
-    skipped: batch.skipped.map((s) => ({ deviceId: s.deviceId, label: deviceLabel(s.deviceId), reason: s.reason })),
+      .map((j) => ({ deviceId: j.deviceId, ...deviceName(j.deviceId), reason: j.error ?? 'failed' })),
+    skipped: batch.skipped.map((s) => ({ deviceId: s.deviceId, ...deviceName(s.deviceId), reason: s.reason })),
   }
 }

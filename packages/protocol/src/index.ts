@@ -311,6 +311,16 @@ export {
   type ReadinessBlockedReason,
   type DeviceReadiness,
 } from './readiness'
+export {
+  AwakeApplyOutcomeSchema,
+  CapturedPowerStateSchema,
+  ObservedScreenSchema,
+  AwakeApplyResultSchema,
+  type AwakeApplyOutcome,
+  type CapturedPowerState,
+  type ObservedScreen,
+  type AwakeApplyResult,
+} from './power'
 export type {
   Transport,
   TransportExecOptions,

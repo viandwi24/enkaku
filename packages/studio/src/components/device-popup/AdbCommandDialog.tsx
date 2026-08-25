@@ -16,7 +16,7 @@ import {
 } from '@enkaku/protocol'
 import { ConfirmFanout } from '@/components/command/ConfirmFanout'
 import { RunReport, type RunReportRun } from '@/components/command/RunReport'
-import { EmptyState, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, Switch, api, useAction } from '@enkaku/ui'
+import { EmptyState, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, Switch, api, formatDeviceName, useAction } from '@enkaku/ui'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
@@ -318,8 +318,16 @@ export function AdbCommandDialog({
     return res.text()
   }
 
+  /**
+   * Plan 124 §4.4 Group D, step 124.4 — the run report's own label lookup,
+   * composing the number for exactly the reason `app/console/page.tsx`'s
+   * twin does: this dialog can fan a command out across the whole farm, and
+   * `RunReport`'s grouped device chips are the only per-device result an
+   * operator ever sees for it.
+   */
   function deviceLabel(devId: string): string {
-    return devices.find((d) => d.id === devId)?.label ?? devId
+    const d = devices.find((dev) => dev.id === devId)
+    return d ? formatDeviceName(d.number, d.label) : devId
   }
 
   const shellOff = shellMode === 'off'

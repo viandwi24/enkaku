@@ -19,6 +19,9 @@ function makeDevice(id: string, label: string): DeviceInfo {
     id,
     stableId: id,
     serial: id,
+    // Plan 124 step 124.3 — the batch report and the re-attach banner both
+    // name devices now, so every fixture carries a number.
+    number: Number(id.replace(/\D/g, '')) || null,
     label,
     androidVersion: '15',
     apiLevel: 35,

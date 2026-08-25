@@ -475,6 +475,15 @@ function AdbDiagnosticsPanel() {
                     <TableBody>
                       {stats.devices.map((d) => (
                         <TableRow key={d.deviceId}>
+                          {/* Plan 124 §3.7, §4.4 Group D — `label` arrives
+                              ALREADY COMPOSED here: `api/adb-stats.ts` wraps
+                              it in the core's own `formatDeviceLabel` before
+                              it reaches the wire (step 124.5). Rendering it
+                              as-is is deliberate; wrapping it again in
+                              `formatDeviceName` would print `#7 #7 Galaxy
+                              A15`. The two-span `<DeviceName>` form is not
+                              available for the same reason — the halves are
+                              already joined server-side. */}
                           <TableCell className="font-medium">{d.label}</TableCell>
                           <TableCell className="readout text-right">{d.queueDepth}</TableCell>
                           <TableCell className="readout text-right">{d.execMsP50 ?? '—'}</TableCell>
@@ -996,6 +1005,21 @@ function BlockedDevicesSection() {
               {blocked.map((b) => (
                 <TableRow key={b.stableId}>
                   <TableCell className="font-medium">
+                    {/* Plan 124 §4.4 Group D — LEFT UNCOMPOSED, knowingly.
+                        `BlockedDeviceSchema` (`@enkaku/protocol`) carries
+                        `{ stableId, label, reason, blockedAt, blockedBy }`
+                        and no `number`; it is not one of §3.7's five payloads,
+                        so step 124.5 did not put one there and this step may
+                        not add it (that is a core + protocol change, Group E).
+                        There is nothing to compose from client-side either: a
+                        blocked device is by construction absent from
+                        `GET /api/devices`, so no loaded `DeviceInfo` answers
+                        to this `stableId`.
+
+                        It is also the surface where it matters least — a
+                        blocked row is keyed on the stableId, which is printed
+                        directly underneath and is already unique. Raised in
+                        the step's report rather than fixed here. */}
                     {b.label ?? b.stableId}
                     <p className="readout mt-0.5 text-[11px] text-fg-subtle">{b.stableId}</p>
                   </TableCell>

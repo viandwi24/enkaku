@@ -450,12 +450,20 @@ describe('SessionManager — the fast-path control entry (plan 100 §3.2, §4.2,
     // Baseline: the ORDINARY path (wall, first entry for this device) DOES
     // issue every one of these commands with this fixture — proving the
     // fixture is not vacuously silent regardless of skipDevicePrep.
-    await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
+    const wallSession = await manager.acquire(PREP_DEVICE_ID, () => {}, 'wall')
     expect(calls.some((c) => c.includes('KEYCODE_WAKEUP'))).toBe(true)
     expect(calls.some((c) => c.includes('stayon'))).toBe(true)
     expect(calls.some((c) => c.includes('accelerometer_rotation') || c.includes('user_rotation'))).toBe(true)
-    expect(calls.some((c) => c.startsWith('ime '))).toBe(true)
     expect(calls.some((c) => c.includes('debug.enkaku.instrumented'))).toBe(true)
+    // Text input is the one member of this baseline that is NO LONGER issued
+    // at build time: plan 125 §3.8 (step 125.8) moved the guest-agent
+    // bootstrap off the critical line, so it runs after the first frame or on
+    // demand, never between the click and the picture. Driven explicitly here
+    // so the fixture still proves it is not vacuously silent — which is what
+    // makes the fast path's own `ime`-free assertion below mean something.
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+    await wallSession.whenTextInputReady?.()
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(true)
 
     calls.length = 0 // isolate the SECOND (control, fast-path) build's own commands
     await manager.acquire(PREP_DEVICE_ID, () => {}, 'control')
@@ -1318,6 +1326,118 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
     expect(restartPhases.length).toBeGreaterThan(0)
     expect(restartPhases.every((p) => p.detail === 'applying new video settings')).toBe(true)
 
+    await manager.closeAll()
+  })
+})
+
+/**
+ * **Plan 125 §3.7, §4.5, §5 step 125.7 — acceptance criterion 11, composed**:
+ * `session.test.ts` pins `CreateSessionOpts.skipWake` itself; this pins the
+ * wiring that decides it, which is where the real defect lived. `createSession`
+ * never consulted the readiness manager, so on a cold `stream.start` the wake
+ * ran twice — once from `readiness.hold(deviceId, 'viewer')` and again from the
+ * `sessions.acquire` immediately after it (plan 125 §0.7, ≈3.2 s of a ≈4.3 s
+ * cold start, on the owner's own measurement).
+ *
+ * `deviceIsAwake` stands in for `daemon.ts`'s real wiring,
+ * `(deviceId) => readiness?.actual(deviceId) !== 'asleep'`. Counting `input
+ * keyevent KEYCODE_WAKEUP` on the wire (rather than spying on `wakeDevice`)
+ * keeps the assertion about what actually reaches the phone — the thing the
+ * sealed-box constraint (§0.2) cares about.
+ */
+describe('SessionManager — one wake per session start (plan 125 §3.7, §5 step 125.7, acceptance #11)', () => {
+  /** The shared `snapshot` opts out of keeping the screen awake; this farm's default (since 125.2) does not. */
+  const awakeDevices: DeviceSnapshotSource = {
+    get: (id) => (id === DEVICE_ID ? { ...snapshot, keepAwake: 'always' } : null),
+  }
+
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length
+
+  test('readiness reports the device already awake or hot: the build wakes it ZERO times', async () => {
+    const { client, calls } = recordingClient()
+    const manager = createSessionManager({
+      client,
+      devices: awakeDevices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      deviceIsAwake: () => true,
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(wakeCount(calls)).toBe(0)
+    expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+    await manager.closeAll()
+    // ...and the close does not release a hold the readiness manager owns.
+    expect(calls).not.toContain('svc power stayon false')
+  })
+
+  test('readiness reports the device asleep: the build wakes it EXACTLY ONCE', async () => {
+    const { client, calls } = recordingClient()
+    const manager = createSessionManager({
+      client,
+      devices: awakeDevices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      deviceIsAwake: () => false,
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(wakeCount(calls)).toBe(1)
+    await manager.closeAll()
+  })
+
+  /**
+   * The safe default in the only direction that matters: a manager with no
+   * readiness manager behind it (the node package's mini-core, a fixture) must
+   * behave exactly as it did before this plan. An unnecessary wake costs a
+   * second; a missing one costs a boxed phone its screen.
+   */
+  test('no deviceIsAwake accessor wired: the wake happens exactly as it did before this plan', async () => {
+    const { client, calls } = recordingClient()
+    const manager = createSessionManager({
+      client,
+      devices: awakeDevices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(wakeCount(calls)).toBe(1)
+    await manager.closeAll()
+    expect(calls).toContain('svc power stayon false')
+  })
+
+  /**
+   * Read fresh at BUILD time, not at `acquire` time — a build queued behind the
+   * farm-wide build lane can wait a while, and the answer that decides whether
+   * to pay a 1422 ms `svc power stayon` has to be the one true when the build
+   * actually runs.
+   */
+  test('the accessor is consulted at build time, so a device woken while the build was queued is not woken again', async () => {
+    const { client, calls } = recordingClient()
+    let awake = false
+    const manager = createSessionManager({
+      client,
+      devices: awakeDevices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy(),
+      deviceIsAwake: () => awake,
+      maxConcurrentBuilds: () => 1,
+    })
+    // Flip the readiness answer before the build is allowed to start, standing
+    // in for `readiness.hold` completing while this build waited for a permit.
+    awake = true
+    await manager.acquire(DEVICE_ID, () => {})
+    expect(wakeCount(calls)).toBe(0)
     await manager.closeAll()
   })
 })

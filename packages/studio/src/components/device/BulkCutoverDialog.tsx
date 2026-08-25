@@ -143,13 +143,28 @@ export function BulkCutoverDialog({
     setBusy(true)
 
     const eligible = targetDevices.filter((d) => isUsb(d) && d.status !== 'offline')
+    // Plan 124 §4.4, step 124.3 — `NamedOutcome` now carries `number` beside
+    // the label, and every producer here holds a whole `DeviceInfo`, so it is
+    // one extra field rather than a lookup. The number is what tells the three
+    // identically-labelled phones in a rack apart in the report below; without
+    // it "Already on the network" names a model, not a device.
     const skipped: NamedOutcome[] = targetDevices
       .filter((d) => !isUsb(d))
-      .map((d) => ({ deviceId: d.id, label: d.label, reason: 'Already on the network — this wizard is for the USB→network move itself.' }))
+      .map((d) => ({
+        deviceId: d.id,
+        number: d.number,
+        label: d.label,
+        reason: 'Already on the network — this wizard is for the USB→network move itself.',
+      }))
     skipped.push(
       ...targetDevices
         .filter((d) => isUsb(d) && d.status === 'offline')
-        .map((d) => ({ deviceId: d.id, label: d.label, reason: 'Offline — connect it over USB before moving it to the network.' })),
+        .map((d) => ({
+          deviceId: d.id,
+          number: d.number,
+          label: d.label,
+          reason: 'Offline — connect it over USB before moving it to the network.',
+        })),
     )
 
     const parsedPort = Number(port)
@@ -162,10 +177,10 @@ export function BulkCutoverDialog({
       eligible.map(async (d) => {
         try {
           const res = await api(`/api/devices/${d.id}/connection/cutover`, CutoverResponseSchema, { method: 'POST', json: body })
-          if (res.cutover.step === 'failed') failed.push({ deviceId: d.id, label: d.label, reason: res.cutover.detail })
+          if (res.cutover.step === 'failed') failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: res.cutover.detail })
           else ok += 1
         } catch (err) {
-          failed.push({ deviceId: d.id, label: d.label, reason: describeApiError(err) })
+          failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: describeApiError(err) })
         }
       }),
     )

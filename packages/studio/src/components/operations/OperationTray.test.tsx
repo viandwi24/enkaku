@@ -83,6 +83,65 @@ describe('OperationTray — a running batch renders through OutcomeSummary, the 
   })
 })
 
+/**
+ * Plan 124 §0.1, §4.4, criterion 5, step 124.3 — the tray is mounted at the
+ * shell and is therefore visible on EVERY screen, including while the
+ * operator is looking at a different device entirely. That makes it the one
+ * surface where an unnumbered row is most useless: `SM-F721U1 +3` says
+ * nothing about which four phones are busy. The composition itself lives in
+ * `useOperations().deviceLabel` (`lib/operations.ts`), so this test pins the
+ * rendered result rather than re-proving the formatter.
+ */
+describe('OperationTray — a row names its devices with their numbers (plan 124 §4.4)', () => {
+  const device = (id: string, number: number | null, label: string) => ({
+    id,
+    stableId: id,
+    serial: id,
+    number,
+    label,
+    androidVersion: '15',
+    apiLevel: 35,
+    screenW: 720,
+    screenH: 1600,
+    density: 280,
+    status: 'idle',
+    lastSeen: 1,
+    battery: null,
+    quarantineReason: null,
+    tags: [],
+    cluster: null,
+    lastCrashAt: null,
+    readiness: { desired: 'awake', actual: 'awake', blocked: null, since: 0 },
+  })
+
+  test('two identically labelled phones read as #7 and #8, and an unnumbered one stays bare', async () => {
+    renderWithApi(<OperationTray />, {
+      ...EMPTY,
+      '/api/devices*': {
+        body: {
+          items: [device('d1', 7, 'Galaxy A15'), device('d2', 8, 'Galaxy A15'), device('d3', null, 'Galaxy A15')],
+          nextCursor: null,
+          total: 3,
+        },
+      },
+      '/api/transfers': {
+        body: {
+          transfers: [
+            { transferId: 't1', deviceId: 'd1', kind: 'push', state: 'running', sent: 1, total: 10, startedAt: 100, updatedAt: 100, ok: null, error: null, remotePath: '/sdcard/a', localName: 'a' },
+          ],
+        },
+      },
+    })
+
+    await waitFor(() => expect(screen.getByTestId('operation-tray')).toBeTruthy())
+    // The device list resolves on its own tick after the operation rows do,
+    // so the name is awaited rather than asserted synchronously.
+    await waitFor(() => expect(document.body.textContent).toContain('#7 Galaxy A15'))
+    // Criterion 7 — no stray `#`, and nothing anywhere reads `#null`.
+    expect(document.body.textContent).not.toContain('#null')
+  })
+})
+
 describe('OperationTray — an ephemeral transfer is marked distinctly from a durable row (plan 107 §3.2)', () => {
   test('a raw transfer row carries the "not saved" badge; a batch row does not', async () => {
     renderWithApi(<OperationTray />, {

@@ -9,6 +9,7 @@ import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
 import { createCoControlManager, type CoControlGrant, type CoControlManager } from '../lease/co-control'
+import { allocateDeviceNumber } from '../registry/device-number'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
@@ -305,6 +306,73 @@ describe('inputStats() — GET /api/adb/stats\' `input` block (plan 91 §4.10, �
     const after = handler.inputStats()
     expect(after.mirrorGroups).toBe(1)
     expect(after.orphanedMirrorGroups).toBe(1)
+  })
+
+  /**
+   * Plan 124 §3.7, §3.1 — `mirror.started`/`mirror.changed` name every member,
+   * and before this step they named them with a bare `devices.label`, so a
+   * mirror group spanning three phones all labelled `SM-F721U1` was
+   * unreadable. `ws-handlers.ts`'s `deviceNumberOf` resolves the reservation
+   * through the device's `stableId` (which is what `device_numbers` is keyed
+   * on, plan 89 §3.1 — never `devices.id`, which is what a mirror group
+   * addresses members by), and this test exists because that indirection is
+   * exactly the kind that silently returns `null` forever if it is wired to
+   * the wrong key.
+   */
+  test('a mirror member carries its device number beside — never inside — its label (plan 124 §3.7)', async () => {
+    const db = setUpDb()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' }).run()
+    allocateDeviceNumber(db, 'stable-1')
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 3600, manualIdleTimeoutSec: 300, reaperIntervalMs: 1_000_000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const coControl = createCoControlManager({ leases, config: { grantTtlSec: () => 300, maxConcurrentPerDevice: () => 1, mode: () => 'operator' }, log })
+    const sessions = fakeSessionManager(new Map([['d1', fakeSession('d1', fakeInputSink().sink)]]))
+    const handler = createWsMessageHandler(
+      baseDeps({ db, sessions, leases, coControl, states, mirrorSettings: () => ({ maxDevices: 20, requireSameOrientation: true, aspectTolerance: 0.05, dropAfterConsecutiveFailures: 3 }) }),
+    )
+
+    const { ws, sent } = fakeConn()
+    handler.handleOpen(ws)
+    await handler.handleMessage(ws, JSON.stringify({ type: 'mirror.start', payload: { focusDeviceId: 'd1', deviceIds: ['d1'] } }))
+    const started = sent.find((m) => m.type === 'mirror.started')
+    expect(started).toBeTruthy()
+    if (started?.type !== 'mirror.started') throw new Error('mirror.start was refused')
+    expect(started.payload.members[0]?.number).toBe(1)
+    // The number composes at render time; it never enters the stored label.
+    expect(started.payload.members[0]?.label).toBe('Phone One')
+  })
+
+  test('a device with no reservation mirrors as number: null, never 0 (plan 89 §3.3 — a missing number is a real state)', async () => {
+    const db = setUpDb()
+    db.insert(devices).values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' }).run()
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const leases = createLeaseManager({
+      states,
+      jobStore: createJobStore(db),
+      config: { jobTtlSec: 3600, manualIdleTimeoutSec: 300, reaperIntervalMs: 1_000_000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const coControl = createCoControlManager({ leases, config: { grantTtlSec: () => 300, maxConcurrentPerDevice: () => 1, mode: () => 'operator' }, log })
+    const sessions = fakeSessionManager(new Map([['d1', fakeSession('d1', fakeInputSink().sink)]]))
+    const handler = createWsMessageHandler(
+      baseDeps({ db, sessions, leases, coControl, states, mirrorSettings: () => ({ maxDevices: 20, requireSameOrientation: true, aspectTolerance: 0.05, dropAfterConsecutiveFailures: 3 }) }),
+    )
+
+    const { ws, sent } = fakeConn()
+    handler.handleOpen(ws)
+    await handler.handleMessage(ws, JSON.stringify({ type: 'mirror.start', payload: { focusDeviceId: 'd1', deviceIds: ['d1'] } }))
+    const started = sent.find((m) => m.type === 'mirror.started')
+    if (started?.type !== 'mirror.started') throw new Error('mirror.start was refused')
+    expect(started.payload.members[0]?.number).toBeNull()
   })
 
   test('uncollectedGrants counts a grant well past its own expiry (a fake CoControlManager stands in so the 30s grace does not require a real wait)', () => {

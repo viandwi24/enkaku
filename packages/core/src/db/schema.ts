@@ -130,6 +130,32 @@ export const devices = sqliteTable(
      * round trips.
      */
     labelState: text('label_state', { mode: 'json' }),
+    /**
+     * What this phone's power settings were BEFORE Enkaku ever touched them,
+     * as JSON (`CapturedPowerStateSchema`, plan 125 §3.3, §4.2) — the
+     * `screen_off_timeout` and `stay_on_while_plugged_in` the device shipped
+     * with, plus when we read them. Null until the first wake captures them.
+     *
+     * Modelled on `labelFingerprint`/`labelState` directly above, and kept off
+     * `settings` for the same reason `networkRoute`/`agent`/`preparation` are:
+     * this is a fact about the DEVICE that Enkaku recorded, not a preference
+     * an operator set, and it must not collide with `DeviceSettingsSchema`.
+     *
+     * **It exists because of plan 125 §0.2.** The owner's phones live in a
+     * sealed phone-farm box with no screen and no hands on them, so the
+     * recovery cost of a bad device write is hardware disassembly. That makes
+     * "put it back exactly as we found it" a requirement rather than a
+     * courtesy, and a requirement needs somewhere durable to remember the
+     * original — the gap plan 89 §3.6 records for the wallpaper label tier,
+     * deliberately not repeated here.
+     *
+     * **Written exactly once per device and never overwritten**
+     * (`awake-policy.ts`'s `capture`): a second capture would record OUR OWN
+     * writes as if they were the phone's own settings, and destroy the only
+     * copy of the truth. Always Zod-validated on read (CLAUDE.md) — a corrupt
+     * or pre-migration row reads as "never captured" rather than throwing.
+     */
+    powerCapture: text('power_capture', { mode: 'json' }),
   },
   (t) => [
     // `/api/devices` sorts by label ASC, id ASC — the browse list, not a

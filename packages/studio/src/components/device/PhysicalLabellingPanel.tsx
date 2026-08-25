@@ -7,7 +7,7 @@ import { LabelPreview } from '@/components/device/LabelPreview'
 import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { Button, Switch, ConfirmDialog, api, describeApiError, relativeTime } from '@enkaku/ui'
+import { Button, Switch, ConfirmDialog, api, describeApiError, formatDeviceName, relativeTime } from '@enkaku/ui'
 
 function readDraftLabelling(draft: Record<string, unknown>): { mode: DeviceLabelMode; showName: boolean } {
   const raw = (draft.labelling ?? {}) as { mode?: DeviceLabelMode; showName?: boolean }
@@ -182,7 +182,14 @@ export function PhysicalLabellingPanel({
                       Clear label…
                     </Button>
                   }
-                  title={`Clear ${device.label}'s label?`}
+                  // Plan 124 §4.4, step 124.3 — the confirm that WIPES a
+                  // phone's wallpaper has to name the phone, not its model.
+                  // The irony is specific here: the label being cleared is
+                  // the black wallpaper carrying this very number, so a title
+                  // that omits it asks the operator to confirm the removal of
+                  // the only thing currently telling this phone from its
+                  // neighbours (plan 89 §3.1).
+                  title={`Clear ${formatDeviceName(device.number, device.label)}'s label?`}
                   description={
                     <div className="space-y-3">
                       <p>

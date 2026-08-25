@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { fireEvent } from '@testing-library/react'
+import { fireEvent, within } from '@testing-library/react'
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import { TooltipProvider } from '@enkaku/ui'
@@ -71,11 +71,52 @@ describe('TargetPicker', () => {
 
   test('an offline device in the target is named as excluded, not silently dropped', () => {
     const devices = [device({ id: 'a' }), device({ id: 'b', label: 'Offline One', status: 'offline' })]
-    const { getByText } = renderWithApi(<Picker devices={devices} clusters={[]} target={{ deviceIds: ['a', 'b'] }} onChange={() => {}} />)
+    const { getByText, getByTestId } = renderWithApi(<Picker devices={devices} clusters={[]} target={{ deviceIds: ['a', 'b'] }} onChange={() => {}} />)
     expect(getByText(/1 device will be targeted/)).toBeTruthy()
     expect(getByText(/1 excluded/)).toBeTruthy()
-    expect(getByText('Offline One — offline')).toBeTruthy()
+    // Plan 124 §4.4 Group D, step 124.4 — the excluded row is now a
+    // `<DeviceName>` (two spans) followed by the reason, so the label and the
+    // reason are no longer one text node. Scoped to the preview panel because
+    // device mode also renders `DevicePicker` above it, which lists the very
+    // same device — an unscoped query would match both and say nothing about
+    // which one it found.
+    const panel = within(getByTestId('target-preview'))
+    expect(panel.getAllByText('Offline One').length).toBe(1)
+    expect(panel.getByText(/— offline/)).toBeTruthy()
   })
+
+  /**
+   * Plan 124 §4.4 Group D, criterion 6, step 124.4 — this preview is
+   * `target-preview.ts`'s own "the guard that stops the mistake most often".
+   * Two identically labelled phones made it useless: it named the same model
+   * twice and told an operator nothing about which one was about to be
+   * skipped.
+   */
+  test('the preview names each device with its number, in both the caution line and the excluded list', () => {
+    const devices = [
+      device({ id: 'a', label: 'SM-F721U1', status: 'busy', number: 7 } as Partial<DeviceInfo>),
+      device({ id: 'b', label: 'SM-F721U1', status: 'offline', number: 12 } as Partial<DeviceInfo>),
+    ]
+    const { getByTestId } = renderWithApi(
+      <Picker devices={devices} clusters={[]} target={{ deviceIds: ['a', 'b'] }} onChange={() => {}} />,
+    )
+    const panel = within(getByTestId('target-preview'))
+    // The caution line is a joined sentence, so the number is IN the string.
+    expect(panel.getByText(/may be skipped — #7 SM-F721U1/)).toBeTruthy()
+    // The excluded list is rows, so the number is its own dimmed span.
+    expect(panel.getAllByText('#12').length).toBe(1)
+  })
+
+  test('a device with no number renders its bare label in the preview — no stray "#" (criterion 7)', () => {
+    const devices = [device({ id: 'b', label: 'Unnumbered', status: 'offline' })]
+    const { getByTestId } = renderWithApi(
+      <Picker devices={devices} clusters={[]} target={{ deviceIds: ['b'] }} onChange={() => {}} />,
+    )
+    const panel = within(getByTestId('target-preview'))
+    expect(panel.getAllByText('Unnumbered').length).toBe(1)
+    expect(panel.queryAllByText(/^#/).length).toBe(0)
+  })
+
 
   test('tag mode: AND semantics — a device must carry every selected tag', () => {
     const devices = [device({ id: 'a', tags: ['pool:smoke', 'rack:a'] }), device({ id: 'b', tags: ['pool:smoke'] })]

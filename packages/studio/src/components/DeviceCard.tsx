@@ -14,6 +14,7 @@ import {
   TooltipContent,
   TooltipTrigger,
   cn,
+  formatDeviceName,
 } from '@enkaku/ui'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
@@ -88,6 +89,13 @@ export function DeviceCard({
   // adapter `WallTile` reads, so the number and the connection glyph read
   // identically wherever a device appears.
   const identity = tileIdentityOf(device)
+  // Plan 124 §4.4 Group B, step 124.2 — `#7 Galaxy A15` for the two places on
+  // this card that need the device as a `string`: the "More actions"
+  // `aria-label` and the guest-agent alert panel's outcome sentences. The
+  // card's own visible heading below composes the two halves separately (a
+  // dimmed number span beside a `<Link>`-wrapped label), which is why it does
+  // NOT read this value — see the note there.
+  const deviceName = formatDeviceName(identity.number, device.label)
 
   return (
     <div
@@ -136,7 +144,20 @@ export function DeviceCard({
                   concatenated into `label` — a separate span composed
                   beside it. `null` only for a device whose reservation was
                   explicitly released (§3.2), rendered honestly as a dash
-                  rather than a fake `#0`. */}
+                  rather than a fake `#0`.
+
+                  Plan 124 §4.2, step 124.2 — deliberately NOT switched to the
+                  shared `<DeviceName>`, on the two grounds that component's
+                  own contract states. First, the label here is a `<Link>` to
+                  the device page while the number is not (it identifies the
+                  row; it is not part of what the label navigates to), and
+                  `<DeviceName>` renders both halves as plain spans. Second,
+                  `<DeviceName>` renders NOTHING for a null number, whereas
+                  this card renders a dash on purpose so the identity column
+                  of a fleet grid stays aligned. Both differences are the
+                  right call for a card and the wrong call for a component
+                  shared with dialogs and plugin tables, so the two stay
+                  separate rather than one being bent to fit the other. */}
               <span className="readout shrink-0 text-[11px] font-normal text-fg-subtle" aria-hidden="true">
                 {identity.number !== null ? `#${identity.number}` : '—'}
               </span>
@@ -175,12 +196,12 @@ export function DeviceCard({
               </span>
             )}
             {/* Plan 90 §5 step 90.6 — quiet for `ready`/`absent`/`provisioning`/`unsupported`; only `failed`/`outdated` need an operator (F10). */}
-            <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} />
+            <AgentAlertChip agent={device.agent ?? 'absent'} deviceId={device.id} deviceLabel={device.label} deviceNumber={identity.number} />
             <DeviceStatusBadge status={device.status} />
             {(onRequestForget || onRequestDisconnect || onReconnect) && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="size-6" aria-label={`More actions for ${device.label}`}>
+                  <Button variant="ghost" size="icon" className="size-6" aria-label={`More actions for ${deviceName}`}>
                     <MoreVertical className="size-3.5" aria-hidden />
                   </Button>
                 </DropdownMenuTrigger>

@@ -241,3 +241,323 @@ describe('close() sends a scid-scoped device-side stop (96.23)', () => {
     )
   })
 })
+
+/**
+ * Step 125.9 (plan 125 §3.9, §4.5; acceptance criterion 13 — "`packages/
+ * scrcpy/src/session.ts` spawns no `adb.exe` process for push or forward").
+ *
+ * Every test above drives the CLI wiring, which is still the fallback and
+ * still what `packages/node/src/hosts.ts` uses — they keep it honest. These
+ * drive the PROTOCOL wiring `packages/core/src/daemon.ts` now supplies, and
+ * the countable claim is `calls.hostAdb`: it must be empty, because the four
+ * process spawns a session used to cost (`push`, `forward`, `forward --list`,
+ * and `forward --remove` on close) are now four protocol calls on the adb
+ * server's existing socket. The FIFTH — the long-lived `adb shell` running
+ * scrcpy-server itself — stays a spawn by nature and is counted separately so
+ * that "zero spawns" cannot be read as "nothing was launched".
+ */
+describe('the video path spawns no adb.exe for push or forward (plan 125 step 125.9)', () => {
+  interface ForwardEntry {
+    serial: string
+    local: string
+    remote: string
+  }
+
+  interface HarnessOptions {
+    /** Ask for a fixed host port instead of letting "adb" pick one (`opts.port`). */
+    preferredPort?: boolean
+    /** Stand in for `host:list-forward`; the default reports this session's own forward, bound to this device. */
+    listForward?: (ctx: { serial: string; socketName: string; port: number }) => ForwardEntry[]
+    /** Drop the fake device's listener the moment the video socket is up, so the CONTROL connect can never succeed. */
+    breakControlSocket?: boolean
+    /**
+     * Make the protocol ADD reject — an adb server that does not answer
+     * `host-serial:<serial>:forward:tcp:0;...` the way plan 119 §4.1 inferred
+     * it would. The one shape in this path nobody has exercised against real
+     * hardware.
+     */
+    forwardRejects?: boolean
+  }
+
+  function createHarness(opts: HarnessOptions = {}) {
+    const serial = 'fake-serial'
+    const calls = {
+      /** Every `adb.exe` argv this session asked for. Criterion 13 wants this empty. */
+      hostAdb: [] as string[][],
+      /** The one spawn that legitimately remains: the long-lived scrcpy-server shell. */
+      spawnLongLived: [] as string[][],
+      push: [] as { localPath: string; remotePath: string }[],
+      forward: [] as { serial: string; local: string; remote: string }[],
+      listForward: 0,
+      killForward: [] as { serial: string; local: string }[],
+      exec: [] as string[],
+      logs: [] as string[],
+    }
+    let serverChildKills = 0
+    let capturedScid: string | null = null
+    let capturedSocketName: string | null = null
+
+    let connectionCount = 0
+    const server = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        open(socket) {
+          connectionCount += 1
+          // Video first, control second — so every ODD connection is a video
+          // socket, and a harness reused for two sequential sessions (the
+          // G13 push test) still answers the second one's handshake.
+          if (connectionCount % 2 === 1) {
+            socket.write(new Uint8Array([0]))
+            // `connectVideoSocket` has resolved by the time this listener is
+            // gone; `connectWithRetry`'s 20 attempts then all get refused.
+            if (opts.breakControlSocket) server.stop(true)
+          }
+        },
+        data() {},
+        close() {},
+        error() {},
+      },
+    })
+
+    const adb: AdbExecutor = {
+      serial,
+      async exec(cmd) {
+        calls.exec.push(cmd)
+        return ''
+      },
+      async hostAdb(args) {
+        // Recorded AND answered: the CLI fallback has to be able to actually
+        // complete when a test drives it (`forwardRejects`), while every other
+        // test's `expect(calls.hostAdb).toEqual([])` proves it was never asked.
+        calls.hostAdb.push(args)
+        if (args.includes('--list')) return `${serial}\ttcp:${server.port}\t${capturedSocketName}`
+        if (args.includes('forward') && !args.includes('--remove')) {
+          capturedSocketName = args[args.length - 1] ?? null
+          return `${server.port}`
+        }
+        return ''
+      },
+      spawnLongLived(args) {
+        calls.spawnLongLived.push(args)
+        capturedScid = /scid=([0-9a-f]+)/.exec(args.join(' '))?.[1] ?? null
+        return {
+          pid: 1,
+          tail: () => '',
+          kill: () => {
+            serverChildKills += 1
+          },
+          exited: new Promise<number>(() => {}),
+        }
+      },
+      async push(localPath, remotePath) {
+        calls.push.push({ localPath, remotePath })
+      },
+      async forward(fwdSerial, local, remote) {
+        if (opts.forwardRejects) throw new Error('E_ADB_FAIL: unknown host service')
+        // A real `tcp:0` ADD binds an ephemeral port the caller does not learn
+        // from this reply — `openForwardOverProtocol` reads it back out of the
+        // listing instead, which is what the fake port below models.
+        calls.forward.push({ serial: fwdSerial, local, remote })
+        capturedSocketName = remote
+      },
+      async listForward() {
+        calls.listForward += 1
+        const ctx = { serial, socketName: capturedSocketName ?? '', port: server.port }
+        return opts.listForward
+          ? opts.listForward(ctx)
+          : [{ serial, local: `tcp:${server.port}`, remote: ctx.socketName }]
+      },
+      async killForward(killSerial, local) {
+        calls.killForward.push({ serial: killSerial, local })
+      },
+    }
+
+    return {
+      calls,
+      serial,
+      port: () => server.port,
+      scid: () => capturedScid,
+      serverChildKills: () => serverChildKills,
+      start: () =>
+        startScrcpySession(adb, {
+          jarPath: '/fake/scrcpy-server.jar',
+          onLog: (level, msg) => calls.logs.push(`${level}: ${msg}`),
+          ...(opts.preferredPort ? { port: server.port } : {}),
+        }),
+      stop: () => server.stop(true),
+    }
+  }
+
+  test('a whole session start issues ZERO adb.exe spawns: the push and the forward pair go over the protocol client instead', async () => {
+    const h = createHarness()
+    try {
+      const session = await h.start()
+      // The countable result criterion 13 asks for: four spawns before this
+      // step, none now.
+      expect(h.calls.hostAdb).toEqual([])
+      // …and not because nothing happened: each one has a protocol call in
+      // its place.
+      expect(h.calls.push).toEqual([{ localPath: '/fake/scrcpy-server.jar', remotePath: '/data/local/tmp/scrcpy-server.jar' }])
+      expect(h.calls.forward).toEqual([{ serial: h.serial, local: 'tcp:0', remote: `localabstract:scrcpy_${h.scid()}` }])
+      expect(h.calls.listForward).toBe(1)
+      // The one spawn that must remain: `app_process` is a process, and this
+      // is the shell holding it (plan 125's own carve-out).
+      expect(h.calls.spawnLongLived).toHaveLength(1)
+      expect(h.calls.spawnLongLived[0]?.join(' ')).toContain('app_process')
+      await session.close()
+      expect(h.calls.hostAdb).toEqual([])
+    } finally {
+      h.stop()
+    }
+  })
+
+  test('the jar is pushed on EVERY session, never cached or skipped (plan 100 G13)', async () => {
+    const h = createHarness()
+    try {
+      const first = await h.start()
+      await first.close()
+      const second = await h.start()
+      await second.close()
+      // scrcpy-server `unlinkSelf()`s the jar as it loads, so a second session
+      // that trusted the first one's push would find nothing and die with a
+      // bare `Aborted`.
+      expect(h.calls.push).toHaveLength(2)
+    } finally {
+      h.stop()
+    }
+  })
+
+  test('close() removes the forward over the protocol client, with no `forward --remove` spawn', async () => {
+    const h = createHarness()
+    try {
+      const session = await h.start()
+      expect(h.calls.killForward).toEqual([])
+      await session.close()
+      expect(h.calls.killForward).toEqual([{ serial: h.serial, local: `tcp:${h.port()}` }])
+      expect(h.calls.exec).toEqual([`pkill -f 'scid=${h.scid()}'`])
+      expect(h.serverChildKills()).toBe(1)
+      expect(h.calls.hostAdb).toEqual([])
+    } finally {
+      h.stop()
+    }
+  })
+
+  /**
+   * The exit routes that leaked before this step. In a sealed phone-farm box
+   * (plan 125 §0.2) a leaked forward plus an orphaned server is not a tidy-up
+   * item: §96.23 measured one still encoding video 7m42s after the core had
+   * given up on it, and nothing short of taking the box apart reaches it.
+   */
+  test('a forward that comes back owned by ANOTHER device is removed, and the server it would have fed is killed', async () => {
+    const h = createHarness({
+      listForward: ({ socketName, port }) => [
+        { serial: h.serial, local: `tcp:${port}`, remote: socketName },
+        // adb cannot really bind one port twice; the check exists because
+        // "video from one phone, taps landing on the other" is expensive
+        // enough to be worth refusing on sight.
+        { serial: 'some-other-phone', local: `tcp:${port}`, remote: 'localabstract:scrcpy_deadbeef' },
+      ],
+    })
+    try {
+      await expect(h.start()).rejects.toThrow('refusing to drive another device')
+      expect(h.calls.killForward).toEqual([{ serial: h.serial, local: `tcp:${h.port()}` }])
+      expect(h.calls.exec).toEqual([`pkill -f 'scid=${h.scid()}'`])
+      expect(h.serverChildKills()).toBe(1)
+      expect(h.calls.hostAdb).toEqual([])
+    } finally {
+      h.stop()
+    }
+  })
+
+  test('a forward that does not come back at all still kills the server, on a preferred port also removes the forward', async () => {
+    const h = createHarness({ preferredPort: true, listForward: () => [] })
+    try {
+      await expect(h.start()).rejects.toThrow('adb lost the forward')
+      expect(h.calls.killForward).toEqual([{ serial: h.serial, local: `tcp:${h.port()}` }])
+      expect(h.serverChildKills()).toBe(1)
+    } finally {
+      h.stop()
+    }
+  })
+
+  test('a socket handshake that never completes releases the forward, the adb child AND the device-side server', async () => {
+    // The failure class behind the screencap-loop fallback (§96.22): the
+    // forward and the server exist, the sockets never come up, and before this
+    // step the throw left all three behind — `close()` was never reachable,
+    // since it is part of the object `startScrcpySession` never returned.
+    const h = createHarness({ breakControlSocket: true })
+    try {
+      await expect(h.start()).rejects.toThrow()
+      expect(h.calls.killForward).toEqual([{ serial: h.serial, local: `tcp:${h.port()}` }])
+      expect(h.calls.exec).toEqual([`pkill -f 'scid=${h.scid()}'`])
+      expect(h.serverChildKills()).toBe(1)
+      expect(h.calls.hostAdb).toEqual([])
+    } finally {
+      h.stop()
+    }
+  }, 15_000)
+
+  test('an adb server that refuses the protocol forward falls back to the CLI once, loudly — never to a farm with no video', async () => {
+    const h = createHarness({ forwardRejects: true })
+    try {
+      const session = await h.start()
+      // The push still went over the protocol path: only the ADD fell back.
+      expect(h.calls.push).toHaveLength(1)
+      const verbs = h.calls.hostAdb.map((args) => args.filter((a) => a === 'forward' || a === '--list').join(' '))
+      expect(verbs).toEqual(['forward', 'forward --list'])
+      expect(h.calls.logs.some((l) => l.startsWith('warn: the adb server refused a protocol-level forward'))).toBe(true)
+      await session.close()
+      // The remove follows the same mechanism the trio is wired with, not the
+      // path the ADD happened to fall back to — `killForward` is a separate
+      // service and its own refusal is already tolerated.
+      expect(h.calls.killForward).toEqual([{ serial: h.serial, local: `tcp:${h.port()}` }])
+    } finally {
+      h.stop()
+    }
+  })
+
+  test('with no protocol client supplied the CLI path is still there, spawn for spawn — the fallback plan 125 §8 keeps one line away', async () => {
+    // `packages/node/src/hosts.ts` runs on exactly this shape today.
+    const spawns: string[][] = []
+    const server = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        open(socket) {
+          socket.write(new Uint8Array([0]))
+        },
+        data() {},
+        close() {},
+        error() {},
+      },
+    })
+    try {
+      let socketName = ''
+      const adb: AdbExecutor = {
+        serial: 'fake-serial',
+        async exec() {
+          return ''
+        },
+        async hostAdb(args) {
+          spawns.push(args)
+          if (args.includes('--list')) return `fake-serial\ttcp:${server.port}\t${socketName}`
+          if (args.includes('forward') && !args.includes('--remove')) {
+            socketName = args[args.length - 1] ?? ''
+            return `${server.port}`
+          }
+          return ''
+        },
+        spawnLongLived() {
+          return { pid: 1, tail: () => '', kill: () => {}, exited: new Promise<number>(() => {}) }
+        },
+      }
+      const session = await startScrcpySession(adb, { jarPath: '/fake/scrcpy-server.jar' })
+      await session.close()
+      const verbs = spawns.map((args) => args.filter((a) => a === 'push' || a === 'forward' || a === '--list' || a === '--remove').join(' '))
+      expect(verbs).toEqual(['push', 'forward', 'forward --list', 'forward --remove'])
+    } finally {
+      server.stop(true)
+    }
+  })
+})

@@ -8,12 +8,15 @@ import {
   type DeviceReadiness,
   type DeviceStatus,
   type KeepAwakeMode,
+  type ObservedScreen,
   type Readiness,
   type ReadinessBlockedReason,
 } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
+import type { AwakePolicy } from './awake-policy'
 import type { Lease, LeaseManager } from '../lease/lease-manager'
+import { mapWithConcurrency } from '../util/concurrency'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 
@@ -48,6 +51,24 @@ export interface ReadinessManager {
    * open a real session, e.g. `stream.start`'s own `sessions.acquire`).
    */
   hold(deviceId: string, reason: HoldReason): Promise<Hold>
+  /**
+   * Ask the PHONE what its screen is doing (plan 125 §3.6) and remember the
+   * answer, so the next `get()` carries it as `observed`.
+   *
+   * This is the "on demand" half of §3.6's rule — the other half runs inside
+   * `reconcile`. There is deliberately no third caller: a probe costs an adb
+   * round trip, and §3.6 states it plainly — *"it runs on reconcile and on
+   * demand — **never on a timer**"* (`readiness.ts`'s own no-timer rule at the
+   * head of `createReadinessManager` stands unchanged).
+   *
+   * Always answers; never throws. A device that cannot be probed answers
+   * `unknown` WITH a reason, and never `off` (acceptance criterion 5).
+   */
+  observe(deviceId: string): Promise<ObservedScreen>
+  /**
+   * Runs the boot sweep (plan 125 §4.4) — ONCE, not on a timer. See the
+   * implementation for why that is not a contradiction of the no-timer rule.
+   */
   start(): void
   stop(): void
 }
@@ -69,6 +90,18 @@ export interface ReadinessManagerDeps {
    * no-op release), so callers do not need to branch on locality themselves.
    */
   isRemote?: (deviceId: string) => boolean
+  /**
+   * The awake policy (plan 125 §4.1, §5 step 125.2) — optional, and its
+   * absence is not a silent degradation but a deliberate refusal.
+   *
+   * `ensureAwake` writes the device's own `screen_off_timeout` ONLY when this
+   * is wired, because §0.2's first rule is that nothing is written to a boxed
+   * phone without its original value being captured first, and this is what
+   * owns the capture. With no policy wired, the wake behaves exactly as it did
+   * before plan 125: the runtime nudge and `svc power stayon`, both of which
+   * predate this plan and are reverted by `releaseAwake` below.
+   */
+  awakePolicy?: () => AwakePolicy | null
   broadcast: (deviceId: string, readiness: DeviceReadiness) => void
   /** One `device.readiness` main-stream event per change (§4.5, acceptance #12). */
   record?: (e: { deviceId: string; actor: string | null; from: Readiness; to: Readiness }) => void
@@ -76,6 +109,37 @@ export interface ReadinessManagerDeps {
 }
 
 const RANK: Record<Readiness, number> = { asleep: 0, awake: 1, hot: 2 }
+
+/**
+ * How stale a screen observation may be before `reconcile` pays for a fresh
+ * one (plan 125 §3.6: *"cached with a timestamp"*).
+ *
+ * `reconcile` is not a rare event — `daemon.ts` calls it on EVERY device
+ * status transition, every session open and close, and every job claim and
+ * finish. Probing unconditionally would put a `dumpsys power` round trip on
+ * all of those, on a farm of twelve phones, which is exactly the kind of cost
+ * plan 125 §0.7 is trying to remove from this codebase rather than add to it.
+ * The cache collapses a burst of reconciles into one probe and leaves the
+ * observation no more than this many seconds old.
+ *
+ * `observe()` (the on-demand path) ignores this and always probes fresh — an
+ * operator who asks a question deserves the current answer, not a cached one.
+ */
+const OBSERVE_MAX_AGE_SEC = 15
+
+/**
+ * The upper bound on how many devices the boot sweep wakes at once (plan 125
+ * §4.4's *"bounded by the existing build-lane discipline"*).
+ *
+ * Lower than the 8 `battery.ts`/`health.ts` use for their polls, on purpose: a
+ * poll is one `dumpsys`, whereas a wake opens a transport and issues several
+ * shell calls including `svc power stayon`, measured at 1422 ms on the owner's
+ * hardware (plan 96 §22). The real fleet-wide bound is still the shared adb
+ * lane (`adb.maxConcurrent`, taken into account below) — this is the second,
+ * tighter ceiling that stops a twelve-phone farm arriving at boot from
+ * becoming a twelve-way fan-out of the most expensive call in the product.
+ */
+const BOOT_SWEEP_MAX_CONCURRENCY = 4
 
 /**
  * A pure, manager-free fallback (Plan 43 §4.1): `offline` always reads
@@ -93,6 +157,11 @@ export function staticReadinessFallback(row: Pick<DeviceRow, 'status' | 'desired
     actual: offline ? 'asleep' : desired,
     blocked: offline && desired !== 'asleep' ? 'offline' : null,
     since: 0,
+    // Written explicitly rather than left to the schema (plan 125 §4.2): this
+    // fallback exists precisely where no manager — and therefore no probe —
+    // is wired, so "nothing was ever observed" is the literal truth here, and
+    // the wire shape stays identical to the real manager's.
+    observed: null,
   })
 }
 
@@ -137,6 +206,16 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   const lastActual = new Map<string, { level: Readiness; since: number }>()
   /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/lease). */
   const holdCounts = new Map<string, number>()
+  /**
+   * deviceId → the last thing the PHONE said about its own screen (plan 125
+   * §3.6). Absent means "never probed", which the wire reports as `null` —
+   * distinct from a probe that ran and answered `unknown`.
+   */
+  const lastObserved = new Map<string, ObservedScreen>()
+  /** Set by `stop()`, so a core shutting down mid-boot-sweep stops waking phones it is about to abandon. */
+  let stopped = false
+  /** The boot sweep is once-per-process by construction (plan 125 §4.4), not once-per-`start()`-call. */
+  let sweepStarted = false
 
   function getRow(deviceId: string): DeviceRow | null {
     return db.select().from(devices).where(eq(devices.id, deviceId)).get() ?? null
@@ -153,9 +232,22 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     return row.transport === 'adb-tcp' ? new AdbTcpTransport(opts) : new AdbUsbTransport(opts)
   }
 
+  /**
+   * The fallback tracks `DeviceSettingsSchema`'s own default, which plan 125
+   * §3.3 moved to `'always'`: `'while-charging'` maps to `svc power stayon
+   * usb`, a documented no-op on a device attached over `adb-tcp`, so leaving
+   * it here would make a device with an unparseable settings blob quietly
+   * un-holdable on exactly the transport this farm runs on.
+   */
   function keepAwakeModeFor(row: DeviceRow): KeepAwakeMode {
     const parsed = DeviceSettingsSchema.safeParse(row.settings ?? {})
-    return parsed.success ? parsed.data.prep.keepAwake : 'while-charging'
+    return parsed.success ? parsed.data.prep.keepAwake : 'always'
+  }
+
+  /** `prep.screenOffTimeoutMs` (plan 125 §4.2) — `null` means "leave the device's own value alone" and issues no write. */
+  function screenOffTimeoutFor(row: DeviceRow): number | null {
+    const parsed = DeviceSettingsSchema.safeParse(row.settings ?? {})
+    return parsed.success ? parsed.data.prep.screenOffTimeoutMs : null
   }
 
   /** `actual`, ignoring `blocked` — the raw, live-derived level (§4.3's derivation order). */
@@ -177,6 +269,52 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     return prev.since
   }
 
+  /**
+   * Record an observation we can make WITHOUT talking to the device (plan 125
+   * §3.6).
+   *
+   * An offline or quarantined phone cannot be probed, and leaving the previous
+   * answer in place would be worse than having none: a stale `on` from five
+   * minutes ago, still presented to an operator as the current state of a
+   * phone that has since dropped off the farm, is exactly the "inference
+   * presented as fact" plan 125 §0.3 exists to stop. `unknown` with the reason
+   * is the honest replacement — never `off`, because "we cannot ask" and "the
+   * panel is dark" are different facts (acceptance criterion 5).
+   */
+  function markUnobservable(deviceId: string, reason: string): void {
+    lastObserved.set(deviceId, { state: 'unknown', reason, observedAt: nowSec() })
+  }
+
+  /**
+   * The probe itself (plan 125 §3.6). Returns null — and stores nothing — when
+   * there is no probe to run at all, so a core built without an awake policy
+   * reports `observed: null` ("never asked") rather than inventing an
+   * `unknown` that would read as a failed probe.
+   *
+   * Never throws: a screen observation is a nice-to-have, and a failing probe
+   * must never take down the `reconcile` that carries it, whose actual job is
+   * keeping a boxed phone awake.
+   */
+  async function refreshObserved(deviceId: string, opts: { force?: boolean } = {}): Promise<ObservedScreen | null> {
+    const policy = deps.awakePolicy?.() ?? null
+    if (!policy) return null
+    // A cloud/node-owned device is out of scope for the whole module (§2) — a
+    // local transport against one would silently talk to nothing, and an
+    // observation read off nothing is the worst possible answer here.
+    if (deps.isRemote?.(deviceId)) return null
+    const prev = lastObserved.get(deviceId)
+    if (!opts.force && prev && nowSec() - prev.observedAt < OBSERVE_MAX_AGE_SEC) return prev
+    try {
+      const observed = await policy.observe(deviceId)
+      lastObserved.set(deviceId, observed)
+      return observed
+    } catch (err) {
+      const observed: ObservedScreen = { state: 'unknown', reason: `the screen probe failed: ${String(err)}`, observedAt: nowSec() }
+      lastObserved.set(deviceId, observed)
+      return observed
+    }
+  }
+
   function computeReadiness(deviceId: string): DeviceReadiness {
     const row = getRow(deviceId)
     const desired = desiredOf(row)
@@ -196,7 +334,11 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       else if (status === 'quarantined') blocked = 'quarantined'
       else blocked = blockedReason.get(deviceId) ?? null
     }
-    return DeviceReadinessSchema.parse({ desired, actual, blocked, since })
+    // `observed` rides alongside `actual`, never in place of it (plan 125
+    // §4.2) — `actual` stays the scheduling-relevant bookkeeping value every
+    // other module in this codebase already reasons about, and `observed` is
+    // the phone's own answer, which is allowed to disagree with it.
+    return DeviceReadinessSchema.parse({ desired, actual, blocked, since, observed: lastObserved.get(deviceId) ?? null })
   }
 
   function broadcast(deviceId: string): void {
@@ -215,7 +357,18 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     if (!transport) return
     await transport.connect()
     try {
-      await wakeDevice(transport, { keepAwake: keepAwakeModeFor(row), log })
+      // Plan 125 §3.3, step 125.2 — the PERSISTED writes ride along with the
+      // runtime nudge, which is what keeps a boxed phone awake even when the
+      // core is not running at all. The timeout write and the capture sink
+      // travel together on purpose: no policy wired means no capture sink,
+      // and no capture sink means no persisted timeout write (§0.2 rule 1).
+      const policy = deps.awakePolicy?.() ?? null
+      await wakeDevice(transport, {
+        keepAwake: keepAwakeModeFor(row),
+        screenOffTimeoutMs: policy ? screenOffTimeoutFor(row) : null,
+        ...(policy ? { capture: policy.captureSink(deviceId) } : {}),
+        log,
+      })
     } catch (err) {
       log.warn(`readiness: wakeDevice failed for ${deviceId}: ${String(err)}`)
     } finally {
@@ -254,8 +407,23 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
     if (status === 'offline') {
       releaseDesiredHot(deviceId)
-      keepAwakeApplied.delete(deviceId) // the device itself is gone — nothing left to revert on it
+      // The device itself is gone — nothing left to revert on it.
+      //
+      // Plan 125 §4.4 is about what happens NEXT, and this line is why it
+      // needed saying: dropping the flag means `rawActual` reads `asleep`
+      // again, so a `desired: 'awake'` device that blipped offline is only
+      // ever re-woken if something calls `reconcile` when it comes back. That
+      // something is `daemon.ts`'s device-status hook — the registry applies
+      // `DEVICE_CONNECTED` (offline→idle) on reprobe, the state machine's
+      // `onChange` fires, and it reconciles here, landing in the `awake`
+      // branch below and calling `ensureAwake`. Before the default flipped to
+      // `'awake'` (125.2) a missed re-wake merely meant a dark tile; now it
+      // means a phone in a sealed box that nobody can reach to wake by hand
+      // (§0.2), so the reconnect test in `readiness.test.ts` pins the whole
+      // chain rather than just this function.
+      keepAwakeApplied.delete(deviceId)
       blockedReason.set(deviceId, desired !== 'asleep' ? 'offline' : null)
+      markUnobservable(deviceId, 'the device is offline')
       broadcast(deviceId)
       return
     }
@@ -266,6 +434,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // hook, daemon.ts) tear the session down; we do not force it here.
       releaseDesiredHot(deviceId)
       blockedReason.set(deviceId, desired !== 'asleep' ? 'quarantined' : null)
+      markUnobservable(deviceId, 'the device is quarantined')
       broadcast(deviceId)
       return
     }
@@ -306,7 +475,93 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // `reconcile` and this branch finishes the job then.
       if (!deps.sessions()?.get(deviceId)) await releaseAwake(deviceId)
     }
+    // One of §3.6's two probe points ("on reconcile and on demand — never on a
+    // timer"), placed AFTER the wake so what it observes is the state this
+    // pass just produced rather than the one it replaced. Cached
+    // (`OBSERVE_MAX_AGE_SEC`), because `reconcile` fires on every status
+    // transition, session open/close and job claim/finish, and awaited rather
+    // than fired-and-forgotten so the single `broadcast` below carries the
+    // observation instead of racing a second one behind it. It cannot throw
+    // (see `refreshObserved`), so it can never cost a device its wake.
+    await refreshObserved(deviceId)
     broadcast(deviceId)
+  }
+
+  /**
+   * The boot sweep (plan 125 §4.4, §3.1) — run once from `start()`.
+   *
+   * **Why this is not a breach of the no-timer rule** at the head of this
+   * function: there is no timer. It runs exactly once, when the core comes up,
+   * and nothing reschedules it. §4.4 grants it in those words — *"this is the
+   * one new periodic-ish behaviour, and it runs once at boot, not on a
+   * timer"* — because the alternative is the treadmill §0.4 documents: a
+   * `desired: 'awake'` device that was awake before a core restart comes back
+   * dark, and in a sealed box (§0.2) there is no hand to wake it.
+   *
+   * Three properties this deliberately has:
+   *
+   * - **Bounded.** `mapWithConcurrency` with a ceiling of
+   *   `BOOT_SWEEP_MAX_CONCURRENCY`, further clamped by the live adb lane
+   *   width, so a twelve-device farm does not fan out twelve simultaneous
+   *   `svc power stayon` calls at the exact moment the core is busiest.
+   * - **Loud.** One summary line naming what it woke, what it skipped, and
+   *   why. An operator who cannot see their phones (§0.2) is entitled to read
+   *   in the log what the core did to them at startup.
+   * - **Not a retry loop.** An offline or quarantined device is skipped WITH a
+   *   reason and never re-attempted here; it is picked up by its own
+   *   `DEVICE_CONNECTED`/`UNQUARANTINE` transition, which reconciles anyway
+   *   (see the offline branch above). A sweep that retried would be the timer
+   *   this module does not have, wearing a different name.
+   */
+  async function bootSweep(): Promise<void> {
+    const rows = db.select().from(devices).all()
+    const targets: DeviceRow[] = []
+    const skipped: string[] = []
+    for (const row of rows) {
+      if (desiredOf(row) === 'asleep') continue // not this sweep's business, and not worth a log line
+      if (deps.isRemote?.(row.id)) {
+        skipped.push(`${row.label ?? row.id} (owned by a cloud node)`)
+        continue
+      }
+      const status = (row.status ?? 'offline') as DeviceStatus
+      if (status === 'offline' || status === 'quarantined') {
+        // Recorded as blocked so the very first `get()` after boot reports the
+        // right reason, exactly as `computeReadiness` already does for a
+        // device that has never been reconciled.
+        blockedReason.set(row.id, status)
+        markUnobservable(row.id, status === 'offline' ? 'the device is offline' : 'the device is quarantined')
+        skipped.push(`${row.label ?? row.id} (${status})`)
+        broadcast(row.id)
+        continue
+      }
+      targets.push(row)
+    }
+
+    if (targets.length === 0) {
+      if (skipped.length > 0) log.info(`boot sweep: nothing to wake — skipped ${skipped.length}: ${skipped.join(', ')}`)
+      return
+    }
+
+    const client = deps.client()
+    if (!client) {
+      // `daemon.ts` calls `start()` after `adbState = 'ready'`, so this is a
+      // misordering rather than an expected state — and it is reported, not
+      // retried: a sweep that waited for adb would be a timer (§3.7).
+      log.warn(`boot sweep skipped: the adb subsystem is not ready, so ${targets.length} device(s) were not woken`)
+      return
+    }
+    const limit = Math.max(1, Math.min(BOOT_SWEEP_MAX_CONCURRENCY, client.stats().maxConcurrent, targets.length))
+    log.info(`boot sweep: reconciling ${targets.length} device(s) desired awake or hot, ${limit} at a time`)
+    const results = await mapWithConcurrency(targets, limit, async (row) => {
+      if (stopped) return
+      await reconcile(row.id)
+    })
+    const failed = results.filter((r) => r.status === 'rejected').length
+    const awake = targets.filter((row) => keepAwakeApplied.has(row.id) || desiredHotRelease.has(row.id)).length
+    log.info(
+      `boot sweep done: ${awake}/${targets.length} device(s) now held awake${failed > 0 ? `, ${failed} failed` : ''}` +
+        (skipped.length > 0 ? ` — skipped ${skipped.length}: ${skipped.join(', ')}` : ''),
+    )
   }
 
   return {
@@ -382,15 +637,43 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       }
     },
 
+    async observe(deviceId) {
+      // `force: true` — the on-demand half of §3.6. A cached answer is right
+      // for `reconcile`'s bursts and wrong for someone who just asked.
+      const observed = await refreshObserved(deviceId, { force: true })
+      if (observed) {
+        broadcast(deviceId)
+        return observed
+      }
+      // No policy wired, or a cloud-owned device: nothing was stored (so
+      // `observed` stays `null` on the wire, meaning "never asked"), but the
+      // caller still gets an answer, and that answer is `unknown` with its
+      // reason — never `off` (acceptance criterion 5).
+      return {
+        state: 'unknown',
+        reason: deps.isRemote?.(deviceId)
+          ? 'this device is owned by a cloud node, so its screen cannot be probed from here'
+          : 'no awake policy is wired, so this core cannot probe a screen',
+        observedAt: nowSec(),
+      }
+    },
+
     start() {
-      // No timer to start (§3.7) — present so the interface mirrors every
-      // other manager in this codebase (`SessionManager`, `DeviceHealth`, ...)
-      // and so a future policy-driven reconciliation loop has somewhere to
-      // live without changing this interface again.
+      // Still no timer (§3.7) — see `bootSweep` for why running it from here
+      // is the one behaviour plan 125 §4.4 adds and why it is not a timer in
+      // disguise. Fire-and-forget on purpose: waking a farm must never delay
+      // the core coming up, exactly like `agentProvisioner.ensureAll()` and
+      // `preparationRunner.ensureAll()` beside it in `daemon.ts`.
+      if (sweepStarted) return
+      sweepStarted = true
+      stopped = false
+      void bootSweep().catch((err) => log.warn(`readiness: boot sweep failed, tolerated: ${String(err)}`))
     },
 
     stop() {
-      // Nothing to stop, for the same reason.
+      // There is no timer to clear; this flag is what a shutdown mid-sweep
+      // needs, so the core does not keep waking phones it is walking away from.
+      stopped = true
     },
   }
 }

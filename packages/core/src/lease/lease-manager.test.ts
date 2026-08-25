@@ -148,6 +148,44 @@ describe('acquireManual — takeover (plan 71 §3.4, §3.5, criteria 4, 8, 9, 10
     expect(events).toEqual([{ deviceId: 'd1', fromLabel: 'user:user-a', toLabel: 'user:user-b' }])
   })
 
+  /**
+   * The bug plan 125 step 125.5 uncovered, and the reason it was total rather
+   * than intermittent: `toHolder` publishes `lease.holderUserId ?? lease.holder`,
+   * so on a farm with auth ON every `LeaseHolder.id` a browser ever saw was a
+   * **userId** — while the CAS only accepted a **clientId**. The two can never
+   * be equal, so EVERY takeover on an authenticated farm was refused. Plan 71
+   * §3.4's whole path had been dead since auth shipped, and the field report in
+   * plan 125 §0.8 ("take control keeps getting in the way") is what led here.
+   *
+   * The client sends back the id it was SHOWN, so both must be accepted.
+   */
+  test('takeOverFrom matching the holder USER id succeeds — the id an authenticated client is actually shown (plan 125 §0.8)', () => {
+    const { states } = setUp()
+    const leases = makeLeases({ states, resolveLabel: (kind, id) => `${kind}:${id}` })
+    leases.acquireManual('d1', 'client-a', 'user-a')
+
+    // 'user-a', not 'client-a' — exactly what `toHolder` put on the wire.
+    const taken = leases.acquireManual('d1', 'client-b', 'user-b', { takeOverFrom: 'user-a' })
+    expect(taken.holder).toBe('client-b')
+    expect(leases.getLease('d1')?.holder).toBe('client-b')
+  })
+
+  test('widening the CAS does not weaken it: a stale USER id is still refused', () => {
+    const { states } = setUp()
+    const leases = makeLeases({ states, resolveLabel: (kind, id) => `${kind}:${id}` })
+    leases.acquireManual('d1', 'client-a', 'user-a')
+    leases.acquireManual('d1', 'client-b', 'user-b', { takeOverFrom: 'user-a' })
+    // c still believes user-a holds it. Refused, naming the real holder.
+    try {
+      leases.acquireManual('d1', 'client-c', 'user-c', { takeOverFrom: 'user-a' })
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect((err as { code?: string }).code).toBe('lease_holder_changed')
+      expect((err as { message?: string }).message).toContain('user:user-b')
+    }
+    expect(leases.getLease('d1')?.holder).toBe('client-b')
+  })
+
   test('a stale takeOverFrom (the holder changed since the caller last looked) is refused with lease_holder_changed, naming who holds it NOW — the dialog re-asks rather than failing silently (criterion 8)', () => {
     const { states } = setUp()
     const leases = makeLeases({ states, resolveLabel: (kind, id) => `${kind}:${id}` })

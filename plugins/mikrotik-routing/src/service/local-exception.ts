@@ -152,7 +152,22 @@ function buildSuggestedFixCommands(devices: readonly ProtectedDevice[], coreAddr
   return buildLocalExceptionFixCommands(srcAddress, RFC1918_BLOCKS)
 }
 
-/** `label` alone is useless once a farm has more than one device of the same model (defect 2, §5 step 122.12's follow-up: the owner's own farm printed "SM-F721U1, SM-F721U1, SM-F721U1") — `address` is what a candidate rule's `src-address` actually has to cover, so it is also the most relevant identifier to show beside the label. */
+/**
+ * `label` alone is useless once a farm has more than one device of the same
+ * model (defect 2, §5 step 122.12's follow-up: the owner's own farm printed
+ * "SM-F721U1, SM-F721U1, SM-F721U1") — `address` is what a candidate rule's
+ * `src-address` actually has to cover, so it is also the most relevant
+ * identifier to show beside the label.
+ *
+ * Since plan 124 step 124.7 the `label` handed to this function ALREADY has
+ * the device number composed into it by its two callers
+ * (`handlers.ts`'s `knownDeviceAddresses` and `apply.ts`'s
+ * `protectedDevicesFrom`, both via `shared.ts`'s `deviceNameWithNumber`), so
+ * a line here reads `#7 SM-F721U1 (192.168.10.15)`. This function
+ * deliberately does not compose it itself: it takes a `ProtectedDevice`,
+ * which is an addressing record, and a second composition here would print
+ * the number twice for callers that already did it.
+ */
 function describeUncovered(devices: readonly ProtectedDevice[]): string {
   return devices.map((d) => `${d.label} (${d.address})`).join(', ')
 }

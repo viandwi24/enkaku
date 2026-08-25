@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { fireEvent, waitFor } from '@testing-library/react'
+import { fireEvent, waitFor, within } from '@testing-library/react'
 import '@/lib/test/nav'
 import { setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
@@ -285,5 +285,50 @@ describe('/console', () => {
     await waitFor(() => expect(getByText('The command console is turned off for this farm')).toBeTruthy())
     expect(getByText(/Fleet commands are turned off/)).toBeTruthy()
     expect(queryByPlaceholderText('getprop ro.build.version.release')).toBeNull()
+  })
+})
+
+/**
+ * Plan 124 §4.4 Group D, criterion 6, step 124.4 — the run report.
+ *
+ * `RunReport`'s `deviceLabel` prop stays a `(deviceId) => string` (§4.4's rule
+ * for the string-shaped device labels), so THIS page's lookup is where the
+ * number is composed — and it is the only lookup feeding all three of the
+ * report's naming sites. A fan-out over a rack of identical phones is exactly
+ * the "no count without names" surface (plan 93 §3.15) that the bare label
+ * rendered useless.
+ */
+describe('/console — the run report names devices with their numbers (plan 124 §4.4)', () => {
+  const numbered = device({ label: 'Galaxy A15', number: 7 })
+
+  test('a collapsed group\'s device preview reads "#7 Galaxy A15"', async () => {
+    const { getByText, getByPlaceholderText, getByRole, getAllByText, getByTestId } = renderWithApi(
+      <ConsolePage />,
+      baseMocks([numbered], {}, { '/api/command-runs': () => ({ status: 201, body: runCreateResponse() }) }),
+    )
+    await waitFor(() => expect(getAllByText('Galaxy A15').length).toBeGreaterThan(0))
+    fireEvent.click(getAllByText('Galaxy A15')[0]!)
+    fireEvent.change(getByPlaceholderText('getprop ro.build.version.release'), { target: { value: 'getprop ro.build.version.release' } })
+    fireEvent.click(getByRole('button', { name: 'Run' }))
+    await waitFor(() => expect(getByText(/1 pending/)).toBeTruthy())
+
+    // The group's collapsed preview is a `.join(', ')` of composed names.
+    await waitFor(() => expect(within(getByTestId('run-report')).getByText('#7 Galaxy A15')).toBeTruthy())
+  })
+
+  test('a device with no number keeps its bare label in the report — no "#null" (criterion 7)', async () => {
+    const { getByText, getByPlaceholderText, getByRole, getAllByText, getByTestId: byTestId } = renderWithApi(
+      <ConsolePage />,
+      baseMocks([device({ label: 'Galaxy A15', number: null })], {}, { '/api/command-runs': () => ({ status: 201, body: runCreateResponse() }) }),
+    )
+    await waitFor(() => expect(getAllByText('Galaxy A15').length).toBeGreaterThan(0))
+    fireEvent.click(getAllByText('Galaxy A15')[0]!)
+    fireEvent.change(getByPlaceholderText('getprop ro.build.version.release'), { target: { value: 'getprop ro.build.version.release' } })
+    fireEvent.click(getByRole('button', { name: 'Run' }))
+    await waitFor(() => expect(getByText(/1 pending/)).toBeTruthy())
+
+    const report = within(byTestId('run-report'))
+    expect(report.getByText('Galaxy A15')).toBeTruthy()
+    expect(report.queryAllByText(/#/).length).toBe(0)
   })
 })

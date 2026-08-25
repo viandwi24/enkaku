@@ -63,7 +63,19 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
       <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{localException.message}</p>
       {localException.uncoveredDevices.length > 0 && (
         <p className="text-[12px] text-fg-muted">
-          {/* `label` alone is useless once a farm has more than one device of the same model — the owner's own farm printed "SM-F721U1, SM-F721U1, SM-F721U1" here. `address` is what a candidate rule's src-address actually has to cover. */}
+          {/*
+            `label` alone is useless once a farm has more than one device of
+            the same model — the owner's own farm printed "SM-F721U1,
+            SM-F721U1, SM-F721U1" here. `address` is what a candidate rule's
+            src-address actually has to cover, and since plan 124 step 124.7
+            the `label` this route returns ALREADY carries the device number
+            (`service/handlers.ts`'s `knownDeviceAddresses`, composed with
+            `shared.ts`'s `deviceNameWithNumber`), so this line reads
+            "#7 SM-F721U1 (192.168.10.15)". It is deliberately NOT re-composed
+            here: the number arrives inside `label`, and wrapping it again
+            would print `#7 #7 SM-F721U1` — the exact double-naming plan 124's
+            own §10 notes record from `MirrorMember`.
+          */}
           Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => `${d.label} (${d.address})`).join(', ')}</span>
         </p>
       )}

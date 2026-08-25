@@ -228,16 +228,23 @@ describe('createSession — text-input keyboard (plan 90 §3.2, §4.5, §5 step 
     await session.close()
   })
 
-  test('a wired agent advertising text-input: ime enable+set run at session start, and session.textInput reflects the outcome', async () => {
+  test('a wired agent advertising text-input: ime enable+set run once the setup is awaited, and session.textInput reflects the outcome', async () => {
     const { client, calls } = recordingClient()
     const { runner } = fakeGuestAgent(['text-input'])
     const session = await createSession(
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
       { client, log: silentLog(), withGuestAgentClient: runner },
     )
+    // Plan 125 §3.8, step 125.8 — this used to be true the moment
+    // `createSession` resolved. It is now deliberately NOT: the whole point of
+    // the step is that nothing about the keyboard sits between the operator's
+    // click and the first frame.
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+    await session.whenTextInputReady?.()
     expect(calls).toContain(`ime enable ${ENKAKU_IME_COMPONENT_ID}`)
     expect(calls).toContain(`ime set ${ENKAKU_IME_COMPONENT_ID}`)
     expect(session.textInput.agentCapabilities).toEqual(['text-input'])
+    expect(session.textInput.imeCurrent).toBe(false) // the fake device reports no default_input_method to read back
     await session.close()
   })
 
@@ -258,6 +265,7 @@ describe('createSession — text-input keyboard (plan 90 §3.2, §4.5, §5 step 
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
       { client, log: silentLog(), withGuestAgentClient: runner },
     )
+    await session.whenTextInputReady?.() // plan 125 step 125.8 — deferred; there is nothing to restore until it has run
     calls.length = 0
     await session.close()
     const restoresAfterFirstClose = calls.filter((c) => c === 'ime set com.google.android.inputmethod.latin/.LatinIME').length
@@ -516,5 +524,289 @@ describe('screencap-loop fallback retry (plan 100 §4.3, step 100.6)', () => {
     await retryCalls[0]!.fn()
     expect(makeScrcpyCalls).toBe(1) // the retry itself never ran
     expect(session.displayEngineId).toBe('screencap-loop')
+  })
+})
+
+/**
+ * **Plan 125 §3.7, §4.5, §5 step 125.7 — acceptance criterion 11**: *"`wakeDevice`
+ * runs at most once per session start, and zero times for a device already awake
+ * or hot — asserted by a test that counts the calls."*
+ *
+ * What was wrong (plan 125 §0.7): a cold `stream.start` ran the wake block
+ * TWICE, serially — `ws-handlers.ts`'s `readiness.hold(deviceId, 'viewer')` →
+ * `ensureAwake` → `wakeDevice`, then `sessions.acquire` → `createSession` →
+ * `wakeDevice` again. `svc power stayon` alone was measured at 1422 ms (plan 96
+ * §22), so ≈3.2 s burned before `starting-video` was even entered.
+ *
+ * `wakeDevice` is counted by the commands it — and only it — issues in this
+ * file's paths: `input keyevent KEYCODE_WAKEUP` fires on every non-`off` call
+ * and nothing else in a session build sends it, and `readPowerState`'s
+ * `settings get` pair is its first act. Counting the commands rather than
+ * spying on the function keeps the assertion about what reaches the PHONE,
+ * which is what the sealed-box constraint (§0.2) actually cares about.
+ */
+describe('createSession — one wake per session start (plan 125 §3.7, §5 step 125.7, acceptance #11)', () => {
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  /** How many times `wakeDevice` ran, read off the wire rather than a spy. */
+  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length
+
+  test('the baseline: a device nothing is holding awake gets EXACTLY ONE wake, never zero', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always' },
+      { client, log: silentLog() },
+    )
+    expect(wakeCount(calls)).toBe(1)
+    expect(calls).toContain('svc power stayon true')
+    await session.close()
+  })
+
+  test('skipWake: the readiness manager already holds this device awake — ZERO wakes reach the phone', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always', skipWake: true },
+      { client, log: silentLog() },
+    )
+    expect(wakeCount(calls)).toBe(0)
+    // Every part of the wake sequence, not just the nudge: the `settings get`
+    // readback pair and the 1422 ms `svc` call are the expensive halves.
+    expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+    expect(calls.some((c) => c.startsWith('settings get global stay_on_while_plugged_in'))).toBe(false)
+    expect(calls.some((c) => c.startsWith('settings get system screen_off_timeout'))).toBe(false)
+    await session.close()
+  })
+
+  /**
+   * The safety half, and the reason this is a REMOVAL of adb writes rather than
+   * a reordering of them (§0.2): a session that never claimed `stayon` must
+   * never release it. Releasing a hold this session did not take would hand a
+   * boxed phone's screen back to its own timeout out from under the readiness
+   * manager that IS holding it — and nobody can reach that phone to wake it.
+   */
+  test('skipWake: close() does NOT release a stayon hold this session never took', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always', skipWake: true },
+      { client, log: silentLog() },
+    )
+    await session.close()
+    expect(calls).not.toContain('svc power stayon false')
+  })
+
+  test('without skipWake, close() still releases its own hold exactly as before this plan', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always' },
+      { client, log: silentLog() },
+    )
+    await session.close()
+    expect(calls).toContain('svc power stayon false')
+  })
+
+  /**
+   * Plan 100 §4.2's fast path is unchanged by 125.7 and must stay that way:
+   * `skipDevicePrep` has always implied "do not wake, do not release", and the
+   * new flag folds into it rather than competing with it.
+   */
+  test('skipDevicePrep still implies skipWake, both at open and at close (plan 100 §4.2 regression)', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always', skipDevicePrep: true },
+      { client, log: silentLog() },
+    )
+    expect(wakeCount(calls)).toBe(0)
+    await session.close()
+    expect(calls).not.toContain('svc power stayon false')
+  })
+
+  test('keepAwake: "off" is still opted out entirely, with or without skipWake', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'off' },
+      { client, log: silentLog() },
+    )
+    expect(wakeCount(calls)).toBe(0)
+    await session.close()
+    expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+  })
+})
+
+/**
+ * **Plan 125 §3.8, §4.5, §5 step 125.8 — acceptance criterion 12**:
+ * *"`applyTextInput` no longer blocks the first frame; a device with no guest
+ * agent still reaches `ready` and still streams."*
+ *
+ * The cost being removed (§0.7's table): `applyTextInput` ran on EVERY ordinary
+ * session build (`prep.textInput` defaults to `'auto'`) and triggers a full
+ * guest-agent app bootstrap — 3 `appops` calls, an `am start` with a ~500 ms
+ * measured handover, an 8 × 500 ms `hello()` ladder, up to three full pairing
+ * rounds, then 4 more `ime`/`settings` calls — all of it between the operator's
+ * click and the first frame, for a keyboard nobody had asked to use yet.
+ */
+describe('createSession — the guest-agent bootstrap is off the critical line (plan 125 §3.8, §5 step 125.8, acceptance #12)', () => {
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        if (cmd === 'settings get secure default_input_method') {
+          return { stdout: 'com.google.android.inputmethod.latin/.LatinIME', stderr: '', exitCode: 0 }
+        }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  /** A `GuestAgentClientRunner` whose `hello()` can be made slow, so "in flight" is a state a test can stand in. */
+  function fakeGuestAgent(opts: { helloDelayMs?: number } = {}): { runner: GuestAgentClientRunner } {
+    const client = {
+      hello: async () => {
+        if (opts.helloDelayMs) await Bun.sleep(opts.helloDelayMs)
+        return { protocol: 1, appVersion: '1.0', androidSdkInt: 34, capabilities: ['text-input'] }
+      },
+      textCommit: async (text: string) => ({ committed: [...text].length, ime: 'current' as const }),
+    } as unknown as GuestAgentClient
+    return { runner: (fn) => fn(client) }
+  }
+
+  /** A minimal fake `ScrcpySession` whose packets a test can emit by hand — the same shape the fallback-retry block above uses. */
+  function fakeScrcpySession(): { session: ScrcpySession; emitFrame: () => void } {
+    let packetCb: ((p: { kind: string; data: Uint8Array }) => void) | null = null
+    const session = {
+      meta: { deviceName: 'test phone', codec: 'h264', width: 704, height: 1600 },
+      onPacket: (cb: (p: { kind: string; data: Uint8Array }) => void) => {
+        packetCb = cb
+      },
+      onMetaChange: () => {},
+      onClose: () => {},
+      control: {
+        injectTouch: () => {},
+        injectKeycode: () => {},
+        injectText: () => {},
+        uhidCreate: () => {},
+        uhidInput: () => {},
+        uhidDestroy: () => {},
+        setDisplayPower: () => {},
+        resetVideo: () => {},
+        getClipboard: async () => '',
+        setClipboard: async () => {},
+      },
+      close: async () => {},
+    } as unknown as ScrcpySession
+    return { session, emitFrame: () => packetCb?.({ kind: 'keyframe', data: new Uint8Array([1, 2, 3]) }) }
+  }
+
+  test('nothing about the keyboard is issued before the session is returned — the whole point of the step', async () => {
+    const { client, calls } = recordingClient()
+    const { runner } = fakeGuestAgent()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), withGuestAgentClient: runner },
+    )
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+    expect(calls).not.toContain('settings get secure default_input_method')
+    await session.close()
+  })
+
+  test('the first frame is what starts it: `ready` is reported, and the bootstrap follows behind the picture', async () => {
+    const { client, calls } = recordingClient()
+    const { runner } = fakeGuestAgent()
+    const { session: scrcpy, emitFrame } = fakeScrcpySession()
+    const phases: string[] = []
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), withGuestAgentClient: runner, makeScrcpy: async () => scrcpy, onPhase: (p) => phases.push(p) },
+    )
+    await session.display.start()
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+
+    emitFrame()
+    expect(phases).toContain('ready') // the picture is up FIRST — synchronously with the frame
+    await session.whenTextInputReady?.() // then, and only then, the keyboard
+    expect(calls).toContain(`ime set ${ENKAKU_IME_COMPONENT_ID}`)
+    await session.close()
+  })
+
+  /**
+   * Acceptance criterion 12's second half, and the reason
+   * `whenTextInputReady()` starts the work rather than merely awaiting it: a
+   * session whose display never produces a frame must not leave a script
+   * blocked forever on a bootstrap nothing ever kicked off.
+   */
+  test('a session that never sees a frame still sets the keyboard up on demand', async () => {
+    const { client, calls } = recordingClient()
+    const { runner } = fakeGuestAgent()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), withGuestAgentClient: runner },
+    )
+    await session.whenTextInputReady?.()
+    expect(calls).toContain(`ime set ${ENKAKU_IME_COMPONENT_ID}`)
+    expect(session.textInput.agentCapabilities).toEqual(['text-input'])
+    await session.close()
+  })
+
+  test('the setup is start-once: a second whenTextInputReady() does not re-run the bootstrap', async () => {
+    const { client, calls } = recordingClient()
+    const { runner } = fakeGuestAgent()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), withGuestAgentClient: runner },
+    )
+    await session.whenTextInputReady?.()
+    await session.whenTextInputReady?.()
+    expect(calls.filter((c) => c === `ime set ${ENKAKU_IME_COMPONENT_ID}`).length).toBe(1)
+    await session.close()
+  })
+
+  /**
+   * The window 125.8 opened, and the reason `revertTextInput` awaits an
+   * in-flight setup before reverting: `close()` can now land mid-bootstrap, and
+   * a revert of the not-yet-applied no-op would leave the agent's IME pinned as
+   * the device's default input method PERMANENTLY — a device-scoped setting
+   * outliving the session that made it, on a phone in a sealed box (§0.2).
+   */
+  test('close() racing an in-flight bootstrap still restores the device’s own IME', async () => {
+    const { client, calls } = recordingClient()
+    const { runner } = fakeGuestAgent({ helloDelayMs: 20 })
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), withGuestAgentClient: runner },
+    )
+    void session.whenTextInputReady?.() // deliberately NOT awaited — the setup is still running
+    await session.close()
+    expect(calls).toContain('ime set com.google.android.inputmethod.latin/.LatinIME')
+  })
+
+  test('a device with no guest agent still streams and still reaches ready, and never blocks on a bootstrap it has no agent for', async () => {
+    const { client, calls } = recordingClient()
+    const { session: scrcpy, emitFrame } = fakeScrcpySession()
+    const frames: number[] = []
+    const phases: string[] = []
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), makeScrcpy: async () => scrcpy, onFrame: (chunk) => frames.push(chunk.byteLength), onPhase: (p) => phases.push(p) },
+    )
+    await session.display.start()
+    emitFrame()
+    expect(phases).toContain('ready')
+    expect(frames).toEqual([3])
+    await session.whenTextInputReady?.()
+    expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
+    expect(session.textInput.agentCapabilities).toBeNull()
+    await session.close()
   })
 })

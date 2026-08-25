@@ -5,7 +5,7 @@ import { Check, Search } from 'lucide-react'
 import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
 import { HolderBadge } from '@/components/HolderBadge'
-import { Input, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
+import { DeviceName, Input, Tooltip, TooltipContent, TooltipTrigger, cn, matchesDeviceQuery } from '@enkaku/ui'
 import { UNAVAILABLE_REASON } from '@/components/device-popup/ControlState'
 
 /**
@@ -72,22 +72,24 @@ export function DevicePicker(props: DevicePickerProps) {
   }, [devices])
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
     return devices.filter((d) => {
+      // The tag CHIP is a different control from the search box and stays
+      // here: it is an exact, single-tag toggle driven by `toggleTag` below
+      // (which also bulk-selects in `multiple` mode), not a text match, so
+      // `matchesDeviceQuery`'s substring tag matching would be the wrong
+      // predicate for it.
       if (activeTag && !d.tags.includes(activeTag)) return false
-      if (!q) return true
-      // A bare digit or a `#`-prefixed one both match the number (plan 89
-      // §3.3: "typing `7` matches `#7`") — an operator standing in front of
-      // a phone reads the number off it, not off the label. `?? null`
-      // guards a hand-built test fixture that omits the field (undefined).
-      const number = d.number ?? null
-      const numberMatch = number !== null && (String(number) === q.replace(/^#/, '') || `#${number}` === q)
-      return (
-        numberMatch ||
-        d.label.toLowerCase().includes(q) ||
-        d.stableId.toLowerCase().includes(q) ||
-        d.tags.some((t) => t.includes(q))
-      )
+      // Plan 124 §4.1, step 124.2 — the four-way match (number both bare and
+      // `#`-prefixed, label, stableId, tag) used to be written out right
+      // here, and this file was the ONLY place in the product that had it.
+      // Every other device list grew its own near-miss or none at all, which
+      // is the gap plan 124 exists to close: the predicate now lives in
+      // `@enkaku/ui` so the Mikrotik assignments table, the Proxy Manager
+      // table, the agent device-grant list and the cluster members dialog
+      // all behave identically to this picker instead of approximating it.
+      // Behaviour here is unchanged but for one strict widening documented
+      // in `matchesDeviceQuery` itself: a tag now matches case-insensitively.
+      return matchesDeviceQuery(d, query)
     })
   }, [devices, query, activeTag])
 
@@ -221,13 +223,17 @@ export function DevicePicker(props: DevicePickerProps) {
           <div className="flex items-center gap-2">
             {/* The number leads, composed beside the label — never baked
                 into it (plan 89 §3.3). `null` only for a device whose
-                reservation was explicitly released. */}
-            {d.number !== null && d.number !== undefined && (
-              <span className="readout shrink-0 text-[11px] text-fg-subtle" aria-hidden="true">
-                #{d.number}
-              </span>
-            )}
-            <span className="truncate text-[13px] font-medium">{d.label}</span>
+                reservation was explicitly released.
+                Plan 124 §4.2, step 124.2 — this pair of spans was the
+                REFERENCE the shared `<DeviceName>` was lifted from, so it
+                now uses it rather than remaining a fourth private copy of
+                the same markup. `gap-2` keeps this row's own slightly wider
+                spacing (the component defaults to `gap-1.5`), and the
+                number is no longer `aria-hidden`: §4.2 is explicit that the
+                number IS the identity here — it is the only thing telling
+                three rows a screen reader would otherwise announce as
+                "SM-F721U1" apart. */}
+            <DeviceName number={d.number} label={d.label} className="gap-2 text-[13px] font-medium" />
             <DeviceStatusBadge status={d.status} />
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">

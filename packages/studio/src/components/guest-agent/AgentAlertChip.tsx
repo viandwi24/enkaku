@@ -2,7 +2,7 @@
 
 import { TriangleAlert } from 'lucide-react'
 import type { AgentState } from '@enkaku/protocol'
-import { Popover, PopoverContent, PopoverTrigger, cn } from '@enkaku/ui'
+import { Popover, PopoverContent, PopoverTrigger, cn, formatDeviceName } from '@enkaku/ui'
 import { AgentAlertDetail } from '@/components/guest-agent/AgentAlertDetail'
 
 /**
@@ -40,12 +40,27 @@ export function AgentAlertChip({
   agent,
   deviceId,
   deviceLabel,
+  deviceNumber,
   className,
 }: {
   agent: AgentState
   deviceId: string
-  /** For the panel's own outcome sentences ("The guest agent is ready on moto g06 now."). */
+  /** For the panel's own outcome sentences ("The guest agent is ready on moto g06 now."). Bare — never pre-composed with `#N`; pass `deviceNumber` instead. */
   deviceLabel: string
+  /**
+   * The device's number (plan 89 §3.1), composed with `deviceLabel` for the
+   * panel below — plan 124 §4.4 Group B.
+   *
+   * A separate prop rather than asking every caller to pass a pre-composed
+   * string, for the reason plan 124 §3.1 gives generally and which bites here
+   * specifically: all three callers (`DeviceCard`, `DeviceHeader`,
+   * `DevicePopup`) hold a `DeviceInfo` and would each have written their own
+   * `#${n} ${label}`, which is precisely the drift this plan exists to end.
+   * Optional and nullable: a device whose reservation was released, and a
+   * caller that predates the field, both get the bare label and never `#null`
+   * (plan 124 criterion 7).
+   */
+  deviceNumber?: number | null
   className?: string
 }) {
   /**
@@ -109,7 +124,10 @@ export function AgentAlertChip({
         collisionPadding={12}
         className="max-h-(--radix-popover-content-available-height) w-[26rem] max-w-[calc(100vw-2rem)] overflow-y-auto"
       >
-        <AgentAlertDetail deviceId={deviceId} deviceLabel={deviceLabel} fallbackState={agent} />
+        {/* Plan 124 §4.4 — `AgentAlertDetail`'s `deviceLabel: string` prop is
+            deliberately NOT widened into an object; the composition happens
+            here, at the caller, exactly once. */}
+        <AgentAlertDetail deviceId={deviceId} deviceLabel={formatDeviceName(deviceNumber, deviceLabel)} fallbackState={agent} />
       </PopoverContent>
     </Popover>
   )

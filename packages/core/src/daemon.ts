@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
-import { ADB_TIMEOUTS, AdbClient, createAdbdShim, Semaphore, type AdbTimeoutProfile } from '@enkaku/adb'
+import { ADB_TIMEOUTS, AdbClient, createAdbdShim, pushFile as pushFileOverSync, Semaphore, type AdbTimeoutProfile } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
 import {
@@ -141,6 +141,7 @@ import { runTransfer, type TransferBroadcast } from './device/transfer-dispatch'
 import { createTransferRegistry } from './device/transfer-registry'
 import { createTransferRegistryRoutes } from './api/transfers'
 import { createReadinessManager, staticReadinessFallback, type ReadinessManager } from './device/readiness'
+import { createAwakePolicy } from './device/awake-policy'
 import { createDeviceLifecycle } from './device/lifecycle'
 import { createPairingService, type PairingService } from './enroll/pairing'
 import { EnkakuError } from './util/errors'
@@ -170,7 +171,7 @@ import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
 import { createSweeper, type Sweeper } from './registry/sweep'
 import { createCutoverManager, type CutoverManager } from './registry/cutover'
-import { formatDeviceLabel, loadDeviceNumbers } from './registry/device-number'
+import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './registry/device-number'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler, type InputStatsBlock } from './server/ws-handlers'
@@ -553,10 +554,19 @@ let blobGc: BlobGc | null = null
           if (!reconnector) return { attempted: 0, succeeded: 0, failed: [] }
           const reconnectorRef = reconnector
           const targets = endpoints.allWithEndpoints()
-          const labelFor = (stableId: string): string =>
-            db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()?.label ?? stableId
+          // The number rides alongside the label (plan 124 §3.1, §3.7) rather
+          // than being composed into it here: the report is rendered by
+          // `AdbRestartDialog`, and a pre-composed string would double up the
+          // moment that dialog also holds a `DeviceInfo` — the failure plan
+          // 124 §10 records against `MirrorMember`. One row per failed
+          // reattach, so a per-row lookup is bounded by the failure count,
+          // not by the fleet size.
+          const namedFor = (stableId: string): { label: string; number: number | null } => {
+            const row = db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()
+            return { label: row?.label ?? stableId, number: lookupDeviceNumber(db, stableId) }
+          }
           let succeeded = 0
-          const failed: Array<{ stableId: string; label: string }> = []
+          const failed: Array<{ stableId: string; label: string; number: number | null }> = []
           const REATTACH_CONCURRENCY = 6
           const queue = [...targets]
           async function worker(): Promise<void> {
@@ -570,7 +580,7 @@ let blobGc: BlobGc | null = null
                   return { result: 'not-found' }
                 })
               if (outcome.result === 'connected' || outcome.result === 'already-connected') succeeded += 1
-              else failed.push({ stableId: next.stableId, label: labelFor(next.stableId) })
+              else failed.push({ stableId: next.stableId, ...namedFor(next.stableId) })
             }
           }
           await Promise.all(Array.from({ length: Math.min(REATTACH_CONCURRENCY, targets.length) }, () => worker()))
@@ -1119,6 +1129,16 @@ let blobGc: BlobGc | null = null
           // acquire/release, since any of them can change whether a standing
           // `desired: hot` device is still reachable. Cheap and idempotent —
           // reconciling on every transition is simplest to reason about.
+          //
+          // Plan 125 §4.4 raised the stakes on ONE of those transitions:
+          // `DEVICE_CONNECTED` (offline→idle). `readiness.reconcile`'s offline
+          // branch drops its keep-awake bookkeeping when a device disappears,
+          // so this line is the ONLY thing that re-wakes a `desired: 'awake'`
+          // device when it comes back — and since 125.2 flipped the default to
+          // `'awake'`, that is now every device on a fresh farm. Without it a
+          // momentary blip leaves a phone dark permanently, and the owner's
+          // phones are sealed in a box with no hand to wake them (§0.2). Do
+          // not narrow this to a subset of transitions.
           void readiness?.reconcile(deviceId)
         },
       })
@@ -1832,6 +1852,22 @@ let blobGc: BlobGc | null = null
           labellingRef?.clear(deviceId, { restoreOriginal: false, actor }).then(() => undefined) ?? Promise.resolve(),
       })
 
+      // The awake policy (plan 125 §4.1, §5 step 125.3) — built immediately
+      // before the readiness manager below, which is its only production
+      // caller. `client: () => adb` is the same adb-not-ready-yet-safe
+      // accessor every module in this function uses, so constructing it this
+      // early costs nothing and touches no device.
+      //
+      // This wiring is what makes §3.3's PERSISTED writes live. Without it
+      // `readiness.ts`'s `awakePolicy` dep stays undefined and `ensureAwake`
+      // deliberately withholds the `screen_off_timeout` write — because §0.2's
+      // first rule is that nothing may be written to a boxed phone without its
+      // original having been captured first, and this object owns the capture.
+      // So the practical effect of wiring it is exactly the thing plan 125
+      // exists for: a phone that stays awake across a core restart, when no
+      // core is running to hold it.
+      const awakePolicy = createAwakePolicy({ db, client: () => adb, log: log.child('awake-policy') })
+
       // Device readiness (plan 43): a second, orthogonal axis to
       // `DeviceStatus` (§3.1) — constructed here, once `leases` exists,
       // using the same lazy-accessor forward-ref pattern every other
@@ -1844,6 +1880,7 @@ let blobGc: BlobGc | null = null
         sessions: () => sessions,
         leases,
         maxHot: () => settingsStore.get().readiness.maxHot,
+        awakePolicy: () => awakePolicy,
         // Cloud/node-owned devices are out of scope for this plan (§2, §9
         // open question #2) — never attempt a local wake/session acquire
         // against one.
@@ -3734,6 +3771,22 @@ let blobGc: BlobGc | null = null
           // farm-wide build lane's cap, read fresh on every acquire like
           // every other accessor above.
           maxConcurrentBuilds: () => settingsStore.get().session.maxConcurrentBuilds,
+          // Plan 125 §3.7, step 125.7 — the readiness manager is the ONE authority on whether
+          // this phone's screen is already being held awake, so `createSession` stops calling
+          // `wakeDevice` blindly.
+          //
+          // What this removes, measured: on a cold device the wake block used to run TWICE,
+          // serially — once here in `readiness.hold` (`ws-handlers.ts`, `ensureAwake`) and again
+          // inside `createSession` — and `svc power stayon` alone is 1422 ms on real hardware
+          // (`docs/plans/96-m61-hotfixes.md:2517`). Plan 96 recorded the duplication as "not
+          // fixed" (`:2540`); this is the fix. Since plan 125 §3.1 flipped `defaultDesired` to
+          // `awake`, the zero-wake case is now the COMMON path on a real farm, not the rare one.
+          //
+          // Written the long way ON PURPOSE. `readiness?.actual(deviceId) !== 'asleep'` reads
+          // `undefined !== 'asleep'` — i.e. `true` — while readiness is still unset during early
+          // boot, which would skip the wake on exactly the builds that most need it. A missing
+          // readiness manager must mean "wake it", never "assume it is awake".
+          deviceIsAwake: (deviceId) => (readiness ? readiness.actual(deviceId) !== 'asleep' : false),
           // Plan 91 §4.1, §4.5 — the input arbiter's bounded-queue budget, read fresh on every
           // submission (docs/plans/96-m61-hotfixes.md §96.13: before this fix `SessionManagerDeps`
           // had no field to receive these at all, so every session ran the plan's own hardcoded
@@ -3765,6 +3818,42 @@ let blobGc: BlobGc | null = null
                 exec: (cmd) => transport.exec(cmd, { profile: 'default' }).then((r) => r.stdout),
                 hostAdb: hostAdbHandle.run,
                 spawnLongLived: hostAdbHandle.spawnLongLived,
+                // Plan 125 §3.9, step 125.9 — the video path joins the protocol
+                // path plan 119 built. Every scrcpy session used to spawn FOUR
+                // `adb.exe` children (`push`, `shell`, `forward`, `forward
+                // --list`) plus a fifth on close (`forward --remove`); the four
+                // that are not the long-lived server shell become zero here.
+                // Plan 119 wired exactly this trio into the guest-agent and
+                // ui-server launchers and left `makeScrcpy` on `hostAdb.run`,
+                // which made video the one hot path that never got the
+                // optimisation — on Windows, the owner's host, process creation
+                // is measurably the most expensive kind of work in this list
+                // (plan 118 §0.2).
+                //
+                // The jar push rides the same adb socket via the `sync:`
+                // service (`transfer.ts`'s `install()` has used exactly this
+                // for APKs since plan 39). It is still a full push on every
+                // session — plan 100 G13, see `AdbExecutor.push`'s comment —
+                // only without the process around it.
+                //
+                // Deleting any one of these four lines puts that command back
+                // on `hostAdb.run` with no other change: `@enkaku/scrcpy` keeps
+                // the CLI path alive behind an `if` for exactly that reason
+                // (plan 125 §8), and `packages/node/src/hosts.ts` still runs on
+                // it today.
+                push: async (localPath, remotePath) => {
+                  const stream = await adbClient.openRaw(transport.serial, 'sync:')
+                  try {
+                    await pushFileOverSync(stream, { localPath, remotePath })
+                    stream.close()
+                  } catch (err) {
+                    stream.close(true)
+                    throw err
+                  }
+                },
+                forward: (serial, local, remote) => adbClient.forward(serial, local, remote),
+                listForward: () => adbClient.listForward(),
+                killForward: (serial, local) => adbClient.killForward(serial, local),
               },
               {
                 jarPath,
@@ -4286,6 +4375,16 @@ let blobGc: BlobGc | null = null
         void preparationRunner
           .ensureAll()
           .catch((err) => log.warn(`preparation-runner boot sweep failed, tolerated: ${String(err)}`))
+        // Plan 125 §4.4, step 125.3 — the readiness boot sweep: every device
+        // whose `desired` is not `asleep` is reconciled once, here, so a farm
+        // that was awake before a core restart is awake again after it.
+        //
+        // Placed with the two sweeps above for the identical boot-ordering
+        // reason (§96.25 fix 1, plan 106 §3.5): only past `adbState = 'ready'`
+        // is `adb` genuinely non-null, and a sweep that ran earlier would find
+        // no transport and wake nothing. It is fire-and-forget and bounded
+        // inside `readiness.start()` itself, not here.
+        readiness?.start()
       } catch (err) {
         adbState = 'error'
         // The core stays up: the tools API can still be used to retry the install.
@@ -4323,6 +4422,10 @@ let blobGc: BlobGc | null = null
       health = null
       adbHealthMonitor?.stop()
       adbHealthMonitor = null
+      // Plan 125 §4.4 — no timer to clear (this module has none); this is what
+      // tells a boot sweep still walking the farm to stop waking phones the
+      // core is about to stop talking to.
+      readiness?.stop()
       retention?.stop()
       retention = null
       blobGc?.stop()

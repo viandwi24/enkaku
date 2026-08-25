@@ -447,6 +447,23 @@ describe('the device number in the title (plan 89 §3.3, §5 step 89.3)', () => 
     // The underlying field is untouched — only the title string composes them.
     expect(device.label).not.toContain('#7')
   })
+
+  /**
+   * Plan 124 §4.4 Group B, step 124.2 — the title above was one of the four
+   * render sites in the whole web UI that had this right; everything else on
+   * this same header named the device by its bare `label`. The composition is
+   * now hoisted into one `deviceName` const the header reads everywhere, so
+   * these two assertions are what stop a second spelling reappearing.
+   */
+  test('the "More actions" menu is labelled with the number too, not the bare label', () => {
+    const labels = ariaLabels(render({ device: { ...device, number: 7 }, onRemove: () => undefined }))
+    expect(labels).toContain(`More actions for #7 ${device.label}`)
+  })
+
+  test('a device with no number labels that menu with the bare label — no `#`, no `#null` (criterion 7)', () => {
+    const labels = ariaLabels(render({ onRemove: () => undefined })).filter((l) => l.startsWith('More actions for'))
+    expect(labels).toEqual([`More actions for ${device.label}`])
+  })
 })
 
 describe('engineName', () => {

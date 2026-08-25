@@ -92,6 +92,45 @@ export const BlockedDeviceSchema = z.object({
 })
 export const DevicesBlockedResponseSchema = z.object({ blocked: z.array(BlockedDeviceSchema) })
 
+/**
+ * One resolved device reference — `GET /api/devices/refs?ids=a,b,c` (plan 47
+ * §4.5, plan 124 §3.7).
+ *
+ * A job, batch, schedule or recording keeps a plain `deviceId` long after the
+ * device it points at was forgotten (plan 47 §3.4), so any UI rendering one
+ * needs something a human can read rather than a bare uuid. `deleted: true`
+ * means the row came from `deleted_devices` — the device is gone, but the
+ * reference is still legitimate and must still be nameable.
+ *
+ * `number` (plan 124 §3.7) is the device's reservation from `device_numbers`,
+ * or `null` for a device that never had one (or whose number was explicitly
+ * released — plan 89 §3.2's "a missing number is a real state, not an
+ * error"). It rides here rather than being pre-composed into `label` for the
+ * reason plan 124 §3.1 states as the whole rule of that plan: the number
+ * COMPOSES with the label at render time and never enters it — nothing
+ * writes `#7` into `devices.label`, and nothing parses it back out. Studio's
+ * `deviceRefLabel` (`packages/studio/src/lib/api.ts`) calls itself "the one
+ * place this formatting rule lives"; it could not obey the rule while the
+ * only wire shape it reads carried no number at all.
+ *
+ * A DELETED device keeps its number here too, deliberately: `device_numbers`
+ * is keyed on `stableId` and `forget()` leaves the reservation in place
+ * (plan 89 §3.2's sticky guarantee), so `#7 Old Phone` stays `#7 Old Phone`
+ * in a job's history rather than losing half its identity the moment the
+ * device leaves the farm.
+ */
+export const DeviceRefSchema = z.object({
+  id: z.string(),
+  label: z.string().nullable(),
+  stableId: z.string(),
+  deleted: z.boolean(),
+  number: z.number().int().nullable(),
+})
+export type DeviceRef = z.infer<typeof DeviceRefSchema>
+
+/** `GET /api/devices/refs?ids=…` — a MAP keyed by the requested id, not an array: an id neither table knows is simply absent (never a null entry, and never an error — a caller resolving twenty references should not lose nineteen to one dangling one). */
+export const DeviceRefsResponseSchema = z.object({ refs: z.record(z.string(), DeviceRefSchema) })
+
 /** `GET /api/devices/:id/viewers`. */
 export const DeviceViewersResponseSchema = z.object({ viewers: z.array(ViewerSchema) })
 
@@ -884,7 +923,26 @@ export type DevicePrepPatch = z.infer<typeof DevicePrepPatchSchema>
  * is deliberately not bulk-settable.
  */
 const _prepPatchIsASubsetOfPrep: (patch: DevicePrepPatch) => Partial<DeviceSettings['prep']> = (patch) => patch
-type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey> extends never
+/**
+ * **`screenOffTimeoutMs` is deliberately not bulk-settable (yet)** — the guard
+ * below offers exactly this choice, and this is the documented half of it.
+ *
+ * It is a genuinely good candidate for a bulk apply: plan 125's whole subject
+ * is a twelve-plus device farm sealed in a box, where doing anything one
+ * device at a time is the problem. It is excluded here only because the bulk
+ * surface is not just a schema — `BulkPrepDialog` renders one control per key
+ * and its `Record<DevicePrepKey, …>` maps make a new key a compile error
+ * there, and a numeric/nullable duration is the first key in this list that is
+ * not a checkbox or a small enum. Adding it is a Studio change with a real
+ * design question in it (what does "leave it alone" look like next to a
+ * number field?), not a line in this file, so plan 125 step 125.1/125.2 left
+ * it out rather than shipping half of it.
+ *
+ * Nothing is blocked by the omission: `PATCH /api/devices/:id` sets it per
+ * device today, and the farm-wide default (`DeviceSettingsSchema.prep`) is
+ * what every newly admitted device picks up.
+ */
+type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey | 'screenOffTimeoutMs'> extends never
   ? true
   : 'a prep setting is missing from DEVICE_PREP_KEYS — add it, or document why it is not bulk-settable'
 const _everyPrepKeyIsCovered: _EveryPrepKeyIsCovered = true

@@ -91,6 +91,35 @@ describe('DevicePicker — the device number (plan 89 §3.3, §5 step 89.3)', ()
     expect(screen.getByText('unrelated name')).toBeTruthy()
     expect(screen.queryByText('moto g06 power')).toBeNull()
   })
+
+  /**
+   * Plan 124 §4.1, step 124.2 — this picker's own four-way filter now IS
+   * `matchesDeviceQuery` from `@enkaku/ui`, so every other device list in
+   * the product (Mikrotik, Proxy Manager, agent grants, cluster members)
+   * behaves identically instead of approximating it. The behaviour above is
+   * unchanged; the two cases below pin the one deliberate widening and the
+   * one property `DevicePicker` still owns.
+   */
+  test('typing `7` does NOT also match `#17` — the number match is exact, not a substring', () => {
+    const seven: DeviceInfo = { ...BASE_DEVICE, id: 'd2', stableId: 'stable-2', label: 'first phone', number: 7 }
+    const seventeen: DeviceInfo = { ...BASE_DEVICE, id: 'd3', stableId: 'stable-3', label: 'second phone', number: 17 }
+    renderWithApi(<DevicePicker devices={[seven, seventeen]} value="" onChange={() => {}} />)
+    fireEvent.change(screen.getByLabelText('Search devices'), { target: { value: '7' } })
+    expect(screen.getByText('first phone')).toBeTruthy()
+    expect(screen.queryByText('second phone')).toBeNull()
+  })
+
+  test('a tag matches case-insensitively — the one behaviour the shared predicate widened', () => {
+    // The old local copy lowercased the query but not the tag, so a tag
+    // written `pool:Smoke` was unfindable. Tags are lowercase by convention,
+    // which is why nobody hit it; the shared predicate fixes it rather than
+    // reproducing the near-miss.
+    const tagged: DeviceInfo = { ...BASE_DEVICE, id: 'd2', stableId: 'stable-2', label: 'tagged phone', tags: ['pool:Smoke'] }
+    renderWithApi(<DevicePicker devices={[BASE_DEVICE, tagged]} value="" onChange={() => {}} />)
+    fireEvent.change(screen.getByLabelText('Search devices'), { target: { value: 'smoke' } })
+    expect(screen.getByText('tagged phone')).toBeTruthy()
+    expect(screen.queryByText('moto g06 power')).toBeNull()
+  })
 })
 
 describe('DevicePicker — an offline device can still be given a job', () => {

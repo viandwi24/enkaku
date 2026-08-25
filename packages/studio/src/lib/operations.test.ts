@@ -60,6 +60,13 @@ mock.module('@enkaku/ui', () => ({
     if (body === undefined) return Promise.reject(new Error(`no mock for ${path}`))
     return Promise.resolve(body)
   },
+  // Plan 124 step 124.3 — `useOperations().deviceLabel` composes the device
+  // number now, so this module mock has to carry the real formatter. Copied
+  // (three lines) rather than re-exported from `@enkaku/ui`, because the whole
+  // point of the mock is that the real module is never loaded here: importing
+  // it to fill one field would drag in the React component tree this test
+  // deliberately avoids.
+  formatDeviceName: (number: number | null | undefined, label: string) => (number == null ? label : `#${number} ${label}`),
 }))
 
 let devicesResponse: DeviceInfo[] = []
@@ -453,7 +460,7 @@ describe('OperationsStore / useOperations — fetch on mount, follow WS events, 
     apiResponses['/api/jobs?limit=200'] = { items: [job({ jobId: 'j1', deviceId: 'd1', batchId: 'batch-1' })], nextCursor: null, total: 1 }
     apiResponses['/api/batches?limit=50'] = { items: [batch({})], nextCursor: null, total: 1 }
     apiResponses['/api/command-runs?limit=50'] = { items: [], nextCursor: null, total: 0 }
-    devicesResponse = [device('d1')]
+    devicesResponse = [device('d1', { number: 7, label: 'Galaxy A15' }), device('d2')]
 
     const store = new OperationsStore()
     const { result } = renderHook(() => useOperations(store))
@@ -461,7 +468,14 @@ describe('OperationsStore / useOperations — fetch on mount, follow WS events, 
 
     await waitFor(() => expect(result.current.operations).toHaveLength(1))
     expect(result.current.operations[0]?.key).toBe('batch:batch-1')
-    expect(result.current.deviceLabel('d1')).toBe('d1')
+    expect(result.current.deviceLabel('d1')).toBe('#7 Galaxy A15')
+    // Criterion 7 — a device with no number renders its bare label, never `#null`.
+    expect(result.current.deviceLabel('d2')).toBe('d2')
+    // Plan 124 §4.4, step 124.3 — the tray is visible on every screen, so its
+    // rows have to name the phone, not the model. A device WITH a number
+    // composes it; an id that is not in the snapshot at all stays bare rather
+    // than inventing a `#` for a device the store cannot see.
+    expect(result.current.deviceLabel('nope')).toBe('nope')
   })
 
   test('a running transfer on an uncovered device sends log.subscribe for THAT device only — never a farm-wide subscription', async () => {

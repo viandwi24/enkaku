@@ -19,7 +19,7 @@ import {
   type ScheduleInfo,
   type ScheduleRunInfo,
 } from '@enkaku/protocol'
-import { ConfirmDialog, ErrorState, LoadingRows, Button, TableCell, TableHead, api, useAction, relativeTime } from '@enkaku/ui'
+import { ConfirmDialog, ErrorState, LoadingRows, Button, TableCell, TableHead, api, formatDeviceName, useAction, relativeTime } from '@enkaku/ui'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -293,8 +293,18 @@ function ScheduleDetail() {
               </p>
             )}
             {!schedule.clusterId && (
+              // Plan 124 §4.4 Group D, step 124.4 — the explicit device list a
+              // schedule targets, joined into one sentence and therefore the
+              // `string` form of the rule (§3.2). A schedule can outlive the
+              // devices it names, so an unresolved id keeps its existing
+              // truncated-id fallback with no number attached to it.
               <p className="mt-2 text-[12px] text-fg-muted">
-                {schedule.deviceIds.map((id) => devices.find((d) => d.id === id)?.label ?? id.slice(0, 8)).join(', ')}
+                {schedule.deviceIds
+                  .map((id) => {
+                    const d = devices.find((dev) => dev.id === id)
+                    return d ? formatDeviceName(d.number, d.label) : id.slice(0, 8)
+                  })
+                  .join(', ')}
               </p>
             )}
           </div>

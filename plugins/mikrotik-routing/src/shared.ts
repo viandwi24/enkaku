@@ -308,3 +308,37 @@ export function writeAssignment(assignment: StoredAssignment): Record<string, un
 export function isAssignmentEmpty(assignment: StoredAssignment): boolean {
   return assignment.pathId === '' && assignment.lanIp === ''
 }
+
+// ---------------------------------------------------------------------------
+// Naming a device (plan 124 §3.1, §4.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * `#7 SM-F721U1`, or the bare label when the device has no number.
+ *
+ * **This is the service half's copy of `@enkaku/ui`'s `formatDeviceName`, and
+ * the duplication is deliberate rather than an oversight.** Plan 124 §4.1 put
+ * the one browser-side definition in `@enkaku/ui` precisely so Studio and
+ * every plugin screen compose a name with the same code — but `@enkaku/ui` is
+ * a React package that this plugin lists as a *dev* dependency and that
+ * `packages/sdk/src/cli/build-ui.ts`'s `UI_EXTERNALS` supplies to the UI
+ * bundle at runtime. `src/service/**` runs in the core's Bun process, where
+ * importing it would pull React and 30 components into a module that renders
+ * nothing. The core's own `formatDeviceLabel`
+ * (`packages/core/src/registry/device-number.ts`) is equally out of reach:
+ * a plugin may not import `@enkaku/core`.
+ *
+ * So this file — the one module both halves already share, and which by its
+ * own header imports nothing — carries the third copy of a five-token rule.
+ * All three must agree character for character, because the same device is
+ * named by a core log line, by this plugin's local-exception report and by
+ * the Assignments tab within seconds of each other, and an operator reading
+ * all three has to see one string.
+ *
+ * `null` and `undefined` are both "no number" and both render the bare label:
+ * a device whose reservation was released is a legitimate state, never an
+ * error, and must never print `#null` (plan 124 criterion 7).
+ */
+export function deviceNameWithNumber(number: number | null | undefined, label: string): string {
+  return number == null ? label : `#${number} ${label}`
+}

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { DeviceNetworkApplyResponseSchema, classifyDeviceNetworkApply, type ClusterInfo, type DeviceInfo, type DeviceNetworkApplyResult } from '@enkaku/protocol'
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, api, useAction } from '@enkaku/ui'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
-import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
+import { SkippedGroups, deviceNameIn, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
 import { parseHttpProxyUrl } from '@/components/guest-agent/HttpProxyFields'
 import { parseSocks5Url } from '@/components/guest-agent/VpnRouteFields'
@@ -125,7 +125,10 @@ export function BulkProxyDialog({
   const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
   const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
-  const deviceLabel = (id: string) => pool.find((d) => d.id === id)?.label ?? id
+  // Plan 124 §4.4, step 124.3 — the two-field form `NamedOutcome` carries, so
+  // the number stays apart from the label and `SkippedGroups` can dim it. The
+  // report below is this dialog's only device-naming site.
+  const deviceName = (id: string) => deviceNameIn(pool, id)
 
   // Re-default whenever the dialog OPENS (plan 104 §3.2) — never on every
   // render, which would stomp an operator's own edit the moment the device list
@@ -245,9 +248,9 @@ export function BulkProxyDialog({
     for (const r of results) {
       const outcome = classifyDeviceNetworkApply(r)
       if (outcome === 'failed' && r.error) {
-        failed.push({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: reasonText(r.error.code, r.error.message) })
+        failed.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: reasonText(r.error.code, r.error.message) })
       } else if (outcome === 'skipped' && r.skip) {
-        skipped.push({ deviceId: r.deviceId, label: deviceLabel(r.deviceId), reason: reasonText(r.skip.code, r.skip.message) })
+        skipped.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: reasonText(r.skip.code, r.skip.message) })
       } else {
         ok += 1
         // NOT a failure — the normal terminal state of both HTTP rungs. Counted

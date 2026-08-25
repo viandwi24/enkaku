@@ -1,4 +1,5 @@
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
+import { formatDeviceName } from '@enkaku/ui'
 
 /**
  * The command console's target-resolution PREVIEW (plan 93 §3.14 guard 1,
@@ -74,7 +75,19 @@ export function computeTargetPreview(devices: DeviceInfo[], target: CommandTarge
   return { matched, willAttempt, excluded, caution }
 }
 
-/** A short, human summary of a `CommandTarget` for a history row or a saved command — resolves labels when it can, falls back to the raw id/count otherwise. */
+/**
+ * A short, human summary of a `CommandTarget` for a history row or a saved
+ * command — resolves labels when it can, falls back to the raw id/count
+ * otherwise.
+ *
+ * Plan 124 §4.4 Group D, step 124.4 — each device name is composed through
+ * `formatDeviceName`, so a history row reads `#7 Galaxy A15, #12 Galaxy A15`
+ * instead of the same model name twice. This is a `.join(', ')` summary and
+ * therefore needs the `string` form of the rule (§3.2), not `<DeviceName>`.
+ *
+ * The cluster and tag branches are untouched on purpose: neither names a
+ * device, and a cluster is not a phone.
+ */
 export function describeCommandTarget(target: CommandTarget, devices: DeviceInfo[], clusters: ClusterInfo[]): string {
   if ('clusterId' in target) {
     const cluster = clusters.find((c) => c.id === target.clusterId)
@@ -84,7 +97,14 @@ export function describeCommandTarget(target: CommandTarget, devices: DeviceInfo
     return target.tags.join(', ')
   }
   const byId = new Map(devices.map((d) => [d.id, d]))
-  const labels = target.deviceIds.map((id) => byId.get(id)?.label ?? id)
+  // A saved command outlives the devices it names (that is the whole reason
+  // this function has a fallback at all), so an id with no device left
+  // resolves to the bare id — never `#undefined`, never a number invented
+  // from somewhere else.
+  const labels = target.deviceIds.map((id) => {
+    const d = byId.get(id)
+    return d ? formatDeviceName(d.number, d.label) : id
+  })
   if (labels.length <= 3) return labels.join(', ')
   return `${labels.slice(0, 3).join(', ')} +${labels.length - 3} more`
 }

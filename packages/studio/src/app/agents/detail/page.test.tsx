@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import '@/lib/test/nav'
 import { setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
@@ -186,5 +186,172 @@ describe('AgentDetailPage — smoke render', () => {
     setSearchParams({})
     renderWithApi(<AgentDetailPage />, {})
     expect(screen.getByText('No agent id given.')).toBeTruthy()
+  })
+})
+
+/**
+ * Plan 124 §4.5, §4.4 Group D, step 124.4 — the device-grants list.
+ *
+ * This list is the WHOLE fleet and it decides which phones an agent may
+ * touch, and it had neither a number nor a search box: on a rack of
+ * identically modelled phones it was a scroll hunt through the same word
+ * repeated, with no way to type-to-find. The last test here is the one that
+ * matters most — a "Select all" scoped to a filter must MERGE into the
+ * existing grants, never replace them, or filtering silently revokes access
+ * to every phone the operator could not see.
+ */
+describe('AgentDetailPage — device grants: the number and the search box (plan 124 §4.5)', () => {
+  const devices = [
+    // Same label, different numbers — plan 124 §0's opening rack. Neither the
+    // label nor the stableId contains the digit 7, so "typing 7 finds only #7"
+    // cannot pass by substring accident.
+    { id: 'device-1', label: 'Galaxy A15', stableId: 'R5CWAAAA', status: 'idle', tags: [], number: 7 },
+    { id: 'device-2', label: 'Galaxy A15', stableId: 'R5CWBBBB', status: 'idle', tags: [], number: 12 },
+  ]
+
+  function withDevices(agent: Record<string, unknown> = {}) {
+    return {
+      ...baseResponses({ body: { capabilities: [] } }),
+      '/api/agents/agent-1': { body: { agent: { ...baseAgent, ...agent } } },
+      '/api/devices*': { body: { items: devices, nextCursor: null, total: 2 } },
+    }
+  }
+
+  async function openAccessSection() {
+    await waitFor(() => expect(screen.getByText('Test Agent')).toBeTruthy())
+    const tab = await screen.findByRole('tab', { name: 'Access' })
+    tab.click()
+    await waitFor(() => expect(screen.getByLabelText('Search devices to grant')).toBeTruthy())
+  }
+
+  /** Scoped to the grants panel — `ContextPanel`'s rail lists the same devices. */
+  function panel() {
+    return within(screen.getByTestId('device-grants'))
+  }
+
+  function grantCheckbox(stableId: string): HTMLInputElement {
+    return panel().getByText(stableId).closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement
+  }
+
+  test('each row names its device with the number, so two identical labels are distinguishable (criterion 6)', async () => {
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, withDevices())
+    await openAccessSection()
+    expect(panel().getAllByText('Galaxy A15').length).toBe(2)
+    expect(panel().getAllByText('#7').length).toBe(1)
+    expect(panel().getAllByText('#12').length).toBe(1)
+  })
+
+  test('typing "7" filters to #7 alone and shows a live count (criterion 1)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, withDevices())
+    await openAccessSection()
+
+    await user.type(screen.getByLabelText('Search devices to grant'), '7')
+    await waitFor(() => expect(panel().getAllByText('Galaxy A15').length).toBe(1))
+    expect(panel().queryAllByText('#12').length).toBe(0)
+    expect(panel().getByText('1 of 2')).toBeTruthy()
+  })
+
+  test('a filter that matches nothing says so, naming the query — never a blank box', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, withDevices())
+    await openAccessSection()
+
+    await user.type(screen.getByLabelText('Search devices to grant'), 'zzz')
+    await waitFor(() => expect(panel().getByText(/No device matches/)).toBeTruthy())
+    expect(panel().getByText(/2 enrolled/)).toBeTruthy()
+  })
+
+  test('the bulk button says WHICH devices it applies to once a filter is on (§4.5)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, withDevices())
+    await openAccessSection()
+
+    await user.type(screen.getByLabelText('Search devices to grant'), '7')
+    await waitFor(() => expect(panel().getByRole('button', { name: 'Select these 1' })).toBeTruthy())
+  })
+
+  test('a scoped "Select all" MERGES — it never revokes a grant the filter hid', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    // #12 is already granted, and the filter below hides it. With the
+    // `toggleAll` this button used to call, "Select all" would have REPLACED
+    // the whole selection with the filtered ids and silently dropped it.
+    renderWithApi(<AgentDetailPage />, withDevices({ deviceGrants: ['device-2'] }))
+    await openAccessSection()
+
+    await user.type(screen.getByLabelText('Search devices to grant'), '7')
+    await waitFor(() => expect(panel().getByRole('button', { name: 'Select these 1' })).toBeTruthy())
+    await user.click(panel().getByRole('button', { name: 'Select these 1' }))
+
+    await user.clear(screen.getByLabelText('Search devices to grant'))
+    await waitFor(() => expect(panel().getAllByText('Galaxy A15').length).toBe(2))
+    expect(grantCheckbox('R5CWAAAA').checked).toBe(true)
+    expect(grantCheckbox('R5CWBBBB').checked).toBe(true)
+  })
+
+  test('a scoped "Clear all" clears only the filtered devices', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, withDevices({ deviceGrants: ['device-1', 'device-2'] }))
+    await openAccessSection()
+
+    await user.type(screen.getByLabelText('Search devices to grant'), '7')
+    await waitFor(() => expect(panel().getByRole('button', { name: 'Clear these 1' })).toBeTruthy())
+    await user.click(panel().getByRole('button', { name: 'Clear these 1' }))
+
+    await user.clear(screen.getByLabelText('Search devices to grant'))
+    await waitFor(() => expect(panel().getAllByText('Galaxy A15').length).toBe(2))
+    expect(grantCheckbox('R5CWAAAA').checked).toBe(false)
+    expect(grantCheckbox('R5CWBBBB').checked).toBe(true)
+  })
+
+  test('a device with no number renders its bare label — no stray "#" (criterion 7)', async () => {
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, {
+      ...withDevices(),
+      '/api/devices*': { body: { items: [{ ...devices[0], number: null }], nextCursor: null, total: 1 } },
+    })
+    await openAccessSection()
+    expect(panel().getAllByText('Galaxy A15').length).toBe(1)
+    expect(panel().queryAllByText(/^#/).length).toBe(0)
+  })
+})
+
+/**
+ * Plan 124 §4.4 Group D, step 124.4 — `agent/ContextPanel.tsx`'s granted-device
+ * rail, which has no colocated test of its own and is exercised here because
+ * this page is its only mount point. The rail answers "which phones may this
+ * agent touch"; capped at twelve rows, it is precisely the list a repeated
+ * model name made unreadable.
+ */
+describe('AgentDetailPage — the context rail names devices with their numbers (ContextPanel)', () => {
+  test('the rail renders the number too, so both surfaces agree', async () => {
+    setSearchParams({ id: 'agent-1', tab: 'settings' })
+    renderWithApi(<AgentDetailPage />, {
+      ...baseResponses({ body: { capabilities: [] } }),
+      '/api/devices*': {
+        body: {
+          items: [{ id: 'device-1', label: 'Galaxy A15', stableId: 'R5CWAAAA', status: 'idle', tags: [], number: 7 }],
+          nextCursor: null,
+          total: 1,
+        },
+      },
+    })
+    // The Access section is not open (the page defaults to Identity), so the
+    // ONLY device name on screen is the rail's — which is exactly what makes
+    // this an unambiguous test of `ContextPanel` rather than of the grants
+    // list beside it.
+    await waitFor(() => expect(screen.getAllByText('#7').length).toBe(1))
+    expect(screen.getAllByText('Galaxy A15').length).toBe(1)
   })
 })

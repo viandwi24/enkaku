@@ -13,6 +13,7 @@ import { ExecutorRegistry } from '../jobs/executor'
 import { createScriptExecutor } from '../jobs/executors/script'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { createJobStore } from '../queue/job-store'
+import { allocateDeviceNumber } from '../registry/device-number'
 import { createScriptRegistry } from '../scripts/registry'
 import { createLogger } from '../util/logger'
 import { createBatchRoutes, queryBatchRows, type BatchRoutesDeps } from './batches'
@@ -999,6 +1000,40 @@ describe('GET /api/batches/:id/artifacts and .../artifacts.zip (plan 93 §3.13, 
     rmSync(dataDir, { recursive: true, force: true })
   })
 
+  /**
+   * Plan 124 §3.7 — this listing is the exact case the device number exists
+   * for: `seedBulkPull` gives d1 and d2 the SAME label (`Pixel 6`) on
+   * purpose, and before this step the two rows were literally
+   * indistinguishable in Studio's artifacts table except by a raw stableId.
+   *
+   * The number is composed into `deviceLabel` server-side rather than shipped
+   * as a second field because a batch artifact outlives the device that
+   * produced it — a split field would read `null` exactly when the device is
+   * gone and the name matters most.
+   */
+  test('GET /:id/artifacts names each device with its number, disambiguating two devices that share a label (plan 124 §3.7)', async () => {
+    const db = setUp()
+    const { dataDir } = await seedBulkPull(db)
+    allocateDeviceNumber(db, 's-d1')
+    allocateDeviceNumber(db, 's-d2')
+    const app = makeArtifactApp(db, dataDir)
+
+    const res = await app.request('/b1/artifacts')
+    const body = (await res.json()) as { items: Array<{ artifactId: string; deviceLabel: string }> }
+    const byId = new Map(body.items.map((i) => [i.artifactId, i]))
+    expect(byId.get('art-1')?.deviceLabel).toBe('#1 Pixel 6')
+    expect(byId.get('art-2')?.deviceLabel).toBe('#2 Pixel 6')
+    // d3 has no reservation — the bare label, no stray `#`, no `#null`.
+    expect(byId.get('art-3')?.deviceLabel).toBe('Note 20')
+    // The internal-only fields never reach the wire.
+    for (const item of body.items) {
+      expect(item).not.toHaveProperty('path')
+      expect(item).not.toHaveProperty('rawDeviceLabel')
+    }
+
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
   test('a batch with no collected files returns an empty list, not an error', async () => {
     const db = setUp()
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-batch-artifacts-empty-'))
@@ -1053,6 +1088,43 @@ describe('GET /api/batches/:id/artifacts and .../artifacts.zip (plan 93 §3.13, 
     expect(asText.includes(Buffer.from('note-20-s-d3/report.log'))).toBe(true)
     // The two same-named files are NOT the same bytes in the same slot — each is present with its OWN content, proving they occupy different entries.
     for (const f of files) expect(asText.includes(Buffer.from(f.content))).toBe(true)
+
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  /**
+   * The other half of plan 124 §3.7's rule for this route, and the reason
+   * `CollectedArtifact` keeps a `rawDeviceLabel` at all: the number belongs in
+   * every surface that NAMES a device to a human, and in NO filename. §3.7
+   * names this site explicitly — "a `#` in a filename is a new problem".
+   *
+   * Without the split, allocating numbers on an existing farm would silently
+   * rewrite every archive path (`pixel-6-s-d1/…` → `1-pixel-6-s-d1/…`),
+   * breaking whatever an operator or a downstream script already unpacks by
+   * name, and buying nothing: the FULL `stableId` is already in the path and
+   * is exact where a number is merely short.
+   */
+  test('.../artifacts.zip entry names are unaffected by device numbers — no `#`, no renumbered directories (plan 124 §3.7)', async () => {
+    const db = setUp()
+    const { dataDir } = await seedBulkPull(db)
+    allocateDeviceNumber(db, 's-d1')
+    allocateDeviceNumber(db, 's-d2')
+    allocateDeviceNumber(db, 's-d3')
+    const app = makeArtifactApp(db, dataDir)
+
+    const res = await app.request('/b1/artifacts.zip')
+    expect(res.status).toBe(200)
+    const asText = Buffer.from(new Uint8Array(await res.arrayBuffer()))
+
+    // Byte-for-byte the SAME names the un-numbered farm produced above.
+    expect(asText.includes(Buffer.from('pixel-6-s-d1/screenshot.png'))).toBe(true)
+    expect(asText.includes(Buffer.from('pixel-6-s-d2/screenshot.png'))).toBe(true)
+    expect(asText.includes(Buffer.from('note-20-s-d3/report.log'))).toBe(true)
+    // And NOT the slugged form the composed `#1 Pixel 6` would have left
+    // behind. (A bare `#` byte is deliberately not asserted against: this is
+    // a stored, uncompressed archive, and 0x23 occurs freely inside CRCs and
+    // size fields — that check would be flaky, not strict.)
+    expect(asText.includes(Buffer.from('1-pixel-6-s-d1/'))).toBe(false)
 
     rmSync(dataDir, { recursive: true, force: true })
   })

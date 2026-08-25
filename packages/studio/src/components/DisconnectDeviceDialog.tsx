@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { DisconnectOutcomeSchema, type DeviceInfo } from '@enkaku/protocol'
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, type ApiError } from '@enkaku/ui'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, formatDeviceName, type ApiError } from '@enkaku/ui'
 
 function isApiError(err: unknown): err is Error & ApiError {
   return err instanceof Error && 'code' in err
@@ -55,6 +55,12 @@ export function DisconnectDeviceDialog({
 
   if (!device) return null
 
+  // Plan 124 §4.4, step 124.3 — one composed name for the title and all three
+  // outcome toasts. Disconnect is the action an operator fires at one phone
+  // out of a rack of identical ones, so `Disconnect SM-F721U1 from the
+  // network?` was precisely the wrong question to be asked.
+  const name = formatDeviceName(device.number, device.label)
+
   const address = device.connection.address
     ? device.connection.port
       ? `${device.connection.address}:${device.connection.port}`
@@ -70,11 +76,11 @@ export function DisconnectDeviceDialog({
         json: { force },
       })
       if (outcome.result === 'disconnected') {
-        toast.success(`${device.label} disconnected from the network`)
+        toast.success(`${name} disconnected from the network`)
       } else if (outcome.result === 'not-connected') {
-        toast.success(`${device.label} was already offline`)
+        toast.success(`${name} was already offline`)
       } else {
-        toast.error(`Could not disconnect ${device.label}`, { description: outcome.detail })
+        toast.error(`Could not disconnect ${name}`, { description: outcome.detail })
       }
       onOpenChange(false)
       onDone()
@@ -93,7 +99,7 @@ export function DisconnectDeviceDialog({
     <Dialog open={open} onOpenChange={onOpenChange} modal={!nonModal}>
       <DialogContent overlay={!nonModal}>
         <DialogHeader>
-          <DialogTitle>Disconnect {device.label} from the network?</DialogTitle>
+          <DialogTitle>Disconnect {name} from the network?</DialogTitle>
           <DialogDescription asChild>
             <div className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
               <p>Enkaku drops its adb connection. The phone keeps running.</p>

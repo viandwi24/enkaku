@@ -20,6 +20,7 @@ const device: DeviceInfo = {
   id: 'dev-1',
   stableId: 'stable-1',
   serial: '10.0.0.5:5555',
+  number: 12,
   label: 'Pixel 7 Pro',
   androidVersion: '15',
   apiLevel: 35,
@@ -42,7 +43,10 @@ describe('DisconnectDeviceDialog (plan 88 §3.7, §3.8, §4.6, §5 step 88.4)', 
       <DisconnectDeviceDialog device={device} open={true} onOpenChange={() => {}} onDone={() => {}} />,
       {},
     )
-    expect(getByText('Disconnect Pixel 7 Pro from the network?')).toBeTruthy()
+    // Plan 124 criterion 5, step 124.3 — `Disconnect …?` names the device with
+    // its number, so the operator can tell which of three identical phones is
+    // about to lose its adb link.
+    expect(getByText('Disconnect #12 Pixel 7 Pro from the network?')).toBeTruthy()
     expect(getByText(/Enkaku drops its adb connection. The phone keeps running./)).toBeTruthy()
     expect(getByText(/This is not Remove/)).toBeTruthy()
     expect(getByText(/it shows as Offline, and it cannot be controlled or scheduled/)).toBeTruthy()

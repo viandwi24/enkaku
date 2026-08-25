@@ -70,6 +70,23 @@ export function RunReport({
   run: RunReportRun
   members: CommandMember[]
   outputs: CommandOutput[]
+  /**
+   * Resolves a device id to its FULLY COMPOSED name — `#7 Galaxy A15`, the
+   * number already in the string.
+   *
+   * Plan 124 §4.4, step 124.4 — this prop is deliberately not widened into
+   * `{ number, label }` (§4.4's own rule for the `deviceLabel: string`
+   * shaped props: "their callers pass `formatDeviceName(...)`"). Both callers
+   * — `app/console/page.tsx` and `device-popup/AdbCommandDialog.tsx` — hold
+   * the `DeviceInfo[]` and compose in their own lookup, so the number reaches
+   * all three render sites below (the collapsed group's `.join(', ')`
+   * preview, each `MemberRow`, and the output drawer's title) through one
+   * definition instead of three.
+   *
+   * The consequence for anyone editing this file: **never wrap the result in
+   * `formatDeviceName` again here** — it is already composed, and doing so
+   * would render `#7 #7 Galaxy A15`.
+   */
   deviceLabel: (deviceId: string) => string
   onCancel: () => void
   onContinue: () => void
@@ -182,6 +199,7 @@ function GroupRow({
   onOpenOutput,
 }: {
   group: OutcomeGroup
+  /** Already composed with the device's number — see `RunReport`'s own prop doc. */
   deviceLabel: (deviceId: string) => string
   output: CommandOutput | undefined
   onOpenOutput: (deviceId: string) => void

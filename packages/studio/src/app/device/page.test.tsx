@@ -323,3 +323,51 @@ describe('DevicePage — Assist (plan 91 §3.2, §3.4, §3.12, §5 step 91.6)', 
     expect(lastScreenCardProps?.assisting).toBeFalsy()
   })
 })
+
+/**
+ * Plan 124 §4.4 Group D, step 124.4 — the two `deviceLabel: string` props this
+ * page passes (`AgentPanel`, `AssistDialog`) are composed by the CALLER
+ * (§4.4's rule: those props are not widened into objects), and the four
+ * reconnect toasts read from the same composed string.
+ *
+ * `AssistDialog` is the one of the two reachable without a dialog trigger the
+ * stub owns, so it is what pins the composition. Its title is a sentence, so
+ * this is the `string` form of the rule (§3.2), not `<DeviceName>`.
+ */
+describe('DevicePage — the device is named with its number (plan 124 §4.4 Group D)', () => {
+  test('AssistDialog is titled "Assist #7 <label> …" when the device has a number', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'dev-1' })
+    renderWithApi(
+      <TooltipProvider>
+        <DevicePage />
+      </TooltipProvider>,
+      { ...busyResponses, '/api/devices/dev-1': { body: { device: { ...busyDevice, number: 7 } } } },
+    )
+    await waitFor(() => expect(lastScreenCardProps?.inputEnabled).toBe(false))
+    await user.click(screen.getByText('stub-open-assist'))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByText(/Assist #7 moto g06 — rack 1 while/)).toBeTruthy())
+  })
+
+  test('a device with no number is named bare — no stray "#", no "#null" (criterion 7)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    setSearchParams({ id: 'dev-1' })
+    // `busyDevice` carries no `number` key at all, which is `undefined` rather
+    // than `null` — `formatDeviceName` treats both as "no number", and this is
+    // the case a hand-built fixture or an older payload actually produces.
+    renderWithApi(
+      <TooltipProvider>
+        <DevicePage />
+      </TooltipProvider>,
+      busyResponses,
+    )
+    await waitFor(() => expect(lastScreenCardProps?.inputEnabled).toBe(false))
+    await user.click(screen.getByText('stub-open-assist'))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByText(/Assist moto g06 — rack 1 while/)).toBeTruthy())
+    expect(within(dialog).queryAllByText(/#null|#undefined/).length).toBe(0)
+  })
+})

@@ -6,7 +6,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import type { TopologyActiveJob } from '@/lib/api'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
 import { TileChips } from '@/components/TileChips'
-import { duration, cn } from '@enkaku/ui'
+import { DeviceName, duration, cn } from '@enkaku/ui'
 
 /**
  * One device on the fleet map (plan 32 §3.4). Built entirely from the
@@ -53,7 +53,19 @@ export function DeviceTile({
 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-[13px] font-medium leading-tight">{device.label}</p>
+          {/* Plan 124 §4.4 Group B, step 124.2 — the fleet map named a
+              device by label alone, which on a rack of physically identical
+              phones names nothing; its sibling `wall/WallTile.tsx` has shown
+              the number since plan 89 and this tile now matches it. The
+              `flex` in `className` overrides `<DeviceName>`'s own
+              `inline-flex` on purpose: as a block-level flex box it takes the
+              width of this `min-w-0` column, which is what actually lets the
+              label's `truncate` engage. A device with no number renders the
+              bare label with no leading gap (criterion 7) — the spacing comes
+              from the flex container, not from padding on either span. */}
+          <p className="text-[13px] font-medium leading-tight">
+            <DeviceName number={device.number} label={device.label} className="flex" />
+          </p>
           <p className="readout truncate text-[10.5px] text-fg-subtle">{device.stableId}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">

@@ -172,10 +172,25 @@ never a single colour standing in for every outcome:
 
 ### Turning it on
 
-- **One phone:** open the device's Settings page, find **Physical
-  labelling**, choose a mode, and (optionally) whether to include the name
-  above the number. Use **Re-apply label** to push it immediately, or
-  **Check now** to refresh the status without writing anything.
+- **The quick way, one phone or many:** click a device to open its popup and
+  choose **Set number as wallpaper**. That single press turns the wallpaper
+  mode on for the device and writes the label immediately — you do not have
+  to visit Settings, change a mode, save, and then re-apply. Select several
+  devices first and the same action does all of them, reporting each one's
+  result separately.
+
+  It tells you the truth about what happened rather than just closing:
+  a phone where only one of the two screens accepted the wallpaper reports
+  **partial**, naming which; a phone that could not do it at all reports
+  **unavailable**, with the reason. Neither is ever reported as success. The
+  action is greyed out, with the reason on hover, when the device has no
+  number, is offline, or does not have the guest agent installed.
+
+- **One phone, with the options:** open the device's Settings page, find
+  **Physical labelling**, choose a mode, and (optionally) whether to include
+  the name above the number. Use **Re-apply label** to push it immediately,
+  or **Check now** to refresh the status without writing anything. This is
+  the place to go for lock-screen mode, or to turn the name off.
 - **A whole farm going forward:** set the farm's default `labelling.mode`
   in Settings once. Every device admitted *after* that point inherits it
   automatically — flipping the default never reaches back and relabels
@@ -184,6 +199,14 @@ never a single colour standing in for every outcome:
 - **An existing fleet, right now:** select devices on the devices page and
   use **Apply labels**. This is the explicit fleet-wide switch-on; nothing
   retroactively labels an existing farm on its own.
+
+  Note what this button does and does not do: it applies **whatever mode
+  each device already has**. On a farm where nothing has opted in yet, every
+  device is `off`, and the report will say so — each one listed as skipped,
+  because there was nothing to apply. (It used to count those as successes,
+  which made it look like it had labelled a farm it had not touched.) To
+  turn labelling *on* for a selection in one press, use **Set number as
+  wallpaper** above.
 - **At admission time:** the admit dialog has a checkbox reflecting the
   farm's current default, with the exact consequence spelled out before you
   confirm.

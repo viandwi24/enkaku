@@ -7,6 +7,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { can } from '../auth/acl'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
+import { formatDeviceLabel, loadDeviceNumbers } from '../registry/device-number'
 import type { CommandConsoleStats } from '../command-console/runner'
 import type { AdbMetricsStore } from '../device/adb-metrics'
 import type { DeviceHealth } from '../device/health'
@@ -149,6 +150,12 @@ export function createAdbStatsRoutes(deps: {
     const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, perDevice: {} }
     const health = deps.health()
     const rows = deps.db.select().from(devices).all()
+    // stableId → number for the whole fleet, in ONE statement (plan 124 §3.7,
+    // plan 19 §4.3's no-N+1 rule). This route already reads EVERY device row
+    // to build its per-device queue table, and Studio's Tools page polls it —
+    // a per-row `lookupDeviceNumber` here would be the textbook N+1 on the
+    // one endpoint an operator watches while the farm is under load.
+    const numbers = loadDeviceNumbers(deps.db)
     // Idle session TTL (plan 42 §4.4) — every session currently held open
     // with no subscriber, oldest first, so the setting's effect is
     // measurable rather than assumed.
@@ -190,7 +197,15 @@ export function createAdbStatsRoutes(deps: {
         const m = deps.metrics.forSerial(row.serial)
         return {
           deviceId: row.id,
-          label: row.label,
+          // Composed server-side (plan 124 §3.7) rather than shipped as
+          // `label` + `number` for the caller to compose: every consumer of
+          // this row — the Tools page's adb pool table, `AdbRestartDialog`'s
+          // "devices with queued work" list — renders the name as one opaque
+          // string beside a queue depth, and none of them holds a
+          // `DeviceInfo` to compose a number from. `#7 Pixel 6` is the whole
+          // point on a rack of identically-named phones: an operator reading
+          // "3 commands queued" needs to know WHICH phone that is.
+          label: formatDeviceLabel(numbers.get(row.stableId) ?? null, row.label),
           queueDepth: client?.pending(row.serial) ?? 0,
           execMsP50: m.execMsP50,
           execMsP95: m.execMsP95,

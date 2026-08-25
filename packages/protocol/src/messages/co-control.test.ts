@@ -75,7 +75,7 @@ describe('mirror.* / input.mirror.* — twelve messages, part 2 (plan 91 §4.4)'
   })
 
   test('mirror.started: one MirrorMember per requested device', () => {
-    const member = { deviceId: 'd1', label: 'Pixel 7', mode: 'lease' as const, reason: null, aspectDrift: false }
+    const member = { deviceId: 'd1', label: 'Pixel 7', number: 7, mode: 'lease' as const, reason: null, aspectDrift: false }
     const result = MirrorStartedMessage.safeParse({
       type: 'mirror.started',
       payload: { groupId: 'g1', focusDeviceId: 'd1', members: [member] },
@@ -119,7 +119,7 @@ describe('mirror.* / input.mirror.* — twelve messages, part 2 (plan 91 §4.4)'
   })
 
   test('mirror.changed: unicast to the owner with the updated member list', () => {
-    const member = { deviceId: 'd2', label: 'Pixel 6', mode: 'skipped' as const, reason: 'repeated_failures', aspectDrift: false }
+    const member = { deviceId: 'd2', label: 'Pixel 6', number: 6, mode: 'skipped' as const, reason: 'repeated_failures', aspectDrift: false }
     expect(MirrorChangedMessage.safeParse({ type: 'mirror.changed', payload: { groupId: 'g1', members: [member] } }).success).toBe(true)
   })
 })
@@ -127,14 +127,30 @@ describe('mirror.* / input.mirror.* — twelve messages, part 2 (plan 91 §4.4)'
 describe('MirrorMemberSchema / MirrorResultSchema (plan 91 §4.4)', () => {
   test('MirrorMemberSchema accepts every documented mode', () => {
     for (const mode of ['lease', 'assist', 'partial', 'skipped'] as const) {
-      expect(MirrorMemberSchema.safeParse({ deviceId: 'd1', label: 'x', mode, reason: null, aspectDrift: false }).success).toBe(true)
+      expect(MirrorMemberSchema.safeParse({ deviceId: 'd1', label: 'x', number: 1, mode, reason: null, aspectDrift: false }).success).toBe(true)
     }
   })
 
   test('MirrorMemberSchema rejects an undocumented mode', () => {
-    expect(MirrorMemberSchema.safeParse({ deviceId: 'd1', label: 'x', mode: 'taken-over', reason: null, aspectDrift: false }).success).toBe(
+    expect(MirrorMemberSchema.safeParse({ deviceId: 'd1', label: 'x', number: 1, mode: 'taken-over', reason: null, aspectDrift: false }).success).toBe(
       false,
     )
+  })
+
+  /**
+   * Plan 124 §3.7, §3.1 — `number` is REQUIRED and nullable, not optional:
+   * "this device has no reservation" is a real, distinct state that the
+   * producer must state, and a member that simply omitted the field would be
+   * indistinguishable from one built by code that forgot about the number
+   * entirely — which is exactly the drift plan 124 exists to end.
+   */
+  test('MirrorMemberSchema requires `number`, accepts null for an unnumbered device, and rejects a non-integer', () => {
+    const base = { deviceId: 'd1', label: 'x', mode: 'lease' as const, reason: null, aspectDrift: false }
+    expect(MirrorMemberSchema.safeParse({ ...base, number: null }).success).toBe(true)
+    expect(MirrorMemberSchema.safeParse({ ...base, number: 7 }).success).toBe(true)
+    expect(MirrorMemberSchema.safeParse(base).success).toBe(false)
+    expect(MirrorMemberSchema.safeParse({ ...base, number: 7.5 }).success).toBe(false)
+    expect(MirrorMemberSchema.safeParse({ ...base, number: '7' }).success).toBe(false)
   })
 
   test('MirrorResultSchema: code is nullable (null on success)', () => {

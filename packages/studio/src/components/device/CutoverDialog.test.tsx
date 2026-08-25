@@ -34,6 +34,7 @@ const device: DeviceInfo = {
   id: 'dev-1',
   stableId: 'stable-1',
   serial: 'ZP2222RMBS',
+  number: 3,
   label: 'Pixel 7 Pro',
   androidVersion: '15',
   apiLevel: 35,
@@ -76,6 +77,10 @@ describe('CutoverDialog (plan 88 §3.4, §4.6, §5 step 88.5)', () => {
       <CutoverDialog device={device} open={true} onOpenChange={() => {}} onDone={() => {}} />,
       {},
     )
+    // Plan 124 §4.4, criterion 5, step 124.3 — a cutover is a physical action
+    // on ONE chassis port, so the wizard's title has to name the phone the
+    // operator is about to walk over to, not the model it happens to be.
+    expect(getByText('Move #3 Pixel 7 Pro to the network')).toBeTruthy()
     expect(getByText(/no software can press it for you/)).toBeTruthy()
     expect(getByLabelText('Port')).toBeTruthy()
     expect(getByLabelText('Medium')).toBeTruthy()

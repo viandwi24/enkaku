@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { useEffect } from 'react'
 import { fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
@@ -7,18 +8,47 @@ import { mockRouter } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 
 /**
- * `WallTile` now calls `useRouter()` (plan 91 §5 step 91.8, F13 — the
- * click/double-click disambiguation below) — `@/lib/test/nav` has to be
- * imported, for its `mock.module` side effect, before `WallTile` itself is
- * first evaluated, hence the dynamic import after it (same pattern
- * `Wall.test.tsx`, the sibling file, already uses for its own `mock.module`
- * calls).
+ * The picture itself, stubbed. Plan 125 §4.3 gave this file its first tests
+ * about WHETHER `LiveView` is mounted and — the point of the whole step —
+ * whether it stays the SAME instance across a readiness change, and neither
+ * question can be asked of a component that stands up a real WebCodecs
+ * decoder over a live WS stream. The stub keeps the one handle the older
+ * tests here already assert against (`aria-label="Device screen"`, which is
+ * the real component's own canvas label), and adds a mount counter: a
+ * remount is exactly the defect being fixed, so it has to be observable and
+ * not merely presumed from the picture still being on screen.
+ *
+ * `mock.module` has to run before `WallTile` is first evaluated, hence the
+ * dynamic import below — the same ordering `@/lib/test/nav` above needs for
+ * `useRouter` (plan 91 §5 step 91.8, F13), and the same pattern
+ * `Wall.test.tsx` uses for its own mocks.
  */
+const liveViewMounts: string[] = []
+/**
+ * Every `markLiveViewIntent` call this tile makes (plan 125 §4.7, step
+ * 125.11) — the click→first-paint mark. Recorded rather than executed for the
+ * same reason the component itself is stubbed: the real one writes into a
+ * module-level map inside `LiveView.tsx`, and this file's whole point is to
+ * test the tile without standing up the video component.
+ */
+const intentMarks: string[] = []
+mock.module('@/components/LiveView', () => ({
+  LiveView: ({ deviceId }: { deviceId: string }) => {
+    useEffect(() => {
+      liveViewMounts.push(deviceId)
+    }, [deviceId])
+    return <canvas aria-label="Device screen" />
+  },
+  markLiveViewIntent: (deviceId: string) => intentMarks.push(deviceId),
+}))
+
 const { WallTile } = await import('./WallTile')
 
 afterEach(() => {
   cleanup()
   mockRouter.push.mockClear()
+  liveViewMounts.length = 0
+  intentMarks.length = 0
 })
 
 /**
@@ -295,6 +325,42 @@ describe('WallTile — click vs double-click (plan 91 §3.11/§5 step 91.8, F13)
     // Still navigates once, from the (uncancelled) first click's own timer.
     await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/device?id=dev-1'))
   })
+
+  /**
+   * Click → first paint (plan 125 §4.7, §5 step 125.11). The double-click IS
+   * the start of the measurement, so it has to be marked here — nothing
+   * downstream (`app/page.tsx`'s `?focus=`, `DevicePopup`, `LiveView`) knows
+   * when the operator clicked. The number itself is `LiveView`'s to compute
+   * and render; this file only proves the mark is taken, once, at the click.
+   */
+  test('a double-click marks the click→first-paint start for this device', async () => {
+    const user = userEvent.setup()
+    const { getByRole } = renderWithApi(
+      <WallTile device={device} live={false} onShowLive={() => undefined} onFocus={() => undefined} />,
+    )
+    await user.dblClick(getByRole('link'))
+    expect(intentMarks).toEqual(['dev-1'])
+  })
+
+  test('a single click marks nothing — selecting a tile is not asking for its picture', async () => {
+    const { getByRole } = renderWithApi(
+      <WallTile device={device} live={false} onShowLive={() => undefined} onToggleSelect={() => undefined} />,
+    )
+    fireEvent.click(getByRole('link'))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(intentMarks.length).toBe(0)
+  })
+
+  test('a modified double-click (the browser\'s own "open in a new tab") marks nothing either', async () => {
+    const user = userEvent.setup()
+    const { getByRole } = renderWithApi(
+      <WallTile device={device} live={false} onShowLive={() => undefined} onFocus={() => undefined} />,
+    )
+    await user.keyboard('{Meta>}')
+    await user.dblClick(getByRole('link'))
+    await user.keyboard('{/Meta}')
+    expect(intentMarks.length).toBe(0)
+  })
 })
 
 /** The "Controlling here" placeholder for the focused tile (plan 91 §3.11/§5 step 91.8). */
@@ -374,7 +440,13 @@ describe('WallTile — the caption\'s live node counter (plan 99 §4.9, §4.11, 
   })
 })
 
-const asleepDevice: DeviceInfo = { ...device, readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: 0 } }
+/**
+ * `number: 4` (plan 124 §3.1, `docs/design.md` "Naming a device") — the Wake
+ * button added by plan 125 §3.5 names its device in the `aria-label`, and a
+ * fixture with no number would let the tests below pass against a name that
+ * identifies nothing on a rack of identical phones.
+ */
+const asleepDevice: DeviceInfo = { ...device, number: 4, readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: 0 } }
 
 /**
  * The screen-off placeholder (Plan 92 §3.2 rule 1, §3.4, §4.7, fixes F12):
@@ -401,18 +473,134 @@ describe('WallTile — the screen-off placeholder for asleep devices (plan 92 §
   })
 
   /**
-   * Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the persistent
-   * `ReadinessControl` (Wake/Sleep) overlay this tile still carried after
-   * 101.7 is gone — `refs/ui`'s own tile has nothing on it but the picture,
-   * the centred name, and (when the picture is empty) a centred watermark.
-   * Waking a single asleep device is reached the same way waking a
-   * selection already was: right-click opens `DeviceContextMenu` ("Wake
-   * selected"), or select it and use the floating selection bar — both
-   * already routed through `wakeOrSleepSelected` before this step.
+   * Plan 101 §5 step 101.8 removed the persistent `ReadinessControl`
+   * (Wake/Sleep) overlay from every tile face, and **plan 125 §3.5/§4.3
+   * brings back exactly half of it**: a compact Wake INSIDE the screen-off
+   * placeholder, where there is no picture for it to compete with. 101.8's
+   * actual rule — a tile showing a picture carries no chrome but the number,
+   * the name and the rail — is untouched, and the test below pins that half
+   * so the reversal cannot creep back onto a live tile.
+   *
+   * The field report (plan 125 §0.1 report 1): *"I have to double-click each
+   * device to make it wake up … Do I really have to trigger a wake-up one by
+   * one? That takes forever."* Plan 92 §8 had already claimed this
+   * affordance existed — *"The tiles are explicitly 'Screen off' with a
+   * working Wake"* — which 101.8 silently made false.
    */
-  test('no Wake button anywhere on an asleep tile — the affordance moved to the context menu and the selection bar', () => {
-    const { queryByRole } = renderWithApi(<WallTile device={asleepDevice} live={false} onShowLive={() => undefined} />)
-    expect(queryByRole('button', { name: 'Wake' })).toBeNull()
+  test('an asleep tile offers a compact Wake, named with the device (plan 125 §3.5)', () => {
+    const { getByRole } = renderWithApi(<WallTile device={asleepDevice} live={false} onShowLive={() => undefined} />)
+    // `docs/design.md`'s "Naming a device" rule reaches `aria-label`s too —
+    // a rack of identical `SM-F721U1` needs the number to identify anything.
+    expect(getByRole('button', { name: 'Wake #4 moto g06' })).toBeTruthy()
+  })
+
+  test('the Wake button PUTs the readiness the context menu and the selection bar already use', async () => {
+    const { getByRole, apiMock } = renderWithApi(
+      <WallTile device={asleepDevice} live={false} onShowLive={() => undefined} />,
+      { '/api/devices/*/readiness': { body: { readiness: { desired: 'awake', actual: 'awake', blocked: null, since: 0 } } } },
+    )
+    fireEvent.click(getByRole('button', { name: 'Wake #4 moto g06' }))
+    await waitFor(() => expect(apiMock.calls.length).toBe(1))
+    expect(apiMock.calls[0]?.method).toBe('PUT')
+    expect(apiMock.calls[0]?.path).toBe('/api/devices/dev-1/readiness')
+    expect(apiMock.calls[0]?.body).toMatchObject({ desired: 'awake' })
+  })
+
+  /**
+   * The tile's root is a `next/link` and a plain click toggles selection
+   * (plan 101 §5 step 101.7) — a Wake that also selected the tile, or
+   * navigated to the device page, would be the same defect the budgeted
+   * "Show live" button already guards against.
+   */
+  test('waking does not also toggle selection or navigate', async () => {
+    let toggled = 0
+    const { getByRole, apiMock } = renderWithApi(
+      <WallTile device={asleepDevice} live={false} onShowLive={() => undefined} onToggleSelect={() => (toggled += 1)} />,
+      { '/api/devices/*/readiness': { body: { readiness: { desired: 'awake', actual: 'awake', blocked: null, since: 0 } } } },
+    )
+    fireEvent.click(getByRole('button', { name: 'Wake #4 moto g06' }))
+    await waitFor(() => expect(apiMock.calls.length).toBe(1))
+    expect(toggled).toBe(0)
+    expect(mockRouter.push).not.toHaveBeenCalled()
+  })
+
+  /** 101.8's surviving half: a tile that is SHOWING something carries no readiness chrome. */
+  test('no Wake or Sleep button on a live tile — 101.8s rule holds wherever there is a picture', () => {
+    const { queryAllByRole } = renderWithApi(<WallTile device={device} live onShowLive={() => undefined} />)
+    expect(queryAllByRole('button').length).toBe(0)
+  })
+})
+
+/**
+ * **Plan 125 §0.5, §3.5, §4.3 — the branch reorder, and report 1's own
+ * defect.** A display error closes the session entry even with live
+ * subscribers (`packages/session/src/manager.ts`'s `onDisplayError`), the
+ * core broadcasts `stream.ended`, readiness reconciles the device down to
+ * `asleep`, and — before this step — the `asleep` branch replaced the
+ * picture with an inert "Screen off" rectangle. `LiveView`'s own "Stream
+ * stopped … Try again" overlay existed the whole time; nobody ever saw it,
+ * because the component holding it was unmounted in the same commit.
+ *
+ * These tests assert the two halves of the fix that actually matter, and
+ * neither of them is "the picture is on screen":
+ *
+ *  1. the picture SURVIVES the flip to `asleep` **as the same instance** —
+ *     a remount would restart the stream and throw away the very `stopped`
+ *     state that carries the retry;
+ *  2. a latched error may only ever KEEP a picture, never CREATE one — or a
+ *     wall tile would start a session on a sleeping phone just by being
+ *     looked at, which is plan 92 F11/F12 reintroduced.
+ */
+describe('WallTile — a dead stream keeps its retry instead of going dark (plan 125 §4.3)', () => {
+  test('a stream error keeps the SAME LiveView mounted when the device flips to asleep', () => {
+    const { rerender, queryAllByLabelText, queryAllByText } = renderWithApi(
+      <WallTile device={device} live onShowLive={() => undefined} />,
+    )
+    expect(liveViewMounts.length).toBe(1)
+
+    // Exactly what the core does after a display error: `stream.ended`
+    // arrives (latched by `Wall.tsx`, handed down here) and the device's own
+    // `readiness.actual` reconciles to `asleep`, dropping it out of the live
+    // set in the same update.
+    rerender(<WallTile device={asleepDevice} live={false} streamError="display error" onShowLive={() => undefined} />)
+
+    // Counts, never nodes: a failing `expect(node).toBeNull()` inside a
+    // retrying matcher serialises a whole happy-dom element.
+    expect(queryAllByLabelText('Device screen').length).toBe(1)
+    expect(queryAllByText('Screen off').length).toBe(0)
+    // The whole point: one mount, not two. A second entry here would mean
+    // `LiveView` was torn down and rebuilt — a fresh `stream.start` on a
+    // sleeping phone, and no retry overlay to show for it.
+    expect(liveViewMounts.length).toBe(1)
+  })
+
+  test('a stream error on a tile that was NOT showing a picture never mounts one', () => {
+    // Budgeted (awake, outside `wall.maxTiles`) — the tile has no decoder,
+    // and a `stream.ended` broadcast for this device (someone else's popup
+    // session dying, say) must not give it one.
+    const { queryAllByLabelText, queryAllByText } = renderWithApi(
+      <WallTile device={device} live={false} streamError="display error" onShowLive={() => undefined} />,
+    )
+    expect(liveViewMounts.length).toBe(0)
+    expect(queryAllByLabelText('Device screen').length).toBe(0)
+    expect(queryAllByText('Show live').length).toBe(1)
+  })
+
+  test('an asleep tile with a stale error latched, but no picture ever mounted, still shows Screen off and its Wake', () => {
+    const { queryAllByLabelText, getByRole } = renderWithApi(
+      <WallTile device={asleepDevice} live={false} streamError="display error" onShowLive={() => undefined} />,
+    )
+    expect(queryAllByLabelText('Device screen').length).toBe(0)
+    expect(getByRole('button', { name: 'Wake #4 moto g06' })).toBeTruthy()
+  })
+
+  /** offline/quarantined are facts about the phone and still outrank a dead stream — "Offline" is the truer and more actionable statement, and it is what `Wall.tsx` clears the latch on. */
+  test('offline still wins over a latched stream error', () => {
+    const { queryAllByLabelText, queryAllByText } = renderWithApi(
+      <WallTile device={{ ...device, status: 'offline' }} live streamError="display error" onShowLive={() => undefined} />,
+    )
+    expect(queryAllByText('Offline').length).toBe(1)
+    expect(queryAllByLabelText('Device screen').length).toBe(0)
   })
 })
 
@@ -540,5 +728,45 @@ describe('WallTile — height stability: no header left to grow (plan 92 §4.8 f
     const { container } = renderWithApi(<WallTile device={device} live={false} onShowLive={() => undefined} />)
     expect(container.textContent).not.toContain('Controlled by')
     expect(container.textContent).not.toContain('Assisting')
+  })
+})
+
+/**
+ * Plan 125 §3.6, criterion 5 — `observed` is what the phone actually
+ * reported; `actual` is bookkeeping. They disagree routinely (a lit panel
+ * with no session open reads `asleep`), and only the disagreement is worth
+ * showing. `unknown` is deliberately silent: it means no probe succeeded,
+ * and rendering it beside "Screen off" would read as confirmation of the one
+ * thing nobody checked.
+ */
+describe('WallTile — readiness.observed (plan 125 §3.6)', () => {
+  function asleepWith(observed: { state: 'on' | 'off' | 'unknown'; reason: string | null } | null): DeviceInfo {
+    return {
+      ...asleepDevice,
+      readiness: { ...asleepDevice.readiness, observed: observed ? { ...observed, observedAt: 0 } : null },
+    }
+  }
+
+  test('says "Screen reported on" only when the probe disagrees with the bookkeeping', () => {
+    const { queryAllByText } = renderWithApi(<WallTile onShowLive={() => undefined} live={false} device={asleepWith({ state: 'on', reason: null })} />)
+    expect(queryAllByText('Screen off').length).toBe(1)
+    expect(queryAllByText('Screen reported on').length).toBe(1)
+  })
+
+  test('stays silent when the probe agrees, and when it could not run at all', () => {
+    const agreed = renderWithApi(<WallTile onShowLive={() => undefined} live={false} device={asleepWith({ state: 'off', reason: null })} />)
+    expect(agreed.queryAllByText('Screen reported on').length).toBe(0)
+    agreed.unmount()
+
+    // `unknown` must never be dressed up as either state.
+    const unknown = renderWithApi(<WallTile onShowLive={() => undefined} live={false} device={asleepWith({ state: 'unknown', reason: 'probe failed' })} />)
+    expect(unknown.queryAllByText('Screen reported on').length).toBe(0)
+    expect(unknown.queryAllByText('Screen off').length).toBe(1)
+  })
+
+  test('a device with no observation at all renders exactly as it did before the field existed', () => {
+    const { queryAllByText } = renderWithApi(<WallTile onShowLive={() => undefined} live={false} device={asleepWith(null)} />)
+    expect(queryAllByText('Screen off').length).toBe(1)
+    expect(queryAllByText('Screen reported on').length).toBe(0)
   })
 })

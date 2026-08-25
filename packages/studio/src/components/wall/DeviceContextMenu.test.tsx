@@ -97,10 +97,20 @@ describe('DeviceContextMenu — renders panel 3, not a copy of it (plan 103 §5 
     await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
     const rows = [...getAllByRole('button'), ...getAllByRole('link')].filter((el) => el.getAttribute('aria-label') !== 'Close')
     // `idleDevice` has no `connection` field, so `DeviceConnectionSchema`'s
-    // own default supplies `kind: 'usb'` — thirteen rows, matching
-    // `ActionsList.test.tsx`'s own usb-device count (the fixed twelve plus
-    // "Move to the network (Wi-Fi/OTG)…", plan 88 §5, plan 96 hotfix).
-    expect(rows).toHaveLength(13)
+    // own default supplies `kind: 'usb'` — fourteen rows, matching
+    // `ActionsList.test.tsx`'s own usb-device count (the fixed twelve, plus
+    // "Move to the network (Wi-Fi/OTG)…" from plan 88 §5 / plan 96's hotfix,
+    // plus "Set number as wallpaper" from plan 124 §4.6 step 124.6).
+    //
+    // This count is a SECOND, independent copy of `ActionsList.test.tsx`'s
+    // (`:407`, `:426`) and that is exactly how it went stale: plan 124 added
+    // its row, updated the counts in the file it owned, and this assertion —
+    // in a different directory, owned by a different worker — kept asserting
+    // the old number. Whoever adds row fifteen has to change BOTH. The
+    // duplication is deliberate (this test's whole point is that the menu
+    // renders panel 3 rather than a copy of it, so it must count for itself),
+    // but the coupling is real and is worth this comment.
+    expect(rows).toHaveLength(14)
   })
 
   test('with more than one device selected, the header reads "N devices selected" — the old menu\'s own rule', async () => {
@@ -109,6 +119,34 @@ describe('DeviceContextMenu — renders panel 3, not a copy of it (plan 103 §5 
       { ...baseResponses, '/api/devices/dev-1': { body: { device: idleDevice } } },
     )
     await waitFor(() => expect(getByText('2 devices selected')).toBeTruthy())
+  })
+
+  test('the header and its region label both carry the device number (plan 124 §4.4 Group B, criterion 5)', async () => {
+    // The whole point of this surface — a right-click on ONE tile in a rack
+    // of physically identical phones. Two `moto g06`s are told apart by `#7`
+    // and nothing else, so the number has to reach both the visible header
+    // and the region's accessible name, not just one of them.
+    const numbered = { ...idleDevice, number: 7 }
+    const { getByText, getByRole } = renderWithApi(
+      <Menu deviceId="dev-1" devices={[numbered]} selectedIds={['dev-1']} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: numbered } } },
+    )
+    await waitFor(() => expect(getByText('#7')).toBeTruthy())
+    expect(getByText('moto g06')).toBeTruthy()
+    expect(getByRole('region', { name: 'Device actions — #7 moto g06' })).toBeTruthy()
+  })
+
+  test('a device with no number renders the bare label — no `#`, no `#null` (plan 124 criterion 7)', async () => {
+    // `idleDevice` omits `number` entirely, so `DeviceInfoSchema`'s own
+    // `.default(null)` supplies it — the same path a device whose
+    // reservation was explicitly released takes.
+    const { getByText, getByRole, queryByText } = renderWithApi(
+      <Menu deviceId="dev-1" devices={[idleDevice]} selectedIds={['dev-1']} onClose={() => {}} />,
+      baseResponses,
+    )
+    await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
+    expect(queryByText(/#/)).toBeNull()
+    expect(getByRole('region', { name: 'Device actions — moto g06' })).toBeTruthy()
   })
 
   test('the Inspector tab is not reachable here — a stated decision, not a silently rendered subset (SidePanel\'s own tabs prop)', async () => {

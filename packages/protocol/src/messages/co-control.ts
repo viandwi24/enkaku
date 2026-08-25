@@ -42,6 +42,19 @@ export type AssistEndReason = z.infer<typeof AssistEndReasonSchema>
 export const MirrorMemberSchema = z.object({
   deviceId: z.string(),
   label: z.string(),
+  /**
+   * The device's number from `device_numbers` (plan 89 §3.1), or `null` for a
+   * device that has no reservation — plan 124 §3.7.
+   *
+   * A SEPARATE field, not `#7` pre-composed into `label` above, for the two
+   * reasons plan 124 §3.1 gives: the number composes with the label at render
+   * time and never enters it, and a consumer that already knows the number
+   * from somewhere else (`DevicePopup`'s `labelFor` falls back to the
+   * `DeviceInfo` it holds, which carries `number` of its own) would otherwise
+   * compose a second `#7` onto a string that already had one. `label` stays
+   * exactly what `devices.label` says; this is the other half.
+   */
+  number: z.number().int().nullable(),
   mode: z.enum(['lease', 'assist', 'partial', 'skipped']),
   reason: z.string().nullable(),
   aspectDrift: z.boolean(),

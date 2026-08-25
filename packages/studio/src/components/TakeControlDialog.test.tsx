@@ -54,6 +54,30 @@ describe('TakeControlDialog — smoke render', () => {
     await waitFor(() => expect(screen.getByText('Take control of Pixel 7 from Alice?')).toBeTruthy())
   })
 
+  /**
+   * Plan 124 §4.4, step 124.3 — `deviceLabel` stays a plain `string` prop and
+   * the caller composes it with `formatDeviceName()`. What this pins is the
+   * other half of that contract: the value is rendered VERBATIM at every
+   * mention, so a composed name never arrives twice (`#7 #7 Galaxy A15`),
+   * which is exactly the failure plan 124 §10's note on `MirrorMember`
+   * records for the popup's own member list.
+   */
+  test('an already-composed name is rendered verbatim, never composed twice', async () => {
+    renderWithApi(
+      <TakeControlDialog
+        deviceId="dev-1"
+        deviceLabel="#7 Galaxy A15"
+        holder={{ kind: 'user', id: 'u1', label: 'Alice', runId: null, takeable: true, acquiredAt: 0, expiresAt: null }}
+        open
+        onOpenChange={() => {}}
+        onTaken={() => {}}
+      />,
+      {},
+    )
+    await waitFor(() => expect(screen.getByText('Take control of #7 Galaxy A15 from Alice?')).toBeTruthy())
+    expect(document.body.textContent).not.toContain('#7 #7')
+  })
+
   test('open, holder is an agent: fetches the run/thread title without throwing', async () => {
     renderWithApi(
       <TakeControlDialog

@@ -177,12 +177,15 @@ describe('POST /api/devices/prep/apply writes ONLY the keys the operator chose',
     const res = await app.request('/prep/apply', applyReq({ deviceIds: ['a'], prep: { rotation: 'lock-portrait' } }))
     expect(res.status).toBe(200)
 
-    // The one chosen key moved; the four nobody touched are untouched — NOT
-    // reset to the schema defaults (`while-charging`/`auto`/`true`/`false`),
-    // which is what a whole-object write would have done here.
+    // The one chosen key moved; the five nobody touched are untouched — NOT
+    // reset to the schema defaults (`always`/`auto`/`true`/`false`), which is
+    // what a whole-object write would have done here.
     expect(prepOf(db, 'a')).toEqual({
       disableAnimations: false,
       keepAwake: 'always',
+      // Never sent by this request, and the seed above did not set it either,
+      // so it holds `DeviceSettingsSchema`'s own default (plan 125 §4.2).
+      screenOffTimeoutMs: 1800000,
       standbyScreenOff: true,
       rotation: 'lock-portrait',
       textInput: 'agent',
@@ -205,8 +208,9 @@ describe('POST /api/devices/prep/apply writes ONLY the keys the operator chose',
     seedDevice(db, 'a')
     const res = await app.request('/prep/apply', applyReq({ deviceIds: ['a'], prep: {} }))
     expect(res.status).toBe(400)
-    // And nothing was written.
-    expect(prepOf(db, 'a').keepAwake).toBe('while-charging')
+    // And nothing was written — the seeded device still holds the schema
+    // default, which plan 125 §3.3 moved to `always`.
+    expect(prepOf(db, 'a').keepAwake).toBe('always')
   })
 
   test('a device whose stored settings do not parse is REFUSED and named — never merged onto a blank slate', async () => {
@@ -229,7 +233,10 @@ describe('POST /api/devices/prep/apply writes ONLY the keys the operator chose',
   test('`changed` names only the keys that actually moved on THIS device', async () => {
     const { db, app } = makeApp()
     seedDevice(db, 'a', { settings: DeviceSettingsSchema.parse({ prep: { keepAwake: 'always' } }) })
-    seedDevice(db, 'b')
+    // Explicitly on the OLD value, not the schema default: plan 125 §3.3 moved
+    // that default to `always`, so a plain `seedDevice` would already hold the
+    // value this request applies and the test would assert nothing.
+    seedDevice(db, 'b', { settings: DeviceSettingsSchema.parse({ prep: { keepAwake: 'while-charging' } }) })
     const res = await app.request('/prep/apply', applyReq({ deviceIds: ['a', 'b'], prep: { keepAwake: 'always' } }))
     const report = await reportOf(res)
     expect(report.results.find((r) => r.deviceId === 'a')?.changed).toEqual([])

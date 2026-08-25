@@ -301,6 +301,24 @@ const FleetDeviceRowSchema = z.looseObject({
   deviceId: z.string(),
   stableId: z.string(),
   label: z.string(),
+  /**
+   * The device's operator-facing number, `null` when it has none (plan 124
+   * §3.7's table names this row as one of the five payloads that named a
+   * device and carried no number).
+   *
+   * Nullable but NOT optional, deliberately: the server half that builds this
+   * row (`service/apply.ts`'s `loadFleetState`) ships inside the same pack as
+   * this file, so there is no version skew for a `.default(null)` to absorb —
+   * a row arriving here without the field would mean the pack's two halves
+   * disagree, and failing the parse says that out loud instead of rendering
+   * every device unnumbered and looking like a farm that allocated none.
+   *
+   * `FleetDeviceRow` satisfies `@enkaku/ui`'s structural `SearchableDevice`
+   * with this field present, which is what lets `matchesDeviceQuery` and
+   * `deviceSearchTerms` be used on these rows without widening them into a
+   * `DeviceInfo` (plan 124 §4.1's "why the shapes are structural").
+   */
+  number: z.number().int().nullable(),
   lan: DeviceLanAddressSchema,
   assignment: StoredAssignmentSchema,
 })

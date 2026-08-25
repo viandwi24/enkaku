@@ -138,3 +138,36 @@ describe('ScheduleDetailPage — Stop the last run (plan 94 §3.9, §4.9, step 9
     expect(screen.queryByText('Last run')).toBeNull()
   })
 })
+
+/**
+ * Plan 124 §4.4 Group D, criterion 6, step 124.4 — the Target card's explicit
+ * device list. A schedule that fires on three of forty-five identical phones
+ * named all three the same thing, which made the card unreadable exactly when
+ * it mattered: deciding whether a schedule points at the phones you meant.
+ * It is a `.join(', ')` sentence, so the `string` form of the rule (§3.2).
+ */
+describe('ScheduleDetailPage — the target device list names numbers (plan 124 §4.4)', () => {
+  const devices = [
+    { id: 'device-1', label: 'Galaxy A15', stableId: 'stable-1', status: 'idle', tags: [], number: 7 },
+    { id: 'device-2', label: 'Galaxy A15', stableId: 'stable-2', status: 'idle', tags: [], number: 12 },
+  ]
+  const twoDeviceSchedule = { ...schedule, deviceIds: ['device-1', 'device-2'] }
+
+  test('two identically labelled phones are told apart', async () => {
+    setSearchParams({ id: 'sched-1' })
+    renderWithApi(<ScheduleDetailPage />, {
+      ...baseResponses({ body: { schedule: twoDeviceSchedule, resolvesTo: null } }),
+      '/api/devices*': { body: { items: devices, nextCursor: null, total: 2 } },
+    })
+    await waitFor(() => expect(screen.getByText('#7 Galaxy A15, #12 Galaxy A15')).toBeTruthy())
+  })
+
+  test('a device with no number keeps its bare label, and an unresolved id its truncated one (criterion 7)', async () => {
+    setSearchParams({ id: 'sched-1' })
+    renderWithApi(<ScheduleDetailPage />, {
+      ...baseResponses({ body: { schedule: { ...schedule, deviceIds: ['device-1', 'gone-abcdefgh'] }, resolvesTo: null } }),
+      '/api/devices*': { body: { items: [{ ...devices[0], number: null }], nextCursor: null, total: 1 } },
+    })
+    await waitFor(() => expect(screen.getByText('Galaxy A15, gone-abc')).toBeTruthy())
+  })
+})

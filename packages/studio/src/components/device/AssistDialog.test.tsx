@@ -68,6 +68,31 @@ describe('AssistDialog — smoke render (plan 91 §3.12)', () => {
     expect(document.body.textContent).toContain('is not paused and is not cancelled')
   })
 
+  /**
+   * Plan 124 §4.4, step 124.3 — `deviceLabel` stays a plain `string` prop and
+   * the caller composes it with `formatDeviceName()`. What this pins is the
+   * other half of that contract: the value is rendered VERBATIM at every
+   * mention, so a composed name never arrives twice (`#7 #7 Galaxy A15`),
+   * which is exactly the failure plan 124 §10's note on `MirrorMember`
+   * records for the popup's own member list.
+   */
+  test('an already-composed name is rendered verbatim, never composed twice', async () => {
+    renderWithApi(
+      <AssistDialog
+        deviceId="dev-1"
+        deviceLabel="#7 Galaxy A15"
+        primary={JOB_PRIMARY}
+        grantTtlSec={300}
+        open
+        onOpenChange={() => {}}
+        onAssisted={() => {}}
+      />,
+      {},
+    )
+    await waitFor(() => expect(screen.getByText('Assist #7 Galaxy A15 while its job keeps control?')).toBeTruthy())
+    expect(document.body.textContent).not.toContain('#7 #7')
+  })
+
   test('a non-round TTL still reads correctly (mm:ss form)', async () => {
     renderWithApi(
       <AssistDialog

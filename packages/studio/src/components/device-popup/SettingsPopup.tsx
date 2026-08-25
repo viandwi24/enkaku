@@ -23,7 +23,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { DeviceVideoFields } from '@/components/video/DeviceVideoFields'
 import { TagEditor } from '@/components/TagEditor'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, LoadingRows, api, useAction } from '@enkaku/ui'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, LoadingRows, api, formatDeviceName, useAction } from '@enkaku/ui'
 
 /**
  * The device popup's one sectioned Settings popup (plan 103 §3.3, §4.2 row
@@ -86,6 +86,16 @@ export function SettingsPopup({
   const [farmVideo, setFarmVideo] = useState<FarmSettings['video'] | null>(null)
   const [section, setSection] = useState('general')
   const { run, isPending } = useAction()
+
+  // Plan 124 §4.4 Group B, step 124.2 — `#7 Galaxy A15`, used by the dialog
+  // title and by the two panels that write outcome sentences naming this
+  // device. This popup is opened from a tile in a rack of physically
+  // identical phones, so "Settings — SM-F721U1" told the operator nothing
+  // about WHICH one they were about to change. `device.number` is `undefined`
+  // only on a hand-built test fixture (`DeviceInfoSchema.number` defaults to
+  // `null` on a real parse); `formatDeviceName` renders the bare label for
+  // both, never `#null` (criterion 7).
+  const deviceName = formatDeviceName(device.number, device.label)
 
   // Fetched once when the popup opens, not on every render — the same
   // deviceSchema `app/device/page.tsx` reads from `/api/settings`, needed
@@ -184,12 +194,12 @@ export function SettingsPopup({
       // Actions/Inspector/Record do.
       id: 'preparation',
       title: 'Preparation',
-      render: () => <PreparationPanel deviceId={deviceId} deviceLabel={device.label} canUse={canUse} />,
+      render: () => <PreparationPanel deviceId={deviceId} deviceLabel={deviceName} canUse={canUse} />,
     },
     {
       id: 'agent',
       title: 'Agent',
-      render: () => <AgentPanel deviceId={deviceId} deviceLabel={device.label} canUse={canUse} />,
+      render: () => <AgentPanel deviceId={deviceId} deviceLabel={deviceName} canUse={canUse} />,
     },
     {
       // Plan 103 §5, closing step 103.11's audit row 18 — `DeviceVideoFields`
@@ -285,7 +295,7 @@ export function SettingsPopup({
           content, not past the point where it costs the thing it floats over. */}
       <DialogContent overlay={false} className="sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>Settings — {device.label}</DialogTitle>
+          <DialogTitle>Settings — {deviceName}</DialogTitle>
         </DialogHeader>
         {/* **A fixed frame: the section nav stays put, the content pane is the
             only scroller** (owner-reported, 2026-08-17: *"antar tab ganti

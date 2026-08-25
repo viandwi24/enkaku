@@ -4,6 +4,7 @@ import type { AdbClient } from '@enkaku/adb'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createAdbMetricsStore } from '../device/adb-metrics'
+import { allocateDeviceNumber } from '../registry/device-number'
 import type { AuthEnv } from '../auth/middleware'
 import { createAdbStatsRoutes } from './adb-stats'
 
@@ -72,6 +73,39 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     const d2 = body.devices.find((d) => d.deviceId === 'd2')
     expect(d2?.queueDepth).toBe(0)
     expect(d2?.consecutiveFailures).toBe(0)
+  })
+
+  /**
+   * Plan 124 §3.7 — one of the five payloads that named a device and carried
+   * no number. This one is a diagnostics table: "3 commands queued" is
+   * useless on a rack of phones all labelled `SM-F721U1` unless the row says
+   * WHICH phone. The label is composed server-side here (unlike `DeviceRef`,
+   * which ships the number as its own field) because every consumer renders
+   * it as one opaque string and none of them holds a `DeviceInfo` to compose
+   * against — see the schema's own note in `packages/protocol/src/api/adb.ts`.
+   */
+  test('each device row is named with its number, and an unnumbered device keeps its bare label (plan 124 §3.7)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'd1', 'SER1')
+    seedDevice(db, 'd2', 'SER2')
+    allocateDeviceNumber(db, 'stable-d1')
+
+    const inner = createAdbStatsRoutes({
+      db,
+      client: () => fakeAdbClient(),
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+    })
+    const app = withUser('operator', inner)
+    const res = await app.request('/')
+    const body = (await res.json()) as { devices: Array<{ deviceId: string; label: string }> }
+    expect(body.devices.find((d) => d.deviceId === 'd1')?.label).toBe('#1 Phone d1')
+    // No reservation → the bare label. Never `#null`, never a stray `#`.
+    expect(body.devices.find((d) => d.deviceId === 'd2')?.label).toBe('Phone d2')
   })
 
   test('returns zeroed global figures when adb is not up yet (orchestrator mode, or still provisioning)', async () => {

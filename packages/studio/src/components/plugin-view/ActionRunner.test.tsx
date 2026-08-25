@@ -91,9 +91,9 @@ function renderRunner(
 describe('ActionRunner — the confirmation names the target, and is never a template', () => {
   test('a row action names the row (by the view’s rowKey) and the device', async () => {
     renderRunner()
-    await waitFor(() => expect(screen.getByText('Switch to this account — alice on Pixel 7?')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Switch to this account — alice on #12 Pixel 7?')).toBeTruthy())
     // The row's own value and the device label, both present in the body too.
-    expect(screen.getByText('alice on Pixel 7')).toBeTruthy()
+    expect(screen.getByText('alice on #12 Pixel 7')).toBeTruthy()
   })
 
   test('the author’s `confirm` sentence is rendered verbatim, beneath the named target', async () => {
@@ -104,16 +104,39 @@ describe('ActionRunner — the confirmation names the target, and is never a tem
   test('nothing rendered anywhere contains `{{` — there is no interpolation path at all', async () => {
     const templated = action({ ...SWITCH_TO, confirm: 'Switch to @{{username}}?' })
     renderRunner({ action: templated })
-    await waitFor(() => expect(screen.getByText('Switch to this account — alice on Pixel 7?')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Switch to this account — alice on #12 Pixel 7?')).toBeTruthy())
     // The braces survive as literal text — proof they were never a template
     // — and the *named* target came from the row instead.
     expect(document.body.textContent).toContain('Switch to @{{username}}?')
-    expect(screen.getByText('Switch to this account — alice on Pixel 7?').textContent).not.toContain('{{')
+    expect(screen.getByText('Switch to this account — alice on #12 Pixel 7?').textContent).not.toContain('{{')
   })
 
   test('a device with no label falls back to the stable id rather than saying nothing', async () => {
     renderRunner({ row: { ...ROW, device: { ...ROW.device!, label: null } } })
-    await waitFor(() => expect(screen.getByText('Switch to this account — alice on SER1?')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Switch to this account — alice on #12 SER1?')).toBeTruthy())
+  })
+
+  /**
+   * Plan 124 §0.1, goal 1, criterion 6 — the confirmation for a plugin action
+   * is the sentence that puts a device at stake, and on a rack of physically
+   * identical phones the label alone names three of them at once.
+   */
+  test('the confirmation names the device by its NUMBER as well as its label', async () => {
+    renderRunner({ row: { ...ROW, device: { ...ROW.device!, number: 31 } } })
+    await waitFor(() => expect(screen.getByText('Switch to this account — alice on #31 Pixel 7?')).toBeTruthy())
+  })
+
+  /**
+   * Criterion 7 — a device with no number reads as its bare label. Asserted on
+   * COUNTS rather than on nodes: a failing `expect(node).toBeNull()` inside a
+   * retrying `waitFor` serialises a happy-dom element into a ~98 MB report
+   * (plan 124 §10's own note from 124.1).
+   */
+  test('a device with no number renders the bare label — no `#`, no `#null`', async () => {
+    renderRunner({ row: { ...ROW, device: { ...ROW.device!, number: null } } })
+    await waitFor(() => expect(screen.queryAllByText('Switch to this account — alice on Pixel 7?').length).toBe(1))
+    expect(document.body.textContent).not.toContain('#null')
+    expect(document.body.textContent).not.toContain('# Pixel 7')
   })
 
   test('confirming POSTs the row verbatim, with $device and $entry alongside its own fields', async () => {
@@ -161,7 +184,7 @@ describe('ActionRunner — the form path', () => {
     renderRunner({ action: RENAME, actionId: 'rename' }, {})
     await waitFor(() => expect(screen.getByText('Save')).toBeTruthy())
     fireEvent.click(screen.getByText('Save'))
-    await waitFor(() => expect(screen.getByText('Rename account — alice on Pixel 7?')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Rename account — alice on #12 Pixel 7?')).toBeTruthy())
   })
 
   test('the collected values are POSTed as `form`, beside the row', async () => {
@@ -172,7 +195,7 @@ describe('ActionRunner — the form path', () => {
     )
     await waitFor(() => expect(screen.getByText('Save')).toBeTruthy())
     fireEvent.click(screen.getByText('Save'))
-    await waitFor(() => expect(screen.getByText('Rename account — alice on Pixel 7?')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Rename account — alice on #12 Pixel 7?')).toBeTruthy())
     fireEvent.click(screen.getByText('Rename account', { selector: 'button' }))
 
     await waitFor(() => expect(onDone).toHaveBeenCalled())
@@ -252,6 +275,23 @@ describe('ActionRunner — the target path', () => {
     fireEvent.click(screen.getByText('Sync every device', { selector: 'button' }))
     await waitFor(() => expect(onDone).toHaveBeenCalled())
     expect(apiMock.calls.find((c) => c.path === '/api/plugins/tiktok/action/syncAll')?.body).toEqual({})
+  })
+
+  /**
+   * Plan 124 §4.4 Group H — the OTHER place this component names a device: a
+   * `job` action with `device: 'picker'` has no row to read, so the name comes
+   * from the picked `DeviceInfo`. `DevicePicker` itself has listed `#N Label`
+   * since plan 89; a confirmation that dropped the number would name a
+   * different-looking device than the row the operator just clicked.
+   */
+  test('a picked device is confirmed by its number too, not by the label alone', async () => {
+    const runOne = action({ kind: 'job', label: 'Sync one', script: 'tiktok/list-accounts@latest', device: 'picker' })
+    const numbered = { ...DEVICES, items: [{ ...device('dev-9', 'SER9', 'Pixel 6'), number: 9 }] }
+    renderRunner({ action: runOne, actionId: 'syncOne', row: null }, { '/api/devices*': { body: numbered } })
+    await waitFor(() => expect(screen.getByText('Pixel 6')).toBeTruthy())
+    fireEvent.click(screen.getByText('Pixel 6'))
+    fireEvent.click(screen.getByText('Continue'))
+    await waitFor(() => expect(screen.getByText('Sync one — #9 Pixel 6?')).toBeTruthy())
   })
 
   test('a selection target sends the table’s own selection, with no picker in between', async () => {

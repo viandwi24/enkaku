@@ -2,7 +2,7 @@
 
 import { Loader2, Moon, Sun } from 'lucide-react'
 import type { DeviceInfo, DeviceReadiness, Readiness } from '@enkaku/protocol'
-import { Button, cn, useAction } from '@enkaku/ui'
+import { Button, cn, formatDeviceName, useAction } from '@enkaku/ui'
 import { setDeviceReadiness } from '@/lib/readiness'
 
 /**
@@ -87,7 +87,12 @@ export function ReadinessControl({
         e.preventDefault()
         e.stopPropagation()
         void run(key, () => setDeviceReadiness(device.id, target), {
-          failure: `Could not ${label.toLowerCase()} ${device.label}`,
+          // Plan 124 §1 goal 1, §4.4 Group F — this control renders on every
+          // tile and every card, so its failure toast is one of the most
+          // frequently seen device names in the product. A rack of
+          // identically-labelled phones makes "Could not sleep moto g06"
+          // useless; the number is what makes it actionable.
+          failure: `Could not ${label.toLowerCase()} ${formatDeviceName(device.number, device.label)}`,
         })
       }}
     >

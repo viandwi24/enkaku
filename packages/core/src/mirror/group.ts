@@ -70,6 +70,22 @@ export interface MirrorManagerDeps {
   /** `devices.label`, or the id itself when the device row cannot be found — a `MirrorMember` always carries something a human can read (never a bare uuid presented as if it were one). */
   deviceLabel: (deviceId: string) => string
   /**
+   * The device's number from `device_numbers`, or `null` — the other half of
+   * `MirrorMember`'s identity (plan 124 §3.7, plan 89 §3.1).
+   *
+   * Its own accessor rather than a widened `deviceLabel` return, for the same
+   * reason `nodeIdFor` above is its own tiny function: this file resolves
+   * members by `deviceId` and has no `Db` of its own, and threading the
+   * `device_numbers` table in here to save one callback would give the mirror
+   * manager a database dependency it otherwise does not have.
+   *
+   * OPTIONAL, and `null` when absent, because a host built before plan 124 —
+   * and every test harness in `group.test.ts`, which constructs these deps by
+   * hand — is a farm where the number simply is not known here. Plan 89 §3.3
+   * already fixed what that renders as: the bare label, never `#null`.
+   */
+  deviceNumber?: (deviceId: string) => number | null
+  /**
    * The SAME `canAssist(role, mode)` gate `assist.start` enforces (§3.6),
    * checked once per MEMBER that would need a fresh co-control grant — not
    * once for the whole `mirror.start` call, so an operator who lacks
@@ -357,6 +373,12 @@ function membersOf(deps: MirrorManagerDeps, group: MirrorGroup): MirrorMember[] 
   return [...group.members.entries()].map(([deviceId, m]) => ({
     deviceId,
     label: deps.deviceLabel(deviceId),
+    // Plan 124 §3.7 — the number travels beside the label, never inside it
+    // (§3.1). A group is bounded by `mirror.maxDevices` (20 default, 64
+    // ceiling), and this runs on every `reconcile`/auto-drop, so the accessor
+    // it calls is a keyed lookup, not a scan — see `ws-handlers.ts`, which
+    // resolves it through `lookupDeviceNumber`'s indexed `stableId` read.
+    number: deps.deviceNumber?.(deviceId) ?? null,
     mode: m.mode,
     reason: m.reason,
     aspectDrift: m.aspectDrift,

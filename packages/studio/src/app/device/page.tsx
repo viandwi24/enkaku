@@ -52,7 +52,7 @@ import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { TableCell, TableHead, Button, relativeTime, duration, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
+import { TableCell, TableHead, Button, formatDeviceName, relativeTime, duration, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
@@ -485,7 +485,14 @@ function DeviceDetail() {
       {
         failure: 'Could not reconnect the device',
         onSuccess: (outcome) => {
-          const label = device?.label ?? 'The device'
+          // Plan 124 §4.4 Group D, step 124.4 — `#7 Galaxy A15`, not
+          // `Galaxy A15`. All four toasts below read the SAME `label`, so
+          // composing once here is what keeps them from disagreeing the way
+          // `AdmitDeviceDialog`'s two ternary halves did (§0.1). `device` can
+          // still be null on the very first reconnect after a cold load,
+          // which is what the 'The device' fallback is for — and it is a
+          // sentence, not a name, so it never gets a number.
+          const label = device ? formatDeviceName(device.number, device.label) : 'The device'
           if (outcome.result === 'already-connected') toast.success(`${label} is already connected`)
           else if (outcome.result === 'connected') toast.success(`${label} reconnected from ${outcome.address}`)
           else if (outcome.result === 'not-found') toast.error(`Could not find ${label} on the network`, { description: 'It did not answer at any remembered address.' })
@@ -873,7 +880,12 @@ function DeviceDetail() {
       </TabPanel>
 
       <TabPanel active={tab === 'agent'}>
-        <AgentPanel deviceId={device.id} deviceLabel={device.label} canUse={iHoldControl && !busy} />
+        {/* Plan 124 §4.4, step 124.4 — the four `deviceLabel: string` props in
+            the product are deliberately NOT widened into objects; their
+            callers compose instead (§4.4's own note). `AgentPanel` puts this
+            straight into toasts and a confirm title, all of which need a
+            plain string. */}
+        <AgentPanel deviceId={device.id} deviceLabel={formatDeviceName(device.number, device.label)} canUse={iHoldControl && !busy} />
       </TabPanel>
 
       <TabPanel active={tab === 'identity'}>
@@ -966,7 +978,7 @@ function DeviceDetail() {
       {heldBy && (
         <AssistDialog
           deviceId={device.id}
-          deviceLabel={device.label}
+          deviceLabel={formatDeviceName(device.number, device.label)}
           primary={heldBy}
           grantTtlSec={assistGrantTtlSec}
           open={assistOpen}

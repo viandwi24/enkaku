@@ -97,6 +97,29 @@ const ScanRowSchema = z.looseObject({
   stableId: z.string(),
   label: z.string().nullable(),
   status: z.string().nullable(),
+  /**
+   * The short human-facing number (plan 89 §3.1), as plan 124 §0.5 found it:
+   * **already on the wire and simply not read here.** The scan route LEFT JOINs
+   * `device_numbers` on `stableId` in the same statement that answers the page
+   * (`packages/core/src/api/plugins.ts`), so this costs nothing — no second
+   * request, no widened payload, no server change of any kind. The field was
+   * missing from this schema alone, which is why the Assignments tab named
+   * three physically identical phones `SM-F721U1, SM-F721U1, SM-F721U1`.
+   *
+   * `null` is a real state, not an error: a device whose reservation was
+   * released, or one that never had a number. `formatDeviceName`/`<DeviceName>`
+   * render the bare label for it (plan 124 criterion 7) — never `#null`.
+   *
+   * **Defaulted rather than merely nullable**, and that is this pack's own
+   * discipline rather than a deviation for its own sake: this file's header
+   * states the tier-C trade — a plugin narrows the wire to what its screen
+   * draws, and a field the core has not sent must never be an error in an
+   * operator's face. A pack can be published against a core older than plan
+   * 89's join; without the default, the whole Assignments tab would fail to
+   * parse instead of degrading to bare labels. `LogLineSchema.subject` below
+   * defaults for the same reason.
+   */
+  number: z.number().int().nullable().default(null),
   entry: KvEntrySchema.nullable(),
 })
 export type ScanRow = z.infer<typeof ScanRowSchema>

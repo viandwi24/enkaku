@@ -18,6 +18,10 @@ function makeDevice(id: string, label: string): DeviceInfo {
     id,
     stableId: id,
     serial: id,
+    // Plan 124 step 124.3 — a number on every fixture, because the report
+    // these tests read is exactly the surface that has to tell two
+    // identically labelled phones apart.
+    number: Number(id.replace(/\D/g, '')) || null,
     label,
     androidVersion: '15',
     apiLevel: 35,
@@ -121,6 +125,11 @@ describe('BulkProxyDialog — the report (plan 114 §3.9)', () => {
     await waitFor(() => expect(r.getByText('Phone 01')).toBeTruthy())
     expect(r.getByText('Phone 02')).toBeTruthy()
     expect(r.getByText('Phone 03')).toBeTruthy()
+    // Plan 124 §4.4, step 124.3 — and each of those names carries its number,
+    // which on a farm of identically modelled phones is the only part of the
+    // row that identifies a handset (`NamedOutcome.number`).
+    expect(r.getByText('#1')).toBeTruthy()
+    expect(r.getByText('#2')).toBeTruthy()
   })
 
   test('an applied-but-unverified device is not a failure, and the report says what was and was not proven', async () => {

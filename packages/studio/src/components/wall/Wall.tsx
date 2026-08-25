@@ -1,13 +1,15 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { Smartphone } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Smartphone, Sunrise } from 'lucide-react'
 import { AdbStatsResponseSchema, SettingsResponseSchema, type DeviceInfo, type JobInfo } from '@enkaku/protocol'
 import { WallTile } from './WallTile'
 import { TileGrid } from './TileGrid'
 import { TileSkeleton } from './TileSkeleton'
 import { useLiveSet } from './useLiveSet'
-import { EmptyState, api } from '@enkaku/ui'
+import { ws } from '@/lib/ws'
+import { READINESS_BLOCKED_REASON } from '@/lib/readiness'
+import { Button, EmptyState, api } from '@enkaku/ui'
 
 /**
  * `wall.rampConcurrency`'s schema default (plan 92 §5 step 92.1,
@@ -44,6 +46,63 @@ const DEFAULT_MAX_TILES = 8
 const EMPTY_DEVICES: DeviceInfo[] = []
 
 /**
+ * The same stable-reference trick as `EMPTY_DEVICES`, for the stream-error
+ * latch below: `setStreamErrors` returns THIS map (not a fresh `new Map()`)
+ * whenever nothing actually changed, so a no-op update never re-renders the
+ * whole grid. On a wall decoding 24-40 H.264 streams that is not a
+ * micro-optimisation — every avoidable re-render of this component is a
+ * re-render of every tile in it.
+ */
+const NO_STREAM_ERRORS: ReadonlyMap<string, string> = new Map()
+
+/**
+ * What "Wake N devices" (plan 125 §3.5, §4.3, answering plan 92 §9 Q2) will
+ * actually do, computed ONCE from the devices this wall is showing and used
+ * for both the button's own count and the request it sends. One computation,
+ * so the number on the button and the set that is acted on cannot disagree —
+ * the discipline `TargetPicker` already states as a rule ("no dialog can show
+ * a number that disagrees with what it will actually submit",
+ * `docs/design.md`).
+ */
+export interface WallWakeTarget {
+  /** Asleep and wakeable — the count the button names. */
+  wake: DeviceInfo[]
+  /** Asleep but refusable up front, with the reason a human reads. Reported, never silently dropped: `docs/design.md`'s "no count without names". */
+  skipped: Array<{ device: DeviceInfo; reason: string }>
+}
+
+/**
+ * Pure, exported for `Wall.test.tsx`.
+ *
+ * "Visible" means **the devices this wall is currently showing** — the list
+ * after the page's search and filters — not the `IntersectionObserver`
+ * viewport `useLiveSet` maintains. Two reasons, and the choice is deliberate
+ * rather than convenient: scroll position is not a set an operator can name
+ * or predict (a wake that depends on exactly how far you had scrolled is the
+ * "alarming" half of plan 92 §9 Q2's own hesitation), and the filtered list
+ * is precisely the set the operator composed on purpose and can see the size
+ * of.
+ *
+ * `offline`/`quarantined` are split out rather than filtered away because
+ * the core refuses a Wake for both (plan 43 §3.4, corrected by plan 49 §3.1)
+ * — sending those requests would produce failures that say nothing new, and
+ * dropping them silently would leave asleep tiles the report never mentions.
+ * Devices that are already `awake`/`hot` are not "skipped": they were never
+ * in scope.
+ */
+export function wallWakeTarget(devices: readonly DeviceInfo[]): WallWakeTarget {
+  const wake: DeviceInfo[] = []
+  const skipped: Array<{ device: DeviceInfo; reason: string }> = []
+  for (const d of devices) {
+    if (d.readiness.actual !== 'asleep') continue
+    if (d.status === 'offline') skipped.push({ device: d, reason: READINESS_BLOCKED_REASON.offline ?? 'offline' })
+    else if (d.status === 'quarantined') skipped.push({ device: d, reason: READINESS_BLOCKED_REASON.quarantined ?? 'quarantined' })
+    else wake.push(d)
+  }
+  return { wake, skipped }
+}
+
+/**
  * The devices list's Wall mode (Plan 42 §3.5, §4.6): every device's screen
  * live, at once, capped at `wall.maxTiles` — the wall is the existing video
  * stream at a low-rate quality profile, decoded by the existing path, never
@@ -69,6 +128,7 @@ export function Wall({
   onDeviceContextMenu,
   focusId = null,
   onFocus,
+  onWakeVisible,
   minTileWidthPx = 180,
 }: {
   devices: DeviceInfo[] | null
@@ -105,6 +165,20 @@ export function Wall({
   /** `?focus=` (plan 91 §3.11) — the one tile currently in the focus overlay. */
   focusId?: string | null
   onFocus?: (id: string) => void
+  /**
+   * "Wake all visible" (plan 125 §3.5, §4.3 — the answer to plan 92 §9 Q2,
+   * open since that plan). This component owns the BUTTON and the target
+   * set; the parent owns the requests and the report, because the report is
+   * the shared `OutcomeSummary`/`SkippedGroups` pair `app/page.tsx` already
+   * renders for "Wake selected" (plan 93 §3.15, step 93.11) and a second
+   * copy of it here would be exactly the fourth bulk pattern F15 exists to
+   * prevent. The `WallWakeTarget` handed over is the identical object the
+   * button counted, never a recomputation.
+   *
+   * Absent ⇒ no button at all: a caller with no way to run the wake must not
+   * be given an action that silently does nothing.
+   */
+  onWakeVisible?: (target: WallWakeTarget) => void
   /**
    * The Tile size control (plan 92 §3.11) — S/M/L maps to 140/180/260px via
    * `TILE_SIZE_PX` in `@/lib/prefs`, and the parent owns that mapping and
@@ -155,6 +229,80 @@ export function Wall({
   const jobByDevice = useMemo(() => new Map(jobs.map((j) => [j.deviceId, j])), [jobs])
   const selectedSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds])
 
+  /**
+   * The stream-error latch (plan 125 §0.5, §3.5, §4.3) — deviceId → the
+   * core's own reason for the session that just died.
+   *
+   * **One subscription for the whole grid, not one per tile.** `ws.on` adds
+   * a handler that is called for every JSON message the core sends, and a
+   * 40-tile wall registering 40 of them to watch for a message concerning
+   * one device is the kind of per-device cost `docs/design.md` rules out on
+   * exactly this surface. `WallTile` therefore takes the reason as a plain
+   * prop and owns no WS wiring of its own.
+   *
+   * `stream.ended` is emitted from ONE place in the core
+   * (`daemon.ts`'s `onSessionEnded`, wired to `packages/session`'s
+   * `onDisplayError`), so it genuinely means "this session died with an
+   * error" — a routine idle close or a last-subscriber-left close does not
+   * fire it. That is what makes latching on it safe: there is no ordinary
+   * lifecycle event to mistake for a failure.
+   */
+  const [streamErrors, setStreamErrors] = useState<ReadonlyMap<string, string>>(NO_STREAM_ERRORS)
+  useEffect(
+    () =>
+      ws.on((msg) => {
+        if (msg.type !== 'stream.ended') return
+        const { deviceId, reason } = msg.payload
+        setStreamErrors((prev) => {
+          if (prev.get(deviceId) === reason) return prev
+          const next = new Map(prev)
+          next.set(deviceId, reason)
+          return next
+        })
+      }),
+    [],
+  )
+
+  /**
+   * Clearing the latch. Three cases, and the FIRST one is the only subtle
+   * one:
+   *
+   *  1. **A session is open for this device again** — `readiness.actual`
+   *     rising into `hot` (`rawActual`: a live session entry is what makes a
+   *     device `hot`). It has to be the RISING EDGE, not the level: at the
+   *     instant a display error is reported the device is usually still
+   *     `hot`, and clearing on the level would wipe the latch in the same
+   *     commit it was set, restoring the exact defect this step fixes.
+   *  2. **The device went offline or into quarantine.** Those tile branches
+   *     render before the picture anyway, so `WallTile` unmounts `LiveView`;
+   *     a latch left behind would be waiting to re-mount it — and start a
+   *     session on a possibly-sleeping phone — the moment the device came
+   *     back. (`WallTile`'s own `pictureMountedRef` guard already refuses
+   *     that; this keeps the state honest as well as harmless.)
+   *  3. **The device left the list**, so nothing is holding its entry.
+   */
+  const prevHotRef = useRef<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    if (devices === null) return
+    const present = new Set(devices.map((d) => d.id))
+    const hot = new Set(devices.filter((d) => d.readiness.actual === 'hot').map((d) => d.id))
+    const becameHot = [...hot].filter((id) => !prevHotRef.current.has(id))
+    prevHotRef.current = hot
+    const unreachable = devices.filter((d) => d.status === 'offline' || d.status === 'quarantined').map((d) => d.id)
+    setStreamErrors((prev) => {
+      if (prev.size === 0) return prev
+      const drop = [...prev.keys()].filter((id) => !present.has(id) || becameHot.includes(id) || unreachable.includes(id))
+      if (drop.length === 0) return prev
+      if (drop.length === prev.size) return NO_STREAM_ERRORS
+      const next = new Map(prev)
+      for (const id of drop) next.delete(id)
+      return next
+    })
+  }, [devices])
+
+  /** See `wallWakeTarget` — one computation, shared by the button's count and the request it sends. */
+  const wakeTarget = useMemo(() => wallWakeTarget(devices ?? EMPTY_DEVICES), [devices])
+
   // Loading (Plan 92 §4.7, two rows sharing one skeleton): devices not yet
   // known, or devices known but the real live-tile budget is not — showing
   // tiles before the budget answers is exactly F14 (start the right number
@@ -186,7 +334,35 @@ export function Wall({
     // explains itself individually via its own tile placeholder (offline/
     // quarantined/asleep/"Show live"), so nothing here goes unexplained —
     // it is just no longer summarised in a sentence above the grid.
+    //
+    // Plan 125 §3.5, §4.3 adds ONE thing back above the grid, and it is
+    // deliberately not what 101.8 removed: an ACTION, not a readout. It is
+    // absent whenever there is nothing asleep to wake, so a healthy farm
+    // still shows a bare grid, and it never reports state the tiles do not
+    // already report themselves.
     <div className="space-y-5">
+      {onWakeVisible && wakeTarget.wake.length > 0 && (
+        // **Plan 92 §9 Q2, answered.** That question — "should the wall offer
+        // 'Wake all visible'?" — hesitated for a real reason, quoted in plan
+        // 125 §3.5: *"the default view can wake twenty phones with one
+        // click, which is either convenient or alarming depending on whose
+        // farm it is."* The answer is that the alarming version is the
+        // AUTOMATIC one. An action a person presses, that names in its own
+        // label exactly how many phones it will touch, and that appears only
+        // when there are phones to touch, is neither surprising nor
+        // reversible-by-accident.
+        //
+        // So the label states the count and nothing else: "Wake 12 devices",
+        // never a bare "Wake all" whose scope you learn afterwards. Nothing
+        // on this row is automatic, nothing on it is a side effect of
+        // viewing, and `wakeTarget` is the same object the click submits.
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" onClick={() => onWakeVisible(wakeTarget)}>
+            <Sunrise className="size-3.5" aria-hidden />
+            Wake {wakeTarget.wake.length} device{wakeTarget.wake.length === 1 ? '' : 's'}
+          </Button>
+        </div>
+      )}
       {sections.map(([title, list]) => (
         <div key={title ?? '__all__'}>
           {title !== null && (
@@ -223,6 +399,13 @@ export function Wall({
                   focused={d.id === focusId}
                   onFocus={() => onFocus?.(d.id)}
                   rootRef={liveSet.tileRef(d.id)}
+                  // Plan 125 §4.3 — the latched reason this device's last
+                  // session died, so the tile can keep `LiveView`'s own
+                  // retry overlay open instead of swapping it for an inert
+                  // "Screen off". `?? null` because `WallTile` treats
+                  // `undefined` and `null` alike but reads better with an
+                  // explicit absence.
+                  streamError={streamErrors.get(d.id) ?? null}
                 />
               </div>
             ))}

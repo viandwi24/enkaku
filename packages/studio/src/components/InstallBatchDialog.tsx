@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BatchResponseSchema, type BatchOrder, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
 import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
-import { SkippedGroups } from '@/components/bulk/SkippedGroups'
+import { SkippedGroups, deviceLabelIn, deviceNameIn } from '@/components/bulk/SkippedGroups'
 import { batchOutcomeCounts, batchOutcomeGroups, useBatchReport } from '@/components/bulk/use-batch-report'
 import { ReattachBanner } from '@/components/operations/ReattachBanner'
 import { TransferProgressBar } from '@/components/operations/TransferProgressBar'
@@ -122,7 +122,12 @@ export function InstallBatchDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const deviceLabel = (id: string) => pool.find((d) => d.id === id)?.label ?? id
+  // Plan 124 §4.4, step 124.3 — one lookup, two shapes. `deviceName` is the
+  // two-field form `batchOutcomeGroups` feeds into `NamedOutcome` (the number
+  // stays apart so `SkippedGroups` can dim it); `deviceLabel` is the composed
+  // `#7 Galaxy A15` string the prose sentences and `ReattachBanner` need.
+  const deviceName = (id: string) => deviceNameIn(pool, id)
+  const deviceLabel = (id: string) => deviceLabelIn(pool, id)
 
   // Plan 107 §3.6 — resolved against the CURRENT picker state, not just the
   // caller's own pre-fill, so editing the target while the dialog stays
@@ -183,7 +188,7 @@ export function InstallBatchDialog({
   }
 
   const counts = report.batch ? batchOutcomeCounts(report.batch) : null
-  const groups = report.batch ? batchOutcomeGroups(report.batch, report.jobs, deviceLabel) : null
+  const groups = report.batch ? batchOutcomeGroups(report.batch, report.jobs, deviceName) : null
 
   return (
     <Dialog

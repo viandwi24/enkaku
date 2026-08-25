@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { encodeVideoFrame } from '@enkaku/protocol'
 import { TooltipProvider } from '@enkaku/ui'
 
 /**
@@ -17,6 +18,13 @@ let wsRequestImpl: (msg: { type: string; id?: string; payload?: unknown }) => Pr
   Promise.reject(new Error('ws not available in test'))
 const wsSendCalls: { type: string; payload?: unknown }[] = []
 let wsListener: ((m: { type: string; payload: unknown }) => void) | null = null
+/**
+ * The binary (video frame) subscription, captured rather than discarded
+ * (plan 125 §4.7, step 125.11) — click→first-paint can only be asserted by
+ * actually delivering a frame, which is the one thing this mock never used
+ * to allow. Every pre-existing test is unaffected: none of them delivers one.
+ */
+let wsBinaryListener: ((buf: Uint8Array) => void) | null = null
 mock.module('@/lib/ws', () => ({
   WsRequestError: class WsRequestError extends Error {
     code: string
@@ -32,7 +40,12 @@ mock.module('@/lib/ws', () => ({
         wsListener = null
       }
     },
-    onBinary: () => () => {},
+    onBinary: (cb: (buf: Uint8Array) => void) => {
+      wsBinaryListener = cb
+      return () => {
+        wsBinaryListener = null
+      }
+    },
     onStatus: (cb: (v: boolean) => void) => {
       cb(true)
       return () => {}
@@ -45,6 +58,21 @@ mock.module('@/lib/ws', () => ({
   },
   coreBase: () => 'http://localhost:7700',
   newId: () => 'test-id',
+}))
+
+/**
+ * A stub H.264 renderer (plan 125 §4.7, step 125.11). The real one builds a
+ * `VideoDecoder`, which happy-dom does not have — and the click→paint test
+ * does not care what a frame LOOKS like, only that `markPainted()` ran. The
+ * h264 path is chosen over the PNG one for exactly that reason: it calls
+ * `markPainted()` synchronously after `decode()`, where PNG goes through
+ * `createImageBitmap`, which happy-dom also lacks.
+ * Only h264 responses reach this — every other test in this file answers
+ * `stream.start` with `codec: 'png'` and so never constructs a renderer.
+ */
+mock.module('@/lib/h264-decoder', () => ({
+  isWebCodecsSupported: () => true,
+  createH264Renderer: () => ({ decode: () => {}, close: () => {} }),
 }))
 
 /**
@@ -83,13 +111,14 @@ function rect(width: number, height = 0): DOMRect {
   return { width, height, top: 0, left: 0, right: width, bottom: height, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
 }
 
-const { LiveView } = await import('./LiveView')
+const { LiveView, markLiveViewIntent } = await import('./LiveView')
 
 afterEach(() => {
   cleanup()
   wsSendCalls.length = 0
   wsRequestImpl = () => Promise.reject(new Error('ws not available in test'))
   wsListener = null
+  wsBinaryListener = null
   resizeObserverCallback = null
   resizeObserverTarget = null
 })
@@ -571,5 +600,96 @@ describe('LiveView — fitContainer takes the picture\'s own aspect ratio (plan 
     )
     await waitFor(() => expect(getByLabelText('Device screen')).toBeTruthy())
     expect(resizeObserverTarget).toBeNull()
+  })
+})
+
+/**
+ * Click → first paint (plan 125 §4.7, §5 step 125.11).
+ *
+ * The browser half of the cold cast path, which nothing in this repo measured
+ * before — `scripts/bench-device-nfrs.ts`'s own header records that a real
+ * glass-to-glass figure needs a browser-driving harness that does not exist
+ * here, and plan 125 §2 keeps that out of scope. These tests pin the three
+ * properties that keep the number honest: it is measured from the CLICK, it
+ * is absent when nobody clicked, and it never claims to be glass-to-glass.
+ */
+describe('LiveView — click→first-paint (plan 125 §4.7, step 125.11)', () => {
+  function routeH264Start(streamId = 9) {
+    wsRequestImpl = (msg) => {
+      if (msg.type === 'stream.start') {
+        return Promise.resolve({
+          type: 'stream.started',
+          id: msg.id,
+          payload: { deviceId: 'dev-1', streamId, codec: 'h264', width: 1080, height: 2400 },
+        })
+      }
+      return Promise.reject(new Error(`unexpected request: ${msg.type}`))
+    }
+  }
+
+  /** One decodable-looking H.264 keyframe on `streamId` — the renderer is stubbed, so the bytes only have to parse. */
+  function deliverFrame(streamId = 9) {
+    // `act` because a frame is what sets `painted`/`clickToPaintMs`: this is a
+    // state update driven from outside React's own event system.
+    act(() => {
+      wsBinaryListener?.(
+        encodeVideoFrame(streamId, { codec: 'h264', keyframe: true, width: 1080, height: 2400, seq: 0 }, new Uint8Array([0, 0, 0, 1, 0x65])),
+      )
+    })
+  }
+
+  test('a marked click is reported as one number once the first frame paints', async () => {
+    markLiveViewIntent('dev-1')
+    routeH264Start()
+    renderCanvas()
+    await waitFor(() => expect(wsBinaryListener).not.toBeNull())
+    await waitFor(() => expect(document.body.textContent).toContain('streaming'))
+    deliverFrame()
+    await waitFor(() => expect(document.body.textContent).toContain('click→paint'))
+  })
+
+  test('no click, no number — a Wall tile that came up on its own never invents one', async () => {
+    routeH264Start()
+    renderCanvas()
+    await waitFor(() => expect(wsBinaryListener).not.toBeNull())
+    await waitFor(() => expect(document.body.textContent).toContain('streaming'))
+    deliverFrame()
+    // Assert on a COUNT, never on a node: a failing `toBeNull()` inside a
+    // retrying `waitFor` serialises a happy-dom element into a ~98 MB report.
+    await waitFor(() => expect(document.body.textContent).toContain('1080'))
+    expect(document.body.textContent).not.toContain('click→paint')
+  })
+
+  /**
+   * Criterion 14 asks for a number, and §2 forbids implying it is the §16
+   * glass-to-glass NFR. The label is the whole guard: "click→paint" states
+   * both ends of what was actually timed.
+   */
+  test('the readout never claims to be glass-to-glass', async () => {
+    markLiveViewIntent('dev-1')
+    routeH264Start()
+    renderCanvas()
+    await waitFor(() => expect(wsBinaryListener).not.toBeNull())
+    await waitFor(() => expect(document.body.textContent).toContain('streaming'))
+    deliverFrame()
+    await waitFor(() => expect(document.body.textContent).toContain('click→paint'))
+    expect(document.body.textContent).not.toContain('glass-to-glass')
+    expect(document.body.textContent).not.toContain('Glass-to-glass')
+  })
+
+  /**
+   * A mark belongs to one device. Marking `dev-2` must not hand `dev-1`'s
+   * view a start time it never had — the map is keyed, and this is what
+   * proves the key is actually read.
+   */
+  test('a mark for another device is not consumed by this one', async () => {
+    markLiveViewIntent('dev-2')
+    routeH264Start()
+    renderCanvas()
+    await waitFor(() => expect(wsBinaryListener).not.toBeNull())
+    await waitFor(() => expect(document.body.textContent).toContain('streaming'))
+    deliverFrame()
+    await waitFor(() => expect(document.body.textContent).toContain('1080'))
+    expect(document.body.textContent).not.toContain('click→paint')
   })
 })

@@ -453,9 +453,53 @@ describe('MirrorManager.start — node-owned devices are refused by name (§2 no
       log: createLogger('test'),
     })
     const { members } = await mirror.start({ ownerClientId: 'op', ownerUserId: null, focusDeviceId: 'node-dev', deviceIds: ['node-dev'] })
-    expect(members).toEqual([{ deviceId: 'node-dev', label: 'node-dev', mode: 'skipped', reason: 'node_owned', aspectDrift: false }])
+    // `number: null` — this harness wires no `deviceNumber` accessor, which is
+    // the "the number is not known here" case plan 124 §3.7 makes explicit:
+    // the bare label, never `#null` (plan 89 §3.3).
+    expect(members).toEqual([{ deviceId: 'node-dev', label: 'node-dev', number: null, mode: 'skipped', reason: 'node_owned', aspectDrift: false }])
     // A node-owned device never even reaches `leases`/`coControl` — no manual lease was acquired.
     expect(leases.getLease('node-dev')).toBeNull()
+  })
+})
+
+/**
+ * Plan 124 §3.7, §3.1 — `MirrorMember` is one of the five payloads that named
+ * a device and carried no number, so no mirror surface could tell two
+ * identically-labelled phones apart. The number rides as its OWN field: a
+ * consumer that already knows it (`DevicePopup`'s `labelFor` falls back to
+ * the `DeviceInfo` it holds) must never be handed a `label` with `#7` already
+ * baked in, or it composes a second one.
+ */
+describe('MirrorManager.start — every member carries its device number beside its label (plan 124 §3.7)', () => {
+  test('a numbered device reports its number; an unnumbered one reports null, and neither label is touched', async () => {
+    const db = seedDb({ 'dev-numbered': 'idle', 'dev-bare': 'idle' })
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    const { leases, coControl } = wireLeasesAndCoControl(states)
+    const mirror = createMirrorManager({
+      sessions: () => null,
+      states,
+      leases,
+      coControl,
+      jobs: { get: () => null } as unknown as Pick<JobService, 'get'>,
+      deviceLabel: (id) => `Phone ${id}`,
+      deviceNumber: (id) => (id === 'dev-numbered' ? 7 : null),
+      recorder: { record: () => {} },
+      incrementAssistCount: () => {},
+      assistAllowedFor: () => true,
+      config: defaultMirrorConfig,
+      log: createLogger('test'),
+    })
+    const { members } = await mirror.start({
+      ownerClientId: 'op',
+      ownerUserId: null,
+      focusDeviceId: 'dev-numbered',
+      deviceIds: ['dev-numbered', 'dev-bare'],
+    })
+    const byId = new Map(members.map((m) => [m.deviceId, m]))
+    expect(byId.get('dev-numbered')?.number).toBe(7)
+    expect(byId.get('dev-bare')?.number).toBeNull()
+    // The rule this plan exists to enforce: the number NEVER enters the label.
+    for (const m of members) expect(m.label).toBe(`Phone ${m.deviceId}`)
   })
 })
 

@@ -287,11 +287,48 @@ describe('Dashboard — connection filter', () => {
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('wifi phone')).toBeTruthy())
 
-    fireEvent.change(screen.getByPlaceholderText('Search name or serial…'), { target: { value: '192.168.1.51' } })
+    fireEvent.change(screen.getByPlaceholderText('Search number, name, or serial…'), { target: { value: '192.168.1.51' } })
 
     await waitFor(() => expect(screen.queryByText('usb phone')).toBeNull())
     expect(screen.queryByText('otg phone')).toBeNull()
     expect(screen.getByText('wifi phone')).toBeTruthy()
+  })
+
+  /**
+   * Plan 124 §1 criterion 1. Every tile and row on this screen has led with
+   * `#7` since plan 89, but this box — the most-used search in the product —
+   * matched only label, serial and address, so an operator reading the number
+   * off the phone in their hand and typing it got "no devices". Both query
+   * forms are asserted, because an operator types whichever the sticker shows.
+   *
+   * The two decoys deliberately carry NO `7` anywhere in their serial or
+   * address. An earlier draft of this test reused `otgDevice` (serial
+   * `10.20.0.37:5555`) and failed for a reason that was not a bug: `7` is in
+   * that serial, and serial is a legitimate part of this box's haystack.
+   *
+   * Assertions count nodes rather than holding one, per plan 124 §10: a
+   * failing `toBeNull()` on a happy-dom element serialises the whole tree and
+   * turns a one-second failure into a 77-second one.
+   */
+  test('searching a device number finds it, typed bare or with a #', async () => {
+    const numbered = { ...usbDevice, id: 'dev-numbered', label: 'numbered phone', stableId: 'stable-numbered', number: 7 }
+    const decoyA = { ...usbDevice, id: 'dev-decoy-a', label: 'decoy alpha', stableId: 'stable-decoy-a', serial: 'AAAA1234', number: 42 }
+    const decoyB = { ...usbDevice, id: 'dev-decoy-b', label: 'decoy beta', stableId: 'stable-decoy-b', serial: 'BBBB5566', number: null }
+    renderWithApi(<Dashboard />, {
+      ...responses,
+      '/api/devices?*': { body: { items: [numbered, decoyA, decoyB], nextCursor: null, total: 3 } },
+    })
+    await waitFor(() => expect(screen.queryAllByText('numbered phone').length).toBeGreaterThan(0))
+
+    const box = screen.getByPlaceholderText('Search number, name, or serial…')
+    fireEvent.change(box, { target: { value: '7' } })
+    await waitFor(() => expect(screen.queryAllByText('decoy alpha').length).toBe(0))
+    expect(screen.queryAllByText('decoy beta').length).toBe(0)
+    expect(screen.queryAllByText('numbered phone').length).toBeGreaterThan(0)
+
+    fireEvent.change(box, { target: { value: '#7' } })
+    await waitFor(() => expect(screen.queryAllByText('numbered phone').length).toBeGreaterThan(0))
+    expect(screen.queryAllByText('decoy alpha').length).toBe(0)
   })
 })
 
@@ -1095,6 +1132,141 @@ describe('Dashboard — Apply labels (plan 89 §3.7 point 3, §5 step 89.8)', ()
 
     await waitFor(() => expect(screen.getByText('0 ok · 1 failed · 0 skipped (1/1)')).toBeTruthy())
     expect(screen.getByText('device_not_found: no such device')).toBeTruthy()
+  })
+
+  /**
+   * Plan 124 §0.4, §4.6, criterion 12 — the bug this button shipped with.
+   * `mode: 'off'` is the farm DEFAULT, so on a fresh farm every device
+   * answers `state: 'off'`, and the old mapping counted that as `ok`:
+   * pressing "Apply labels" on 45 phones wrote nothing, changed nothing, and
+   * reported 45 successes. It is a skipped row with a stated reason now.
+   */
+  test('a device whose labelling mode is off is reported as SKIPPED with a reason, never as ok', async () => {
+    renderWithApi(<Dashboard />, {
+      ...responses,
+      '/api/devices/labels/apply': {
+        body: {
+          total: 2,
+          results: [
+            { deviceId: 'dev-1', state: { mode: 'off', state: 'off', reason: null, fingerprint: null, appliedAt: null, originalCaptured: false, capturedLockScreen: null }, error: null },
+            { deviceId: 'dev-2', state: { mode: 'off', state: 'off', reason: null, fingerprint: null, appliedAt: null, originalCaptured: false, capturedLockScreen: null }, error: null },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply labels' }))
+
+    await waitFor(() => expect(screen.getByText('0 ok · 0 failed · 2 skipped (2/2)')).toBeTruthy())
+    // The service leaves `reason: null` for `off` (from its side there was
+    // nothing to explain), so the report supplies the one sentence an
+    // operator can act on rather than printing the bare word "off".
+    expect(screen.getByText('labelling is off for this device')).toBeTruthy()
+  })
+})
+
+/**
+ * "Set number as wallpaper" from the selection toolbar (plan 124 §0.4, §3.5,
+ * §4.6, step 124.6, criterion 11) — the fleet twin of the device popup's own
+ * row, and a DIFFERENT action from "Apply labels" beside it: this one sets
+ * each selected device's mode to `wallpaper` first.
+ */
+describe('Dashboard — Set number as wallpaper on the selection (plan 124 §4.6, step 124.6)', () => {
+  const deviceB = { ...device, id: 'dev-2', label: 'pixel 8' }
+  const detail = (id: string, label: string) => ({
+    body: {
+      device: {
+        id,
+        stableId: `stable-${id}`,
+        serial: `serial-${id}`,
+        label,
+        androidVersion: '15',
+        apiLevel: 35,
+        screenW: 720,
+        screenH: 1600,
+        density: 280,
+        status: 'idle',
+        lastSeen: 1,
+        transport: 'adb-usb',
+        display: 'scrcpy',
+        liveDisplay: null,
+        input: 'adb-input',
+        inspection: 'ui-server',
+        settings: { proxy: { mode: 'off' }, labelling: { mode: 'off', showName: true } },
+        nodeId: null,
+      },
+    },
+  })
+  const responses = {
+    ...baseResponses,
+    '/api/devices?*': { body: { items: [device, deviceB], nextCursor: null, total: 2 } },
+    '/api/devices/dev-1': detail('dev-1', 'moto g06'),
+    '/api/devices/dev-2': detail('dev-2', 'pixel 8'),
+  }
+
+  beforeEach(() => setSearchParams({ view: 'list' }))
+
+  test('sets the mode on every selected device, applies ONCE, and never rounds an unavailable up', async () => {
+    const { apiMock } = renderWithApi(<Dashboard />, {
+      ...responses,
+      '/api/devices/labels/apply': {
+        body: {
+          total: 2,
+          results: [
+            { deviceId: 'dev-1', state: { mode: 'wallpaper', state: 'applied', reason: null, fingerprint: 'f1', appliedAt: 1, originalCaptured: true, capturedLockScreen: null }, error: null },
+            { deviceId: 'dev-2', state: { mode: 'wallpaper', state: 'unavailable', reason: 'this device has no number assigned', fingerprint: null, appliedAt: null, originalCaptured: false, capturedLockScreen: null }, error: null },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
+    fireEvent.click(screen.getByRole('button', { name: 'Set number as wallpaper' }))
+
+    await waitFor(() => expect(screen.getByText('Set number as wallpaper — result')).toBeTruthy())
+    // `PATCH /api/devices/:id` replaces the WHOLE settings blob, so each
+    // device is read before it is written (§3.5) — a `DeviceInfo` on this
+    // page carries no `settings` to read from.
+    expect(apiMock.calls.filter((c) => c.method === 'PATCH').length).toBe(2)
+    const patch = apiMock.calls.find((c) => c.method === 'PATCH')
+    expect((patch?.body as { settings: { proxy: unknown; labelling: unknown } }).settings.proxy).toEqual({ mode: 'off' })
+    expect((patch?.body as { settings: { labelling: unknown } }).settings.labelling).toEqual({ mode: 'wallpaper', showName: true })
+    // One fleet apply, never one per device.
+    expect(apiMock.calls.filter((c) => c.path === '/api/devices/labels/apply').length).toBe(1)
+
+    expect(screen.getByText('1 ok · 0 failed · 1 skipped (2/2)')).toBeTruthy()
+    expect(screen.getByText('this device has no number assigned')).toBeTruthy()
+  })
+
+  test('a device whose mode PATCH fails is reported as failed and left out of the apply', async () => {
+    const { apiMock } = renderWithApi(<Dashboard />, {
+      ...responses,
+      '/api/devices/dev-2': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'settings write failed' } } },
+      '/api/devices/labels/apply': {
+        body: {
+          total: 1,
+          results: [
+            { deviceId: 'dev-1', state: { mode: 'wallpaper', state: 'applied', reason: null, fingerprint: 'f1', appliedAt: 1, originalCaptured: true, capturedLockScreen: null }, error: null },
+          ],
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('moto g06')).toBeTruthy())
+
+    clickDevice('moto g06')
+    clickDevice('pixel 8')
+    fireEvent.click(screen.getByRole('button', { name: 'Set number as wallpaper' }))
+
+    await waitFor(() => expect(screen.getByText('Set number as wallpaper — result')).toBeTruthy())
+    const apply = apiMock.calls.find((c) => c.path === '/api/devices/labels/apply')
+    expect((apply?.body as { deviceIds: string[] }).deviceIds).toEqual(['dev-1'])
+    expect(screen.getByText('1 ok · 1 failed · 0 skipped (2/2)')).toBeTruthy()
+    expect(screen.getByText('settings write failed')).toBeTruthy()
   })
 })
 

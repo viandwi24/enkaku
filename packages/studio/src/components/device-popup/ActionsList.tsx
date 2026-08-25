@@ -3,13 +3,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
-import { ReconnectOutcomeSchema, ScriptListItemSchema, type Readiness } from '@enkaku/protocol'
+import {
+  DeviceLabelsApplyResponseSchema,
+  ReconnectOutcomeSchema,
+  ScriptListItemSchema,
+  type DeviceLabelState,
+  type Readiness,
+} from '@enkaku/protocol'
 import {
   Download,
   EthernetPort,
   ExternalLink,
   FileTerminal,
   FolderOpen,
+  Hash,
   ListChecks,
   Moon,
   Play,
@@ -22,7 +29,7 @@ import {
 } from 'lucide-react'
 import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
-import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
+import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { CutoverDialog } from '@/components/device/CutoverDialog'
 import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
@@ -43,9 +50,11 @@ import {
   TooltipTrigger,
   api,
   describeApiError,
+  formatDeviceName,
   useAction,
 } from '@enkaku/ui'
 import { setDeviceReadiness } from '@/lib/readiness'
+import { setNumberAsWallpaper, setWallpaperLabelMode, summariseLabelApply } from '@/lib/labelling'
 import { fetchAllPages } from '@/lib/api'
 import { AdbCommandDialog } from './AdbCommandDialog'
 import { FilesPopup, JobsPopup } from './ReadPopups'
@@ -160,10 +169,11 @@ function Row({
  * the full reasoning, flagged in this plan's own status line as a judgement
  * call rather than an owner ruling.
  *
- * **The list is thirteen rows on a USB device, twelve on a TCP one — a
- * deliberate, conditional exception to the fixed-twelve rule, not a silent
- * 13th row (see the "Move to the network…" row's own comment below for the
- * full reasoning).** Before this fix, a USB device's "Reconnect" row
+ * **The list is fourteen rows on a USB device, thirteen on a TCP one — two
+ * deliberate, conditional exceptions to the fixed-twelve rule, not silent
+ * appends (see the "Move to the network…" row's own comment below, and the
+ * "Set number as wallpaper" row's, for the full reasoning of each).** Before
+ * this fix, a USB device's "Reconnect" row
  * silently opened the cutover wizard instead of reconnecting — actively
  * misleading, and a live UX defect an operator hit this session, not a
  * design choice (`docs/plans/96-m61-hotfixes.md`). Reconnect now always
@@ -217,6 +227,32 @@ function Row({
  * identical `applyLabelsToSelected`/`setBulkTransferOpen` handlers the old
  * context menu called — so this is a route removed, not a capability lost.
  * Named here, not silently dropped, per this step's own instruction.
+ *
+ * **"Set number as wallpaper" (plan 124 §0.4, §3.5, §3.6, §4.6, step 124.6)
+ * is the one row this plan spends the budget on.** The black wallpaper
+ * carrying the device's number has worked end to end since plan 89 — the
+ * renderer, the guest-agent facet, the labelling service and four REST routes
+ * all exist. What did not exist was a way in: reaching it meant popup →
+ * Settings → the TENTH section of that dialog's left nav → change the mode →
+ * Save changes → Re-apply label, six clicks through two nested dialogs, and
+ * the last two could not even be merged because "Re-apply label" is
+ * `disabled` while the settings form is dirty. This row is that sequence,
+ * once.
+ *
+ * §4.2's row budget was checked rather than assumed (§3.6's own requirement).
+ * At the popup's default height (`DevicePopup.tsx`: `min(88vh, 720px)`) the
+ * side panel spends ~196px on its header, the identity meta row, the tab
+ * strip and the session-state block, leaving ~524px for the Actions tab —
+ * and a row is `h-8` (32px) inside a `space-y-0.5` (2px) stack, so fourteen
+ * rows are 14×32 + 13×2 = 474px. It fits, with room to spare. The stronger
+ * evidence is that fourteen rows are not even new: a USB device with a live
+ * multi-selection behind the popup ALREADY renders fourteen today (twelve
+ * fixed + "Move to the network…" + Wake/Sleep's conditional second row), and
+ * that was accepted by step 103.10. So "Open full device page" stays a row
+ * rather than being displaced into the popup header (§3.6's fallback).
+ * `SidePanel`'s Actions tab keeps its bounded `overflow-y-auto` for the case
+ * an operator drags the popup smaller than its default, which that file's own
+ * comment already calls a legitimate outcome rather than a layout defect.
  */
 export function ActionsList({
   deviceId,
@@ -289,6 +325,12 @@ export function ActionsList({
   const [readinessReport, setReadinessReport] = useState<{ verb: 'Wake' | 'Sleep'; okCount: number; total: number; refused: NamedOutcome[] } | null>(
     null,
   )
+  // Plan 124 §4.6, step 124.6 — the multi-candidate wallpaper report. The
+  // single-device press stays a toast (one device has one outcome, and a
+  // dialog for it would be ceremony); more than one device has N outcomes in
+  // up to five different states, which is exactly what `OutcomeSummary` +
+  // `SkippedGroups` exist for. Never a flattened "N failed" (§4.6).
+  const [wallpaperReport, setWallpaperReport] = useState<{ counts: OutcomeCounts; failed: NamedOutcome[]; skipped: NamedOutcome[] } | null>(null)
 
   // Fetched once, the same list the device page loads for its own Run
   // script dialog (`ScriptListItemSchema` — plan 95 §5 step 95.5, F8: a
@@ -361,6 +403,18 @@ export function ActionsList({
   // refusal (a running job, another viewer) never blocks the rest. Only
   // reached when `candidateIds.length > 1` — the single-candidate case below
   // keeps calling `setDeviceReadiness` directly, unchanged.
+  /**
+   * The name and number of one candidate, for a bulk report row (plan 124 §4.4
+   * Group F). The label stays BARE and the number rides beside it, never a
+   * pre-composed `#7 …` string: `SkippedGroups` renders the pair itself now
+   * (`NamedOutcome.number`), so composing here would print the number twice —
+   * the same trap §10 records for `MirrorMember`.
+   */
+  const outcomeNameOf = (id: string) => {
+    const found = devices.find((d) => d.id === id)
+    return { label: found?.label ?? id, number: found?.number ?? null }
+  }
+
   async function bulkSetReadiness(desired: Readiness, verb: 'Wake' | 'Sleep') {
     const ids = candidateIds
     const results = await Promise.allSettled(ids.map((id) => setDeviceReadiness(id, desired)))
@@ -369,9 +423,103 @@ export function ActionsList({
       if (r.status === 'fulfilled') return []
       const id = ids[i]
       if (!id) return []
-      return [{ deviceId: id, label: devices.find((d) => d.id === id)?.label ?? id, reason: describeApiError(r.reason) }]
+      return [{ deviceId: id, ...outcomeNameOf(id), reason: describeApiError(r.reason) }]
     })
     setReadinessReport({ verb, okCount, total: ids.length, refused })
+  }
+
+  /**
+   * Plan 124 §3.5, §4.6 — one press, two requests, and the second one is the
+   * truthful one.
+   *
+   * There is no per-key patch on `PATCH /api/devices/:id` (it replaces the
+   * whole `settings` blob), so setting the mode and applying the label cannot
+   * be one call. `lib/labelling.ts` owns the read-modify-write; this function
+   * owns only what the operator is told afterwards.
+   *
+   * **The toast reports the server's `state` verbatim.** `applied` is the only
+   * success. `partial` is a warning carrying the service's own text, which
+   * names WHICH surface took (`labelling.ts`'s `runWallpaperPass`: "only the
+   * home screen accepted the label — the other surface likely refused it").
+   * `unavailable` is an error carrying its reason ("this device's guest agent
+   * has no screen-label capability", "the device refused the label on both
+   * surfaces"). `stale`/`unknown`/`off` are neither success nor error and are
+   * named as themselves. A row that said "Done" over an `unavailable` result
+   * would be worse than no row at all (§3.5) — this is plan 89 §3.5's "two
+   * tiers, no silent fallback" applied to the action that triggers it.
+   */
+  function reportWallpaperState(state: DeviceLabelState) {
+    const name = formatDeviceName(device.number, device.label)
+    if (state.state === 'applied') {
+      toast.success(`${name} is showing its number on the home and lock screens`)
+    } else if (state.state === 'partial') {
+      toast.warning(`Only part of ${name}'s label took`, {
+        description: state.reason ?? 'One surface accepted the label and the other refused it.',
+      })
+    } else if (state.state === 'unavailable') {
+      toast.error(`Could not set ${name}'s number as its wallpaper`, {
+        description: state.reason ?? 'The device reported the label as unavailable.',
+      })
+    } else {
+      // `stale` (an older fingerprint is still on the phone), `unknown` (never
+      // asked, or offline) and `off` are not failures and are not successes.
+      // They are reported as what they are rather than rounded to either side.
+      toast.warning(`${name}'s label is ${state.state}`, { description: state.reason ?? 'The device did not confirm the label.' })
+    }
+  }
+
+  const setWallpaperOne = () =>
+    run('wallpaper-label', () => setNumberAsWallpaper(deviceId, device.settings), {
+      failure: `Could not set ${formatDeviceName(device.number, device.label)}'s number as its wallpaper`,
+      onSuccess: (state) => {
+        reportWallpaperState(state)
+        // The device's own `settings.labelling.mode` just changed, and the
+        // popup's identity row renders a `LabelStateBadge` from it — so the
+        // caller re-fetches, exactly as the connection rows already do.
+        onDeviceReloaded()
+      },
+    })
+
+  /**
+   * Plan 124 §4.6 — the same action over the whole candidate set: one PATCH
+   * per device (`Promise.allSettled`, the shape `bulkSetReadiness` above
+   * already uses, so one device's refusal never blocks the rest), then ONE
+   * `POST /api/devices/labels/apply` for every device whose PATCH landed, then
+   * `OutcomeSummary` + `SkippedGroups` grouped by the reported `state`.
+   *
+   * Nothing is pre-filtered here on number/agent/status. Those three checks
+   * gate the SINGLE-device row (below) because there the answer is knowable
+   * locally and a dead click is the worse outcome; across N devices the server
+   * already answers each one honestly and by name (`this device has no number
+   * assigned`, `this device's guest agent has no screen-label capability`),
+   * and a client-side skip would replace those exact words with a guess.
+   */
+  async function bulkSetWallpaper() {
+    const ids = candidateIds
+    const patched = await Promise.allSettled(ids.map((id) => setWallpaperLabelMode(id)))
+    const patchFailed: NamedOutcome[] = patched.flatMap((r, i) => {
+      const id = ids[i]
+      if (r.status === 'fulfilled' || !id) return []
+      return [{ deviceId: id, ...outcomeNameOf(id), reason: describeApiError(r.reason) }]
+    })
+    const applicable = ids.filter((_, i) => patched[i]?.status === 'fulfilled')
+    // `DeviceLabelsApplyBodySchema` requires at least one id, so a run where
+    // every PATCH failed reports those failures rather than sending a request
+    // the server would reject with a validation error nobody asked for.
+    const report =
+      applicable.length === 0
+        ? { counts: { ok: 0, failed: 0, skipped: 0, total: 0 }, failed: [], skipped: [] }
+        : summariseLabelApply(
+            (await api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: applicable } })).results,
+            applicable.length,
+            outcomeNameOf,
+          )
+    setWallpaperReport({
+      counts: { ...report.counts, failed: report.counts.failed + patchFailed.length, total: ids.length },
+      failed: [...report.failed, ...patchFailed],
+      skipped: report.skipped,
+    })
+    onDeviceReloaded()
   }
 
   const reconnect = () =>
@@ -381,11 +529,16 @@ export function ActionsList({
       {
         failure: 'Could not reconnect the device',
         onSuccess: (outcome) => {
-          if (outcome.result === 'already-connected') toast.success(`${device.label} is already connected`)
-          else if (outcome.result === 'connected') toast.success(`${device.label} reconnected from ${outcome.address}`)
+          // Plan 124 §1 goal 1, §4.4 Group F — a toast that names a device
+          // names it with its number. On a rack of identically-labelled
+          // phones "moto g06 reconnected" identifies nothing; "#7 moto g06
+          // reconnected" identifies exactly one.
+          const name = formatDeviceName(device.number, device.label)
+          if (outcome.result === 'already-connected') toast.success(`${name} is already connected`)
+          else if (outcome.result === 'connected') toast.success(`${name} reconnected from ${outcome.address}`)
           else if (outcome.result === 'not-found')
-            toast.error(`Could not find ${device.label} on the network`, { description: 'It did not answer at any remembered address.' })
-          else toast.error(`Could not reconnect ${device.label}`, { description: outcome.detail })
+            toast.error(`Could not find ${name} on the network`, { description: 'It did not answer at any remembered address.' })
+          else toast.error(`Could not reconnect ${name}`, { description: outcome.detail })
           onDeviceReloaded()
         },
       },
@@ -484,12 +637,72 @@ export function ActionsList({
           label={readinessAction.label}
           onSelect={() => {
             void run(`readiness-${device.id}`, () => setDeviceReadiness(device.id, readinessAction.target), {
-              failure: `Could not ${readinessAction.label.toLowerCase()} ${device.label}`,
+              failure: `Could not ${readinessAction.label.toLowerCase()} ${formatDeviceName(device.number, device.label)}`,
             })
           }}
           disabledReason={readinessUnreachable ? `Device is ${device.status} — readiness cannot be changed` : null}
         />
       )}
+      {/* Plan 124 §0.4, §4.6, step 124.6 — the owner's own headline ask, and
+          the one row this plan spends the budget on (the file header has the
+          fit measurement). Sits beside Wake/Sleep because it is the same kind
+          of thing: a single press that changes what the phone physically
+          shows, with no form in between.
+
+          Three disabled reasons, checked locally BEFORE any request, in this
+          order — a dead click is worse than a stated refusal, and each of
+          these is knowable without asking the server:
+
+          1. no number — there is literally nothing to draw (`PhysicalLabelling
+             Panel.tsx` already refuses "Re-apply label" with this wording);
+          2. offline/quarantined — reusing `readinessUnreachable`, the same
+             fact and the same first clause the Wake/Sleep row above states.
+             Only the second clause differs: claiming "readiness cannot be
+             changed" on a wallpaper row would be a true sentence about the
+             wrong thing;
+          3. no guest agent — the wallpaper tier IS the guest agent
+             (`WallpaperFacet.kt`); there is no host-side fallback for it.
+
+          **The agent check is deliberately COARSE and must stay that way.**
+          The precise fact is the `screen-label` capability, which lives on
+          `GET /api/devices/:id/guest-agent` — a request this popup would then
+          have to make on every open, for a row that is usually not pressed
+          (`packages/protocol/src/device.ts:278-285` records exactly why that
+          capability is not on `DeviceInfo`). A device whose agent is `ready`
+          but whose build lacks the facet therefore reaches the server and
+          comes back `unavailable` with the service's own words — reported
+          verbatim by the toast, never a silent success.
+
+          **This is not a toggle.** Pressing it again re-applies; it never
+          clears. Clearing stays in Settings → Labelling → Clear because it is
+          destructive on Android versions that cannot restore the original
+          wallpaper, and that dialog already says so (§3.5, §9 Q2).
+
+          At more than one candidate the row acts on all of them (the same
+          candidate-set rule Wake/Sleep and Forget follow) and reports through
+          the grouped dialog below; the local disabled checks are then dropped,
+          since they describe only the focused device — see
+          `bulkSetWallpaper`'s own comment. */}
+      <Row
+        icon={Hash}
+        label="Set number as wallpaper"
+        onSelect={
+          candidateIds.length > 1
+            ? () => void run('wallpaper-bulk', bulkSetWallpaper, { failure: 'Could not set the number as wallpaper' })
+            : () => void setWallpaperOne()
+        }
+        disabledReason={
+          candidateIds.length > 1
+            ? null
+            : device.number === null
+              ? 'This device has no number assigned yet.'
+              : readinessUnreachable
+                ? `Device is ${device.status} — the label cannot be written to it`
+                : device.agent !== 'ready'
+                  ? 'The Enkaku guest agent is not installed on this device — the wallpaper label needs it.'
+                  : null
+        }
+      />
       <Row
         icon={ListChecks}
         label={assistState === 'busy' ? 'Assisting' : 'Assist'}
@@ -565,9 +778,12 @@ export function ActionsList({
         onOpenChange={setAdbOpen}
       />
       <FilesPopup deviceId={deviceId} canUse={canUseLive} open={filesOpen} onOpenChange={setFilesOpen} />
+      {/* Plan 124 §4.4 — `deviceLabel` is a plain `string` prop and stays one
+          (§4.4's rule: those props are not widened into objects); the CALLER
+          composes the number. */}
       <JobsPopup
         deviceId={deviceId}
-        deviceLabel={device.label}
+        deviceLabel={formatDeviceName(device.number, device.label)}
         deviceOffline={device.status === 'offline'}
         open={jobsOpen}
         onOpenChange={setJobsOpen}
@@ -601,6 +817,30 @@ export function ActionsList({
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setReadinessReport(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Plan 124 §4.6 — the multi-candidate wallpaper report. Grouped by the
+          reported `state`, each group carrying the labelling service's own
+          reason text; `applied` is the only thing counted as ok, so a run
+          where every phone answered `unavailable` reads `0 ok`, never "done".
+          Only ever populated by `bulkSetWallpaper`; the single-device press
+          keeps its toast. */}
+      <Dialog open={wallpaperReport !== null} onOpenChange={(o) => !o && setWallpaperReport(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set number as wallpaper — result</DialogTitle>
+          </DialogHeader>
+          {wallpaperReport && (
+            <div className="space-y-3">
+              <OutcomeSummary counts={wallpaperReport.counts} label="Set number as wallpaper progress" />
+              <SkippedGroups failed={wallpaperReport.failed} skipped={wallpaperReport.skipped} />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWallpaperReport(null)}>
               Close
             </Button>
           </DialogFooter>

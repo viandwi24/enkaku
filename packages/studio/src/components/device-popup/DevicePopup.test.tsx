@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { useEffect } from 'react'
 import type { ComponentProps } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
 // `WallTile` (rendered for real below, for the decoder-count test) calls
@@ -32,6 +33,20 @@ let liveViewMounts: {
   mirror: { groupId: string; solo: boolean; onResult?: (r: unknown) => void } | undefined
   provisioning: { componentId: string; label: string; startedAt: number } | null | undefined
 }[] = []
+/**
+ * One entry per `LiveView` INSTANCE, as opposed to `liveViewMounts` above,
+ * which the stub appends to on every render and which is therefore a record
+ * of the PROPS each render was given, not a count of decoders.
+ *
+ * The distinction stopped being academic with plan 125 step 125.10: the popup
+ * now renders `<LiveView>` from its very first render instead of waiting for
+ * `GET /api/devices/:id`, so the same instance is rendered several times
+ * before the popup's chrome settles. The decoder-count test below asserts the
+ * plan-103 property *"8 streams, not 9"*, which is about instances, and a
+ * render tally can no longer stand in for it.
+ */
+let liveViewInstances: string[] = []
+let intentMarks: { deviceId: string; opts?: { onlyIfAbsent?: boolean } }[] = []
 mock.module('@/components/LiveView', () => ({
   LiveView: (props: {
     deviceId: string
@@ -47,8 +62,22 @@ mock.module('@/components/LiveView', () => ({
       mirror: props.mirror,
       provisioning: props.provisioning,
     })
+    // One push per mounted instance — see `liveViewInstances` above for why
+    // this is kept separate from the per-render `liveViewMounts` tally.
+    useEffect(() => {
+      liveViewInstances.push(props.deviceId)
+    }, [])
     return <div data-testid={`live-view-${props.deviceId}`} />
   },
+  /**
+   * Plan 125 §4.7, step 125.11 — the click→first-paint mark, recorded rather
+   * than executed (the real one writes a module-level map inside
+   * `LiveView.tsx`, which is stubbed out here entirely). `opts` is captured
+   * because `onlyIfAbsent` is the whole reason this call site exists in a
+   * form different from `WallTile`'s: a popup opened BY a tile double-click
+   * must not overwrite that tile's earlier, truer timestamp.
+   */
+  markLiveViewIntent: (deviceId: string, opts?: { onlyIfAbsent?: boolean }) => intentMarks.push({ deviceId, opts }),
 }))
 
 let wsRequestImpl: (msg: { type: string; payload?: unknown }) => Promise<unknown> = () =>
@@ -93,6 +122,10 @@ mock.module('@/lib/ws', () => ({
 
 const { DevicePopup, RELEASE_UNDO_MS, provisioningComponentFor } = await import('./DevicePopup')
 const { WallTile } = await import('@/components/wall/WallTile')
+// Imported the same deferred way as the two above (plan 125 §3.10, step
+// 125.5): `@/lib/auth` pulls in `@/lib/ws` for `coreBase`, so it must not be
+// evaluated before the `mock.module` call above has replaced that module.
+const { AuthContext } = await import('@/lib/auth')
 
 /**
  * `HardwareRail`/`ActionsList` render Radix `Tooltip`s (plan 103 §4.1,
@@ -108,13 +141,51 @@ function Popup(props: ComponentProps<typeof DevicePopup>) {
   )
 }
 
+/**
+ * The same popup, rendered as a SIGNED-IN operator (plan 125 §3.10, step
+ * 125.5). Every other test in this file renders `<Popup>` with no
+ * `AuthContext.Provider` at all, which is exactly the auth-disabled path
+ * (`useAuth()` falls back to its local-mode default, `user: null`) — so this
+ * file already proves acceptance criterion 10 by construction: with auth
+ * off, nothing about control changed.
+ */
+function PopupAs({ userId, ...props }: ComponentProps<typeof DevicePopup> & { userId: string }) {
+  return (
+    <AuthContext.Provider
+      value={{
+        user: { id: userId, email: 'me@example.com', role: 'admin' },
+        authMode: 'server',
+        setupNeeded: false,
+        refresh: async () => {},
+        logout: async () => {},
+      }}
+    >
+      <Popup {...props} />
+    </AuthContext.Provider>
+  )
+}
+
 afterEach(() => {
   cleanup()
   liveViewMounts = []
+  liveViewInstances = []
+  intentMarks = []
   wsSendCalls.length = 0
   wsRequestImpl = () => Promise.reject(new Error('ws not available in test'))
   wsListeners.clear()
 })
+
+/**
+ * The props `LiveView` was given on its MOST RECENT render for `deviceId`.
+ * `liveViewMounts.find(…)` returns the FIRST render's props, which since plan
+ * 125 step 125.10 is the render that happens before `GET /api/devices/:id`
+ * and the preparation fetch have answered anything — i.e. deliberately the
+ * one with the least filled in. Anything asserting on a late-arriving prop
+ * wants the latest render, not the first.
+ */
+function latestLiveViewProps(deviceId: string) {
+  return [...liveViewMounts].reverse().find((m) => m.deviceId === deviceId)
+}
 
 function emit(msg: { type: string; payload: unknown }): void {
   for (const cb of wsListeners) cb(msg)
@@ -151,6 +222,18 @@ const idleDevice = {
 const jobHolder = { kind: 'job', id: 'job-1', label: 'checkout@1.4.2', runId: null, takeable: false, acquiredAt: 0, expiresAt: null }
 const busyDevice = { ...idleDevice, status: 'busy', heldBy: jobHolder }
 
+// Plan 125 §3.10/§3.11 (steps 125.5, 125.6). `id` is what the wire actually
+// carries for an authenticated person: `toHolder` (`lease-manager.ts`) writes
+// `holderUserId ?? holder`, so a signed-in holder's id IS their `user.id` —
+// which is why comparing it to `GET /api/auth/me`'s own `user.id` is a valid
+// check, and why the owner saw their own email address named as the holder.
+const meHolder = { kind: 'user', id: 'user-1', label: 'me@example.com', runId: null, takeable: true, acquiredAt: 0, expiresAt: 1_700_000_300 }
+const otherPersonHolder = { kind: 'user', id: 'user-2', label: 'bob@example.com', runId: null, takeable: true, acquiredAt: 0, expiresAt: 1_700_000_300 }
+const agentHolder = { kind: 'agent', id: 'agent-1', label: 'Triage bot', runId: 'run-1', takeable: true, acquiredAt: 0, expiresAt: null }
+const heldByMeDevice = { ...idleDevice, status: 'manual', heldBy: meHolder }
+const heldByOtherDevice = { ...idleDevice, status: 'manual', heldBy: otherPersonHolder }
+const heldByAgentDevice = { ...idleDevice, status: 'manual', heldBy: agentHolder }
+
 const settingsBody = { settings: {}, schema: {}, deviceSchema: {} }
 
 const baseResponses = {
@@ -165,12 +248,24 @@ const baseResponses = {
 }
 
 describe('DevicePopup — loading and basic chrome', () => {
-  test('shows loading rows before the device fetch resolves, then the label and an Open full device page link', async () => {
-    const { container, getByText } = renderWithApi(
+  /**
+   * Plan 125 §0.7, §4.5, §5 step 125.10 — this test used to assert the
+   * opposite: that the screen panel showed `LoadingRows` (`aria-busy`) until
+   * `GET /api/devices/:id` resolved. That placeholder WAS the defect — it
+   * meant `stream.start` could not leave the browser until an HTTP round trip
+   * had completed, for a payload the video path does not read. The picture is
+   * now the first thing the popup asks for, and the chrome (the label, the
+   * Open-full-device-page row) still fills in behind it exactly as before,
+   * which is what the second half of this test still checks.
+   */
+  test('mounts LiveView on the first render, before the device fetch resolves — then fills in the label and an Open full device page link', async () => {
+    const { getByText } = renderWithApi(
       <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
       baseResponses,
     )
-    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy()
+    // Synchronously, in the same tick as the very first render: no `await`
+    // anywhere above this line, so the detail fetch cannot have resolved.
+    expect(liveViewMounts.some((m) => m.deviceId === 'dev-1')).toBe(true)
     await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
     // Plan 103 §4.2 item 12 — the Actions list's own row, not a header
     // button (removed per §4.2's "displace, don't append" rule so this
@@ -445,6 +540,149 @@ describe('DevicePopup — release, re-take, and auto-claim origin (plan 105 §5 
   })
 })
 
+/**
+ * Plan 125 (M90) §3.10, §3.11 — steps 125.5 and 125.6, both from report 3:
+ * *"Take control keeps getting in the way. I open a device in browser A —
+ * that auto-takes control — and it tells me `bitorex.it@gmail.com is using
+ * this device now. Join them, or take over — not decided which should be the
+ * default here.` As if it isn't me in this tab, when it is me, under that
+ * very account."*
+ *
+ * Two defects in one sentence: the control model never asked who the
+ * operator was, and the caption was our own unanswered design question
+ * (plan 105 §9 Q1) rendered verbatim into production.
+ */
+describe('DevicePopup — control knows who you are (plan 125 §3.10, step 125.5)', () => {
+  const acquireRequests: { payload?: unknown }[] = []
+
+  function routeAcquire(outcome: 'ok' | 'refused' = 'ok') {
+    acquireRequests.length = 0
+    wsRequestImpl = (msg) => {
+      if (msg.type !== 'lease.acquire') return Promise.reject(new Error(`unexpected request: ${msg.type}`))
+      acquireRequests.push(msg)
+      return outcome === 'ok'
+        ? Promise.resolve({ type: 'lease.acquired', payload: { deviceId: 'dev-1', expiresAt: 1_700_000_300 } })
+        : Promise.reject(new Error('the device is now held by someone else'))
+    }
+  }
+
+  test('125.5 — a device you already hold in another tab is claimed back on open, with the takeOverFrom CAS, and never named as someone else’s', async () => {
+    routeAcquire('ok')
+    const { getByRole, queryAllByText } = renderWithApi(
+      <PopupAs userId="user-1" deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByMeDevice } } },
+    )
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy())
+    // The claim the popup made: a compare-and-swap against the holder it saw
+    // — an ordinary acquire is refused while anyone still holds the device.
+    expect(acquireRequests.length).toBe(1)
+    expect(acquireRequests[0]?.payload).toEqual({ deviceId: 'dev-1', takeOverFrom: 'user-1' })
+    // Report 3's own sentence must not be on screen at all. Asserted on a
+    // COUNT, never on a node: a failing `expect(node).toBeNull()` inside a
+    // retrying `waitFor` serialises a whole happy-dom element.
+    expect(queryAllByText(/is using this device now/).length).toBe(0)
+  })
+
+  test('125.5 — criterion 10: with auth off, that same device is NOT auto-claimed and reads exactly as it does today', async () => {
+    routeAcquire('ok')
+    const { getByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByMeDevice } } },
+    )
+    await waitFor(() => expect(getByText(/is using this device now/)).toBeTruthy())
+    expect(acquireRequests.length).toBe(0)
+  })
+
+  test('125.5 — a device held by SOMEONE ELSE is still never auto-claimed, signed in or not', async () => {
+    routeAcquire('ok')
+    const { getByText } = renderWithApi(
+      <PopupAs userId="user-1" deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByOtherDevice } } },
+    )
+    await waitFor(() => expect(getByText(/bob@example\.com/)).toBeTruthy())
+    expect(acquireRequests.length).toBe(0)
+  })
+
+  test('125.5 — when the claim is refused, the popup offers "Resume control here" rather than describing the operator to themselves; clicking it retries the same CAS', async () => {
+    routeAcquire('refused')
+    const { getByRole, getByText, queryAllByText } = renderWithApi(
+      <PopupAs userId="user-1" deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByMeDevice } } },
+    )
+    await waitFor(() => expect(getByText('You are already controlling this device somewhere else.')).toBeTruthy())
+    expect(queryAllByText(/is using this device now/).length).toBe(0)
+    // Never a takeover of yourself — no takeover dialog, no "Take control…".
+    expect(queryAllByText('Take control…').length).toBe(0)
+    routeAcquire('ok')
+    fireEvent.click(getByRole('button', { name: 'Resume control here' }))
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy())
+    expect(acquireRequests[0]?.payload).toEqual({ deviceId: 'dev-1', takeOverFrom: 'user-1' })
+  })
+
+  test('125.5 — a resumed lease is NOT given up when the popup closes: you already held this device before you opened it', async () => {
+    routeAcquire('ok')
+    const { getByRole, unmount } = renderWithApi(
+      <PopupAs userId="user-1" deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByMeDevice } } },
+    )
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy())
+    unmount()
+    expect(wsSendCalls.some((m) => m.type === 'lease.release')).toBe(false)
+  })
+})
+
+describe('DevicePopup — the undecided caption is gone (plan 105 §9 Q1, answered by plan 125 §3.11, step 125.6)', () => {
+  /** The control card itself — `within` it, so the Actions list's own Assist row is never mistaken for one of these two buttons. */
+  function controlCard(holderLine: HTMLElement): HTMLElement {
+    const card = holderLine.closest('div')
+    if (!card) throw new Error('the holder line has no card around it')
+    return card
+  }
+
+  test('125.6 — the caption "not decided which should be the default here" is nowhere on screen', async () => {
+    const { getByText, queryAllByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByOtherDevice } } },
+    )
+    await waitFor(() => expect(getByText(/is using this device now/)).toBeTruthy())
+    expect(queryAllByText(/not decided/i).length).toBe(0)
+    expect(queryAllByText(/Join them, or take over/i).length).toBe(0)
+  })
+
+  test('125.6 — a PERSON holding it: Take control is the primary action, Assist the secondary, and each says what it does', async () => {
+    const { getByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByOtherDevice } } },
+    )
+    const card = controlCard(await waitFor(() => getByText(/is using this device now/)))
+    expect(within(card).getAllByRole('button').map((b) => b.textContent)).toEqual(['Take control…', 'Assist'])
+    expect(within(card).getByText('Ends their control and gives the device to you.')).toBeTruthy()
+    expect(within(card).getByText('Drive alongside them — they keep control.')).toBeTruthy()
+  })
+
+  test('125.6 — an AGENT holding it keeps the two equal: joining a running automation is a genuinely likely intent', async () => {
+    const { getByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: heldByAgentDevice } } },
+    )
+    const card = controlCard(await waitFor(() => getByText(/is using this device now/)))
+    expect(within(card).getAllByRole('button').map((b) => b.textContent)).toEqual(['Assist', 'Take control…'])
+  })
+
+  test('125.6 — a disabled Assist explains ITSELF (co-control off for the farm), which is what the operator needs when the button cannot be pressed', async () => {
+    const { getByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      {
+        ...baseResponses,
+        '/api/devices/dev-1': { body: { device: heldByOtherDevice } },
+        '/api/settings': { body: { settings: { coControl: { mode: 'off', grantTtlSec: 300 } }, schema: {}, deviceSchema: {} } },
+      },
+    )
+    const card = controlCard(await waitFor(() => getByText(/is using this device now/)))
+    await waitFor(() => expect(within(card).getByText('Assisting is turned off for this farm.')).toBeTruthy())
+  })
+})
+
 describe('DevicePopup — Mirror arms from the selection, no switch (plan 104 §3.3)', () => {
   test('nothing else selected: no arming, and the panel says nothing it does not have to (owner call, 2026-08-16)', async () => {
     const { getByText, queryByText, queryByRole } = renderWithApi(
@@ -688,6 +926,94 @@ describe('DevicePopup — End task', () => {
   })
 })
 
+/**
+ * Plan 124 §4.4 Group B, step 124.2 — this popup is the surface an operator
+ * spends the most time in, and until this step every string in it named the
+ * device by its bare `label`. On the owner's own farm that means three panels
+ * whose headers, region labels and confirm dialogs all read `SM-F721U1`.
+ */
+describe('DevicePopup — the device number (plan 124 §4.4 Group B)', () => {
+  const numbered = { ...idleDevice, number: 7 }
+
+  test('the panel header and the region label both carry the number (criterion 5)', async () => {
+    const { getByText, getByRole } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: numbered } } },
+    )
+    await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
+    // Two spans, not one string — `<DeviceName>`'s visual form (§3.2), which
+    // is what lets the number be dimmed beside the label rather than run
+    // into it.
+    expect(getByText('#7')).toBeTruthy()
+    expect(getByRole('region', { name: 'Focused control — #7 moto g06' })).toBeTruthy()
+  })
+
+  test('the End task confirm names the device with its number, not just the job', async () => {
+    const { getByText, getByRole } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: { ...busyDevice, number: 7 } } } },
+    )
+    await waitFor(() => expect(getByText(/checkout@1\.4\.2/)).toBeTruthy())
+    fireEvent.click(getByRole('button', { name: /End task/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/End checkout@1\.4\.2 on #7 moto g06\?/)).toBeTruthy()
+  })
+
+  test('a device with no number renders the bare label — no `#`, no `#null` (criterion 7)', async () => {
+    // `idleDevice` omits `number`, so `DeviceInfoSchema`'s `.default(null)`
+    // supplies it — the same value a device whose reservation was explicitly
+    // released carries.
+    const { getByText, getByRole, queryByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />,
+      baseResponses,
+    )
+    await waitFor(() => expect(getByText('moto g06')).toBeTruthy())
+    expect(queryByText(/#null|#undefined/)).toBeNull()
+    expect(getByRole('region', { name: 'Focused control — moto g06' })).toBeTruthy()
+  })
+
+  test('a failed mirror member is named from MirrorMember.number — composed once, never twice', async () => {
+    // Plan 124 §10's note from step 124.5: `MirrorMember` carries a `number`
+    // FIELD and its `label` stays BARE, precisely so `labelFor` can compose.
+    // `dev-2` is deliberately absent from the `devices` array here, which
+    // forces `labelFor` down its mirror-member branch rather than its
+    // `DeviceInfo` fallback — the branch that would have rendered `#12 #12
+    // pixel 8` had the server pre-baked the number into `label` instead.
+    wsRequestImpl = (msg) => {
+      if (msg.type === 'mirror.start') {
+        return Promise.resolve({
+          type: 'mirror.started',
+          payload: {
+            groupId: 'group-1',
+            focusDeviceId: 'dev-1',
+            members: [
+              { deviceId: 'dev-1', label: 'moto g06', number: 7, mode: 'lease', reason: null, aspectDrift: false },
+              { deviceId: 'dev-2', label: 'pixel 8', number: 12, mode: 'assist', reason: null, aspectDrift: false },
+            ],
+          },
+        })
+      }
+      return Promise.reject(new Error('unexpected'))
+    }
+    const other: DeviceInfo = { ...(numbered as unknown as DeviceInfo), id: 'dev-2', label: 'pixel 8' }
+    const { getByText } = renderWithApi(
+      <Popup deviceId="dev-1" devices={[numbered as unknown as DeviceInfo, other]} selectedIds={['dev-2']} onClose={() => {}} />,
+      { ...baseResponses, '/api/devices/dev-1': { body: { device: numbered } } },
+    )
+    await waitFor(() => expect(getByText('2 / 2 devices active')).toBeTruthy())
+
+    const mounted = liveViewMounts.find((m) => m.deviceId === 'dev-1' && m.mirror)
+    mounted?.mirror?.onResult?.([
+      { deviceId: 'dev-1', ok: true, code: null, latencyMs: 12 },
+      { deviceId: 'dev-2', ok: false, code: 'orientation_mismatch', latencyMs: 0 },
+    ])
+
+    await waitFor(() => expect(getByText('1/2')).toBeTruthy())
+    fireEvent.click(getByText('1/2'))
+    expect(getByText('#12 pixel 8 — orientation_mismatch')).toBeTruthy()
+  })
+})
+
 describe('DevicePopup — Forget closes the popup (plan 103 §4.2)', () => {
   test('a successful Forget calls onClose, the same way it navigated away on the device page', async () => {
     let closed = false
@@ -740,8 +1066,14 @@ describe('DevicePopup — decoder count (the plan\'s own verifiable result)', ()
       baseResponses,
     )
 
-    await waitFor(() => expect(liveViewMounts.length).toBeGreaterThan(0))
-    const mountedIds = liveViewMounts.map((m) => m.deviceId)
+    // Asserted against `liveViewInstances` (one entry per mounted instance),
+    // not the per-render `liveViewMounts` tally — see that variable's own
+    // comment. Since plan 125 step 125.10 the popup renders `<LiveView>` from
+    // its first render, so it is rendered several times while the popup's
+    // chrome settles; the number of DECODERS, which is what this test is
+    // about, never changed.
+    await waitFor(() => expect(liveViewInstances.length).toBeGreaterThan(0))
+    const mountedIds = liveViewInstances
     expect(mountedIds).toHaveLength(8)
     expect(new Set(mountedIds).size).toBe(8)
     expect(mountedIds).toContain(focusId)
@@ -857,7 +1189,7 @@ describe('DevicePopup — the screen-panel provisioning overlay (plan 106 §5 st
   test('LiveView receives no provisioning prop when nothing is installing', async () => {
     renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, baseResponses)
     await waitFor(() => expect(liveViewMounts.some((m) => m.deviceId === 'dev-1')).toBe(true))
-    expect(liveViewMounts.find((m) => m.deviceId === 'dev-1')?.provisioning ?? null).toBeNull()
+    expect(latestLiveViewProps('dev-1')?.provisioning ?? null).toBeNull()
   })
 
   test('LiveView receives the provisioning component once GET /:id/preparation reports one mid-install', async () => {
@@ -869,11 +1201,55 @@ describe('DevicePopup — the screen-panel provisioning overlay (plan 106 §5 st
     }
     renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, responses)
     await waitFor(() =>
-      expect(liveViewMounts.find((m) => m.deviceId === 'dev-1')?.provisioning).toEqual({
+      expect(latestLiveViewProps('dev-1')?.provisioning).toEqual({
         componentId: 'ui-server',
         label: 'UI server (openatx)',
         startedAt: 1_700_000_000,
       }),
     )
+  })
+})
+
+/**
+ * Plan 125 §0.7, §4.5, §4.7 — steps 125.10 and 125.11, the two halves of
+ * "the video stops waiting, and what is left is measured".
+ */
+describe('DevicePopup — the ungated picture and the click→paint mark (plan 125 §4.5, §4.7)', () => {
+  test('exactly one LiveView instance is ever mounted, however the detail fetch turns out', async () => {
+    renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, baseResponses)
+    await waitFor(() => expect(liveViewInstances.length).toBe(1))
+    // The point of one element at one position: the arrival of the detail
+    // payload is an UPDATE, never an unmount-and-remount. A second instance
+    // here would mean a second `stream.start` — and, worse, that the
+    // component's own retry/progress state had been thrown away, which is
+    // exactly what `WallTile.tsx`'s `rendersPicture` comment records.
+    expect(liveViewInstances).toEqual(['dev-1'])
+  })
+
+  test('a failed detail fetch keeps the picture rather than unmounting it', async () => {
+    renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, {
+      ...baseResponses,
+      '/api/devices/dev-1': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'boom' } } },
+    })
+    // Long enough for the rejection to have propagated through the effect.
+    await waitFor(() => expect(liveViewInstances.length).toBe(1))
+    expect(liveViewMounts.filter((m) => m.deviceId === 'dev-1').length).toBeGreaterThan(0)
+    expect(liveViewInstances).toEqual(['dev-1'])
+  })
+
+  test('opening the popup marks the click→paint start, but only if nothing marked it first', async () => {
+    renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, baseResponses)
+    expect(intentMarks.length).toBeGreaterThan(0)
+    expect(intentMarks[0]?.deviceId).toBe('dev-1')
+    // `onlyIfAbsent` is the whole contract with `WallTile`: a popup opened by
+    // a tile double-click must keep that tile's earlier, truer timestamp, or
+    // every wall-originated reading silently loses the popup-mount leg.
+    expect(intentMarks[0]?.opts?.onlyIfAbsent).toBe(true)
+  })
+
+  test('the mark is taken once per device, not on every re-render', async () => {
+    renderWithApi(<Popup deviceId="dev-1" devices={[]} selectedIds={[]} onClose={() => {}} />, baseResponses)
+    await waitFor(() => expect(liveViewMounts.filter((m) => m.deviceId === 'dev-1').length).toBeGreaterThan(1))
+    expect(intentMarks.filter((m) => m.deviceId === 'dev-1').length).toBe(1)
   })
 })

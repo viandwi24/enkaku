@@ -8,7 +8,7 @@ import {
   type DeviceInfo,
   type JsonSchemaNode as WireJsonSchemaNode,
 } from '@enkaku/protocol'
-import { ConfirmDialog, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, useAction } from '@enkaku/ui'
+import { ConfirmDialog, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, formatDeviceName, useAction } from '@enkaku/ui'
 import { readRowField, rowPayload, type PluginViewRow } from '@/components/plugin-view/rows'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -127,11 +127,25 @@ function evaluatePrefill(binding: Binding, row: PluginViewRow | null, depth = 0)
   return out
 }
 
-/** A device as an operator recognises it — its label, else the stable id it was enrolled under. */
+/**
+ * A device as an operator recognises it — `#7 Galaxy A15`, falling back to the
+ * stable id it was enrolled under when it has no label.
+ *
+ * **The number is not decoration here; it is the whole of the identity** (plan
+ * 124 §0.1, goal 1). A plugin action can be destructive — `kv.delete` is one of
+ * the four kinds — and this string is what the confirm dialog puts at stake.
+ * On a rack of physically identical phones, "Delete — accounts on SM-F721U1?"
+ * names three devices at once, which is the same as naming none.
+ *
+ * `RowDevice.number` has carried the value since plan 108 (`rows.ts`, populated
+ * from the scan's own LEFT JOIN); this function simply stopped dropping it.
+ * `formatDeviceName` is `@enkaku/ui`'s single formatter — a device with no
+ * number renders its bare label, never `#null` (criterion 7).
+ */
 function deviceName(row: PluginViewRow | null): string | null {
   const device = row?.device
   if (!device) return null
-  return device.label && device.label.length > 0 ? device.label : device.stableId
+  return formatDeviceName(device.number, device.label && device.label.length > 0 ? device.label : device.stableId)
 }
 
 /** The row, as the view's own `rowKey` names it. `null` when the row carries nothing at that path. */
@@ -222,7 +236,11 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
     if (device) return device
     if (terminal.kind === 'job' && terminal.device === 'picker') {
       const picked = devices?.find((d) => d.id === selection.deviceId)
-      return picked ? picked.label || picked.stableId : 'no device chosen yet'
+      // The picker itself lists `#7 Galaxy A15` (`DevicePicker`, plan 89 §3.3);
+      // the confirmation that follows it has to name the same device the same
+      // way, or the operator is asked to confirm something they cannot match to
+      // the row they just clicked.
+      return picked ? formatDeviceName(picked.number, picked.label || picked.stableId) : 'no device chosen yet'
     }
     return null
   }, [row, rowKey, terminal, devices, deviceIds.length, selection.deviceId])

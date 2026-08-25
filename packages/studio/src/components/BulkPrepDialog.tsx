@@ -37,7 +37,7 @@ import {
   useAction,
 } from '@enkaku/ui'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
-import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
+import { SkippedGroups, deviceNameIn, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import { resolveTargetDeviceIds } from '@/lib/operations'
@@ -147,7 +147,11 @@ export function BulkPrepDialog({
   const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
   const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
-  const deviceLabel = (id: string) => pool.find((d) => d.id === id)?.label ?? id
+  // Plan 124 §4.4, step 124.3 — the report below is the only consumer, and it
+  // needs the two-field form (number apart from label) that `NamedOutcome`
+  // carries so `SkippedGroups` can dim the number. There is no prose site in
+  // this dialog that names a single device, so no composed-string twin here.
+  const deviceName = (id: string) => deviceNameIn(pool, id)
 
   // Re-default whenever the dialog OPENS — never on every render, which would
   // stomp an operator's own edit the moment the device list refreshed
@@ -228,18 +232,18 @@ export function BulkPrepDialog({
     let relocked = 0
     for (const r of results) {
       const outcome = classifyDevicePrepApply(r)
-      const label = deviceLabel(r.deviceId)
+      const named = deviceName(r.deviceId)
       if (outcome === 'failed') {
         const reason = r.error
           ? `${CODE_LABEL[r.error.code] ?? r.error.code} — ${r.error.message}`
           : `The screen did not re-lock${r.rotation?.reason ? ` — ${r.rotation.reason}` : ''}. The setting is saved and applies to this device’s next session.`
-        failed.push({ deviceId: r.deviceId, label, reason })
+        failed.push({ deviceId: r.deviceId, ...named, reason })
         continue
       }
       if (outcome === 'deferred') {
         deferred.push({
           deviceId: r.deviceId,
-          label,
+          ...named,
           reason: `Saved, but the screen was not re-locked — ${r.rotation?.reason ?? 'a job is running on this device'}.`,
         })
         continue
