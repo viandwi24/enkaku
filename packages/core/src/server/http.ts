@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { compress } from 'hono/compress'
 import { cors } from 'hono/cors'
 import type { AuthMode } from '../config'
 import { authMiddleware, type AuthEnv } from '../auth/middleware'
@@ -23,6 +24,25 @@ export interface HttpDeps {
   adbServerVersion: () => Promise<string | null>
   /** The adb subsystem's status: 'provisioning' | 'ready' | 'error'. */
   adbState: () => string
+  /**
+   * How many plugin rows sit in `failed` — `GET /api/health`'s
+   * `failedPlugins` (plan 126 §3.5, step 126.5). Studio's sidebar reads it
+   * off the health poll it already makes, instead of downloading the entire
+   * plugin list on every page to filter one status (plan 126 §0.4).
+   *
+   * **Optional for the same reason `audit`/`adbControl` below are**: several
+   * tests build a minimal `HttpDeps` with no database behind it. When it is
+   * absent the field is OMITTED from the response rather than sent as `0` —
+   * "nobody counted" and "counted, none failed" are different answers, and a
+   * confident zero here would silently hide a farm-health warning.
+   *
+   * **It must be a `COUNT(*)`, never a list-and-length.** Health is polled,
+   * and `db/schema.ts:1865`'s `bundle` column holds the plugin's full built
+   * JavaScript (~1 MB per version row) — the exact mistake plan 126 §0.5
+   * found in `runtime.ts`'s `scriptCountFor` and fixed in step 126.1. See
+   * `daemon.ts`'s wiring for the query and why it never touches a bundle.
+   */
+  failedPluginCount?: () => number
   /**
    * The audit logger, threaded through so the Toolchain routes can record
    * install/activate/delete/repair. Optional because several tests build a
@@ -210,6 +230,41 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
     logSlowRequest(new URL(c.req.url).pathname, Date.now() - startedAt)
   })
 
+  /**
+   * Compression, farm-wide (plan 127 §3.4, step 127.3). Registered at the
+   * SERVER rather than on the routes that happen to be large today, because
+   * a per-route compressor is one more thing the next route forgets — the
+   * same rule plan 126 §3.1 applies to column projections.
+   *
+   * Why it matters here: this core had no compression at all, and the owner's
+   * farm is reached over the internet. Their report — *"every refresh is very
+   * heavy … on local it looks fine, because local is not limited by internet
+   * speed and bandwidth"* — is what opened plan 127. JavaScript and CSS are
+   * the most compressible content there is (typically 3-5x), and the plugin
+   * UI assets alone are ~159 KB per cold load.
+   *
+   * Hono's own middleware is used rather than a hand-rolled one, and three of
+   * its behaviours are the reason it is safe to mount globally:
+   *
+   * 1. It **deletes `Content-Length`** after compressing. `GET /api/plugins/
+   *    :name/ui/:path` sets that header explicitly, and compressing a
+   *    response while leaving a byte count from before would corrupt it.
+   * 2. Its content-type filter **excludes `text/event-stream` by name**, so
+   *    the agent chat's SSE stream is untouched — buffering an event stream
+   *    through a compressor is how "streaming" quietly stops streaming.
+   * 3. It skips anything already encoded, any `HEAD`, any `206`, any
+   *    `no-transform`, and every non-compressible type — so binary blobs
+   *    (screenshots, artifacts) pass through byte-for-byte.
+   *
+   * Below the 1 KB default threshold nothing is compressed, which is correct:
+   * a gzip header on a 200-byte JSON answer costs more than it saves.
+   *
+   * Deliberately registered AFTER the slow-request logger so the timing still
+   * covers the compression work rather than reporting a number that excludes
+   * it, and BEFORE auth so a 401 body is compressed like any other.
+   */
+  app.use('*', compress())
+
   // Studio dev mode (next dev on another port) — local-mode only.
   //
   // This used to gate on `process.env.NODE_ENV !== 'production'`. Nothing in
@@ -307,6 +362,13 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
       mode: process.env.ENKAKU_MODE === 'orchestrator' ? 'orchestrator' : 'local',
       deviceCount: deps.deviceCount(),
       uptimeMs: Date.now() - deps.startedAt,
+      // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, so
+      // Studio stops fetching the whole plugin list on every page to derive
+      // one integer (§0.4). `undefined` when the host has no plugin store to
+      // count, which `HealthResponseSchema` declares optional precisely so
+      // this can be omitted rather than reported as a false `0`; see the
+      // dep's own doc comment above.
+      failedPlugins: deps.failedPluginCount?.(),
     })
   })
 

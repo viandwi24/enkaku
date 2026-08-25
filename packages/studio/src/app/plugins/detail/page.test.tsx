@@ -10,11 +10,18 @@ process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 afterEach(cleanup)
 
 /**
- * A plugin carrying all three things this page exists to read back: its member
- * scripts, the screen it contributes, and the service an operator consented to
- * at install. `manifest.service` is real wire data — the core stores it in the
- * same JSON column as `scripts`/`surface` — even though `PluginManifestSchema`
- * in `@enkaku/protocol` still drops it (see `../plugin-list.ts`).
+ * ## Two fixtures per version, because this page now makes two reads
+ *
+ * Plan 126 §3.3 split them: `GET /api/plugins?name=…` answers the narrow
+ * `PluginListItem` (identity, `scriptCount`, `declaredScripts`, `hasService`)
+ * that the version picker and the lifecycle actions are drawn from, and
+ * `GET /api/plugins/:name/:version` answers the ONE version in full, which is
+ * where `manifest` — and so the screen and the service declaration — lives.
+ *
+ * The `…Full` fixtures below are therefore not a duplicate of the list ones:
+ * they are what a different route answers, and a test that served the manifest
+ * from the list route would be asserting against a payload the core no longer
+ * sends.
  */
 const active = {
   id: 'p-1',
@@ -29,6 +36,13 @@ const active = {
   createdBy: 'local-admin',
   createdAt: '2026-01-01T00:00:00.000Z',
   scriptCount: 1,
+  declaredScripts: [{ id: 'check', title: 'Check a proxy' }],
+  hasService: true,
+}
+
+/** The same version as `GET /api/plugins/proxy-manager/0.3.1` answers it — everything above, plus the manifest. */
+const activeFull = {
+  ...active,
   manifest: {
     scripts: [
       {
@@ -69,6 +83,8 @@ const older = {
   scriptCount: 0,
 }
 
+const olderFull = { ...older, manifest: activeFull.manifest }
+
 const failed = {
   id: 'p-bad',
   name: 'broken-pack',
@@ -82,7 +98,16 @@ const failed = {
   createdBy: 'local-admin',
   createdAt: '2026-01-01T00:00:00.000Z',
   scriptCount: 0,
-  manifest: { scripts: [{ id: 'login', paramsSchema: {} }] },
+  declaredScripts: [{ id: 'login' }],
+  hasService: false,
+}
+
+const failedFull = { ...failed, manifest: { scripts: [{ id: 'login', paramsSchema: {} }] } }
+
+/** Both versions of `proxy-manager` as the single-version route answers them. */
+const proxyVersions = {
+  '/api/plugins/proxy-manager/0.3.1': { body: { plugin: activeFull } },
+  '/api/plugins/proxy-manager/0.3.0': { body: { plugin: olderFull } },
 }
 
 /** The `<plugin>/<script>` → row id join the member links are built from. */
@@ -111,6 +136,7 @@ describe('PluginDetailPage — identity, members, screen and service', () => {
     setSearchParams({ name: 'proxy-manager' })
     renderWithApi(<PluginDetailPage />, {
       ...scriptRows,
+      ...proxyVersions,
       '/api/plugins?name=proxy-manager': { body: { items: [older, active], dev: [] } },
     })
 
@@ -141,6 +167,7 @@ describe('PluginDetailPage — identity, members, screen and service', () => {
     setSearchParams({ name: 'proxy-manager' })
     renderWithApi(<PluginDetailPage />, {
       ...scriptRows,
+      ...proxyVersions,
       '/api/plugins?name=proxy-manager': { body: { items: [older, active], dev: [] } },
     })
     await waitFor(() => expect(screen.getByLabelText('Version of proxy-manager')).toBeTruthy())
@@ -151,6 +178,7 @@ describe('PluginDetailPage — identity, members, screen and service', () => {
     setSearchParams({ name: 'proxy-manager', version: '0.3.0' })
     renderWithApi(<PluginDetailPage />, {
       ...scriptRows,
+      ...proxyVersions,
       '/api/plugins?name=proxy-manager': { body: { items: [older, active], dev: [] } },
     })
     await waitFor(() => expect(screen.getByLabelText('Version of proxy-manager').textContent).toContain('0.3.0'))
@@ -168,6 +196,7 @@ describe('PluginDetailPage — a failed plugin', () => {
     setSearchParams({ name: 'broken-pack' })
     const { container } = renderWithApi(<PluginDetailPage />, {
       ...scriptRows,
+      '/api/plugins/broken-pack/1.0.0': { body: { plugin: failedFull } },
       '/api/plugins?name=broken-pack': { body: { items: [failed], dev: [] } },
     })
     const code = await waitFor(() => screen.getByText('E_PLUGIN_NAME_CONFLICT'))
@@ -183,6 +212,7 @@ describe('PluginDetailPage — a failed plugin', () => {
     setSearchParams({ name: 'broken-pack' })
     renderWithApi(<PluginDetailPage />, {
       ...scriptRows,
+      '/api/plugins/broken-pack/1.0.0': { body: { plugin: failedFull } },
       '/api/plugins?name=broken-pack': { body: { items: [failed], dev: [] } },
     })
     await waitFor(() => expect(screen.getByText('broken-pack/login')).toBeTruthy())

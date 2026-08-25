@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import type { PluginResetResponse } from '@enkaku/protocol'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import type { PluginRowWithService } from '@/app/plugins/plugin-list'
+import type { PluginListRow } from '@/app/plugins/plugin-list'
 import { ResetPluginAction } from './ResetPluginAction'
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
@@ -22,30 +22,54 @@ afterEach(cleanup)
  *    in as many words, whether anything was deleted.
  */
 
-function pluginRow(over: Partial<PluginRowWithService> = {}): PluginRowWithService {
+function pluginRow(over: Partial<PluginListRow> = {}): PluginListRow {
   return {
     id: 'row-1',
     name: 'proxy-manager',
+    title: null,
+    description: null,
     version: '0.8.0',
     status: 'active',
     verifiedAt: null,
     verifyError: null,
     verifyErrorCode: null,
+    scriptCount: 0,
+    declaredScripts: [],
+    hasService: true,
+    createdBy: null,
     createdAt: '2026-08-19T00:00:00.000Z',
-    manifest: {
-      scripts: [],
-      service: {
-        permissions: ['device.list'],
-        isolation: 'in-process',
-        listeners: [],
-        events: [],
-        webhooks: [],
-        resetData: { permissions: ['device.network.clear'], description: 'Turns off the network route on every device this plugin routed.' },
-      },
-    },
     ...over,
   }
 }
+
+/**
+ * The reset-handler declaration, which since plan 126 §3.2 arrives with the
+ * VERSION rather than on the row: the confirm reads it from
+ * `GET /api/plugins/:name/:version` when it opens, so a Plugins tab twenty
+ * versions deep no longer carries a service declaration per row to describe a
+ * button that renders on one of them.
+ */
+function versionRoute(resetData: unknown) {
+  return {
+    '/api/plugins/proxy-manager/0.8.0': {
+      status: 200,
+      body: {
+        plugin: {
+          ...pluginRow(),
+          manifest: {
+            scripts: [],
+            service: { permissions: ['device.list'], isolation: 'in-process', listeners: [], events: [], webhooks: [], resetData },
+          },
+        },
+      },
+    },
+  }
+}
+
+const HANDLER = versionRoute({
+  permissions: ['device.network.clear'],
+  description: 'Turns off the network route on every device this plugin routed.',
+})
 
 function response(over: Partial<PluginResetResponse> = {}): PluginResetResponse {
   return {
@@ -58,7 +82,7 @@ function response(over: Partial<PluginResetResponse> = {}): PluginResetResponse 
   }
 }
 
-const COUNT = { '/api/plugins/proxy-manager/data/count': { status: 200, body: { global: 2, device: 1 } } }
+const COUNT = { '/api/plugins/proxy-manager/data/count': { status: 200, body: { global: 2, device: 1 } }, ...HANDLER }
 
 describe('the confirm', () => {
   test("names the plugin, the count, and the plugin's own sentence about what it will touch", async () => {
@@ -76,13 +100,32 @@ describe('the confirm', () => {
   })
 
   test('a plugin with no cleanup handler says there is nothing to undo, rather than staying silent about it', async () => {
-    const row = pluginRow()
-    renderWithApi(
-      <ResetPluginAction selected={{ ...row, manifest: { scripts: [], service: { ...row.manifest!.service!, resetData: null } } }} onChanged={() => {}} />,
-      COUNT,
-    )
+    renderWithApi(<ResetPluginAction selected={pluginRow()} onChanged={() => {}} />, {
+      ...COUNT,
+      ...versionRoute(null),
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Reset data' }))
     await waitFor(() => expect(screen.getByText(/declares no cleanup handler/)).toBeTruthy())
+  })
+
+  /**
+   * Plan 126 §3.2 — the state the lazy read introduced, and the one it would be
+   * easiest to get wrong. "Declares no cleanup handler" promises that nothing
+   * outside this farm's database is touched; printing it because a request
+   * failed would be that promise made on no evidence, on the screen where an
+   * operator decides to destroy data.
+   */
+  test('a version read that fails says so, and never spells it "declares no cleanup handler"', async () => {
+    renderWithApi(<ResetPluginAction selected={pluginRow()} onChanged={() => {}} />, {
+      ...COUNT,
+      '/api/plugins/proxy-manager/0.8.0': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'boom' } } },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset data' }))
+    await waitFor(() => expect(screen.getByText(/could not read whether/)).toBeTruthy())
+    expect(screen.queryByText(/declares no cleanup handler/)).toBeNull()
+    // The confirm is still offered — what actually runs is decided server-side,
+    // off the active row's own manifest, not by what this dialog could read.
+    expect(screen.getByText("Reset proxy-manager's data?")).toBeTruthy()
   })
 
   test('nothing is posted until Reset data is confirmed', async () => {

@@ -18,7 +18,8 @@ const activePlugin = {
   verifiedAt: '2026-01-01T00:00:00.000Z',
   verifyError: null,
   verifyErrorCode: null,
-  manifest: { scripts: [{ id: 'login', paramsSchema: {} }, { id: 'warmup', paramsSchema: {} }] },
+  declaredScripts: [{ id: 'login' }, { id: 'warmup' }],
+  hasService: false,
   createdAt: '2026-01-01T00:00:00.000Z',
   scriptCount: 2,
 }
@@ -32,7 +33,8 @@ const failedPlugin = {
   verifiedAt: null,
   verifyError: 'E_PLUGIN_NAME_CONFLICT: "broken-pack/login" is already owned by plugin "shop" — "broken-pack" cannot also claim it',
   verifyErrorCode: 'E_PLUGIN_NAME_CONFLICT',
-  manifest: { scripts: [{ id: 'login', paramsSchema: {} }, { id: 'other', paramsSchema: {} }] },
+  declaredScripts: [{ id: 'login' }, { id: 'other' }],
+  hasService: false,
   createdAt: '2026-01-01T00:00:00.000Z',
   scriptCount: 0,
 }
@@ -46,7 +48,8 @@ const disabledPlugin = {
   verifiedAt: '2026-01-01T00:00:00.000Z',
   verifyError: null,
   verifyErrorCode: null,
-  manifest: { scripts: [{ id: 'login', paramsSchema: {} }] },
+  declaredScripts: [{ id: 'login' }],
+  hasService: false,
   createdAt: '2026-01-01T00:00:00.000Z',
   scriptCount: 0,
 }
@@ -629,6 +632,66 @@ describe('PluginsPage — tabs', () => {
   })
 })
 
+/**
+ * Plan 126 §0.4, step 126.3 — the Scripts panel's device list is fetched when
+ * the run dialog is opened, not when the screen mounts.
+ *
+ * It has one consumer, `RunScriptDialog`'s target picker, and it is the most
+ * expensive read on this page: `fetchDevices()` walks `/api/devices` pages
+ * SEQUENTIALLY at `limit=200`, up to 25 round trips. Because this panel stays
+ * MOUNTED behind the tab strip (deliberately — see `page.tsx`), it used to run
+ * for every operator who opened the Plugins tab, including everyone who never
+ * opened the dialog at all.
+ *
+ * Asserted on request counts: the rendered screen is identical either way, so
+ * nothing else in this file can see the difference.
+ */
+describe('PluginsPage — the device list is fetched lazily (plan 126 step 126.3)', () => {
+  const deviceCalls = (calls: { path: string }[]) => calls.filter((c) => c.path.startsWith('/api/devices')).length
+
+  test('opening the Plugins tab does not fetch the device list', async () => {
+    setSearchParams({})
+    const { apiMock } = renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    // The Scripts panel — the half that owns this fetch — is fully loaded, so
+    // this is "never asked for it", not "has not got round to it yet". The
+    // plugin table is deliberately NOT what is waited on here: the device
+    // fetch never lived on that side, and pinning this test to the plugin
+    // list's rendered shape would make it fail for reasons that have nothing
+    // to do with what it asserts.
+    await waitFor(() => expect(screen.getByText('demo/checkout')).toBeTruthy())
+    await waitFor(() => expect(apiMock.calls.some((c) => c.path === '/api/plugins')).toBe(true))
+    expect(deviceCalls(apiMock.calls)).toBe(0)
+  })
+
+  test('pressing Run fetches it, so the dialog still gets its picker', async () => {
+    setSearchParams({})
+    const { apiMock } = renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    await waitFor(() => expect(screen.getByText('demo/checkout')).toBeTruthy())
+    expect(deviceCalls(apiMock.calls)).toBe(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }))
+    await waitFor(() => expect(deviceCalls(apiMock.calls)).toBeGreaterThan(0))
+  })
+
+  test('arriving with ?device= fetches it up front — that flow auto-opens the dialog', async () => {
+    setSearchParams({ device: 'dev-1' })
+    const { apiMock } = renderWithApi(<PluginsPage />, {
+      ...withScripts([memberScript]),
+      '/api/plugins': { body: { items: [activePlugin], dev: [] } },
+    })
+    // Started with the script list rather than after it: the deep link exists
+    // to open the run dialog immediately, so waiting for the dialog before
+    // asking for the devices it needs would make the fast path the slow one.
+    await waitFor(() => expect(deviceCalls(apiMock.calls)).toBeGreaterThan(0))
+  })
+})
+
 describe('PluginsPage — search', () => {
   test('the box says what it covers, and ?q= arrives applied', async () => {
     setSearchParams({ q: 'tiktok' })
@@ -644,7 +707,7 @@ describe('PluginsPage — search', () => {
 
   /**
    * The case worth having: "which plugin does `warmup` come from". The member
-   * list is `manifest.scripts`, already on the row, so it costs no fetch — and
+   * list is `declaredScripts`, already on the row, so it costs no fetch — and
    * the row says WHY it is on screen, because otherwise a search for `warmup`
    * returning a row labelled `tiktok` reads as a broken filter.
    */

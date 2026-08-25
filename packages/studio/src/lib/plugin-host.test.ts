@@ -294,7 +294,7 @@ describe('the plugin’s own stylesheet (step 111.9’s handover contract)', () 
     void h.host.loadView(ACCOUNTS)
     await flush()
     expect(h.dom.stylesheets).toHaveLength(1)
-    expect(h.dom.stylesheets[0]!.href).toBe('http://core.test:7700/api/plugins/proxy-manager/ui/index.css')
+    expect(h.dom.stylesheets[0]!.href).toBe('http://core.test:7700/api/plugins/proxy-manager/ui/index.css?v=1.2.0')
   })
 
   test('the <link> comes BEFORE the script that needs it, and after the import map', async () => {
@@ -305,11 +305,33 @@ describe('the plugin’s own stylesheet (step 111.9’s handover contract)', () 
     expect(h.dom.stylesheets[0]!.seq).toBeLessThan(h.dom.last().seq)
   })
 
-  test('carries no cache-busting query — the asset route serves CSS with no-store', async () => {
+  /**
+   * Plan 127 §0.4, step 127.1 — this test used to assert the OPPOSITE, and the
+   * assertion was correct for its time: while the asset route answered
+   * `no-store`, a version query bought nothing, so the sheet went without one.
+   *
+   * Step 127.2 makes that route `immutable`, and an unversioned `.css` under
+   * an immutable header is served from cache forever — including after an
+   * operator activates a new plugin version. So the query is now the thing
+   * that keeps the stylesheet correct, not a redundancy. Inverted deliberately
+   * rather than deleted, so the record shows the rule changed and why.
+   */
+  test('carries the same ?v=<version> the script does — the asset route caches CSS immutably now', async () => {
     const h = harness()
     void h.host.loadView(ACCOUNTS)
     await flush()
-    expect(h.dom.stylesheets[0]!.href).not.toContain('?')
+    expect(h.dom.stylesheets[0]!.href).toContain('?v=1.2.0')
+  })
+
+  test('two versions of one plugin link two distinct stylesheet URLs — the whole point of 127.1', async () => {
+    const h = harness()
+    void h.host.loadView(ACCOUNTS)
+    void h.host.loadView({ ...ACCOUNTS, version: '1.3.0', viewId: 'accounts-next' })
+    await flush()
+    const hrefs = h.dom.stylesheets.map((s) => s.href)
+    expect(new Set(hrefs).size).toBe(hrefs.length)
+    expect(hrefs.some((href) => href.includes('?v=1.2.0'))).toBe(true)
+    expect(hrefs.some((href) => href.includes('?v=1.3.0'))).toBe(true)
   })
 
   test('two views sharing one entry link the stylesheet once', async () => {
@@ -326,8 +348,8 @@ describe('the plugin’s own stylesheet (step 111.9’s handover contract)', () 
     void h.host.loadView({ ...ACCOUNTS, viewId: 'panel', entry: 'panel.js' })
     await flush()
     expect(h.dom.stylesheets.map((s) => s.href)).toEqual([
-      'http://core.test:7700/api/plugins/proxy-manager/ui/index.css',
-      'http://core.test:7700/api/plugins/proxy-manager/ui/panel.css',
+      'http://core.test:7700/api/plugins/proxy-manager/ui/index.css?v=1.2.0',
+      'http://core.test:7700/api/plugins/proxy-manager/ui/panel.css?v=1.2.0',
     ])
   })
 

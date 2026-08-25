@@ -8,6 +8,28 @@ export const HealthResponseSchema = z.object({
   mode: z.string().optional(),
   deviceCount: z.number().optional(),
   uptimeMs: z.number().optional(),
+  /**
+   * How many plugin rows are in `failed` — the sidebar's farm-health warning
+   * badge (plan 82 criterion 30), moved onto this response by plan 126 §3.5,
+   * step 126.5.
+   *
+   * **Why it lives on health rather than staying a `GET /api/plugins` read.**
+   * `AppShell` needed exactly this one integer and was downloading the whole
+   * plugin list on every Studio page to derive it — at the time, every
+   * plugin's full built bundle, ~1 MB per version row (plan 126 §0.4). The
+   * shell already polls this route for `version` and `mode`, so carrying the
+   * count here deletes a request rather than shrinking one.
+   *
+   * **Optional, like every other field on this schema, and deliberately so.**
+   * A Studio build talking to an older core must still parse this document —
+   * `app/nodes/page.tsx` reads it through this schema and would lose the
+   * whole page if one missing field failed the parse. Absent therefore means
+   * "this core does not report it", which a client must render as "no badge",
+   * never as a confident zero: the core only sets it when it has a database
+   * to count (see `HttpDeps.failedPluginCount` in
+   * `packages/core/src/server/http.ts`).
+   */
+  failedPlugins: z.number().int().nonnegative().optional(),
 })
 
 /** `POST /api/nodes`. */

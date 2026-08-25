@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { ADB_TIMEOUTS, AdbClient, createAdbdShim, pushFile as pushFileOverSync, Semaphore, type AdbTimeoutProfile } from '@enkaku/adb'
 import { UI_SERVER_PACKAGE, UI_SERVER_DEVICE_PORT } from '@enkaku/drivers'
 import { ToolchainManager } from '@enkaku/toolchain'
@@ -130,7 +130,7 @@ import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/mig
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
-import { devices } from './db/schema'
+import { devices, plugins } from './db/schema'
 import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
@@ -2561,6 +2561,32 @@ let blobGc: BlobGc | null = null
         listDevices: () =>
           listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId), settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
         deviceCount: () => db.select().from(devices).all().length,
+        // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
+        // off the health poll Studio already makes instead of the whole
+        // plugin list it used to download on every page (§0.4).
+        //
+        // A `COUNT(*)` with the filter in SQL, never `.all().length`: that is
+        // the §0.5 mistake this plan already fixed once in `runtime.ts`, and
+        // it is worse here because health is POLLED and every materialised
+        // row would carry `plugins.bundle` — the full built pack, ~1 MB per
+        // version row (`db/schema.ts:1865`).
+        //
+        // Written this way it never reads a bundle at all: `idx_plugins_status`
+        // (`db/schema.ts:1884`, `(name, status)`) contains `status`, and the
+        // query needs no other column, so SQLite answers it with
+        // `SCAN plugins USING COVERING INDEX idx_plugins_status` — verified
+        // with `EXPLAIN QUERY PLAN` against this exact schema. The table's
+        // rows, and the overflow pages holding their bundles, are never
+        // visited. The index's leading column is `name`, so this is a full
+        // index scan rather than a seek; over a farm's few dozen plugin rows
+        // that is the right trade, and it stays index-only however deep the
+        // version history gets.
+        failedPluginCount: () =>
+          db
+            .select({ n: sql<number>`count(*)` })
+            .from(plugins)
+            .where(eq(plugins.status, 'failed'))
+            .get()?.n ?? 0,
         log: log.child('http'),
         audit,
         version: CORE_VERSION,

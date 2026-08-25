@@ -78,8 +78,16 @@ const NOT_IN_STUDIO_BY_DESIGN: Record<string, string> = {
     'A screen never writes an entry directly. §3.7 is that a view mutates only through a DECLARED `kv.set` action, which goes to `POST /:name/action/:actionId` and is evaluated server-side against the surface that was verified. A second, ad-hoc writer in Studio would be exactly the undeclared write path that design forbids. The route completes the `plugin.data` surface (§4.5) for a CLI or a script driving the farm over HTTP.',
   'DELETE /:name/data/entry':
     'The delete half of the same pair, refused from Studio for the same reason: a view deletes through a declared `kv.delete` action. The one bulk delete an operator does need — dropping a plugin\'s whole namespace on remove — is `DELETE /:name/:version?deleteKv=1`, which P4 made reachable in step 108.9.',
-  'GET /:name/:version':
-    'One plugin version row by name and version. `GET /` already returns every row of every version (`runtime.list`), and `app/plugins/page.tsx` renders the whole table from that single read, so Studio has no request that this route would answer better. It stays for `curl` and for the CLI\'s post-publish check.',
+  // `GET /:name/:version` was excused here until plan 126 step 126.2, on the
+  // reasoning that `GET /` already returned every row of every version so Studio
+  // had no request this route would answer better. That reasoning was exactly
+  // backwards, and the owner felt it: the only reason the LIST carried a
+  // manifest, a declared surface and a service declaration on every one of a
+  // farm's twenty-plus version rows was that the detail page read them off it.
+  // Studio now calls this route for the one version an operator opened
+  // (`app/plugins/detail/page.tsx`, and `ResetPluginAction` for the handler it
+  // is about to run), which is what let the list shed all three. The entry is
+  // deleted rather than reworded — the route has a caller.
   'POST /:id/verify':
     'Verification is not a separate step in any browser flow: `POST /` verifies in the same call unless `stageOnly` is set, and Reload re-verifies a live plugin (both wired in step 108.9). This route is the companion of `enkaku publish --stage-only`, documented in `packages/sdk/src/cli/publish.ts` for a pipeline that wants to stage and verify as two jobs.',
   'POST /dev':

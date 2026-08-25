@@ -1,8 +1,15 @@
 import { Hono } from 'hono'
+import { and, eq } from 'drizzle-orm'
 import { describe, expect, test } from 'bun:test'
+import { z } from 'zod'
 import {
   PluginActionResponseSchema,
+  PluginActivateResponseSchema,
+  PluginResponseSchema,
+  PluginsListResponseSchema,
+  PluginStageResponseSchema,
   PluginUiResponseSchema,
+  PluginVerifyResponseSchema,
   PluginViewResponseSchema,
   validatePluginSurface,
   type JobInfo,
@@ -12,7 +19,7 @@ import {
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { auditLog, scripts } from '../db/schema'
+import { auditLog, plugins, scripts } from '../db/schema'
 import { createKvStore } from '../kv/store'
 import { createTarGz } from '../backup/tar'
 import { createDevSlotStore } from '../plugins/dev-slots'
@@ -103,7 +110,7 @@ describe('POST /api/plugins — stage + verify (criterion 1)', () => {
   })
 
   test('a `.enkaku` package posted as raw bytes stages the same row the JSON body would (plan 108 §3.8, step 108.2)', async () => {
-    const { app, runtime } = setUp()
+    const { app, db } = setUp()
     const archive = writePluginPackage({
       manifest: { name: 'tiktok', version: '1.0.0', source: 'the original source' },
       scripts: 'export {}',
@@ -113,7 +120,11 @@ describe('POST /api/plugins — stage + verify (criterion 1)', () => {
     expect(res.status).toBe(201)
     const body = await jsonBody(res)
     expect((body.verify as VerifyReport).ok).toBe(true)
-    const row = runtime.get('tiktok', '1.0.0')
+    // Read from the TABLE, not through `runtime.get`: since plan 126 step 126.1
+    // the runtime's reads are projected and no longer carry `bundle`/`source` at
+    // all (they are what this route must store and what no screen may receive),
+    // so the only honest place to assert they were stored is the row itself.
+    const row = db.select().from(plugins).where(and(eq(plugins.name, 'tiktok'), eq(plugins.version, '1.0.0'))).get()
     expect(row?.bundle).toBe('export {}')
     expect(row?.source).toBe('the original source')
     expect(row?.status).toBe('staged')
@@ -294,6 +305,308 @@ describe('GET /api/plugins/:name/:version', () => {
     const { app } = setUp()
     const res = await app.request('/nope/1.0.0')
     expect(res.status).toBe(404)
+  })
+
+  test('the version route carries the manifest and NOT the bundle (plan 126 step 126.1)', async () => {
+    const { app, runtime } = setUp()
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: `export const marker = "${BUNDLE_MARKER}"`, source: SOURCE_MARKER })
+    await runtime.verify(staged.id)
+
+    const res = await app.request('/tiktok/1.0.0')
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+    expect(raw).not.toContain(BUNDLE_MARKER)
+    expect(raw).not.toContain(SOURCE_MARKER)
+    // …and it still carries what the detail page reads it FOR.
+    const plugin = PluginResponseSchema.parse(JSON.parse(raw)).plugin
+    expect(plugin.manifest?.scripts.map((s) => s.id)).toEqual(['login'])
+  })
+})
+
+/**
+ * Plan 126 (M91) §0.1, §3.1, criterion 1 — **the guard that stops the bundle
+ * coming back.**
+ *
+ * The owner's report was *"the Plugins menu is very heavy when I open it"*, and
+ * the cause was `db.select()` with no argument over a table whose largest column
+ * is the complete built JavaScript pack, ~1 MB per version row. `PluginRowSchema`
+ * never declared `bundle`, so Zod stripped it on arrival and the browser
+ * downloaded megabytes to throw them away on the next line.
+ *
+ * **These search the SERIALISED BODY for a marker, rather than asserting a
+ * shape**, and the difference is the whole value of the file. A shape assertion
+ * (`expect(item.bundle).toBeUndefined()`) pins the columns that exist today and
+ * says nothing about the seventh one someone adds to `plugins` next year; a body
+ * search fails the moment any column carrying the bundle text reaches the wire,
+ * whatever it is called and however it got there. That is the failure mode this
+ * plan exists to make impossible.
+ */
+const BUNDLE_MARKER = '__ENKAKU_BUNDLE_MARKER_DO_NOT_SHIP__'
+const SOURCE_MARKER = '__ENKAKU_SOURCE_MARKER_DO_NOT_SHIP__'
+
+describe('GET /api/plugins — the list carries no plugin source (plan 126)', () => {
+  /** `n` published versions of one plugin, each with a distinctively-marked bundle — the shape of a farm that has iterated on a plugin all week (§0.3). */
+  async function publishVersions(runtime: PluginRuntime, n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      const staged = await runtime.stage({
+        name: 'tiktok',
+        version: `1.0.${i}`,
+        // Padded to a realistic size: the built packs this plan measured are
+        // 818–1065 KB, and a marker in a 40-byte string would prove the field is
+        // gone without proving the WEIGHT is.
+        bundle: `export const marker = "${BUNDLE_MARKER}"\n${'// filler\n'.repeat(20_000)}`,
+        source: SOURCE_MARKER,
+      })
+      await runtime.verify(staged.id)
+    }
+  }
+
+  test('no version of the bundle, the source, or the hash appears anywhere in the response body', async () => {
+    const { app, runtime } = setUp()
+    await publishVersions(runtime, 3)
+
+    const res = await app.request('/')
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+
+    expect(raw).not.toContain(BUNDLE_MARKER)
+    expect(raw).not.toContain(SOURCE_MARKER)
+    expect(raw).not.toContain('// filler')
+    expect(raw).not.toContain('bundleHash')
+    expect(raw).not.toContain('resetPackages')
+    // The rows really are there — otherwise the assertions above would pass on
+    // an empty list, which is the one way this test could lie.
+    const body = PluginsListResponseSchema.parse(JSON.parse(raw))
+    expect(body.items).toHaveLength(3)
+  })
+
+  test('the response stays in the tens of kilobytes at twenty versions (criterion 2)', async () => {
+    const { app, runtime } = setUp()
+    await publishVersions(runtime, 20)
+
+    const raw = await (await app.request('/')).text()
+    // Twenty versions of one plugin, each holding a ~200 KB bundle: the old
+    // `SELECT *` answered ~4 MB here. The bound is deliberately loose — this
+    // guards an ORDER OF MAGNITUDE, not a byte count, so it does not fail the
+    // day someone adds an honest field to the list item.
+    expect(raw.length).toBeLessThan(50_000)
+    expect(PluginsListResponseSchema.parse(JSON.parse(raw)).items).toHaveLength(20)
+  })
+
+  test('what the list DOES carry: the manifest projected to declaredScripts + hasService (§3.2)', async () => {
+    const { app, runtime } = setUp('admin', async () =>
+      healthyReport({
+        scripts: [
+          { id: 'login', paramsSchema: { type: 'object', properties: { user: { type: 'string' } } }, title: 'Log in', runtime: null },
+          { id: 'warmup', paramsSchema: { type: 'object' }, runtime: null },
+        ],
+      }),
+    )
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}' })
+    await runtime.verify(staged.id)
+
+    const raw = await (await app.request('/')).text()
+    // The member SCHEMAS are what `declaredScripts` exists to leave behind.
+    expect(raw).not.toContain('paramsSchema')
+    const [item] = PluginsListResponseSchema.parse(JSON.parse(raw)).items
+    expect(item?.declaredScripts).toEqual([{ id: 'login', title: 'Log in' }, { id: 'warmup' }])
+    expect(item?.hasService).toBe(false)
+    expect(item?.scriptCount).toBe(0) // verified, not activated — nothing registered yet
+  })
+
+  test('scriptCount is the live registered count, produced by COUNT(*) (§4.2, criterion 5)', async () => {
+    const { app, runtime } = setUp('admin', async () =>
+      healthyReport({ scripts: [{ id: 'login', paramsSchema: {}, runtime: null }, { id: 'warmup', paramsSchema: {}, runtime: null }] }),
+    )
+    const staged = await runtime.stage({ name: 'tiktok', version: '1.0.0', bundle: 'export {}' })
+    await runtime.verify(staged.id)
+    runtime.activate(staged.id)
+
+    const body = PluginsListResponseSchema.parse(JSON.parse(await (await app.request('/')).text()))
+    expect(body.items[0]?.scriptCount).toBe(2)
+  })
+
+  test('the list requires script.view — an anonymous caller is refused (step 126.4)', async () => {
+    const { app } = setUp(null)
+    expect((await app.request('/')).status).toBe(403)
+  })
+
+  test('…and an OPERATOR is not: script.view is in the OPERATOR set, which is what makes the gate safe for the sidebar', async () => {
+    const { app } = setUp('operator')
+    expect((await app.request('/')).status).toBe(200)
+  })
+})
+
+/**
+ * Plan 126 (M91) step 126.6 — **the same guard, on the routes that WRITE.**
+ *
+ * Step 126.1 fixed the two reads and measured the win, and the plan recorded
+ * what it had deliberately left: `POST /api/plugins`, `POST /:id/activate`,
+ * `POST /:name/rollback` and `POST /:name/enable` each answered `c.json()` with
+ * a raw table row, so **a publish sent the ~1 MB bundle up and got the same
+ * ~1 MB straight back down**, and every activate/rollback/enable paid it too.
+ * `PluginRowSchema` declares none of those columns, so the browser parsed the
+ * echo and dropped it — the identical waste, on the identical schema, one
+ * handler over.
+ *
+ * These are body searches for a marker, for the reason the list's guard states
+ * at length above: a shape assertion pins the columns that exist today and says
+ * nothing about the one someone adds to `plugins` next year. The fix these
+ * cover is a projection at the runtime's edge (`PluginWireRow`) rather than a
+ * strip at each `c.json`, so a route added later inherits it — but "inherits it
+ * by construction" is a claim about types, and these tests are the claim about
+ * bytes.
+ */
+describe('the write routes echo no plugin source either (plan 126 step 126.6)', () => {
+  /**
+   * Padded to a realistic size for the same reason `publishVersions` pads: a
+   * marker inside a 40-byte bundle would prove the FIELD is gone without proving
+   * the WEIGHT is, and weight is what the owner felt.
+   */
+  const MARKED_BUNDLE = `export const marker = "${BUNDLE_MARKER}"\n${'// filler\n'.repeat(20_000)}`
+
+  /**
+   * Publish through the ROUTE rather than through `runtime.stage`, because on
+   * this route the request body IS the bundle — the round trip is the thing
+   * being measured, and staging behind the router's back would not exercise it.
+   */
+  async function publish(app: Hono<AuthEnv>, version: string, opts: { stageOnly?: boolean } = {}): Promise<Response> {
+    return await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'tiktok', version, bundle: MARKED_BUNDLE, source: SOURCE_MARKER, ...opts }),
+    })
+  }
+
+  /** The assertion every case in this block shares. Named once so a new case cannot check three of the five and look complete. */
+  function expectNoPluginSource(raw: string): void {
+    expect(raw).not.toContain(BUNDLE_MARKER)
+    expect(raw).not.toContain(SOURCE_MARKER)
+    expect(raw).not.toContain('// filler')
+    expect(raw).not.toContain('bundleHash')
+    // `resetPackages` is checked against the `plugin` MEMBER rather than the
+    // whole body, and the distinction is real rather than a way around a red
+    // test: `VerifyReport` declares a field of that name of its own (the
+    // packages a plugin's Reset data clears), several of these routes answer a
+    // report alongside the row, and that field is exactly what the caller asked
+    // for. It is the `plugins` COLUMN of that name — the stored copy nobody
+    // reads off a row — that must not ride along.
+    const seen = z.object({ plugin: z.unknown() }).safeParse(JSON.parse(raw))
+    if (seen.success && seen.data.plugin !== undefined) expect(JSON.stringify(seen.data.plugin)).not.toContain('resetPackages')
+  }
+
+  /** Publish `version` and hand back its id — the handle `activate`/`verify` need. */
+  async function publishId(app: Hono<AuthEnv>, version: string): Promise<string> {
+    const res = await publish(app, version)
+    expect(res.status).toBe(201)
+    const { plugin } = PluginStageResponseSchema.parse(await res.json())
+    if (!plugin) throw new Error(`publishing tiktok@${version} answered no plugin row`)
+    return plugin.id
+  }
+
+  test('POST /api/plugins does not send the upload back down with the 201', async () => {
+    const { app } = setUp()
+    const res = await publish(app, '1.0.0')
+    expect(res.status).toBe(201)
+    const raw = await res.text()
+
+    expectNoPluginSource(raw)
+    // The bound is an ORDER OF MAGNITUDE, not a byte count, exactly as the
+    // list's own size guard is: ~200 KB went up, and what comes back is a row's
+    // worth of identity plus a manifest — a couple of kilobytes, not a copy.
+    expect(MARKED_BUNDLE.length).toBeGreaterThan(200_000)
+    expect(raw.length).toBeLessThan(5_000)
+    // …and it still says what a publish is asked for: which row now exists, and
+    // whether it verified. Without this the assertions above would pass on an
+    // empty body, which is the one way this test could lie.
+    const body = PluginStageResponseSchema.parse(JSON.parse(raw))
+    expect(body.verify?.ok).toBe(true)
+    expect(body.plugin?.status).toBe('staged')
+    expect(body.plugin?.manifest?.scripts.map((s) => s.id)).toEqual(['login'])
+  })
+
+  test('…including on the stageOnly path, which answers the pre-verify row rather than a re-read', async () => {
+    const { app } = setUp()
+    // The two exits of this handler are different objects — `staged` here, a
+    // fresh `runtime.get` on the verifying path above — so both need covering.
+    const raw = await (await publish(app, '1.0.0', { stageOnly: true })).text()
+    expectNoPluginSource(raw)
+    expect(raw.length).toBeLessThan(5_000)
+    const body = PluginStageResponseSchema.parse(JSON.parse(raw))
+    expect(body.verify).toBeUndefined()
+    expect(body.plugin?.verifiedAt).toBeNull()
+  })
+
+  test('POST /:id/verify answers the report and nothing off the row', async () => {
+    const { app } = setUp()
+    const id = await publishId(app, '1.0.0')
+    const res = await app.request(`/${id}/verify`, { method: 'POST' })
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+    expectNoPluginSource(raw)
+    expect(PluginVerifyResponseSchema.parse(JSON.parse(raw)).verify.ok).toBe(true)
+  })
+
+  test('POST /:id/activate answers the activated row, projected', async () => {
+    const { app } = setUp()
+    const id = await publishId(app, '1.0.0')
+    const res = await app.request(`/${id}/activate`, { method: 'POST' })
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+
+    expectNoPluginSource(raw)
+    const plugin = PluginActivateResponseSchema.parse(JSON.parse(raw)).plugin
+    expect(plugin.status).toBe('active')
+    expect(plugin.version).toBe('1.0.0')
+    // `scriptCount` is read after activation wrote the member rows, so it
+    // reports what just became runnable rather than the pre-activation zero.
+    expect(plugin.scriptCount).toBe(1)
+  })
+
+  test('POST /:name/rollback answers the version it went back to, projected', async () => {
+    const { app } = setUp()
+    await app.request(`/${await publishId(app, '1.0.0')}/activate`, { method: 'POST' })
+    await app.request(`/${await publishId(app, '1.0.1')}/activate`, { method: 'POST' })
+
+    const res = await app.request('/tiktok/rollback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ toVersion: '1.0.0' }),
+    })
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+
+    expectNoPluginSource(raw)
+    const plugin = PluginActivateResponseSchema.parse(JSON.parse(raw)).plugin
+    expect(plugin.version).toBe('1.0.0')
+    expect(plugin.status).toBe('active')
+  })
+
+  test('POST /:name/enable answers the re-enabled row, projected', async () => {
+    const { app } = setUp()
+    await app.request(`/${await publishId(app, '1.0.0')}/activate`, { method: 'POST' })
+    expect((await app.request('/tiktok/disable', { method: 'POST' })).status).toBe(200)
+
+    const res = await app.request('/tiktok/enable', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+
+    expectNoPluginSource(raw)
+    const plugin = PluginActivateResponseSchema.parse(JSON.parse(raw)).plugin
+    expect(plugin.status).toBe('active')
+    expect(plugin.version).toBe('1.0.0')
+  })
+
+  test('the row itself still holds everything the farm needs — the projection is a wire shape, not a deletion', async () => {
+    const { app, db } = setUp()
+    await publish(app, '1.0.0')
+    // The counterpart to every assertion above: a publish that answered nothing
+    // about the bundle would also pass them, and that would be a far worse bug
+    // than the one this step fixes.
+    const row = db.select().from(plugins).where(and(eq(plugins.name, 'tiktok'), eq(plugins.version, '1.0.0'))).get()
+    expect(row?.bundle).toContain(BUNDLE_MARKER)
+    expect(row?.source).toBe(SOURCE_MARKER)
+    expect(row?.bundleHash).toBeString()
   })
 })
 

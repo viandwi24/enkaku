@@ -1173,6 +1173,45 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
   })
 
+  describe('the sidebar\'s farm-health badge (plan 126 §3.5, step 126.5): HttpDeps.failedPluginCount is optional, so nothing but this test notices if it is never wired', () => {
+    /**
+     * `failedPlugins` on `GET /api/health` exists so Studio's `AppShell`
+     * can stop fetching `GET /api/plugins` on every page to derive one
+     * integer — at the time, every plugin's full built bundle, ~1 MB per
+     * version row, downloaded and discarded (plan 126 §0.4). The shell no
+     * longer has that fetch to fall back on, so an unwired accessor here
+     * means the badge is silently absent forever: the field is simply
+     * omitted, the sidebar renders no warning, and every plugin could be
+     * `failed` without a single visible sign.
+     */
+    test("daemon.ts's createApp({...}) passes a live failedPluginCount accessor", () => {
+      const call = extractCall(daemonSource, 'const app = createApp({')
+      expect(call).toContain('failedPluginCount: () =>')
+    })
+
+    /**
+     * The COUNT(*), pinned as source rather than behaviour because the
+     * cheap version and the ruinous one return the identical number. Plan
+     * 126 §0.5 found `db.select().from(scripts)...all().length` on the
+     * plugin-counting path and step 126.1 fixed it; health is POLLED, and
+     * every materialised `plugins` row carries the full bundle
+     * (`db/schema.ts:1865`), so re-introducing the pattern here would be
+     * strictly worse than the bug this plan opened on.
+     */
+    test('it counts in SQL — `count(*)` with the status filter, never a materialised list whose rows each carry a ~1 MB bundle', () => {
+      // Sliced by hand rather than through `extractCall`: this accessor is an
+      // arrow expression, not a `name({` region, so there is no brace pair to
+      // balance. The upper bound is the next key in the same object literal.
+      const call = extractCall(daemonSource, 'const app = createApp({')
+      const from = call.indexOf('failedPluginCount: () =>')
+      expect(from).toBeGreaterThan(-1)
+      const accessor = call.slice(from, call.indexOf("log: log.child('http')", from))
+      expect(accessor).toContain('count(*)')
+      expect(accessor).toContain("eq(plugins.status, 'failed')")
+      expect(accessor).not.toContain('.all()')
+    })
+  })
+
   describe("a batch's runtimeOverride ceiling check (docs/plans/96-m61-hotfixes.md §96.18): BatchRoutesDeps.farmJobSettings existed and was documented but nothing constructed it", () => {
     test('createBatchRoutes(...) passes a live `farmJobSettings` accessor — without it, E_RUNTIME_OVER_CEILING can never fire for a batch override, no matter how large', () => {
       const call = extractCall(daemonSource, 'createBatchRoutes({')

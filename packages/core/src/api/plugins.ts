@@ -320,7 +320,38 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { runtime, audit, workspace } = deps
 
-  app.get('/', (c) => {
+  /**
+   * `GET /api/plugins` — every version this farm carries, plus the live dev
+   * slots. Answers `PluginsListResponseSchema`.
+   *
+   * ## `script.view`, added by plan 126 §3.4, step 126.4
+   *
+   * This route shipped with no `requirePermission` at all, unlike every one of
+   * its neighbours below, so any authenticated session could read the whole
+   * plugin inventory. `script.view` is the permission the equivalent question
+   * already uses on this very router — `GET /ui` and `GET /:name/view/:viewId`
+   * both carry it — and reading a plugin's identity IS reading what can run on
+   * this farm.
+   *
+   * Every existing caller holds it, which was checked before it was added
+   * rather than assumed (§3.4: a gate that breaks the sidebar for an operator
+   * is a worse bug than the one being fixed). The three HTTP callers are all in
+   * Studio — `app/plugins/page.tsx`, `app/plugins/detail/page.tsx` and
+   * `components/layout/AppShell.tsx`'s failed-plugin count, which runs on EVERY
+   * Studio page — and `script.view` is in `auth/acl.ts`'s `OPERATOR` set, so
+   * both of this farm's two roles hold it (an admin holds everything). The
+   * fourth caller, `plugins/surface-registry.ts`, is in-process and never
+   * crosses this middleware at all.
+   *
+   * ## The payload
+   *
+   * `runtime.list()` answers `PluginView`s, not `plugins` rows: no `bundle`, no
+   * `source`, no `bundleHash`, no `resetPackages`, and a `manifest` projected
+   * down to `declaredScripts`/`hasService` (plan 126 §3.1/§3.2 — the reasoning
+   * lives on `PluginView` and `PluginListItemSchema`). Nothing is deleted here
+   * on the way out; the query simply never asked for it.
+   */
+  app.get('/', requirePermission('script.view'), (c) => {
     const name = c.req.query('name') ?? undefined
     const items = runtime.list({ name })
     const dev = runtime.devSlots()
@@ -420,7 +451,37 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
         'content-length': String(asset.bytes),
         'x-content-type-options': 'nosniff',
         'referrer-policy': 'no-referrer',
-        'cache-control': 'no-store',
+        /**
+         * Plan 127 §0.1, §3.1, §3.2, step 127.2. This was `no-store` — the
+         * strongest instruction there is, "never write this to any cache" —
+         * and it was buying nothing while costing the page.
+         *
+         * **The URL is already unique per plugin version.** `plugin-host.ts`
+         * injects `…/ui/index.js?v=<version>` (its `scriptUrl`), and as of
+         * step 127.1 the stylesheet carries the same query. Bytes at that
+         * exact URL therefore never change, so there is nothing for a cache
+         * to get wrong — while `no-store` re-downloaded ~159 KB of plugin UI
+         * (measured: proxy-manager 90 KB + 14 KB CSS, mikrotik 55 KB) on
+         * every single page load. Invisible on loopback; the owner's own
+         * report from a remote farm was "every refresh is very heavy … on
+         * local it looks fine, because local is not limited by internet
+         * speed and bandwidth."
+         *
+         * `immutable` rather than an ETag on purpose (§3.1): a revalidation
+         * would still be one round trip per asset per refresh, on a
+         * high-latency link, to confirm something the version query already
+         * guarantees.
+         *
+         * **`private`, never `public`** (§3.2): this route is behind
+         * `requirePermission('script.view')`, and a shared proxy must not be
+         * allowed to hold an authenticated response and hand it to somebody
+         * else. `private` keeps it in the operator's own browser only.
+         *
+         * The retry path stays correct: `plugin-host.ts`'s `scriptUrl`
+         * appends `&retry=<n>` on a real retry, so a failed load is re-fetched
+         * at a URL this cache has never seen (§3.5).
+         */
+        'cache-control': 'private, max-age=31536000, immutable',
       },
     })
   })
@@ -896,6 +957,22 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
     })
   }
 
+  /**
+   * ONE version, in full — the read the plugin detail page makes for whichever
+   * version it is pointed at (plan 126 §3.3). It is the home of `manifest`, and
+   * so of the declared surface and the service declaration an operator consented
+   * to at install; the list route deliberately carries neither.
+   *
+   * `runtime.get` projects its columns (step 126.1): this route renders neither
+   * `bundle` nor `source`, `PluginRowSchema` never declared either, and they used
+   * to be selected and shipped anyway — ~1 MB of built JavaScript per open.
+   *
+   * **Every `{ plugin }` on this router now answers the same shape**
+   * (`PluginWireRow`, step 126.6), this route and the four transitions below
+   * alike. That is a property of the runtime's signatures, not of anyone
+   * remembering a helper here: this file does not import `PluginRow`, so no
+   * handler in it can be holding a bundle to serialise in the first place.
+   */
   app.get('/:name/:version', (c) => {
     const row = runtime.get(c.req.param('name'), c.req.param('version'))
     if (!row) throw new EnkakuError('plugin_not_found', 'no such plugin version')
@@ -942,19 +1019,45 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
       stageOnly = bodyStageOnly === true
     }
 
+    // `stage` returns the PROJECTION, not the row it wrote (plan 126 step
+    // 126.6, `PluginWireRow`). This is the site where echoing the row cost the
+    // most: the request body IS the bundle, so a publish sent ~1 MB up and got
+    // the same ~1 MB straight back down in this 201 — and `PluginRowSchema`
+    // declares no `bundle`, so the browser parsed it and dropped it on the next
+    // line, the same waste §0.2 found on the list. Both exits below are safe by
+    // construction rather than by remembering to strip anything: `staged` and
+    // `runtime.get` are the same narrow type, and neither can carry a bundle.
     const staged = await runtime.stage({ ...input, createdBy: actorId(c) })
     audit.record({ userId: actorId(c), action: 'plugin.publish', target: staged.id, meta: { name: staged.name, version: staged.version } })
     if (stageOnly) return c.json({ plugin: staged }, 201)
     const report = await runtime.verify(staged.id)
+    // Re-read rather than reusing `staged`: verification is what fills in
+    // `manifest`, `title`, `description` and `verifiedAt`, none of which the
+    // pre-verify row has.
     const row = runtime.get(staged.name, staged.version)
     return c.json({ plugin: row, verify: report }, 201)
   })
 
+  /**
+   * Verify one staged version. Answers the REPORT and no plugin row — the only
+   * transition route that reports nothing about the row itself, because the
+   * report already carries what changed (`ok`, the members, the error verbatim)
+   * and the caller that wants the updated row reads `GET /:name/:version`.
+   *
+   * Worth stating explicitly: this is the handler that most obviously "has" the
+   * bundle (verification is the thing that reads it), and it never had a
+   * `{ plugin }` exit to project. `runtime.verify` returns a `VerifyReport`,
+   * which is a shape of its own and carries no column of `plugins` at all.
+   */
   app.post('/:id/verify', requirePermission('script.publish'), async (c) => {
     const report = await runtime.verify(c.req.param('id'))
     return c.json({ verify: report })
   })
 
+  // `activate`/`rollback`/`enable` all answer `PluginWireRow` — see step 126.6
+  // in `plugins/runtime.ts`. They used to answer the raw table row, so every
+  // activation, every rollback and every re-enable shipped that version's whole
+  // bundle back to a dialog that renders a name and a version out of it.
   app.post('/:id/activate', requirePermission('script.publish'), (c) => {
     const row = runtime.activate(c.req.param('id'))
     audit.record({ userId: actorId(c), action: 'plugin.activate', target: row.id, meta: { name: row.name, version: row.version } })

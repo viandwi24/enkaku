@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ChevronsLeft, Menu, MonitorSmartphone, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, type LucideIcon } from 'lucide-react'
 import { z } from 'zod'
+import { HealthResponseSchema } from '@enkaku/protocol'
 import {
   Button,
   Sheet,
@@ -221,32 +222,46 @@ export function AppShell({ children }: { children: ReactNode }) {
   // entirely: local mode's implicit admin has no session to sign out of.
   const { user, authMode, logout } = useAuth()
 
+  // ── The two loads are SEPARATE effects on purpose (plan 126 §0.4, §3.5,
+  // steps 126.3 and 126.5). They used to be one `Promise.all` of six requests
+  // re-fired by every `device.added`, `device.removed` AND `job.status`, which
+  // meant the sidebar re-downloaded the whole plugin list — at the time, every
+  // plugin's full built bundle, ~1 MB per version row — several times a
+  // second on a farm running batches. Splitting them is what lets the two
+  // halves have the cadence each actually needs: the counts genuinely change
+  // on job and device events, and the plugin nav genuinely does not.
   useEffect(() => {
+    // One controller for the LIFETIME OF THE EFFECT, aborted only on unmount.
+    // Deliberately NOT one per pass: aborting the in-flight pass whenever a
+    // newer event arrives would mean a farm emitting `job.status` faster than
+    // the round trip completes never lands a single count — the counts would
+    // freeze precisely on the busy farm they matter on. Staleness is handled
+    // by never having two passes in flight at once (below) instead.
+    const ctrl = new AbortController()
+    let disposed = false
+    // The stale-response guard the old effect had none of. `running` means a
+    // pass owns the state; a burst of events while it is in flight collapses
+    // into ONE follow-up pass (`queued`) rather than N parallel ones whose
+    // replies could land in any order and leave the badge showing whichever
+    // answer happened to be slowest.
+    let running = false
+    let queued = false
     const load = async () => {
+      if (running) {
+        queued = true
+        return
+      }
+      running = true
       try {
-        const [d, s, j, h, p, u] = await Promise.all([
-          fetch(`${coreBase()}/api/devices`).then((r) => r.json()),
-          fetch(`${coreBase()}/api/scripts`).then((r) => r.json()),
-          fetch(`${coreBase()}/api/jobs?limit=200`).then((r) => r.json()),
-          fetch(`${coreBase()}/api/health`).then((r) => r.json()),
-          // Plan 82 §4.6, criterion 30 — a farm-health warning while any
-          // plugin is `failed`. Best-effort: an older core with no
-          // `/api/plugins` route (or a request that simply fails) leaves
-          // the badge at 0 rather than breaking the whole sidebar.
-          fetch(`${coreBase()}/api/plugins`).then((r) => r.json()).catch(() => ({ items: [] })),
-          // Plan 108 §5 step 108.8 (G8) — the nav contributions, on the SAME
-          // pass as the badge above rather than a fetch of their own. Its own
-          // `catch`, like the badge's: a core too old to know this route, or
-          // an operator whose token cannot read it, gets the static nav and
-          // nothing extra — never a sidebar that failed to draw.
-          fetch(`${coreBase()}/api/plugins/ui`).then((r) => r.json()).catch(() => null),
+        const [d, s, j, h] = await Promise.all([
+          fetch(`${coreBase()}/api/devices`, { signal: ctrl.signal }).then((r) => r.json()),
+          fetch(`${coreBase()}/api/scripts`, { signal: ctrl.signal }).then((r) => r.json()),
+          fetch(`${coreBase()}/api/jobs?limit=200`, { signal: ctrl.signal }).then((r) => r.json()),
+          fetch(`${coreBase()}/api/health`, { signal: ctrl.signal }).then((r) => r.json()),
         ])
-        // Parsed, never `as`-cast: a 404/403 body is a perfectly valid JSON
-        // document that simply is not this shape, and `safeParse` is what
-        // turns that into "no plugin group" instead of a render-time throw.
-        const ui = PluginNavResponseSchema.safeParse(u)
-        setPluginNav(ui.success ? ui.data.items : [])
-        setCounts({
+        if (disposed) return
+        setCounts((prev) => ({
+          ...prev,
           // Both endpoints paginate now (plan 30 §4.2) — `total` is the true
           // farm-wide count; `.devices`/`.scripts` would silently cap at the
           // first page's size on a farm bigger than the default limit.
@@ -262,25 +277,108 @@ export function AppShell({ children }: { children: ReactNode }) {
           activeJobs: ((j.items ?? j.jobs ?? []) as { status: string }[]).filter(
             (x) => x.status === 'queued' || x.status === 'running',
           ).length,
-          failedPlugins: ((p.items ?? []) as { status: string }[]).filter((x) => x.status === 'failed').length,
-        })
+          // Plan 126 §3.5, step 126.5 — the farm-health warning badge, now
+          // an integer on the health response this pass already makes rather
+          // than a filter over a plugin list this component downloaded on
+          // every page to compute it (§0.4). Parsed, never `as`-cast, and
+          // `?? prev.failedPlugins` on failure: a core too old to report the
+          // field, or a body that is not this shape at all, must leave the
+          // badge where it was rather than assert a confident zero.
+          failedPlugins: HealthResponseSchema.safeParse(h).data?.failedPlugins ?? prev.failedPlugins,
+        }))
         setVersion(h.version ?? null)
         setMode(h.mode ?? 'local')
       } catch {
         // The sidebar must not take the page down when the core is unreachable.
+      } finally {
+        running = false
+        if (queued && !disposed) {
+          queued = false
+          void load()
+        }
       }
     }
     void load()
     const offStatus = ws.onStatus(setConnected)
-    // Counts update on events rather than on a polling timer.
+    // Counts update on events rather than on a polling timer. `job.status`
+    // stays a trigger HERE — `activeJobs` is exactly "how many jobs are
+    // queued or running", so a job changing state is the only thing that can
+    // change it. What must never come back is the plugin list riding along on
+    // this pass; see the effect below.
     const off = ws.on((m) => {
       if (m.type === 'device.added' || m.type === 'device.removed' || m.type === 'job.status') void load()
     })
     return () => {
+      disposed = true
+      ctrl.abort()
       off()
       offStatus()
     }
   }, [])
+
+  /**
+   * The plugin nav group — plan 108 §5 step 108.8, plan 126 §3.5, steps
+   * 126.3 and 126.5.
+   *
+   * **This effect no longer fetches `GET /api/plugins`, and it must not fetch
+   * it again.** It used to, on every Studio page, for one integer:
+   * `failedPlugins`, the count of plugin rows in `failed`. That list carried
+   * every plugin's full built bundle at the time — ~1 MB per version row,
+   * 37 MB on a farm with twenty versions (plan 126 §0.4, §0.3) — and the
+   * whole payload was discarded on the next line. Step 126.5 moved the
+   * integer onto `GET /api/health`, which the counts effect above already
+   * polls, so the request is gone rather than merely rarer. Anything the
+   * sidebar needs about plugins beyond the nav belongs on health as another
+   * scalar, not as a list read reinstated here.
+   *
+   * `/api/plugins/ui` stays, and it is a different animal: it returns nav
+   * entries only — plugin, version, origin, and each entry's id/label/icon/
+   * view (`packages/core/src/plugins/surface-registry.ts`) — never a
+   * manifest, a settings schema or a bundle. It is genuinely needed on every
+   * page, because it is the nav.
+   *
+   * **`job.status` is not a trigger here, and restoring it would be a
+   * regression, not a fix.** The screens a plugin declares cannot change
+   * because a job moved from `queued` to `running`, so every one of those
+   * re-fetches was pure waste — and on a farm running batches `job.status`
+   * fires several times a second, which made this the most expensive request
+   * in Studio (plan 126 §0.4). `device.added`/`device.removed` are gone for
+   * the same reason: plugging a phone in cannot add a plugin screen either.
+   *
+   * `pathname` is the dependency instead, so the nav refreshes on every
+   * client-side navigation. That is deliberate and it is the cheapest trigger
+   * that still covers the one flow that DOES change this answer — an operator
+   * installing, publishing, disabling or restarting a plugin on `/plugins`
+   * and then going somewhere else. Human-paced, bounded by clicks, and no
+   * longer coupled to farm throughput.
+   */
+  useEffect(() => {
+    const ctrl = new AbortController()
+    let disposed = false
+    const loadPluginNav = async () => {
+      // Plan 108 §5 step 108.8 (G8) — the nav contributions, with their own
+      // `catch`: a core too old to know this route, or an operator whose
+      // token cannot read it, gets the static nav and nothing extra — never
+      // a sidebar that failed to draw.
+      const u = await fetch(`${coreBase()}/api/plugins/ui`, { signal: ctrl.signal })
+        .then((r) => r.json())
+        .catch(() => null)
+      // The abort path lands here too (the `catch` swallows it), so the guard
+      // is what stops an unmounted — or superseded — pass from writing an
+      // empty nav over a good one.
+      if (disposed) return
+      // Parsed, never `as`-cast: a 404/403 body is a perfectly valid JSON
+      // document that simply is not this shape, and `safeParse` is what
+      // turns that into "no plugin group" instead of a render-time throw.
+      const ui = PluginNavResponseSchema.safeParse(u)
+      setPluginNav(ui.success ? ui.data.items : [])
+    }
+    void loadPluginNav()
+    return () => {
+      disposed = true
+      ctrl.abort()
+    }
+  }, [pathname])
 
   useEffect(() => setMobileOpen(false), [pathname])
 

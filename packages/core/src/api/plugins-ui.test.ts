@@ -144,7 +144,7 @@ describe('GET /:name/ui/* — serving a published package’s assets', () => {
    *
    * The three that STAY are the three a subresource load actually honours.
    */
-  test('every response carries nosniff, no-referrer and no-store — and no CSP at all', async () => {
+  test('every response carries nosniff, no-referrer and an immutable private cache — and no CSP at all', async () => {
     const { app, runtime } = setUp()
     await publishPackage(app, runtime)
 
@@ -156,11 +156,30 @@ describe('GET /:name/ui/* — serving a published package’s assets', () => {
       // refuse a module whose content type is not a JavaScript MIME rather
       // than sniff its way into running it.
       expect(res.headers.get('x-content-type-options')).toBe('nosniff')
-      // `no-store` does double duty: the route is permission-gated, so a
-      // cached asset is one an operator who has since lost `script.view` could
-      // still be served by their own browser — and it is what makes an
-      // `enkaku dev` rebuild serve the NEW component (plan 111 criterion 8).
-      expect(res.headers.get('cache-control')).toBe('no-store')
+      /**
+       * Plan 127 step 127.2 — this was `no-store`, and this comment used to
+       * give two reasons for it. Both were re-examined before the change; one
+       * turned out not to hold, and the other is now a stated trade rather
+       * than an unexamined default.
+       *
+       * **"It is what makes an `enkaku dev` rebuild serve the NEW component"
+       * — this does not hold, verified rather than assumed.** A dev slot's
+       * `buildVersion` increments on every rebuild (`dev-slots.ts:127`:
+       * `${declaredVersion}+dev.${n}`), and `plugin-host.ts` puts that value
+       * in the URL's `?v=`. Each rebuild is therefore a URL the cache has
+       * never seen, so hot reload keeps working with no header help at all.
+       *
+       * **"An operator who has since lost `script.view` could still be served
+       * by their own browser" — true, and accepted.** What is cached is
+       * plugin CODE, not farm data: no device, job or credential ever passes
+       * through this route. Revoking a permission does not make bytes that
+       * operator's own browser already fetched and executed secret again, and
+       * `private` keeps it out of every shared cache in between. The cost of
+       * the alternative was measured: ~159 KB of plugin UI re-downloaded on
+       * every page load, which on a remote farm is the page.
+       */
+      expect(res.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
+      expect(res.headers.get('cache-control')).not.toContain('public')
       expect(res.headers.get('referrer-policy')).toBe('no-referrer')
     }
   })

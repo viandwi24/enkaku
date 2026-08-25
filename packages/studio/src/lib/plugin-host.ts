@@ -691,14 +691,31 @@ export function createPluginHost(overrides: Partial<PluginHostDeps> = {}): Plugi
    *   — the same class compiles to the same rule from the same theme — so a
    *   sheet left in the document is inert, and removing it would mean
    *   re-fetching on every return to the screen. (Which is also why there is
-   *   no version in this URL: the asset route serves `.css` with `no-store`,
-   *   so a fresh document after an `enkaku dev` rebuild gets the new sheet.
-   *   Within ONE document a rebuild reuses the already-linked sheet — the
-   *   reload in criterion 9 is what refreshes it.)
+   *   the stylesheet carries the SAME `?v=<version>` the script does, as of
+   *   plan 127 step 127.1 — see `ensureStylesheet` below for why that had to
+   *   change before the asset route's cache header could.)
    */
   const stylesheetsLinked = new Set<string>()
   function ensureStylesheet(request: PluginViewRequest): void {
-    const href = assetUrl(request.pluginName, stylesheetPathFor(request.entry))
+    /**
+     * The `?v=<version>` is load-bearing, and it was missing until plan 127
+     * §0.4 found the asymmetry: the SCRIPT url has carried a version query
+     * since plan 111 (`scriptUrl` below), the stylesheet never did.
+     *
+     * While the asset route answered `no-store` that cost nothing — a fresh
+     * document always re-fetched both. Plan 127 step 127.2 makes that route
+     * `immutable`, because a version-unique URL can never serve stale bytes
+     * and forbidding the browser to cache it was re-downloading ~159 KB of
+     * plugin UI on every single page refresh (invisible on loopback, the
+     * whole page over a real link).
+     *
+     * An unversioned `.css` under an immutable header would then be served
+     * from cache FOREVER, including after an operator activates a new plugin
+     * version — trading a bandwidth bug for a correctness one. So this line
+     * has to land before that header changes, not after. `request.version`
+     * is the same value `scriptUrl` uses, so the two URLs now agree.
+     */
+    const href = `${assetUrl(request.pluginName, stylesheetPathFor(request.entry))}?v=${encodeURIComponent(request.version)}`
     if (stylesheetsLinked.has(href)) return
     stylesheetsLinked.add(href)
     deps.dom.injectStylesheet({ href, crossOrigin: crossOriginFor(href) })

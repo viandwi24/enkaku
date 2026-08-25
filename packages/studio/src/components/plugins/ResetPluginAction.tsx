@@ -4,9 +4,11 @@ import { useState } from 'react'
 import {
   PluginDataCountResponseSchema,
   PluginResetResponseSchema,
+  PluginResponseSchema,
   type PluginDataCountResponse,
   type PluginResetItem,
   type PluginResetResponse,
+  type PluginServiceResetData,
 } from '@enkaku/protocol'
 import {
   Button,
@@ -20,7 +22,7 @@ import {
   api,
   useAction,
 } from '@enkaku/ui'
-import type { PluginRowWithService } from '@/app/plugins/plugin-list'
+import type { PluginListRow } from '@/app/plugins/plugin-list'
 
 /**
  * **Reset data** — the operator action that deletes everything a plugin stored
@@ -60,7 +62,7 @@ export function ResetPluginAction({
   dense = true,
 }: {
   /** The version whose row/page this sits on. Reset always acts on the plugin's ACTIVE version, whichever row it was pressed from — see below. */
-  selected: PluginRowWithService
+  selected: PluginListRow
   onChanged: () => void
   dense?: boolean
 }) {
@@ -74,17 +76,34 @@ export function ResetPluginAction({
 
   /**
    * The plugin's own account of what its cleanup handler will do, straight off
-   * the manifest an operator consented to at install. Absent means the plugin
-   * declares no handler — which is a real and complete answer, not a gap: it
-   * has nothing to undo, so a reset is a plain deletion.
+   * the manifest an operator consented to at install. `null` means the plugin
+   * declares no handler — which is a real and complete answer, not a gap: it has
+   * nothing to undo, so a reset is a plain deletion.
+   *
+   * **Read when the dialog opens, not off the row** (plan 126 §3.2). It used to
+   * come from `selected.manifest.service.resetData`, which meant every version
+   * of every plugin on the Plugins tab carried a whole service declaration — and
+   * the surface and the member schemas beside it — so that a button rendered on
+   * at most one of those rows could describe itself if pressed. The declaration
+   * now travels with the one version an operator opened, exactly as the entry
+   * count beside it does.
+   *
+   * Three states and not a nullable value, because the loading one must not be
+   * spelled the same as "declares no handler": that sentence promises nothing
+   * outside this farm's database will be touched, and saying it while the answer
+   * is still in flight would be a false promise at the moment it matters most.
    */
-  const reset = p.manifest?.service?.resetData ?? null
+  const [handler, setHandler] = useState<{ state: 'loading' | 'unavailable' } | { state: 'known'; resetData: PluginServiceResetData | null }>({
+    state: 'loading',
+  })
+  const reset = handler.state === 'known' ? handler.resetData : null
   const borrowed = reset?.permissions ?? []
 
   const openConfirm = () => {
     setOpen(true)
     setDataCount(null)
     setCountState('loading')
+    setHandler({ state: 'loading' })
     // Optional by construction, exactly as the Remove dialog's own count is: an
     // older core answers 404 and the dialog still renders, saying plainly that
     // the number could not be read rather than hiding the action behind it.
@@ -94,6 +113,13 @@ export function ResetPluginAction({
         setCountState('known')
       })
       .catch(() => setCountState('unavailable'))
+    // `p.version` IS the active version here: this button renders only on an
+    // `active` row (`PluginActions`), which is the same row `POST /:name/reset`
+    // reads the handler off server-side. Asking for any other version would
+    // describe a manifest the reset will not run.
+    api(`/api/plugins/${encodeURIComponent(p.name)}/${encodeURIComponent(p.version)}`, PluginResponseSchema)
+      .then((r) => setHandler({ state: 'known', resetData: r.plugin.manifest?.service?.resetData ?? null }))
+      .catch(() => setHandler({ state: 'unavailable' }))
   }
 
   const reset_ = () =>
@@ -164,6 +190,21 @@ export function ResetPluginAction({
                   record of what is still out there, and you can fix the cause and reset again.
                 </p>
               </div>
+            ) : handler.state === 'loading' ? (
+              <p className="mt-2.5 text-[12.5px] text-fg-subtle">Reading what {p.name} cleans up first…</p>
+            ) : handler.state === 'unavailable' ? (
+              /*
+                The honest third state. "Declares no cleanup handler" is a
+                promise that nothing outside the database is touched, and this
+                farm could not check it — so it is not said. The action stays
+                available, exactly as it does when the entry count cannot be
+                read: what the reset actually runs is decided server-side off
+                the active row's own manifest, and this dialog only describes it.
+              */
+              <p className="mt-2.5 text-[12.5px] text-fg-subtle">
+                This farm could not read whether {p.name} declares a cleanup handler, so this dialog cannot say what it will undo first. The
+                reset itself still runs whatever the active version declares.
+              </p>
             ) : (
               <p className="mt-2.5 text-[12.5px] text-fg-subtle">
                 {p.name} declares no cleanup handler, so nothing outside this farm&apos;s database is touched — there is nothing for it to

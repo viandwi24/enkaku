@@ -50,7 +50,7 @@ import {
   scriptMatches,
   searchPlugins,
   type PluginMatch,
-  type PluginRowWithService,
+  type PluginListRow,
 } from './plugin-list'
 
 /**
@@ -133,7 +133,7 @@ export default function PluginsPage() {
 
 function PluginsScreen() {
   const params = useSearchParams()
-  const [items, setItems] = useState<PluginRowWithService[] | null>(null)
+  const [items, setItems] = useState<PluginListRow[] | null>(null)
   const [dev, setDev] = useState<DevSlotView[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
@@ -463,10 +463,12 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
   // version re-points the whole row — status, counts, verified time, actions.
   const live = versions.find((v) => v.status === 'active')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const p = versions.find((v) => v.id === selectedId) ?? live ?? (versions[0] as PluginRowWithService)
+  const p = versions.find((v) => v.id === selectedId) ?? live ?? (versions[0] as PluginListRow)
   const isNewest = versions[0]?.id === p.id
 
-  const declared = p.manifest?.scripts ?? []
+  // Plan 126 §3.2 — `manifest.scripts` projected to id + title by the list
+  // route, so this row no longer carries a JSON Schema per member per version.
+  const declared = p.declaredScripts
   const registered = p.scriptCount ?? 0
   const detailHref = `/plugins/detail?name=${encodeURIComponent(p.name)}${selectedId ? `&version=${encodeURIComponent(p.version)}` : ''}`
 
@@ -506,7 +508,8 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
             <span className="rounded-full border border-line px-1.5 text-[10.5px] leading-[1.35] text-fg-subtle">latest</span>
           )}
           {versions.length > 1 && <span className="text-[11px] text-fg-subtle">{versions.length} versions</span>}
-          {p.manifest?.service && (
+          {/* Plan 126 §3.2 — the one bit of `manifest.service` this screen reads. */}
+          {p.hasService && (
             <span
               className="rounded-full border border-line px-1.5 text-[10.5px] leading-[1.35] text-fg-subtle"
               title="This plugin declares a long-lived service — see its detail page for the permissions and listeners it asked for."
@@ -598,11 +601,45 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
   const [autoOpened, setAutoOpened] = useState(false)
   const { run, isPending } = useAction()
 
-  useEffect(() => {
+  /**
+   * The farm's device list, fetched LAZILY — plan 126 §0.4, step 126.3.
+   *
+   * It exists for one consumer, `RunScriptDialog`'s target picker, and it is
+   * not cheap: `fetchDevices()` is `fetchAllPages('/api/devices')`, which
+   * walks pages SEQUENTIALLY at `limit=200`, up to 25 round trips
+   * (`lib/api.ts`). It used to run on mount — and because this section stays
+   * MOUNTED behind the tab strip (see the `hidden` comment above, which is
+   * load-bearing: unmounting it would make a failure in the inactive tab
+   * silent), every operator who opened the Plugins tab paid for it, including
+   * the ones who never opened the run dialog at all.
+   *
+   * `requested` is a ref, not state: this must fire exactly once per mount and
+   * a re-render is not wanted — the arriving devices already re-render through
+   * `setDevices`. `RunScriptDialog` re-resolves its default target when
+   * `devices.length` changes (its own `targetSelection.reset` effect), which is
+   * what makes a list that lands slightly after the dialog opened correct
+   * rather than a flash: the picker fills in and re-defaults, exactly as it
+   * already does for `/api/clusters`, which the dialog has always fetched on
+   * open rather than on mount.
+   */
+  const devicesRequested = useRef(false)
+  const ensureDevices = () => {
+    if (devicesRequested.current) return
+    devicesRequested.current = true
     void fetchDevices()
       .then(setDevices)
       .catch(() => undefined)
-  }, [])
+  }
+
+  // The deep-link flow (`?device=`/`?cluster=`) opens the dialog by itself as
+  // soon as the script list resolves, so the fetch starts HERE rather than
+  // waiting for that: it runs in parallel with the script list instead of
+  // after it, which is what keeps the "Run on this device" arrival as fast as
+  // it was before this became lazy.
+  useEffect(() => {
+    if (initialDevice || initialCluster) ensureDevices()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDevice, initialCluster])
 
   // Arriving from the "Run" button on a device card, or a cluster's "Run" link:
   // open the dialog as soon as the script list is ready, so the flow is not
@@ -625,11 +662,16 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
   // The list only ever shows the latest version's summary — opening the run
   // dialog needs its full row (params schema included), which the grouped
   // endpoint deliberately omits to keep the list payload small.
-  const openRun = (s: ScriptGroupRow) =>
-    run('run-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptResponseSchema), {
+  const openRun = (s: ScriptGroupRow) => {
+    // Started BEFORE the script fetch is awaited, so the two run in parallel
+    // and the device list is usually already in state by the time the dialog
+    // mounts (plan 126 step 126.3).
+    ensureDevices()
+    return run('run-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptResponseSchema), {
       failure: 'Could not load this script',
       onSuccess: (b) => setRunTarget(b.script),
     })
+  }
 
   return (
     <>

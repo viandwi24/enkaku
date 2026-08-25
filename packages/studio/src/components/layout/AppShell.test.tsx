@@ -1,13 +1,76 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { act, screen, waitFor } from '@testing-library/react'
 import '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
-import { AppShell } from './AppShell'
 
 process.env.NEXT_PUBLIC_ENKAKU_CORE_URL = 'http://core.test'
 
+/**
+ * The sidebar subscribes to the live socket (`ws.on`), and plan 126 step
+ * 126.3 is specifically about WHICH messages are allowed to re-fetch what —
+ * so this file has to be able to deliver one. The real `WsClient` would open
+ * a `WebSocket` the moment `ws.on` is called, which is both unavailable here
+ * and untriggerable from a test; the mock is the only way to drive a
+ * `job.status` into the component.
+ *
+ * `AppShell` is imported dynamically BELOW the mock, the same shape
+ * `app/console/page.test.tsx` established: `mock.module` has to be in effect
+ * before the module graph under test resolves `@/lib/ws`, and a static
+ * `import` at the top of the file would already have bound the real one.
+ * `NotificationBell`, `ProvisioningBanner` and `AdbServerBanner` all sit
+ * inside `AppShell` and take `ws` from the same module, which is why the mock
+ * carries the whole surface rather than just `on`.
+ */
+type WsHandler = (msg: { type: string; payload?: unknown }) => void
+let wsHandlers: WsHandler[] = []
+
+mock.module('@/lib/ws', () => ({
+  ws: {
+    on: (cb: WsHandler) => {
+      wsHandlers.push(cb)
+      return () => {
+        wsHandlers = wsHandlers.filter((h) => h !== cb)
+      }
+    },
+    onBinary: () => () => {},
+    onStatus: (cb: (v: boolean) => void) => {
+      cb(true)
+      return () => {}
+    },
+    onReconnected: () => () => {},
+    getSessionId: () => 'session-1',
+    isConnected: () => true,
+    send: () => {},
+    request: () => Promise.reject(new Error('ws.request is not used by the sidebar')),
+  },
+  coreBase: () => 'http://core.test',
+  newId: (() => {
+    let n = 0
+    return () => `test-id-${n++}`
+  })(),
+}))
+
+const { AppShell } = await import('./AppShell')
+
+type ServerMessageLike = { type: string; payload?: unknown }
+
+/**
+ * Delivers messages to every live `ws.on` subscriber, inside `act` so React
+ * flushes what they cause. The whole list goes out before the `act` yields,
+ * which is what makes a genuine BURST expressible: a handler is synchronous,
+ * so all of them land while the first pass is still awaiting its `fetch`.
+ */
+async function emitAll(msgs: ServerMessageLike[]): Promise<void> {
+  await act(async () => {
+    for (const m of msgs) for (const h of [...wsHandlers]) h(m)
+  })
+}
+
+const emit = (msg: ServerMessageLike): Promise<void> => emitAll([msg])
+
 afterEach(() => {
   cleanup()
+  wsHandlers = []
   // The collapsed-rail test seeds `sidebarCollapsed`, and happy-dom keeps one
   // `localStorage` for the whole file — without this, every test after it
   // would render the 72px rail instead of the full sidebar.
@@ -18,15 +81,22 @@ const emptyPages = {
   '/api/devices': { body: { devices: [], total: 0 } },
   '/api/scripts': { body: { scripts: [], total: 0 } },
   '/api/jobs*': { body: { items: [], nextCursor: null, total: 0 } },
-  '/api/health': { body: { version: '0.1.6', mode: 'local' } },
+  // `failedPlugins` rides on health since plan 126 step 126.5 — the sidebar
+  // no longer reads `/api/plugins` at all, so this is where the farm-health
+  // badge's number comes from in every test below.
+  '/api/health': { body: { version: '0.1.6', mode: 'local', failedPlugins: 0 } },
 }
 
+/**
+ * The badge's SOURCE moved in plan 126 step 126.5: it was a filter over the
+ * whole `GET /api/plugins` list (every plugin's full built bundle, ~1 MB per
+ * version row, downloaded on every Studio page for one integer — §0.4), and
+ * is now a scalar on the health poll the shell already makes. The rendered
+ * behaviour these tests pin is unchanged; only the fixture is.
+ */
 describe('AppShell — the Plugins nav entry carries a farm-health WARNING while any plugin is failed (plan 82, criterion 30)', () => {
   test('no failed plugins: the Plugins link shows no badge', async () => {
-    renderWithApi(<AppShell>content</AppShell>, {
-      ...emptyPages,
-      '/api/plugins': { body: { items: [{ id: 'p1', name: 'tiktok', version: '1.0.0', status: 'active' }], dev: [] } },
-    })
+    renderWithApi(<AppShell>content</AppShell>, emptyPages)
     const link = await waitFor(() => screen.getByRole('link', { name: /plugins/i }))
     await waitFor(() => expect(link.textContent).not.toMatch(/\d/))
   })
@@ -34,15 +104,7 @@ describe('AppShell — the Plugins nav entry carries a farm-health WARNING while
   test('one failed plugin: the Plugins link shows a warning badge naming the count, and links to /plugins', async () => {
     renderWithApi(<AppShell>content</AppShell>, {
       ...emptyPages,
-      '/api/plugins': {
-        body: {
-          items: [
-            { id: 'p1', name: 'tiktok', version: '1.0.0', status: 'active' },
-            { id: 'p2', name: 'broken-pack', version: '1.0.0', status: 'failed', verifyError: 'boom' },
-          ],
-          dev: [],
-        },
-      },
+      '/api/health': { body: { version: '0.1.6', mode: 'local', failedPlugins: 1 } },
     })
     const link = await waitFor(() => screen.getByRole('link', { name: /plugins/i }))
     await waitFor(() => expect(link.textContent).toContain('1'))
@@ -51,10 +113,22 @@ describe('AppShell — the Plugins nav entry carries a farm-health WARNING while
     expect(link.querySelector('[role="status"]')).toBeTruthy()
   })
 
-  test('a /api/plugins fetch failure never breaks the rest of the sidebar', async () => {
+  test('a health response with no failedPlugins field (an older core) shows no badge instead of a confident zero-or-worse', async () => {
     renderWithApi(<AppShell>content</AppShell>, {
       ...emptyPages,
-      '/api/plugins': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'boom' } } },
+      '/api/health': { body: { version: '0.1.6', mode: 'local' } },
+    })
+    const link = await waitFor(() => screen.getByRole('link', { name: /plugins/i }))
+    // The rest of the health read still lands, which is what proves the parse
+    // did not simply fail wholesale.
+    await waitFor(() => expect(document.body.textContent).toContain('0.1.6'))
+    expect(link.querySelector('[role="status"]')).toBeNull()
+  })
+
+  test('a /api/health fetch failure never breaks the rest of the sidebar', async () => {
+    renderWithApi(<AppShell>content</AppShell>, {
+      ...emptyPages,
+      '/api/health': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'boom' } } },
     })
     await waitFor(() => expect(screen.getByRole('link', { name: /devices/i })).toBeTruthy())
     expect(screen.getByRole('link', { name: /plugins/i })).toBeTruthy()
@@ -69,10 +143,7 @@ describe('AppShell — the Plugins nav entry carries a farm-health WARNING while
  */
 describe('AppShell — Scripts merged into the Plugins entry', () => {
   test('there is no Scripts nav entry, and the Plugins entry names both halves', async () => {
-    renderWithApi(<AppShell>content</AppShell>, {
-      ...emptyPages,
-      '/api/plugins': { body: { items: [], dev: [] } },
-    })
+    renderWithApi(<AppShell>content</AppShell>, emptyPages)
     const link = await waitFor(() => screen.getByRole('link', { name: 'Plugins & scripts' }))
     expect(link.getAttribute('href')).toBe('/plugins')
     expect(screen.queryByRole('link', { name: 'Scripts' })).toBeNull()
@@ -83,7 +154,6 @@ describe('AppShell — Scripts merged into the Plugins entry', () => {
     renderWithApi(<AppShell>content</AppShell>, {
       ...emptyPages,
       '/api/scripts': { body: { scripts: [], total: 41 } },
-      '/api/plugins': { body: { items: [{ id: 'p1', name: 'tiktok', version: '1.0.0', status: 'active' }], dev: [] } },
     })
     const link = await waitFor(() => screen.getByRole('link', { name: 'Plugins & scripts' }))
     await waitFor(() => expect(link.textContent).toContain('41'))
@@ -95,9 +165,7 @@ describe('AppShell — Scripts merged into the Plugins entry', () => {
     renderWithApi(<AppShell>content</AppShell>, {
       ...emptyPages,
       '/api/scripts': { body: { scripts: [], total: 41 } },
-      '/api/plugins': {
-        body: { items: [{ id: 'p2', name: 'broken-pack', version: '1.0.0', status: 'failed', verifyError: 'boom' }], dev: [] },
-      },
+      '/api/health': { body: { version: '0.1.6', mode: 'local', failedPlugins: 1 } },
     })
     const link = await waitFor(() => screen.getByRole('link', { name: 'Plugins & scripts' }))
     await waitFor(() => expect(link.querySelector('[role="status"]')).toBeTruthy())
@@ -147,7 +215,6 @@ describe('AppShell — the content pane floats as a rounded panel (plan 101 §5 
 describe('AppShell — plugin-declared nav entries (plan 108 step 108.8)', () => {
   const withUi = (items: unknown[]) => ({
     ...emptyPages,
-    '/api/plugins': { body: { items: [], dev: [] } },
     '/api/plugins/ui': { body: { items } },
   })
 
@@ -200,7 +267,6 @@ describe('AppShell — plugin-declared nav entries (plan 108 step 108.8)', () =>
   test('a failed /api/plugins/ui read leaves the static nav intact and adds no group', async () => {
     const { apiMock } = renderWithApi(<AppShell>content</AppShell>, {
       ...emptyPages,
-      '/api/plugins': { body: { items: [], dev: [] } },
       '/api/plugins/ui': { status: 500, body: { error: { code: 'E_INTERNAL', message: 'boom' } } },
     })
 
@@ -224,6 +290,115 @@ describe('AppShell — plugin-declared nav entries (plan 108 step 108.8)', () =>
     // Hover, not click, is what shows a Radix tooltip's content.
     await user.hover(link)
     await waitFor(() => expect(document.body.textContent).toContain('TikTok Accounts'))
+  })
+})
+
+/**
+ * Plan 126 §0.4, §3.5, steps 126.3 and 126.5 — the sidebar used to re-download
+ * the whole plugin list on every `device.added`, `device.removed` AND
+ * `job.status`, in one `Promise.all` with the counts. `job.status` fires per
+ * job transition, so on a farm running batches that was the entire plugin
+ * payload — at the time, every plugin's full built bundle — several times a
+ * second, to recompute a number that cannot change when a job moves state.
+ * Step 126.3 took it off the event path; step 126.5 deleted the request
+ * outright by moving `failedPlugins` onto `GET /api/health`.
+ *
+ * This describe is the regression guard for exactly that, and it is invisible
+ * to every other test in this file: they all assert on what is RENDERED, and
+ * the rendered sidebar is identical whether the list was fetched once, never,
+ * or two hundred times. Only a request count can see it.
+ */
+describe('AppShell — the plugin list is never requested, and the nav read is off the job-event path (plan 126 steps 126.3, 126.5)', () => {
+  const pages = {
+    ...emptyPages,
+    '/api/plugins/ui': { body: { items: [] } },
+  }
+
+  const countOf = (calls: { path: string }[], path: string) => calls.filter((c) => c.path === path).length
+  /**
+   * Every request to the plugin LIST route, however it is spelled — bare, or
+   * with a query (`?name=…` is the shape the detail page uses). Deliberately
+   * NOT `countOf(calls, '/api/plugins')`: a re-added fetch that happened to
+   * carry a query string would slip past an exact match, and the point of
+   * this suite is that no such request exists at all. `/api/plugins/ui` and
+   * the other sub-paths are excluded by the `?`/exact test rather than by
+   * `startsWith`, which would have swallowed them.
+   */
+  const listReads = (calls: { path: string }[]) =>
+    calls.filter((c) => c.path === '/api/plugins' || c.path.startsWith('/api/plugins?')).length
+  // `/api/health` stands in for "the counts pass ran", because it is the ONE
+  // request in this tree only `AppShell` makes. `/api/jobs?limit=200` looks
+  // like the obvious choice and is not: `OperationTray` renders inside the
+  // shell, fetches the same path on mount and re-fetches it on the same
+  // events, so counting it would measure two components at once.
+  const countsPasses = (calls: { path: string }[]) => countOf(calls, '/api/health')
+
+  test('the shell issues NO /api/plugins request at all — the nav read is the only plugin request it makes', async () => {
+    const { apiMock } = renderWithApi(<AppShell>content</AppShell>, pages)
+    // The positive control first, so this cannot pass merely because nothing
+    // was fetched yet: the nav read and the counts pass both landed.
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1))
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBe(1))
+    expect(listReads(apiMock.calls)).toBe(0)
+    // And nothing else under `/api/plugins/` either — the shell's whole
+    // plugin surface is the nav route.
+    expect(apiMock.calls.filter((c) => c.path.startsWith('/api/plugins')).map((c) => c.path)).toEqual(['/api/plugins/ui'])
+  })
+
+  test('the nav is fetched exactly once on mount, not once per consumer', async () => {
+    const { apiMock } = renderWithApi(<AppShell>content</AppShell>, pages)
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1))
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBe(1))
+    expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1)
+  })
+
+  test('a job.status message refreshes the counts and does NOT re-fetch the plugin nav, nor introduce a list read', async () => {
+    const { apiMock } = renderWithApi(<AppShell>content</AppShell>, pages)
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1))
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBe(1))
+
+    await emit({ type: 'job.status', payload: { jobId: 'job-1', status: 'running' } })
+
+    // The positive control, and the reason this test cannot pass vacuously:
+    // the message WAS delivered and it DID drive a counts pass. `activeJobs`
+    // is a real function of job state, so re-reading the counts is correct —
+    // and `failedPlugins` now rides along on that same health response for
+    // free, which is the whole point of step 126.5.
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBeGreaterThan(1))
+    expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1)
+    expect(listReads(apiMock.calls)).toBe(0)
+  })
+
+  test('device.added and device.removed do not re-fetch the plugin nav either', async () => {
+    const { apiMock } = renderWithApi(<AppShell>content</AppShell>, pages)
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1))
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/devices')).toBe(1))
+
+    await emit({ type: 'device.added', payload: { device: { id: 'dev-1' } } })
+    await emit({ type: 'device.removed', payload: { id: 'dev-1' } })
+
+    // Same control: the device count genuinely changes on these, so the device
+    // read is expected to repeat — plugging a phone in cannot add a plugin
+    // screen, so the nav read is not.
+    await waitFor(() => expect(countOf(apiMock.calls, '/api/devices')).toBeGreaterThan(1))
+    expect(countOf(apiMock.calls, '/api/plugins/ui')).toBe(1)
+    expect(listReads(apiMock.calls)).toBe(0)
+  })
+
+  test('a burst of job events collapses instead of putting several passes in flight at once', async () => {
+    const { apiMock } = renderWithApi(<AppShell>content</AppShell>, pages)
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBe(1))
+
+    await emitAll(Array.from({ length: 12 }, (_, i) => ({ type: 'job.status', payload: { jobId: `job-${i}`, status: 'running' } })))
+
+    // Twelve events, never twelve concurrent passes: the pass in flight owns
+    // the state and everything arriving while it runs collapses into ONE
+    // follow-up, so a stale reply can never land after a newer one. At most
+    // two passes follow the mount's — the one the burst started, and the one
+    // the other eleven collapsed into.
+    await waitFor(() => expect(countsPasses(apiMock.calls)).toBeGreaterThan(1))
+    expect(countsPasses(apiMock.calls)).toBeLessThanOrEqual(3)
+    expect(listReads(apiMock.calls)).toBe(0)
   })
 })
 

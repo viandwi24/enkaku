@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   planPluginVersionRemoval,
@@ -46,6 +46,28 @@ const ManifestSurfaceEnvelopeSchema = z.object({ surface: z.unknown().optional()
 const ManifestServiceEnvelopeSchema = z.object({ service: z.unknown().optional() })
 
 /**
+ * Plan 126 §3.2 — the ONLY two things `GET /api/plugins` reads out of a
+ * version's `manifest`: each declared member's id and human title, and whether
+ * a service was declared at all.
+ *
+ * A Zod parse and not a cast, for the reason the two envelopes above are: this
+ * is a JSON column written by whatever version of the core published the row. A
+ * `z.object` also STRIPS what it does not name, which is doing real work here
+ * rather than being incidental — `paramsSchema`/`resultSchema`/`runtime` are a
+ * full JSON Schema per member per version, and this is the boundary that leaves
+ * them behind instead of carrying them to a screen that reads neither.
+ *
+ * `.optional()` on `scripts` rather than a required array: a `failed` version
+ * whose bundle never got far enough to report a manifest has no member list at
+ * all, and that must read as "declared nothing", never as a parse failure on
+ * the way to rendering the Plugins page.
+ */
+const ManifestListProjectionSchema = z.object({
+  scripts: z.array(z.object({ id: z.string(), title: z.string().optional() })).optional(),
+  service: z.unknown().optional(),
+})
+
+/**
  * Stage → verify → activate (plan 82 §3.7, §4.3) — everything that reads or
  * writes the `plugins` table plus the in-memory dev slot store, and the
  * ONE guarantee the whole plan hangs on (§3.8): assembling/operating on the
@@ -63,7 +85,97 @@ const ManifestServiceEnvelopeSchema = z.object({ service: z.unknown().optional()
  * runtime`, would otherwise silently lose its receiver).
  */
 
-export interface PluginView extends PluginRow {
+/**
+ * The identity columns every read of the `plugins` table hands OUT of this
+ * module — plan 126 §3.1.
+ *
+ * Stated as a type, and selected column-by-column by the two queries below,
+ * because the alternative is what this plan exists to undo: `db.select()` with
+ * no argument is `SELECT *`, `PluginRow` is `typeof plugins.$inferSelect`, and
+ * a spread of that carries `bundle` — the complete built JavaScript pack, ~1 MB
+ * per version row — onto the wire for a screen that renders none of it. Four
+ * columns are absent here **by construction**: `bundle`, `source`, `bundleHash`
+ * and `resetPackages`. A fifth one added to the table tomorrow is absent too,
+ * until someone deliberately names it, which is the whole difference between a
+ * projection and a post-filter (`api/plugins.ts`'s `data/scan` states the same
+ * rule: *"Selected narrowly rather than filtered later, so a seventh field
+ * cannot arrive by accident."*).
+ *
+ * `Date` and not a number: `mode: 'timestamp'` columns come back as `Date`s and
+ * `api/plugins.ts` sends them straight through `c.json()`, so they reach the
+ * wire as ISO strings. That is the existing format `PluginRowSchema` and
+ * `PluginListItemSchema` both declare; see the protocol file's header note.
+ */
+export interface PluginIdentity {
+  id: string
+  name: string
+  version: string
+  title: string | null
+  description: string | null
+  status: string
+  verifiedAt: Date | null
+  verifyError: string | null
+  verifyErrorCode: string | null
+  createdBy: string | null
+  createdAt: Date
+}
+
+/**
+ * One row of `runtime.list()` — the wire shape of `GET /api/plugins`'s `items`
+ * (`PluginListItemSchema` in `@enkaku/protocol`).
+ *
+ * No `manifest`. The two things the list renders out of one are projected here
+ * instead (§3.2), so a version's declared JSON Schemas and its whole declared
+ * SCREEN stop riding along on every row of a history twenty versions deep. A
+ * caller that needs the manifest itself asks for one version — `runtime.get`,
+ * `GET /api/plugins/:name/:version` — which is the read that is scoped to a row
+ * someone actually opened.
+ */
+export interface PluginView extends PluginIdentity {
+  scriptCount: number
+  /** `manifest.scripts` projected to what the list reads: id and title, never a schema. */
+  declaredScripts: { id: string; title?: string }[]
+  /** Whether `manifest.service` is present at all — the "service" chip, and nothing more. */
+  hasService: boolean
+}
+
+/**
+ * **One version, and the ONLY plugin-row shape this module hands to a route**
+ * — `PluginRowSchema`'s counterpart on the core side (plan 126 §3.3, §126.6).
+ *
+ * The home of `manifest`, which is why the detail page reads
+ * `manifest.surface`/`manifest.service` from here and not from the list.
+ *
+ * Still no `bundle`/`source`/`bundleHash`/`resetPackages`: no route renders any
+ * of them, `PluginRowSchema` never declared any of them, so the same projection
+ * §3.1 applies to the reads applies here. Code that needs a version's actual
+ * bundle reads the row inside this module (`findRow`, `activeImpl`), where it
+ * never crosses a wire.
+ *
+ * ## Why it is called `Wire` and not `Detail` (step 126.6)
+ *
+ * It began as the detail route's shape alone. Step 126.1 fixed the two READ
+ * routes and left the write ones — `POST /api/plugins`, `POST /:id/activate`,
+ * `POST /:name/rollback`, `POST /:name/enable` — each answering `{ plugin }`
+ * with a raw `PluginRow` straight out of the table, **so a publish sent the
+ * ~1 MB bundle up and got the same ~1 MB straight back down**, and every
+ * activate/rollback/enable paid it too. The client discarded all of it, exactly
+ * as the list's copy was discarded, because `PluginRowSchema` declares none of
+ * those columns.
+ *
+ * That fix could not be a query projection the way §3.1's was: those handlers
+ * legitimately hold the complete row (activation writes `p.bundle` into every
+ * member's `scripts` row). So it is a projection at the module boundary, and
+ * the choice that matters is *where* it is applied. A `toPluginWire(row)` that
+ * `api/plugins.ts` had to remember to call at each `c.json({ plugin })` is a
+ * post-filter with extra steps — the seventh route added next year forgets it,
+ * silently, and nobody notices until a farm feels it. Instead the four
+ * transition methods RETURN this type: `api/plugins.ts` does not import
+ * `PluginRow`, cannot name it, and never holds an object that has a `bundle` on
+ * it to echo. Forgetting is not a thing a future route can do here.
+ */
+export interface PluginWireRow extends PluginIdentity {
+  manifest: unknown
   scriptCount: number
 }
 
@@ -167,7 +279,21 @@ export interface PluginLifecycleEvent {
 
 export interface PluginRuntime {
   list(q?: { name?: string }): PluginView[]
-  get(name: string, version: string): PluginRow | null
+  get(name: string, version: string): PluginWireRow | null
+  /**
+   * The ACTIVE row, **complete** — the one method here that still hands out
+   * `bundle`, `source`, `bundleHash` and `resetPackages`, because its callers
+   * are the ones that genuinely need them: `runtime-host.ts` materialises
+   * `row.bundle` to a file to load the service, and `surface-registry.ts`
+   * re-parses `row.manifest`.
+   *
+   * **Never `c.json()` this row** (plan 126 §126.6). Every route that reports a
+   * plugin either goes through `get` or through one of the four transitions
+   * below, all of which answer `PluginWireRow`; the three routes in
+   * `api/plugins.ts` that call this one read a field off it (`.version`, or its
+   * mere existence) and serialise nothing. A route that needs to ANSWER with
+   * the active row should call `get(name, row.version)`, not send this.
+   */
   active(name: string): PluginRow | null
   /**
    * The ACTIVE version's verified surface (plan 108 §5 step 108.3), or `null`
@@ -214,10 +340,18 @@ export interface PluginRuntime {
    */
   uiAsset(name: string, path: string): Promise<StoredAsset | null>
 
-  stage(input: StagePluginInput): Promise<PluginRow>
+  /**
+   * Stage one version — the row is written in FULL (the bundle is the whole
+   * point of staging it), and what comes back is the projection, because the
+   * only caller that wants a row back is `POST /api/plugins` answering
+   * `{ plugin }` (step 126.6 — see `PluginWireRow`). The two in-process callers
+   * (`seed-embedded.ts`, `runtime-host.rejection-child.ts`) read `.id` and hand
+   * it to `verify`, which they can still do.
+   */
+  stage(input: StagePluginInput): Promise<PluginWireRow>
   verify(pluginId: string): Promise<VerifyReport>
-  activate(pluginId: string, expectedStatus?: 'staged'): PluginRow
-  rollback(name: string, toVersion: string): PluginRow
+  activate(pluginId: string, expectedStatus?: 'staged'): PluginWireRow
+  rollback(name: string, toVersion: string): PluginWireRow
   disable(name: string): void
   /**
    * The way back from `disable` — `disabled` → `active`, plus the member
@@ -234,7 +368,7 @@ export interface PluginRuntime {
    * assumes at most one active row per name, and enabling would break that.
    * Switching between two versions is `rollback`'s job, not this one's.
    */
-  enable(name: string): PluginRow
+  enable(name: string): PluginWireRow
   /**
    * One version. Throws `script_in_use` when a queued or running job still
    * names one of that version's scripts — see `removeImpl`.
@@ -337,8 +471,100 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     return db.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.version, version))).get() ?? null
   }
 
+  /**
+   * How many `scripts` rows this version registered — plan 126 §0.5, §4.2.
+   *
+   * A real `COUNT(*)`, and the difference is not academic. This used to be
+   * `db.select().from(scripts).where(...).all().length` — a full materialisation
+   * of every matching row to produce one integer — over a table whose every row
+   * carries the FULL plugin bundle, identical across every member of a version
+   * (`db/schema.ts`: *"the row's own `bundle` column holds the FULL plugin
+   * bundle, identical across every member"*). Counting tiktok's six scripts read
+   * and allocated six copies of a ~900 KB string; across twenty published
+   * versions that is ~110 MB read and thrown away to produce twenty integers,
+   * on every single request to `GET /api/plugins`.
+   *
+   * The predicate is unchanged from the query it replaces — `pluginId` and
+   * nothing else — so the count it returns is the same one, including for the
+   * `disabled`/`superseded` rows whose members stay registered on purpose
+   * (§3.9's "superseded still resolves pinned refs"). `api/plugins.ts`'s
+   * `data/count` uses this same shape.
+   */
   function scriptCountFor(pluginId: string): number {
-    return db.select().from(scripts).where(eq(scripts.pluginId, pluginId)).all().length
+    const row = db
+      .select({ n: sql<number>`count(*)` })
+      .from(scripts)
+      .where(eq(scripts.pluginId, pluginId))
+      .get()
+    return row?.n ?? 0
+  }
+
+  /**
+   * The columns every row this module hands out is built from — see
+   * `PluginIdentity`. One object literal, shared by the list query and the
+   * single-version one, so the two cannot come to disagree about what a plugin
+   * looks like from outside this file, and so adding a field to the wire is one
+   * edit in one place rather than a hunt for every `db.select()`.
+   */
+  const identityColumns = {
+    id: plugins.id,
+    name: plugins.name,
+    version: plugins.version,
+    title: plugins.title,
+    description: plugins.description,
+    status: plugins.status,
+    verifiedAt: plugins.verifiedAt,
+    verifyError: plugins.verifyError,
+    verifyErrorCode: plugins.verifyErrorCode,
+    createdBy: plugins.createdBy,
+    createdAt: plugins.createdAt,
+  }
+
+  /**
+   * A complete `PluginRow` → the only shape this module lets past its edge —
+   * plan 126 §126.6.
+   *
+   * The two READ paths never load the heavy columns at all (§3.1: `listImpl`
+   * and `getImpl` name their columns, so `bundle`/`source`/`bundleHash`/
+   * `resetPackages` are absent by construction). The four TRANSITION paths
+   * cannot do that — `stage` writes the bundle, `activate` copies `p.bundle`
+   * into every member's `scripts` row — so they hold the full row for real
+   * reasons and project it on the way out, here.
+   *
+   * **Named keys, not `delete row.bundle` or a rest-spread**, for exactly the
+   * reason `api/plugins.ts`'s `data/scan` gives — *"Selected narrowly rather
+   * than filtered later, so a seventh field cannot arrive by accident"*. A
+   * column added to `plugins` tomorrow is invisible to every route until
+   * someone deliberately writes its name on this list; an omission-based filter
+   * would have shipped it the day it landed.
+   *
+   * `scriptCount` costs one `COUNT(*)` (see `scriptCountFor` — a real count
+   * since §4.2, not a materialised scan), and it is included so that every
+   * `{ plugin }` response on this router has ONE shape, whichever route
+   * produced it. `PluginRowSchema` declares it optional, so no client that
+   * predates this is affected.
+   */
+  const toPluginWire = (row: PluginRow): PluginWireRow => ({
+    id: row.id,
+    name: row.name,
+    version: row.version,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    verifiedAt: row.verifiedAt,
+    verifyError: row.verifyError,
+    verifyErrorCode: row.verifyErrorCode,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+    manifest: row.manifest,
+    scriptCount: scriptCountFor(row.id),
+  })
+
+  /** `manifest` → the two fields the list carries in its place (§3.2). A manifest this build cannot read degrades to "declared nothing", never to a throw on the way to a page. */
+  function projectManifest(manifest: unknown): { declaredScripts: { id: string; title?: string }[]; hasService: boolean } {
+    const parsed = ManifestListProjectionSchema.safeParse(manifest)
+    if (!parsed.success) return { declaredScripts: [], hasService: false }
+    return { declaredScripts: parsed.data.scripts ?? [], hasService: parsed.data.service !== undefined }
   }
 
   /** Writes the N `scripts` rows a plugin version's manifest describes — never deletes an older version's rows (§3.9's "superseded still resolves pinned refs"). Idempotent: re-activating (or re-verifying then re-activating) the same version does not duplicate rows. */
@@ -375,12 +601,50 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     }
   }
 
+  /**
+   * Every version this farm carries — plan 126 §3.1, the line the whole plan is
+   * about.
+   *
+   * `manifest` is selected because the two projected fields below are derived
+   * from it; it is NOT part of what comes back out (`PluginView` has no such
+   * member), so it never reaches `c.json()`. The four heavy columns are not
+   * selected at all.
+   *
+   * **This is a list of VERSIONS, not of plugins**, and that is what makes the
+   * projection load-bearing rather than tidy: a farm that has published
+   * repeatedly holds 20+ rows for one name, every one of which used to carry its
+   * own ~1 MB copy of the bundle to draw a single `<option>` in a version picker.
+   */
   const listImpl = (q?: { name?: string }): PluginView[] => {
-    const rows = q?.name ? db.select().from(plugins).where(eq(plugins.name, q.name)).all() : db.select().from(plugins).all()
-    return rows.map((r) => ({ ...r, scriptCount: scriptCountFor(r.id) }))
+    const columns = { ...identityColumns, manifest: plugins.manifest }
+    const rows = q?.name
+      ? db.select(columns).from(plugins).where(eq(plugins.name, q.name)).all()
+      : db.select(columns).from(plugins).all()
+    return rows.map(({ manifest, ...identity }) => ({
+      ...identity,
+      scriptCount: scriptCountFor(identity.id),
+      ...projectManifest(manifest),
+    }))
   }
 
-  const getImpl = (name: string, version: string): PluginRow | null => findRow(name, version)
+  /**
+   * ONE version, with its manifest — `GET /api/plugins/:name/:version`.
+   *
+   * Narrow for the same reason `listImpl` is (§0.1, step 126.1): the detail
+   * route renders neither `bundle` nor `source`, and `PluginRowSchema` never
+   * declared either, so both were downloaded and discarded. `findRow` — the
+   * unprojected read — stays exactly as it was for this module's own callers,
+   * which genuinely need the bundle to verify and to write script rows; the
+   * difference is that its result now stops at this file's edge.
+   */
+  const getImpl = (name: string, version: string): PluginWireRow | null => {
+    const row = db
+      .select({ ...identityColumns, manifest: plugins.manifest })
+      .from(plugins)
+      .where(and(eq(plugins.name, name), eq(plugins.version, version)))
+      .get()
+    return row ? { ...row, scriptCount: scriptCountFor(row.id) } : null
+  }
 
   const activeImpl = (name: string): PluginRow | null =>
     db.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'active'))).get() ?? null
@@ -426,7 +690,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     return assets.read(row.id, path)
   }
 
-  const stageImpl = async (input: StagePluginInput): Promise<PluginRow> => {
+  const stageImpl = async (input: StagePluginInput): Promise<PluginWireRow> => {
     requireIdShape(input.name)
     // Plan 110 §4.3 — refused here as well as at verify (below), so a reserved
     // name never reaches the database at all: `resolveRecordingsOwner` finds
@@ -464,7 +728,10 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     // expects.
     if (input.ui && input.ui.length > 0) await assets.put(values.id, input.ui)
     db.insert(plugins).values(values).run()
-    return values
+    // `values` still holds the bundle the caller just uploaded; the projection
+    // is what leaves. Without it `POST /api/plugins` echoed the whole upload
+    // back in its own 201 (step 126.6).
+    return toPluginWire(values)
   }
 
   const verifyImpl = async (pluginId: string): Promise<VerifyReport> => {
@@ -560,7 +827,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     return report
   }
 
-  const activateImpl = (pluginId: string, expectedStatus: 'staged' = 'staged'): PluginRow => {
+  const activateImpl = (pluginId: string, expectedStatus: 'staged' = 'staged'): PluginWireRow => {
     return db.transaction((tx) => {
       const p = tx.select().from(plugins).where(eq(plugins.id, pluginId)).get()
       if (!p) throw new EnkakuError('plugin_not_found', `no such plugin: ${pluginId}`)
@@ -597,11 +864,16 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       }
       writeScriptRows(p, p.manifest as NonNullable<PluginRow['manifest']>)
       registry.invalidate(p.name)
-      return { ...p, status: 'active' }
+      // `p` is the full row on purpose — `writeScriptRows` above copies
+      // `p.bundle` into each member — and the projection is what the caller
+      // gets, so `POST /:id/activate` cannot echo it (step 126.6). The
+      // `scriptCount` inside is read AFTER `writeScriptRows`, so it reports the
+      // members this activation just registered rather than the previous zero.
+      return toPluginWire({ ...p, status: 'active' })
     })
   }
 
-  const rollbackImpl = (name: string, toVersion: string): PluginRow => {
+  const rollbackImpl = (name: string, toVersion: string): PluginWireRow => {
     refuseSynthetic(name, 'rolled back')
     return db.transaction((tx) => {
       const target = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.version, toVersion))).get()
@@ -609,14 +881,14 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       if (target.status !== 'superseded' && target.status !== 'active') {
         throw new EnkakuError('plugin_not_rollbackable', `${name}@${toVersion} is "${target.status}", not a previously active version`)
       }
-      if (target.status === 'active') return target
+      if (target.status === 'active') return toPluginWire(target)
       const current = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'active'))).get()
       if (current) tx.update(plugins).set({ status: 'superseded' }).where(eq(plugins.id, current.id)).run()
       tx.update(plugins).set({ status: 'active' }).where(eq(plugins.id, target.id)).run()
       // No re-publish, no bundle upload (criterion 8) — the target's `scripts` rows were
       // already written when IT was first activated and were never deleted.
       registry.invalidate(name)
-      return { ...target, status: 'active' }
+      return toPluginWire({ ...target, status: 'active' })
     })
   }
 
@@ -632,7 +904,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     registry.invalidate(name)
   }
 
-  const enableImpl = (name: string): PluginRow => {
+  const enableImpl = (name: string): PluginWireRow => {
     refuseSynthetic(name, 'enabled')
     const row = db.transaction((tx) => {
       const target = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'disabled'))).get()
@@ -676,7 +948,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       for (const s of tx.select().from(scripts).where(eq(scripts.pluginId, target.id)).all()) {
         tx.update(scripts).set({ enabled: true }).where(eq(scripts.id, s.id)).run()
       }
-      return { ...target, status: 'active' as const }
+      return toPluginWire({ ...target, status: 'active' as const })
     })
     registry.invalidate(name)
     return row

@@ -27,7 +27,7 @@ DB and migrations (including the one-shot cluster materialisation, see below) �
 
 ## Endpoints
 
-- `GET /api/health` — `{ ok, version, adb: { state, serverVersion }, deviceCount, uptimeMs }`
+- `GET /api/health` — `{ ok, version, adb: { state, serverVersion }, deviceCount, uptimeMs, failedPlugins? }` (`failedPlugins` is a `COUNT(*)` of plugin rows in `failed`, omitted when the host has no plugin store to count — plan 126 step 126.5)
 - `GET /api/devices` — `{ devices: DeviceInfo[] }`; `?tag=` narrows by tag (AND), `?clusterId=<id|none>` narrows by cluster
 - `PUT /api/devices/:id/cluster` — `{ clusterId: string | null }`, moves the device (or unassigns it)
 - `GET/POST /api/clusters`, `PATCH/DELETE /api/clusters/:id` — a cluster is a container (plan 22.0): `POST /api/clusters/:id/devices` assigns members, `DELETE /api/clusters/:id/devices/:deviceId` removes one, `GET /api/clusters/:id/devices` lists them. A device belongs to at most one cluster; deleting a cluster unassigns its members without deleting any device.

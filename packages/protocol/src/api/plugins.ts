@@ -69,7 +69,31 @@ export const PluginManifestSchema = z
   })
   .nullable()
 
-/** One row of `plugins` — one version. Several versions of the same `name` can be listed at once (active plus every superseded one, plan 82 §4.4). */
+/**
+ * One row of `plugins` — one version. Several versions of the same `name` can be
+ * listed at once (active plus every superseded one, plan 82 §4.4).
+ *
+ * ## What is deliberately NOT here, and what the core does about it
+ *
+ * `bundle` (the complete built JavaScript pack, ~1 MB per version), `source`,
+ * `bundleHash` and `resetPackages` are columns of that table and are **not**
+ * declared here. That was true from the day this schema was written, and for
+ * most of that time it was a lie the wire told: the core sent them anyway and
+ * Zod silently stripped them on arrival, so every reader downloaded a megabyte
+ * and discarded it on the next line. Plan 126 closed that on the read routes
+ * (step 126.1) and then on the write ones (step 126.6) — `POST /api/plugins`,
+ * `POST /:id/activate`, `POST /:name/rollback` and `POST /:name/enable`, where
+ * a publish sent the bundle up and got the same bytes straight back down.
+ *
+ * The core now has no way to send them: `plugins/runtime.ts` hands routes a
+ * `PluginWireRow`, a type with no such member, and `api/plugins.ts` does not
+ * import the table row at all. So this schema and the server finally agree,
+ * and the agreement is enforced on the sending side rather than papered over on
+ * the receiving one.
+ *
+ * The list route answers `PluginListItemSchema` below instead — narrower still,
+ * because a farm pays for that shape once per VERSION.
+ */
 export const PluginRowSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -89,6 +113,87 @@ export const PluginRowSchema = z.object({
 })
 export type PluginRow = z.infer<typeof PluginRowSchema>
 export type PluginStatus = z.infer<typeof PluginStatusSchema>
+
+/**
+ * One row of `GET /api/plugins` — **not** a `PluginRow` (plan 126 §3.2, §4.1).
+ *
+ * ## Why the list has a shape of its own
+ *
+ * `PluginRowSchema` above is what ONE version looks like when a caller asked
+ * for that version. The list answers a different question — *"what does this
+ * farm carry"* — and a farm carries every version of every plugin it has ever
+ * published: the farm this was written for holds 20+ `tiktok` rows and a dozen
+ * `networking` ones (see `PluginBulkRemoveBodySchema`'s note on why history
+ * accumulates). Anything on this schema is therefore paid for **per version**,
+ * and the two things `PluginRowSchema` carries that the list never renders are
+ * the two largest:
+ *
+ *  - `manifest.scripts[].paramsSchema`/`.resultSchema` — a full JSON Schema per
+ *    member per version, where the list reads only `.id`/`.title`;
+ *  - `manifest.surface` — the whole declared screen, which the list does not
+ *    render at all.
+ *
+ * So the manifest is projected down to `declaredScripts` and `hasService`, the
+ * exact two things the Plugins screen reads out of it, mirroring how
+ * `ScriptListItemSchema`'s `hasResult` stands in for a script's `resultSchema`
+ * (`./scripts.ts` — *"a list payload has no business paying for every row's own
+ * schema"*). **`manifest` itself lives on `GET /api/plugins/:name/:version`**,
+ * which is where a screen that needs the surface or the service declaration
+ * reads it (§3.3).
+ *
+ * The plugin BUNDLE was never declared here or on `PluginRowSchema`, and the
+ * core no longer selects it: `plugins/runtime.ts`'s list query names its
+ * columns, so `bundle`, `source`, `bundleHash` and `resetPackages` are absent
+ * by construction rather than stripped by this schema after a ~1 MB-per-row
+ * download the browser threw away (§0.1, §3.1).
+ *
+ * ## Timestamps are ISO strings here, deliberately
+ *
+ * `createdAt`/`verifiedAt` are `z.string()`, matching `PluginRowSchema` and the
+ * file-header note above: this router does not go through `typedJson`, so a
+ * `Date` column reaches the wire as `Date.prototype.toJSON`. Plan 126 §4.1
+ * sketched them as unix seconds; making that change here would be a WIRE FORMAT
+ * change to a route this plan is only meant to slim down, and it would break
+ * every reader that currently `Date.parse`es them. Left as it is on purpose —
+ * the header comment is the standing record of why.
+ */
+export const PluginListItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  /**
+   * `.default(null)` on the three nullable identity columns, matching
+   * `PluginRowSchema`'s own leniency: these are `text` columns that are null for
+   * most rows, and a caller that omits the key entirely means the same thing as
+   * one that sends `null`. The fields this plan ADDED are required instead —
+   * see `scriptCount`/`declaredScripts`/`hasService` below.
+   */
+  title: z.string().nullable().default(null),
+  description: z.string().nullable().default(null),
+  status: PluginStatusSchema,
+  verifiedAt: z.string().nullable(),
+  /** Verbatim from the verification child (plan 82 §4.6) — rendered as-is, never summarised. */
+  verifyError: z.string().nullable(),
+  verifyErrorCode: z.string().nullable(),
+  /** A live count of registered `scripts` rows, not the manifest's declared count (0 for a `failed` plugin, since nothing registered). */
+  scriptCount: z.number().int(),
+  /**
+   * What the list renders out of `manifest.scripts`: the id and the human title
+   * of each member this version declared, and never its params or result schema
+   * (§3.2). `title` is absent for a member that declared none — the same
+   * optionality `VerifiedScriptSchema.title` has, kept rather than filled with
+   * an empty string so "no title" and "titled with nothing" stay distinct.
+   *
+   * Empty for a `failed` version whose bundle never got far enough to report a
+   * manifest at all, which is a real state the screen already words.
+   */
+  declaredScripts: z.array(z.object({ id: z.string(), title: z.string().optional() })),
+  /** The one bit `manifest.service` contributes to this screen: the "service" chip. Everything else about the declaration — the permissions, listeners, events, webhooks an operator consented to — is on the detail route. */
+  hasService: z.boolean(),
+  createdBy: z.string().nullable().default(null),
+  createdAt: z.string(),
+})
+export type PluginListItem = z.infer<typeof PluginListItemSchema>
 
 export const DevSlotOwnerSchema = z.object({
   kind: z.enum(['workspace', 'cli']),
@@ -124,9 +229,9 @@ export const DevSlotSchema = z.object({
 export const DevSlotViewSchema = DevSlotSchema.extend({ kvNamespace: z.string() })
 export type DevSlotView = z.infer<typeof DevSlotViewSchema>
 
-/** `GET /api/plugins`. */
+/** `GET /api/plugins` — `items` are `PluginListItem`s, not full rows; see that schema for why. */
 export const PluginsListResponseSchema = z.object({
-  items: z.array(PluginRowSchema),
+  items: z.array(PluginListItemSchema),
   dev: z.array(DevSlotViewSchema),
 })
 
@@ -151,7 +256,15 @@ export const VerifyReportSchema = z.object({
 })
 export type VerifyReport = z.infer<typeof VerifyReportSchema>
 
-/** `POST /api/plugins` (stage, optionally verify in the same call). */
+/**
+ * `POST /api/plugins` (stage, optionally verify in the same call).
+ *
+ * **The response does not echo the upload** (plan 126 step 126.6). The request
+ * body of this route is the bundle — up to a `.enkaku` package's worth of it —
+ * and until that step `plugin` was the raw table row, so a publish paid for the
+ * same ~1 MB twice, once in each direction, to show a dialog a version string.
+ * See `PluginRowSchema`'s note for how the core makes that unrepeatable.
+ */
 export const PluginStageResponseSchema = z.object({
   plugin: PluginRowSchema.nullable(),
   verify: VerifyReportSchema.optional(),
@@ -165,6 +278,10 @@ export const PluginVerifyResponseSchema = z.object({ verify: VerifyReportSchema 
  * `POST /api/plugins/:name/enable` — the three routes that end with one row
  * now `active` and report which one. (`disable` has no such row and answers
  * `PluginOkResponseSchema` instead.)
+ *
+ * All three carry the same projected row every other `{ plugin }` on this
+ * router carries (step 126.6) — a click on Activate, Roll back or Enable used
+ * to pull that version's whole bundle down with the acknowledgement.
  */
 export const PluginActivateResponseSchema = z.object({ plugin: PluginRowSchema })
 

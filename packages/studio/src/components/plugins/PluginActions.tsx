@@ -20,7 +20,7 @@ import {
   api,
   useAction,
 } from '@enkaku/ui'
-import type { PluginRowWithService } from '@/app/plugins/plugin-list'
+import type { PluginListRow } from '@/app/plugins/plugin-list'
 import { previewBulkRemoval, requestBulkRemoval, summariseBulkRemoval } from '@/lib/plugin-removal'
 import { ResetPluginAction } from './ResetPluginAction'
 
@@ -44,9 +44,9 @@ export function PluginActions({
   dense = true,
 }: {
   /** Every published version of ONE plugin, newest first. */
-  versions: PluginRowWithService[]
+  versions: PluginListRow[]
   /** The version every control below acts on. */
-  selected: PluginRowWithService
+  selected: PluginListRow
   onChanged: () => void
   where?: 'row' | 'page'
   dense?: boolean
@@ -54,7 +54,10 @@ export function PluginActions({
   const p = selected
   const { run, isPending } = useAction()
   const registered = p.scriptCount ?? 0
-  const declared = p.manifest?.scripts ?? []
+  // Plan 126 §3.2 — the id/title projection of `manifest.scripts` the list route
+  // now carries in place of the manifest. This reads only `.id`, which is what
+  // made the full member schemas droppable in the first place.
+  const declared = p.declaredScripts
   const btn = dense ? 'h-7 text-[12px]' : undefined
   const enableSentence = where === 'row' ? 'Enable, on this same row,' : 'Enable, on this page,'
 
@@ -296,8 +299,8 @@ export function RemovePluginAction({
   dense = true,
   scopes = ['version'],
 }: {
-  versions: PluginRowWithService[]
-  selected: PluginRowWithService
+  versions: PluginListRow[]
+  selected: PluginListRow
   onChanged: () => void
   dense?: boolean
   /**

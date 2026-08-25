@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AuthEnv } from '../auth/middleware'
 import type { AuthService } from '../auth/service'
 import type { ToolchainManager } from '@enkaku/toolchain'
+import { HealthResponseSchema } from '@enkaku/protocol'
 import { createLogger } from '../util/logger'
 import { createApp, type HttpDeps } from './http'
 
@@ -82,6 +83,7 @@ async function health(deps: HttpDeps) {
     mode?: string
     deviceCount?: number
     uptimeMs?: number
+    failedPlugins?: number
   }
 }
 
@@ -132,6 +134,51 @@ describe('GET /api/health', () => {
       expect(body.adb?.state).toBe(state)
     }
   })
+
+  /**
+   * Plan 126 §3.5, step 126.5 — `failedPlugins` exists so Studio's sidebar
+   * can stop downloading the entire plugin list on every page to derive one
+   * integer (§0.4: every plugin's full built bundle, ~1 MB per version row,
+   * discarded on arrival). It rides on health because the shell already
+   * polls health.
+   *
+   * The absent case is the one worth pinning: `HttpDeps.failedPluginCount`
+   * is optional (a host with no plugin store to count — several tests build
+   * exactly that), and the field must then be OMITTED rather than sent as
+   * `0`. "Nobody counted" and "counted, none failed" are different answers,
+   * and a confident zero would silently suppress a farm-health warning on a
+   * core that never looked.
+   */
+  test('failedPlugins reports the count the daemon supplies', async () => {
+    expect((await health(buildDeps({ failedPluginCount: () => 3 }))).failedPlugins).toBe(3)
+    expect((await health(buildDeps({ failedPluginCount: () => 0 }))).failedPlugins).toBe(0)
+  })
+
+  test('failedPlugins is omitted entirely — never a false 0 — when the host has no plugin store to count', async () => {
+    const body = await health(buildDeps())
+    expect('failedPlugins' in body).toBe(false)
+    // The rest of the document is unaffected, which is what makes the
+    // omission a version-tolerance property rather than a broken response.
+    expect(body.ok).toBe(true)
+  })
+
+  test('the count is read per request, so the badge follows the farm rather than the boot', async () => {
+    let failed = 0
+    // ONE app, asked twice: an implementation that read the count once at
+    // wiring time — or cached it — would answer 0 both times, and health is
+    // a polled route, so that would leave the sidebar warning-free forever
+    // after a plugin failed to verify.
+    const deps = buildDeps({ failedPluginCount: () => failed })
+    const app = createApp(deps)
+    const ask = async (): Promise<number | undefined> => {
+      const res = await app.request('/api/health')
+      const parsed = HealthResponseSchema.parse(await res.json())
+      return parsed.failedPlugins
+    }
+    expect(await ask()).toBe(0)
+    failed = 2
+    expect(await ask()).toBe(2)
+  })
 })
 
 /**
@@ -142,6 +189,66 @@ describe('GET /api/health', () => {
  * now gates on `deps.authMode`, which `resolveAuthMode` derives from the bind
  * address: 'local' only for a loopback bind with auth not forced to 'server'.
  */
+/**
+ * Plan 127 §3.4, step 127.3. The core shipped with no compression at all, on
+ * a product whose farms are reached over the internet — the owner's own report
+ * is that every page refresh was heavy remotely while looking fine on
+ * loopback. Measured on the real built plugin UI assets: 159,158 bytes of
+ * JS+CSS gzip to 46,939 (3.4x).
+ *
+ * These tests pin the three properties that make a GLOBAL compressor safe,
+ * because each one is a way it could quietly break something far from here.
+ */
+describe('response compression (plan 127 step 127.3)', () => {
+  /** A body comfortably over the middleware's 1 KB threshold, and highly compressible. */
+  const BIG = 'a'.repeat(20_000)
+
+  /**
+   * Local mode with a real `ensureLocalAdmin` stand-in — `/api/*` goes through
+   * `authMiddleware`, and `buildDeps`'s default `{}` auth is only enough for
+   * the public-path bypass `/api/health` rides on. Same reason (and the same
+   * stand-in shape) the CORS block below spells out for itself.
+   */
+  const compressAuth = { ensureLocalAdmin: () => ({ id: 'local-admin', email: 'admin@localhost', role: 'admin' }) } as unknown as AuthService
+
+  function appWith(body: string | Uint8Array, contentType: string) {
+    const routes = new Hono<AuthEnv>()
+    routes.get('/big', () => new Response(body, { headers: { 'content-type': contentType } }))
+    return createApp(buildDeps({ deviceRoutes: routes, authMode: 'local', auth: compressAuth }))
+  }
+
+  test('a large compressible body is gzipped when the client accepts it', async () => {
+    const app = appWith(BIG, 'application/json')
+    const res = await app.request('/api/devices/big', { headers: { 'accept-encoding': 'gzip' } })
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    // `Content-Length` MUST be gone: the asset route sets it explicitly, and a
+    // byte count from before compression would describe a body that no longer
+    // exists. This is the property that makes a global compressor safe here.
+    expect(res.headers.get('content-length')).toBeNull()
+  })
+
+  test('a client that does not accept gzip still gets the plain body', async () => {
+    const app = appWith(BIG, 'application/json')
+    const res = await app.request('/api/devices/big')
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect((await res.text()).length).toBe(BIG.length)
+  })
+
+  test('an SSE stream is never compressed — buffering an event stream is how streaming stops streaming', async () => {
+    const app = appWith(BIG, 'text/event-stream')
+    const res = await app.request('/api/devices/big', { headers: { 'accept-encoding': 'gzip' } })
+    expect(res.headers.get('content-encoding')).toBeNull()
+  })
+
+  test('a binary body passes through byte-for-byte — screenshots and artifacts are already compressed', async () => {
+    const png = new Uint8Array(20_000).fill(7)
+    const app = appWith(png, 'image/png')
+    const res = await app.request('/api/devices/big', { headers: { 'accept-encoding': 'gzip' } })
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect(new Uint8Array(await res.arrayBuffer()).length).toBe(png.length)
+  })
+})
+
 describe('the dev-only CORS grant (plan 87 §4.9, S7)', () => {
   const loopbackOrigin = 'http://localhost:3001'
   // `authMiddleware`'s 'local' branch calls `deps.auth.ensureLocalAdmin()` for

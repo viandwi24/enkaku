@@ -1,10 +1,5 @@
 import { z } from 'zod'
-import {
-  DevSlotViewSchema,
-  PluginManifestSchema,
-  PluginRowSchema,
-  type DevSlotView,
-} from '@enkaku/protocol'
+import { DevSlotViewSchema, PluginListItemSchema, type DevSlotView, type PluginListItem } from '@enkaku/protocol'
 
 /**
  * `GET /api/plugins`, plus the grouping and the search this screen and the
@@ -13,27 +8,37 @@ import {
  * construction rather than by two copies staying in step.
  *
  * ---------------------------------------------------------------------------
- * ONE FIELD WIDER THAN `@enkaku/protocol` CURRENTLY DESCRIBES
+ * THE LIST ROW AND THE FULL ROW ARE NO LONGER THE SAME TYPE
  * ---------------------------------------------------------------------------
  *
- * A plugin's SERVICE declaration (plan 109 §4.1 — the permissions, listeners,
- * farm events and webhooks an operator consents to at install) rides in the
- * same `plugins.manifest` JSON column as `scripts` and `surface`.
+ * This file used to re-export `PluginRowSchema` under a local alias, so the
+ * Plugins tab and the plugin detail page shared one type and one fetch. Plan
+ * 126 (§3.2, step 126.2) split them, and the reason is size: the list is a list
+ * of VERSIONS, and a farm that has published repeatedly carries 20+ rows for one
+ * plugin name. Everything on the row is paid for once per row, and the two
+ * heaviest members — every declared member's JSON Schemas, and the plugin's
+ * whole declared SCREEN — were rendered by nothing on this screen.
  *
- * It used to be stripped here: `PluginManifestSchema` predated plan 109, and a
- * Zod object drops an undeclared key **without a word** — so the field was on
- * the wire and gone after the parse, and this file re-admitted it locally to
- * get it back. `@enkaku/protocol` now declares it, so the local widening is
- * deleted and `PluginRowSchema` is used directly. The row's shape is stated in
- * exactly one place again.
+ * So `GET /api/plugins` now answers `PluginListItem`: the row's identity, its
+ * live `scriptCount`, and the manifest projected down to `declaredScripts`
+ * (id + title, the search index and the declared count) and `hasService` (one
+ * chip). A page that needs the manifest itself — the detail page's Screen and
+ * Service cards — reads ONE version through `GET /api/plugins/:name/:version`,
+ * which is the request that is actually scoped to what an operator opened.
  */
 
-export const PluginRowWithServiceSchema = PluginRowSchema
-export type PluginRowWithService = z.infer<typeof PluginRowWithServiceSchema>
+/**
+ * The list row. Named for what it is rather than kept as
+ * `PluginRowWithServiceSchema`, whose name recorded a protocol gap that no
+ * longer exists (`PluginManifestSchema` declares `service` now) and which read
+ * as "a full row, plus something" — the opposite of what it is.
+ */
+export const PluginListRowSchema = PluginListItemSchema
+export type PluginListRow = PluginListItem
 
 /** `GET /api/plugins` and `GET /api/plugins?name=<name>` — the same envelope, filtered server-side. */
 export const PluginsListSchema = z.object({
-  items: z.array(PluginRowWithServiceSchema),
+  items: z.array(PluginListRowSchema),
   dev: z.array(DevSlotViewSchema),
 })
 
@@ -45,13 +50,13 @@ export const PluginsListSchema = z.object({
 export interface PluginGroup {
   name: string
   /** Newest first, so `[0]` is what `@latest` resolves to. */
-  versions: PluginRowWithService[]
+  versions: PluginListRow[]
   /** The group is failed when its NEWEST version failed — that is the one a fresh install resolves to. */
   failed: boolean
 }
 
-export function groupPlugins(items: readonly PluginRowWithService[]): PluginGroup[] {
-  const byName = new Map<string, PluginRowWithService[]>()
+export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
+  const byName = new Map<string, PluginListRow[]>()
   for (const p of items) {
     const list = byName.get(p.name) ?? []
     list.push(p)
@@ -74,7 +79,7 @@ export function groupPlugins(items: readonly PluginRowWithService[]): PluginGrou
  * otherwise the newest. Shared by the row and the detail page so a link from
  * one lands on what the other was showing.
  */
-export function defaultVersion(group: PluginGroup): PluginRowWithService | undefined {
+export function defaultVersion(group: PluginGroup): PluginListRow | undefined {
   return group.versions.find((v) => v.status === 'active') ?? group.versions[0]
 }
 
@@ -82,7 +87,7 @@ export function defaultVersion(group: PluginGroup): PluginRowWithService | undef
 export function declaredScriptIds(group: PluginGroup): string[] {
   const ids: string[] = []
   for (const v of group.versions) {
-    for (const s of v.manifest?.scripts ?? []) if (!ids.includes(s.id)) ids.push(s.id)
+    for (const s of v.declaredScripts) if (!ids.includes(s.id)) ids.push(s.id)
   }
   return ids
 }
@@ -107,11 +112,15 @@ export interface PluginMatch {
  * strings, and **the ids and titles of the scripts it registers**.
  *
  * That last one is the case worth being explicit about — "which plugin does
- * `auto-scroll` come from" is a real question, and `manifest.scripts` is on
- * the row already, so it costs no extra fetch. Its one limit, stated on the
- * screen rather than hidden here: a FAILED plugin whose bundle never got far
- * enough to report a manifest has no member list at all, so it can only be
- * found by its own name.
+ * `auto-scroll` come from" is a real question, and `declaredScripts` is on the
+ * row already, so it costs no extra fetch. It is the whole reason that field
+ * survived plan 126's projection while the rest of the manifest did not: the
+ * search index needs an id and a title per member, and nothing on this screen
+ * needs the JSON Schemas that used to travel with them.
+ *
+ * Its one limit, stated on the screen rather than hidden here: a FAILED plugin
+ * whose bundle never got far enough to report a manifest has no member list at
+ * all, so it can only be found by its own name.
  */
 export function searchPlugins(groups: readonly PluginGroup[], query: string): PluginMatch[] {
   const q = norm(query)
@@ -127,7 +136,7 @@ export function searchPlugins(groups: readonly PluginGroup[], query: string): Pl
     const identityHit = identity.some((s) => norm(s).includes(q))
     const viaScripts: string[] = []
     for (const v of group.versions) {
-      for (const s of v.manifest?.scripts ?? []) {
+      for (const s of v.declaredScripts) {
         if (viaScripts.includes(s.id)) continue
         if (norm(s.id).includes(q) || norm(s.title ?? '').includes(q)) viaScripts.push(s.id)
       }

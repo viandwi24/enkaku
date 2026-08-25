@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, ExternalLink } from 'lucide-react'
 import { z } from 'zod'
-import { ScriptGroupsPageResponseSchema, type DevSlotView } from '@enkaku/protocol'
+import { PluginResponseSchema, ScriptGroupsPageResponseSchema, type DevSlotView, type PluginRow } from '@enkaku/protocol'
 import {
   Badge,
   Button,
@@ -23,7 +23,7 @@ import {
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PluginActions } from '@/components/plugins/PluginActions'
 import { PluginStatusBadge } from '@/components/StatusBadge'
-import { PluginsListSchema, groupPlugins, type PluginRowWithService } from '../plugin-list'
+import { PluginsListSchema, groupPlugins, type PluginListRow } from '../plugin-list'
 
 /**
  * The plugin detail page (plan 82 §4.6's own "Detail" bullet, which shipped
@@ -39,9 +39,30 @@ import { PluginsListSchema, groupPlugins, type PluginRowWithService } from '../p
  * reads only the TOP level of `src/app/`) satisfied without a nav entry — this
  * page is reached from the Plugins tab's rows.
  *
- * **Read through `GET /api/plugins?name=<name>`** — the list route's own
- * server-side filter, so every version of one plugin arrives in one request
- * with the same envelope the list page parses.
+ * **TWO reads, and the split is the point** (plan 126 §3.3):
+ *
+ *  - `GET /api/plugins?name=<name>` — the list route's own server-side filter,
+ *    which answers every version of ONE plugin as `PluginListItem`s. That is
+ *    what the version picker in the header is drawn from, what the lifecycle
+ *    actions plan a removal against, and where `scriptCount` comes from. It
+ *    carries no manifest.
+ *  - `GET /api/plugins/:name/:version` — the one version this page is pointed
+ *    at, in full. **This is where `manifest` lives**, and so the Screen and
+ *    Service cards below.
+ *
+ * It used to be one read: this page fetched the LIST and pulled
+ * `manifest.surface`/`manifest.service` out of it, which is the only reason
+ * those ever rode on a list row at all — every version of every plugin on the
+ * Plugins tab paid for a screen and a service declaration so that one detail
+ * page could read one row's. Splitting the reads is what let the list shed them
+ * (§3.2), and the two must stay split: collapsing them back would put a full
+ * JSON Schema per member per version, plus a whole declared surface, back on a
+ * response a farm with twenty versions of one plugin downloads to draw twenty
+ * `<option>`s.
+ *
+ * The version read re-fires when the picker moves — that is a request per
+ * version an operator deliberately opened, which is the shape the payload
+ * should have had all along.
  *
  * **What this page wanted and the API does not give it**, stated here rather
  * than faked or quietly left out:
@@ -53,9 +74,6 @@ import { PluginsListSchema, groupPlugins, type PluginRowWithService } from '../p
  *    the plugin DECLARED and never whether it is running — `starting` is not
  *    `running`, and a card that implied either from a manifest would be exactly
  *    the "degraded state worded as the full one" `docs/design.md` forbids.
- *  - **The service declaration itself** is on the wire but is dropped by
- *    `PluginManifestSchema` in `@enkaku/protocol`; see `../plugin-list.ts` for
- *    the one-line fix and why it is not made here.
  *  - **A member script's own row id.** `manifest.scripts` carries export ids,
  *    not `scripts` row ids, and there is no `GET /api/plugins/:name/scripts`.
  *    The map comes from `GET /api/scripts?group=name` instead, joined on the
@@ -108,10 +126,12 @@ function PluginDetail() {
   const name = params.get('name')
   const wantVersion = params.get('version')
 
-  const [versions, setVersions] = useState<PluginRowWithService[] | null>(null)
+  const [versions, setVersions] = useState<PluginListRow[] | null>(null)
   const [devSlot, setDevSlot] = useState<DevSlotView | null>(null)
   const [scriptIds, setScriptIds] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
+  /** The selected version IN FULL, manifest included — `GET /:name/:version`. `null` until it lands. */
+  const [detail, setDetail] = useState<PluginRow | null>(null)
 
   const load = () => {
     if (!name) return
@@ -124,6 +144,38 @@ function PluginDetail() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
   useEffect(load, [name])
+
+  // The version this page is POINTED AT: the one asked for, else the live one,
+  // else the newest — the same rule the list row uses, so a link from one lands
+  // on what the other was showing. Computed before the manifest read below
+  // rather than after the early returns, because it is what that read is keyed
+  // on and a hook cannot live behind a `return`.
+  const selected = versions === null ? null : (versions.find((v) => v.version === wantVersion) ?? versions.find((v) => v.status === 'active') ?? versions[0] ?? null)
+  const selectedVersion = selected?.version ?? null
+
+  /**
+   * The manifest for that one version (plan 126 §3.3). Re-runs when the picker
+   * moves, and `stale` drops a reply that arrived after the operator had already
+   * moved on — otherwise a slow response for 0.3.0 could paint its screen and
+   * service under a header reading 0.3.1.
+   *
+   * A failure here costs the Screen and Service cards and nothing else, so it
+   * degrades to "still reading" rather than taking the page down: everything
+   * above them came from the list read, which has its own error state.
+   */
+  useEffect(() => {
+    setDetail(null)
+    if (!name || !selectedVersion) return
+    let stale = false
+    void api(`/api/plugins/${encodeURIComponent(name)}/${encodeURIComponent(selectedVersion)}`, PluginResponseSchema)
+      .then((b) => {
+        if (!stale) setDetail(b.plugin)
+      })
+      .catch(() => undefined)
+    return () => {
+      stale = true
+    }
+  }, [name, selectedVersion])
 
   // The `<plugin>/<script>` → row id map, so a member can be opened. A failure
   // here costs the links and nothing else, so it degrades silently rather than
@@ -171,7 +223,7 @@ function PluginDetail() {
       </>
     )
   }
-  if (versions.length === 0) {
+  if (versions.length === 0 || !selected) {
     return (
       <>
         <PageHeader title={name} description="Plugin" />
@@ -194,14 +246,32 @@ function PluginDetail() {
     )
   }
 
-  // The version this page is POINTED AT: the one asked for, else the live one,
-  // else the newest — the same rule the list row uses, so a link from one lands
-  // on what the other was showing.
-  const p =
-    versions.find((v) => v.version === wantVersion) ?? versions.find((v) => v.status === 'active') ?? (versions[0] as PluginRowWithService)
-  const declared = p.manifest?.scripts ?? []
-  const surface = p.manifest?.surface
-  const service = p.manifest?.service
+  const p = selected
+
+  /**
+   * The manifest half of this page, and `null` while `GET /:name/:version` is in
+   * flight or after it failed. Every card below that reads it says "still
+   * reading" for that window rather than rendering its empty state — "this
+   * version contributes no screen" and "declares no service" are ANSWERS, and
+   * showing either before the answer is known would be a plain falsehood on the
+   * screen where an operator audits what a plugin may do.
+   *
+   * Guarded on the version too: `detail` is cleared when the picker moves, but a
+   * reply for the version we just left must never paint under the new header.
+   */
+  const full = detail && detail.version === p.version && detail.name === p.name ? detail : null
+
+  /**
+   * The member list renders from the LIST row's `declaredScripts` immediately
+   * (id + title — plan 126 §3.2) and is upgraded in place when the manifest
+   * lands with each member's description, param schema and runtime envelope. The
+   * cheap half of the answer is on screen at once; the half that costs a JSON
+   * Schema per member arrives when it arrives.
+   */
+  const declared: { id: string; title?: string; description?: string; paramsSchema?: unknown; runtime?: unknown }[] =
+    full?.manifest?.scripts ?? p.declaredScripts
+  const surface = full?.manifest?.surface
+  const service = full?.manifest?.service
   const isActive = p.status === 'active'
 
   return (
@@ -300,9 +370,11 @@ function PluginDetail() {
         >
           {declared.length === 0 ? (
             <p className="text-[12.5px] text-fg-subtle">
-              {p.manifest
-                ? 'This version declares no scripts.'
-                : 'This version never reported a manifest, so there is no member list to show — see the error above.'}
+              {!full
+                ? 'Reading this version…'
+                : full.manifest
+                  ? 'This version declares no scripts.'
+                  : 'This version never reported a manifest, so there is no member list to show — see the error above.'}
             </p>
           ) : (
             <ul className="divide-y overflow-hidden rounded border">
@@ -322,10 +394,15 @@ function PluginDetail() {
                       )}
                       {s.title && <span className="ml-2 text-[12px] text-fg">{s.title}</span>}
                     </span>
-                    <span className="rack-label shrink-0">
-                      {nParams === null ? 'params ?' : `${nParams} param${nParams === 1 ? '' : 's'}`}
-                    </span>
-                    {s.runtime && <span className="rack-label shrink-0">runtime</span>}
+                    {/* Only once the manifest is here. Before that the params
+                        are not "unknown", they are simply not read yet, and
+                        `params ?` would state a defect where there is none. */}
+                    {full && (
+                      <span className="rack-label shrink-0">
+                        {nParams === null ? 'params ?' : `${nParams} param${nParams === 1 ? '' : 's'}`}
+                      </span>
+                    )}
+                    {s.runtime ? <span className="rack-label shrink-0">runtime</span> : null}
                     {s.description && <p className="w-full text-[11.5px] leading-relaxed text-fg-muted">{s.description}</p>}
                     {!rowId && (
                       <p className="w-full text-[11px] leading-relaxed text-fg-subtle">
@@ -347,7 +424,12 @@ function PluginDetail() {
           title="Screen"
           hint="A plugin can contribute its own page to Studio, with its own sidebar entry (plan 108). Only the live version's screen is reachable — the address resolves against whichever version is active."
         >
-          {!surface || surface.nav.length === 0 ? (
+          {!full ? (
+            /* Not "contributes no screen" — that is an answer, and it is not
+               known yet (plan 126 §3.3: the surface arrives with the version
+               read, not with the list). */
+            <p className="text-[12.5px] text-fg-subtle">Reading this version…</p>
+          ) : !surface || surface.nav.length === 0 ? (
             <p className="text-[12.5px] text-fg-subtle">
               This version contributes no screen — it adds nothing to the sidebar and has no page of its own.
             </p>
@@ -387,7 +469,13 @@ function PluginDetail() {
           title="Service"
           hint="The long-lived half a plugin declares (plan 109) — what it asked for at install, and what an operator consented to. Declared, not observed: this farm has no route yet that reports whether the service is actually running, and “declares a listener” is not “the port is bound”."
         >
-          {!service ? (
+          {!full ? (
+            /* The same rule as the Screen card above, and it matters more here:
+               "declares no service" tells an operator nothing of this plugin
+               runs inside the core, and that sentence must never be printed
+               before the manifest that decides it has arrived. */
+            <p className="text-[12.5px] text-fg-subtle">Reading this version…</p>
+          ) : !service ? (
             <p className="text-[12.5px] text-fg-subtle">
               This version declares no service. Nothing of it runs inside the core between jobs; its scripts run in their own job processes
               as usual.
