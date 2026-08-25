@@ -430,3 +430,24 @@ The lesson worth keeping: **two payloads whose field is spelled `label` are not 
 2. `AdbRestartReport.reattachFailed` — see the correction note above.
 
 **The plan register in `docs/plans/00-overview.md` §2 was left alone.** It stops at plan 120; 121, 122 and 123 have no row either. Adding 124 alone would sit oddly, and backfilling four plans' rows is a decision for the owner, not a side effect of this one. `bash scripts/check-plan-status.sh` passes regardless — it reads each plan's own `Status:`/`Ships:` lines, not the register.
+
+---
+
+## 11. The deployment gap this plan shipped with — found in the field, 2026-08-26
+
+**Steps 124.7 and 124.8 told their workers to run `bun run build:packs`. Neither told them to bump the plugin version, and nobody caught it in review. The result: every plugin-UI change in this plan was inert on any farm that had already run.**
+
+The owner found it the honest way — by looking:
+
+> *"the device list selector / dropdown hasn't changed? I'm using the [routing] plugin as the example; when I want to assign a device to a group it's still just the device name. Where's the device number, the id, anything? And this is just one UI, I haven't checked the others with the same function."*
+
+`packages/core/src/plugins/seed-embedded.ts` states the rule in its own header, and the plugins' own changelogs repeat it at length: **packs are seeded once, keyed on `${pack.name}@${pack.version}`**, with the record in `<dataDir>/seeded-packs.json`. A version already in that file is skipped entirely — the rebuilt `index.js` never arrives. So `mikrotik-routing@0.6.0` and `proxy-manager@0.10.0`, rebuilt but not renumbered, would have kept serving the pre-124 bundles on the owner's farm for ever, with the fix sitting in the repository fully tested and never once reaching a browser.
+
+Closed: `mikrotik-routing` → **0.7.0**, `proxy-manager` → **0.11.0**, both with the reasoning written into their own changelog blocks beside every prior bump that gives the identical reason, and `bun run build:packs` re-run.
+
+**Two lessons, both worth more than the fix.**
+
+1. **"Rebuild the artifact" and "ship the artifact" are different steps, and only the second one is visible to a user.** A plan step that changes plugin UI is not done at `build:packs`; it is done at the version bump. Any future plan touching `plugins/*/src/ui/**` must say so in the step itself — a worker reading only its own step will not infer it, and three did not.
+2. **The split that decides whether a fix arrives at all**: Studio ships *inside* the core binary and has no gate, so every Studio surface in §4.4 reached the owner the moment they deployed. Plugin UI is version-gated. Half of this plan's work was live on deploy and half was dormant, and nothing in the plan or its tests distinguished the two. `check-plan-status.sh` cannot see this class of defect — it verifies that an artefact exists, not that it can reach an operator.
+
+A newly seeded version is **staged, not activated** (`seed-embedded.ts`'s first deliberate limit), so the operator still activates it on the Plugins page. That is by design and is not a defect — but it means "bump the version" and "the operator sees it" are also two different steps, and a release note that skips the second will produce this same report again.

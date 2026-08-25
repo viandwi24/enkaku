@@ -255,8 +255,28 @@ export default definePlugin({
    * silently failed to arrive. Minor, not patch: a record that used to serve
    * traffic now refuses to start on Linux and macOS, which is a behaviour
    * change an operator meets immediately.
+   *
+   * **0.11.0 — plan 124 (M89), device identity and search in this pack's own
+   * UI.** `service.permissions` UNCHANGED. Step 124.8 taught the Assignments
+   * tab to render `#7 SM-F721U1` instead of a bare label (the `number` was
+   * already on the wire — `GET /api/plugins/:name/data/scan` has LEFT JOINed
+   * `device_numbers` since plan 89 — this pack simply never parsed it), added
+   * a filter above the device table, and turned the per-row proxy `Select`
+   * into a searchable `Combobox`, which on a 45-record catalogue rendered
+   * once per device row was a scroll hunt.
+   *
+   * The bump is the whole point, for the reason 0.10.0's note above spells
+   * out at length: `seedEmbeddedPacks` keys on `${pack.name}@${pack.version}`
+   * and skips what it has already seeded, so a UI-only change left at 0.10.0
+   * never reaches an install that already ran. The other UI pack plan 124
+   * touched was bumped in the same pass and for the same reason — the owner
+   * reported ITS device dropdown still unchanged after the work had landed
+   * and been committed, and that report is what found this.
+   *
+   * Minor, not patch: an operator meets it immediately, in a table they use
+   * every day.
    */
-  version: '0.10.0',
+  version: '0.11.0',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],

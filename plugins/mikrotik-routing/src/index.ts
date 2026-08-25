@@ -167,6 +167,27 @@ import verifyEgressScript from './verify-egress'
  * loop's first `notify.send` lands, or presses the new "Reconcile now"
  * button.
  *
+ * **0.6.0 → 0.7.0 — plan 124 (M89), device identity and search in this
+ * plugin's own UI.** `service.permissions` is UNCHANGED; nothing here asks
+ * for a new capability. The same mechanical reason as every bump above, and
+ * this one was very nearly missed: plan 124 §0.2 named this pack's "Add a
+ * device…" dropdown the worst device selector in the product — a bare
+ * `Select` over `{d.label}`, no number, no search, on a farm of twenty
+ * identically-named phones — and step 124.7 replaced it with a searchable
+ * `Combobox` reading `#7 SM-F721U1`, put `number` on `FleetDeviceRow` (both
+ * halves of the pack), and added a filter to the assignments table.
+ *
+ * All of that is UI, and UI is exactly what `seedEmbeddedPacks` gates: it
+ * keys on `${pack.name}@${pack.version}` and skips a key it has already
+ * seeded, so left at 0.6.0 every farm running `v0.1.22` — which is the
+ * owner's — would keep serving the OLD `index.js` bundle for ever. The fix
+ * would sit in the repository, fully tested, and never once reach a browser.
+ * That is not hypothetical: the owner reported the dropdown unchanged after
+ * the work landed, and this bump is the answer.
+ *
+ * Minor, not patch: an operator meets it the moment they open the group
+ * editor and can type `7` to find a phone.
+ *
  * `config.autoRepair` was SAVED but UNREAD before this step (a gap the
  * Settings tab's own Preferences copy used to admit honestly rather than
  * imply otherwise). This step is what wires it: `reconcile.ts`'s
@@ -202,7 +223,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.6.0',
+  version: '0.7.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',
