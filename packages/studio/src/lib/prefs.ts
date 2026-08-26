@@ -96,7 +96,26 @@ const LocalPrefsSchema = z.object({
    * it belongs beside it in `localStorage` rather than resetting to the
    * default every time a fresh tab lands here.
    */
-  pageSize: z.union([z.literal(12), z.literal(24), z.literal(48), z.literal(96)]).default(24),
+  /**
+   * Plain tens, not grid multiples (field report, 2026-08-26). The old
+   * `12/24/48/96` was chosen so a tile grid's last row always filled — it
+   * divides by 2, 3, 4 and 6. That reasoning is real but it is the grid's,
+   * not the operator's: someone running 35 devices thinks in twenties, and
+   * `24` also collided confusingly with `wall.decodeTileCeiling`'s unrelated
+   * default of the same number, which cost the owner time hunting a bug that
+   * was two independent settings wearing one figure.
+   *
+   * The cost is accepted and stated: at 20 per page on a 6-column grid the
+   * last row is partial. A readable number beats a tidy final row.
+   *
+   * `.catch(20)` matters — a browser holding `12`, `24`, `48` or `96` from
+   * before this change would otherwise fail the union and reset every OTHER
+   * preference in this object along with it.
+   */
+  pageSize: z
+    .union([z.literal(20), z.literal(40), z.literal(60), z.literal(80), z.literal(100), z.literal(160), z.literal(200)])
+    .catch(20)
+    .default(20),
 })
 export type LocalPrefs = z.infer<typeof LocalPrefsSchema>
 export type TileSize = LocalPrefs['tileSize']
@@ -105,8 +124,8 @@ export type PageSize = LocalPrefs['pageSize']
 /** The `140 / 180 / 260` px minimum tile widths §3.11 specifies, keyed by the S/M/L a person actually picks. */
 export const TILE_SIZE_PX: Record<TileSize, number> = { s: 140, m: 180, l: 260 }
 
-/** The devices grid's page-size choices (plan 101 §5 step 101.7) — the reference's own fixed 24 kept as the default, an operator can widen or narrow it. */
-export const PAGE_SIZE_OPTIONS: readonly PageSize[] = [12, 24, 48, 96]
+/** The devices grid's page-size choices — plain tens (see `pageSize` above for why the grid-friendly `12/24/48/96` was dropped). */
+export const PAGE_SIZE_OPTIONS: readonly PageSize[] = [20, 40, 60, 80, 100, 160, 200]
 
 /** Reads `localStorage` through the schema; any failure (private mode, corrupt value) yields the schema default (`'m'`). */
 export function readLocalPrefs(): LocalPrefs {

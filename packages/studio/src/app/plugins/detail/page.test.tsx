@@ -140,23 +140,38 @@ describe('PluginDetailPage — identity, members, screen and service', () => {
       '/api/plugins?name=proxy-manager': { body: { items: [older, active], dev: [] } },
     })
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Proxy manager', level: 1 })).toBeTruthy())
+    /*
+      This page loads from THREE independent effects, and one of them is
+      chained: `/api/plugins?name=` gives the heading, `/api/plugins/:name/
+      :version` (which cannot start until the first resolves and picks a
+      version) gives the service block, and `/api/scripts?group=name` gives
+      the members. Gating on the heading alone and then asserting
+      synchronously — which this test used to do — asserts against a fetch
+      that has not been issued yet. It passed locally, where mocked responses
+      resolve in the same tick, and failed in CI under load
+      (`plugins/detail` was the one red test in an otherwise green 2185).
+
+      So each group waits for its OWN source to arrive. `findBy*` is the gate;
+      the `expect`s after it are the assertions.
+    */
+    await screen.findByRole('heading', { name: 'Proxy manager', level: 1 })
 
     // Identity — the identifier, which is also the KV namespace, not only the title.
-    expect(screen.getByText('key/value namespace')).toBeTruthy()
+    expect(await screen.findByText('key/value namespace')).toBeTruthy()
     expect(screen.getByText('local-admin')).toBeTruthy()
 
-    // Members, linked into the script detail page that already exists.
-    const member = screen.getByRole('link', { name: 'proxy-manager/check' })
+    // Members, linked into the script detail page that already exists. Second source.
+    const member = await screen.findByRole('link', { name: 'proxy-manager/check' })
     expect(member.getAttribute('href')).toBe('/scripts/detail?id=script-9')
     expect(screen.getByText('Dials the proxy and reports the egress it saw.')).toBeTruthy()
 
     // The screen it contributes, linked at the address the sidebar uses.
-    const view = screen.getByRole('link', { name: /Proxy manager$/ })
+    const view = await screen.findByRole('link', { name: /Proxy manager$/ })
     expect(view.getAttribute('href')).toBe('/plugins/view?name=proxy-manager&view=proxies')
 
-    // The service — declared, and never worded as "running".
-    expect(screen.getByText('device.list')).toBeTruthy()
+    // The service — declared, and never worded as "running". Third source, and
+    // the chained one: this is what CI was racing.
+    expect(await screen.findByText('device.list')).toBeTruthy()
     expect(screen.getByText('job.run')).toBeTruthy()
     expect(screen.getByText('proxy-bridge')).toBeTruthy()
     expect(screen.getByText('host-only')).toBeTruthy()

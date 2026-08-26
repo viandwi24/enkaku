@@ -1328,12 +1328,12 @@ describe('Dashboard — pagination (plan 101 §5 step 101.7, requirement 4)', ()
 
   beforeEach(() => setSearchParams({ view: 'list' }))
 
-  test('defaults to 24 per page, shows the range, and Prev starts disabled', async () => {
+  test('defaults to 20 per page, shows the range, and Prev starts disabled', async () => {
     renderWithApi(<Dashboard />, responses)
     await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
 
-    expect(screen.getByText('Showing 1–24 of 30 devices')).toBeTruthy()
-    expect(screen.queryByText('device 25')).toBeNull()
+    expect(screen.getByText('Showing 1–20 of 30 devices')).toBeTruthy()
+    expect(screen.queryByText('device 21')).toBeNull()
     expect(screen.getByRole('button', { name: 'Prev' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Next' }).hasAttribute('disabled')).toBe(false)
   })
@@ -1344,9 +1344,9 @@ describe('Dashboard — pagination (plan 101 §5 step 101.7, requirement 4)', ()
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 
-    await waitFor(() => expect(screen.getByText('device 25')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('device 21')).toBeTruthy())
     expect(screen.queryByText('device 1')).toBeNull()
-    expect(screen.getByText('Showing 25–30 of 30 devices')).toBeTruthy()
+    expect(screen.getByText('Showing 21–30 of 30 devices')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Next' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Prev' }).hasAttribute('disabled')).toBe(false)
   })
@@ -1356,13 +1356,13 @@ describe('Dashboard — pagination (plan 101 §5 step 101.7, requirement 4)', ()
     await waitFor(() => expect(screen.getByText('device 1')).toBeTruthy())
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
-    await waitFor(() => expect(screen.getByText('device 25')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('device 21')).toBeTruthy())
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Devices per page' }))
-    fireEvent.click(await screen.findByRole('option', { name: '12' }))
+    fireEvent.click(await screen.findByRole('option', { name: '40' }))
 
-    await waitFor(() => expect(screen.getByText('Showing 1–12 of 30 devices')).toBeTruthy())
-    expect(readLocalPrefs().pageSize).toBe(12)
+    await waitFor(() => expect(screen.getByText('Showing 1–30 of 30 devices')).toBeTruthy())
+    expect(readLocalPrefs().pageSize).toBe(40)
   })
 
   /**

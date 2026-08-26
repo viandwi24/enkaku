@@ -2259,9 +2259,9 @@ export const FarmSettingsSchema = z.object({
           .max(64)
           .default(24)
           .describe(
-            'How many wall tiles one browser tab is assumed able to decode smoothly, applied always regardless of transport. Placeholder pending plan 100 §7.3\'s hardware measurement — chosen below the auto-tile formula\'s own [4, 32] ceiling, not a measured result; update it once that ladder has run.',
+            'The hard cap on how many wall tiles show a live picture at once — if your wall stops casting at a certain number, this is usually the number. It is about what one browser TAB can decode, not what the farm can send, and it applies regardless of transport. The default of 24 is a placeholder, NOT a measurement: plan 100 §7.3\'s hardware ladder has never been run, and 24 was picked to sit safely below the auto-tile formula\'s own [4, 32] ceiling. Raise it until your own tab stutters — that is the measurement nobody has taken yet.',
           )
-          .meta(ui({ title: 'Decode tile ceiling', kind: 'count' })),
+          .meta(ui({ title: 'Max live tiles your browser will decode', kind: 'count' })),
         bandwidthBps: z
           .number()
           .int()
