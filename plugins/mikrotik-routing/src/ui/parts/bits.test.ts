@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { pathOptions, STALE_PATH_SUFFIX, UNASSIGNED_PATH } from './bits'
+import { isFirstLoad, pathOptions, STALE_PATH_SUFFIX, UNASSIGNED_PATH } from './bits'
 
 /**
  * Plan 124 step 124.7 — the egress-path picker's option list.
@@ -61,5 +61,31 @@ describe('pathOptions', () => {
 
   test('a router with no paths at all still offers Unassigned, and still keeps a stale note visible', () => {
     expect(pathOptions({ paths: [], selectedPathId: 'via-modem1', unassigned: true }).map((o) => o.label)).toEqual(['Unassigned', `via-modem1${STALE_PATH_SUFFIX}`])
+  })
+})
+
+/**
+ * Plan 131 §3.3, §4.3, step 131.5 — the guard that used to unmount the whole
+ * Assignments table on every write (`assignments.tsx:365`, "the owner's own
+ * diagnosis was right"). No DOM harness in this pack, so what is proved here
+ * is the predicate `assignments.tsx` renders its early return from, not a
+ * rendered tree — the same trade `pathOptions` above already makes.
+ */
+describe('isFirstLoad', () => {
+  test('true on the first load, before any data has ever arrived', () => {
+    expect(isFirstLoad(true, null)).toBe(true)
+  })
+
+  test('false once data exists, even while a revalidation is in flight — this is the fix', () => {
+    // This is exactly `reload()`'s state after a write: `loading` flips back
+    // to `true`, but the previous fleet is still sitting in `data`. The old
+    // code (`if (loading) return <LoadingRows />`) could not see the
+    // difference and unmounted the table anyway.
+    expect(isFirstLoad(true, { devices: [] })).toBe(false)
+  })
+
+  test('false once loading has finished, regardless of data', () => {
+    expect(isFirstLoad(false, null)).toBe(false)
+    expect(isFirstLoad(false, { devices: [] })).toBe(false)
   })
 })

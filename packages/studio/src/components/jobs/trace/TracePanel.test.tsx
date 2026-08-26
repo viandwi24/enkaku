@@ -275,3 +275,245 @@ describe('Timeline tab — a truncated fetch says so (plan 128 §10 item 9)', ()
     expect(screen.queryByText('This timeline is incomplete.')).toBeNull()
   })
 })
+
+/**
+ * Plan 130 §0.3, §3.4, step 130.2 — the detail panel and the frame panel are
+ * CSS Grid children of `TracePanel`'s `grid gap-3 xl:grid-cols-[22rem_1fr]`,
+ * and a Grid item's default `min-width: auto` sizes it to fit its own
+ * min-content. `TraceFrame`'s unconstrained `<img>` (no explicit width)
+ * contributes the SCREENSHOT'S OWN intrinsic width to that sizing — which is
+ * what pushed `seq`/`phase`/`attempt`/`duration` off past
+ * `document.clientWidth` on the farm at 900 px (in the DOM, correct value,
+ * unreachable) and blew the frame panel out to match.
+ *
+ * jsdom does not lay out (`getBoundingClientRect` returns zeroes), so a real
+ * 900 px reflow cannot be reproduced here — these assert on the STRUCTURE
+ * that CSS guarantees prevents it (`min-w-0` on every grid child, and the
+ * grid row itself), not on computed pixels. §7's own test plan already says
+ * criterion 4 needs re-measuring on the farm; that re-measurement is still
+ * outstanding after this step.
+ */
+describe('Timeline tab — the detail panel and frame panel own their width, not the grid track (plan 130 §3.4, step 130.2)', () => {
+  test('the grid row and both its children carry min-w-0', async () => {
+    mount([
+      uiServerPhase,
+      ev({ id: 'a1', seq: 2, atMs: 1_100, kind: 'action', name: 'tap', ok: true, frameHash: 'a'.repeat(64), frameStatus: 'ok' }),
+    ])
+    await waitFor(() => expect(screen.getByText('Frames: per action (ui-server)')).toBeTruthy())
+
+    const framePanel = screen.getByTestId('trace-frame-panel')
+    const eventDetail = screen.getByTestId('trace-event-detail')
+    const lanesCard = screen.getByTestId('trace-lanes')
+    for (const el of [framePanel, eventDetail, lanesCard]) {
+      expect(el.className).toContain('min-w-0')
+    }
+    // The grid row that makes both panels share a track (`TracePanel.tsx`).
+    expect(framePanel.parentElement?.className).toContain('grid')
+    expect(framePanel.parentElement?.className).toContain('min-w-0')
+    expect(framePanel.parentElement).toBe(eventDetail.parentElement)
+  })
+
+  test('every event-detail row can shrink instead of pushing its value past the panel edge', async () => {
+    mount([
+      uiServerPhase,
+      ev({
+        id: 'a1',
+        seq: 42,
+        atMs: 1_100,
+        kind: 'action',
+        name: 'tap',
+        ok: true,
+        durationMs: 12,
+        frameHash: 'a'.repeat(64),
+        frameStatus: 'ok',
+      }),
+    ])
+    // A success job opens on the FIRST event (the phase `start`) — select the
+    // action so the panel shows ITS `seq`, not the phase's.
+    await waitFor(() => expect(screen.getByLabelText(/tap at/)).toBeTruthy())
+    fireEvent.click(screen.getByLabelText(/tap at/))
+
+    await waitFor(() => expect(screen.getByText('42')).toBeTruthy()) // the `seq` row's value
+    const seqRow = screen.getByText('42').closest('div')
+    expect(seqRow?.className).toContain('min-w-0')
+    const seqValue = screen.getByText('42')
+    // `min-w-0 truncate` is what lets this value shrink to the panel's real
+    // width instead of forcing the row (and the panel) wider than it.
+    expect(seqValue.className).toContain('min-w-0')
+    expect(seqValue.className).toContain('truncate')
+  })
+
+  test('the UI tree scrolls in its own box — not the page', async () => {
+    const deepNode = {
+      resourceId: 'com.example:id/very_deeply_nested_node_that_is_genuinely_wide',
+      text: 'a long label that would otherwise force the panel wider',
+      desc: '',
+      className: 'android.widget.FrameLayout',
+      packageName: 'com.example',
+      bounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
+      clickable: false,
+      enabled: true,
+      focused: false,
+      index: 0,
+      children: [
+        {
+          resourceId: 'com.example:id/child',
+          text: 'child',
+          desc: '',
+          className: 'android.widget.TextView',
+          packageName: 'com.example',
+          bounds: { left: 10, top: 10, right: 200, bottom: 60 },
+          clickable: true,
+          enabled: true,
+          focused: false,
+          index: 0,
+          children: [],
+        },
+      ],
+    }
+    renderWithApi(
+      <TracePanel jobId="job-1" jobStatus="success" />,
+      {
+        '/api/jobs/job-1/trace/ui/*': { body: deepNode },
+        '/api/jobs/job-1/trace*': {
+          body: {
+            items: [
+              uiServerPhase,
+              ev({ id: 'a1', seq: 2, atMs: 1_100, kind: 'action', name: 'tap', ok: true, uiHash: 'b'.repeat(64) }),
+            ],
+            nextCursor: null,
+            total: 2,
+          },
+        },
+      },
+    )
+    // A success job opens on the phase `start` event; select the action that
+    // carries the `uiHash` so the tree actually fetches and renders.
+    await waitFor(() => expect(screen.getByLabelText(/tap at/)).toBeTruthy())
+    fireEvent.click(screen.getByLabelText(/tap at/))
+
+    await waitFor(() => expect(screen.getByTestId('trace-ui-tree')).toBeTruthy())
+    const tree = screen.getByTestId('trace-ui-tree')
+    expect(tree.className).toContain('overflow-x-auto')
+    expect(tree.className).toContain('min-w-0')
+    // Each node's own line no longer `truncate`s (which would silently
+    // absorb the overflow instead of widening this box) — it stays on one
+    // line via `whitespace-nowrap` so a deep/long node makes THIS box
+    // scroll sideways rather than the page.
+    expect(screen.getByText('FrameLayout').closest('p')?.className).toContain('whitespace-nowrap')
+    expect(screen.getByText('FrameLayout').closest('p')?.className).not.toContain('truncate')
+  })
+
+  test('the redacted-arguments dump gets its own horizontal scroller too', async () => {
+    mount([
+      uiServerPhase,
+      ev({
+        id: 'a1',
+        seq: 2,
+        atMs: 1_100,
+        kind: 'action',
+        name: 'tap',
+        ok: true,
+        meta: { args: { selector: { text: 'a very long selector value that could otherwise widen the panel' } } },
+      }),
+    ])
+    // A success job opens on the phase `start` event, which has no `args`.
+    await waitFor(() => expect(screen.getByLabelText(/tap at/)).toBeTruthy())
+    fireEvent.click(screen.getByLabelText(/tap at/))
+
+    await waitFor(() => expect(screen.getByText('arguments')).toBeTruthy())
+    const pre = document.querySelector('pre')
+    expect(pre?.className).toContain('overflow-x-auto')
+  })
+})
+
+/**
+ * Plan 130 §0.4, §3.3, step 130.3 — a thumbnail measured 22×62 px on the
+ * farm, decoded from a 1080×1920 PNG: legible only as a position marker,
+ * not as a screen. `MIN_FRAME_WIDTH`/`MAX_FRAME_WIDTH` in `TraceTimeline.tsx`
+ * are the enforced floor/ceiling; the two "film strip" buttons are the zoom
+ * control. Real legibility (§7's criterion 5, "judged by eye on a
+ * 100-frame trace") is a farm check, not something jsdom can confirm — these
+ * assert the floor is enforced and that zoom actually changes rendered
+ * width, which IS real DOM state (inline `style`), not computed layout.
+ */
+describe('Timeline tab — the film strip has a legible floor and a zoom control (plan 130 §3.3, step 130.3)', () => {
+  const framesFixture = [
+    uiServerPhase,
+    ev({ id: 'ok', seq: 2, atMs: 1_100, kind: 'action', name: 'tap', ok: true, frameHash: 'a'.repeat(64), frameStatus: 'ok' }),
+    ev({ id: 'busy', seq: 3, atMs: 1_200, kind: 'action', name: 'tap', ok: true, frameStatus: 'skipped-busy' }),
+    ev({ id: 'bad', seq: 4, atMs: 1_300, kind: 'action', name: 'tap', ok: true, frameStatus: 'failed' }),
+  ]
+
+  test('a thumbnail never renders below the legible minimum, and the zoom-out button disables at the floor', async () => {
+    mount(framesFixture)
+    await waitFor(() => expect(screen.getByTestId('frame-thumb')).toBeTruthy())
+
+    const zoomOut = screen.getByLabelText('Zoom film strip out')
+    // Click far past what any reasonable zoom range would need — the floor
+    // must hold regardless of how many times this is pressed.
+    for (let i = 0; i < 10; i++) fireEvent.click(zoomOut)
+
+    const thumb = screen.getByTestId('frame-thumb')
+    const width = Number(thumb.style.width.replace('px', ''))
+    expect(width).toBeGreaterThanOrEqual(96) // MIN_FRAME_WIDTH
+    expect(screen.getByTestId('frame-zoom-value').textContent).toBe(`${width}px`)
+    expect((zoomOut as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  test('zooming in widens both the thumbnail and the overall strip, up to a ceiling', async () => {
+    // Enough frames that the strip's own required width (frames × thumbnail
+    // width) genuinely exceeds the event-count-based floor — with only a
+    // couple of frames the strip never needs to grow past that floor at any
+    // zoom level, which would make this assertion trivially true rather than
+    // a real check of the scaling behaviour.
+    const manyFrames = [
+      uiServerPhase,
+      ...Array.from({ length: 60 }, (_, i) =>
+        ev({ id: `f${i}`, seq: i + 2, atMs: 1_100 + i * 50, kind: 'action', name: 'tap', ok: true, frameHash: 'a'.repeat(64), frameStatus: 'ok' }),
+      ),
+    ]
+    mount(manyFrames)
+    await waitFor(() => expect(screen.getAllByTestId('frame-thumb').length).toBe(60))
+
+    const lanesInner = screen.getByTestId('trace-lanes').firstElementChild as HTMLElement
+    const widthBefore = Number(lanesInner.style.width.replace('px', ''))
+    const thumbWidthBefore = Number(screen.getAllByTestId('frame-thumb')[0]!.style.width.replace('px', ''))
+
+    const zoomIn = screen.getByLabelText('Zoom film strip in')
+    fireEvent.click(zoomIn)
+
+    const thumbWidthAfter = Number(screen.getAllByTestId('frame-thumb')[0]!.style.width.replace('px', ''))
+    const widthAfter = Number((screen.getByTestId('trace-lanes').firstElementChild as HTMLElement).style.width.replace('px', ''))
+    expect(thumbWidthAfter).toBeGreaterThan(thumbWidthBefore)
+    expect(widthAfter).toBeGreaterThan(widthBefore)
+
+    // Push to the ceiling; it must hold there too.
+    for (let i = 0; i < 10; i++) fireEvent.click(zoomIn)
+    const capped = Number(screen.getAllByTestId('frame-thumb')[0]!.style.width.replace('px', ''))
+    expect(capped).toBeLessThanOrEqual(200) // MAX_FRAME_WIDTH
+    expect((zoomIn as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  test('the skipped/failed frame-status markers survive zoom, still labelled and positioned', async () => {
+    mount(framesFixture)
+    await waitFor(() => expect(screen.getByTestId('frame-thumb')).toBeTruthy())
+
+    fireEvent.click(screen.getByLabelText('Zoom film strip in'))
+
+    const busy = screen.getAllByLabelText(/frame skipped — another capture was still in flight/)[0]!
+    const failed = screen.getAllByLabelText(/frame capture failed/)[0]!
+    expect(busy.getAttribute('data-frame-status')).toBe('skipped-busy')
+    expect(failed.getAttribute('data-frame-status')).toBe('failed')
+    // Marked cells scale with zoom exactly like ok frames do — no separate,
+    // stuck-at-the-old-size code path for them.
+    expect((busy as HTMLElement).style.width).toBe((screen.getByTestId('frame-thumb') as HTMLElement).style.width)
+  })
+
+  test('the frame image keeps lazy loading', async () => {
+    mount(framesFixture)
+    await waitFor(() => expect(screen.getByTestId('frame-thumb')).toBeTruthy())
+    const img = screen.getByTestId('frame-thumb').querySelector('img')
+    expect(img?.getAttribute('loading')).toBe('lazy')
+  })
+})

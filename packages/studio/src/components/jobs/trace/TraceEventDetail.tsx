@@ -21,6 +21,21 @@ import { formatOffset } from './TraceTimeline'
  * the same shape a live dump produces, parsed rather than `as`-cast — and
  * draws it read-only. Flagged in the step's own report rather than papered
  * over.
+ *
+ * **`min-w-0` on the root, and on every `Row` (plan 130 §3.4, step 130.2)**:
+ * this panel is the other CSS Grid child in `TracePanel`'s
+ * `grid gap-3 xl:grid-cols-[22rem_1fr]`, sharing a track with `TraceFrame`.
+ * A grid item's default `min-width: auto` sizes it to fit its own
+ * min-content — and `TraceFrame`'s unconstrained `<img>` was blowing that
+ * track out to the screenshot's native ~1080px width, which is what pushed
+ * `seq`/`phase`/`attempt`/`duration` here off past `document.clientWidth`
+ * at a 900 px viewport, in the DOM with the right value and unreachable
+ * (§0.3). Fixing it here too, not just on `TraceFrame`, means this panel
+ * stays correctly sized even if the frame panel's own content changes
+ * later. The UI tree and the redacted-arguments dump are the two things
+ * here that ARE genuinely wide (a snapshot can nest many levels; a raw
+ * arguments object can be long) — each gets its own `overflow-x-auto`
+ * scroller rather than truncating, so THEY scroll, never the page.
  */
 
 const KIND_TONE: Record<JobTraceEvent['kind'], string> = {
@@ -64,7 +79,7 @@ export function TraceEventDetail({
 }) {
   if (!event) {
     return (
-      <div className="rounded-lg border bg-surface p-3">
+      <div className="min-w-0 rounded-lg border bg-surface p-3" data-testid="trace-event-detail">
         <h2 className="rack-label mb-2">event</h2>
         <p className="text-[12px] text-fg-subtle">Nothing selected.</p>
       </div>
@@ -75,7 +90,7 @@ export function TraceEventDetail({
   const message = messageOf(event.meta)
 
   return (
-    <div className="rounded-lg border bg-surface p-3">
+    <div className="min-w-0 rounded-lg border bg-surface p-3" data-testid="trace-event-detail">
       <h2 className="rack-label mb-2">event</h2>
 
       <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
@@ -110,7 +125,7 @@ export function TraceEventDetail({
           <p className="mb-1 text-[11px] text-fg-subtle">
             Recorded already redacted — typed text and clipboard writes store only a length.
           </p>
-          <pre className="readout max-h-56 overflow-auto rounded-md border bg-bg p-2 text-[11px] leading-relaxed">{pretty(args)}</pre>
+          <pre className="readout max-h-56 min-w-0 overflow-x-auto overflow-y-auto rounded-md border bg-bg p-2 text-[11px] leading-relaxed">{pretty(args)}</pre>
         </div>
       )}
 
@@ -121,8 +136,8 @@ export function TraceEventDetail({
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[12px] text-fg-muted">{label}</dt>
+    <div className="flex min-w-0 items-baseline justify-between gap-3">
+      <dt className="shrink-0 text-[12px] text-fg-muted">{label}</dt>
       <dd className="readout min-w-0 truncate text-[12px]" title={value}>
         {value}
       </dd>
@@ -163,7 +178,7 @@ function UiTree({ jobId, hash }: { jobId: string; hash: string }) {
       {error ? (
         <p className="text-[11.5px] text-led-warn">{error}</p>
       ) : root ? (
-        <div className="max-h-72 overflow-auto rounded-md border bg-bg p-2">
+        <div className="max-h-72 min-w-0 overflow-x-auto overflow-y-auto rounded-md border bg-bg p-2" data-testid="trace-ui-tree">
           <UiTreeNode node={root} depth={0} />
         </div>
       ) : (
@@ -186,7 +201,14 @@ function UiTreeNode({ node, depth }: { node: UiNode; depth: number }) {
   const text = label(node)
   return (
     <div style={{ paddingLeft: `${depth * 12}px` }}>
-      <p className="readout truncate text-[11px] leading-5">
+      {/* `whitespace-nowrap`, not `truncate` (plan 130 §3.4, step 130.2): a
+          `truncate`d line clips at ITS OWN width, which absorbs the overflow
+          silently — exactly the opposite of "the UI tree is what scrolls,
+          not the page". A deep node's line now widens `trace-ui-tree`'s own
+          scroll content instead, so the indentation and the full label stay
+          readable by scrolling sideways, rather than being squeezed to
+          nothing on a deeply nested tree. */}
+      <p className="readout whitespace-nowrap text-[11px] leading-5">
         <span className="text-fg">{shortClass(node.className) || 'node'}</span>
         {text && <span className="text-accent"> {text}</span>}
         <span className="text-fg-subtle">

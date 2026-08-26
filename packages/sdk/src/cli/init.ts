@@ -479,6 +479,15 @@ interface Window {
  * its own live namespace through an import map, so there is nothing on disk
  * for \`tsc\` to resolve without this block.
  *
+ * **Testing a module that imports this**: you cannot \`import './your-view'\`
+ * statically from a test file. \`@enkaku/host\` resolves only through Studio's
+ * import map in a browser, so module RESOLUTION fails before any test code
+ * runs. Use \`mock.module('@enkaku/host', () => ({ … }))\` and then
+ * \`await import('./your-view')\` dynamically — the mock has to precede the
+ * module's evaluation, not the graph's resolution. \`@enkaku/ui\` needs none of
+ * this; it is a real package on disk. (Learned the hard way in plan 131; see
+ * plan 129 §10 item 7.)
+ *
  * Nothing checks this declaration against Studio's real barrel
  * (\`packages/studio/src/components/host/index.ts\`) — there is no shared
  * package both sides import from, so a drift here cannot fail a build and can

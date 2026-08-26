@@ -3,6 +3,7 @@ import { compress } from 'hono/compress'
 import { cors } from 'hono/cors'
 import type { AuthMode } from '../config'
 import { authMiddleware, type AuthEnv } from '../auth/middleware'
+import type { ApiTokenService } from '../auth/api-tokens'
 import type { AuthService } from '../auth/service'
 import type { AuditLogger } from '../auth/audit'
 import type { DeviceInfo } from '@enkaku/protocol'
@@ -174,6 +175,16 @@ export interface HttpDeps {
   doctorRoutes: Hono<AuthEnv>
   authRoutes: Hono<AuthEnv>
   nodeRoutes: Hono<AuthEnv>
+  /** `GET/POST /api/tokens`, `DELETE /api/tokens/:id` — durable API credentials (plan 130 §3.5). */
+  tokenRoutes: Hono<AuthEnv>
+  /**
+   * Resolves an `Authorization: Bearer <api token>` when no session matched
+   * (plan 130 §3.5). Threaded through to BOTH `authMiddleware` call sites
+   * below — `/api/*` and `/mcp` — because an external agent reaching the MCP
+   * surface is the case this credential exists for, and wiring only the first
+   * would leave exactly that caller still borrowing a human's session.
+   */
+  apiTokens: ApiTokenService
   auth: AuthService
   authMode: AuthMode
   startedAt: number
@@ -328,11 +339,12 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   }
 
   // Auth: local mode (loopback) injects an implicit admin; server mode requires login.
-  app.use('/api/*', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
+  app.use('/api/*', authMiddleware({ auth: deps.auth, mode: deps.authMode, apiTokens: deps.apiTokens }))
 
   app.route('/api/auth', deps.authRoutes)
 
   app.route('/api/nodes', deps.nodeRoutes)
+  app.route('/api/tokens', deps.tokenRoutes)
 
   // `deps.adbServerVersion()` resolves `string | null` — `HealthResponseSchema`'s
   // `adb.serverVersion` was widened to `z.string().nullable().optional()` (plan 72.5) so this
@@ -490,7 +502,7 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.route('/api/notifications', deps.notificationRoutes)
   app.route('/api/webhooks', deps.webhookRoutes)
 
-  app.use('/mcp', authMiddleware({ auth: deps.auth, mode: deps.authMode }))
+  app.use('/mcp', authMiddleware({ auth: deps.auth, mode: deps.authMode, apiTokens: deps.apiTokens }))
   app.route('/mcp', deps.mcpRoutes)
 
   // Static Studio (single-origin prod); /api/* and /ws are handled above.

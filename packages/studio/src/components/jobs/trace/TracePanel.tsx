@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { JobStatus } from '@enkaku/protocol'
 import { EmptyState, ErrorState, LoadingRows } from '@enkaku/ui'
 import {
@@ -17,6 +17,7 @@ import { TraceEventDetail } from './TraceEventDetail'
 import { TraceFrame } from './TraceFrame'
 import { TraceScrubber } from './TraceScrubber'
 import { TraceTimeline } from './TraceTimeline'
+import { useTracePlayback } from './useTracePlayback'
 
 /**
  * The Timeline tab (plan 128 §4.6, step 128.8) — the one composition of the
@@ -32,7 +33,6 @@ import { TraceTimeline } from './TraceTimeline'
  */
 export function TracePanel({ jobId, jobStatus }: { jobId: string; jobStatus: JobStatus }) {
   const { events, loading, error, truncated, reload } = useJobTrace(jobId)
-  const [picked, setPicked] = useState<number | null>(null)
 
   const defaultIndex = useMemo(() => {
     if (events.length === 0) return 0
@@ -40,7 +40,11 @@ export function TracePanel({ jobId, jobStatus }: { jobId: string; jobStatus: Job
     return failingEventIndex(events) ?? events.length - 1
   }, [events, jobStatus])
 
-  const selected = Math.min(events.length - 1, Math.max(0, picked ?? defaultIndex))
+  // Play/pause (plan 130 step 130.6) — `useTracePlayback`'s own doc has the
+  // design: `playheadMs` is a continuous axis position, `selected` is
+  // `nearestEventIndex` applied to it every tick, and any manual selection
+  // (below, via `select`) pauses first.
+  const { selected, playheadMs, playing, speed, select, toggle, setSpeed } = useTracePlayback(events, defaultIndex)
   const selectedEvent = events[selected] ?? null
   const originMs = events[0]?.atMs ?? 0
 
@@ -96,10 +100,26 @@ export function TracePanel({ jobId, jobStatus }: { jobId: string; jobStatus: Job
         <p className="rounded-lg border border-line bg-bg px-3.5 py-2.5 text-[12.5px] text-fg-muted">{emptyLane}</p>
       )}
 
-      <TraceScrubber events={events} selected={selected} onSelect={setPicked} />
-      <TraceTimeline jobId={jobId} events={events} selected={selected} onSelect={setPicked} />
+      <TraceScrubber
+        events={events}
+        selected={selected}
+        onSelect={select}
+        playheadMs={playheadMs}
+        playing={playing}
+        speed={speed}
+        onToggle={toggle}
+        onSpeedChange={setSpeed}
+      />
+      <TraceTimeline jobId={jobId} events={events} selected={selected} onSelect={select} />
 
-      <div className="grid gap-3 xl:grid-cols-[22rem_1fr]">
+      {/* `min-w-0` on both this row and its two children (plan 130 §3.4,
+          step 130.2): a CSS Grid item's default `min-width: auto` sizes it
+          to fit its own content, and `TraceFrame`'s screenshot has no
+          explicit width — without this the column blows out to the image's
+          native ~1080px, taking `TraceEventDetail`'s values off screen with
+          it (§0.3). See both components' own doc comments for the full
+          mechanism. */}
+      <div className="grid min-w-0 gap-3 xl:grid-cols-[22rem_1fr]">
         <TraceFrame
           jobId={jobId}
           originMs={originMs}

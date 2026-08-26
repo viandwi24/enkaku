@@ -1273,6 +1273,28 @@ export const nodes = sqliteTable(
 export type NodeRow = typeof nodes.$inferSelect
 
 /**
+ * Durable API tokens (plan 130 §4.2, §3.5) — a hashed, named, revocable
+ * credential an external agent can authenticate with, instead of borrowing a
+ * human's session. Always carries a `userId`: this is not a second identity
+ * system, and a token grants nothing its user does not already have. The
+ * plaintext is returned once at creation (`auth/api-tokens.ts`'s `create()`)
+ * and never stored — only `tokenHash`, following `sessions.tokenHash`'s own
+ * "raw token NEVER stored" rule one table up.
+ */
+export const apiTokens = sqliteTable('api_tokens', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  label: text('label').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+  revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+})
+
+export type ApiTokenRow = typeof apiTokens.$inferSelect
+
+/**
  * A schedule triggers a batch on a cron expression, in a stated timezone
  * (plan 21 §1, §4.1) — it never triggers a bare job. Every operator question
  * (overlap, queue timeout, catch-up, jitter, priority) is an explicit column

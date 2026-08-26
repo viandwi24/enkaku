@@ -495,12 +495,59 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
    * flagged it before either side shipped, which is why both halves are
    * asserted here rather than one.
    */
+  /**
+   * Plan 130 §3.5, §10 item 8 — the FOURTH time in four plans that the gap
+   * between "built and tested" and "reachable on a farm" was the last thing
+   * standing. 130.4's worker was told `daemon.ts` was off limits and to name
+   * the wiring instead of assuming someone would notice; it did, and this
+   * pins the result. A token service that is never threaded into the
+   * middleware refuses every API token while every one of its own 52 tests
+   * passes, because those tests call `validate` directly.
+   *
+   * BOTH middleware call sites are asserted. `/mcp` is not an afterthought:
+   * an external MCP client is the caller this credential exists for, and
+   * wiring only `/api/*` would leave exactly that caller still borrowing a
+   * human's session.
+   */
+  describe('durable API tokens (plan 130 §3.5, step 130.4)', () => {
+    const httpSource = readFileSync(new URL('./server/http.ts', import.meta.url), 'utf8')
+
+    test('the token service is constructed and handed to the http layer', () => {
+      expect(daemonSource).toContain('const apiTokens = createApiTokenService(db)')
+      expect(daemonSource).toContain('tokenRoutes: createTokenRoutes({ apiTokens })')
+    })
+
+    test('BOTH authMiddleware call sites receive it — /api/* and /mcp', () => {
+      const wired = httpSource.match(/authMiddleware\(\{[^}]*apiTokens: deps\.apiTokens[^}]*\}\)/g) ?? []
+      expect(wired).toHaveLength(2)
+    })
+
+    test('the routes are actually mounted', () => {
+      expect(httpSource).toContain("app.route('/api/tokens', deps.tokenRoutes)")
+    })
+  })
+
   describe('job trace (plan 128 §3.1, §3.5, §3.6, step 128.5): the recorder, the frame store, and BOTH runner deps', () => {
     test('createJobRunner(...) is passed BOTH onTraceEvent and traceStore — onTraceEvent alone leaves the frame lane empty on every job', () => {
       const call = extractCall(daemonSource, 'createJobRunner({')
       expect(call).toContain('onTraceEvent:')
       expect(call).toContain('traceRecorder?.record(event)')
       // The other half. This is the assertion the plan exists for.
+      expect(call).toContain('traceStore: traceFrameStore')
+    })
+
+    /**
+     * Plan 130 §10 item 1 — the same failure one surface over, found by 130.1's
+     * worker after the capabilities were written, tested and registered.
+     * `job.trace.frame` and `job.trace.ui` read through `ctx.jobTrace`, which
+     * `createCapabilityContext` builds only when `traceStore` is among its
+     * deps. Unwired, both capabilities refuse with `E_NOT_SUPPORTED` on a real
+     * farm while looking entirely healthy everywhere it is cheap to look: they
+     * are registered, they are listed to the agent, and they appear over MCP.
+     * Every unit test passes, because every unit test builds its own context.
+     */
+    test('the capability context is given the SAME trace store — otherwise job.trace.frame/ui refuse on a real farm while every test passes', () => {
+      const call = extractCall(daemonSource, 'const capContextDeps: CapabilityContextDeps = {')
       expect(call).toContain('traceStore: traceFrameStore')
     })
 

@@ -1,8 +1,8 @@
 'use client'
 
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
-import { cn } from '@enkaku/ui'
+import { Button, cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 
 /**
@@ -19,7 +19,27 @@ import { coreBase } from '@/lib/ws'
  * inner width grows with the event count, so a dense trace spreads out
  * instead of smearing, and the PAGE body never scrolls horizontally
  * (`CLAUDE.md`'s Studio rule).
+ *
+ * **The film strip has a legible floor and a zoom (plan 130 §3.3, step
+ * 130.3)**: a thumbnail measured 22×62 px on the farm, decoded from a
+ * 1080×1920 PNG — one glyph of an on-screen countdown, not a screen. There
+ * is no server-side resize to reach for (`agent/blob/store.ts` ships no
+ * image codec), so legibility comes only from picking fewer, larger frames.
+ * The two "film strip" buttons below are the operator's control over that
+ * trade (`frameWidth` state, stepped by `FRAME_ZOOM_STEP`) — wider
+ * thumbnails read better and need more of the strip to show the same span,
+ * the same trade a video editor's own timeline zoom makes. `MIN_FRAME_WIDTH`
+ * is a floor, not a preference: nothing may render a thumbnail narrower
+ * than it, at any zoom setting. These exact pixel values are a judgment
+ * call, not a measurement — §7's own test plan leaves criterion 5 ("judged
+ * by eye on a 100-frame trace") to a farm check this step could not perform.
  */
+const MIN_FRAME_WIDTH = 96
+const MAX_FRAME_WIDTH = 200
+const DEFAULT_FRAME_WIDTH = 120
+const FRAME_ZOOM_STEP = 24
+/** Real captures are portrait (1080×1920, §0.4) — height follows that ratio so a wider thumbnail is never a distorted one. */
+const FRAME_HEIGHT_RATIO = 1920 / 1080
 
 /** A phase band, resolved from the `phase` `start`/`end` event pairs. */
 export interface PhaseBand {
@@ -124,14 +144,26 @@ export function TraceTimeline({
   }, [events, originMs, span])
   const densityPeak = Math.max(1, ...density)
 
+  // The film strip's zoom (plan 130 §3.3, step 130.3) — a legible minimum,
+  // clamped both ways, changed only by the two buttons below.
+  const [frameWidth, setFrameWidth] = useState(DEFAULT_FRAME_WIDTH)
+  const frameHeight = Math.round(frameWidth * FRAME_HEIGHT_RATIO)
+
   // The inner width grows with the event count so a dense trace spreads out
   // rather than piling every tick on top of the next. Capped so a 5,000-event
   // trace does not build a 50,000 px node.
-  const innerWidth = Math.min(6000, Math.max(720, events.length * 14))
+  const baseInnerWidth = Math.min(6000, Math.max(720, events.length * 14))
+  // Zoomed-in thumbnails need more of the strip to avoid piling on each
+  // other — the same trade §3.3 describes. This widens the WHOLE lane
+  // stack (not just the frames lane), which is what "let the strip be as
+  // wide as it needs" means for a design where every lane shares one time
+  // axis; it never shrinks the strip below the event-count-based width above.
+  const framesInnerWidth = frames.length > 0 ? frames.length * (frameWidth + 6) : 0
+  const innerWidth = Math.min(20000, Math.max(baseInnerWidth, framesInnerWidth))
   const selectedEvent = events[selected]
 
   return (
-    <div className="overflow-x-auto rounded-lg border bg-surface">
+    <div className="min-w-0 overflow-x-auto rounded-lg border bg-surface" data-testid="trace-lanes">
       <div className="min-w-full p-3" style={{ width: `${innerWidth}px` }}>
         {/* The ruler: five evenly-spaced offsets from the start of the trace. */}
         <div className="relative h-4">
@@ -203,24 +235,60 @@ export function TraceTimeline({
             rather than leaving a gap (goal 6); `skipped-policy` is the one
             status left to the header count above, because on a
             `uiautomator-dump` job it is every single action and the policy
-            line already explains it in one sentence. */}
-        <Lane label="frames" height="h-16">
+            line already explains it in one sentence.
+
+            The zoom row (plan 130 §3.3, step 130.3) sits right above this
+            lane, not the whole card, because it is the film strip's own
+            control — a video editor's zoom, not the ruler's. `frameWidth` is
+            clamped on every step, so the "−" button disables itself at the
+            floor rather than the floor ever being reachable by mashing it. */}
+        <div className="mt-2 flex items-center justify-end gap-1.5 pr-0.5">
+          <span className="text-[10.5px] text-fg-subtle">film strip</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[12px] leading-none"
+            onClick={() => setFrameWidth((w) => Math.max(MIN_FRAME_WIDTH, w - FRAME_ZOOM_STEP))}
+            disabled={frameWidth <= MIN_FRAME_WIDTH}
+            aria-label="Zoom film strip out"
+          >
+            −
+          </Button>
+          <span className="readout w-11 text-center text-[11px] text-fg-muted" data-testid="frame-zoom-value">
+            {frameWidth}px
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[12px] leading-none"
+            onClick={() => setFrameWidth((w) => Math.min(MAX_FRAME_WIDTH, w + FRAME_ZOOM_STEP))}
+            disabled={frameWidth >= MAX_FRAME_WIDTH}
+            aria-label="Zoom film strip in"
+          >
+            +
+          </Button>
+        </div>
+        <Lane label="frames" height="" style={{ height: `${frameHeight}px` }}>
           {frames.map((e) => (
             <button
               key={e.id}
               type="button"
               onClick={() => onSelect(events.indexOf(e))}
+              data-testid="frame-thumb"
               className={cn(
-                'absolute inset-y-0 w-6 -translate-x-1/2 overflow-hidden rounded-sm border',
+                'absolute inset-y-0 -translate-x-1/2 overflow-hidden rounded-sm border',
                 selectedEvent?.id === e.id ? 'z-10 border-accent' : 'border-line hover:z-10 hover:border-line-strong',
               )}
-              style={{ left: `${pct(e.atMs)}%` }}
+              style={{ left: `${pct(e.atMs)}%`, width: `${frameWidth}px` }}
               title={`${e.name} — ${formatOffset(e.atMs, originMs)}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`${coreBase()}/api/jobs/${jobId}/trace/frames/${e.frameHash}`}
                 alt={`frame at ${formatOffset(e.atMs, originMs)}`}
+                loading="lazy"
                 className="size-full object-cover"
               />
             </button>
@@ -232,11 +300,11 @@ export function TraceTimeline({
               onClick={() => onSelect(events.indexOf(e))}
               data-frame-status={e.frameStatus ?? 'none'}
               className={cn(
-                'absolute inset-y-0 w-6 -translate-x-1/2 rounded-sm border border-dashed text-[9px] leading-none',
+                'absolute inset-y-0 flex -translate-x-1/2 items-center justify-center rounded-sm border border-dashed text-[11px] leading-none',
                 FRAME_STATUS_TONE[e.frameStatus ?? 'ok'],
                 selectedEvent?.id === e.id && 'z-10 ring-2 ring-fg',
               )}
-              style={{ left: `${pct(e.atMs)}%` }}
+              style={{ left: `${pct(e.atMs)}%`, width: `${frameWidth}px` }}
               aria-label={`${e.name} — ${FRAME_STATUS_WORD[e.frameStatus ?? 'ok']}`}
               title={`${e.name} — ${FRAME_STATUS_WORD[e.frameStatus ?? 'ok']}`}
             >
@@ -254,11 +322,23 @@ export function TraceTimeline({
   )
 }
 
-function Lane({ label, height = 'h-6', children }: { label: string; height?: string; children: ReactNode }) {
+function Lane({
+  label,
+  height = 'h-6',
+  style,
+  children,
+}: {
+  label: string
+  height?: string
+  style?: CSSProperties
+  children: ReactNode
+}) {
   return (
     <div className="mt-2 flex items-stretch gap-2">
       <span className="rack-label w-14 shrink-0 self-center text-fg-subtle">{label}</span>
-      <div className={cn('relative min-w-0 flex-1 rounded-sm bg-bg', height)}>{children}</div>
+      <div className={cn('relative min-w-0 flex-1 rounded-sm bg-bg', height)} style={style}>
+        {children}
+      </div>
     </div>
   )
 }

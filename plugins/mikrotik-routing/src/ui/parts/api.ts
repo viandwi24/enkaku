@@ -381,8 +381,20 @@ export async function previewApplyPlan(): Promise<PlanPreviewResult> {
   return api(`${ROUTER_HTTP_API}/plan`, PlanPreviewResultSchema, { method: 'POST', json: {} })
 }
 
-export async function runApply(): Promise<ApplyResult> {
-  return api(`${ROUTER_HTTP_API}/apply`, ApplyResultSchema, { method: 'POST', json: {} })
+/**
+ * `forceDownPaths` (plan 131 §3.4) — endpoint keys the operator has
+ * explicitly chosen to write even though their path is DOWN. Omitted (the
+ * default, and every pre-plan-131 caller) sends `{}` exactly as before.
+ *
+ * Forcing changes the PLAN, not the execution: the server hands these to
+ * `buildPlan`, so a forced row is previewed as the real `create`/`update` it
+ * will be, flagged `forcedOverDownPath` — never written while the preview
+ * still says `skip`. That is plan 122 §4.5's "never applied *silently*" kept
+ * intact, with the dead end removed.
+ */
+export async function runApply(forceDownPaths?: readonly string[]): Promise<ApplyResult> {
+  const json = forceDownPaths && forceDownPaths.length > 0 ? { forceDownPaths: [...forceDownPaths] } : {}
+  return api(`${ROUTER_HTTP_API}/apply`, ApplyResultSchema, { method: 'POST', json })
 }
 
 /**

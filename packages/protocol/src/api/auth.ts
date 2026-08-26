@@ -32,3 +32,24 @@ export const AuditEntrySchema = z.object({
   at: z.number().nullable(),
 })
 export const AuditResponseSchema = z.object({ entries: z.array(AuditEntrySchema) })
+
+/**
+ * Durable API tokens (plan 130 §3.5, §4.2) — `GET/POST /api/tokens`,
+ * `DELETE /api/tokens/:id`. Never carries `tokenHash`: the summary is what
+ * every response returns, including the list right after creation: only
+ * `ApiTokenCreateResponseSchema`'s own `token` field ever carries the
+ * plaintext, and only once.
+ */
+export const ApiTokenSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  label: z.string(),
+  createdAt: z.number(),
+  lastUsedAt: z.number().nullable(),
+  expiresAt: z.number().nullable(),
+  revokedAt: z.number().nullable(),
+})
+export const ApiTokensResponseSchema = z.object({ tokens: z.array(ApiTokenSchema) })
+
+/** `POST /api/tokens` — `token` is the plaintext, shown exactly once. */
+export const ApiTokenCreateResponseSchema = ApiTokenSchema.extend({ token: z.string() })

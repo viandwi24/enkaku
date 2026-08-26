@@ -72,11 +72,36 @@ export function registerApplyRoutes(host: ApplyRoutesHost, deps: ApplyDeps = {})
 
   host.onRequest(
     APPLY_ROUTES.apply,
-    async () => ({ body: await applyNow(host, deps) }),
+    // `forceDownPaths` (plan 131 §3.4) — endpoint keys the operator has
+    // explicitly chosen to write even though their path is down. Parsed
+    // defensively: a body that is absent, unparseable, or carries anything
+    // other than an array of strings yields NO forced keys, so a malformed
+    // request degrades to the ordinary, safe apply rather than being refused
+    // or — far worse — forcing something nobody asked for.
+    async (req) => {
+      const forced = await readForcedDownPaths(req)
+      return { body: await applyNow(host, { ...deps, ...(forced.size > 0 ? { forceDownPaths: forced } : {}) }) }
+    },
     {
       methods: ['POST'],
       permission: APPLY_ROUTE_PERMISSIONS.apply,
-      description: 'Executes the exact plan `plan` previews — refused, not attempted, while §3.2’s local-exception check is not ok (acceptance criterion 1).',
+      description: 'Executes the exact plan `plan` previews — refused, not attempted, while §3.2’s local-exception check is not ok (acceptance criterion 1). An optional `{ forceDownPaths: string[] }` body writes those endpoints over a DOWN path, which the plan then shows as a real create/update rather than a skip (plan 131 §3.4).',
     },
   )
+}
+
+/**
+ * The one place the request body is read. Never throws: plan 122's own rule is
+ * that these routes do not throw, and an operator's apply must not fail
+ * because a body was malformed — it falls back to forcing nothing.
+ */
+async function readForcedDownPaths(req: unknown): Promise<ReadonlySet<string>> {
+  try {
+    const body = await (req as { json?: () => Promise<unknown> } | null)?.json?.()
+    const raw = (body as { forceDownPaths?: unknown } | null)?.forceDownPaths
+    if (!Array.isArray(raw)) return new Set()
+    return new Set(raw.filter((k): k is string => typeof k === 'string' && k.length > 0))
+  } catch {
+    return new Set()
+  }
 }

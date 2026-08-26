@@ -63,6 +63,12 @@ function buildDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
     doctorRoutes: emptyAuthEnvApp(),
     authRoutes: emptyAuthEnvApp(),
     nodeRoutes: emptyAuthEnvApp(),
+    tokenRoutes: emptyAuthEnvApp(),
+    // Plan 130 §3.5 — the middleware only consults this when a session lookup
+    // misses, and this fixture never presents a bearer token, so a stub that
+    // would throw if called is the honest shape: it asserts by construction
+    // that session auth does not touch the API-token path.
+    apiTokens: { validate: () => { throw new Error('apiTokens.validate must not be reached by session auth') } } as unknown as HttpDeps['apiTokens'],
     auth,
     // 'server' mode + the public-paths bypass in authMiddleware means
     // `/api/health` never calls into the `auth` stand-in above.

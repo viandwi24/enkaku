@@ -53,6 +53,27 @@ export function useLoader<T>(load: () => Promise<T>, deps: unknown[]): { data: T
   return { data, error, loading, reload }
 }
 
+/**
+ * Whether an in-flight load should replace the whole table with a full
+ * skeleton, rather than leave the current rows mounted with a stale
+ * affordance (plan 131 §3.3, §4.3). True only for the FIRST load, when there
+ * is nothing to show yet — a revalidation (`reload()` after a write) already
+ * has `data`, and unmounting the table on every write is exactly the defect
+ * plan 131 §0.3 diagnoses: `useLoader` flips `loading` to `true`, the old
+ * `if (loading) return <LoadingRows />` tore down every row, and the remount
+ * that followed had no scroll anchor to restore — so the viewport snapped to
+ * the top on every single assignment.
+ *
+ * Extracted as a pure predicate rather than left inline in the caller — the
+ * same move `pathOptions` above makes, and for the same reason: this pack
+ * has no DOM test harness (`plugins/proxy-manager/src/ui/parts/
+ * catalogue.test.ts` records the same limitation), so the guard has to be
+ * provable as a function, not as a rendered tree.
+ */
+export function isFirstLoad<T>(loading: boolean, data: T | null): boolean {
+  return loading && data === null
+}
+
 // ---------------------------------------------------------------------------
 // The egress-path picker's options (plan 124 §4.5, step 124.7)
 // ---------------------------------------------------------------------------

@@ -129,6 +129,19 @@ export interface ApplyHost {
 }
 
 export interface ApplyDeps {
+  /**
+   * Endpoint keys the operator explicitly chose to write over a DOWN path
+   * (plan 131 §3.4). Passed straight through to `buildPlan`, which is where
+   * the forcing happens — see `planner.ts`'s own `forceDownPaths` comment for
+   * why it is there and not in `executePlan`. Absent by default: every
+   * caller that does not opt in behaves exactly as before.
+   *
+   * Because it changes the PLAN rather than the execution, `previewPlan` and
+   * `applyNow` given the same set agree with each other, which is §4.4's
+   * guarantee. A forced row shows up as the `create`/`update` it will really
+   * be, flagged `forcedOverDownPath`.
+   */
+  forceDownPaths?: ReadonlySet<string>
   createDriver?: (config: RouterConfig) => RouterDriver
   deriveCoreAddress?: (config: { baseUrl: string; tls: boolean }) => Promise<CoreAddressResult>
   /**
@@ -308,7 +321,7 @@ async function prepareApply(host: ApplyHost, deps: ApplyDeps = {}): Promise<Prep
     const { desired, blocked } = desiredEntriesFrom(fleet.devices)
     const localException = classifyLocalException(rules, protectedDevicesFrom(fleet.devices), coreAddress)
     const pathIds = new Set(fleet.paths.map((p) => p.id))
-    const plan = buildPlan({ desired, rules, pathIds, health: fleet.health })
+    const plan = buildPlan({ desired, rules, pathIds, health: fleet.health, ...(deps.forceDownPaths ? { forceDownPaths: deps.forceDownPaths } : {}) })
 
     return { ok: true, prepared: { driver, plan, localException, blocked } }
   } catch (err) {

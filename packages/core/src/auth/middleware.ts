@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie'
 import { parsePluginWebhookPath } from '@enkaku/protocol'
 import type { AuthMode } from '../config'
 import { can, type Permission } from './acl'
+import type { ApiTokenService } from './api-tokens'
 import type { AuthService, AuthUser } from './service'
 
 export const SESSION_COOKIE = 'enkaku_session'
@@ -43,6 +44,15 @@ export function isPublicPath(path: string): boolean {
 export function authMiddleware(deps: {
   auth: AuthService
   mode: AuthMode
+  /**
+   * Durable API tokens (plan 130 §3.5) — resolved ONLY when both the cookie
+   * and the session-bearer lookup below miss, so session auth is byte-for-
+   * byte unchanged when no token is present. Optional so every existing
+   * call site (and the many tests that build this middleware directly)
+   * keeps compiling untouched; absent, a bearer value that is not a live
+   * session is simply refused, exactly as before this existed.
+   */
+  apiTokens?: ApiTokenService
 }): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
     // Local mode (loopback bind): one implicit admin, no login.
@@ -54,8 +64,9 @@ export function authMiddleware(deps: {
     const path = new URL(c.req.url).pathname
     if (isPublicPath(path)) return next()
 
-    const token = getCookie(c, SESSION_COOKIE) ?? c.req.header('authorization')?.replace(/^Bearer /, '')
-    const user = token ? deps.auth.validateSession(token) : null
+    const bearer = getCookie(c, SESSION_COOKIE) ?? c.req.header('authorization')?.replace(/^Bearer /, '')
+    const sessionUser = bearer ? deps.auth.validateSession(bearer) : null
+    const user = sessionUser ?? (bearer && deps.apiTokens ? deps.apiTokens.validate(bearer) : null)
     if (!user) {
       return c.json(
         {

@@ -53,6 +53,7 @@ import {
   type PlanRow,
 } from './api'
 import { pathOptions, useLoader } from './bits'
+import { buildPairings, type BulkPairing, type PairingNote, type PairingRow } from './bulk-builder'
 
 /**
  * Groups — plan 122 §5 step 122.8, "the tab itself": group CRUD, the §4.6
@@ -149,6 +150,251 @@ function duplicateDeviceIdsLocal(entries: readonly EntryDraft[]): string[] {
   return [...dupes]
 }
 
+// ---------------------------------------------------------------------------
+// Bulk add — plan 131 §3.1/§4.1, step 131.3. The same `buildPairings` the
+// Assignments tab renders (131.2, another worker's file — not this one), but
+// mapped onto GROUP ENTRIES rather than assignments, because that is what
+// this screen writes. `assignments.tsx` writes a `StoredAssignment` keyed by
+// `stableId`; this dialog writes `EntryDraft[]` into the group form's own
+// local `entries` state, exactly the shape `addEntry` above already builds
+// for the wall picker — nothing here invents a second way to construct an
+// entry.
+// ---------------------------------------------------------------------------
+
+const PAIRING_NOTE_LABEL: Record<PairingNote, string> = {
+  ok: 'ok',
+  'no-such-device': 'no device carries this number',
+  'already-assigned': 'already has an assignment note (Assignments tab)',
+  'no-path': 'ran out of paths from the chosen start',
+}
+const PAIRING_NOTE_TONE: Record<PairingNote, string> = {
+  ok: 'text-led-ok',
+  'no-such-device': 'text-led-danger',
+  'already-assigned': 'text-led-warn',
+  'no-path': 'text-led-warn',
+}
+
+/**
+ * One row of the bulk-add preview, after `buildPairings`'s own anomaly note
+ * is joined with the one anomaly THIS call site knows about that the pure
+ * function cannot: whether the paired device is already listed in this
+ * group's own `entries` (added earlier by the wall picker, a previous bulk
+ * commit in the same dialog session, or an overlapping range run twice).
+ * `row.note === 'already-assigned'` is a different, farm-wide fact (the
+ * Assignments tab's own note) and is deliberately NOT treated as a reason to
+ * skip here — a device can belong to an Assignments-tab note and to this
+ * group at the same time; they are unrelated records.
+ */
+export interface BulkEntryPlan {
+  row: PairingRow
+  alreadyInGroup: boolean
+  /** The entry this row would add, or `null` when nothing can be written — no matching device, no path to pair with, or already in this group. Never guessed, never a partial record. */
+  entry: EntryDraft | null
+}
+
+/**
+ * Pure. Mirrors `EditGroupDialog`'s own `addEntry` exactly for the one field
+ * that function computes rather than copies straight from a `PairingRow`:
+ * `lanIp` comes from the device's resolved LAN address, or `EMPTY_LAN` when
+ * it has none — never invented, never left for `buildPairings` to guess,
+ * since `buildPairings` (`bulk-builder.tsx`) knows nothing about LAN
+ * addresses at all.
+ */
+export function planBulkGroupEntries(rows: readonly PairingRow[], devices: readonly FleetDeviceRow[], usedDeviceIds: ReadonlySet<string>): BulkEntryPlan[] {
+  return rows.map((row) => {
+    const alreadyInGroup = row.deviceId !== null && usedDeviceIds.has(row.deviceId)
+    if (row.deviceId === null || row.pathId === null || alreadyInGroup) {
+      return { row, alreadyInGroup, entry: null }
+    }
+    const device = devices.find((d) => d.deviceId === row.deviceId)
+    const lanIp = device && device.lan.state === 'resolved' ? device.lan.lanIp : EMPTY_LAN
+    return { row, alreadyInGroup, entry: { deviceId: row.deviceId, lanIp, pathId: row.pathId } }
+  })
+}
+
+/**
+ * Which device numbers are carried by more than one enrolled device — the
+ * one gap step 131.1 flagged rather than papering over: `buildPairings`
+ * looks up a device by number through a `Map`, so a duplicated number has one
+ * device win silently and the other read as `no-such-device`. This screen
+ * cannot fix the ambiguity (there is no way to know which of the two the
+ * operator meant), but it CAN say the ambiguity exists, cheaply, from the
+ * same `devices` array already in hand — so a row is never just wrong with
+ * no explanation.
+ */
+function duplicatedDeviceNumbers(devices: readonly FleetDeviceRow[]): ReadonlySet<number> {
+  const counts = new Map<number, number>()
+  for (const d of devices) {
+    if (d.number !== null) counts.set(d.number, (counts.get(d.number) ?? 0) + 1)
+  }
+  return new Set([...counts.entries()].filter(([, n]) => n > 1).map(([n]) => n))
+}
+
+function BulkAddDialog({
+  open,
+  onOpenChange,
+  devices,
+  paths,
+  usedDeviceIds,
+  onCommit,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  devices: FleetDeviceRow[]
+  paths: Path[]
+  usedDeviceIds: ReadonlySet<string>
+  onCommit: (entries: EntryDraft[]) => void
+}) {
+  const [fromText, setFromText] = useState('1')
+  const [toText, setToText] = useState('1')
+  const [pathStartIndex, setPathStartIndex] = useState(0)
+  const [overflow, setOverflow] = useState<BulkPairing['overflow']>('stop')
+
+  // Re-seed whenever the dialog is (re)opened — the same `open`-keyed pattern
+  // `EditGroupDialog` uses above, so a second bulk-add in the same session
+  // does not inherit the previous one's typed range.
+  const [lastOpen, setLastOpen] = useState(open)
+  if (open !== lastOpen) {
+    setLastOpen(open)
+    if (open) {
+      setFromText('1')
+      setToText('1')
+      setPathStartIndex(0)
+      setOverflow('stop')
+    }
+  }
+
+  const fromNumber = Number.parseInt(fromText, 10)
+  const toNumber = Number.parseInt(toText, 10)
+  const rangeValid = Number.isInteger(fromNumber) && Number.isInteger(toNumber) && fromText.trim() !== '' && toText.trim() !== '' && toNumber >= fromNumber
+
+  const duplicateNumbers = useMemo(() => duplicatedDeviceNumbers(devices), [devices])
+
+  // Pure preview — computed, never written, until "Add" below (§4.4's rule
+  // aimed at this dialog, per §3.1/§0.1).
+  const rows: PairingRow[] = useMemo(() => {
+    if (!rangeValid) return []
+    return buildPairings({ fromNumber, toNumber, pathStartIndex, overflow }, devices, paths)
+  }, [rangeValid, fromNumber, toNumber, pathStartIndex, overflow, devices, paths])
+
+  const plans = useMemo(() => planBulkGroupEntries(rows, devices, usedDeviceIds), [rows, devices, usedDeviceIds])
+  const writable = plans.filter((p) => p.entry !== null)
+
+  function commit(): void {
+    if (writable.length === 0) return
+    onCommit(writable.map((p) => p.entry as EntryDraft))
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Bulk add by device number</DialogTitle>
+          <DialogDescription>
+            A range of device numbers, paired positionally against paths starting at the one you choose — the owner's own ask (§0.1). Nothing is added to this group until you confirm below; every
+            row's preview is exactly what gets written.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="grid gap-3 @sm:grid-cols-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-fg-muted">From device #</label>
+              <Input type="number" value={fromText} onChange={(e) => setFromText(e.target.value)} className="readout" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-fg-muted">To device #</label>
+              <Input type="number" value={toText} onChange={(e) => setToText(e.target.value)} className="readout" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-fg-muted">When devices outrun the paths</label>
+              <Select value={overflow} onValueChange={(v) => setOverflow(v as BulkPairing['overflow'])}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="stop">Stop — leave the rest unpaired (recommended)</SelectItem>
+                  <SelectItem value="wrap">Wrap — reuse paths from the start</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-medium text-fg-muted">Starting path</label>
+            <Combobox
+              value={paths[pathStartIndex]?.id ?? ''}
+              onValueChange={(v) => {
+                const idx = paths.findIndex((p) => p.id === v)
+                if (idx >= 0) setPathStartIndex(idx)
+              }}
+              options={pathOptions({ paths, selectedPathId: paths[pathStartIndex]?.id ?? '' })}
+              placeholder="Choose the first path"
+              searchPlaceholder="Filter paths…"
+              emptyText="No path matches."
+              ariaLabel="Starting path for the bulk pairing"
+              triggerClassName="h-8 w-full text-[12px]"
+              disabled={paths.length === 0}
+            />
+            <p className="text-[11px] text-fg-muted">Device #{Number.isFinite(fromNumber) ? fromNumber : '?'} pairs with this path; each following device number pairs with the next path in the Paths tab's own order.</p>
+          </div>
+
+          {!rangeValid ? (
+            <p className="text-[12px] text-led-danger">Enter whole numbers with "To" greater than or equal to "From".</p>
+          ) : rows.length === 0 ? (
+            <p className="text-[12px] text-fg-muted">Nothing to preview yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              <p className="text-[12px] text-fg-muted">
+                {writable.length} of {rows.length} device{rows.length === 1 ? '' : 's'} in this range will be added to the group.
+              </p>
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-16">#</TableHead>
+                      <TableHead>Device</TableHead>
+                      <TableHead>Path</TableHead>
+                      <TableHead>Note</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {plans.map((plan) => {
+                      const { row } = plan
+                      const ambiguous = duplicateNumbers.has(row.deviceNumber)
+                      return (
+                        <TableRow key={row.deviceNumber} className={cn(plan.entry === null && 'bg-led-warn/5')}>
+                          <TableCell className="readout">{row.deviceNumber}</TableCell>
+                          <TableCell>{row.deviceId ? labelFor(row.deviceId, devices) : <span className="text-fg-muted">—</span>}</TableCell>
+                          <TableCell className="readout">{row.pathLabel ?? <span className="text-fg-muted">—</span>}</TableCell>
+                          <TableCell className={cn('text-[11px]', plan.alreadyInGroup ? 'text-led-warn' : PAIRING_NOTE_TONE[row.note])}>
+                            {plan.alreadyInGroup ? 'already in this group' : PAIRING_NOTE_LABEL[row.note]}
+                            {ambiguous ? <div className="text-led-danger">{'>'}1 device shares number #{row.deviceNumber} — ambiguous, resolved to one of them</div> : null}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button disabled={writable.length === 0} onClick={commit}>
+            Add {writable.length} device{writable.length === 1 ? '' : 's'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function EditGroupDialog({
   open,
   onOpenChange,
@@ -181,6 +427,8 @@ function EditGroupDialog({
    */
   const [pendingDeviceIds, setPendingDeviceIds] = useState<string[]>([])
   const [wallOpen, setWallOpen] = useState(false)
+  /** The bulk-by-number builder (plan 131 §3.1, step 131.3) — a second, complementary way to add devices, beside the wall picker above. Neither replaces the other (§3.1's own instruction). */
+  const [bulkOpen, setBulkOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
 
@@ -197,6 +445,7 @@ function EditGroupDialog({
     setEntries(toDraft(group?.entries ?? []))
     setPendingDeviceIds([])
     setWallOpen(false)
+    setBulkOpen(false)
     setError(null)
   }
 
@@ -226,6 +475,19 @@ function EditGroupDialog({
       })),
     ])
     setPendingDeviceIds([])
+  }
+
+  /**
+   * `BulkAddDialog`'s own commit — it has already run `planBulkGroupEntries`
+   * and shown every row before this is ever called, so here there is nothing
+   * left to validate: the entries handed in are exactly what the preview
+   * showed (§3.1's own rule, "the preview renders exactly what gets
+   * written"). Appended the same way `addEntry` appends above, never a
+   * second entries-mutation shape.
+   */
+  function addEntriesFromBulk(newEntries: EntryDraft[]): void {
+    if (newEntries.length === 0) return
+    setEntries((prev) => [...prev, ...newEntries])
   }
 
   function removeEntry(deviceId: string): void {
@@ -312,9 +574,25 @@ function EditGroupDialog({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
-              <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setWallOpen(true)}>
-                Add devices…
-              </Button>
+              <div className="flex gap-1.5">
+                <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setWallOpen(true)}>
+                  Add devices…
+                </Button>
+                {/*
+                  A second, complementary way in (plan 131 §3.1) — the wall
+                  picker above is for choosing by looking at the screen; this
+                  is for "devices 1 through 20 onto paths starting at index
+                  3", the owner's own verbatim ask (§0.1). Neither replaces
+                  the other. Not gated on `addableDevices` the way the wall
+                  button is: a range that includes a device already in this
+                  group is a legitimate thing to type, and the preview names
+                  that row as "already in this group" rather than refusing to
+                  open.
+                */}
+                <Button size="sm" variant="outline" disabled={devices.length === 0} onClick={() => setBulkOpen(true)}>
+                  Bulk add by number…
+                </Button>
+              </div>
             </div>
 
             {/*
@@ -349,6 +627,7 @@ function EditGroupDialog({
               filter={(d) => !usedDeviceIds.has(d.id)}
               title="Choose devices for this group"
             />
+            <BulkAddDialog open={bulkOpen} onOpenChange={setBulkOpen} devices={devices} paths={paths} usedDeviceIds={usedDeviceIds} onCommit={addEntriesFromBulk} />
 
             {entries.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border p-4 text-center text-[12px] text-fg-muted">No devices yet — add at least one above.</p>

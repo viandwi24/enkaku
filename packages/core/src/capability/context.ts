@@ -1,13 +1,13 @@
-import { eq } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import type { AgentRunStatus, AgentStopReason, ConnectionMedium, DeviceInfo, LeaseHolder } from '@enkaku/protocol'
+import { JobTraceEventSchema, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type LeaseHolder, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
 import type { Db } from '../db'
-import { devices } from '../db/schema'
+import { devices, jobEvents } from '../db/schema'
 import type { LeaseManager } from '../lease/lease-manager'
 import type { DeviceNetworkPort } from '../network/route-service'
 import { createDeviceNetworkService, type DeviceNetworkCapabilityService } from './device-network'
@@ -24,6 +24,8 @@ import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
 import type { WorkspaceStore } from '../workspace/store'
 import type { NotifyService } from '../notify/service'
+import { keysetWhere } from '../api/pagination'
+import type { TraceFrameStore } from '../jobs/trace/frame-store'
 
 /** The authenticated caller `invoke` checks against — a human today; Plan
  * 65 adds an agent actor with the same shape (id + role). */
@@ -163,6 +165,97 @@ export interface CapabilityContext {
    * than throwing something unreadable.
    */
   network?: DeviceNetworkCapabilityService
+  /**
+   * `job.trace`/`.trace.ui`/`.trace.frame`'s one-line delegation target (plan 130 §4.1, step
+   * 130.1) — built from `deps.db` and the optional `deps.traceStore` exactly like `scripts`/
+   * `workspace` above, never a raw `db` handed to a handler. Optional for the same reason
+   * `notify`/`network` are (see their comments above): every pre-plan-130 test that hand-builds a
+   * `CapabilityContext` literal keeps compiling unedited. A REAL host (`createCapabilityContext`
+   * below) always sets it; the three capabilities refuse by name (`E_NOT_SUPPORTED`) on the rare
+   * fixture that omits it.
+   */
+  jobTrace?: JobTraceCapabilityService
+}
+
+/** `job.trace`'s decoded cursor shape — the same `{ sortValue, id }` pair `decodeCursor` (`api/pagination.ts`) already returns; kept here rather than re-exported from there, since only this service consumes it. */
+export interface JobTraceListParams {
+  jobId: string
+  kind?: JobTraceEvent['kind'][]
+  limit: number
+  cursor: { sortValue: number; id: string } | null
+}
+
+export interface JobTraceListResult {
+  items: JobTraceEvent[]
+  nextCursor: { sortValue: number; id: string } | null
+  total: number
+}
+
+/**
+ * `job.trace`/`.trace.ui`/`.trace.frame`'s service (plan 130 §4.1, step 130.1).
+ *
+ * `list` reads the identical `job_events` table with the identical
+ * `(seq, id)` keyset ordering `api/jobs.ts`'s `GET /:id/trace` route already
+ * uses — that route's own comment explains why: `seq` is the cursor and the
+ * sort key, `atMs` is the display axis, ordering by `atMs` would break
+ * paging to fix rendering. Reimplemented here (not imported) because the
+ * route builds its query inline inside its own handler closure and this
+ * plan's edit scope does not extend to `api/jobs.ts`; both read the same
+ * table under the same predicate, so the two cannot drift apart in what
+ * they SELECT, only in where the query text lives.
+ *
+ * `readFrame`/`readUiTree` are the opposite: NOT reimplemented. They
+ * delegate straight to `TraceFrameStore`, which owns the hash/jobId
+ * path-traversal guards (`jobs/trace/frame-store.ts`) — a malformed hash is
+ * refused there, never sanitised here.
+ */
+export interface JobTraceCapabilityService {
+  list(params: JobTraceListParams): JobTraceListResult
+  /** `null` when the store has no file for this hash (never captured, or swept) — a 404 upstream, same as the REST route. */
+  readFrame(jobId: string, hash: string): Promise<Uint8Array | null>
+  readUiTree(jobId: string, hash: string): Promise<UiNode | null>
+}
+
+function toTraceEvent(row: typeof jobEvents.$inferSelect): JobTraceEvent {
+  const parsed = JobTraceEventSchema.safeParse(row)
+  if (!parsed.success) {
+    throw new EnkakuError('E_TRACE_CORRUPT', `job_events row ${row.id} does not match JobTraceEventSchema`)
+  }
+  return parsed.data
+}
+
+/** Exported so a test builds the SAME service the real context does (mirrors `buildScriptService` above). */
+export function buildJobTraceService(db: Db, traceStore?: TraceFrameStore): JobTraceCapabilityService {
+  return {
+    list({ jobId, kind, limit, cursor }) {
+      const scope = and(eq(jobEvents.jobId, jobId), kind && kind.length > 0 ? inArray(jobEvents.kind, kind) : undefined)
+      const counted = db.select({ n: sql<number>`count(*)` }).from(jobEvents).where(scope).get()
+      const rows = db
+        .select()
+        .from(jobEvents)
+        .where(and(scope, keysetWhere(cursor ? { value: cursor.sortValue, id: cursor.id } : null, jobEvents.seq, jobEvents.id, 'asc')))
+        // Same tiebreak reasoning as the REST route: `seq` is unique per job, so `id` only breaks a
+        // tie `keysetWhere`'s predicate cannot otherwise produce.
+        .orderBy(asc(jobEvents.seq), asc(jobEvents.id))
+        .limit(limit + 1)
+        .all()
+      const page = rows.slice(0, limit)
+      const last = page.at(-1)
+      return {
+        items: page.map(toTraceEvent),
+        nextCursor: rows.length > limit && last ? { sortValue: last.seq, id: last.id } : null,
+        total: counted?.n ?? 0,
+      }
+    },
+    async readFrame(jobId, hash) {
+      if (!traceStore) throw new EnkakuError('E_NOT_SUPPORTED', 'trace frame storage is not available on this host')
+      return traceStore.readFrame(jobId, hash)
+    },
+    async readUiTree(jobId, hash) {
+      if (!traceStore) throw new EnkakuError('E_NOT_SUPPORTED', 'trace ui storage is not available on this host')
+      return traceStore.readUiTree(jobId, hash)
+    },
+  }
 }
 
 /**
@@ -310,6 +403,15 @@ export interface CapabilityContextDeps {
    * name when it is absent.
    */
   network?: DeviceNetworkPort
+  /**
+   * The trace frame/UI-tree file store (plan 128 §3.5, `jobs/trace/frame-store.ts`) — the SAME
+   * store `api/jobs.ts`'s `GET /:id/trace/frames|ui/:hash` routes already read, threaded through
+   * exactly like `workspace`/`jobService` above (plan 130 §4.1, step 130.1). Optional: an
+   * orchestrator-mode host or a pre-plan-130 test literal has none, and `job.trace.frame`/
+   * `.trace.ui` refuse by name (`E_NOT_SUPPORTED`) rather than throwing something unreadable —
+   * `job.trace` itself needs no store at all, since it only ever reads `job_events`.
+   */
+  traceStore?: TraceFrameStore
 }
 
 /**
@@ -474,5 +576,7 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     // today. Plan 65 gives an agent actor its own narrower grant; this
     // function is the one place that will change.
     workspaceScope: () => ({ read: ['/'], write: ['/'] }),
+
+    jobTrace: buildJobTraceService(deps.db, deps.traceStore),
   }
 }

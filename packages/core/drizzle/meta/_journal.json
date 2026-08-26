@@ -442,6 +442,13 @@
       "when": 1787685436215,
       "tag": "0062_closed_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1787731317398,
+      "tag": "0063_sparkling_dreadnoughts",
+      "breakpoints": true
     }
   ]
 }

@@ -133,14 +133,38 @@ export interface BuildPlanInput {
   pathIds: ReadonlySet<string>
   /** Path health, from `inventory().health` — "up" iff the path's default route carries the active flag (§4.5). A `pathId` with no entry here is treated as down (fail-safe — see this file's header). */
   health: readonly PathHealth[]
+  /**
+   * Endpoint keys the operator has explicitly chosen to write even though
+   * their path is DOWN (plan 131 §3.4). Empty/absent by default, which is
+   * every caller that has not opted in — behaviour then is byte-identical to
+   * before this field existed.
+   *
+   * **The forcing happens HERE, in the planner, and deliberately not in the
+   * executor.** Plan 122 §4.5's rule is that such a rule is "never applied
+   * *silently*" — the word is silently, not never. A forced entry therefore
+   * skips the `path-down` check and falls through to `resolveTarget` like any
+   * other, so it becomes a genuine `create`/`update` row carrying
+   * `forcedOverDownPath: true`. The operator sees in the preview exactly the
+   * write that is about to happen, which is §4.4's guarantee ("plan, then
+   * apply — never write blind") preserved rather than sidestepped.
+   *
+   * Had this been done in `executePlan` instead, the plan would have kept
+   * saying `skip` while the executor wrote anyway — precisely the silent
+   * surprise §4.5 exists to prevent, arrived at from the opposite direction.
+   *
+   * `path-missing` and `duplicate` are NOT forceable and never will be from
+   * here: a table that does not exist cannot be written to at all, and §4.3
+   * is explicit that two matching rules means refuse, never guess.
+   */
+  forceDownPaths?: ReadonlySet<string>
 }
 
 /** Why a `skip` row was produced instead of `create`/`update` — see this file's header, point 1. */
 export type SkipReason = 'path-down' | 'path-missing' | 'duplicate'
 
 export type PlanRow =
-  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string }
-  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule }
+  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string; forcedOverDownPath?: true }
+  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule; forcedOverDownPath?: true }
   | { kind: 'delete'; endpointKey: string; pathId: string | null; groupId: string | null; rule: RouterRule }
   | { kind: 'skip'; endpointKey: string; pathId: string; groupId: string; groupName: string; reason: SkipReason }
   | { kind: 'foreign'; endpointKey: string | null; pathId: string | null; rule: RouterRule }
@@ -197,14 +221,18 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
       rows.push({ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' })
       continue
     }
-    if (!(healthByPath.get(d.pathId) ?? false)) {
+    const forced = input.forceDownPaths?.has(d.endpointKey) ?? false
+    if (!(healthByPath.get(d.pathId) ?? false) && !forced) {
       rows.push({ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' })
       continue
     }
+    // Only true when the path really is down AND the operator asked for it —
+    // never set for a healthy path that merely appeared in the forced set.
+    const overDownPath = forced && !(healthByPath.get(d.pathId) ?? false)
 
     const resolved = resolveTarget(input.rules, d.endpointKey)
     if (resolved.action === 'create') {
-      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName })
+      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, ...(overDownPath ? { forcedOverDownPath: true as const } : {}) })
     } else if (resolved.action === 'update') {
       if (resolved.rule.table === d.pathId && !resolved.rule.disabled) {
         // Already correct and enabled — no row (mirrors drift.ts's "matches
@@ -220,6 +248,7 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
         groupId: d.groupId,
         groupName: d.groupName,
         rule: resolved.rule,
+        ...(overDownPath ? { forcedOverDownPath: true as const } : {}),
       })
     } else {
       // 'refuse-duplicate' — never guess which to keep (§4.3); this endpoint is not safely actionable.

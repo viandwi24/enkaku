@@ -30,6 +30,8 @@ import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
+import { createApiTokenService } from './auth/api-tokens'
+import { createTokenRoutes } from './api/tokens'
 import { createRetentionGc, type RetentionGc } from './maintenance/retention'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
@@ -1063,6 +1065,13 @@ let blobGc: BlobGc | null = null
       // (spec §14) — `authMode` itself was resolved earlier, above.
       assertTlsPolicy(cfg, authMode)
       const auth = createAuthService({ db, sessionTtlHours: cfg.auth.sessionTtlHours })
+      /**
+       * Durable API credentials (plan 130 §3.5) — what an external agent
+       * authenticates with instead of borrowing a human's session. Built
+       * beside `auth` because the middleware consults them in that order:
+       * a session first, this only when that misses.
+       */
+      const apiTokens = createApiTokenService(db)
       const nodeAuth = createNodeAuth(db)
 
       // Cloud mode (spec §5.3): the orchestrator holds no local devices;
@@ -2490,6 +2499,23 @@ let blobGc: BlobGc | null = null
         readiness: () => readiness,
         transfer: transferPortForScripts,
         jobService,
+        // Plan 130 §10 item 1 — `job.trace.frame` / `job.trace.ui` read their
+        // payloads through this store, and without it both refuse with
+        // `E_NOT_SUPPORTED` on a real farm while looking perfectly healthy in
+        // every test: the capabilities are registered, reachable over MCP,
+        // and listed to the agent. The SAME store instance the REST routes
+        // and the job runner already write through, never a second one —
+        // two stores over one directory would disagree the moment either
+        // grew a cache.
+        traceStore: traceFrameStore,
+        // Plan 130 §10 item 1 — `job.trace.frame` / `job.trace.ui` read their
+        // payloads through this store, and without it both refuse with
+        // `E_NOT_SUPPORTED` on a real farm while looking perfectly healthy in
+        // every test: the capabilities are registered, reachable over MCP,
+        // and listed to the agent. The SAME store instance the REST routes
+        // and the job runner already write through, never a second one —
+        // two stores over one directory would disagree the moment either
+        // grew a cache.
         workspace: workspaceStore,
         // Plan 68 §4.3 — `notify.send`'s one-line delegation. The SAME instance for every actor:
         // a human via REST/MCP and an agent via the loop both reach the identical service.
@@ -3123,6 +3149,8 @@ let blobGc: BlobGc | null = null
           lockoutSeconds: cfg.auth.loginLockoutSeconds,
         }),
         nodeRoutes: createNodeRoutes({ nodeAuth, db }),
+        tokenRoutes: createTokenRoutes({ apiTokens }),
+        apiTokens,
         auth,
         authMode,
         scriptRoutes: createScriptRoutes({ db, audit, ...(process.env.ENKAKU_PUBLISH_TOKEN ? { publishToken: process.env.ENKAKU_PUBLISH_TOKEN } : {}) }),

@@ -188,6 +188,46 @@ import verifyEgressScript from './verify-egress'
  * Minor, not patch: an operator meets it the moment they open the group
  * editor and can type `7` to find a phone.
  *
+ * **0.9.0 → 0.10.0 — field report, 2026-08-26: five complaints from one
+ * afternoon of real use.** Four additive, one a correction.
+ *
+ * **Bulk, by number.** `buildPairings` pairs an inclusive device-NUMBER range
+ * positionally against the path list from a start index, and both the
+ * Assignments tab and the group editor build on it. Every anomaly is a row in
+ * the preview, never a dropped one: a number nobody has, a device already
+ * assigned, running out of paths. The preview is mandatory and it IS the
+ * feature — §4.4's "plan, then apply — never write blind" aimed at the
+ * database rather than the router. `overflow` defaults to `stop`, because
+ * `wrap` silently puts a later device on a path an earlier one already holds.
+ *
+ * **Selection.** Per-row checkboxes, select-all scoped to the FILTERED rows,
+ * and a bulk bar whose count matches that scope — `docs/design.md`'s "a
+ * filter must not lie about its scope". Selection clears when the filter
+ * changes, because a selection whose scope you can no longer see is a trap.
+ *
+ * **The table stops throwing away your scroll position.** `if (loading)
+ * return <LoadingRows />` unmounted every row on every write, so the browser
+ * had no anchor to restore and the viewport snapped to the top. The skeleton
+ * is now for the FIRST load only. Reported as "saya udah di item ke 30 …
+ * pas assign device itu tabel ke refresh dan page saya balik ke scroll paling
+ * atas", and the owner's own guess at the cause — a forced re-render — was
+ * exactly right.
+ *
+ * **Applying over a down path is now a decision instead of a dead end.**
+ * Plan 122 §4.5 says such a rule is "never applied **silently**" — the word
+ * is silently. `skip` stays the default and the warning stays, and beside it
+ * is one explicit, never-primary action naming how many rows it will write
+ * and which paths are down. The forcing happens in the PLANNER, so a forced
+ * row is previewed as the real `create`/`update` it will be, flagged
+ * `forcedOverDownPath`; forcing in the executor would have left the plan
+ * saying `skip` while the write happened anyway, which is the same silent
+ * surprise from the other side. `path-missing` and `duplicate` remain
+ * unforceable: a table that does not exist cannot be written to, and §4.3 is
+ * explicit that two matching rules means refuse, never guess.
+ *
+ * Minor, not patch: an operator meets every one of these the moment they open
+ * the tab.
+ *
  * **0.7.0 → 0.8.0 — field report, 2026-08-26: "kok masih dropdown?"** The
  * owner opened this group editor on a live 20-device farm and asked why it
  * was still a dropdown when the product has a device selector. Fair: 0.7.0
@@ -277,7 +317,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.9.0',
+  version: '0.10.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',
