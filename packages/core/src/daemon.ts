@@ -191,6 +191,11 @@ import { createToolInstallStore } from './tools/store'
 import { createLogger } from './util/logger'
 import { acquireDataDirLock, type DataDirLock } from './util/data-dir-lock'
 import { createEventRecorder, type EventRecorder } from './events/recorder'
+// Plan 128 (M93 — the job trace timeline), step 128.5 — the host half of the
+// tee that lives in `@enkaku/session`'s job runner: the recorder owns `seq`
+// and the database, the frame store owns `<dataDir>/traces/<jobId>/`.
+import { createTraceRecorder, type TraceRecorder } from './jobs/trace/recorder'
+import { createTraceFrameStore } from './jobs/trace/frame-store'
 import { findPortHolder } from './doctor/context'
 
 import pkg from '../package.json'
@@ -340,6 +345,13 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let retention: RetentionGc | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
+  /**
+   * The job trace recorder (plan 128 §3.6, step 128.5) — the host end of the
+   * runner's tee. Declared out here, beside `recorder`, for the same reason
+   * that one is: it is built in `start()` but has to be flushed and stopped
+   * from `stop()`.
+   */
+  let traceRecorder: TraceRecorder | null = null
   /**
    * The plugin runtime host (plan 109 §4.2, step 109.2) — the thing that loads
    * a plugin's long-lived `service` into THIS process. Built in `start()`
@@ -932,6 +944,29 @@ let blobGc: BlobGc | null = null
         db,
         publish: (deviceId, ev) => publishDeviceEvent?.(deviceId, ev),
       })
+      // Plan 128 §3.6, §4.2, step 128.5 — the job trace's two host halves,
+      // built beside `jobLogBuffer` and `recorder` because they are the same
+      // kind of thing: a job's timeline is the log buffer's sibling, and this
+      // recorder is `events/recorder.ts`'s shape with a `seq` authority added.
+      //
+      // `publish` is the WS fan-out and it fires SYNCHRONOUSLY from
+      // `record()`, before the row is written (the recorder's own doc, and
+      // `JobTraceMessage`'s). It is handed the event the recorder just
+      // STORED — the one carrying the assigned `id`/`seq` — never the
+      // input-shaped event the tee emitted, which has neither. That is why
+      // the `onTraceEvent` hook below only calls `record()` and does not
+      // broadcast a second time: broadcasting there as well would send every
+      // event twice, and the one thing it must not send is the object it was
+      // handed.
+      traceRecorder = createTraceRecorder({
+        db,
+        publish: (jobId, event) => hub.broadcast({ type: 'job.trace', payload: { jobId, event } }),
+      })
+      // `<dataDir>/traces/<jobId>/` — one directory per job, one lifetime
+      // (§3.5). Passed BOTH into the local runner (as `traceStore`, the only
+      // route a screenshot's bytes have out of `@enkaku/session`) and into
+      // `createJobRoutes` (which reads the same files back out).
+      const traceFrameStore = createTraceFrameStore({ dataDir: cfg.dataDir })
       // The lease-scoped adb endpoint (plan 27 §4.2, cloud devices plan 28
       // §4.4). Constructed unconditionally, even before adb or the tunnel
       // layer are ready — `deps.adb`/`deps.rpc`/`deps.router` all read their
@@ -1316,6 +1351,13 @@ let blobGc: BlobGc | null = null
           // Nor do the retained log lines: from here the `job.log` artifact is
           // the record, and `GET /api/jobs/:id/logs` falls through to it.
           jobLogBuffer.release(jobId)
+          // Plan 128 §3.6, step 128.5 — a settled job's timeline must be
+          // complete the instant its status changes: a Timeline tab opened on
+          // the millisecond a job turns `failed` must not be missing its last
+          // 250 ms of buffered events. Passing `jobId` also releases that
+          // job's in-memory `seq` cursor, so a rebound attempt re-seeds from
+          // the rows already on disk instead of restarting at 1.
+          traceRecorder?.flush(jobId)
           // Job claim/finish is one of the events readiness reconciles on
           // (plan 43 §5 step 43.6) — the job's own hold release (executor-host.ts)
           // already triggers this once its own count reaches zero, but a
@@ -1832,6 +1874,14 @@ let blobGc: BlobGc | null = null
         leases,
         record: recorder!.record,
         log: log.child('device-lifecycle'),
+        // Plan 128 §4.5, §10 item 8 — `forget(deleteHistory)` cascades through
+        // `deleteJobsWithHistory`, which unlinks artifact FILES and removes
+        // `traces/<jobId>/`. Both paths are relative to app-data, and the
+        // lifecycle service has no other way to learn where that is. Omit this
+        // and the rows still go while the bytes stay on disk — the cascade
+        // half-succeeds silently, which is the exact failure mode plan 128
+        // §4.5 ("one implementation, no drift") exists to prevent.
+        dataDir: cfg.dataDir,
         // An operator removing a device hands the phone its network back
         // (plan 56 §3.6). Deliberate acts only — a core that crashes or goes
         // quiet must still leave the tunnel HELD CLOSED, which is the device's
@@ -2053,11 +2103,24 @@ let blobGc: BlobGc | null = null
                 msg: entry.msg,
               },
             })
+            traceRecorder?.record({ jobId, kind: 'log', name: level, meta: { source, msg: entry.msg } })
           },
-          onArtifact: (jobId, artifact) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } }),
+          onArtifact: (jobId, artifact) => {
+            hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } })
+            traceRecorder?.record({ jobId, kind: 'artifact', name: artifact.kind, meta: { label: artifact.label, sizeBytes: artifact.sizeBytes } })
+          },
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, ...(attempt ? { attempt } : {}), phase } })
+            // Plan 128 §2, §10 item 5 — a node-owned job has no `device.call`
+            // tee (that lives in `@enkaku/session`'s LOCAL runner), so its
+            // action lane is empty by design. Its phase/log/artifact events
+            // are teed here anyway, because "empty action lane, everything
+            // else present" is a legible timeline and a wholly blank tab is
+            // not. Discovered by step 128.5b's worker: §2 CLAIMED this
+            // already happened through the existing hooks, and it did not —
+            // `hooks` only ever broadcast, and nothing here wrote a row.
+            traceRecorder?.record({ jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
           },
           heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
         },
@@ -2671,6 +2734,15 @@ let blobGc: BlobGc | null = null
           // the WS `job.cancel` path (wired below) gets.
           getDeviceOwner,
           audit,
+          // Plan 128 §4.3, step 128.5/128.6 — the read half of the trace:
+          // `GET /:id/trace` pages `job_events` off `db`, and
+          // `/:id/trace/frames/:hash` + `/:id/trace/ui/:hash` read the very
+          // files the runner's `traceStore` above wrote. The SAME store
+          // instance is passed, never a second one built here, so the write
+          // and read paths cannot disagree about where `traces/` lives.
+          db,
+          dataDir: cfg.dataDir,
+          traceStore: traceFrameStore,
         }),
         deviceRoutes: createDeviceRoutes({
           db,
@@ -3989,6 +4061,26 @@ let blobGc: BlobGc | null = null
           onArtifact: () => {
             // The sink already broadcast this when it wrote the DB row.
           },
+          // Plan 128 §3.1, §3.6, §4.2, step 128.5 — the job trace's two deps,
+          // and they are wired TOGETHER on purpose. `onTraceEvent` alone
+          // produces a complete event lane with an EMPTY frame lane on every
+          // job: `traceStore` is the only route a screenshot's bytes have out
+          // of `@enkaku/session` (the runner's capture thunk returns
+          // `{ frameHash: null, uiHash: null }` the moment it is absent, and
+          // the tee's capture policy then resolves to `'none'`). Dropping
+          // either one is the specific regression
+          // `daemon-wiring.test.ts` guards.
+          //
+          // The recorder is the single `seq` authority (§3.3): the tee emits
+          // an event without `id`/`seq`, `record()` assigns both, and the
+          // recorder's own `publish` (wired to `hub.broadcast` where it is
+          // constructed, far above) fans the STORED event out as `job.trace`.
+          // Nothing is broadcast from here — that would send the tee's
+          // unnumbered event, and send every event twice.
+          onTraceEvent: (_jobId, event) => {
+            traceRecorder?.record(event)
+          },
+          traceStore: traceFrameStore,
           onPhase: (jobId, attempt, phase) => {
             // Plan 99 §4.6, §4.7 — `job_nodes.attempts`'s only source: this
             // fires on every attempt of every execution, and `attempt` resets
@@ -4473,6 +4565,12 @@ let blobGc: BlobGc | null = null
       sessions = null
       await recorder?.stop()
       recorder = null
+      // Same placement and the same reason as `recorder` just above: the job
+      // runner's tee calls `record()` while sessions are still closing, and a
+      // stopped recorder writes nothing — so this flushes the last buffered
+      // batch AFTER the work that produces it has stopped (plan 128 §3.6).
+      await traceRecorder?.stop()
+      traceRecorder = null
       await remoteSessions?.closeAll()
       remoteSessions = null
       await webrtcRelayRef?.closeAll()

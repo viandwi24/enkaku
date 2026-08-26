@@ -107,6 +107,22 @@ export type Permission =
   | 'job.view'
   | 'job.run'
   | 'job.cancel.any'
+  /**
+   * Bulk, irreversible erasure of job history — `POST /api/jobs/history/clear`
+   * (plan 128 §4.3, §9 Q4). Deliberately OUTSIDE the `OPERATOR` set below,
+   * on the `kv.manage` precedent directly beneath: the route takes filters,
+   * not a device the caller owns, so `job.run` would have let any operator
+   * erase every run on every device in the farm — including runs on devices
+   * owned by someone else, and including the trace frames that are the only
+   * record of what those runs did.
+   *
+   * NOT the same verb as `DELETE /api/jobs/:id`, which stays on the
+   * per-job ownership gate `POST /:id/cancel` already uses (erasing one run
+   * must not be a stricter check than stopping it). The asymmetry is the
+   * point: one job is an operator's own business, the whole farm's history
+   * is not.
+   */
+  | 'job.history.purge'
   | 'tool.view'
   | 'tool.manage'
   | 'settings.view'
@@ -211,6 +227,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'job.view',
   'job.run',
   'job.cancel.any',
+  'job.history.purge',
   'tool.view',
   'tool.manage',
   'settings.view',

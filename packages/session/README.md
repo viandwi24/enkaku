@@ -263,3 +263,83 @@ reads the live `SurfaceOrientation` and falls back to `lock-portrait` (logged)
 when the device has none to read, e.g. asleep at session start — see
 `docs/plans/85-m50-windows-fleet-scale.md` §9 Q4, an unratified proposal, not
 a settled product decision.
+
+## The job-trace tee at the `device.call` boundary (plan 128, M93)
+
+`src/runner/trace.ts` is the same tee `packages/core/src/recording/session.ts`
+already runs for the *manual* input path (plan 94), moved one boundary over:
+from `ws-handlers.ts`'s `input.*` branch to `job-runner.ts`'s `device.call`
+branch. The child process never opens adb itself — every action a script takes
+crosses that one boundary, in order, with its arguments already Zod-parsed by
+`DeviceCallSchema` — so one wrap of `execDevice` sees the whole run.
+
+**The tee must observe, never alter.** `begin()` is synchronous and returns a
+token; `end()` is synchronous, returns `void`, and neither ever throws. Every
+genuinely async consequence — a screenshot, a UI-tree snapshot, the host's own
+database write — is started inside `end()` and is never on the critical path
+the real device call sits on, including the host's `emit` callback, which is
+wrapped so a trace consumer that throws cannot take the job with it. A host
+that wires no `onTraceEvent` gets `createNoopTraceTee()` instead, so the call
+sites in `job-runner.ts` are unconditional and there is no `if (tracing)`
+anywhere on the hot path. `ScriptContext` gains nothing and `DeviceCallSchema`
+is not extended: the tee consumes them, it does not change them.
+
+This module does **no I/O**. It owns exactly three things — argument redaction,
+capture-policy resolution, and the bounded capture ceiling — and takes
+`emit(event)`, `capture(request)` and an `engineId()` accessor injected. It
+also does **not** assign `id` or `seq`: it emits `TraceEventInput`
+(`Omit<JobTraceEvent, 'id' | 'seq'>`) and the core's recorder is the single
+`seq` authority, because `job_events` carries `uniqueIndex(jobId, seq)` and a
+job that infra-retries would otherwise build a second tee with a second
+counter, both starting at 1 for one job id. The tee's contract is **order**;
+numbering is the recorder's.
+
+**The capture policy is derived from the resolved inspector engine, never
+configured** — `resolveFramePolicy(session.inspectorEngineId)`, read per
+attempt and re-stated on every `phase` `start` event's `meta`:
+
+| `inspectorEngineId` | Frame policy | Why |
+|---|---|---|
+| `ui-server` | `per-action` — one frame beside every device call, no sampling, no cap | JSON-RPC over an `adb forward` socket; it never acquires the per-device adb semaphore, so it cannot queue ahead of or behind a script's own call |
+| anything else (`uiautomator-dump`, and any engine added later) | `on-failure` — the failing action only | `screencap` goes through the per-device queue, which is plain FIFO with no priority: a background capture inserted between two script calls adds its full duration to the script's next one. A job that has already failed has nothing left to slow down. An unmeasured engine is assumed to contend — that is the safe assumption for the script |
+| `null` (no inspector) | `none` | there is nothing to capture with |
+
+UI trees are free wherever the call already produced one (`dump`, `find`,
+`waitFor` are requested as `'reuse'`, so the host never goes back to the
+device for them) and captured for the failing action. `screenshot` and the
+`artifact.save` screenshot path reuse the script's own bytes rather than
+taking a second picture.
+
+Captures are bounded at `MAX_CONCURRENT_CAPTURES` (4) outstanding per job, not
+serialised behind a single slot. One slot was tried first and was wrong: a
+script is quicker than a screenshot, so most actions recorded `skipped-busy`
+and no frame at all — quietly defeating the one-action-one-frame rule the
+feature exists for. It is bounded rather than unlimited because on `ui-server`
+a screenshot travels the **same** on-device RPC channel as the script's own
+`find` and `click`, and uiautomator serves that channel one call at a time;
+captures allowed to pile up there put the script behind its own debugging.
+At the ceiling a capture is **dropped, never queued**.
+
+A dropped frame never costs the tree. A `dump`/`find`/`waitFor` already
+returned its tree, so storing it touches no device: the saturated path stores
+it anyway and marks the event `meta.frameDropped: 'busy'`. Statuses stay
+honest — `'skipped-busy'` when the ceiling was saturated (never `'skipped-policy'`,
+which would claim the engine was never going to take a picture), `'failed'` when
+a capture threw or timed out, `'skipped-policy'` when the policy genuinely
+declined. A timeline never omits a frame silently, and no capture can fail a
+job.
+
+The number 4 is **not measured on hardware** — see plan 128 §9b.
+
+Arguments reach `meta.args` redacted (`ARG_REDACTION`, one entry per
+`DeviceCallMethod` so a new verb is a compile error until somebody decides):
+`type` and `clipboard.set` store `{ length: n }` and never the text, and any
+single value whose JSON exceeds 512 bytes is replaced by a truncation marker
+naming its size — the rest of the object survives, so a `find` keeps the
+selector that makes it worth reading.
+
+An action event is emitted when its **capture** settles, not when the call
+does, but its `atMs` is stamped at `begin()` — so it lands on the axis at the
+instant the action really started. Log lines are never held behind a capture.
+That is why `seq` (arrival order at the recorder) is the right keyset cursor
+and the wrong display axis; see `packages/core/README.md`'s companion section.

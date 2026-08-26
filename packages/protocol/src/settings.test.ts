@@ -1384,3 +1384,39 @@ describe('FarmSettingsSchema.defaults — identity is excluded (docs/settings-au
     expect(parsed.data.defaults.autoReconnect).toBe(defaultFarmSettings().defaults.autoReconnect)
   })
 })
+
+describe('FarmSettingsSchema.retention.traceDays — job trace history GC (plan 128 §3.7, §4.1)', () => {
+  test('a settings row that predates this field (an empty object) still parses, defaulting to 30 days', () => {
+    expect(FarmSettingsSchema.parse({}).retention.traceDays).toBe(30)
+  })
+
+  test('a legacy retention section written before this field still parses and fills the default in', () => {
+    const legacy = {
+      retention: {
+        enabled: true,
+        maxAgeDays: 7,
+        maxTotalGb: 5,
+        eventMainDays: 14,
+        eventInputDays: 2,
+        eventMaxRowsPerDevice: 20_000,
+        blobOrphanGraceHours: 48,
+        commandRunDays: 7,
+      },
+    }
+    const parsed = FarmSettingsSchema.parse(legacy)
+    expect(parsed.retention.commandRunDays).toBe(7)
+    expect(parsed.retention.traceDays).toBe(30)
+  })
+
+  test('NOT gated by retention.enabled — an unbounded per-action trace table is a disk-filling bug, not an opt-in convenience, matching eventMainDays/commandRunDays', () => {
+    const parsed = FarmSettingsSchema.parse({ retention: { enabled: false } })
+    expect(parsed.retention.enabled).toBe(false)
+    expect(parsed.retention.traceDays).toBe(30)
+  })
+
+  test('bounded below at 1 day, and an integer', () => {
+    expect(() => FarmSettingsSchema.parse({ retention: { traceDays: 0 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ retention: { traceDays: 1.5 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ retention: { traceDays: 90 } }).retention.traceDays).toBe(90)
+  })
+})

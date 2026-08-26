@@ -1,15 +1,37 @@
 import { Hono } from 'hono'
-import { JobAssistsResponseSchema, JobCancelResponseSchema, JobCreateResponseSchema, JobLogsResponseSchema, JobNodesResponseSchema, JobResponseSchema, JobStatusSchema, JobsPageResponseSchema, ScriptRefSchema } from '@enkaku/protocol'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import {
+  JobAssistsResponseSchema,
+  JobCancelResponseSchema,
+  JobCreateResponseSchema,
+  JobDeleteResponseSchema,
+  JobHistoryClearRequestSchema,
+  JobHistoryClearResponseSchema,
+  JobLogsResponseSchema,
+  JobNodesResponseSchema,
+  JobResponseSchema,
+  JobStatusSchema,
+  JobTraceEventSchema,
+  JobTraceResponseSchema,
+  JobsPageResponseSchema,
+  ScriptRefSchema,
+  type JobStatus,
+  type JobTraceEvent,
+} from '@enkaku/protocol'
 import type { JobLogEntry } from '@enkaku/session'
 import { z } from 'zod'
 import { canCancelJob } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
+import type { Db } from '../db'
+import { jobEvents, jobs } from '../db/schema'
+import { deleteJobsWithHistory } from '../jobs/purge'
+import type { TraceFrameStore } from '../jobs/trace/frame-store'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
-import { decodeCursor, encodeCursor, parsePageQuery } from './pagination'
+import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
 
 /**
@@ -76,6 +98,20 @@ const ERROR_STATUS: Record<string, number> = {
   E_RUNTIME_UNSUPPORTED: 400,
   E_RUNTIME_ENVELOPE_INVALID: 400,
   E_RUNTIME_OVER_CEILING: 400,
+  // Plan 128 §4.3 — `DELETE /:id` on a job that has not settled. A 409, not a
+  // 400: the request is well formed and will succeed unchanged once the job
+  // stops running, which is precisely what `job_not_cancellable` above means
+  // for the opposite verb.
+  job_not_settled: 409,
+  // The host has no database wired into these routes (a partial harness) —
+  // the cascade genuinely cannot run here, and saying "not implemented" is
+  // honest where a 500 would send someone looking for a fault.
+  E_UNSUPPORTED: 501,
+  // `frame-store.ts` raises this for a UI snapshot that is on disk but
+  // unreadable. Deliberately NOT a 404: null means "gone", and a corrupt
+  // snapshot reported as gone sends a debugger hunting a retention sweep that
+  // never ran.
+  E_TRACE_CORRUPT: 500,
 }
 
 export interface JobRoutesDeps {
@@ -112,6 +148,57 @@ export interface JobRoutesDeps {
    * follow. Optional so an existing test harness keeps compiling unchanged.
    */
   audit?: AuditLogger
+  /**
+   * The database, for the four routes that read or delete rows `JobService`
+   * does not model: `GET /:id/trace` (a keyset page of `job_events`),
+   * `DELETE /:id` and `POST /history/clear` (the §4.5 cascade).
+   *
+   * Optional, like every other dependency in this interface — a harness that
+   * does not wire it gets an empty trace page rather than a crash (the same
+   * "empty list, never a 404" convention `/logs` and `/nodes` already use),
+   * and the two destructive routes answer `E_UNSUPPORTED` (501) rather than
+   * pretending to have deleted something.
+   */
+  db?: Db
+  /**
+   * Frames and UI-tree snapshots for `GET /:id/trace/frames/:hash` and
+   * `/:id/trace/ui/:hash` (plan 128 §3.5). The store validates BOTH the job id
+   * and the hash before it builds a path, so these routes hand it the raw URL
+   * segments rather than sanitising them here — one guard, at the place that
+   * touches the filesystem.
+   */
+  traceStore?: TraceFrameStore
+  /**
+   * App-data root, needed by the cascade: artifact `path`s are relative to it
+   * and `traces/<jobId>/` lives under it. Without it the row half of a delete
+   * still runs and the file half is logged as skipped.
+   */
+  dataDir?: string
+}
+
+/**
+ * Whether a job may be deleted — everything except `queued`/`running` (plan
+ * 128 §4.3). Written as an exclusion rather than a list of the four settled
+ * statuses so a status added later is refused until somebody decides,
+ * instead of being deletable by omission.
+ */
+function isSettled(status: JobStatus): boolean {
+  return status !== 'queued' && status !== 'running'
+}
+
+/**
+ * One `job_events` row as the protocol declares it. Parsed, never cast: `meta`
+ * is a JSON column and `kind`/`phase`/`frameStatus` are plain `text`, so what
+ * comes back off disk is external input exactly like a request body is
+ * (00-overview §4.2). A row that does not fit is a coded 500 rather than a
+ * malformed event handed to a client that trusted the schema.
+ */
+function toTraceEvent(row: typeof jobEvents.$inferSelect): JobTraceEvent {
+  const parsed = JobTraceEventSchema.safeParse(row)
+  if (!parsed.success) {
+    throw new EnkakuError('E_TRACE_CORRUPT', `job_events row ${row.id} does not match JobTraceEventSchema`)
+  }
+  return parsed.data
 }
 
 export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono<AuthEnv> {
@@ -143,6 +230,76 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
       runtimeOverride: body.data.runtimeOverride,
     })
     return typedJson(c, JobCreateResponseSchema, { job }, 201)
+  })
+
+  /**
+   * "Clear history" (plan 128 §4.3) — the bulk form of `DELETE /:id`'s
+   * cascade, over whatever the three optional filters select.
+   *
+   * **Registered before every `/:id` route on purpose.** `history` is a
+   * perfectly good job id as far as a path pattern is concerned, and a router
+   * that resolved this to `/:id/clear` would turn "clear the farm's history"
+   * into a 404 on a job nobody has — or, worse, into a different verb. The
+   * ordering is the guard; do not move it down.
+   *
+   * A `queued` or `running` job that the filter matched is left alone and
+   * counted in `skipped`, for the same reason `DELETE /:id` refuses one: a
+   * running job's rows are still being written, and deleting them mid-flight
+   * would race the trace recorder's own flush. Reported rather than silently
+   * dropped, so "clear everything" followed by a job that is still there reads
+   * as the deliberate refusal it is.
+   */
+  // Plan 128 §4.3, §9 Q4 — `job.history.purge`, NOT `job.run`. This route
+  // selects by FILTER, not by a device the caller owns, so `job.run` (an
+  // operator permission) would have made bulk erasure of the whole farm's
+  // history — every device, every owner, every trace frame — an ordinary
+  // operator action. `DELETE /:id` deliberately keeps the looser per-job
+  // ownership gate; see the permission's own comment in `auth/acl.ts`.
+  app.post('/history/clear', requirePermission('job.history.purge'), async (c) => {
+    const db = deps?.db
+    if (!db) throw new EnkakuError('E_UNSUPPORTED', 'clearing job history is not available on this host')
+    const raw = (await c.req.json().catch(() => ({}))) ?? {}
+    const body = JobHistoryClearRequestSchema.safeParse(raw)
+    if (!body.success) {
+      return c.json(
+        { error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } },
+        400,
+      )
+    }
+    const { before, deviceId, status } = body.data
+    const filters = [
+      deviceId !== undefined ? eq(jobs.deviceId, deviceId) : undefined,
+      status !== undefined && status.length > 0 ? inArray(jobs.status, status) : undefined,
+      // `finishedAt` for a job that ran, `createdAt` for one that never did
+      // (an expired or cancelled queue entry has no finish). Unix SECONDS —
+      // the `jobs` table's own convention; §3.3's milliseconds carve-out is
+      // `job_events.atMs` alone and does not reach here.
+      before !== undefined ? sql`coalesce(${jobs.finishedAt}, ${jobs.createdAt}) < ${before}` : undefined,
+    ].filter((f) => f !== undefined)
+    const matched = db
+      .select({ id: jobs.id, status: jobs.status })
+      .from(jobs)
+      .where(filters.length > 0 ? and(...filters) : undefined)
+      .all()
+    const deletable: string[] = []
+    let skipped = 0
+    for (const row of matched) {
+      const parsed = JobStatusSchema.safeParse(row.status ?? 'queued')
+      if (parsed.success && isSettled(parsed.data)) deletable.push(row.id)
+      else skipped += 1
+    }
+    const deleted = deleteJobsWithHistory(db, deletable, {
+      dataDir: deps?.dataDir,
+      traceStore: deps?.traceStore,
+      log: deps?.log,
+    })
+    deps?.audit?.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'job.history.clear',
+      target: deviceId ?? 'farm',
+      meta: { filter: { before: before ?? null, deviceId: deviceId ?? null, status: status ?? null }, deleted, skipped },
+    })
+    return typedJson(c, JobHistoryClearResponseSchema, { deleted, skipped })
   })
 
   app.get('/', (c) => {
@@ -227,6 +384,154 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
   app.get('/:id/nodes', requirePermission('job.view'), (c) => {
     const result = service.nodes(c.req.param('id'))
     return typedJson(c, JobNodesResponseSchema, result)
+  })
+
+  /**
+   * The job trace (plan 128 §4.3) — a keyset page of `job_events`.
+   *
+   * **The cursor is `seq`, and so is the ORDER BY — never `atMs`.** `seq` is
+   * arrival order at the recorder, which is not event order: an `action` is
+   * held until its screenshot settles, while a `log` line emits immediately,
+   * so an action whose capture took 200 ms lands after a log line that
+   * happened during it. That makes `seq` a correct cursor (unique per job,
+   * monotonic, stable across concurrent inserts — a page boundary can neither
+   * repeat nor lose a row) and the wrong display axis. `atMs` is stamped at
+   * `begin()` and is the true axis, and **the CLIENT sorts by `(atMs, seq)`**.
+   * Ordering this query by `atMs` would break paging to fix rendering, in the
+   * one place where paging correctness is the whole job.
+   *
+   * `?after=` is the opaque cursor from the previous page's `nextCursor`
+   * (`?cursor=` is accepted as an alias, since that is what every other list
+   * endpoint in the core calls it). `?kind=` is repeatable and ANDs with
+   * nothing else — `?kind=action&kind=error` is "either of these".
+   *
+   * `[]` for a job that recorded nothing, and for a host with no database
+   * wired into these routes — never a 404 for either reason, matching
+   * `/logs`, `/assists` and `/nodes` above; only a missing JOB 404s.
+   */
+  app.get('/:id/trace', requirePermission('job.view'), (c) => {
+    const id = c.req.param('id')
+    if (!service.get(id)) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const db = deps?.db
+    if (!db) return typedJson(c, JobTraceResponseSchema, { items: [], nextCursor: null, total: null })
+
+    const { cursor: cursorParam, limit } = parsePageQuery(c)
+    const after = decodeCursor(c.req.query('after') ?? cursorParam)
+    const kinds: JobTraceEvent['kind'][] = []
+    for (const raw of c.req.queries('kind') ?? []) {
+      const parsed = JobTraceEventSchema.shape.kind.safeParse(raw)
+      if (!parsed.success) {
+        throw new EnkakuError('E_BAD_REQUEST', `unknown trace kind "${raw}"`)
+      }
+      kinds.push(parsed.data)
+    }
+
+    const scope = and(eq(jobEvents.jobId, id), kinds.length > 0 ? inArray(jobEvents.kind, kinds) : undefined)
+    const counted = db.select({ n: sql<number>`count(*)` }).from(jobEvents).where(scope).get()
+    const rows = db
+      .select()
+      .from(jobEvents)
+      .where(and(scope, keysetWhere(after ? { value: after.sortValue, id: after.id } : null, jobEvents.seq, jobEvents.id, 'asc')))
+      // `id` only breaks a tie `seq` cannot produce (it is unique per job) —
+      // it is here because `keysetWhere`'s predicate assumes both columns are
+      // in the ORDER BY, and a cursor whose sort disagrees with its predicate
+      // is the exact bug that helper exists to prevent.
+      .orderBy(asc(jobEvents.seq), asc(jobEvents.id))
+      .limit(limit + 1)
+      .all()
+
+    const page = rows.slice(0, limit)
+    const last = page.at(-1)
+    return typedJson(c, JobTraceResponseSchema, {
+      items: page.map(toTraceEvent),
+      nextCursor: rows.length > limit && last ? encodeCursor(last.seq, last.id) : null,
+      total: counted?.n ?? null,
+    })
+  })
+
+  /**
+   * One trace frame, addressed by the SHA-256 of its own bytes (plan 128
+   * §3.5, §4.3).
+   *
+   * `private, immutable`: the URL names the content, so these bytes can never
+   * change under it — but the content is a screenshot of somebody's phone, so
+   * it must never be held by a shared cache.
+   *
+   * `:id` and `:hash` both arrive from the URL and both become path segments.
+   * They are handed to the store UNsanitised on purpose — `frame-store.ts`
+   * validates each against its own pattern BEFORE it builds a path, and a
+   * second, looser copy of that check here is how the two come to disagree. A
+   * refusal surfaces as its `E_BAD_REQUEST` → 400; a hash that is well formed
+   * but absent (never captured, or swept) is a 404.
+   */
+  app.get('/:id/trace/frames/:hash', requirePermission('job.view'), async (c) => {
+    const id = c.req.param('id')
+    if (!service.get(id)) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const bytes = (await deps?.traceStore?.readFrame(id, c.req.param('hash'))) ?? null
+    if (!bytes) return c.json({ error: { code: 'frame_not_found', message: 'no such trace frame' } }, 404)
+    return new Response(bytes, {
+      headers: { 'content-type': 'image/png', 'cache-control': 'private, immutable' },
+    })
+  })
+
+  /**
+   * The UI tree captured beside an action (plan 128 §4.3) — gunzipped and
+   * re-validated on the way out, so what Studio's `InspectorPanel` renders is
+   * the same shape a live dump gives it. Same addressing, same guards and the
+   * same 404 as the frame route above.
+   */
+  app.get('/:id/trace/ui/:hash', requirePermission('job.view'), async (c) => {
+    const id = c.req.param('id')
+    if (!service.get(id)) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const node = (await deps?.traceStore?.readUiTree(id, c.req.param('hash'))) ?? null
+    if (!node) return c.json({ error: { code: 'ui_snapshot_not_found', message: 'no such ui snapshot' } }, 404)
+    return c.json(node, 200, { 'cache-control': 'private, immutable' })
+  })
+
+  /**
+   * Delete one job and its whole history (plan 128 §4.3, §4.5): the job row,
+   * its artifacts and their files, its `job_events`, its `job_nodes`, and its
+   * trace directory — one cascade, `jobs/purge.ts`'s, shared with "clear
+   * history" and with device removal so it cannot drift between them.
+   *
+   * Refused with `job_not_settled` (409) while the job is `queued` or
+   * `running`: cancel it first. Deleting a job whose recorder is still
+   * flushing rows would race that flush and leave `job_events` behind for a
+   * job that no longer exists — the one orphan this storage layout is
+   * designed to make impossible.
+   *
+   * The ownership check is `POST /:id/cancel`'s, not a weaker one. Erasing
+   * another operator's run is strictly more destructive than stopping it, so
+   * it cannot be the verb with the looser gate.
+   */
+  app.delete('/:id', requirePermission('job.run'), (c) => {
+    const id = c.req.param('id')
+    const job = service.get(id)
+    if (!job) return c.json({ error: { code: 'job_not_found', message: 'no such job' } }, 404)
+    const user = c.get('user')
+    if (user) {
+      const device = deps?.getDeviceOwner?.(job.deviceId) ?? null
+      if (!canCancelJob(user, device)) {
+        throw new EnkakuError('auth.forbidden', 'you do not have permission to delete this job')
+      }
+    }
+    if (!isSettled(job.status)) {
+      throw new EnkakuError('job_not_settled', `job ${id} is ${job.status} — cancel it before deleting it`)
+    }
+    const db = deps?.db
+    if (!db) throw new EnkakuError('E_UNSUPPORTED', 'deleting a job is not available on this host')
+    const deleted = deleteJobsWithHistory(db, [id], {
+      dataDir: deps?.dataDir,
+      traceStore: deps?.traceStore,
+      log: deps?.log,
+    })
+    deps?.audit?.record({
+      userId: user?.id ?? null,
+      action: 'job.delete',
+      target: id,
+      meta: { deviceId: job.deviceId, deleted },
+    })
+    return typedJson(c, JobDeleteResponseSchema, { jobId: id, deleted })
   })
 
   /**

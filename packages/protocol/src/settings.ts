@@ -1156,8 +1156,31 @@ export const FarmSettingsSchema = z.object({
         .default(14)
         .describe('Command runs older than this are deleted, with their per-device results.')
         .meta({ title: 'Command history retention (days)' }),
+      /**
+       * The job trace's own history budget (plan 128 §3.7, §4.1).
+       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`/
+       * `commandRunDays` above, and NOT gated by `enabled` for the same
+       * stated reason: `job_events` is the same append-only, per-action shape
+       * `device_events` and `command_runs` already are — one row per device
+       * call plus a screenshot per row — so leaving it unbounded is a
+       * disk-filling bug, not an opt-in convenience.
+       *
+       * A trace's LIFETIME rule is separate and stricter: a trace lives
+       * exactly as long as its job's history, and deleting a job takes its
+       * `job_events` rows and its `traces/<jobId>` directory with it (§3.5).
+       * That is the correctness rule; this is the bound. Nothing deletes
+       * finished jobs on its own today except the device-removal cascade, so
+       * without this second lever a farm accumulates traces forever.
+       */
+      traceDays: z
+        .number()
+        .int()
+        .min(1)
+        .default(30)
+        .describe('Job traces older than this are deleted, with their captured frames and UI snapshots.')
+        .meta({ title: 'Job trace retention (days)' }),
     })
-    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, commandRunDays: 14 })
+    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, commandRunDays: 14, traceDays: 30 })
     .meta({
       title: 'Artifact storage',
       description: 'Screenshots and job logs pile up over time. Turn this on to clear them automatically.',

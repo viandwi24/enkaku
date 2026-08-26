@@ -11,6 +11,7 @@ import {
   JobAssistsResponseSchema,
   JobCancelResponseSchema,
   JobCreateResponseSchema,
+  JobDeleteResponseSchema,
   JobNodesResponseSchema,
   JobResponseSchema,
   resolveRuntime,
@@ -35,6 +36,7 @@ import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
 import { JobFailureDetail } from '@/components/jobs/JobFailureDetail'
 import { JobLogsPanel } from '@/components/jobs/JobLogsPanel'
 import { JobResultSection } from '@/components/jobs/JobResultSection'
+import { TracePanel } from '@/components/jobs/trace/TracePanel'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -800,6 +802,51 @@ function JobDetail() {
                   Cancel job
                 </Button>
               ))}
+
+            {/* Delete job (plan 128 §4.3, §4.5, step 128.8) — the whole
+                cascade: the job row, its artifacts and their files, its
+                trace events and its trace directory. `DELETE /api/jobs/:id`
+                refuses a `queued`/`running` job with `job_not_settled`
+                (deleting one whose recorder is still flushing would race
+                that flush), so the button is rendered DISABLED with the
+                reason rather than hidden — a control that vanishes teaches
+                nobody why. Same `AlertDialog` confirm shape as "Cancel job"
+                above, deliberately not a new pattern. */}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!finished || isPending('delete')}
+                  title={finished ? undefined : 'Cancel this job before deleting it'}
+                >
+                  {isPending('delete') ? 'Deleting…' : 'Delete job'}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent size="sm">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete job {job.jobId.slice(0, 8)} ({scriptName})?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This erases the run and everything recorded with it — its result, its log, its artifacts and their
+                    files, and its whole timeline including every captured screenshot. There is no undo.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Keep it</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() =>
+                      void run('delete', () => api(`/api/jobs/${jobId}`, JobDeleteResponseSchema, { method: 'DELETE' }), {
+                        success: 'Job deleted',
+                        failure: 'Could not delete the job',
+                        onSuccess: () => router.push('/jobs'),
+                      })
+                    }
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </>
         }
       />
@@ -808,6 +855,11 @@ function JobDetail() {
         active={tab}
         tabs={[
           { key: 'summary', label: 'Summary' },
+          // Plan 128 §4.6, step 128.8 — beside Logs rather than after
+          // Artifacts: the two answer the same question ("what happened"),
+          // and the Timeline is the one that also answers "and what was on
+          // the screen while it did".
+          { key: 'trace', label: 'Timeline' },
           { key: 'logs', label: 'Logs', count: logs.length || null },
           { key: 'artifacts', label: 'Artifacts', count: produced.length || null },
           { key: 'script', label: 'Script' },
@@ -1066,6 +1118,15 @@ function JobDetail() {
               </div>
             )}
           </aside>
+        </div>
+      )}
+
+      {/* The Timeline (plan 128 §4.6, step 128.8) — one branch; the whole
+          composition (fetch-then-subscribe, the lanes, the scrubber, the
+          frame and the event detail) lives in `components/jobs/trace/`. */}
+      {tab === 'trace' && (
+        <div className="px-5 py-4">
+          <TracePanel jobId={jobId} jobStatus={job.status} />
         </div>
       )}
 

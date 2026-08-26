@@ -388,9 +388,13 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
 
     test("host's onJobFinished calls reconcileMirrorForDevice — without this, an internal:install-skipped mirror member never rejoins its group when the install ends (F27)", () => {
-      const onFinishedStart = daemonSource.indexOf('onJobFinished: (deviceId, jobId, status, durationMs) => {')
-      expect(onFinishedStart).toBeGreaterThan(-1)
-      const onFinishedBlock = daemonSource.slice(onFinishedStart, onFinishedStart + 1600)
+      // `extractCall`, not a fixed character window: this hook's body is the
+      // one every plan adds a settle-time line to, and the 1600-char window
+      // that used to be here broke the moment plan 128 inserted
+      // `traceRecorder?.flush(jobId)` (with its comment) two lines above the
+      // call being asserted — the same "widen the guess again" failure this
+      // file's own `extractCall` doc records.
+      const onFinishedBlock = extractCall(daemonSource, 'onJobFinished: (deviceId, jobId, status, durationMs) => {')
       expect(onFinishedBlock).toContain('reconcileMirrorForDevice?.(deviceId)')
     })
   })
@@ -473,6 +477,74 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       expect(trackerAt).toBeGreaterThan(-1)
       expect(runnerAt).toBeGreaterThan(-1)
       expect(trackerAt).toBeLessThan(runnerAt)
+    })
+  })
+
+  /**
+   * Plan 128 (M93 — the job trace timeline) §3.1, §3.5, §3.6, §10, step
+   * 128.5. Exactly this file's defect class again, with one twist that makes
+   * it worse than usual: `JobRunnerDeps` declares `onTraceEvent?` and
+   * `traceStore?` as two SEPARATE optional deps, and wiring only the first
+   * produces a build that looks entirely healthy — every job gets a complete
+   * event lane with durations, outcomes and phases — while every frame lane
+   * on the farm is empty, because `traceStore` is the only route a
+   * screenshot's bytes have out of `@enkaku/session` (`captureForTrace`
+   * returns `{ frameHash: null, uiHash: null }` the instant it is absent, and
+   * the tee's capture policy then resolves to `'none'`). Nothing fails; the
+   * feature is just half there, on every run, forever. Step 128.4's worker
+   * flagged it before either side shipped, which is why both halves are
+   * asserted here rather than one.
+   */
+  describe('job trace (plan 128 §3.1, §3.5, §3.6, step 128.5): the recorder, the frame store, and BOTH runner deps', () => {
+    test('createJobRunner(...) is passed BOTH onTraceEvent and traceStore — onTraceEvent alone leaves the frame lane empty on every job', () => {
+      const call = extractCall(daemonSource, 'createJobRunner({')
+      expect(call).toContain('onTraceEvent:')
+      expect(call).toContain('traceRecorder?.record(event)')
+      // The other half. This is the assertion the plan exists for.
+      expect(call).toContain('traceStore: traceFrameStore')
+    })
+
+    test('the trace recorder and frame store are actually constructed, from the daemon\'s own db/dataDir', () => {
+      expect(daemonSource).toContain("import { createTraceRecorder, type TraceRecorder } from './jobs/trace/recorder'")
+      expect(daemonSource).toContain("import { createTraceFrameStore } from './jobs/trace/frame-store'")
+      const recorderCall = extractCall(daemonSource, 'traceRecorder = createTraceRecorder({')
+      expect(recorderCall).toContain('db,')
+      expect(daemonSource).toContain('const traceFrameStore = createTraceFrameStore({ dataDir: cfg.dataDir })')
+    })
+
+    test("the recorder's publish fans the STORED event out as job.trace — the tee's own event carries no id/seq", () => {
+      const recorderCall = extractCall(daemonSource, 'traceRecorder = createTraceRecorder({')
+      // `record()` calls `publish` synchronously with the event it just
+      // assigned `id`/`seq` to, before the row is written (§3.6). The
+      // `onTraceEvent` hook therefore broadcasts nothing itself — a second
+      // broadcast there would send every event twice, and the object it was
+      // handed is precisely the unnumbered one.
+      expect(recorderCall).toContain("hub.broadcast({ type: 'job.trace', payload: { jobId, event } })")
+      const runnerCall = extractCall(daemonSource, 'createJobRunner({')
+      const hookStart = runnerCall.indexOf('onTraceEvent:')
+      expect(hookStart).toBeGreaterThan(-1)
+      expect(runnerCall.slice(hookStart, hookStart + 200)).not.toContain('hub.broadcast')
+    })
+
+    test('a settled job flushes its trace where the log buffer is released — the timeline must be complete the instant the status changes', () => {
+      const onFinished = extractCall(daemonSource, 'onJobFinished: (deviceId, jobId, status, durationMs) => {')
+      expect(onFinished).toContain('jobLogBuffer.release(jobId)')
+      expect(onFinished).toContain('traceRecorder?.flush(jobId)')
+    })
+
+    test('the recorder is stopped on shutdown, beside the device-event recorder', () => {
+      expect(daemonSource).toContain('await traceRecorder?.stop()')
+      const eventStopAt = daemonSource.indexOf('await recorder?.stop()')
+      const traceStopAt = daemonSource.indexOf('await traceRecorder?.stop()')
+      expect(eventStopAt).toBeGreaterThan(-1)
+      expect(traceStopAt).toBeGreaterThan(eventStopAt)
+    })
+
+    test('createJobRoutes(...) reads back through the SAME frame store the runner writes to', () => {
+      const call = extractCall(daemonSource, 'jobRoutes: createJobRoutes(jobService, {')
+      expect(call).toContain('traceStore: traceFrameStore')
+      expect(call).toContain('dataDir: cfg.dataDir')
+      expect(call).toContain('db,')
     })
   })
 

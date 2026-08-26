@@ -158,6 +158,12 @@ import { JobProgressEventMessage } from './messages/job'
 // `ServerMessageSchema` needs to reference it.
 import { PluginLogMessage } from './messages/plugin'
 
+// Plan 128 (M93 — the job trace timeline), step 128.1, §4.2. `job.trace` — the
+// live tail of one job's event stream. Imported here, separately from the
+// re-export block further down, for the same reason `JobProgressEventMessage`
+// above is: `ServerMessageSchema` needs to reference it.
+import { JobTraceMessage } from './messages/job'
+
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
 export {
@@ -1093,6 +1099,11 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // subscribe to its OWN log. `refusedPluginEventTypesMessage` below is what
   // stops that, and its comment is where the reasoning lives.
   PluginLogMessage,
+  // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2 — the trace's
+  // live tail, the sibling of `JobLogMessage` above. Appended last, for the
+  // same "never interleave, this file is contested" reason noted on every
+  // entry above it.
+  JobTraceMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
 
@@ -1689,3 +1700,10 @@ export {
   type PluginResetItem,
   type PluginResetReport,
 } from './plugin-service'
+
+// Plan 128 (M93 — the job trace timeline), step 128.1, §3.3, §4.2.
+// `JobTraceEventSchema`/`JobTraceMessage` — one `job_events` row and its live
+// tail. Appended as its own statement for the same append-only reason as
+// above; `JobTraceMessage` is also registered in `ServerMessageSchema` (last
+// entry in that union, same convention).
+export { JobTraceEventSchema, JobTraceMessage, type JobTraceEvent } from './messages/job'

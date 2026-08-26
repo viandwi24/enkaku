@@ -35,7 +35,30 @@ export {
   type KvRunnerDeps,
   type JobsRunnerDeps,
   type FarmRunnerDeps,
+  type TraceStoreDeps,
 } from './runner/job-runner'
+// Plan 128 §3.1, step 128.3 — the job-trace tee. `TraceEventInput` is the
+// shape the host's recorder receives (`id`/`seq` are the recorder's to
+// assign); the rest is exported for the host that builds a frame store.
+export {
+  createTraceTee,
+  createNoopTraceTee,
+  resolveFramePolicy,
+  redactArgs,
+  ARG_REDACTION,
+  MAX_ARG_BYTES,
+  type TraceTee,
+  type TraceTeeDeps,
+  type TraceToken,
+  type TraceOutcome,
+  type TraceEventInput,
+  type TraceCaptureRequest,
+  type TraceCaptureResult,
+  type TraceCaptureMode,
+  type FramePolicy,
+  type ArgRedaction,
+  type TracePhase,
+} from './runner/trace'
 export { resetDevice, parseForegroundPackages, type ResetPolicy, type ResetPlan, type ResetOutcome } from './reset'
 export { createJobLogger, type JobLogger, type JobLogEntry } from './runner/job-logger'
 export {

@@ -597,3 +597,81 @@ describe('JobDetailPage — the node timeline (plan 99 §3.5, §3.7, §4.9, §4.
     await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/jobs/detail?id=job-2'))
   })
 })
+
+/**
+ * Plan 128 §4.3, §4.6, step 128.8 — the Timeline tab and the Delete job
+ * action. The tab's own behaviour is covered in
+ * `components/jobs/trace/TracePanel.test.tsx`; what is asserted here is the
+ * WIRING: the tab exists, the render branch mounts the panel, and the
+ * destructive action is gated on the job being settled the same way
+ * `DELETE /api/jobs/:id` itself is (`job_not_settled`).
+ */
+describe('JobDetailPage — the Timeline tab and Delete job (plan 128 §5 step 128.8)', () => {
+  const settled = { ...job, status: 'success', finishedAt: 20 }
+
+  test('the tab strip carries a Timeline entry', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job } }))
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Timeline' })).toBeTruthy())
+  })
+
+  test('?tab=trace mounts the timeline and fetches the trace', async () => {
+    setSearchParams({ id: 'job-1', tab: 'trace' })
+    renderWithApi(<JobDetailPage />, {
+      ...baseResponses({ body: { job: settled } }),
+      '/api/jobs/job-1/trace*': {
+        body: {
+          items: [
+            {
+              id: 'p1',
+              jobId: 'job-1',
+              seq: 1,
+              atMs: 1_000,
+              attempt: 1,
+              phase: 'run',
+              nodeId: null,
+              kind: 'phase',
+              name: 'start',
+              durationMs: null,
+              ok: null,
+              errorCode: null,
+              meta: { inspectorEngineId: 'ui-server', framePolicy: 'per-action' },
+              frameHash: null,
+              frameStatus: null,
+              uiHash: null,
+            },
+          ],
+          nextCursor: null,
+          total: 1,
+        },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('Frames: per action (ui-server)')).toBeTruthy())
+  })
+
+  test('Delete job is disabled while the job is still running', async () => {
+    setSearchParams({ id: 'job-1' })
+    renderWithApi(<JobDetailPage />, baseResponses({ body: { job } }))
+    const button = (await waitFor(() => screen.getByRole('button', { name: 'Delete job' }))) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('title')).toBe('Cancel this job before deleting it')
+  })
+
+  test('a settled job can be deleted — the cascade is named, and the page leaves for /jobs', async () => {
+    setSearchParams({ id: 'job-1' })
+    const { apiMock } = renderWithApi(<JobDetailPage />, {
+      ...baseResponses({ body: { job: settled } }),
+      '/api/jobs/job-1': (req) =>
+        req.method === 'DELETE'
+          ? { body: { jobId: 'job-1', deleted: { jobs: 1, events: 12, artifacts: 2, nodes: 0, traceDirs: 1 } } }
+          : { body: { job: settled } },
+    })
+    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: 'Delete job' })))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('Delete job job-1')
+    expect(dialog.textContent).toContain('every captured screenshot')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(apiMock.calls.some((c) => c.method === 'DELETE' && c.path === '/api/jobs/job-1')).toBe(true))
+    await waitFor(() => expect(mockRouter.push).toHaveBeenCalledWith('/jobs'))
+  })
+})

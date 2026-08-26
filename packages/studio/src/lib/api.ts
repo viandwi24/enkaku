@@ -61,6 +61,49 @@ export async function fetchAllPages(path: string, extraQuery?: Record<string, st
   return all
 }
 
+/**
+ * `fetchAllPages`, but honest when it did NOT fetch all pages (plan 128 §10
+ * item 9). The loop below stops after 25 pages and returns what it has, so a
+ * list longer than 25 × 200 = 5,000 rows comes back as a silent PREFIX —
+ * the exact failure this function's own doc comment above rejects for a bad
+ * row ("a caller silently missing an item it asked for is worse than a
+ * visible failure"), applied to rows it never asked for at all.
+ *
+ * That was harmless while every caller was a device/artifact list of tens or
+ * hundreds. It is not harmless for a job trace: plan 128 records one event
+ * per device call with no cap by design, so a long run genuinely exceeds
+ * 5,000 and the timeline would have shown its first stretch and stopped,
+ * looking complete. `truncated` is what lets the caller say so.
+ *
+ * `fetchAllPages` keeps its exact signature and behaviour — every existing
+ * caller is untouched.
+ */
+export async function fetchPagesDetailed<S extends z.ZodType>(
+  path: string,
+  extraQuery: Record<string, string> | undefined,
+  parser: S,
+  maxPages = 25,
+): Promise<{ items: z.output<S>[]; truncated: boolean }> {
+  const items: z.output<S>[] = []
+  let cursor: string | null = null
+  for (let page = 0; page < maxPages; page++) {
+    const qs = new URLSearchParams({ limit: '200', ...extraQuery, ...(cursor ? { cursor } : {}) })
+    const res = await fetch(`${coreBase()}${path}?${qs.toString()}`)
+    if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
+    const body = (await res.json()) as ItemsPage<unknown>
+    for (const item of body.items) {
+      const parsed = parser.safeParse(item)
+      if (!parsed.success) throw new BadResponseError(path, z.prettifyError(parsed.error))
+      items.push(parsed.data)
+    }
+    if (!body.nextCursor) return { items, truncated: false }
+    cursor = body.nextCursor
+  }
+  // Ran out of pages with a cursor still outstanding: there is more, and the
+  // caller has to be able to say so rather than render a prefix as a whole.
+  return { items, truncated: true }
+}
+
 export async function fetchDevices(): Promise<DeviceInfo[]> {
   return fetchAllPages<DeviceInfo>('/api/devices')
 }

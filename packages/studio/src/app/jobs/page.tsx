@@ -2,15 +2,51 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { toast } from 'sonner'
 import { ListChecks, Search } from 'lucide-react'
-import type { DeviceInfo, JobInfo, JobStatus } from '@enkaku/protocol'
+import { JobHistoryClearResponseSchema, type DeviceInfo, type JobInfo, type JobStatus } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsList } from '@/components/JobsList'
 import { type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, duration, matchesDeviceQuery, relativeTime } from '@enkaku/ui'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+  Button,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  api,
+  duration,
+  matchesDeviceQuery,
+  relativeTime,
+  useAction,
+} from '@enkaku/ui'
 import { fetchDevices } from '@/lib/api'
+import { isAdmin, useAuth } from '@/lib/auth'
 import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
+
+/**
+ * `POST /api/jobs/history/clear` is gated on `job.history.purge` (plan 128
+ * §4.3, §9 Q4) — deliberately admin-only and deliberately OUTSIDE the
+ * `OPERATOR` set, because it selects by FILTER rather than by a device the
+ * caller owns: on `job.run` any operator could have erased every run on
+ * every device in the farm, including the trace frames that are the only
+ * record of what those runs did. Rendered disabled with this reason rather
+ * than hidden, the same shape `/tools` uses for its own admin-only controls;
+ * the server re-checks the real permission regardless.
+ */
+const PURGE_ADMIN_ONLY = 'Only an admin can clear job history'
 
 type Job = JobInfo
 
@@ -21,6 +57,14 @@ export default function JobsPage() {
   const [query, setQuery] = useState('')
   // A running job's duration ticks without a refresh (Plan 17 acceptance #1).
   const now = useNow()
+  const { run, isPending } = useAction()
+  const { user } = useAuth()
+  const canPurge = isAdmin(user)
+  // `queued`/`running` jobs are never cleared — the route reports them as
+  // `skipped` rather than deleting them (plan 128 §4.3). Offering the button
+  // while the list is filtered to exactly those two would promise a purge
+  // that deletes nothing, so it says so instead.
+  const unsettledFilter = status === 'queued' || status === 'running'
 
   useEffect(() => {
     void fetchDevices()
@@ -55,7 +99,81 @@ export default function JobsPage() {
 
   return (
     <>
-      <PageHeader title="Jobs" description="Script execution queue and history" />
+      <PageHeader
+        title="Jobs"
+        description="Script execution queue and history"
+        actions={
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canPurge || unsettledFilter || isPending('clear-history')}
+                title={
+                  !canPurge
+                    ? PURGE_ADMIN_ONLY
+                    : unsettledFilter
+                      ? 'Queued and running jobs are never cleared — cancel them first'
+                      : undefined
+                }
+              >
+                {isPending('clear-history') ? 'Clearing…' : 'Clear history'}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent size="sm">
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  {status === 'all' ? 'Clear every settled job from history?' : `Clear every ${status} job from history?`}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  This erases the runs and everything recorded with them — results, logs, artifacts and their files, and
+                  every job timeline including its captured screenshots. Queued and running jobs are left alone. There is
+                  no undo.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              {/* The filter this acts on is stated, never implied — the
+                  search box narrows what is on SCREEN and the server has no
+                  equivalent filter, so a purge scoped to "what you can see"
+                  would be a lie (docs/design.md: "a filter must not lie
+                  about its scope"). */}
+              <p className="text-[12px] text-fg-muted">
+                {status === 'all'
+                  ? 'Every job on every device, whatever the search box currently shows.'
+                  : `Every ${status} job on every device, whatever the search box currently shows.`}
+              </p>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep them</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() =>
+                    void run(
+                      'clear-history',
+                      () =>
+                        api('/api/jobs/history/clear', JobHistoryClearResponseSchema, {
+                          method: 'POST',
+                          json: status === 'all' ? {} : { status: [status] },
+                        }),
+                      {
+                        failure: 'Could not clear the job history',
+                        onSuccess: (r) => {
+                          toast.success(
+                            `Cleared ${r.deleted.jobs} job${r.deleted.jobs === 1 ? '' : 's'}`,
+                            {
+                              description: `${r.deleted.artifacts} artifact${r.deleted.artifacts === 1 ? '' : 's'} and ${r.deleted.events} trace event${r.deleted.events === 1 ? '' : 's'} went with them${r.skipped > 0 ? ` · ${r.skipped} left alone (queued or running)` : ''}.`,
+                            },
+                          )
+                          tableRef.current?.reload()
+                        },
+                      },
+                    )
+                  }
+                >
+                  Clear history
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        }
+      />
 
       <div className="space-y-4 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">

@@ -1082,3 +1082,93 @@ hardware** — no physical device was reachable while this was built. The
 code fails closed regardless of how they resolve (`unavailable`/`stale`,
 never a false `applied`). See the plan's own consolidated hardware table
 (§5) for the exact commands that settle them.
+
+## The job trace: a recorder, a per-job frame store, and one cascade (plan 128, M93)
+
+The host half of the tee described in `packages/session/README.md`. Three
+pieces, all under `src/jobs/`.
+
+**`trace/recorder.ts` — buffer and flush, never await the database.** Modelled
+on `events/recorder.ts`, which already solved this for `device_events`, with
+the same defaults and the same two rules: `record()` buffers in memory and
+**never awaits the DB** (the tee that calls it sits one line away from a
+script's device call, and the owner's constraint on the whole feature was
+*"async aja intinya jangan sampai mengganggu script nya jalan"*), and
+`publish` — the `job.trace` WS broadcast — fires **synchronously, before the
+row is written**, because the live tail must feel instant and losing an
+unflushed batch to a hard crash is an accepted loss for this log class. Rows
+go out in one transaction per timer tick or when the buffer fills, whichever
+comes first. `flush(jobId)` is forced where `jobLogBuffer.release(jobId)`
+already runs on job settle, so a Timeline opened the millisecond a job turns
+`failed` is not missing its last 250 ms; `stop()` flushes and stops on
+shutdown.
+
+This module is the **single `seq` authority**. The tee emits events without
+`id` or `seq`; the recorder assigns both, seeding a job's counter lazily from
+the highest `seq` already on disk for that id — so an infra-retried job's
+second attempt continues the first's sequence instead of restarting at 1 and
+colliding on `uniqueIndex(job_id, seq)`, and a rebound job reads as one
+continuous timeline rather than two overlapping ones. `flush(jobId)` also
+releases that counter, which is safe precisely because the next event re-seeds
+from the rows.
+
+`seq` is **arrival order, not event order** — an action is held until its
+screenshot settles while a log line emits immediately — so `GET
+/api/jobs/:id/trace` pages *and orders* by `seq` (unique, monotonic, stable
+across a concurrent insert: exactly what a keyset cursor needs) while `atMs`,
+stamped at `begin()`, is the true axis and every client sorts by `(atMs,
+seq)` to render. Ordering the query by `atMs` would break paging to fix
+rendering, in the one place paging correctness is the whole job.
+
+**`trace/frame-store.ts` — one directory per job, content-addressed.**
+`<dataDir>/traces/<jobId>/<sha256>.png` for frames, `<sha256>.json.gz` for UI
+trees. `putFrame`/`putUiTree` hash the bytes, write only if the file is not
+already there, and return the hash; two actions on an unchanged screen produce
+one file and two events both naming it. `sha256Hex` is imported from
+`agent/blob/store.ts` and reused as a pure function — the `agent_blobs`
+**table** is never touched, because `agent/blob/gc.ts`'s `referencedBlobIds()`
+scans `agent_messages` and nothing else, so a trace frame parked there would
+be an orphan on write and swept the moment it cleared
+`retention.blobOrphanGraceHours`. That GC is right; that table is the wrong
+home. The cost accepted in exchange is no cross-job dedupe.
+
+Both `readFrame` and `readUiTree` validate the job id **and** the hash against
+their own patterns before a path is built at all — both values arrive from a
+URL (`GET /api/jobs/:id/trace/frames/:hash`) and both become path segments, so
+the guard lives once, at the layer that touches the filesystem, and the routes
+hand over the raw segments rather than keeping a second, looser copy that can
+drift. `readUiTree` raises `E_TRACE_CORRUPT` for a truncated or unparseable
+snapshot rather than returning `null`: `null` means "gone", and a corrupt
+snapshot reported as gone would send a debugger hunting a retention sweep that
+never ran.
+
+**`purge.ts` — the cascade.** `deleteJobsWithHistory(db, jobIds, deps)` is the
+one implementation of "delete a job and everything that only exists because of
+it", in this order: `job_events` rows → `traces/<jobId>/` → every artifact
+**file**, then the `artifacts` rows → `job_nodes` → the `jobs` rows. Files go
+before the rows that name them, deliberately: the reverse order can lose the
+path on a rollback and orphan the bytes forever, while this order can at worst
+leave a row pointing at a file already gone, which the artifact routes already
+answer as a 404. All three callers — `DELETE /api/jobs/:id`, `POST
+/api/jobs/history/clear`, and `device/lifecycle.ts`'s `deleteHistory` block —
+go through it rather than each deleting what it happens to remember, which is
+exactly how device removal came to delete artifact rows and leave their files
+behind. It returns counts (`jobs`/`events`/`artifacts`/`nodes`/`traceDirs`)
+rather than `ok: true`, so an operator can notice when one of the five quietly
+stops happening.
+
+`retention.traceDays` (default 30, **not** gated by `retention.enabled`)
+sweeps in `maintenance/retention.ts`'s `sweepTraces()`, grouped by `job_id`
+and aged on that job's `MAX(at_ms)` — rows and directory go together or
+neither, because deleting rows by row age would strand a straddling job's
+surviving rows in front of a directory the same sweep just removed.
+
+`daemon.ts` wires all of it: it constructs the recorder (publishing
+`job.trace` over the hub) and the frame store, passes **both**
+`onTraceEvent` and `traceStore` into the local runner deps — passing one
+without the other is exactly the shape of a bug where events flow correctly
+and every frame lane is silently empty, so `daemon-wiring.test.ts` asserts
+both — and records `phase`/`log`/`artifact` events at the remote job bridge's
+hooks, which previously only broadcast and wrote no rows. A remote job's
+**action** lane is still empty (the tee lives in the local runner) and the
+Timeline says so.

@@ -92,6 +92,14 @@ export type AuditAction =
   | 'script.param_set.delete'
   | 'job.run'
   | 'job.cancel'
+  // Plan 128 §4.3, §4.5 — the two DESTRUCTIVE job verbs. Cancelling a job
+  // stops it; these erase the record that it ever ran, together with its
+  // artifacts, its trace and its frames, which is the one job operation
+  // nothing else can undo. `meta` carries the cascade's own counts (and, for
+  // the bulk form, the filter it ran with), so "who deleted this history, and
+  // how much of it" is answerable afterwards rather than inferred from a gap.
+  | 'job.delete'
+  | 'job.history.clear'
   | 'cluster.create'
   | 'cluster.update'
   | 'cluster.delete'

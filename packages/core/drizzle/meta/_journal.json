@@ -435,6 +435,13 @@
       "when": 1787672793531,
       "tag": "0061_late_franklin_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "6",
+      "when": 1787685436215,
+      "tag": "0062_closed_eddie_brock",
+      "breakpoints": true
     }
   ]
 }

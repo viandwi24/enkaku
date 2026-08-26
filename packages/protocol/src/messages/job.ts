@@ -497,3 +497,78 @@ export const JobProgressEventMessage = z.object({
   type: z.literal('job.progress'),
   payload: z.object({ jobId: z.string(), deviceId: z.string(), value: z.unknown() }),
 })
+
+// ---- Plan 128 (M93 — the job trace timeline), step 128.1, §3.3, §4.2 ----
+//
+// Appended at the end of this file rather than interleaved beside
+// `JobLogMessage`, for the same "this file is contested, never interleave"
+// reason `JobProgressEventMessage` above already carries.
+
+/**
+ * One row of `job_events` (plan 128 §4.1, §4.2) — one thing that happened
+ * during a job, on a single millisecond-resolution time axis: a phase
+ * boundary, a device action the script took, a log line, an artifact, a
+ * progress push, a human assist, or an error.
+ *
+ * **`atMs` is unix MILLISECONDS, not seconds** — the deliberate carve-out
+ * from `00-overview.md` §4.2's seconds convention, stated in plan 128 §3.3
+ * and repeated on the DB column itself. Two taps 180 ms apart are the entire
+ * point of a timeline; seconds cannot represent the thing being recorded.
+ * Do not "fix" this to match the neighbouring tables.
+ *
+ * `seq` — not the clock — is the sort key and the keyset cursor: it is a
+ * per-job monotonic integer the recorder assigns, so two events landing in
+ * the same millisecond still order deterministically and a keyset page stays
+ * stable across a concurrent insert.
+ *
+ * `frameStatus` is never null when the capture policy WANTED a frame (§3.4):
+ * a capture that was skipped by policy, skipped because one was already in
+ * flight, or that failed outright says so on its own event. A timeline that
+ * quietly omitted a frame would read as "nothing happened here", which is
+ * the one thing a debugger must not be told.
+ */
+export const JobTraceEventSchema = z.object({
+  id: z.string(),
+  jobId: z.string(),
+  /** Per-job monotonic, assigned by the recorder. The sort key and the keyset cursor — never the clock. */
+  seq: z.number().int(),
+  /** Unix MILLISECONDS. See this schema's own doc — deliberately not seconds. */
+  atMs: z.number().int(),
+  /** 1-based attempt this event belongs to; a rebound job has more than one. */
+  attempt: z.number().int(),
+  /** Null for an event outside any script phase (the pre-script `acquire` window, for instance). */
+  phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable(),
+  /** Plan 99's workflow node axis, mirroring `ArtifactInfo.nodeId`. Null for every non-workflow job. */
+  nodeId: z.string().nullable(),
+  kind: z.enum(['phase', 'action', 'log', 'artifact', 'progress', 'assist', 'error']),
+  /** For `action`: the `DeviceCall` method. For `log`: the level. For `phase`: 'start' | 'end'. */
+  name: z.string(),
+  /** How long the action took. Null for an instantaneous event. */
+  durationMs: z.number().int().nullable(),
+  /** Whether the action succeeded. Null when the question does not apply (a log line, a phase boundary). */
+  ok: z.boolean().nullable(),
+  errorCode: z.string().nullable(),
+  /** Kind-specific detail; always an object or null. `meta.args` is redacted per plan 128 §4.4. */
+  meta: z.record(z.string(), z.unknown()).nullable(),
+  /** SHA-256 hex of the frame in `traces/<jobId>/`, or null. */
+  frameHash: z.string().nullable(),
+  /** Never null when the policy wanted a frame — see this schema's own doc. */
+  frameStatus: z.enum(['ok', 'skipped-policy', 'skipped-busy', 'failed']).nullable(),
+  /** SHA-256 hex of the gzipped UI tree snapshot, or null. */
+  uiHash: z.string().nullable(),
+})
+export type JobTraceEvent = z.infer<typeof JobTraceEventSchema>
+
+/**
+ * The trace's live tail (plan 128 §4.2), mirroring `JobLogMessage`'s shape
+ * and placement — one event per message, pushed as the recorder publishes it
+ * and BEFORE the row is written (§3.6).
+ *
+ * The `/ws` contract is unchanged: there is still no snapshot replay, so the
+ * Timeline tab fetches `GET /api/jobs/:id/trace` and then subscribes, exactly
+ * as the Logs tab already does with `/logs` and `job.log`.
+ */
+export const JobTraceMessage = z.object({
+  type: z.literal('job.trace'),
+  payload: z.object({ jobId: z.string(), event: JobTraceEventSchema }),
+})

@@ -1,6 +1,14 @@
 import { join } from 'node:path'
 import { UiautomatorDumpInspector } from '@enkaku/drivers'
-import { defaultFarmSettings, FindOutcomeSchema, resolveRuntime, RESULT_LIMITS, type JobSettings, type ResultOutcome, type RuntimeEnvelope } from '@enkaku/protocol'
+import {
+  defaultFarmSettings,
+  FindOutcomeSchema,
+  resolveRuntime,
+  RESULT_LIMITS,
+  type JobSettings,
+  type ResultOutcome,
+  type RuntimeEnvelope,
+} from '@enkaku/protocol'
 import type { Subprocess } from 'bun'
 import { backoffDelayMs } from './backoff'
 import { createDeviceExecutor, type TimingSettings } from '../device-executor'
@@ -25,6 +33,14 @@ import {
 } from './ipc'
 import { createJobLogger, type JobLogEntry } from './job-logger'
 import { resolveIsolation, type IsolationProvider } from './isolation'
+import {
+  createNoopTraceTee,
+  createTraceTee,
+  type TraceCaptureRequest,
+  type TraceCaptureResult,
+  type TraceEventInput,
+  type TraceTee,
+} from './trace'
 
 /**
  * Plan 36 §3.2, §4.1 — kept local because `@enkaku/session` cannot depend on
@@ -315,6 +331,55 @@ export interface JobRunnerDeps {
    * `ctx.progress()`, which is exactly today's (pre-97.7) behaviour.
    */
   onProgress?: (jobId: string, value: unknown) => void
+  /**
+   * The job trace (plan 128 §3.1, §4.2, step 128.4) — one event per device
+   * action, log line, phase boundary, artifact, progress push and human
+   * assist, on one millisecond-resolution axis.
+   *
+   * Optional, exactly like `transfer`/`timing`/`kv`/`jobs` above: **a host
+   * that does not wire it loses tracing and nothing else.** The tee it feeds
+   * is a no-op object in that case (`createNoopTraceTee`), so the call sites
+   * below stay unconditional and cost nothing.
+   *
+   * Contractually NON-BLOCKING — the host's recorder buffers in memory and
+   * flushes on its own timer (§3.6, mirroring `events/recorder.ts`'s
+   * "`record()` never awaits the database"). This is called on the runner's
+   * own turn, between a device call settling and the child being told about
+   * it, and a host that blocks here would be slowing the very script the tee
+   * exists to leave alone (§0.2).
+   *
+   * The event arrives WITHOUT `id`/`seq`: the host's recorder is the single
+   * `seq` authority and seeds its per-job counter from the highest `seq`
+   * already stored (`packages/core/src/jobs/trace/recorder.ts`). A tee that
+   * numbered its own events would restart at 1 on a rebound job and collide
+   * with attempt 1 on `uniqueIndex(jobId, seq)`. Order is the tee's contract;
+   * numbering is the recorder's.
+   */
+  onTraceEvent?: (jobId: string, event: TraceEventInput) => void
+  /**
+   * Where trace frames and UI-tree snapshots are stored (plan 128 §3.5, step
+   * 128.5) — `<dataDir>/traces/<jobId>/<sha256>.png` and `.json.gz`, one
+   * directory per job, one lifetime. Kept out of this package for the same
+   * reason `kv`/`jobs`/`transfer` are: the store itself lives in
+   * `@enkaku/core`, which depends on this package and never the reverse.
+   *
+   * Undefined means the frame lane is empty for every job on this host — the
+   * capture policy resolves to `'none'` — while the engine id is still
+   * reported honestly on every `phase` event, so the timeline can say "no
+   * frames" rather than "no inspector".
+   */
+  traceStore?: TraceStoreDeps
+}
+
+/**
+ * The trace frame/UI-tree sink (plan 128 §3.5). Both return the SHA-256 hex
+ * the event's `frameHash`/`uiHash` will carry; both are content-addressed, so
+ * two actions on an unchanged screen write one file and produce two events
+ * naming one hash (criterion 6).
+ */
+export interface TraceStoreDeps {
+  putFrame(jobId: string, bytes: Uint8Array): Promise<string>
+  putUiTree(jobId: string, tree: unknown): Promise<string>
 }
 
 /**
@@ -467,8 +532,15 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
      * `ResolvedRuntime.maxRssBytes`'s own shape rather than inventing a second one.
      */
     memory?: { maxRssBytes: number | null; enforce: 'kill' | 'warn' | 'off'; sampleIntervalMs: number }
+    /**
+     * Plan 128 §3.1, step 128.4 — the job trace tee. Built once per JOB by
+     * `execute()` (never per attempt: `seq` is per job, see `trace.ts`), and
+     * a no-op object when the host wired no `onTraceEvent`, so every call
+     * site below is unconditional.
+     */
+    tee: TraceTee
   }): Promise<AttemptOutcome> {
-    const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts } = opts
+    const { job, attempt, bundlePath, session, timeoutMs, mode, logger, artifacts, tee } = opts
     // Plan 98 §4.7 — "a limit is in effect" (tighter rss cadence, tighter
     // silence watchdog) is decided purely by whether a CEILING NUMBER
     // resolved, never by `enforce`: even `enforce: 'off'` benefits from a
@@ -571,6 +643,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const finish = (outcome: AttemptOutcome) => {
         if (settled) return
         settled = true
+        // Plan 128 §4.1 — close whatever phase this attempt was in, so the
+        // phase lane has an end for every start rather than one open band
+        // running to the right edge of the timeline.
+        tee.closePhase()
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
         opts.assistNotifier.current = null
@@ -696,7 +772,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // anything else that can happen to this attempt, and firing it after
       // `finish()` already nulled the ref is exactly the harmless no-op
       // `opts.assistNotifier.current?.(e)` at the call site expects.
-      opts.assistNotifier.current = (e) => send({ t: 'assist', at: e.at, actor: e.actor })
+      opts.assistNotifier.current = (e) => {
+        // Plan 128 §0.1 — a human touching the device mid-run is delivered to
+        // the script and, until now, sat on no shared time axis at all.
+        tee.assist(e)
+        send({ t: 'assist', at: e.at, actor: e.actor })
+      }
 
       const sendInit = () => {
         if (settled) return
@@ -766,6 +847,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           ...(msg.reset?.clearData !== undefined ? { clearData: msg.reset.clearData } : {}),
         }
         logger.append('info', 'runner', `reset: policy=${plan.policy}`)
+        tee.phase('reset')
         deps.onPhase(job.id, attempt, 'reset')
         // The child is idle while this runs — deliberately, it is waiting
         // for `init` — so the "no message in 30s = hung" watchdog is paused
@@ -881,6 +963,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           void afterReady(msg)
         } else if (msg.t === 'phase') {
           logger.append('info', 'runner', `phase ${msg.phase} (attempt ${attempt})`)
+          // Plan 128 §3.4 — every `phase` start carries `{ inspectorEngineId,
+          // framePolicy }` resolved AT THAT MOMENT. This is where the Timeline
+          // tab's policy line comes from, and why it is per phase rather than
+          // per job: the ui-server watchdog can declare the engine dead
+          // mid-run and the session falls back, so a job really can change
+          // capture policy while it is running.
+          tee.phase(msg.phase)
           deps.onPhase(job.id, attempt, msg.phase)
           if (msg.phase === 'finish') finishRan = true
         } else if (msg.t === 'log') {
@@ -889,6 +978,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // Plan 97 §3.7, §4.3 — forwarded verbatim; already coalesced by the
           // child's own timer. No DB write, no size check, no rate limit
           // here — those live one hop further out (`executor-host.ts`).
+          tee.progress(msg.value)
           deps.onProgress?.(job.id, msg.value)
         } else if (msg.t === 'heartbeat') {
           // already handled by resetSilenceTimer and the lease heartbeat
@@ -898,6 +988,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             send({ t: 'device.result', callId: msg.callId, ok: false, error: { code: 'BAD_CALL', message: 'invalid call' } })
             return
           }
+          // Plan 128 §3.1 — the single boundary every device action a script
+          // takes is visible at, in order, with its arguments already
+          // Zod-parsed. `begin` is synchronous and returns a token; nothing
+          // about `execDevice` moves.
+          const traceToken = tee.begin(call.data)
           void execDevice(call.data)
             .then((value) => {
               // Plan 74 §3.5, §4.3, criterion 12 — a `find` refusal is
@@ -915,6 +1010,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   )
                 }
               }
+              tee.end(traceToken, { ok: true, value })
               send({ t: 'device.result', callId: msg.callId, ok: true, value })
             })
             .catch((err: unknown) => {
@@ -930,6 +1026,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   : err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string'
                     ? (err as { code: string }).code
                     : 'DEVICE_CALL_FAILED'
+              tee.end(traceToken, { ok: false, code, message })
               send({ t: 'device.result', callId: msg.callId, ok: false, error: { code, message } })
             })
         } else if (msg.t === 'kv.call') {
@@ -1050,6 +1147,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                 data,
                 ...(msg.ext ? { ext: msg.ext } : {}),
               })
+              // Plan 128 §3.2 — the second exclusion: an artifact screenshot
+              // is recorded as an `artifact` event whose frame hash is the
+              // artifact's OWN bytes. No second capture, for the same
+              // recursion reason `method: 'screenshot'` gets.
+              tee.artifact({ kind: msg.kind, label: msg.label, sizeBytes: saved.sizeBytes, ...(msg.kind === 'screenshot' ? { frameBytes: data } : {}) })
               deps.onArtifact(job.id, { kind: msg.kind, label: msg.label, ...saved })
               // Plan 115 §3.6 — the bridge: `saved.id` is what
               // `ctx.artifact.file()` hands back to the script, so it can
@@ -1147,10 +1249,80 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // `meta.scriptId` and see it update once `ready` arrives — a job-log
       // line from before that point has nothing to redact against anyway.
       const meta: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string } = {}
+      // Declared here, above the tee, because the tee's `engineId` accessor
+      // and its capture thunk both read the LIVE session: it is acquired and
+      // released once per attempt, and the ui-server watchdog can swap the
+      // inspector engine underneath a running one (plan 128 §3.4).
+      let session: DeviceSession | null = null
+      let traceAttempt = 1
+
+      /**
+       * Plan 128 §3.4, step 128.4 — the capture thunk. This is the ONLY place
+       * in the tee's path that touches a device, and it is reached only after
+       * `end()` has already returned: nothing here is on the critical path
+       * the script's own call sits on.
+       *
+       * `'reuse'` never goes back to the device — the bytes or the tree are
+       * the ones the call already produced (§3.2, §3.4). A frame failure
+       * rejects (the event records `frameStatus: 'failed'`); a UI-tree
+       * failure does NOT, because losing the tree is no reason to also throw
+       * away a frame that was captured successfully.
+       */
+      const captureForTrace = async (req: TraceCaptureRequest): Promise<TraceCaptureResult> => {
+        const store = deps.traceStore
+        if (!store) return { frameHash: null, uiHash: null }
+        const inspector = session?.inspector ?? null
+        let frameHash: string | null = null
+        if (req.frame === 'reuse') {
+          const bytes = toFrameBytes(req.frameValue)
+          if (bytes) frameHash = await store.putFrame(job.id, bytes)
+        } else if (req.frame === 'capture' && inspector) {
+          frameHash = await store.putFrame(job.id, await inspector.screenshot())
+        }
+        let uiHash: string | null = null
+        try {
+          if (req.uiTree === 'reuse') {
+            const tree = toTraceUiTree(req.method, req.treeValue)
+            if (tree !== null) uiHash = await store.putUiTree(job.id, tree)
+          } else if (req.uiTree === 'capture' && inspector) {
+            uiHash = await store.putUiTree(job.id, await inspector.dump())
+          }
+        } catch {
+          uiHash = null
+        }
+        return { frameHash, uiHash }
+      }
+
+      const tee: TraceTee = deps.onTraceEvent
+        ? createTraceTee({
+            jobId: job.id,
+            ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}),
+            attempt: () => traceAttempt,
+            // Read fresh, never captured: `inspectorEngineId` is `'starting'`
+            // until an engine actually resolves, and changes again after a
+            // watchdog fallback (§3.4).
+            engineId: () => (session?.inspector ? session.inspectorEngineId : null),
+            emit: (event) => deps.onTraceEvent!(job.id, event),
+            // No store wired ⇒ no `capture` ⇒ the policy resolves to `'none'`
+            // while the engine id is still reported honestly on every phase
+            // event, so the timeline says "no frames", not "no inspector".
+            ...(deps.traceStore ? { capture: captureForTrace } : {}),
+          })
+        : createNoopTraceTee()
+
       const logger = createJobLogger({
         dataDir: deps.logDir,
         jobId: job.id,
-        onEntry: deps.onLog,
+        // Plan 128 §3.8 — the trace TEES the logger, it does not replace it:
+        // `deps.onLog` still fires first and unchanged, and `job.log`/`GET
+        // /api/jobs/:id/logs` keep their exact shapes. Teeing at `onEntry`
+        // rather than at each `logger.append` call site is deliberate: every
+        // line is already secret-redacted by this point (plan 79 §4.7), and
+        // stdout/stderr from the child come through here too.
+        onEntry: (entry) => {
+          deps.onLog(entry)
+          tee.log(entry)
+        },
         redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.pluginId ?? meta.scriptId }, text) : undefined,
       })
       const artifacts = deps.artifacts(job.id)
@@ -1166,7 +1338,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       })
 
       let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
-      let session: DeviceSession | null = null
       const noopFrame = () => {}
       const classify = deps.classify ?? ((err: unknown) => ({ class: 'script' as const, ...toCodeAndMessage(err), blameDevice: false }))
 
@@ -1194,6 +1365,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         let attempt = 0
         for (;;) {
           attempt += 1
+          traceAttempt = attempt
 
           // The device session (display/input/inspector engines) is acquired
           // PER ATTEMPT and released again below, before any backoff wait —
@@ -1303,6 +1475,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               aborter,
               assistNotifier,
               meta,
+              tee,
             })
             noteAttemptPeak(outcome)
           }
@@ -1334,6 +1507,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
               // no namespace at all.
               meta,
+              tee,
             }).catch(() => undefined)
             // A finish-only re-run gets a fresh process (spec §11.2) that can
             // allocate its own memory — its peak counts toward the job's
@@ -1415,6 +1589,39 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       }
     },
   }
+}
+
+/**
+ * Plan 128 §3.2 — the bytes a call has ALREADY produced, in whichever shape
+ * that call produces them: `device.screenshot` hands the child a base64 PNG
+ * string (`device-executor.ts`), while `artifact.save` already holds raw
+ * bytes. Anything else is not a frame and is ignored rather than guessed at.
+ */
+function toFrameBytes(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) return value
+  if (typeof value === 'string' && value.length > 0) {
+    try {
+      return Uint8Array.from(Buffer.from(value, 'base64'))
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
+ * Plan 128 §3.4 — the UI tree a call already returned, so the trace never
+ * pays for a second dump. `dump`/`waitFor` return the node itself; `find`
+ * returns a `FindOutcome`, whose node exists only when it actually matched
+ * (a refusal carries no tree at all, and inventing one would be worse than
+ * an empty `uiHash`).
+ */
+function toTraceUiTree(method: string, value: unknown): unknown {
+  if (method === 'find') {
+    const outcome = FindOutcomeSchema.safeParse(value)
+    return outcome.success && outcome.data.ok ? outcome.data.node : null
+  }
+  return value && typeof value === 'object' ? value : null
 }
 
 /** Extracts `{code, message}` from anything a device call, adb client, or session layer can throw. */

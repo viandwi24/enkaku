@@ -3,14 +3,21 @@ import { join } from 'node:path'
 import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm'
 import { changedRows } from '../db'
 import type { Db } from '../db'
-import { artifacts, commandRunMembers, commandRuns, deviceEvents } from '../db/schema'
+import { artifacts, commandRunMembers, commandRuns, deviceEvents, jobEvents } from '../db/schema'
+import { createTraceFrameStore } from '../jobs/trace/frame-store'
 import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { Logger } from '../util/logger'
 
 export interface RetentionGc {
   start(): void
   stop(): void
-  sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number; commandRunsDeleted: number }
+  sweepOnce(): {
+    deleted: number
+    freedBytes: number
+    eventsDeleted: number
+    commandRunsDeleted: number
+    tracesDeleted: number
+  }
 }
 
 /**
@@ -27,6 +34,9 @@ export function createRetentionGc(deps: {
   onSwept?: (result: { deleted: number; freedBytes: number }) => void
 }): RetentionGc {
   let timer: ReturnType<typeof setInterval> | null = null
+  // Only for `jobDir()` — the one authority on `<dataDir>/traces/<jobId>`, so
+  // this sweep cannot drift from the layout the writer uses (plan 128 §3.5).
+  const traceStore = createTraceFrameStore({ dataDir: deps.dataDir })
 
   function removeRows(ids: string[]): number {
     if (ids.length === 0) return 0
@@ -124,11 +134,86 @@ export function createRetentionGc(deps: {
     return deleted
   }
 
-  function sweepOnce(): { deleted: number; freedBytes: number; eventsDeleted: number; commandRunsDeleted: number } {
+  /**
+   * Job trace GC (plan 128 §3.7, §5 step 128.7): a job's `job_events` rows and
+   * its `traces/<jobId>` directory, both dropped once the trace is older than
+   * `retention.traceDays` (default 30). Third in the row of ungated sweeps
+   * above, for the same reason the two before it are ungated: `job_events` is
+   * append-only and written once PER DEVICE CALL, with a screenshot beside
+   * each row — the fastest-growing table in the schema. Letting an operator
+   * forget to switch that on is how a disk fills, so this is a bound, not a
+   * preference. The artifact policy below stays opt-in because throwing away
+   * someone's screenshots is a product decision; expiring a month-old debug
+   * trace is housekeeping.
+   *
+   * A trace's own LIFETIME rule (a trace lives exactly as long as its job's
+   * history) is enforced by the delete cascade, not here — this is the second
+   * lever, because nothing deletes finished jobs on its own.
+   *
+   * **Swept whole, per job, never per row.** The age of a trace is its LAST
+   * event, so a job is either entirely gone or entirely intact. Deleting rows
+   * by their own age would tear a long-running job's timeline in half at the
+   * cutoff — the surviving half still pointing at frames in a directory this
+   * sweep had just removed — which is strictly worse than keeping it a few
+   * hours longer.
+   *
+   * `at_ms` is unix MILLISECONDS (plan 128 §3.3), NOT a seconds-backed Drizzle
+   * timestamp like `deviceEvents.at` or `commandRuns.startedAt` above it, so
+   * the cutoff here is a raw `Date.now()`-based number and not a `Date`.
+   */
+  function sweepTraces(): number {
+    const policy = deps.settings.get().retention
+    // Milliseconds on both sides. Compare against `deviceEvents`' cutoff
+    // above: same arithmetic, but that one is wrapped in a `Date` because its
+    // column is seconds-backed, and this one must not be.
+    const cutoffMs = Date.now() - policy.traceDays * 86_400_000
+    const staleJobIds = deps.db
+      .select({ jobId: jobEvents.jobId, lastAtMs: sql<number>`max(${jobEvents.atMs})`.as('last_at_ms') })
+      .from(jobEvents)
+      .groupBy(jobEvents.jobId)
+      .all()
+      .filter((r) => r.lastAtMs < cutoffMs)
+      .map((r) => r.jobId)
+    if (staleJobIds.length === 0) return 0
+
+    for (const jobId of staleJobIds) {
+      try {
+        rmSync(traceStore.jobDir(jobId), { recursive: true, force: true })
+      } catch (err) {
+        // Exactly `removeRows`' rule one function up: a file that will not go
+        // away costs its own warning and nothing else. The rows still go, so a
+        // sweep that cannot unlink degrades to leaked bytes on disk — never to
+        // an aborted sweep that also leaves every LATER job's rows behind.
+        deps.log.warn(`failed to delete trace directory for job ${jobId}: ${String(err)}`)
+      }
+    }
+
+    let rows = 0
+    // `inArray` binds one parameter per id and SQLite has a ceiling on those.
+    // The first sweep after an upgrade can face every job the farm has ever
+    // run, so this is chunked where `sweepCommandRuns` above is not.
+    for (let i = 0; i < staleJobIds.length; i += 500) {
+      rows += changedRows(
+        deps.db.delete(jobEvents).where(inArray(jobEvents.jobId, staleJobIds.slice(i, i + 500))).run(),
+      )
+    }
+
+    deps.log.info(`trace retention: deleted ${staleJobIds.length} job trace(s) (${rows} event row(s))`)
+    return staleJobIds.length
+  }
+
+  function sweepOnce(): {
+    deleted: number
+    freedBytes: number
+    eventsDeleted: number
+    commandRunsDeleted: number
+    tracesDeleted: number
+  } {
     const eventsDeleted = sweepEvents()
     const commandRunsDeleted = sweepCommandRuns()
+    const tracesDeleted = sweepTraces()
     const policy = deps.settings.get().retention
-    if (!policy.enabled) return { deleted: 0, freedBytes: 0, eventsDeleted, commandRunsDeleted }
+    if (!policy.enabled) return { deleted: 0, freedBytes: 0, eventsDeleted, commandRunsDeleted, tracesDeleted }
 
     const rows = deps.db.select().from(artifacts).orderBy(asc(artifacts.createdAt)).all()
     const cutoff = Date.now() - policy.maxAgeDays * 86_400_000
@@ -153,7 +238,7 @@ export function createRetentionGc(deps: {
       deps.log.info(`retention GC: deleted ${deleted} artifact(s) (${(freed / 1024 ** 2).toFixed(1)} MB)`)
       deps.onSwept?.({ deleted, freedBytes: freed })
     }
-    return { deleted, freedBytes: freed, eventsDeleted, commandRunsDeleted }
+    return { deleted, freedBytes: freed, eventsDeleted, commandRunsDeleted, tracesDeleted }
   }
 
   return {

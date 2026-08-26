@@ -1,8 +1,11 @@
+import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { eq, inArray } from 'drizzle-orm'
 import type { DeviceStatus } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
+import { deleteJobsWithHistory } from '../jobs/purge'
 import type { LeaseManager } from '../lease/lease-manager'
 import { formatDeviceLabel, lookupDeviceNumber } from '../registry/device-number'
 import { EnkakuError } from '../util/errors'
@@ -101,6 +104,19 @@ export interface DeviceLifecycleDeps {
    * `kvDeleted: 0`, honestly, rather than pretending the deletion happened.
    */
   kv?: { deleteDevice(stableId: string): number }
+  /**
+   * App-data root, needed only by `forget({ deleteHistory: true })` (plan 128
+   * §4.5): artifact `path`s are stored relative to it and `traces/<jobId>/`
+   * lives under it, so without it the cascade can delete rows but not the
+   * bytes they name.
+   *
+   * Optional so every existing test harness keeps compiling, matching this
+   * interface's own convention for an added dependency — but a host that does
+   * not wire it leaves artifact files and trace directories on disk after a
+   * device is forgotten with its history, and `deleteJobsWithHistory` says so
+   * in the log rather than passing for a clean run.
+   */
+  dataDir?: string
 }
 
 type LifecycleOp = 'forget' | 'block'
@@ -278,16 +294,40 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         kvDeleted = deps.kv?.deleteDevice(row.stableId) ?? 0
         if (opts.deleteHistory) {
           const jobIds = tx.select({ id: jobs.id }).from(jobs).where(eq(jobs.deviceId, row.id)).all().map((r) => r.id)
-          const deviceScopedArtifacts = tx.select().from(artifacts).where(eq(artifacts.deviceId, row.id)).all().length
-          const jobScopedArtifacts =
-            jobIds.length > 0 ? tx.select().from(artifacts).where(inArray(artifacts.jobId, jobIds)).all().length : 0
+          const deviceScopedArtifacts = tx.select().from(artifacts).where(eq(artifacts.deviceId, row.id)).all()
           const events = tx.select().from(deviceEvents).where(eq(deviceEvents.deviceId, row.id)).all().length
-          counts = { jobs: jobIds.length, artifacts: deviceScopedArtifacts + jobScopedArtifacts, events }
 
-          if (jobIds.length > 0) tx.delete(artifacts).where(inArray(artifacts.jobId, jobIds)).run()
+          // The job half of the cascade is `jobs/purge.ts`'s, not this file's
+          // (plan 128 §4.5, R5): job_events, the trace directory, artifact
+          // FILES then artifact rows, job_nodes, then the job rows. This block
+          // used to do the artifact and job halves inline — which is exactly
+          // how it came to delete artifact rows while leaving their files on
+          // disk, and how it would have left `traces/<jobId>/` behind. It runs
+          // on `tx`, so it joins THIS transaction (Drizzle nests as a
+          // SAVEPOINT) rather than opening a second one.
+          const purged = deleteJobsWithHistory(tx, jobIds, { dataDir: deps.dataDir, log })
+
+          // Device-scoped artifacts (the Monitor tab's "save last N lines",
+          // plan 24 §4.6) belong to no job, so they are outside that cascade —
+          // their files and rows go here, in the same transaction.
+          if (deps.dataDir !== undefined) {
+            for (const artifact of deviceScopedArtifacts) {
+              try {
+                rmSync(join(deps.dataDir, artifact.path), { force: true })
+              } catch (err) {
+                log.warn(`failed to delete artifact file ${artifact.path}: ${String(err)}`)
+              }
+            }
+          }
           tx.delete(artifacts).where(eq(artifacts.deviceId, row.id)).run()
           tx.delete(deviceEvents).where(eq(deviceEvents.deviceId, row.id)).run()
-          tx.delete(jobs).where(eq(jobs.deviceId, row.id)).run()
+
+          // The same three numbers this has always reported, from the same
+          // two shapes (`countArtifacts`'s doc): device-scoped artifacts plus
+          // every artifact of every one of the device's own jobs. `events` is
+          // `device_events` — NOT the job trace's `job_events`, which the
+          // cascade counts separately and this shape has no field for.
+          counts = { jobs: jobIds.length, artifacts: deviceScopedArtifacts.length + purged.artifacts, events }
         }
         tx.insert(deletedDevices).values({ id: row.id, stableId: row.stableId, label: row.label, deletedAt: new Date() }).run()
         tx.delete(deviceTags).where(eq(deviceTags.deviceId, row.id)).run()

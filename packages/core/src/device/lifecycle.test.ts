@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs } from '../db/schema'
+import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobEvents, jobs } from '../db/schema'
 import { createJobStore } from '../queue/job-store'
 import { createKvStore } from '../kv/store'
 import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
@@ -467,5 +467,127 @@ describe('block (plan 47 §4.3, §4.4)', () => {
   test('unblocking an unknown stableId is refused', async () => {
     const { lifecycle } = setUp()
     await expect(lifecycle.unblock('ghost', { userId: null })).rejects.toBeInstanceOf(EnkakuError)
+  })
+})
+
+// ---- Plan 128 (M93 — the job trace timeline), step 128.6, §4.5 ----
+//
+// `forget({ deleteHistory: true })` no longer deletes artifact and job rows
+// inline: it calls `deleteJobsWithHistory`, the ONE cascade shared with
+// `DELETE /api/jobs/:id` and "Clear history" (R5). These tests are the
+// regression guard for that swap — it must still delete everything it deleted
+// before, plus `job_events`, the trace directory, and the artifact FILES that
+// the inline version left on disk.
+
+describe('forget with history — the shared cascade (plan 128 §4.5)', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true })
+  })
+
+  function setUpWithDataDir(): { db: Db; lifecycle: DeviceLifecycle; dataDir: string } {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const jobStore = createJobStore(db)
+    const leases = createLeaseManager({
+      states,
+      jobStore,
+      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      log,
+      onJobLeaseExpired: () => {},
+    })
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-lifecycle-'))
+    dirs.push(dataDir)
+    return { db, lifecycle: createDeviceLifecycle({ db, leases, log, dataDir }), dataDir }
+  }
+
+  test('everything the inline version deleted, PLUS job_events, the trace directory, and the artifact files', async () => {
+    const { db, lifecycle, dataDir } = setUpWithDataDir()
+    seedDevice(db, 'd1', 'offline')
+    db.insert(jobs)
+      .values([
+        { id: 'j1', scriptId: 'internal:sleep', deviceId: 'd1', status: 'success', createdAt: new Date() },
+        { id: 'j2', scriptId: 'internal:sleep', deviceId: 'd1', status: 'failed', createdAt: new Date() },
+      ])
+      .run()
+    // A job on ANOTHER device — untouched by this removal, every row kind.
+    seedDevice(db, 'd2', 'offline')
+    db.insert(jobs).values({ id: 'j3', scriptId: 'internal:sleep', deviceId: 'd2', status: 'success', createdAt: new Date() }).run()
+
+    for (const [jobId, deviceId] of [['j1', null], ['j2', null], ['j3', null]] as const) {
+      const rel = join('artifacts', jobId, 'shot.png')
+      mkdirSync(join(dataDir, 'artifacts', jobId), { recursive: true })
+      writeFileSync(join(dataDir, rel), 'bytes')
+      db.insert(artifacts)
+        .values({ id: `a-${jobId}`, jobId, deviceId, kind: 'screenshot', label: 'shot', path: rel, createdAt: new Date() })
+        .run()
+    }
+    // The device-scoped artifact (Monitor "save last N lines") — outside the
+    // job cascade, deleted by `forget` itself, file and row.
+    mkdirSync(join(dataDir, 'artifacts', 'device'), { recursive: true })
+    writeFileSync(join(dataDir, 'artifacts', 'device', 'monitor.log'), 'lines')
+    db.insert(artifacts)
+      .values({
+        id: 'a-device',
+        jobId: null,
+        deviceId: 'd1',
+        kind: 'log',
+        label: 'monitor',
+        path: join('artifacts', 'device', 'monitor.log'),
+        createdAt: new Date(),
+      })
+      .run()
+
+    for (const jobId of ['j1', 'j2', 'j3']) {
+      db.insert(jobEvents)
+        .values({ id: `${jobId}-ev`, jobId, seq: 1, atMs: Date.now(), attempt: 1, kind: 'action', name: 'tap' })
+        .run()
+      mkdirSync(join(dataDir, 'traces', jobId), { recursive: true })
+      writeFileSync(join(dataDir, 'traces', jobId, `${'a'.repeat(64)}.png`), 'frame')
+    }
+    db.insert(deviceEvents).values({ id: 'e1', deviceId: 'd1', stream: 'main', kind: 'device.online', at: new Date() }).run()
+
+    const counts = await lifecycle.historyCounts('d1')
+    expect(counts).toEqual({ jobs: 2, artifacts: 3, events: 1 })
+
+    const result = await lifecycle.forget('d1', { deleteHistory: true, actor: { userId: 'u1' } })
+
+    // The counts shape is EXACTLY what it was — three numbers, same meanings.
+    expect(result.counts).toEqual(counts)
+
+    // What it deleted before.
+    expect(db.select().from(jobs).where(eq(jobs.deviceId, 'd1')).all()).toEqual([])
+    expect(db.select().from(artifacts).where(eq(artifacts.deviceId, 'd1')).all()).toEqual([])
+    expect(db.select().from(deviceEvents).where(eq(deviceEvents.deviceId, 'd1')).all()).toEqual([])
+
+    // Plus what it did not.
+    expect(db.select().from(jobEvents).all().map((e) => e.jobId)).toEqual(['j3'])
+    expect(existsSync(join(dataDir, 'traces', 'j1'))).toBe(false)
+    expect(existsSync(join(dataDir, 'traces', 'j2'))).toBe(false)
+    expect(existsSync(join(dataDir, 'artifacts', 'j1', 'shot.png'))).toBe(false)
+    expect(existsSync(join(dataDir, 'artifacts', 'device', 'monitor.log'))).toBe(false)
+
+    // The other device keeps all five of its row kinds and both its files.
+    expect(db.select().from(jobs).where(eq(jobs.deviceId, 'd2')).all()).toHaveLength(1)
+    expect(db.select().from(artifacts).where(eq(artifacts.jobId, 'j3')).all()).toHaveLength(1)
+    expect(existsSync(join(dataDir, 'traces', 'j3'))).toBe(true)
+    expect(existsSync(join(dataDir, 'artifacts', 'j3', 'shot.png'))).toBe(true)
+  })
+
+  test('deleteHistory: false leaves the trace and its events exactly where they were', async () => {
+    const { db, lifecycle, dataDir } = setUpWithDataDir()
+    seedDevice(db, 'd1', 'offline')
+    db.insert(jobs).values({ id: 'j1', scriptId: 's', deviceId: 'd1', status: 'success', createdAt: new Date() }).run()
+    db.insert(jobEvents).values({ id: 'ev1', jobId: 'j1', seq: 1, atMs: 1, attempt: 1, kind: 'log', name: 'info' }).run()
+    mkdirSync(join(dataDir, 'traces', 'j1'), { recursive: true })
+
+    await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
+
+    expect(db.select().from(jobEvents).all()).toHaveLength(1)
+    expect(existsSync(join(dataDir, 'traces', 'j1'))).toBe(true)
   })
 })

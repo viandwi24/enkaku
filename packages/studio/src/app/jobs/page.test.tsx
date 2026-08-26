@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import '@/lib/test/nav'
 import { TooltipProvider } from '@enkaku/ui'
+import { AuthContext, type AuthState } from '@/lib/auth'
 import { cleanup, renderWithApi } from '@/lib/test/render'
 import JobsPage from './page'
 
@@ -168,4 +169,57 @@ describe('JobsPage — the number, in the cell and in the search box (plan 124 �
     await waitFor(() => expect(screen.getByText('Galaxy A15')).toBeTruthy())
     expect(screen.queryAllByText(/^#/).length).toBe(0)
   })
+})
+
+/**
+ * Plan 128 §4.3, §9 Q4, step 128.8 — "Clear history". The route is gated on
+ * `job.history.purge`, a NEW admin-only permission deliberately outside the
+ * `OPERATOR` set: it selects by FILTER, not by a device the caller owns, so
+ * on `job.run` any operator could have erased every run on every device in
+ * the farm along with the trace frames that are the only record of what they
+ * did. Studio renders the control disabled with the reason rather than
+ * hiding it (the `/tools` pattern); the server re-checks regardless.
+ */
+describe('JobsPage — Clear history (plan 128 §5 step 128.8)', () => {
+  function authValue(overrides: Partial<AuthState>): AuthState {
+    return { user: null, authMode: 'server', setupNeeded: false, refresh: async () => {}, logout: async () => {}, ...overrides }
+  }
+
+  const responses = {
+    '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    '/api/jobs*': { body: { items: [job], nextCursor: null, total: 1 } },
+  }
+
+  function mountAs(role: 'admin' | 'operator') {
+    return renderWithApi(
+      <AuthContext.Provider value={authValue({ user: { id: 'u1', email: `${role}@x.com`, role } })}>
+        <Wrapped />
+      </AuthContext.Provider>,
+      { ...responses, '/api/jobs/history/clear': { body: { deleted: { jobs: 4, events: 40, artifacts: 3, nodes: 0, traceDirs: 4 }, skipped: 1 } } },
+    )
+  }
+
+  test('an operator sees the button, disabled, with the reason', async () => {
+    mountAs('operator')
+    const button = (await waitFor(() => screen.getByRole('button', { name: 'Clear history' }))) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('title')).toBe('Only an admin can clear job history')
+  })
+
+  test('an admin can clear — the dialog names the blast radius, and the POST goes out', async () => {
+    const { apiMock } = mountAs('admin')
+    const button = (await waitFor(() => screen.getByRole('button', { name: 'Clear history' }))) as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    fireEvent.click(button)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('Clear every settled job from history?')
+    expect(dialog.textContent).toContain('Queued and running jobs are left alone')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear history' }))
+    await waitFor(() => {
+      const call = apiMock.calls.find((c) => c.path === '/api/jobs/history/clear')
+      expect(call?.method).toBe('POST')
+      expect(call?.body).toEqual({})
+    })
+  })
+
 })

@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb, runMigrations, type Db } from '../db'
-import { commandRunMembers, commandRuns, deviceEvents } from '../db/schema'
+import { commandRunMembers, commandRuns, deviceEvents, jobEvents } from '../db/schema'
 import { createFarmSettingsStore } from '../settings/farm-settings'
 import { createRetentionGc } from './retention'
 import { createLogger } from '../util/logger'
@@ -43,6 +46,51 @@ function seedCommandRun(db: Db, opts: { createdBy?: string | null; ageDays: numb
     .values(opts.deviceIds.map((deviceId, i) => ({ runId: id, deviceId, seq: i, status: 'ok' as const })))
     .run()
   return id
+}
+
+/**
+ * One trace event plus (unless told otherwise) the frame file it points at.
+ * `atMs` is unix MILLISECONDS — the `job_events` carve-out from the seconds
+ * convention (plan 128 §3.3) — so this multiplies by 86_400_000 exactly like
+ * `seedEvent` above, and the tests below assert that it did.
+ */
+function seedTraceEvent(
+  db: Db,
+  dataDir: string,
+  opts: { jobId: string; seq: number; ageDays: number; frame?: boolean },
+) {
+  const atMs = Date.now() - opts.ageDays * 86_400_000
+  db.insert(jobEvents)
+    .values({
+      id: crypto.randomUUID(),
+      jobId: opts.jobId,
+      seq: opts.seq,
+      atMs,
+      attempt: 1,
+      phase: 'run',
+      kind: 'action',
+      name: 'tap',
+      meta: {},
+    })
+    .run()
+  if (opts.frame !== false) {
+    const dir = join(dataDir, 'traces', opts.jobId)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${'a'.repeat(64)}.png`), 'png-bytes')
+  }
+  return atMs
+}
+
+function makeGcIn(db: Db, dataDir: string) {
+  const settings = createFarmSettingsStore(db)
+  const gc = createRetentionGc({
+    db,
+    dataDir,
+    settings,
+    log: createLogger('test').child('retention'),
+    intervalMinutes: 60,
+  })
+  return { gc, settings }
 }
 
 function makeGc(db: Db) {
@@ -165,5 +213,115 @@ describe('command run retention (plan 93 §3.9, §4.1, §5 step 93.2) — beside
     const gc = createRetentionGc({ db, dataDir: '/tmp/enkaku-retention-test', settings, log: createLogger('test').child('retention'), intervalMinutes: 60 })
     const result = gc.sweepOnce()
     expect(result.commandRunsDeleted).toBe(1)
+  })
+})
+
+describe('job trace retention (plan 128 §3.7, §5 step 128.7)', () => {
+  test('a trace past traceDays is swept — rows AND directory — and one inside it is untouched', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    seedTraceEvent(db, dataDir, { jobId: 'job-old', seq: 1, ageDays: 45 }) // past the 30-day default
+    seedTraceEvent(db, dataDir, { jobId: 'job-new', seq: 1, ageDays: 2 })
+
+    const { gc } = makeGcIn(db, dataDir)
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(1)
+    expect(db.select().from(jobEvents).all().map((r) => r.jobId)).toEqual(['job-new'])
+    expect(existsSync(join(dataDir, 'traces', 'job-old'))).toBe(false)
+    expect(existsSync(join(dataDir, 'traces', 'job-new'))).toBe(true)
+  })
+
+  /**
+   * `job_events.at_ms` is MILLISECONDS while `deviceEvents.at` and
+   * `commandRuns.startedAt` are seconds-backed Drizzle timestamps, so the
+   * cutoff arithmetic in `sweepTraces` is the one place in this file where a
+   * factor of 1000 can hide. Both directions of that mistake are caught here:
+   *
+   * - a cutoff of `Date.now() - days * 86_400` (the ms/s multiplier confused)
+   *   lands 43 MINUTES ago, so the 1-day-old trace below would be swept;
+   * - a cutoff of `Date.now() / 1000 - days * 86_400` (a seconds-epoch cutoff
+   *   compared against a milliseconds column) lands ~1.7e9 against values of
+   *   ~1.7e12, so NOTHING would ever be swept, including the 31-day-old one.
+   *
+   * Neither survives both assertions.
+   */
+  test('the cutoff is milliseconds on both sides — a factor-of-1000 slip fails this', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    // Well inside the 30-day window, but far outside a window of 30 * 86_400 ms.
+    const freshAtMs = seedTraceEvent(db, dataDir, { jobId: 'job-1d', seq: 1, ageDays: 1 })
+    // Just outside it — one day past, not a hundred, so a seconds-epoch cutoff
+    // cannot sweep it by accident either.
+    seedTraceEvent(db, dataDir, { jobId: 'job-31d', seq: 1, ageDays: 31 })
+
+    // The fixture itself is in milliseconds — otherwise this test proves nothing.
+    expect(freshAtMs).toBeGreaterThan(1e12)
+    expect(db.select().from(jobEvents).all().every((r) => r.atMs > 1e12)).toBe(true)
+
+    const { gc } = makeGcIn(db, dataDir)
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(1)
+    expect(db.select().from(jobEvents).all().map((r) => r.jobId)).toEqual(['job-1d'])
+  })
+
+  test('NOT gated by retention.enabled — the default farm has it off, and the sweep still runs', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    seedTraceEvent(db, dataDir, { jobId: 'job-old', seq: 1, ageDays: 45 })
+
+    const { gc } = makeGcIn(db, dataDir)
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(1)
+    expect(result.deleted).toBe(0) // the artifact GC itself stayed off
+    expect(db.select().from(jobEvents).all()).toHaveLength(0)
+    expect(existsSync(join(dataDir, 'traces', 'job-old'))).toBe(false)
+  })
+
+  test('a job whose trace directory is already gone sweeps its rows without throwing', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    // A job that never captured a frame (no inspector, or a `none` policy) has
+    // no directory at all — the common case, not an edge case.
+    seedTraceEvent(db, dataDir, { jobId: 'job-nodir', seq: 1, ageDays: 45, frame: false })
+    expect(existsSync(join(dataDir, 'traces', 'job-nodir'))).toBe(false)
+
+    const { gc } = makeGcIn(db, dataDir)
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(1)
+    expect(db.select().from(jobEvents).all()).toHaveLength(0)
+  })
+
+  test('a trace is swept whole or not at all — the age of a trace is its LAST event', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    // One job straddling the cutoff. Deleting only the old row would leave a
+    // torn timeline whose surviving half points at a directory this sweep had
+    // just removed.
+    seedTraceEvent(db, dataDir, { jobId: 'job-long', seq: 1, ageDays: 45 })
+    seedTraceEvent(db, dataDir, { jobId: 'job-long', seq: 2, ageDays: 2 })
+
+    const { gc } = makeGcIn(db, dataDir)
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(0)
+    expect(db.select().from(jobEvents).all()).toHaveLength(2)
+    expect(existsSync(join(dataDir, 'traces', 'job-long'))).toBe(true)
+  })
+
+  test('the window is configurable via retention.traceDays', () => {
+    const db = setUp()
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-retention-trace-'))
+    const { gc, settings } = makeGcIn(db, dataDir)
+    settings.update({ retention: { traceDays: 5 } })
+    seedTraceEvent(db, dataDir, { jobId: 'job-6d', seq: 1, ageDays: 6 }) // now past a 5-day window
+
+    const result = gc.sweepOnce()
+
+    expect(result.tracesDeleted).toBe(1)
+    expect(existsSync(join(dataDir, 'traces', 'job-6d'))).toBe(false)
   })
 })

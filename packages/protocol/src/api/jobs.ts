@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { JobDetailSchema, JobInfoSchema, JobNodeStatusSchema } from '../messages/job'
+import { JobDetailSchema, JobInfoSchema, JobNodeStatusSchema, JobStatusSchema, JobTraceEventSchema } from '../messages/job'
 import { DeviceEventSchema } from '../messages/device-event'
 import { pageSchema } from './pagination'
 
@@ -170,3 +170,98 @@ export const JobNodesResponseSchema = z.object({
   finalized: z.boolean(),
 })
 export type JobNodesResponse = z.infer<typeof JobNodesResponseSchema>
+
+// ---- Plan 128 (M93 — the job trace timeline), step 128.1, §4.3 ----
+
+/**
+ * `GET /api/jobs/:id/trace` (plan 128 §4.3) — a keyset page of `job_events`,
+ * ordered and cursored on `seq` (never `atMs`: two events can share a
+ * millisecond, and a cursor that cannot separate them either repeats a row or
+ * loses one).
+ *
+ * The same `{ items, nextCursor, total }` envelope every other list endpoint
+ * in the core returns (`pageSchema`, plan 30 §4.1) — a trace is a long list
+ * read a page at a time, not a bespoke shape.
+ *
+ * The companion to the `job.trace` WS message rather than a replacement:
+ * `/ws` has no snapshot replay, so the Timeline tab fetches this and then
+ * subscribes, exactly as the Logs tab already does. `[]` for a job that
+ * recorded nothing — never a 404 for that reason, matching `/logs`,
+ * `/assists` and `/nodes` on this same route group; only a missing JOB 404s.
+ */
+export const JobTraceResponseSchema = pageSchema(JobTraceEventSchema)
+
+/**
+ * What one run of `deleteJobsWithHistory` actually removed (plan 128 §4.5) —
+ * shared by `DELETE /api/jobs/:id` and `POST /api/jobs/history/clear` below,
+ * because both call that one function and a caller should not have to learn
+ * two vocabularies for one cascade.
+ *
+ * Counts rather than a bare `ok: true`: the whole point of the cascade is
+ * that five things go together, so a response that cannot say how many rows
+ * and how many directories went with the job leaves the operator no way to
+ * notice when one of the five silently stopped happening.
+ */
+export const JobPurgeCountsSchema = z.object({
+  /** `jobs` rows deleted. */
+  jobs: z.number().int().min(0),
+  /** `job_events` rows deleted. */
+  events: z.number().int().min(0),
+  /** `artifacts` rows deleted — their files are unlinked in the same pass. */
+  artifacts: z.number().int().min(0),
+  /** `job_nodes` rows deleted (0 for every non-workflow job). */
+  nodes: z.number().int().min(0),
+  /** `traces/<jobId>` directories removed (0 when a job never captured a frame). */
+  traceDirs: z.number().int().min(0),
+})
+export type JobPurgeCounts = z.infer<typeof JobPurgeCountsSchema>
+
+/**
+ * `DELETE /api/jobs/:id` (plan 128 §4.3, §4.5) — the job row, its artifacts
+ * and their files, its `job_events`, its `job_nodes`, and its trace directory,
+ * all in one cascade.
+ *
+ * Refused with `job_not_settled` while the job is `queued` or `running`
+ * (cancel it first), so a success response always means the whole cascade
+ * ran. `jobId` is echoed so a client deleting several in a loop can match a
+ * response to its request without tracking order.
+ */
+export const JobDeleteResponseSchema = z.object({
+  jobId: z.string(),
+  deleted: JobPurgeCountsSchema,
+})
+export type JobDeleteResponse = z.infer<typeof JobDeleteResponseSchema>
+
+/**
+ * `POST /api/jobs/history/clear` (plan 128 §4.3) — the bulk form of the same
+ * cascade, over whatever the three optional filters select.
+ *
+ * Every field is optional and they AND together; a body with none of them
+ * means "every settled job", which is the "Clear history" button's own case.
+ * `before` is unix SECONDS (the `jobs` table's own convention — this is a
+ * `finishedAt`/`createdAt` comparison, not a trace timestamp, so §3.3's
+ * milliseconds carve-out does not reach here).
+ */
+export const JobHistoryClearRequestSchema = z.object({
+  /** Unix seconds — only jobs that settled before this instant. Omitted means no age bound. */
+  before: z.number().int().optional(),
+  /** Only this device's jobs. Omitted means every device. */
+  deviceId: z.string().optional(),
+  /** Only these statuses. Omitted means every SETTLED status; `queued`/`running` jobs are never cleared. */
+  status: z.array(JobStatusSchema).optional(),
+})
+export type JobHistoryClearRequest = z.infer<typeof JobHistoryClearRequestSchema>
+
+/**
+ * `POST /api/jobs/history/clear` response (plan 128 §4.3).
+ *
+ * `skipped` counts jobs the filter matched that were still `queued` or
+ * `running` and were therefore left alone — reported rather than silently
+ * dropped, so "clear everything" followed by a job that is still there reads
+ * as the deliberate refusal it is rather than as a bug.
+ */
+export const JobHistoryClearResponseSchema = z.object({
+  deleted: JobPurgeCountsSchema,
+  skipped: z.number().int().min(0).default(0),
+})
+export type JobHistoryClearResponse = z.infer<typeof JobHistoryClearResponseSchema>

@@ -1075,6 +1075,76 @@ export const artifacts = sqliteTable(
 export type ArtifactRow = typeof artifacts.$inferSelect
 
 /**
+ * The job trace: one append-only event stream per job (plan 128 §4.1). Every
+ * device action a script takes, with its arguments, duration and outcome;
+ * every log line; every phase boundary; every artifact; every human assist —
+ * all on one time axis, so a failed run can be answered with "here is what
+ * the phone was doing" rather than a re-run.
+ *
+ * Rows are written by the buffer-and-flush recorder (plan 128 §3.6), never by
+ * the running script's own critical path. Frames and UI trees are not stored
+ * here: `frameHash` / `uiHash` name files under `<dataDir>/traces/<jobId>/`,
+ * whose lifetime is the job's own — deleting a job deletes these rows and
+ * that directory together (plan 128 §3.5), which is exactly why the shared
+ * agent blob store is not reused for them (§0.4).
+ */
+export const jobEvents = sqliteTable(
+  'job_events',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id').notNull(),
+    /** Per-job monotonic. The sort key and the keyset cursor — never the clock (plan 128 §3.3). */
+    seq: integer('seq').notNull(),
+    /**
+     * Unix MILLISECONDS, deliberately NOT `{ mode: 'timestamp' }`. This is a
+     * stated exception to `docs/plans/00-overview.md` §4.2's integer-unix-
+     * seconds convention, not a drift — see plan 128 §3.3, which records it.
+     *
+     * A timeline cannot live in seconds: two taps 180 ms apart are the whole
+     * point of this table, and a seconds column would collapse them onto the
+     * same instant, making the scrubber and the film-strip meaningless. The
+     * same kind of explicit carve-out is already taken elsewhere in this file
+     * (`agentApprovals.expiresAt`, a plain-seconds deadline column).
+     *
+     * Do not "fix" this to `{ mode: 'timestamp' }`: `seq` is what ORDERS
+     * events; `atMs` is what PLACES them on the axis, and it needs the
+     * resolution.
+     */
+    atMs: integer('at_ms').notNull(),
+    /** 1-based attempt this event belongs to; a rebound job has more than one. */
+    attempt: integer('attempt').notNull().default(1),
+    /** 'reset' | 'prepare' | 'run' | 'finish', or null for an event outside a phase. */
+    phase: text('phase'),
+    /** Plan 99's workflow node axis, mirroring `artifacts.nodeId`. Null for every non-workflow job. */
+    nodeId: text('node_id'),
+    /** 'phase' | 'action' | 'log' | 'artifact' | 'progress' | 'assist' | 'error' */
+    kind: text('kind').notNull(),
+    /** For kind 'action': the DeviceCall method. For 'log': the level. For 'phase': 'start' | 'end'. */
+    name: text('name').notNull(),
+    /** Milliseconds the action took. Null for instantaneous events. */
+    durationMs: integer('duration_ms'),
+    /** 1 = succeeded, 0 = failed, null = not applicable. */
+    ok: integer('ok', { mode: 'boolean' }),
+    errorCode: text('error_code'),
+    /** Kind-specific detail; always an object. Args are redacted per plan 128 §4.4. */
+    meta: text('meta', { mode: 'json' }),
+    /** SHA-256 hex of the frame in `traces/<jobId>/`, or null. */
+    frameHash: text('frame_hash'),
+    /** 'ok' | 'skipped-policy' | 'skipped-busy' | 'failed' — never null when the policy wanted a frame. */
+    frameStatus: text('frame_status'),
+    /** SHA-256 hex of the gzipped UI tree, or null. */
+    uiHash: text('ui_hash'),
+  },
+  (t) => [
+    uniqueIndex('idx_job_events_seq').on(t.jobId, t.seq),
+    index('idx_job_events_at').on(t.atMs),
+  ],
+)
+
+export type JobEventRow = typeof jobEvents.$inferSelect
+export type JobEventInsert = typeof jobEvents.$inferInsert
+
+/**
  * `POST /api/jobs/:id/resume` (plan 99 §3.5, §4.9, step 99.8) — one row per
  * RESUMED job, keyed on the NEW job's own id (never the original). Records
  * what a resumed job continues from, so the workflow executor (once the gap

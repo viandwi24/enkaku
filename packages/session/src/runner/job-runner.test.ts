@@ -11,6 +11,7 @@ import type { DeviceSession } from '../session'
 import type { SessionManager } from '../manager'
 import type { Logger } from '../logger'
 import type { ResetOutcome, ResetPlan } from '../reset'
+import type { TraceEventInput } from './trace'
 
 const silentLog = (): Logger => {
   const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
@@ -2395,5 +2396,275 @@ describe('createJobRunner — ctx.progress() forwarding (plan 97 §3.7, §4.3, �
     expect(outcome.ok).toBe(true)
     const init = sentPerSpawn[0]?.find((m) => m.t === 'init')
     expect(init && 'progressIntervalMs' in init ? init.progressIntervalMs : undefined).toBe(2_500)
+  })
+})
+
+/**
+ * The job trace tee (plan 128 §3.1, §3.2, §3.4, step 128.4). `trace.test.ts`
+ * covers the tee's own logic in isolation; these tests drive a REAL child ⇄
+ * parent IPC round trip through `createJobRunner` and assert the three things
+ * only this level can prove:
+ *
+ * 1. the tee actually sits on the `device.call` boundary, in order, measured,
+ * 2. a host that wired no `onTraceEvent` loses tracing and nothing else, and
+ * 3. **acceptance criterion 4** — the `device.result` payloads the script
+ *    sees are byte-identical with the tee and without it.
+ */
+describe('createJobRunner — the job trace tee (plan 128 §3.1, §3.4, step 128.4)', () => {
+  function fakeSessionWithInspector(opts: { engineId?: string; screenshot?: () => Promise<Uint8Array> } = {}): DeviceSession {
+    const input = { tap: async () => {}, swipe: async () => {}, text: async () => {}, key: async () => {} }
+    const arbiter = createInputArbiter(input as unknown as InputSink, {
+      queueWaitMs: () => 5_000,
+      maxQueueDepth: () => 32,
+      log: silentLog(),
+    })
+    return {
+      deviceId: DEVICE_ID,
+      inspector: {
+        id: opts.engineId ?? 'ui-server',
+        dump: async () => ({ cls: 'android.widget.FrameLayout', children: [] }),
+        find: async () => null,
+        screenshot: opts.screenshot ?? (async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      },
+      inspectorEngineId: opts.engineId ?? 'ui-server',
+      inspectorPollIntervalMs: 80,
+      transport: { exec: async () => '', execOut: async () => new Uint8Array() },
+      whenInspectorReady: async () => {},
+      input,
+      arbiter,
+    } as unknown as DeviceSession
+  }
+
+  /** `tap` → `dump` → `result`, each waiting a turn for the parent's reply, as a real child would. */
+  function twoCallBehavior(): ChildBehavior {
+    return {
+      ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
+      onInit: (_init, emit) => {
+        emit({ t: 'phase', phase: 'run' })
+        emit({ t: 'device.call', callId: 'c1', method: 'tap', args: { target: { point: { x: 10, y: 20 } } } } as never)
+        setTimeout(() => emit({ t: 'device.call', callId: 'c2', method: 'dump', args: {} } as never), 30)
+        setTimeout(() => emit({ t: 'result', ok: true, value: 'done', finishRan: true }), 120)
+      },
+    }
+  }
+
+  const NO_TIMING = { ...DEFAULT_TIMING, tapJitterMs: [0, 0] as [number, number], betweenActionMs: [0, 0] as [number, number], coordJitterPx: 0 }
+
+  function traceStore(): { store: { putFrame: (jobId: string, bytes: Uint8Array) => Promise<string>; putUiTree: (jobId: string, tree: unknown) => Promise<string> }; frames: number; trees: number } {
+    const counts = { frames: 0, trees: 0 }
+    return {
+      get frames() {
+        return counts.frames
+      },
+      get trees() {
+        return counts.trees
+      },
+      store: {
+        putFrame: async () => {
+          counts.frames += 1
+          return 'frame-hash'
+        },
+        putUiTree: async () => {
+          counts.trees += 1
+          return 'tree-hash'
+        },
+      },
+    }
+  }
+
+  test('a traced run emits the action events in order, each with a duration and a frame', async () => {
+    const events: TraceEventInput[] = []
+    const { isolation } = fakeIsolation([twoCallBehavior()])
+    const store = traceStore()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSessionWithInspector()),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      onTraceEvent: (jobId, event) => {
+        expect(jobId).toBe(JOB.id)
+        events.push(event)
+      },
+      traceStore: store.store,
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+    // The last capture can still be in flight the instant the job settles —
+    // the tee is fire-and-forget by design (§3.1), so give it a turn.
+    await Bun.sleep(20)
+
+    const actions = events.filter((e) => e.kind === 'action')
+    expect(actions.map((e) => e.name)).toEqual(['tap', 'dump'])
+    for (const a of actions) {
+      expect(a.ok).toBe(true)
+      expect(a.durationMs).not.toBeNull()
+      expect(a.durationMs ?? -1).toBeGreaterThanOrEqual(0)
+      expect(a.attempt).toBe(1)
+      expect(a.phase).toBe('run')
+    }
+    // ui-server ⇒ a frame per action (§3.4), and the `dump`'s tree comes free.
+    expect(actions.every((a) => a.frameStatus === 'ok' || a.frameStatus === 'skipped-busy')).toBe(true)
+    expect(store.trees).toBeGreaterThanOrEqual(1)
+
+    // The other lanes are wired too: a phase boundary carrying the resolved
+    // policy (§3.4), and the job log teed rather than replaced (§3.8).
+    const phaseStart = events.find((e) => e.kind === 'phase' && e.name === 'start')
+    expect(phaseStart?.meta).toEqual({ inspectorEngineId: 'ui-server', framePolicy: 'per-action' })
+    expect(events.some((e) => e.kind === 'log')).toBe(true)
+    // Numbering belongs to the recorder, never to the tee (uniqueIndex(jobId, seq)).
+    for (const e of events) expect('seq' in e).toBe(false)
+  })
+
+  test('on uiautomator-dump the action lane is complete and the frame lane is off by policy', async () => {
+    const events: TraceEventInput[] = []
+    const { isolation } = fakeIsolation([twoCallBehavior()])
+    const store = traceStore()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSessionWithInspector({ engineId: 'uiautomator-dump' })),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      onTraceEvent: (_jobId, event) => events.push(event),
+      traceStore: store.store,
+    })
+
+    expect((await runner.execute(JOB)).ok).toBe(true)
+    await Bun.sleep(20)
+
+    const actions = events.filter((e) => e.kind === 'action')
+    expect(actions.map((e) => e.name)).toEqual(['tap', 'dump'])
+    for (const a of actions) expect(a.frameStatus).toBe('skipped-policy')
+    // Not one screenshot was taken off the running script's adb queue (§0.3).
+    expect(store.frames).toBe(0)
+    const phaseStart = events.find((e) => e.kind === 'phase' && e.name === 'start')
+    expect(phaseStart?.meta).toEqual({ inspectorEngineId: 'uiautomator-dump', framePolicy: 'on-failure' })
+  })
+
+  test('a capture that rejects does not fail the job — it becomes a frameStatus and nothing more', async () => {
+    const events: TraceEventInput[] = []
+    const { isolation } = fakeIsolation([twoCallBehavior()])
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(
+        fakeSessionWithInspector({
+          screenshot: async () => {
+            throw new Error('ui-server watchdog: dead')
+          },
+        }),
+      ),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      onTraceEvent: (_jobId, event) => events.push(event),
+      traceStore: {
+        putFrame: async () => 'never-reached',
+        putUiTree: async () => 'tree-hash',
+      },
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+    expect(outcome.value).toBe('done')
+    await Bun.sleep(20)
+
+    const actions = events.filter((e) => e.kind === 'action')
+    expect(actions).toHaveLength(2)
+    expect(actions.every((a) => a.frameStatus === 'failed')).toBe(true)
+    expect(actions[0]?.meta?.captureError).toBe('ui-server watchdog: dead')
+  })
+
+  test('with onTraceEvent undefined the run behaves exactly as it did before this plan', async () => {
+    const { isolation } = fakeIsolation([twoCallBehavior()])
+    let screenshots = 0
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(
+        fakeSessionWithInspector({
+          screenshot: async () => {
+            screenshots += 1
+            return new Uint8Array([1])
+          },
+        }),
+      ),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      // `onTraceEvent` and `traceStore` deliberately omitted.
+    })
+
+    const outcome = await runner.execute(JOB)
+    await Bun.sleep(20)
+    expect(outcome.ok).toBe(true)
+    expect(outcome.value).toBe('done')
+    // Nothing was captured, because nothing was wired — the no-op tee costs
+    // the device exactly zero calls.
+    expect(screenshots).toBe(0)
+  })
+
+  /**
+   * Plan 128 acceptance criterion 4: "the script-facing API is byte-identical".
+   * Not a code review — an assertion. The SAME script does the SAME calls
+   * against the SAME fake device twice, once traced and once not, and every
+   * message the child receives is compared as text.
+   */
+  test('the device.result payloads the child receives are byte-identical with and without the tee', async () => {
+    const run = async (traced: boolean): Promise<string[]> => {
+      const { isolation, sentPerSpawn } = fakeIsolation([twoCallBehavior()])
+      const runner = createJobRunner({
+        isolation,
+        logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+        sessions: fakeSessions(fakeSessionWithInspector()),
+        artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+        log: silentLog(),
+        onLog: () => {},
+        onArtifact: () => {},
+        onPhase: () => {},
+        heartbeat: () => {},
+        resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+        timing: () => NO_TIMING,
+        ...(traced
+          ? {
+              onTraceEvent: () => {},
+              traceStore: { putFrame: async () => 'frame-hash', putUiTree: async () => 'tree-hash' },
+            }
+          : {}),
+      })
+      const outcome = await runner.execute(JOB)
+      expect(outcome.ok).toBe(true)
+      await Bun.sleep(20)
+      return (sentPerSpawn[0] ?? []).filter((m) => m.t === 'device.result').map((m) => JSON.stringify(m))
+    }
+
+    const untraced = await run(false)
+    const traced = await run(true)
+    expect(untraced).toHaveLength(2)
+    expect(traced).toEqual(untraced)
   })
 })
