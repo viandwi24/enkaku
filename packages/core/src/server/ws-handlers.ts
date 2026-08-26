@@ -74,6 +74,27 @@ export const MAX_BUFFERED = 512 * 1024
 
 /** The Inspect tab's `dump`/`find` deadline (plan 56 §4.2 step 5, acceptance #9) — `ui-server` targets well under this; `uiautomator-dump` can legitimately take 1-2s, so this is generous, not tight. */
 const INSPECT_DEADLINE_MS = 20_000
+/**
+ * The attach deadline, separate from `INSPECT_DEADLINE_MS` above and
+ * deliberately larger (field report, 2026-08-26).
+ *
+ * `session.whenInspectorReady()` used to be awaited with NO deadline at all,
+ * while every other inspect operation was bounded. On a 20-device farm the
+ * ui-server cold start was measured at **32 s** (`control.acquired` 03:44:44 →
+ * `inspect.attached` 03:45:16), which is longer than Studio's own 25 s WS
+ * request budget: the browser gave up and painted a bare "timeout" while the
+ * core went on to attach successfully seven seconds later. The inspector was
+ * working; nothing ever told the page so, and nothing was recorded.
+ *
+ * Bounded, so the await can never hang forever. Larger than a dump's budget,
+ * because starting the engine is genuinely slower than using it — a cold
+ * ui-server has to be pushed, spawned and polled before its first reply.
+ * Studio pairs this with a slightly LONGER client budget on the attach
+ * request specifically (`InspectorPanel.tsx`), so the core's own reason
+ * always arrives before the client stops listening — a timeout that explains
+ * itself beats one that does not.
+ */
+const INSPECT_ATTACH_DEADLINE_MS = 45_000
 
 /** Races `promise` against a timer, rejecting with a coded `EnkakuError` rather than hanging forever (plan 56 §4.2 step 5). */
 function withDeadline<T>(promise: Promise<T>, ms: number, code: string, message: string): Promise<T> {
@@ -2180,7 +2201,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 payload: { deviceId, state: 'starting', engineId: session.inspectorEngineId, capabilities: [] },
               })
               try {
-                await session.whenInspectorReady()
+                await withDeadline(
+                  session.whenInspectorReady(),
+                  INSPECT_ATTACH_DEADLINE_MS,
+                  'E_INSPECT_TIMEOUT',
+                  `the inspector did not start within ${Math.round(INSPECT_ATTACH_DEADLINE_MS / 1000)}s`,
+                )
               } catch (err) {
                 send(ws, {
                   type: 'inspect.status',

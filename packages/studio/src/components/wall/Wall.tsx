@@ -130,9 +130,20 @@ export function Wall({
   onFocus,
   onWakeVisible,
   minTileWidthPx = 180,
+  onReleaseQuarantine,
+  canReleaseQuarantine = false,
 }: {
   devices: DeviceInfo[] | null
   jobs: JobInfo[]
+  /**
+   * Return one quarantined device to the queue (field report, 2026-08-26) —
+   * the same handler the List view's `DeviceCard` already gets. Passed
+   * straight through to `WallTile`, which decides per device whether to
+   * offer it; this component never inspects a device's status itself.
+   */
+  onReleaseQuarantine?: (device: DeviceInfo) => void
+  /** Admin-only (`device.quarantine`); forwarded so the tile can disable rather than hide. */
+  canReleaseQuarantine?: boolean
   /**
    * Optional sectioning (plan 47 §3.6, §4.5) — None | Cluster | Status | Tag,
    * computed once by the parent and shared with the table view so the two
@@ -396,6 +407,8 @@ export function Wall({
                   // wrapper function here would make every click toggle
                   // even for a future caller with no selection concept.
                   onToggleSelect={onToggleSelect ? () => onToggleSelect(d.id) : undefined}
+                  onReleaseQuarantine={onReleaseQuarantine && d.status === 'quarantined' ? () => onReleaseQuarantine(d) : undefined}
+                  canReleaseQuarantine={canReleaseQuarantine}
                   focused={d.id === focusId}
                   onFocus={() => onFocus?.(d.id)}
                   rootRef={liveSet.tileRef(d.id)}

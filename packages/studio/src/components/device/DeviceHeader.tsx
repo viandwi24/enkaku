@@ -19,6 +19,7 @@ import {
   Thermometer,
   Trash2,
   TriangleAlert,
+  Undo2,
   Unplug,
 } from 'lucide-react'
 import type { BatteryState, DeviceInfo, DeviceLabelState, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
@@ -274,6 +275,8 @@ export function DeviceHeader({
   onReleaseControl,
   onDisconnect,
   onReconnect,
+  onReleaseQuarantine,
+  canReleaseQuarantine = false,
   onOpenCutover,
   onRemove,
   takeOverOpen,
@@ -315,6 +318,17 @@ export function DeviceHeader({
   onDisconnect: () => void
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — fires directly, no confirmation (it is not destructive). */
   onReconnect: () => void
+  /**
+   * Return this device to the queue when it is quarantined (field report,
+   * 2026-08-26). The device page showed a `quarantined` badge and offered no
+   * way out anywhere — not in this menu, not in the header, not in Settings —
+   * while the action existed on the fleet card all along. Thermal quarantine
+   * is deliberately manual-release (`device/battery.ts`), so this is the only
+   * way a cooled device ever gets back to work.
+   */
+  onReleaseQuarantine?: () => void
+  /** Admin-only (`device.quarantine`) — disabled with a reason rather than hidden. */
+  canReleaseQuarantine?: boolean
   /** Opens the USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — a `usb` device only; the menu item itself hides on a device already on the network. */
   onOpenCutover: () => void
   onRemove: () => void
@@ -623,6 +637,18 @@ export function DeviceHeader({
                 <RefreshCw className="size-3.5" aria-hidden />
                 Reconnect
               </DropdownMenuItem>
+              {/* Only while it is actually quarantined — a device in the queue
+                  has nothing to return to (field report, 2026-08-26). */}
+              {device.status === 'quarantined' && onReleaseQuarantine && (
+                <DropdownMenuItem
+                  onSelect={onReleaseQuarantine}
+                  disabled={!canReleaseQuarantine}
+                  title={canReleaseQuarantine ? undefined : 'Only an admin can return a quarantined device to the queue'}
+                >
+                  <Undo2 className="size-3.5" aria-hidden />
+                  Return to queue
+                </DropdownMenuItem>
+              )}
               {/* §3.8's third Connection item, the cutover wizard (§5 step
                   88.5) — USB only: a device already on the network has
                   nowhere left to move TO with this flow (Disconnect/

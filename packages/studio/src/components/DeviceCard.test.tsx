@@ -70,6 +70,31 @@ describe('DeviceCard — quarantine release', () => {
     renderWithApi(<DeviceCard device={BASE_DEVICE} onReleaseQuarantine={() => {}} canReleaseQuarantine={false} />)
     expect(screen.getByText(/temperature reached 49.8°C/i)).toBeTruthy()
   })
+
+  /**
+   * Field report, 2026-08-26. `quarantineReason` is frozen at the moment the
+   * device was pulled; the live reading sits two lines above it. A farm at
+   * 31.8°C displaying "temperature reached 45.6°C" reads as a broken sensor,
+   * not as a device that has since cooled — and the operator's actual
+   * question ("is it safe to put back to work?") went unanswered.
+   */
+  test('a device that has since cooled names the current temperature beside the one it was pulled at', () => {
+    const cooled = { ...BASE_DEVICE, battery: { level: 40, temperatureC: 31.8, status: 'discharging', health: 'good', voltageMv: 4300, updatedAt: 1_700_000_000 } }
+    renderWithApi(<DeviceCard device={cooled} onReleaseQuarantine={() => {}} />)
+    expect(screen.getByText(/temperature reached 49.8°C — now 31.8°C/i)).toBeTruthy()
+  })
+
+  test('a device that has NOT cooled says nothing extra — a number is never invented to fill the gap', () => {
+    const stillHot = { ...BASE_DEVICE, battery: { level: 40, temperatureC: 51.2, status: 'discharging', health: 'good', voltageMv: 4300, updatedAt: 1_700_000_000 } }
+    renderWithApi(<DeviceCard device={stillHot} onReleaseQuarantine={() => {}} />)
+    expect(screen.getByText(/temperature reached 49.8°C/i)).toBeTruthy()
+    expect(screen.queryByText(/now 51.2°C/i)).toBeNull()
+  })
+
+  test('an unknown battery reading leaves the phrase exactly as it was before this change', () => {
+    renderWithApi(<DeviceCard device={BASE_DEVICE} onReleaseQuarantine={() => {}} />)
+    expect(screen.getByText('Pulled from the queue: temperature reached 49.8°C')).toBeTruthy()
+  })
 })
 
 /**

@@ -3,6 +3,7 @@ import {
   Badge,
   Button,
   Combobox,
+  DevicePicker,
   ConfirmDialog,
   DeviceName,
   Dialog,
@@ -28,7 +29,6 @@ import {
   TableRow,
   Textarea,
   cn,
-  deviceSearchTerms,
   formatDeviceName,
   useAction,
 } from '@enkaku/ui'
@@ -168,7 +168,13 @@ function EditGroupDialog({
   const [note, setNote] = useState(group?.note ?? '')
   const [onDeactivate, setOnDeactivate] = useState<GroupOnDeactivate>(group?.onDeactivate ?? 'remove-rules')
   const [entries, setEntries] = useState<EntryDraft[]>(toDraft(group?.entries ?? []))
-  const [newDeviceId, setNewDeviceId] = useState('')
+  /**
+   * Devices ticked in the picker but not yet added (field report,
+   * 2026-08-26). An array, not a single id: this used to be a one-at-a-time
+   * `<Combobox>` + Add, so putting twelve phones in a group meant twelve
+   * open-search-pick-Add cycles.
+   */
+  const [pendingDeviceIds, setPendingDeviceIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
 
@@ -183,7 +189,7 @@ function EditGroupDialog({
     setNote(group?.note ?? '')
     setOnDeactivate(group?.onDeactivate ?? 'remove-rules')
     setEntries(toDraft(group?.entries ?? []))
-    setNewDeviceId('')
+    setPendingDeviceIds([])
     setError(null)
   }
 
@@ -192,11 +198,19 @@ function EditGroupDialog({
   const addableDevices = devices.filter((d) => !usedDeviceIds.has(d.deviceId))
 
   function addEntry(): void {
-    const device = devices.find((d) => d.deviceId === newDeviceId)
-    if (!device) return
-    const lanIp = device.lan.state === 'resolved' ? device.lan.lanIp : EMPTY_LAN
-    setEntries((prev) => [...prev, { deviceId: device.deviceId, lanIp, pathId: paths[0]?.id ?? '' }])
-    setNewDeviceId('')
+    const picked = pendingDeviceIds
+      .map((id) => devices.find((d) => d.deviceId === id))
+      .filter((d): d is FleetDeviceRow => d !== undefined)
+    if (picked.length === 0) return
+    setEntries((prev) => [
+      ...prev,
+      ...picked.map((device) => ({
+        deviceId: device.deviceId,
+        lanIp: device.lan.state === 'resolved' ? device.lan.lanIp : EMPTY_LAN,
+        pathId: paths[0]?.id ?? '',
+      })),
+    ])
+    setPendingDeviceIds([])
   }
 
   function removeEntry(deviceId: string): void {
@@ -283,42 +297,41 @@ function EditGroupDialog({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
-              <div className="flex gap-1.5">
-                {/*
-                  Plan 124 §0.2 called this "the worst surface in the product",
-                  and it was: the ONE dropdown in the whole repo that lists
-                  every enrolled device without going through `DevicePicker`.
-                  It was a Radix `Select` of `{d.label || d.stableId}` at
-                  `w-56` — no number, and no search beyond Radix's
-                  single-keystroke jump, so finding one phone among the
-                  owner's 45 near-identically named ones was a scroll hunt.
-
-                  Now a `Combobox` (§4.5): the row reads `#7 Galaxy A15` with
-                  the stableId as its hint, and `deviceSearchTerms` feeds the
-                  filter every string the device can legitimately be
-                  recognised by — so typing `7` finds `#7` (and not `#17`),
-                  and so does `#7`, `Galaxy` or a fragment of the stableId.
-                */}
-                <Combobox
-                  value={newDeviceId}
-                  onValueChange={setNewDeviceId}
-                  options={addableDevices.map((d) => ({
-                    value: d.deviceId,
-                    label: formatDeviceName(d.number, d.label || d.stableId),
-                    hint: d.stableId,
-                    keywords: deviceSearchTerms(d),
-                  }))}
-                  placeholder="Add a device…"
-                  searchPlaceholder="Search number, label, or stable id…"
-                  emptyText={addableDevices.length === 0 ? 'Every enrolled device is already in this group.' : 'No device matches.'}
-                  ariaLabel="Add a device to this group"
-                  triggerClassName="h-8 w-56 text-[12px]"
-                />
-                <Button size="sm" variant="outline" disabled={newDeviceId === ''} onClick={addEntry}>
-                  Add
-                </Button>
-              </div>
+              <Button size="sm" variant="outline" disabled={pendingDeviceIds.length === 0} onClick={addEntry}>
+                {pendingDeviceIds.length > 1 ? `Add ${pendingDeviceIds.length} devices` : 'Add'}
+              </Button>
             </div>
+
+            {/*
+              Plan 124 §0.2 called this "the worst surface in the product" and
+              replaced a Radix `Select` with a `Combobox`, which fixed the
+              searching but not the shape: still one device per trip, so a
+              twelve-phone group meant twelve open-search-pick-Add cycles.
+              §4.5 recorded at the time that this was the one device list in
+              the repo not going through `DevicePicker` — and it could not be,
+              because `DevicePicker` lived in `packages/studio` and a plugin
+              may only import `@enkaku/ui`.
+
+              Field report, 2026-08-26 ("kok masih dropdown?"). The component
+              moved into `@enkaku/ui`, so this is now the same picker every
+              other surface uses: search across number/label/stableId, tag
+              chips, cluster grouping, and multi-select. `FleetDeviceRow`
+              carries no status, tags or cluster, so those parts simply do not
+              render here — the picker draws what it is given and never
+              invents the rest.
+            */}
+            {addableDevices.length === 0 ? (
+              <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[12px] text-fg-muted">
+                Every enrolled device is already in this group.
+              </p>
+            ) : (
+              <DevicePicker
+                multiple
+                devices={addableDevices.map((d) => ({ ...d, id: d.deviceId, label: d.label || d.stableId }))}
+                value={pendingDeviceIds}
+                onChange={setPendingDeviceIds}
+              />
+            )}
 
             {entries.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border p-4 text-center text-[12px] text-fg-muted">No devices yet — add at least one above.</p>

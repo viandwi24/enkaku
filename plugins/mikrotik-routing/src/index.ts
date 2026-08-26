@@ -188,6 +188,36 @@ import verifyEgressScript from './verify-egress'
  * Minor, not patch: an operator meets it the moment they open the group
  * editor and can type `7` to find a phone.
  *
+ * **0.7.0 → 0.8.0 — field report, 2026-08-26: "kok masih dropdown?"** The
+ * owner opened this group editor on a live 20-device farm and asked why it
+ * was still a dropdown when the product has a device selector. Fair: 0.7.0
+ * fixed the SEARCHING and left the SHAPE alone. It was still one device per
+ * trip — open, search, pick, Add — so putting twelve phones in a group meant
+ * twelve of those cycles.
+ *
+ * The reason it stayed that shape is worth recording, because it was never a
+ * choice anyone made here: `DevicePicker`'s own rule is "every place that
+ * chooses a device uses this component, not a bare `Select`", and a plugin
+ * UI may only import `@enkaku/ui`, while `DevicePicker` lived in
+ * `packages/studio`. The rule was literally unfollowable from inside a
+ * plugin. So the component moved into `@enkaku/ui` (with Studio's status
+ * badge, holder badges and unavailable-reason text injected through render
+ * props, so Studio loses nothing), and this editor now uses the same picker
+ * every other surface does: search, tag chips, cluster grouping, and
+ * multi-select — tick several phones, add them in one motion.
+ *
+ * `FleetDeviceRow` carries no status, tags or cluster. The picker's input is
+ * structural with those optional, so the parts it was not given simply do
+ * not render — rather than this pack inventing `status: 'idle'` to satisfy a
+ * type, which would have put a badge on screen that nobody had checked.
+ *
+ * `service.permissions` is UNCHANGED. Minor, not patch, for the same reason
+ * the row above gives: an operator meets this the moment they open the group
+ * editor. And the same seeding gate applies — `seedEmbeddedPacks` keys on
+ * `${pack.name}@${pack.version}`, so without this bump the owner's farm
+ * would go on serving the 0.7.0 bundle and the dropdown would still be
+ * there, which is exactly the complaint that opened this row.
+ *
  * `config.autoRepair` was SAVED but UNREAD before this step (a gap the
  * Settings tab's own Preferences copy used to admit honestly rather than
  * imply otherwise). This step is what wires it: `reconcile.ts`'s
@@ -223,7 +253,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.7.0',
+  version: '0.8.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

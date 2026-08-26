@@ -146,7 +146,13 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
    */
   test('every device-naming surface imports the shared name formatter (plan 124 §3.8)', () => {
     const deviceNamingFiles = [
-      join(root, 'components/DevicePicker.tsx'),
+      // `components/DevicePicker.tsx` is deliberately NOT in this list any
+      // more (2026-08-26). It stopped naming devices when the component moved
+      // to `@enkaku/ui` — so a plugin UI could use it at all — and what is
+      // left here is a wrapper that injects Studio's badges and renders
+      // nothing itself. The invariant did not disappear with it: the assertion
+      // below follows it to its new home, so "the picker names devices the
+      // shared way" is still enforced, just in the file that now does it.
       join(root, 'components/DeviceCard.tsx'),
       join(root, 'components/wall/DeviceContextMenu.tsx'),
       join(root, 'components/device/DeviceHeader.tsx'),
@@ -173,6 +179,12 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
     // may legitimately use only one of them.
     const offenders = deviceNamingFiles.filter((f) => !/\b(formatDeviceName|DeviceName|matchesDeviceQuery)\b/.test(readFileSync(f, 'utf8')))
     expect(offenders).toEqual([])
+
+    // The shared picker, wherever it lives, is still bound by the same rule.
+    const sharedPicker = join(root, '../../ui/src/components/device-picker.tsx')
+    const sharedSource = readFileSync(sharedPicker, 'utf8')
+    expect(/\bDeviceName\b/.test(sharedSource)).toBe(true)
+    expect(/\bmatchesDeviceQuery\b/.test(sharedSource)).toBe(true)
   })
 
   test('AppShell.tsx carries the one permitted backdrop-filter — the sidebar (plan 101 §3.6, §4.2)', () => {

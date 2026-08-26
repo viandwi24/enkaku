@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
 import type { ServerWebSocket } from 'bun'
 import type { DisplaySource, InputSink, Selector, ServerMessage, Transport, UiNode } from '@enkaku/protocol'
@@ -467,5 +468,56 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
     const err = a.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
     expect(a.sent.some((m) => m.type === 'inspect.tree')).toBe(false)
+  })
+})
+
+/**
+ * The attach deadline (field report, 2026-08-26). `inspect.attach` awaited
+ * `session.whenInspectorReady()` with NO bound while `dump` and `find` were
+ * both wrapped in `withDeadline` — so a slow engine start hung the request
+ * until the BROWSER gave up, and the page showed a bare timeout with no
+ * reason while the core went on to attach successfully moments later.
+ * Measured on a 20-device farm: 32 s to attach, against Studio's 25 s
+ * request budget.
+ *
+ * Asserted by reading the source rather than by hanging a fake session for
+ * 45 real seconds. That is the same guard shape `tools/adb-server-control.test.ts`
+ * already uses for `adb kill-server`, and it catches the thing that actually
+ * went wrong here: not a wrong number, but a missing bound.
+ */
+describe('inspect.attach is bounded (field report 2026-08-26)', () => {
+  const source = readFileSync(new URL('./ws-handlers.ts', import.meta.url), 'utf8')
+
+  test('whenInspectorReady() is awaited through withDeadline, never bare', () => {
+    // A bare `await session.whenInspectorReady()` is the regression. It must
+    // not come back: an unbounded await here is invisible in every test that
+    // resolves it immediately, and only shows up on real hardware.
+    expect(source).not.toMatch(/await\s+session\.whenInspectorReady\(\)/)
+    expect(source).toMatch(/withDeadline\(\s*\n?\s*session\.whenInspectorReady\(\)/)
+  })
+
+  test('the attach budget is larger than a dump budget — starting an engine is slower than using it', () => {
+    const attach = /const INSPECT_ATTACH_DEADLINE_MS = ([\d_]+)/.exec(source)
+    const perOp = /const INSPECT_DEADLINE_MS = ([\d_]+)/.exec(source)
+    expect(attach).not.toBeNull()
+    expect(perOp).not.toBeNull()
+    const attachMs = Number(attach![1]!.replace(/_/g, ''))
+    const perOpMs = Number(perOp![1]!.replace(/_/g, ''))
+    expect(attachMs).toBeGreaterThan(perOpMs)
+    // The measured cold start was 32 s. A budget under that would turn a slow
+    // farm's working inspector into a deterministic failure.
+    expect(attachMs).toBeGreaterThanOrEqual(40_000)
+  })
+
+  test("Studio waits LONGER than the core's own attach deadline, so the reason always arrives", () => {
+    // The whole point of the fix: the client must outlive the server's bound,
+    // or it invents a blank timeout instead of rendering the real reason the
+    // core is about to send. Cross-package on purpose — this invariant spans
+    // the two files and is wrong the moment either drifts alone.
+    const panel = readFileSync(new URL('../../../studio/src/components/InspectorPanel.tsx', import.meta.url), 'utf8')
+    const clientMs = /inspect\.attach[\s\S]{0,200}?\},\s*([\d_]+)\)/.exec(panel)
+    expect(clientMs).not.toBeNull()
+    const attachMs = Number(/const INSPECT_ATTACH_DEADLINE_MS = ([\d_]+)/.exec(source)![1]!.replace(/_/g, ''))
+    expect(Number(clientMs![1]!.replace(/_/g, ''))).toBeGreaterThan(attachMs)
   })
 })

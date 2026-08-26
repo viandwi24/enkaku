@@ -334,7 +334,7 @@ export class WsClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(msg.id)
-        reject(new Error('timeout menunggu balasan core'))
+        reject(new Error(`the core did not answer within ${Math.round(timeoutMs / 1000)}s`))
       }, timeoutMs)
       this.pending.set(msg.id, {
         resolve: (m) => {

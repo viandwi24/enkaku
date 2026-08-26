@@ -1416,6 +1416,12 @@ function DashboardView() {
             devices={group === 'none' ? pageDevices : filtered}
             jobs={jobs}
             groups={groups}
+            // Field report, 2026-08-26 — the Wall showed the quarantine
+            // reason but never the way out, so a thermally quarantined
+            // device could only be released by switching to List view.
+            // Same handler, same admin gate as `DeviceCard` below.
+            onReleaseQuarantine={(d) => void releaseQuarantine(d)}
+            canReleaseQuarantine={canReleaseQuarantine}
             selectedIds={selectedIds}
             onToggleSelect={toggleSelected}
             onDeviceContextMenu={handleDeviceContextMenu}

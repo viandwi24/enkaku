@@ -398,7 +398,15 @@ export function InspectorPanel({
     let cancelled = false
     const attach = () => {
       setState('starting')
-      ws.request({ type: 'inspect.attach', id: newId(), payload: { deviceId } })
+      // Longer than `request()`'s 25 s default, and deliberately longer than
+      // the core's own 45 s attach deadline (`INSPECT_ATTACH_DEADLINE_MS`,
+      // `ws-handlers.ts`) — the field report this fixes was a 32 s ui-server
+      // cold start on a 20-device farm, where the browser gave up first and
+      // showed a bare timeout while the core attached fine moments later.
+      // Waiting slightly longer than the server's own bound means the page
+      // receives the REASON ("the inspector did not start within 45s", or a
+      // real engine error) instead of inventing a blank one of its own.
+      ws.request({ type: 'inspect.attach', id: newId(), payload: { deviceId } }, 50_000)
         .then((res) => {
           if (cancelled || res.type !== 'inspect.status') return
           setState(res.payload.state)

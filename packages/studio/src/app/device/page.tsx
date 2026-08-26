@@ -53,6 +53,7 @@ import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { TableCell, TableHead, Button, formatDeviceName, relativeTime, duration, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
+import { isAdmin, useAuth } from '@/lib/auth'
 import { useNow } from '@/lib/useNow'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
@@ -69,6 +70,9 @@ function DeviceDetail() {
   // pre-render dynamic ids — see the studio README.
   const params = useSearchParams()
   const router = useRouter()
+  // `device.quarantine` is admin-only (`packages/core/src/auth/acl.ts`), the
+  // same gate the fleet card applies to its own "Return to queue".
+  const { user } = useAuth()
   const deviceId = params.get('id')
   // `Inspect` stopped being a tab (plan 57 §3.1) and became a mode of the
   // screen card. Links printed before that — a bookmark, a chat message —
@@ -477,6 +481,21 @@ function DeviceDetail() {
       })
       .catch(() => undefined)
 
+  /**
+   * Return this device to the queue (field report, 2026-08-26). Thermal
+   * quarantine never lifts on its own — `device/health.ts` releases only
+   * reasons prefixed `adb:`, deliberately, so a phone that has cooled back
+   * to 32 °C stays out of the pool until a human says otherwise. Until this
+   * landed, the only place that "human says otherwise" existed was the fleet
+   * card in List view; the device's OWN page had no way at all.
+   */
+  const releaseQuarantine = () =>
+    run('unquarantine', () => api(`/api/devices/${deviceId}/unquarantine`, DeviceResponseSchema, { method: 'POST' }), {
+      success: 'Back in the queue',
+      failure: 'Could not return the device to the queue',
+      onSuccess: () => reloadDevice(),
+    })
+
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
   const reconnectDevice = () =>
     run(
@@ -693,6 +712,8 @@ function DeviceDetail() {
         onReleaseControl={releaseControl}
         onDisconnect={() => setDisconnectOpen(true)}
         onReconnect={reconnectDevice}
+        onReleaseQuarantine={() => void releaseQuarantine()}
+        canReleaseQuarantine={isAdmin(user)}
         onOpenCutover={() => setCutoverOpen(true)}
         onRemove={() => setForgetOpen(true)}
         takeOverOpen={takeOverOpen}

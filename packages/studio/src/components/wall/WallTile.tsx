@@ -150,6 +150,8 @@ export function WallTile({
   onFocus,
   rootRef,
   streamError = null,
+  onReleaseQuarantine,
+  canReleaseQuarantine = false,
 }: {
   device: DeviceInfo
   runningJob?: JobInfo | null
@@ -157,6 +159,17 @@ export function WallTile({
   live: boolean
   /** Promote this tile into the live set, swapping out the least-recently-shown one. */
   onShowLive: () => void
+  /**
+   * Return a thermally quarantined device to the queue (field report,
+   * 2026-08-26). The tile has always RENDERED the reason and never offered
+   * the way out: the button existed only on `DeviceCard`, so an operator
+   * working in Wall view — the default — saw "temperature reached 45.6°C"
+   * with no way to clear it and no hint that List view had one. Undefined
+   * when the device is not quarantined, exactly as `DeviceCard` treats it.
+   */
+  onReleaseQuarantine?: () => void
+  /** `device.quarantine` is admin-only; a non-admin sees the button disabled with the reason, never a silently missing control. */
+  canReleaseQuarantine?: boolean
   /** A tint + accent border (`refs/ui`'s own rule: selection is the card's own background/border, never a badge) — never a checkbox, since plan 101 §5 step 101.7 removed the last one. */
   selected?: boolean
   /**
@@ -448,10 +461,28 @@ export function WallTile({
             <span>Offline</span>
           </div>
         ) : quarantined ? (
-          <div className="flex size-full flex-col items-center justify-center gap-1 px-3 text-center text-[11px] text-fg-subtle">
+          <div className="flex size-full flex-col items-center justify-center gap-1.5 px-3 text-center text-[11px] text-fg-subtle">
             <span className="text-led-danger">
-              {device.quarantineReason ? explainQuarantine(device.quarantineReason) : 'Quarantined'}
+              {device.quarantineReason ? explainQuarantine(device.quarantineReason, device.battery?.temperatureC ?? null) : 'Quarantined'}
             </span>
+            {onReleaseQuarantine && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[10.5px]"
+                disabled={!canReleaseQuarantine}
+                title={canReleaseQuarantine ? undefined : 'Only an admin can return a quarantined device to the queue'}
+                // The tile's own click toggles selection or navigates — a
+                // click on this button must do neither.
+                onClick={(e) => {
+                  e.stopPropagation()
+                  e.preventDefault()
+                  onReleaseQuarantine()
+                }}
+              >
+                Return to queue
+              </Button>
+            )}
           </div>
         ) : rendersPicture ? (
           // Streaming — or holding a dead stream's own retry overlay open
