@@ -1,15 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  applyAnywayOffer,
   describeSkipReason,
   duplicateDeviceNumbersInRange,
   isEverythingFilteredSelected,
-  pathDownRows,
-  rowsStillUnwritten,
+  overDownPathRows,
   selectAllFiltered,
   selectedCountInScope,
   selectedRowsAssignable,
   selectedRowsClearable,
+  summariseOverDownPath,
   toggleSelected,
   writablePairingRows,
 } from './assignments'
@@ -42,6 +41,14 @@ function makeDevice(deviceId: string, opts: { number?: number | null; lanState?:
 
 function skipRow(endpointKey: string, pathId: string, reason: string): PlanRow {
   return { kind: 'skip', endpointKey, pathId, groupId: 'default', groupName: 'Default', reason }
+}
+
+function createRow(endpointKey: string, pathId: string, opts: { overDownPath?: true } = {}): PlanRow {
+  return { kind: 'create', endpointKey, pathId, groupId: 'default', groupName: 'Default', ...opts }
+}
+
+function updateRow(endpointKey: string, fromPathId: string, toPathId: string, opts: { overDownPath?: true } = {}): PlanRow {
+  return { kind: 'update', endpointKey, fromPathId, toPathId, groupId: 'default', groupName: 'Default', rule: { '.id': '*1', comment: '' }, ...opts }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,49 +204,49 @@ describe('selectedRowsAssignable', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 131.6 — apply anyway, deliberately
+// 132.3 — the down-path warning (plan 132 / M97: applied, not skipped)
 // ---------------------------------------------------------------------------
 
-describe('pathDownRows / applyAnywayOffer', () => {
-  test('absent when the plan has no skip row at all', () => {
-    const rows: PlanRow[] = [{ kind: 'create', endpointKey: '192.168.10.1', pathId: 'via-a', groupId: 'default', groupName: 'Default' }]
-    expect(applyAnywayOffer(rows)).toBeNull()
+describe('overDownPathRows / summariseOverDownPath', () => {
+  test('absent when nothing in the plan is flagged', () => {
+    const rows: PlanRow[] = [createRow('192.168.10.1', 'via-a')]
+    expect(summariseOverDownPath(rows)).toBeNull()
+    expect(overDownPathRows(rows)).toHaveLength(0)
   })
 
-  test('absent when the plan has skip rows for OTHER reasons — path-missing and duplicate stay a hard stop, never offered a bypass', () => {
+  test('absent when the plan has skip rows — path-missing and duplicate are not down-path writes at all', () => {
     const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-missing'), skipRow('192.168.10.2', 'via-b', 'duplicate')]
-    expect(applyAnywayOffer(rows)).toBeNull()
-    expect(pathDownRows(rows)).toHaveLength(0)
+    expect(summariseOverDownPath(rows)).toBeNull()
   })
 
-  test('present, and names the count, when some rows are skip/path-down', () => {
-    const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-down'), skipRow('192.168.10.2', 'via-b', 'path-down'), skipRow('192.168.10.3', 'via-a', 'path-missing')]
-    const offer = applyAnywayOffer(rows)
-    expect(offer?.count).toBe(2)
+  test('present, and names the count, when some rows are flagged overDownPath', () => {
+    const rows: PlanRow[] = [createRow('192.168.10.1', 'via-a', { overDownPath: true }), createRow('192.168.10.2', 'via-b', { overDownPath: true }), createRow('192.168.10.3', 'via-a')]
+    const summary = summariseOverDownPath(rows)
+    expect(summary?.count).toBe(2)
   })
 
-  test('names the DISTINCT down paths, not one entry per row', () => {
-    const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-down'), skipRow('192.168.10.2', 'via-a', 'path-down'), skipRow('192.168.10.3', 'via-b', 'path-down')]
-    expect(applyAnywayOffer(rows)?.pathIds.sort()).toEqual(['via-a', 'via-b'])
-  })
-
-  test('a mix of create/update/delete/foreign rows alongside a path-down skip still surfaces only the skip rows', () => {
+  test('names the DISTINCT down paths, not one entry per row — an update row is named by its TARGET (toPathId), not its origin', () => {
     const rows: PlanRow[] = [
-      { kind: 'create', endpointKey: '192.168.10.9', pathId: 'via-z', groupId: 'default', groupName: 'Default' },
-      skipRow('192.168.10.1', 'via-a', 'path-down'),
+      createRow('192.168.10.1', 'via-a', { overDownPath: true }),
+      updateRow('192.168.10.2', 'via-old', 'via-a', { overDownPath: true }),
+      createRow('192.168.10.3', 'via-b', { overDownPath: true }),
     ]
-    expect(pathDownRows(rows)).toHaveLength(1)
+    expect(summariseOverDownPath(rows)?.pathIds.sort()).toEqual(['via-a', 'via-b'])
+  })
+
+  test('a mix of create/update/delete/foreign/skip rows alongside a flagged one surfaces only the flagged rows', () => {
+    const rows: PlanRow[] = [createRow('192.168.10.9', 'via-z'), createRow('192.168.10.1', 'via-a', { overDownPath: true }), skipRow('192.168.10.5', 'via-c', 'duplicate')]
+    expect(overDownPathRows(rows)).toHaveLength(1)
+  })
+
+  test('an unflagged update row (overDownPath absent) is never counted, even though update rows carry no bare `pathId`', () => {
+    const rows: PlanRow[] = [updateRow('192.168.10.2', 'via-old', 'via-a')]
+    expect(overDownPathRows(rows)).toHaveLength(0)
+    expect(summariseOverDownPath(rows)).toBeNull()
   })
 })
 
 describe('describeSkipReason', () => {
-  test('path-down names what it is waiting for AND what the operator can do — never just the bare reason word', () => {
-    const copy = describeSkipReason('path-down')
-    expect(copy).not.toBe('path-down')
-    expect(copy.toLowerCase()).toContain('down')
-    expect(copy.toLowerCase()).toContain('apply anyway')
-  })
-
   test('path-missing and duplicate each get their own actionable copy, not the same sentence reused', () => {
     const missing = describeSkipReason('path-missing')
     const duplicate = describeSkipReason('duplicate')
@@ -248,30 +255,19 @@ describe('describeSkipReason', () => {
     expect(duplicate.toLowerCase()).toContain('router')
   })
 
+  test('path-down is an unrecognised reason now — it falls back to the raw string like any other value this build does not know', () => {
+    // Plan 132 (M97) removed `'path-down'` from `SkipReason` entirely: no
+    // planner code path can produce it any more, so this only proves the
+    // fallback is honest if a stale value ever did arrive (e.g. a cached
+    // preview from before the reversal).
+    expect(describeSkipReason('path-down')).toBe('path-down')
+  })
+
   test('an unrecognised reason falls back to the raw string rather than throwing or going blank', () => {
     expect(describeSkipReason('some-future-reason')).toBe('some-future-reason')
   })
 
   test('no reason at all reads as an empty string, not "undefined"', () => {
     expect(describeSkipReason(undefined)).toBe('')
-  })
-})
-
-describe('rowsStillUnwritten', () => {
-  test('every path-down row is reported unwritten when outcomes contain none of them — the current backend, honestly: executePlan (service/apply.ts) never touches a skip row', () => {
-    const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-down')]
-    expect(rowsStillUnwritten(rows, [])).toHaveLength(1)
-  })
-
-  test('a path-down row IS excluded once an outcome for its endpoint exists — forward-compatible with a future backend that can force it through', () => {
-    const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-down')]
-    const outcomes = [{ row: { kind: 'update', endpointKey: '192.168.10.1', fromPathId: 'via-old', toPathId: 'via-a', groupId: 'default', groupName: 'Default', rule: { '.id': '*1', comment: '' } } as PlanRow }]
-    expect(rowsStillUnwritten(rows, outcomes)).toHaveLength(0)
-  })
-
-  test('an outcome for a DIFFERENT endpoint does not clear an unrelated down row', () => {
-    const rows: PlanRow[] = [skipRow('192.168.10.1', 'via-a', 'path-down')]
-    const outcomes = [{ row: { kind: 'create', endpointKey: '192.168.10.99', pathId: 'via-z', groupId: 'default', groupName: 'Default' } as PlanRow }]
-    expect(rowsStillUnwritten(rows, outcomes)).toHaveLength(1)
   })
 })

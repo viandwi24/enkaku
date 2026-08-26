@@ -200,54 +200,45 @@ export function selectedRowsAssignable(selected: ReadonlySet<string>, filtered: 
 }
 
 // ---------------------------------------------------------------------------
-// Plan 131 §3.4/§4.4, step 131.6 — "apply anyway", deliberately. See
-// `ApplyDialog`'s own comment for why this is a disclosed action rather than
-// a silent one, and for the honesty note about what today's `runApply()` can
-// and cannot actually do.
+// Plan 132 (M97) §4.3, step 132.3 — the down-path warning. Plan 122 §4.5's
+// `skip` is gone (plan 132 §4.1: the assignment is a hard constraint, not a
+// preference); every `create`/`update` row whose target path is down is
+// still written, but is flagged `overDownPath` so the operator is told —
+// above the plan list, not below a `max-h-72` scroll — exactly how many
+// devices are about to lose connectivity and which paths are down, in the
+// owner's own terms (§0.1: this is what keeps a device off any other path).
 // ---------------------------------------------------------------------------
 
-/** Every `skip` row in a plan whose reason is specifically `path-down` — the one reason §3.4 gives an operator a deliberate way past, never `path-missing` or `duplicate` (§4.4's own non-goal: those stay a hard stop). */
-export function pathDownRows(rows: readonly PlanRow[]): PlanRow[] {
-  return rows.filter((row) => row.kind === 'skip' && row.reason === 'path-down')
+/** Every `create`/`update` row the plan is about to write onto a path that is currently down. */
+export function overDownPathRows(rows: readonly PlanRow[]): PlanRow[] {
+  return rows.filter((row) => (row.kind === 'create' || row.kind === 'update') && row.overDownPath === true)
 }
 
-export interface ApplyAnywayOffer {
+export interface OverDownPathSummary {
   count: number
-  /** Distinct path ids named by the down rows — what the warning tells the operator is down, not just how many rows are affected. */
+  /** Distinct path ids the affected rows are being written onto — an `update` row names its target as `toPathId`, a `create` row as `pathId`. */
   pathIds: string[]
-  /**
-   * The endpoint keys to send as `forceDownPaths` (plan 131 §3.4). Derived
-   * from the same rows the warning names, so the write can never include a
-   * row the operator was not shown — which is the whole of §4.5's
-   * "never *silently*".
-   */
-  endpointKeys: string[]
 }
 
-/** `null` when there is nothing to offer — the action must not exist at all when no row is `path-down` (§5 step 131.6's own test). */
-export function applyAnywayOffer(rows: readonly PlanRow[]): ApplyAnywayOffer | null {
-  const down = pathDownRows(rows)
-  if (down.length === 0) return null
-  const pathIds = Array.from(new Set(down.map((row) => row.pathId).filter((id): id is string => Boolean(id))))
-  // The endpoint keys the server needs in order to force these rows — plan
-  // 131 §3.4, wired through `runApply(forceDownPaths)` → `buildPlan`. Taken
-  // from the very rows the warning names, so the button can never write a
-  // row the operator was not shown.
-  const endpointKeys = Array.from(new Set(down.map((row) => row.endpointKey).filter((k): k is string => Boolean(k))))
-  return { count: down.length, pathIds, endpointKeys }
+/** `null` when nothing in the plan is affected — the warning must not render at all in that case. */
+export function summariseOverDownPath(rows: readonly PlanRow[]): OverDownPathSummary | null {
+  const affected = overDownPathRows(rows)
+  if (affected.length === 0) return null
+  const pathIds = Array.from(new Set(affected.map((row) => row.toPathId ?? row.pathId).filter((id): id is string => Boolean(id))))
+  return { count: affected.length, pathIds }
 }
 
 /**
- * Human copy for a `skip` row's reason (§3.4's last paragraph: "the word
- * `skip` also stops being the last thing the UI says" — a skipped row states
- * what it is waiting for and what the operator can do about it). Falls back
- * to the raw reason string for a value this build does not know about,
+ * Human copy for a `skip` row's reason. Only `path-missing` and `duplicate`
+ * remain skips (plan 132 §4.1 removed `'path-down'` from `SkipReason`
+ * entirely) — both stay a hard stop, for reasons that are not about
+ * availability (§2: a table that does not exist cannot be written to, and
+ * §4.3 refuses a duplicate rather than guessing which rule to keep). Falls
+ * back to the raw reason string for a value this build does not know about,
  * mirroring `api.ts`'s own loose-schema philosophy for this row.
  */
 export function describeSkipReason(reason: string | undefined): string {
   switch (reason) {
-    case 'path-down':
-      return 'Waiting on the path — it is reported down right now. It will be applied automatically once the path is back up, or use "Apply anyway" below to write it now.'
     case 'path-missing':
       return 'The path no longer exists on the router. Recreate the routing table, or point this device at a different one, then try again.'
     case 'duplicate':
@@ -255,23 +246,6 @@ export function describeSkipReason(reason: string | undefined): string {
     default:
       return reason ?? ''
   }
-}
-
-/**
- * After an "Apply anyway" attempt, which of the `path-down` rows it was FOR
- * still did not get written. `RowOutcome` is only ever produced for
- * `create`/`update`/`delete` rows (`apply.ts`'s `executePlan`: "skip/foreign
- * rows are never touched, by construction"), so a `path-down` row can never
- * appear in `outcomes` under the CURRENT backend — this always returns every
- * row `applyAnywayOffer` named. It is written as a real diff against
- * `outcomes`, not a constant `true`, so the day `apply.ts` gains a way to
- * force a `path-down` row through (this file's own report names exactly
- * what that needs), this function starts reporting the truth automatically
- * with no change here.
- */
-export function rowsStillUnwritten(rows: readonly PlanRow[], outcomes: readonly { row: PlanRow }[]): PlanRow[] {
-  const writtenEndpointKeys = new Set(outcomes.map((outcome) => outcome.row.endpointKey ?? ''))
-  return pathDownRows(rows).filter((row) => !writtenEndpointKeys.has(row.endpointKey ?? ''))
 }
 
 function HealthBadge({ health }: { health: PathHealth | undefined }) {
@@ -327,8 +301,9 @@ const PLAN_KIND_LABEL: Record<PlanRow['kind'], string> = { create: '+ create', u
 const PLAN_KIND_TONE: Record<PlanRow['kind'], string> = { create: 'text-led-ok', update: 'text-fg', delete: 'text-led-danger', skip: 'text-led-warn', foreign: 'text-fg-muted' }
 
 function PlanRowLine({ row }: { row: PlanRow }) {
+  const overDownPath = (row.kind === 'create' || row.kind === 'update') && row.overDownPath === true
   return (
-    <div className={cn('flex flex-wrap items-baseline gap-2 border-b border-border py-1.5 text-[12px] last:border-0', PLAN_KIND_TONE[row.kind])}>
+    <div className={cn('flex flex-wrap items-baseline gap-2 border-b border-border py-1.5 text-[12px] last:border-0', overDownPath ? 'text-led-warn' : PLAN_KIND_TONE[row.kind])}>
       <span className="w-16 shrink-0 font-medium">{PLAN_KIND_LABEL[row.kind]}</span>
       <span className="readout">{row.endpointKey ?? '—'}</span>
       {row.kind === 'update' ? (
@@ -339,11 +314,18 @@ function PlanRowLine({ row }: { row: PlanRow }) {
         <span className="text-fg-muted">{row.pathId ?? '—'}</span>
       )}
       {/*
-        Plan 131 §3.4's last paragraph: `skip` stops being the last thing the
-        UI says. `describeSkipReason` states what the row is waiting for and
-        what the operator can do — `(path-down)` on its own said neither.
+        Plan 132 (M97) §4.3, acceptance criterion 2: a row written over a down
+        path is visibly marked IN the row, not only in the summary above the
+        list — an operator scanning forty rows for the two that matter needs
+        the mark right where the row is, not a count they have to cross-check.
       */}
-      {row.kind === 'skip' ? <span className="w-full basis-full text-fg-muted">{describeSkipReason(row.reason)}</span> : row.reason ? <span className="text-fg-muted">({row.reason})</span> : null}
+      {(row.kind === 'create' || row.kind === 'update') && row.overDownPath ? (
+        <span className="w-full basis-full text-led-warn">Path is down — no internet on this device until it returns.</span>
+      ) : row.kind === 'skip' ? (
+        <span className="w-full basis-full text-fg-muted">{describeSkipReason(row.reason)}</span>
+      ) : row.reason ? (
+        <span className="text-fg-muted">({row.reason})</span>
+      ) : null}
     </div>
   )
 }
@@ -353,8 +335,6 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ApplyResult | null>(null)
-  /** Which button produced `result` — only "Apply anyway" gets the §3.4 honesty note below; a plain Confirm apply never claimed those rows in the first place. */
-  const [lastAction, setLastAction] = useState<'apply' | 'apply-anyway' | null>(null)
   const { run, isPending } = useAction()
 
   useEffect(() => {
@@ -362,7 +342,6 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
       setPreview(null)
       setResult(null)
       setError(null)
-      setLastAction(null)
       return
     }
     setLoading(true)
@@ -375,14 +354,10 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
 
   const previewOk = preview && !isRefusal(preview) ? preview : null
   const canApply = previewOk !== null && previewOk.localException.status === 'ok' && result === null
-  // §3.4/§4.4, step 131.6: `null` when the plan has no `path-down` row at
-  // all — the action must not exist, not merely be disabled, in that case
-  // (§5 step 131.6's own test, "the action is absent when no row is
-  // path-down"). Computed from the SAME `previewOk.rows` the warning below
-  // renders, so the button can never appear before the warning has.
-  const anyway = previewOk ? applyAnywayOffer(previewOk.rows) : null
-  const canApplyAnyway = anyway !== null && previewOk !== null && previewOk.localException.status === 'ok' && result === null
-  const stillUnwritten = result && result.ok && lastAction === 'apply-anyway' ? rowsStillUnwritten(result.rows, result.outcomes) : []
+  // Plan 132 (M97) §4.3, step 132.3: computed from the SAME `previewOk.rows`
+  // the plan list renders below, so this can never disagree with what is
+  // about to be written.
+  const overDownPath = previewOk ? summariseOverDownPath(previewOk.rows) : null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -423,6 +398,29 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
               </div>
             ) : null}
 
+            {/*
+              Plan 132 (M97) §4.3/§0.4, step 132.3 — moved ABOVE the plan
+              list, deliberately: it used to render below a `max-h-72`
+              scrolling list, where an operator applying a large plan could
+              close the dialog never having scrolled far enough to see it. An
+              assignment is a hard constraint now (§0.1) — the rule is written
+              onto the down path regardless, and this is the one place an
+              operator is told the cost before confirming, in the owner's own
+              terms: these devices go offline, and that is what keeps them off
+              any other path.
+            */}
+            {overDownPath ? (
+              <div className="space-y-1.5 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
+                <p className="text-[12px] font-medium text-led-warn">
+                  {overDownPath.count} device{overDownPath.count === 1 ? '' : 's'} will have no internet: the assigned path is down ({overDownPath.pathIds.join(', ')}).
+                </p>
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  The rule is written anyway — an assignment is a hard constraint, not a preference. This is what keeps a device off any other path (and off any other IP) rather than quietly sharing
+                  one it should not be on: it stays offline until the path comes back, instead of falling back to its previous route.
+                </p>
+              </div>
+            ) : null}
+
             {previewOk.rows.length === 0 ? (
               <p className="text-[12px] text-fg-muted">Nothing to change — the router already matches every noted assignment.</p>
             ) : (
@@ -432,44 +430,6 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                 ))}
               </div>
             )}
-
-            {/*
-              §3.4/§4.4, step 131.6: the warning §4.5 already requires
-              ("never applied silently"), PLUS the one thing that was
-              missing — a deliberate, explicit way past it. Rendered from the
-              exact same `previewOk.rows` as the plan above, so this can never
-              appear before an operator has seen the rows it is about.
-            */}
-            {anyway ? (
-              <div className="space-y-1.5 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                <p className="text-[12px] font-medium text-led-warn">
-                  {anyway.count} row{anyway.count === 1 ? '' : 's'} {anyway.count === 1 ? 'points' : 'point'} at a path that is down: {anyway.pathIds.join(', ')}.
-                </p>
-                <p className="text-[11px] leading-relaxed text-fg-muted">
-                  Skipped by default (§4.5) — a rule pointing at a dead path is a device with no internet, and that should never be a surprise. If the modem will come back and these should be written now
-                  anyway, use the action below. This never happens from the default Confirm apply.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-led-warn"
-                  disabled={!canApplyAnyway || isPending('apply-anyway') || isPending('apply')}
-                  onClick={() => {
-                    setLastAction('apply-anyway')
-                    void run('apply-anyway', () => runApply(anyway?.endpointKeys ?? []), {
-                      success: 'Applied',
-                      failure: 'Apply failed',
-                      onSuccess: (r) => {
-                        setResult(r)
-                        onApplied()
-                      },
-                    })
-                  }}
-                >
-                  Apply anyway ({anyway.count} row{anyway.count === 1 ? '' : 's'} on a down path)
-                </Button>
-              </div>
-            ) : null}
 
             {result ? (
               <div className="space-y-1 rounded-lg border border-border p-3 text-[12px]">
@@ -486,22 +446,6 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                 ) : (
                   <p className="text-led-danger">{result.message}</p>
                 )}
-                {/*
-                  The honesty half of "apply anyway" (this file's own report
-                  names the exact backend gap): `executePlan` (`service/
-                  apply.ts`) never touches a `skip` row, by construction, so
-                  today this button cannot yet make a `path-down` row land on
-                  the router any more than Confirm apply already does. Saying
-                  so here, every time, is the alternative to a button that
-                  claims a write it did not make — the one thing this whole
-                  plan exists to stop.
-                */}
-                {stillUnwritten.length > 0 ? (
-                  <p className="text-led-warn">
-                    {stillUnwritten.length} of these still were not written — the router still reports the path down, and "Apply anyway" cannot yet override that on its own (it needs the apply
-                    route itself to accept a forced path-down row, which is not part of this change).
-                  </p>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -512,9 +456,8 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
             Close
           </Button>
           <Button
-            disabled={!canApply || isPending('apply') || isPending('apply-anyway')}
+            disabled={!canApply || isPending('apply')}
             onClick={() => {
-              setLastAction('apply')
               void run('apply', () => runApply(), {
                 success: 'Applied',
                 failure: 'Apply failed',

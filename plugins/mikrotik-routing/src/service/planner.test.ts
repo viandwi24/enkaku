@@ -115,8 +115,8 @@ describe('buildPlan — delete', () => {
   })
 })
 
-describe('buildPlan — skip', () => {
-  test('path-down outranks create — a healthy path is required before an assignment is even attempted', () => {
+describe('buildPlan — a down path is applied, not skipped (plan 132 / M97)', () => {
+  test('a down path still produces a create — the assignment is a hard constraint, not a preference', () => {
     const d = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
     const result = buildPlan({
       desired: [d],
@@ -125,10 +125,10 @@ describe('buildPlan — skip', () => {
       health: [down(d.pathId)],
     })
 
-    expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' }])
+    expect(result).toEqual([{ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, overDownPath: true }])
   })
 
-  test('path-down outranks update — an existing rule pointing at a now-dead path is left alone, not patched away', () => {
+  test('a down path with an existing rule at a different table still produces an update, flagged', () => {
     const d = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
     const existing = rule({ '.id': '*1', comment: MARKER(d.groupId, d.endpointKey), 'src-address': d.endpointKey, table: 'via-modem-old' })
 
@@ -139,10 +139,66 @@ describe('buildPlan — skip', () => {
       health: [down(d.pathId), up('via-modem-old')],
     })
 
-    expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' }])
+    expect(result).toEqual([
+      { kind: 'update', endpointKey: d.endpointKey, fromPathId: 'via-modem-old', toPathId: d.pathId, groupId: d.groupId, groupName: d.groupName, rule: existing, overDownPath: true },
+    ])
   })
 
-  test('path-missing is distinct from path-down — the table does not exist on the router at all', () => {
+  test('a healthy path yields no flag at all — `overDownPath` is absent, not `false`', () => {
+    const d = desired({})
+    const result = buildPlan({
+      desired: [d],
+      rules: [],
+      pathIds: new Set([d.pathId]),
+      health: [up(d.pathId)],
+    })
+
+    expect(result).toEqual([{ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName }])
+    expect(result[0]).not.toHaveProperty('overDownPath')
+  })
+
+  test('a pathId present but with no health entry at all is treated as down (fail-safe) and still applied, flagged', () => {
+    const d = desired({})
+    const result = buildPlan({
+      desired: [d],
+      rules: [],
+      pathIds: new Set([d.pathId]),
+      health: [], // no health entry for d.pathId
+    })
+
+    expect(result).toEqual([{ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, overDownPath: true }])
+  })
+
+  test('no plan row anywhere carries reason "path-down" — the value cannot be produced any more', () => {
+    // Exhaustive over every branch buildPlan can take (create/update flagged
+    // overDownPath, path-missing skip, duplicate skip) — none of them ever
+    // sets `reason: 'path-down'`, because SkipReason no longer has that
+    // member at the type level (a re-addition would fail `bun run
+    // typecheck`, which is the other half of this guard).
+    const flaggedCreate = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
+    const missing = desired({ pathId: 'via-modem-deleted', endpointKey: '192.168.10.223' })
+    const d1 = desired({ endpointKey: '192.168.10.224' })
+    const dupRule1 = rule({ '.id': '*1', comment: MARKER(d1.groupId, d1.endpointKey), 'src-address': d1.endpointKey, table: 'via-modem2' })
+    const dupRule2 = rule({ '.id': '*2', comment: MARKER(d1.groupId, d1.endpointKey), 'src-address': d1.endpointKey, table: 'via-modem3' })
+
+    const result = buildPlan({
+      desired: [flaggedCreate, missing, d1],
+      rules: [dupRule1, dupRule2],
+      pathIds: new Set([flaggedCreate.pathId, d1.pathId, 'via-modem2', 'via-modem3']),
+      health: [down(flaggedCreate.pathId), up(d1.pathId), up('via-modem2'), up('via-modem3')],
+    })
+
+    for (const row of result) {
+      if (row.kind === 'skip') expect(row.reason).not.toBe('path-down')
+    }
+    expect(result.some((r) => r.kind === 'skip' && r.reason === 'path-missing')).toBe(true)
+    expect(result.some((r) => r.kind === 'skip' && r.reason === 'duplicate')).toBe(true)
+    expect(result.some((r) => r.kind === 'create' && 'overDownPath' in r && r.overDownPath === true)).toBe(true)
+  })
+})
+
+describe('buildPlan — skip', () => {
+  test('path-missing is the only skip reason for a path that does not exist on the router at all', () => {
     const d = desired({ pathId: 'via-modem-deleted' })
     const result = buildPlan({
       desired: [d],
@@ -154,16 +210,16 @@ describe('buildPlan — skip', () => {
     expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' }])
   })
 
-  test('a pathId present but with no health entry at all is treated as down (fail-safe), not created blind', () => {
-    const d = desired({})
+  test('path-missing outranks a healthy path too — a missing table cannot be written to regardless of health', () => {
+    const d = desired({ pathId: 'via-modem-deleted' })
     const result = buildPlan({
       desired: [d],
       rules: [],
-      pathIds: new Set([d.pathId]),
-      health: [], // no health entry for d.pathId
+      pathIds: new Set(),
+      health: [up('via-modem-deleted')],
     })
 
-    expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' }])
+    expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' }])
   })
 
   test('duplicate managed rules for one endpoint outrank both create and update — never guess which to keep', () => {
@@ -337,96 +393,21 @@ describe('buildPlan — REGRESSION: applying the same assignment twice against a
 })
 
 /**
- * Plan 131 §3.4 — the operator's explicit override of a `path-down` skip.
- *
- * Plan 122 §4.5's rule is that such a rule is "never applied **silently**".
- * The word is *silently*, not *never*: an operator who has read the warning
- * and knows the modem will come back had no way to say so, and the assignment
- * simply never landed. The forcing therefore happens HERE, in the planner —
- * a forced entry falls through to `resolveTarget` and becomes the real
- * `create`/`update` it will be, so the preview shows the write before it
- * happens (§4.4). Doing it in `executePlan` instead would have left the plan
- * saying `skip` while the executor wrote anyway, which is the same silent
- * surprise arrived at from the other side.
+ * Plan 132 (M97) §4.2 — plan 131 §3.4's override collapses into the default.
+ * There is nothing left to force: every desired entry is now applied
+ * regardless of health, so `forceDownPaths` is gone from `BuildPlanInput`
+ * entirely rather than kept as an inert parameter.
  */
-describe('buildPlan — forceDownPaths (plan 131 §3.4)', () => {
-  test('a forced endpoint becomes a real create, flagged, instead of a skip', () => {
-    const d = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
-    const result = buildPlan({
-      desired: [d],
-      rules: [],
-      pathIds: new Set([d.pathId]),
-      health: [down(d.pathId)],
-      forceDownPaths: new Set([d.endpointKey]),
-    })
-
-    expect(result).toEqual([
-      { kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, forcedOverDownPath: true },
-    ])
-  })
-
-  test('a forced endpoint with an existing rule becomes a real update, flagged', () => {
-    const d = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
-    const existing = rule({ '.id': '*1', comment: MARKER(d.groupId, d.endpointKey), 'src-address': d.endpointKey, table: 'via-modem-old' })
-
-    const result = buildPlan({
-      desired: [d],
-      rules: [existing],
-      pathIds: new Set([d.pathId, 'via-modem-old']),
-      health: [down(d.pathId), up('via-modem-old')],
-      forceDownPaths: new Set([d.endpointKey]),
-    })
-
-    expect(result).toHaveLength(1)
-    expect(result[0]).toMatchObject({ kind: 'update', endpointKey: d.endpointKey, toPathId: d.pathId, forcedOverDownPath: true })
-  })
-
-  test('forcing one endpoint leaves every other down row a skip — the set is not a global switch', () => {
-    const forced = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
-    const other = desired({ pathId: 'via-modem32', endpointKey: '192.168.10.223' })
-    const result = buildPlan({
-      desired: [forced, other],
-      rules: [],
-      pathIds: new Set([forced.pathId, other.pathId]),
-      health: [down(forced.pathId), down(other.pathId)],
-      forceDownPaths: new Set([forced.endpointKey]),
-    })
-
-    expect(result.find((r) => r.endpointKey === forced.endpointKey)).toMatchObject({ kind: 'create', forcedOverDownPath: true })
-    expect(result.find((r) => r.endpointKey === other.endpointKey)).toMatchObject({ kind: 'skip', reason: 'path-down' })
-  })
-
-  test('a HEALTHY path in the forced set is never flagged — the flag means "written over a dead path", not "was in the set"', () => {
-    const d = desired({ pathId: 'via-modem7', endpointKey: '192.168.10.215' })
-    const result = buildPlan({
-      desired: [d],
-      rules: [],
-      pathIds: new Set([d.pathId]),
-      health: [up(d.pathId)],
-      forceDownPaths: new Set([d.endpointKey]),
-    })
-
-    expect(result).toEqual([{ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName }])
-  })
-
-  test('path-missing is NOT forceable — a routing table that does not exist cannot be written to at all', () => {
+describe('buildPlan — path-missing stays unforceable, by construction (there is no forcing left)', () => {
+  test('a missing path is still a skip no matter how the desired entry is shaped — nothing can make it a write', () => {
     const d = desired({ pathId: 'via-modem-gone', endpointKey: '192.168.10.222' })
     const result = buildPlan({
       desired: [d],
       rules: [],
       pathIds: new Set(),
       health: [],
-      forceDownPaths: new Set([d.endpointKey]),
     })
 
     expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' }])
-  })
-
-  test('omitting forceDownPaths is byte-identical to before this field existed', () => {
-    const d = desired({ pathId: 'via-modem31', endpointKey: '192.168.10.222' })
-    const input = { desired: [d], rules: [], pathIds: new Set([d.pathId]), health: [down(d.pathId)] }
-
-    expect(buildPlan(input)).toEqual(buildPlan({ ...input, forceDownPaths: new Set() }))
-    expect(buildPlan(input)).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' }])
   })
 })

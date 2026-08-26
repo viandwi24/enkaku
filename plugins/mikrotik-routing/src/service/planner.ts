@@ -19,25 +19,24 @@
  *
  * ## Design decisions worth stating explicitly
  *
- * 1. **`skip` outranks `create`/`update`, and covers three reasons, not just
- *    "path is down".** §4.5: an assignment pointing at a dead path must never
- *    be applied silently. This module treats a target path that no longer
- *    EXISTS on the router at all (`pathIds` — §4.5's `Path.id`) as a
- *    genuinely different condition from one that exists but is unhealthy
- *    (`health` — §4.5's up/down flag), because the fix an operator reaches
- *    for differs (recreate the routing table vs. wait for the modem). Rather
- *    than inventing a second vocabulary, this reuses `drift.ts`'s own
- *    `path-missing` term for the first case (`SkipReason: 'path-missing'`)
- *    and adds `'path-down'` for the second — both are `skip`, per §4.4's five
- *    row kinds, distinguished only by `reason`. A third reason, `'duplicate'`,
- *    covers `resolveTarget`'s `refuse-duplicate` outcome: §4.3 is explicit
- *    that two matching rules means REFUSE, never guess which to keep, so an
- *    endpoint in that state can no more become `create`/`update` than a dead
- *    path can — it is exactly as unsafe to write blind, just for a different
- *    reason. Extending `skip`'s reason vocabulary (rather than adding a sixth
- *    row kind) is a deliberate, minimal reading of §4.4: it still produces
- *    "exactly these five row kinds," and a duplicate is not safely
- *    actionable any other way.
+ * 1. **`skip` now covers exactly two reasons — a down path is no longer one
+ *    of them.** Plan 132 (M97) reverses plan 122 §4.5 on the farm owner's
+ *    explicit instruction: an assignment is a hard constraint, not a
+ *    preference, and a device that keeps using its previous (undesired) path
+ *    is the dangerous outcome, not a device with no internet on the path it
+ *    was actually told to use. So a path that exists but is currently
+ *    unhealthy (`health` — §4.5's up/down flag) no longer produces a `skip`
+ *    row at all: it falls through to `resolveTarget` exactly like a healthy
+ *    path, and the resulting `create`/`update` row carries `overDownPath:
+ *    true` so the preview still shows it — never applied *silently*, which
+ *    is the one half of §4.5 this plan keeps. What remains a `skip`, and
+ *    stays that way, is a target path that no longer EXISTS on the router at
+ *    all (`pathIds` — §4.5's `Path.id`, `SkipReason: 'path-missing'`) — a
+ *    routing table that does not exist cannot be written to, full stop — and
+ *    `'duplicate'`, covering `resolveTarget`'s `refuse-duplicate` outcome:
+ *    §4.3 is explicit that two matching rules means REFUSE, never guess which
+ *    to keep. Neither of those two is about availability, which is exactly
+ *    why forcing them would be the real mistake (plan 132 §2).
  * 2. **`delete` carries the raw marker `groupId`, never a "friendly" group
  *    name.** §4.4's own example shows `(was Jadwal-1)`, but a `delete` row is
  *    for an endpoint the CURRENT desired state (this module's only group
@@ -131,40 +130,23 @@ export interface BuildPlanInput {
   rules: readonly RouterRule[]
   /** Routing tables that currently exist on the router (§4.5's `Path.id`, from `inventory().paths`). */
   pathIds: ReadonlySet<string>
-  /** Path health, from `inventory().health` — "up" iff the path's default route carries the active flag (§4.5). A `pathId` with no entry here is treated as down (fail-safe — see this file's header). */
-  health: readonly PathHealth[]
   /**
-   * Endpoint keys the operator has explicitly chosen to write even though
-   * their path is DOWN (plan 131 §3.4). Empty/absent by default, which is
-   * every caller that has not opted in — behaviour then is byte-identical to
-   * before this field existed.
-   *
-   * **The forcing happens HERE, in the planner, and deliberately not in the
-   * executor.** Plan 122 §4.5's rule is that such a rule is "never applied
-   * *silently*" — the word is silently, not never. A forced entry therefore
-   * skips the `path-down` check and falls through to `resolveTarget` like any
-   * other, so it becomes a genuine `create`/`update` row carrying
-   * `forcedOverDownPath: true`. The operator sees in the preview exactly the
-   * write that is about to happen, which is §4.4's guarantee ("plan, then
-   * apply — never write blind") preserved rather than sidestepped.
-   *
-   * Had this been done in `executePlan` instead, the plan would have kept
-   * saying `skip` while the executor wrote anyway — precisely the silent
-   * surprise §4.5 exists to prevent, arrived at from the opposite direction.
-   *
-   * `path-missing` and `duplicate` are NOT forceable and never will be from
-   * here: a table that does not exist cannot be written to at all, and §4.3
-   * is explicit that two matching rules means refuse, never guess.
+   * Path health, from `inventory().health` — "up" iff the path's default
+   * route carries the active flag (§4.5). A `pathId` with no entry here is
+   * treated as down (fail-safe — see this file's header). Stays on this
+   * input even though a down path is no longer skipped: it is what sets
+   * `overDownPath` on the resulting `create`/`update` row, and the UI needs
+   * it to name which paths are down.
    */
-  forceDownPaths?: ReadonlySet<string>
+  health: readonly PathHealth[]
 }
 
-/** Why a `skip` row was produced instead of `create`/`update` — see this file's header, point 1. */
-export type SkipReason = 'path-down' | 'path-missing' | 'duplicate'
+/** Why a `skip` row was produced instead of `create`/`update` — see this file's header, point 1. `'path-down'` was removed by plan 132 (M97): a down path is applied, not skipped. */
+export type SkipReason = 'path-missing' | 'duplicate'
 
 export type PlanRow =
-  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string; forcedOverDownPath?: true }
-  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule; forcedOverDownPath?: true }
+  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string; overDownPath?: true }
+  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule; overDownPath?: true }
   | { kind: 'delete'; endpointKey: string; pathId: string | null; groupId: string | null; rule: RouterRule }
   | { kind: 'skip'; endpointKey: string; pathId: string; groupId: string; groupName: string; reason: SkipReason }
   | { kind: 'foreign'; endpointKey: string | null; pathId: string | null; rule: RouterRule }
@@ -221,18 +203,14 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
       rows.push({ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' })
       continue
     }
-    const forced = input.forceDownPaths?.has(d.endpointKey) ?? false
-    if (!(healthByPath.get(d.pathId) ?? false) && !forced) {
-      rows.push({ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-down' })
-      continue
-    }
-    // Only true when the path really is down AND the operator asked for it —
-    // never set for a healthy path that merely appeared in the forced set.
-    const overDownPath = forced && !(healthByPath.get(d.pathId) ?? false)
+    // Plan 132 (M97) §4.1: a down path is no longer a reason to skip. It
+    // falls through to `resolveTarget` exactly as a healthy path does, and
+    // the resulting row is flagged so the preview still shows it truthfully.
+    const overDownPath = !(healthByPath.get(d.pathId) ?? false)
 
     const resolved = resolveTarget(input.rules, d.endpointKey)
     if (resolved.action === 'create') {
-      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, ...(overDownPath ? { forcedOverDownPath: true as const } : {}) })
+      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, ...(overDownPath ? { overDownPath: true as const } : {}) })
     } else if (resolved.action === 'update') {
       if (resolved.rule.table === d.pathId && !resolved.rule.disabled) {
         // Already correct and enabled — no row (mirrors drift.ts's "matches
@@ -248,7 +226,7 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
         groupId: d.groupId,
         groupName: d.groupName,
         rule: resolved.rule,
-        ...(overDownPath ? { forcedOverDownPath: true as const } : {}),
+        ...(overDownPath ? { overDownPath: true as const } : {}),
       })
     } else {
       // 'refuse-duplicate' — never guess which to keep (§4.3); this endpoint is not safely actionable.

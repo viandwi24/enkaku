@@ -349,6 +349,8 @@ const PlanRowSchema = z.looseObject({
   groupId: z.string().nullable().optional(),
   groupName: z.string().optional(),
   reason: z.string().optional(),
+  /** Plan 132 (M97) §4.1 — set on a `create`/`update` row whose target path is currently down. The write still happens; this is what lets the UI mark it and total up the warning above the plan list (§4.3). */
+  overDownPath: z.boolean().optional(),
   rule: z.looseObject({ '.id': z.string(), comment: z.string() }).optional(),
 })
 export type PlanRow = z.infer<typeof PlanRowSchema>
@@ -382,19 +384,13 @@ export async function previewApplyPlan(): Promise<PlanPreviewResult> {
 }
 
 /**
- * `forceDownPaths` (plan 131 §3.4) — endpoint keys the operator has
- * explicitly chosen to write even though their path is DOWN. Omitted (the
- * default, and every pre-plan-131 caller) sends `{}` exactly as before.
- *
- * Forcing changes the PLAN, not the execution: the server hands these to
- * `buildPlan`, so a forced row is previewed as the real `create`/`update` it
- * will be, flagged `forcedOverDownPath` — never written while the preview
- * still says `skip`. That is plan 122 §4.5's "never applied *silently*" kept
- * intact, with the dead end removed.
+ * Executes the exact plan `previewApplyPlan` shows. An assignment onto a down
+ * path is written like any other (plan 132 / M97) — the row comes back marked
+ * `overDownPath` rather than held back as a `skip`, so there is nothing left
+ * for a caller here to opt into.
  */
-export async function runApply(forceDownPaths?: readonly string[]): Promise<ApplyResult> {
-  const json = forceDownPaths && forceDownPaths.length > 0 ? { forceDownPaths: [...forceDownPaths] } : {}
-  return api(`${ROUTER_HTTP_API}/apply`, ApplyResultSchema, { method: 'POST', json })
+export async function runApply(): Promise<ApplyResult> {
+  return api(`${ROUTER_HTTP_API}/apply`, ApplyResultSchema, { method: 'POST', json: {} })
 }
 
 /**

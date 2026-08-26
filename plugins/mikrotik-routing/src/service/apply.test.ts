@@ -350,15 +350,20 @@ describe('applyNow — executing the plan once the gate is `ok`', () => {
     expect(result.rows.find((r) => r.kind === 'skip' && 'reason' in r && r.reason === 'duplicate')).toBeDefined()
   })
 
-  test('a path that is down yields a skip row and is never written silently (§4.5)', async () => {
+  test('a path that is down is applied anyway, flagged, never held back (plan 132 / M97 — the assignment is a hard constraint)', async () => {
     const devices = [makeDevice('d1', '192.168.10.215')]
     const { host } = fakeHost({ routerKv: ROUTER_CONFIG, devices, assignments: { d1: writeAssignment(assignment({ pathId: 'via-modem1' })) } })
     const driver = fakeDriver({ listRules: async () => [protectingRule()], inventory: async () => emptyInventory({ health: [{ pathId: 'via-modem1', up: false, checkedAt: 1 }] }) })
     const result = await applyNow(host, { createDriver: () => driver, deriveCoreAddress: async () => OK_CORE_ADDRESS })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('unreachable')
-    expect(driver.calls).toEqual({ create: [], update: [], delete: [] })
-    expect(result.rows.filter((r) => r.kind !== 'foreign')).toEqual([{ kind: 'skip', endpointKey: '192.168.10.215', pathId: 'via-modem1', groupId: 'default', groupName: 'Default', reason: 'path-down' }])
+    // Written for real — a rule pointing at a dead table (`action:
+    // lookup-only-in-table`, router-driver.ts) drops the traffic rather than
+    // falling through to another path, which is what makes this safe to do.
+    expect(driver.calls.create).toEqual([{ srcAddress: '192.168.10.215', table: 'via-modem1', comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215' }])
+    const createRow = { kind: 'create' as const, endpointKey: '192.168.10.215', pathId: 'via-modem1', groupId: 'default', groupName: 'Default', overDownPath: true as const }
+    expect(result.rows.filter((r) => r.kind !== 'foreign')).toEqual([createRow])
+    expect(result.outcomes).toEqual([{ row: createRow, outcome: 'applied' }])
   })
 
   test('one failing write is reported as an error outcome and does not abort the remaining rows', async () => {

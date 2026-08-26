@@ -53,6 +53,7 @@ import {
   type PlanRow,
 } from './api'
 import { pathOptions, useLoader } from './bits'
+import { summariseOverDownPath } from './assignments'
 import { buildPairings, type BulkPairing, type PairingNote, type PairingRow } from './bulk-builder'
 
 /**
@@ -738,6 +739,10 @@ function PlanRowLine({ row }: { row: PlanRow }) {
         <span className="text-fg-muted">{row.pathId ?? '—'}</span>
       )}
       {row.reason ? <span className="text-fg-muted">({row.reason})</span> : null}
+      {/* Plan 132 §10 — the same mark `assignments.tsx` puts on a row that
+          lands on a currently-down path. Without it this dialog wrote those
+          rules and said nothing, which is §0.4's complaint one screen over. */}
+      {'overDownPath' in row && row.overDownPath ? <span className="text-led-warn">(path is down — this device will have no internet until it returns)</span> : null}
     </div>
   )
 }
@@ -793,6 +798,9 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
   }
 
   const previewOk = preview && preview.ok ? preview : null
+  // Reuses the Assignments tab's own helper rather than a second copy — the
+  // two dialogs must never disagree about which rows land on a down path.
+  const overDownPath = previewOk ? summariseOverDownPath(previewOk.plan) : null
   const previewRefusal = preview && !preview.ok ? preview : null
   const blocked: BlockedAssignment[] = previewOk?.blocked ?? []
   const localExceptionBlocks = previewOk ? previewOk.localException.status !== 'ok' : false
@@ -883,6 +891,22 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
                     </li>
                   ))}
                 </ul>
+              </div>
+            ) : null}
+
+            {/* Plan 132 §4.3, extended here per §10: ABOVE the scrolling list,
+                never below it. Activating a group with a down path writes the
+                rule and takes those devices offline — deliberately, because an
+                assignment is a constraint — but an operator must be told
+                before they scroll, not after. */}
+            {overDownPath ? (
+              <div className="space-y-1 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
+                <p className="text-[12px] font-medium text-led-warn">
+                  {overDownPath.count} device{overDownPath.count === 1 ? '' : 's'} will lose internet: {overDownPath.pathIds.join(', ')} {overDownPath.pathIds.length === 1 ? 'is' : 'are'} down.
+                </p>
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  The rule is written anyway, and that is the point — a device keeps the egress path you assigned it instead of falling back to another one. Traffic resumes on its own when the path returns.
+                </p>
               </div>
             ) : null}
 

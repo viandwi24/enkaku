@@ -82,17 +82,59 @@ function CommandInput({
   )
 }
 
+/**
+ * The wheel handler exists because of a real, reported bug, and the mechanism
+ * is worth stating so nobody "simplifies" it away.
+ *
+ * A `Combobox` opened inside a `Dialog` showed a scrollbar and could not be
+ * scrolled with a mouse or trackpad — only with the arrow keys. Reported twice
+ * on two different controls, both inside dialogs (the MikroTik group editor's
+ * path picker and the bulk-assign starting-path picker).
+ *
+ * Read out of the pinned `@radix-ui/react-dialog@1.1.23` rather than guessed:
+ * its modal `DialogContent` wraps the page in `RemoveScroll` with
+ * `shards: [context.contentRef]` — exactly ONE allowed scroll region, the
+ * dialog's own content element. `popover.tsx` renders through
+ * `PopoverPrimitive.Portal`, so the list lives on `document.body`, OUTSIDE
+ * `contentRef` and therefore outside the shard. `react-remove-scroll` then
+ * cancels its wheel events at the document level. The scrollbar is real — the
+ * list genuinely overflows — but the wheel never reaches it. Arrow keys work
+ * because `cmdk` moves the active item itself and calls `scrollIntoView`,
+ * which is a programmatic scroll and never a wheel event.
+ *
+ * So the list scrolls ITSELF: it takes the wheel, cancels the default, and
+ * moves `scrollTop` by hand. Deterministic in both cases — inside a dialog
+ * where the default was going to be cancelled anyway, and outside one where
+ * we cancel it ourselves, so there is never a double scroll.
+ *
+ * `overscroll-contain` keeps the gesture from chaining to whatever is behind
+ * once the list reaches an end, which is what a dropdown should do regardless.
+ *
+ * The alternatives were considered and rejected: dropping the Portal would
+ * expose every popover to clipping by an `overflow` ancestor, and passing the
+ * dialog's element as the portal container would make every call site know
+ * whether it sits in a dialog.
+ */
 function CommandList({
   className,
+  onWheel,
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.List>) {
   return (
     <CommandPrimitive.List
       data-slot="command-list"
       className={cn(
-        "max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto",
+        "max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto overscroll-contain",
         className
       )}
+      onWheel={(event) => {
+        onWheel?.(event)
+        if (event.defaultPrevented) return
+        const el = event.currentTarget
+        if (el.scrollHeight <= el.clientHeight) return // nothing to scroll — let it through
+        event.preventDefault()
+        el.scrollTop += event.deltaY
+      }}
       {...props}
     />
   )

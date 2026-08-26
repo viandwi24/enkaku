@@ -187,6 +187,8 @@ Studio requires confirmation (`config.requireConfirm`, default on). A schedule-d
 
 ### 4.5 Path health
 
+> **REVERSED by plan 132 (M97), 2026-08-26 — read that plan before acting on the paragraph below.** The `skip` this section specifies for a down path is gone: an assignment onto a down path is now **applied**. The reasoning here optimised for the wrong failure. It treats loss of connectivity as the worst outcome; on the farm this plugin was built for, the worst outcome is the *wrong* connectivity — a device that keeps using its previous path is sharing an IP it must not be on, and that is what gets accounts banned. `skip` was the only one of the three possible outcomes that leaked, because it left the old rule standing. Forcing is safe precisely because every managed rule carries `action=lookup-only-in-table` (§4.1): a rule pointing at a dead table drops the traffic rather than falling through. `path-missing` and `duplicate` are NOT reversed and remain refusals — a table that does not exist cannot be written to, and §4.3 refuses a duplicate rather than guessing.
+
 A path is **up** iff its default route in `/ip/route` carries the active flag (maintained on this router by `check-gateway=ping`). An assignment pointing at a down path appears in the plan as `skip` and in the UI as a warning — never applied silently, because a rule pointing at a dead path is a device with no internet, and that should never be a surprise. Optional per-group `failoverPolicy`: `none` (default — report and stop) or `substitute` (assign the healthiest least-loaded up path and **mark the assignment as substituted**, so the UI shows it differs from the group's declared intent).
 
 ### 4.6 Groups, activation, and the exclusivity invariant

@@ -188,6 +188,42 @@ import verifyEgressScript from './verify-egress'
  * Minor, not patch: an operator meets it the moment they open the group
  * editor and can type `7` to find a phone.
  *
+ * **0.10.0 → 0.11.0 — an assignment is a constraint, not a preference
+ * (plan 132, M97). This REVERSES plan 122 §4.5.**
+ *
+ * A device assigned to a path now gets that path written even when the path
+ * is DOWN. The old rule skipped it, and the owner's instruction was blunt:
+ * *"sekalinya device ditentukan keluar lewat mana internetnya itu wajib
+ * dipatuhi … makanya ga boleh diskip wajib dipaksa"*.
+ *
+ * §4.5 optimised for the wrong failure. It treated a device with no internet
+ * as the worst outcome. On this farm the worst outcome is a device with the
+ * WRONG internet: one that keeps its previous path is sharing an IP it must
+ * not be on, and that is what gets accounts banned. Of the three possible
+ * outcomes — skip, apply, delete the old rule — `skip` was the only one that
+ * leaked, because it left the old rule standing.
+ *
+ * Safe to do only because of a property that was already right:
+ * `MANAGED_RULE_ACTION = 'lookup-only-in-table'` (`service/router-driver.ts`).
+ * A rule pointing at a dead table DROPS the traffic. Had it been plain
+ * `lookup`, forcing would have produced exactly the leak this change
+ * prevents, and the reversal would have been wrong.
+ *
+ * `SkipReason` loses `'path-down'` entirely rather than keeping it as dead
+ * vocabulary. `path-missing` and `duplicate` are untouched and still refuse:
+ * a routing table that does not exist cannot be written to, and §4.3 refuses
+ * a duplicate rather than guessing which of two rules to keep. Neither is
+ * availability caution.
+ *
+ * The warning survives the refusal's removal and moves ABOVE the plan list,
+ * in both the Assignments apply dialog and the group activation preview —
+ * previously it sat below a scrolling list, so an operator could apply a
+ * 22-row plan and leave believing the fleet had moved. Plan 131's
+ * "apply anyway" button is gone: there is nothing left to force, and leaving
+ * the affordance would imply some safer default still existed.
+ *
+ * Minor, not patch: the outcome of an apply changes.
+ *
  * **0.9.0 → 0.10.0 — field report, 2026-08-26: five complaints from one
  * afternoon of real use.** Four additive, one a correction.
  *
@@ -317,7 +353,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.10.0',
+  version: '0.11.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',
