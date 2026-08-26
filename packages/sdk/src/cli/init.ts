@@ -435,31 +435,75 @@ function uiStyles(name: string): string {
 }
 
 function hostTypes(): string {
-  return `import type { ComponentType } from 'react'
-import type { PluginViewProps } from '@enkaku/ui'
-
-/**
- * The one thing Studio puts in the page for a plugin: a registry to hand a
- * component to. \`Window\` is a global, so this declaration has to live in a
- * \`.d.ts\` — but the PROPS your component receives do not.
+  return `/**
+ * Ambient declarations for the two things Studio puts in the page for a
+ * plugin: the view registry on \`window\`, and the \`@enkaku/host\` module.
  *
- * \`PluginViewProps\` is imported, never restated. It is declared once, in
- * \`@enkaku/protocol\`, and re-exported by \`@enkaku/ui\` — the same type
- * Studio's own host uses to render your view. Copy it into this file and it
- * will be a copy nothing checks; import it and a change to the contract is a
- * compile error in your project rather than a broken screen in somebody's
- * farm.
+ * **This file must contain NO top-level \`import\` or \`export\`.** That is not
+ * a style preference — it is load-bearing, and getting it wrong fails in a
+ * way that points somewhere else entirely (found while wiring plan 129 step
+ * 129.7, after the previous version of this template shipped with the bug).
+ *
+ * The moment a \`.d.ts\` has a top-level \`import\` or \`export\`, TypeScript
+ * treats the whole file as a MODULE. A \`declare module '@enkaku/host'\` inside
+ * a module file is module AUGMENTATION rather than a new ambient module: it
+ * quietly requires \`'@enkaku/host'\` to already resolve some other way, which
+ * it never can, because Studio serves it through an import map and it is
+ * never published to disk. The symptom is \`Cannot find module
+ * '@enkaku/host'\` reported against every file that imports it — never
+ * against this one.
+ *
+ * So every type here is written as an inline \`import('pkg').X\`, which does
+ * NOT make the file a module, and \`Window\` is augmented directly instead of
+ * through \`declare global\` (that construct requires the file to already be a
+ * module — TS2669 otherwise).
  */
-declare global {
-  interface Window {
-    __enkaku__: {
-      /** Registers the component that renders one view id, as declared under \`surface.views\`. */
-      register(viewId: string, component: ComponentType<PluginViewProps>): void
-    }
+
+interface Window {
+  /**
+   * NOT optional, deliberately: Studio always installs this before it
+   * imports your module, so the scaffold's own \`window.__enkaku__.register(...)\`
+   * call needs no guard. Marking it \`?\` makes every plugin's entry file fail
+   * with TS18048.
+   */
+  __enkaku__: {
+    /** Registers the component that renders one view id, as declared under \`surface.views\`. */
+    register(viewId: string, component: import('react').ComponentType<import('@enkaku/ui').PluginViewProps>): void
   }
 }
 
-export {}
+/**
+ * \`@enkaku/host\` — Studio's OWN components, offered through the same
+ * host-module table \`@enkaku/ui\` is (plan 129 §3.4, step 129.5). Unlike
+ * \`@enkaku/ui\` this is never a published package: Studio hands your module
+ * its own live namespace through an import map, so there is nothing on disk
+ * for \`tsc\` to resolve without this block.
+ *
+ * Nothing checks this declaration against Studio's real barrel
+ * (\`packages/studio/src/components/host/index.ts\`) — there is no shared
+ * package both sides import from, so a drift here cannot fail a build and can
+ * only be noticed. If that barrel gains an export, update this by hand.
+ */
+declare module '@enkaku/host' {
+  /**
+   * Pick devices from a wall of LIVE tiles — the same tiles the Devices page
+   * renders, in a dialog. Choose by looking at the screen rather than by
+   * reading a name off a list; each tile shows the device's number, name,
+   * stableId and its live picture.
+   *
+   * It fetches the device list itself, so pass none. \`filter\` narrows what is
+   * offered (for example, devices not already in the group you are editing).
+   */
+  export function DeviceWallWithPicker(props: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    /** Ids already chosen — shown selected, and returned unchanged unless deselected. */
+    value: string[]
+    onConfirm: (ids: string[]) => void
+    filter?: (device: import('@enkaku/protocol').DeviceInfo) => boolean
+    title?: string
+  }): import('react').ReactElement | null
+}
 `
 }
 

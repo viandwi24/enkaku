@@ -229,6 +229,30 @@ import verifyEgressScript from './verify-egress'
  * refuses without. `ui/parts/settings.tsx`'s Preferences card copy is
  * updated in the same change to say so, rather than left claiming nothing
  * reads it.
+ *
+ * **0.8.0 → 0.9.0 — plan 129 §5 step 129.7, the wall picker.** The owner's
+ * own words opening plan 129 §0.4: *"saya minta device selector nya pas add
+ * device ada popup untuk device list kaya walls gitu, jadi user bisa pilih
+ * mau add device sambil lihat screen castnya"* — 0.8.0's list-style
+ * `DevicePicker` was strictly better than the dropdown it replaced and still
+ * not the ask: a wall of LIVE tiles, chosen by looking at the screen. That
+ * needed a component no plugin could previously reach — one that owns a
+ * WebSocket video stream — so plan 129 §3.4/§4.4 added `@enkaku/host`, a
+ * second host-module table alongside `@enkaku/ui`'s, through which Studio
+ * hands a plugin its OWN live components rather than a published package.
+ * `ui/parts/groups.tsx`'s group editor now opens `DeviceWallWithPicker`
+ * (Studio's `Wall`/`WallTile`, plan 129 §3.5) instead of the list picker;
+ * `addEntry` is unchanged in shape — it still takes several ids in one call
+ * and builds one entry per device with its resolved LAN address and the
+ * fleet's first path — only the source of those ids changed.
+ *
+ * `service.permissions` is UNCHANGED. Minor, not patch, for the same
+ * mechanical reason every UI-only bump above gives: `seedEmbeddedPacks`
+ * (`packages/core/src/plugins/seed-embedded.ts`) keys on
+ * `${pack.name}@${pack.version}` and skips a key it has already seeded, so
+ * left at 0.8.0 the owner's farm would go on serving the list-picker bundle
+ * and this row would never reach a browser — exactly what plan 124 §0.2 and
+ * the 0.7.0/0.8.0 rows above already record happening twice.
  */
 
 const checkParams = z.object({})
@@ -253,7 +277,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.8.0',
+  version: '0.9.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

@@ -95,8 +95,19 @@ import type { UiAsset } from './enkaku-package'
  * up with an unresolved one either.
  */
 
-/** Exactly the specifiers Studio's import map provides. Adding one here that the map does not serve would fail at load with an unresolved bare specifier. */
-export const UI_EXTERNALS = ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom', '@enkaku/ui'] as const
+/**
+ * Exactly the specifiers Studio's import map provides. Adding one here that
+ * the map does not serve would fail at load with an unresolved bare specifier.
+ *
+ * `@enkaku/host` was added by plan 129 step 129.7 and its absence was a real
+ * blocker, not a tidy-up: the bundler tries to RESOLVE every non-external
+ * import, and `@enkaku/host` is never published as a package, so the first
+ * plugin to import it failed the whole `build:packs` run with `Could not
+ * resolve: "@enkaku/host"`. Steps 129.5 and 129.6 did not catch it because
+ * neither built a plugin UI that imports it — the shim table and the
+ * component were both correct on their own.
+ */
+export const UI_EXTERNALS = ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom', '@enkaku/ui', '@enkaku/host'] as const
 
 /** Files that are build INPUT — bundled into an entry, never shipped as-is. */
 const SOURCE_EXT = /\.(tsx|ts|jsx)$/

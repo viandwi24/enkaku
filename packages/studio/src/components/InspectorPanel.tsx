@@ -10,6 +10,7 @@ import {
   type InspectState,
   type Selector,
   type SelectorCandidate,
+  type ServerMessage,
   type UiNode,
 } from '@enkaku/protocol'
 import { Button, Switch, cn, EmptyState, ErrorState, LoadingRows, relativeTime } from '@enkaku/ui'
@@ -184,6 +185,54 @@ export function shouldPoll(o: {
   return o.follow && o.visible && o.canUse && o.ready && o.pageVisible && !o.viewingHistory
 }
 
+/**
+ * The one-line engine sentence for the Inspect header (plan 129 §4.3).
+ *
+ * Before plan 129, `createInspectorForSession`'s fallback meant an attach
+ * could report `ready` with `engineId: 'uiautomator-dump'` and this panel
+ * said nothing beyond the bare id in a `rack-label` span — accurate to
+ * someone who already knows what that id means, silent to anyone else. This
+ * says what is actually reading the tree, in the operator's own words
+ * (`docs/design.md`, "Writing the words": "name things from the user's
+ * side"), and — when `fallbackReason` is set — why it is not the fast engine.
+ *
+ * `uiautomator-dump` genuinely works (§3.1: 334–584 ms per dump against
+ * these phones, slower but real), so this is stated plainly, never as an
+ * error — the same discipline `docs/design.md` states for any degraded
+ * state: "say what is actually true this instant, not what is merely still
+ * possible."
+ */
+export function engineDescription(engineId: string, fallbackReason: string | null): string {
+  if (!engineId) return ''
+  if (engineId === 'uiautomator-dump') {
+    return fallbackReason
+      ? `Reading through uiautomator-dump — ui-server could not start (${fallbackReason}), so this session fell back to the slower engine.`
+      : 'Reading through uiautomator-dump — the slower fallback engine.'
+  }
+  if (engineId === 'ui-server') return 'Reading through ui-server.'
+  return `Reading through ${engineId}.`
+}
+
+/**
+ * Which broadcasts move the fallback banner, and which clear it (plan 129
+ * §4.3) — pulled out of the attach effect's `ws.on` handler so "a fallback
+ * broadcast is surfaced rather than dropped" is provable by calling a
+ * function, not only by reading the effect and trusting it. Only messages
+ * for THIS device change anything.
+ *
+ * `device.inspector.fallback` (`daemon.ts`'s `onFallback`, already
+ * broadcast before this step — nothing consumed it) sets the reason.
+ * `inspect.status`'s own `'starting'` push means a new session is
+ * negotiating its inspector from scratch — the same signal
+ * `device/page.tsx`'s header chip already keys its own reset on — so
+ * whatever fell back before no longer describes what is about to run.
+ */
+export function applyFallbackMessage(current: string | null, deviceId: string, msg: ServerMessage): string | null {
+  if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === deviceId) return msg.payload.reason
+  if (msg.type === 'inspect.status' && msg.payload.deviceId === deviceId && msg.payload.state === 'starting') return null
+  return current
+}
+
 function containsPoint(b: UiNode['bounds'], x: number, y: number): boolean {
   return x >= b.left && x < b.right && y >= b.top && y < b.bottom
 }
@@ -293,6 +342,8 @@ export function InspectorPanel({
   const [capabilities, setCapabilities] = useState<string[]>([])
   const [reason, setReason] = useState<string | null>(null)
   const [attachError, setAttachError] = useState<string | null>(null)
+  /** Set by `device.inspector.fallback` for THIS session (plan 129 §4.3) — why `engineId` is `uiautomator-dump` rather than the requested `ui-server`. */
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null)
 
   const [tree, setTree] = useState<TreePayload | null>(null)
   const [dumpLoading, setDumpLoading] = useState(false)
@@ -371,6 +422,7 @@ export function InspectorPanel({
     setEngineId('')
     setCapabilities([])
     setReason(null)
+    setFallbackReason(null)
     setTree(null)
     treeSerialRef.current = null
     lastCheckRef.current = null
@@ -425,11 +477,15 @@ export function InspectorPanel({
 
     // The interim 'starting' push (no `id`, so it never resolves the
     // request above) — cosmetic only, kept separate from the final
-    // ready/unavailable outcome the request settles with.
+    // ready/unavailable outcome the request settles with. The same handler
+    // also carries `device.inspector.fallback` (plan 129 §4.3) — broadcast
+    // by `daemon.ts`'s `onFallback` before this step, and dropped by every
+    // listener until now.
     const off = ws.on((msg) => {
       if (msg.type === 'inspect.status' && msg.payload.deviceId === deviceId && msg.payload.state === 'starting') {
         setState('starting')
       }
+      setFallbackReason((prev) => applyFallbackMessage(prev, deviceId, msg))
     })
 
     return () => {
@@ -746,6 +802,15 @@ export function InspectorPanel({
         {stale && tree && (
           <span className="rounded-full border border-led-warn/35 bg-led-warn/10 px-2 py-0.5 text-[11px] text-led-warn">
             input was sent — this tree may no longer match the screen
+          </span>
+        )}
+        {/* Names what is actually reading the tree, not just the raw id above
+            (plan 129 §4.3) — and, when this session fell back, why. `w-full`
+            forces its own row in this flex-wrap header: it is usually the
+            longest line here and reads worse squeezed between chips. */}
+        {engineId && (
+          <span className={cn('w-full text-[11.5px]', fallbackReason ? 'text-led-warn' : 'text-fg-muted')}>
+            {engineDescription(engineId, fallbackReason)}
           </span>
         )}
         <label className="ml-auto flex items-center gap-1.5 text-[11.5px] text-fg-muted">

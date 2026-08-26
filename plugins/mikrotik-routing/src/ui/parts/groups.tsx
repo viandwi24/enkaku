@@ -3,7 +3,6 @@ import {
   Badge,
   Button,
   Combobox,
-  DevicePicker,
   ConfirmDialog,
   DeviceName,
   Dialog,
@@ -32,6 +31,7 @@ import {
   formatDeviceName,
   useAction,
 } from '@enkaku/ui'
+import { DeviceWallWithPicker } from '@enkaku/host'
 import {
   activateGroupApi,
   deactivateGroupApi,
@@ -172,9 +172,15 @@ function EditGroupDialog({
    * Devices ticked in the picker but not yet added (field report,
    * 2026-08-26). An array, not a single id: this used to be a one-at-a-time
    * `<Combobox>` + Add, so putting twelve phones in a group meant twelve
-   * open-search-pick-Add cycles.
+   * open-search-pick-Add cycles. `DeviceWallWithPicker`'s own dialog now
+   * carries the multi-select and its own confirm button, so this stays
+   * empty between opens (`addEntry` clears it once devices land in
+   * `entries`) — kept as `addEntry`'s parameter default rather than removed,
+   * so the entry-building logic itself (default lanIp/pathId, one call per
+   * batch) is unchanged from the pre-wall picker (plan 129 §5 step 129.7).
    */
   const [pendingDeviceIds, setPendingDeviceIds] = useState<string[]>([])
+  const [wallOpen, setWallOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
 
@@ -190,6 +196,7 @@ function EditGroupDialog({
     setOnDeactivate(group?.onDeactivate ?? 'remove-rules')
     setEntries(toDraft(group?.entries ?? []))
     setPendingDeviceIds([])
+    setWallOpen(false)
     setError(null)
   }
 
@@ -197,8 +204,16 @@ function EditGroupDialog({
   const usedDeviceIds = new Set(entries.map((e) => e.deviceId))
   const addableDevices = devices.filter((d) => !usedDeviceIds.has(d.deviceId))
 
-  function addEntry(): void {
-    const picked = pendingDeviceIds
+  /**
+   * `ids` defaults to `pendingDeviceIds` so this keeps the exact shape it had
+   * before the wall picker: several ids in, one batch of entries out, each
+   * seeded with its device's resolved LAN address (or the empty placeholder)
+   * and the fleet's first path. `DeviceWallWithPicker`'s own dialog confirm
+   * now calls this directly with the ids it hands back, rather than staging
+   * them in `pendingDeviceIds` for a second, separate "Add" click.
+   */
+  function addEntry(ids: string[] = pendingDeviceIds): void {
+    const picked = ids
       .map((id) => devices.find((d) => d.deviceId === id))
       .filter((d): d is FleetDeviceRow => d !== undefined)
     if (picked.length === 0) return
@@ -297,41 +312,43 @@ function EditGroupDialog({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
-              <Button size="sm" variant="outline" disabled={pendingDeviceIds.length === 0} onClick={addEntry}>
-                {pendingDeviceIds.length > 1 ? `Add ${pendingDeviceIds.length} devices` : 'Add'}
+              <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setWallOpen(true)}>
+                Add devices…
               </Button>
             </div>
 
             {/*
               Plan 124 §0.2 called this "the worst surface in the product" and
-              replaced a Radix `Select` with a `Combobox`, which fixed the
-              searching but not the shape: still one device per trip, so a
-              twelve-phone group meant twelve open-search-pick-Add cycles.
-              §4.5 recorded at the time that this was the one device list in
-              the repo not going through `DevicePicker` — and it could not be,
-              because `DevicePicker` lived in `packages/studio` and a plugin
-              may only import `@enkaku/ui`.
+              went through a `Select` → `Combobox` → list-style `DevicePicker`
+              progression, each fixing the searching but not the shape the
+              owner actually asked for: *"device selector nya pas add device
+              ada popup untuk device list kaya walls gitu, jadi user bisa
+              pilih mau add device sambil lihat screen castnya"* — a wall of
+              LIVE tiles, chosen by looking at the screen (plan 129 §0.4).
 
-              Field report, 2026-08-26 ("kok masih dropdown?"). The component
-              moved into `@enkaku/ui`, so this is now the same picker every
-              other surface uses: search across number/label/stableId, tag
-              chips, cluster grouping, and multi-select. `FleetDeviceRow`
-              carries no status, tags or cluster, so those parts simply do not
-              render here — the picker draws what it is given and never
-              invents the rest.
+              `DeviceWallWithPicker` reaches Studio's own `Wall`/`WallTile`
+              through `@enkaku/host` (plan 129 §3.4, §4.4) — a plugin cannot
+              own a WebSocket video stream itself, so this is Studio's live
+              instance of the component, handed through the same host-module
+              table `@enkaku/ui` already uses. `filter` keeps the wall to
+              devices not already in this group; `onConfirm` calls `addEntry`
+              directly with the ids it hands back, which is the same
+              several-at-once entry-building `addEntry` already did for the
+              list picker (plan 129 §5 step 129.7).
             */}
             {addableDevices.length === 0 ? (
               <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[12px] text-fg-muted">
                 Every enrolled device is already in this group.
               </p>
-            ) : (
-              <DevicePicker
-                multiple
-                devices={addableDevices.map((d) => ({ ...d, id: d.deviceId, label: d.label || d.stableId }))}
-                value={pendingDeviceIds}
-                onChange={setPendingDeviceIds}
-              />
-            )}
+            ) : null}
+            <DeviceWallWithPicker
+              open={wallOpen}
+              onOpenChange={setWallOpen}
+              value={pendingDeviceIds}
+              onConfirm={(ids) => addEntry(ids)}
+              filter={(d) => !usedDeviceIds.has(d.id)}
+              title="Choose devices for this group"
+            />
 
             {entries.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border p-4 text-center text-[12px] text-fg-muted">No devices yet — add at least one above.</p>

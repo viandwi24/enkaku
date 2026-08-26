@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import * as HostReact from 'react'
 import * as HostEnkakuUi from '@enkaku/ui'
+import * as HostEnkakuHost from '@/components/host'
 import {
   SHIMMED_SPECIFIERS,
   buildShimSource,
@@ -189,6 +190,18 @@ describe('the host global', () => {
     const globals = globalTarget.__enkaku__ as { hostModules: Record<string, object> }
     expect(Object.keys(globals.hostModules)).toEqual(['react', '@enkaku/ui'])
   })
+
+  /**
+   * Plan 129 §3.4, §4.4, step 129.5: `@enkaku/host` is Studio's own
+   * components, shimmed through the same table `@enkaku/ui` already uses —
+   * added here, not to the harness above, because the harness publishes a
+   * hand-picked pair of modules and this checks the REAL table `hostModules()`
+   * builds from Studio's own live imports.
+   */
+  test('@enkaku/host is present in the real host module table and resolves to the Studio barrel', () => {
+    expect(SHIMMED_SPECIFIERS).toContain('@enkaku/host')
+    expect(hostModules()['@enkaku/host']).toBe(HostEnkakuHost)
+  })
 })
 
 describe('the import map', () => {
@@ -376,7 +389,7 @@ describe('the plugin’s own stylesheet (step 111.9’s handover contract)', () 
     const h = harness()
     void h.host.loadView(ACCOUNTS)
     await flush()
-    // The harness publishes two of the six host modules, so the import map
+    // The harness publishes two of the seven host modules, so the import map
     // legitimately warns about the other four; nothing about the stylesheet
     // may add to that list, because a plugin drawing only with `@enkaku/ui`
     // ships no CSS and its 404 is the expected path, not a fault.
@@ -750,6 +763,29 @@ describe('the generated shims', () => {
    */
   test('every exported binding is read from the single host table', () => {
     const source = buildShimSource('react', HostReact)
+    for (const line of source.split('\n')) {
+      if (!line.startsWith('export const ')) continue
+      expect(line).toMatch(/= ns\["[^"]+"\]$/)
+    }
+  })
+
+  /**
+   * `@enkaku/host` (plan 129 step 129.5) gets the exact same guarantee
+   * `@enkaku/ui` has above: every export the shim re-exports is read off the
+   * single host table, never imported a second time — which is what makes a
+   * plugin's `@enkaku/host` import the SAME React-consuming instance Studio
+   * is already running, rather than a second copy that throws `Invalid hook
+   * call` the moment it renders (plan 111 T4).
+   */
+  test('@enkaku/host re-exports every own key of the barrel, and cannot drift from it', () => {
+    const source = buildShimSource('@enkaku/host', HostEnkakuHost)
+    const names = Object.keys(HostEnkakuHost)
+    expect(names.length).toBeGreaterThan(0)
+    for (const name of names) expect(source).toContain(`export const ${name} = ns[`)
+  })
+
+  test('@enkaku/host: every exported binding is read from the single host table', () => {
+    const source = buildShimSource('@enkaku/host', HostEnkakuHost)
     for (const line of source.split('\n')) {
       if (!line.startsWith('export const ')) continue
       expect(line).toMatch(/= ns\["[^"]+"\]$/)

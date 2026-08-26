@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import type { UiNode } from '@enkaku/protocol'
+import type { ServerMessage, UiNode } from '@enkaku/protocol'
 import {
+  applyFallbackMessage,
+  engineDescription,
   InspectorNeedsControl,
   keepSelection,
   nodeAt,
@@ -272,6 +274,72 @@ describe('unchangedSuffix — "checked 1s ago, unchanged" (§3.4)', () => {
     expect(unchangedSuffix(null, nowSec - 1, now)).toBe('')
     // A check no newer than the tree itself IS the dump that produced it.
     expect(unchangedSuffix({ at: nowSec - 30, unchanged: true }, nowSec - 30, now)).toBe('')
+  })
+})
+
+describe('engineDescription — names the engine actually in use (plan 129 §4.3)', () => {
+  test('ui-server, no fallback: a plain sentence naming the engine', () => {
+    expect(engineDescription('ui-server', null)).toBe('Reading through ui-server.')
+  })
+
+  test('uiautomator-dump with no recorded reason still says it is the fallback engine', () => {
+    // This is the "attached to an already-degraded session" case: the
+    // `device.inspector.fallback` broadcast fired before this tab attached,
+    // so the reason was never seen — but the engine id alone is enough to
+    // say the session did not get the fast engine.
+    expect(engineDescription('uiautomator-dump', null)).toBe('Reading through uiautomator-dump — the slower fallback engine.')
+  })
+
+  test('uiautomator-dump with a fallback reason names why, not just that', () => {
+    const text = engineDescription('uiautomator-dump', 'ui-server was not ready within the start timeout')
+    expect(text).toContain('ui-server could not start')
+    expect(text).toContain('ui-server was not ready within the start timeout')
+    expect(text).toContain('fell back to the slower engine')
+  })
+
+  test('an unrecognised engine id still gets a sentence, not a blank', () => {
+    expect(engineDescription('some-future-engine', null)).toBe('Reading through some-future-engine.')
+  })
+
+  test('empty engine id (not yet attached) is silent', () => {
+    expect(engineDescription('', null)).toBe('')
+  })
+
+  test('never words the fallback as the nominal state (docs/design.md, "Writing the words")', () => {
+    // The fallback engine genuinely works — this must read as a fact, not an
+    // error, so it must never claim the fast engine is what is running.
+    const text = engineDescription('uiautomator-dump', 'connection refused')
+    expect(text).not.toContain('Reading through ui-server.')
+  })
+})
+
+describe('applyFallbackMessage — a fallback broadcast is surfaced, never dropped (plan 129 §4.3)', () => {
+  const deviceId = 'dev-1'
+  const fallback = (id: string, reason: string): ServerMessage =>
+    ({ type: 'device.inspector.fallback', payload: { deviceId: id, from: 'ui-server', to: 'uiautomator-dump', reason } }) as ServerMessage
+  const starting = (id: string): ServerMessage =>
+    ({ type: 'inspect.status', payload: { deviceId: id, state: 'starting', engineId: '', capabilities: [] } }) as ServerMessage
+  const ready = (id: string): ServerMessage =>
+    ({ type: 'inspect.status', payload: { deviceId: id, state: 'ready', engineId: 'uiautomator-dump', capabilities: ['dump'] } }) as ServerMessage
+
+  test('a fallback broadcast for this device sets the reason', () => {
+    expect(applyFallbackMessage(null, deviceId, fallback(deviceId, 'connection refused'))).toBe('connection refused')
+  })
+
+  test('a fallback broadcast for a DIFFERENT device is ignored', () => {
+    expect(applyFallbackMessage(null, deviceId, fallback('dev-2', 'connection refused'))).toBeNull()
+  })
+
+  test('a new attach starting fresh clears a stale reason from a previous session', () => {
+    expect(applyFallbackMessage('an old reason', deviceId, starting(deviceId))).toBeNull()
+  })
+
+  test('"starting" for a different device does not clear this one', () => {
+    expect(applyFallbackMessage('an old reason', deviceId, starting('dev-2'))).toBe('an old reason')
+  })
+
+  test('an unrelated message (e.g. the ready reply itself) leaves the reason untouched', () => {
+    expect(applyFallbackMessage('an old reason', deviceId, ready(deviceId))).toBe('an old reason')
   })
 })
 

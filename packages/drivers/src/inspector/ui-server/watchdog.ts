@@ -163,12 +163,24 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
     async start() {
       setStatus({ state: 'starting' })
       await opts.launcher.start(opts.localPort)
-      if (await waitReady()) {
-        healthy = true
-        setStatus({ state: 'healthy' })
-      } else {
-        await restart('the server was not ready within the start timeout')
+      if (!(await waitReady())) {
+        // (plan 129 §3.2/§4.1, M94) No restart cycle here, deliberately. The
+        // old code called `restart()` and never checked its outcome, so a
+        // start that never became ready was still reported `healthy` to
+        // every caller — measured on the farm as a 32s attach that answered
+        // `ready` for a ui-server nothing was listening on. The breaker's
+        // budget belongs to RUNTIME recovery (a server that dies later); a
+        // second 15s wait on the start path has never once turned into a
+        // healthy server here, and only delays the fallback the factory
+        // already has ready to use.
+        dead = true
+        healthy = false
+        const reason = 'the server was not ready within the start timeout'
+        setStatus({ state: 'dead', reason })
+        throw new Error(`ui-server was not ready within the start timeout`)
       }
+      healthy = true
+      setStatus({ state: 'healthy' })
       // Guarded on `dead` too: a first attempt that already exhausts the
       // breaker (a tiny `maxRestartsPerWindow`, or a window carried over —
       // neither happens in practice today, but nothing should rely on

@@ -88,11 +88,23 @@ export class UiServerClient {
     return `http://127.0.0.1:${this.opts.localPort}`
   }
 
+  /**
+   * (plan 129 §4.2, M94) A refused connection and a genuine timeout are
+   * different failures and must say so: stamping every failure with "did not
+   * respond within Nms" reported a 5ms connection refusal as a 20s timeout,
+   * which is the exact wrong lead that sent the farm's first investigation
+   * hunting a timeout budget that was never the problem (plan 129 §0.3).
+   * Only an abort actually raised by `AbortSignal.timeout` gets the timeout
+   * wording; everything else reports the elapsed time really measured.
+   */
   private async fetchWithTimeout(url: string, init: RequestInit | undefined, timeoutMs: number): Promise<Response> {
+    const startedAt = Date.now()
     try {
       return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
     } catch (err) {
-      throw new UiServerClientError('UI_SERVER_UNREACHABLE', `${url} did not respond within ${timeoutMs}ms: ${String(err)}`, { cause: err })
+      const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+      const detail = timedOut ? `did not respond within ${timeoutMs}ms` : `failed after ${Date.now() - startedAt}ms`
+      throw new UiServerClientError('UI_SERVER_UNREACHABLE', `${url} ${detail}: ${String(err)}`, { cause: err })
     }
   }
 

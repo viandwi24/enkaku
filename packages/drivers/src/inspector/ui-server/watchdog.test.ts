@@ -123,9 +123,17 @@ describe('createWatchdog — the circuit breaker fires (plan 85 §3.5, fixes F17
     expect(deadStatuses).toHaveLength(1)
   })
 
-  test('a device that never comes back also trips the breaker, and the INITIAL start failure counts as its first cycle', async () => {
+  test('a device that degrades AFTER a healthy start: the idle PING TIMER (not reportFailure) detects it and drives the first restart cycle, and the breaker still trips', async () => {
+    // Unlike the old test this replaces, the initial start here succeeds
+    // (plan 129 §3.2: a failed START no longer spends a restart cycle at
+    // all — see the dedicated describe block below). This test's job is to
+    // prove the RUNTIME restart path is unaffected by that change: the idle
+    // ping timer still notices degradation on its own and still spends a
+    // breaker cycle when it does.
     const { launcher, startCalls } = fakeLauncher()
-    const client = fakeClient(async () => false) // never recovers
+    let healthyPings = true
+    const client = fakeClient(async () => healthyPings)
+    const statuses: UiServerStatus[] = []
     const watchdog = createWatchdog({
       client,
       launcher,
@@ -134,38 +142,115 @@ describe('createWatchdog — the circuit breaker fires (plan 85 §3.5, fixes F17
       restartWindowMs: 60_000,
       restartBackoffMs: [1, 1],
       startTimeoutMs: 5,
-      idlePingMs: 100_000,
+      idlePingMs: 5, // tight, so the timer fires fast without a real wait
+      onStatus: (s) => statuses.push(s),
     })
 
-    // The initial `start()` itself spends cycle 1 (launcher.start once for
-    // the initial attempt, once more for the resulting restart cycle) — and
-    // is fully awaited, so by the time it resolves the cycle has genuinely
-    // settled (unlike the fire-and-forget `reportFailure()` below).
     await watchdog.start()
-    expect(startCalls()).toBe(2)
-    expect(watchdog.isDead()).toBe(false) // exactly at budget (1 cycle used of 2), not yet exceeded
-    expect(watchdog.isHealthy()).toBe(false)
+    expect(startCalls()).toBe(1)
+    expect(watchdog.isHealthy()).toBe(true)
 
-    // Spends cycle 2 — still not dead, exactly at budget. `reportFailure` is
-    // fire-and-forget, and `waitReady`'s own poll granularity (a fixed
-    // 250ms sleep between ping attempts) means `startCalls()` alone is not
-    // enough proof this cycle has fully settled — the settling wait must
-    // outlast that poll, or the NEXT `reportFailure()` below can land while
-    // this one is still `restarting` and get silently dropped, never
-    // reaching the breaker.
+    // The client goes down; nobody calls reportFailure() — only the idle
+    // ping timer is watching, exactly like a device that quietly stops
+    // answering between operator actions.
+    healthyPings = false
+    await waitUntil(() => startCalls() === 2) // the timer's own restart() call
+    expect(watchdog.isDead()).toBe(false) // cycle 1 of 2 — exactly at budget
+    const restarting = statuses.filter((s): s is Extract<UiServerStatus, { state: 'restarting' }> => s.state === 'restarting')
+    expect(restarting.map((s) => s.attempt)).toEqual([1])
+
+    // Once unhealthy the idle timer intentionally stops probing (the
+    // `!healthy` guard) — exactly as before this change. Further
+    // degradation is reported the way the real `call()` wrapper does it,
+    // through `reportFailure()`. Let cycle 1 fully settle first (its own
+    // failed `waitReady()` takes a poll interval to conclude), then spend
+    // the session's last cycle.
+    await waitUntil(() => startCalls() === 2)
+    await Bun.sleep(300)
     watchdog.reportFailure('still down')
-    await waitUntil(() => startCalls() === 3)
+    await waitUntil(() => startCalls() === 3) // cycle 2 of 2 — exactly at budget
     await Bun.sleep(300)
     expect(watchdog.isDead()).toBe(false)
 
-    // A 3rd cycle would exceed the budget of 2.
+    // A 3rd cycle would exceed the budget of 2 — the breaker trips instead
+    // of restarting again.
     watchdog.reportFailure('still down')
     await waitUntil(() => watchdog.isDead())
-    expect(startCalls()).toBe(3)
+    expect(startCalls()).toBe(3) // no 3rd restart attempt
+    expect(watchdog.isHealthy()).toBe(false)
   })
 })
 
-describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17)', () => {
+describe('createWatchdog — start() fails the start, and fails it once (plan 129 §3.2/§4.1, M94)', () => {
+  test('a start whose ping never succeeds THROWS and leaves isDead() true, spending no restart cycle', async () => {
+    const { launcher, startCalls } = fakeLauncher()
+    const client = fakeClient(async () => false) // never becomes ready
+    const statuses: UiServerStatus[] = []
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      maxRestartsPerWindow: 3,
+      restartWindowMs: 60_000,
+      startTimeoutMs: 5,
+      idlePingMs: 100_000,
+      onStatus: (s) => statuses.push(s),
+    })
+
+    await expect(watchdog.start()).rejects.toThrow('ui-server was not ready within the start timeout')
+
+    // Exactly one launcher.start() call — the old code's swallowed restart
+    // cycle inside start() (a second launcher.start + a second 15s wait)
+    // must be gone entirely, per §3.2.
+    expect(startCalls()).toBe(1)
+    expect(watchdog.isDead()).toBe(true)
+    expect(watchdog.isHealthy()).toBe(false)
+
+    const dead = statuses.filter((s) => s.state === 'dead')
+    expect(dead).toHaveLength(1)
+    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('start timeout')
+    // No `restarting` status was ever emitted — the start path never enters
+    // the restart cycle at all.
+    expect(statuses.some((s) => s.state === 'restarting')).toBe(false)
+
+    // A caller that (wrongly) ignores the rejection still observes death
+    // through isDead(), and nothing resurrects it: further failure reports
+    // are no-ops, and no further launcher.start() call is made.
+    watchdog.reportFailure('still down')
+    await Bun.sleep(30)
+    expect(startCalls()).toBe(1)
+    expect(watchdog.isDead()).toBe(true)
+  })
+
+  test('a start whose ping succeeds behaves exactly as before: healthy, no throw, ping timer runs', async () => {
+    const { launcher, startCalls } = fakeLauncher()
+    const client = fakeClient(async () => true)
+    const statuses: UiServerStatus[] = []
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      startTimeoutMs: 200,
+      idlePingMs: 100_000,
+      onStatus: (s) => statuses.push(s),
+    })
+
+    await expect(watchdog.start()).resolves.toBeUndefined()
+    try {
+      expect(startCalls()).toBe(1)
+      expect(watchdog.isHealthy()).toBe(true)
+      expect(watchdog.isDead()).toBe(false)
+      expect(statuses).toEqual([{ state: 'starting' }, { state: 'healthy' }])
+    } finally {
+      // A healthy start leaves the idle ping timer running (idlePingMs here
+      // is 100s so it never actually fires during this test) — stop() so it
+      // doesn't linger in the process for the rest of the suite.
+      await watchdog.stop()
+    }
+  })
+})
+
+describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17; plan 129 §3.2 updates how the FIRST death is reached)', () => {
   test('nothing resurrects it within the same session: no further restart attempts, from any entry point', async () => {
     const { launcher, startCalls } = fakeLauncher()
     const client = fakeClient(async () => false) // never recovers
@@ -182,13 +267,11 @@ describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17)', () 
       onLog: (level, msg) => logs.push(`${level}: ${msg}`),
     })
 
-    await watchdog.start() // spends the session's one allowed cycle — exactly at budget, not yet dead
-    expect(watchdog.isDead()).toBe(false)
+    // (plan 129 §3.2) The failed start itself is now terminal — it throws
+    // and sets `dead` directly, spending none of the restart-cycle budget.
+    await expect(watchdog.start()).rejects.toThrow()
+    expect(watchdog.isDead()).toBe(true)
     const callsAtBudget = startCalls()
-
-    watchdog.reportFailure('still down') // a 2nd cycle would exceed the budget of 1 -> dead
-    await waitUntil(() => watchdog.isDead())
-    expect(startCalls()).toBe(callsAtBudget)
 
     // Repeated failures, and the passage of several ping intervals, change nothing.
     watchdog.reportFailure('still down')
@@ -198,7 +281,10 @@ describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17)', () 
     expect(watchdog.isDead()).toBe(true)
     expect(watchdog.isHealthy()).toBe(false)
     expect(startCalls()).toBe(callsAtBudget) // never a further restart attempt
-    expect(logs.filter((l) => l.includes('giving up'))).toHaveLength(1) // exactly once, not once per extra reportFailure() call
+    // The start path's own death does not go through `restart()`, so it
+    // never logs "giving up" — that phrase is reserved for the breaker
+    // tripping on the RUNTIME path (plan 85 §3.5), which never engages here.
+    expect(logs.filter((l) => l.includes('giving up'))).toHaveLength(0)
   })
 
   test('stop() after death is a harmless no-op, not a resurrection', async () => {
@@ -215,9 +301,8 @@ describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17)', () 
       idlePingMs: 100_000,
     })
 
-    await watchdog.start()
-    watchdog.reportFailure('still down')
-    await waitUntil(() => watchdog.isDead())
+    await expect(watchdog.start()).rejects.toThrow()
+    expect(watchdog.isDead()).toBe(true)
     const callsAtDeath = startCalls()
 
     await watchdog.stop()

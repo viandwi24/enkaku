@@ -182,7 +182,23 @@ describe('UiServerClient — the stale-forward retry (plan 85 §3.5, fixes F18s 
       },
     })
 
-    await expect(client.rpc('someMethod', [])).rejects.toThrow(/socket connection was closed unexpectedly/i)
+    let caught: unknown
+    try {
+      await client.rpc('someMethod', [])
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UiServerClientError)
+    const message = (caught as UiServerClientError).message
+    // Regression (plan 129 §4.2, M94): `isStaleForwardError` matches on
+    // `err.cause`, not on this message, so the retry above must still have
+    // fired (proven by reassertCalls/connections below) even though the
+    // OUTER message text changed from "did not respond within Nms" to
+    // "failed after Nms" — a closed-socket failure is a transport failure,
+    // not a timeout, and must never claim the timeout wording.
+    expect(message).toContain('socket connection was closed unexpectedly')
+    expect(message).toMatch(/failed after \d+ms/)
+    expect(message).not.toContain('did not respond within')
     expect(reassertCalls).toBe(1)
     // Exactly two connections: the original attempt and the ONE retry — a
     // third would mean the retry-exactly-once budget was not respected.
@@ -234,5 +250,57 @@ describe('UiServerClient — the stale-forward retry (plan 85 §3.5, fixes F18s 
     expect(caught).toBeInstanceOf(UiServerClientError)
     expect((caught as UiServerClientError).code).toBe('UI_SERVER_UNREACHABLE')
     expect(reassertCalls).toBe(0)
+  })
+})
+
+/**
+ * (plan 129 §0.3, §3.3, §4.2, M94) `fetchWithTimeout` used to stamp "did not
+ * respond within Nms" onto EVERY failure, so a connection refused in ~5ms
+ * was reported as a 20000ms timeout — the exact sentence the owner pasted,
+ * and the wrong lead that sent the first investigation of this farm's
+ * ui-server outage hunting a timeout budget that was never the problem.
+ * These tests prove the two failure kinds are told apart, and that the
+ * elapsed-time number reported for a transport failure is real, not a
+ * restated timeout budget.
+ */
+describe('UiServerClient — an error must not invent a number (plan 129 §3.3/§4.2, M94)', () => {
+  test('a connection refused reports the real elapsed time and never claims a timeout', async () => {
+    const client = new UiServerClient({ localPort: 1 }) // nothing listens on this port
+    let caught: unknown
+    try {
+      await client.rpc('someMethod', [])
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UiServerClientError)
+    const message = (caught as UiServerClientError).message
+    expect(message).not.toContain('did not respond within')
+    expect(message).toMatch(/failed after \d+ms/)
+  })
+
+  test('a genuine AbortSignal.timeout abort still reports "did not respond within Nms"', async () => {
+    // A raw socket that accepts the connection and then answers nothing —
+    // the only way to provoke a REAL abort rather than an instant refusal.
+    const server: NetServer = createServer(() => {
+      /* accept and never respond */
+    })
+    server.listen(0, '127.0.0.1')
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+    try {
+      const client = new UiServerClient({ localPort: address.port, timeoutMs: 50 })
+      let caught: unknown
+      try {
+        await client.rpc('someMethod', [])
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(UiServerClientError)
+      const message = (caught as UiServerClientError).message
+      expect(message).toContain('did not respond within 50ms')
+      expect(message).not.toMatch(/failed after \d+ms/)
+    } finally {
+      server.close()
+    }
   })
 })

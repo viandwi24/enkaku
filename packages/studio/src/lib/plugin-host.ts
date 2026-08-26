@@ -7,6 +7,7 @@ import * as HostReactDomClient from 'react-dom/client'
 import * as HostJsxRuntime from 'react/jsx-runtime'
 import * as HostJsxDevRuntime from 'react/jsx-dev-runtime'
 import * as HostEnkakuUi from '@enkaku/ui'
+import * as HostEnkakuHost from '@/components/host'
 import type { PluginViewParams, PluginViewProps, SetPluginViewParams } from '@enkaku/protocol'
 import { coreBase } from './ws'
 
@@ -17,14 +18,17 @@ import { coreBase } from './ws'
  * Four mechanisms, in the order they have to happen:
  *
  * 1. **A host module table** (`window.__enkaku__.hostModules`) holding the
- *    LIVE `react`, `react-dom`, `react-dom/client`, both JSX runtimes and
- *    `@enkaku/ui` namespaces this Studio bundle is already running on. Plan
- *    111 T4: two React copies means `Invalid hook call`, so the plugin must
- *    receive these exact objects, never a second copy.
+ *    LIVE `react`, `react-dom`, `react-dom/client`, both JSX runtimes,
+ *    `@enkaku/ui` and `@enkaku/host` namespaces this Studio bundle is already
+ *    running on. Plan 111 T4: two React copies means `Invalid hook call`, so
+ *    the plugin must receive these exact objects, never a second copy.
+ *    `@enkaku/host` (plan 129 §3.4, step 129.5) is Studio's OWN components —
+ *    the ones that reach `/ws`, a lease, or video — offered through this
+ *    same table rather than a second mechanism.
  * 2. **Runtime-generated shim modules**, one per specifier, each re-exporting
  *    the corresponding entry of that table.
  * 3. **One import map**, inserted exactly once and before the first plugin
- *    script, pointing those six bare specifiers at their shims. This is what
+ *    script, pointing those seven bare specifiers at their shims. This is what
  *    lets a plugin author write `import { useState } from 'react'` — the
  *    whole point of §3.2 — with the host-module global hidden inside the
  *    shim where they never see it.
@@ -325,7 +329,7 @@ export function stylesheetPathFor(entry: string): string {
 /**
  * The complete, fixed set of specifiers the import map carries.
  *
- * All six in one map, always, because an import map can ADD keys to the
+ * All seven in one map, always, because an import map can ADD keys to the
  * resolution table but can never override a key an earlier map already
  * defined, and historically only the first map in a document was honoured at
  * all. There is therefore no incremental path: whatever goes in goes in once,
@@ -336,7 +340,9 @@ export function stylesheetPathFor(entry: string): string {
  * own screen. Both JSX runtimes are here because which one a plugin's build
  * emits depends on ITS mode, not ours — a plugin built in development mode
  * imports `react/jsx-dev-runtime`, and leaving that key out would break it
- * with an unresolved-specifier error that names nothing useful.
+ * with an unresolved-specifier error that names nothing useful. `@enkaku/host`
+ * (plan 129 §3.4, §4.4) is here for a plugin that wants a Studio-only
+ * component — the wall picker, for one — rather than a pure `@enkaku/ui` one.
  */
 export const SHIMMED_SPECIFIERS = [
   'react',
@@ -345,6 +351,7 @@ export const SHIMMED_SPECIFIERS = [
   'react/jsx-runtime',
   'react/jsx-dev-runtime',
   '@enkaku/ui',
+  '@enkaku/host',
 ] as const
 
 export type ShimmedSpecifier = (typeof SHIMMED_SPECIFIERS)[number]
@@ -358,6 +365,7 @@ export function hostModules(): Record<ShimmedSpecifier, object> {
     'react/jsx-runtime': HostJsxRuntime,
     'react/jsx-dev-runtime': HostJsxDevRuntime,
     '@enkaku/ui': HostEnkakuUi,
+    '@enkaku/host': HostEnkakuHost,
   }
 }
 
