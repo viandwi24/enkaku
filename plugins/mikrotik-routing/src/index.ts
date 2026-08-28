@@ -188,6 +188,79 @@ import verifyEgressScript from './verify-egress'
  * Minor, not patch: an operator meets it the moment they open the group
  * editor and can type `7` to find a phone.
  *
+ * **0.12.0 → 0.13.0 — what "Up" actually means (plan 134, M99).**
+ *
+ * Plan 133 explained two of the three offline devices from the farm session.
+ * The third was worse than unexplained — it was reported **healthy**. Device
+ * #20's modem answered every ping and had **no data plan at all**, because
+ * `check-gateway=ping` answers "does the modem reply to ICMP", and every
+ * operator reads it as "traffic down this path reaches the internet".
+ *
+ * One boolean becomes three independent facts, each named after the question
+ * it actually answers:
+ *
+ *   `link`    — can the router reach this path's gateway at all?
+ *   `gateway` — does the modem answer?  (today's signal, correctly labelled)
+ *   `egress`  — does traffic through this table REACH the internet?
+ *
+ * `up` is byte-identical to before, so the planner, plan 132's `overDownPath`
+ * and every other consumer read exactly what they read yesterday.
+ *
+ * `egress` is `unknown` until an operator presses **Probe** on the Paths tab —
+ * `POST /rest/ping` with `interface=` (chosen because this farm's RouterOS
+ * 7.24 rejects `routing-table=` on `/ping`), three packets, out of one uplink.
+ * It is never scheduled: every packet is metered LTE data on somebody's SIM.
+ * A router that cannot run the probe reports **`unknown`, never `fail`** —
+ * failing to measure and measuring a failure are different facts, and only one
+ * of them is about the modem.
+ *
+ * Two new faults that were silent before, both free:
+ *
+ *   - **Two uplinks holding the same address** — the plan 133 fault itself,
+ *     now read straight off `/ip/dhcp-client` and named on the row, pointing
+ *     at the modem left on its factory-default LAN range. That GET is
+ *     best-effort: a router that will not serve it loses the warning, never
+ *     the screen.
+ *   - **Two paths egressing from one public IP** — plan 132 §0's ban risk,
+ *     grouped from each device's own `verify-egress` reading. Only verified
+ *     devices count; unverified ones are never grouped with each other.
+ *
+ * Minor, not patch: a new column, a new button, and two new warnings.
+ *
+ * **0.11.0 → 0.12.0 — a down path says why (plan 133, M98).**
+ *
+ * From a live session on the owner's farm: three devices had no internet for
+ * three unrelated reasons, and Studio reported the same red chip for all of
+ * them. Telling them apart took a router CLI session.
+ *
+ *   #20 — modem alive, no data plan. Reported **Up**, because
+ *         `check-gateway=ping` only proves the modem answers.
+ *   #5, #7 — two Orbits left on the factory-default `192.168.8.0/24`, so both
+ *         DHCP clients pulled `192.168.8.100` and the router held NO address
+ *         in `192.168.125.0/24` / `192.168.127.0/24`. The route printed
+ *         `immediate-gw=""` and sat inactive.
+ *
+ * The router had known the difference all along: `immediate-gw` already
+ * arrived on every inventory call through `IpRouteSchema`'s `.passthrough()`
+ * and nothing read it. `PathHealth` now carries a `reason` —
+ * `no-route-to-gateway` (the router cannot reach the modem AT ALL: a VLAN or
+ * DHCP fault on the port, not a modem fault), `gateway-unreachable` (the modem
+ * is off or silent), `no-default-route` (the table is empty) — and the Paths
+ * tab renders a sentence naming the thing to go and look at.
+ *
+ * `up` is unchanged, so the planner, plan 132's `overDownPath` and every other
+ * consumer read exactly what they read before. An unrecognised reason from a
+ * newer core falls back to the plain "Down" wording rather than blanking the
+ * cell.
+ *
+ * **What this does NOT fix**, and it is the bigger half: `check-gateway=ping`
+ * still cannot tell "the modem has internet" from "the modem answers ping" —
+ * #20 was green with no upstream at all. The plugin already ships
+ * `verify-egress`, which tests the real thing; making it the health signal is
+ * its own plan (§9 Q1 there).
+ *
+ * Minor, not patch: an operator meets a new sentence on the Paths tab.
+ *
  * **0.10.0 → 0.11.0 — an assignment is a constraint, not a preference
  * (plan 132, M97). This REVERSES plan 122 §4.5.**
  *
@@ -353,7 +426,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.11.0',
+  version: '0.13.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

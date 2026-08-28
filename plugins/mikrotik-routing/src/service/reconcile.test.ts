@@ -56,7 +56,7 @@ function managedRule(id: string, groupId: string, endpointKey: string, table: st
 }
 
 function emptyInventory(overrides: Partial<RouterInventory> = {}): RouterInventory {
-  return { paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true }], interfaces: [], health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000 }], leases: [], ...overrides }
+  return { paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true, wanInterface: null }], interfaces: [], health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000, link: 'ok', gateway: 'ok', egress: 'unknown' }], leases: [], ...overrides }
 }
 
 interface DriverCalls {
@@ -71,6 +71,7 @@ function fakeDriver(overrides: Partial<RouterDriver> & { calls?: DriverCalls } =
     inventory: async () => emptyInventory(),
     listRules: async () => [],
     doctor: async () => ({ reachable: true, authenticated: true, restVersion: null, rules: [], managedRuleCount: 0, foreignRuleCount: 0, errors: [] }),
+    probeEgress: async () => ({ status: 'unknown' as const, message: 'not probed in this test' }),
     createRule: async (rule) => {
       calls.create.push(rule)
       return { id: '*100' }
@@ -239,7 +240,7 @@ describe('computeReconcileTick — the six drift classes, via classifyDrift (nev
     const rules = [protectingRule(), managedRule('*5', 'default', '192.168.10.11', 'via-modem-old')]
     const host = fakeHost(emptyState({ devices, assignments: { d1: writeAssignment(assignment({ pathId: 'via-modem1' })) } }))
     const result = await computeReconcileTick(host, {
-      createDriver: () => fakeDriver({ listRules: async () => rules, inventory: async () => emptyInventory({ paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: null, hasDefaultRoute: true }, { id: 'via-modem-old', table: 'via-modem-old', gateway: null, hasDefaultRoute: true }] }) }),
+      createDriver: () => fakeDriver({ listRules: async () => rules, inventory: async () => emptyInventory({ paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: null, hasDefaultRoute: true, wanInterface: null }, { id: 'via-modem-old', table: 'via-modem-old', gateway: null, hasDefaultRoute: true, wanInterface: null }] }) }),
       deriveCoreAddress: async () => OK_CORE_ADDRESS,
     })
     expect(result.ok).toBe(true)
@@ -349,7 +350,7 @@ describe('computeReconcileTick — autoRepair, opt-in, missing-rule/wrong-path o
     )
     const driver = fakeDriver({
       listRules: async () => rules,
-      inventory: async () => emptyInventory({ paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: null, hasDefaultRoute: true }, { id: 'via-modem-old', table: 'via-modem-old', gateway: null, hasDefaultRoute: true }] }),
+      inventory: async () => emptyInventory({ paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: null, hasDefaultRoute: true, wanInterface: null }, { id: 'via-modem-old', table: 'via-modem-old', gateway: null, hasDefaultRoute: true, wanInterface: null }] }),
     })
     const result = await computeReconcileTick(host, { createDriver: () => driver, deriveCoreAddress: async () => OK_CORE_ADDRESS })
     expect(result.ok).toBe(true)

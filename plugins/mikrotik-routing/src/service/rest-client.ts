@@ -23,7 +23,7 @@ export interface MikrotikRestConfig {
 }
 
 /** `GET`/`PUT`/`PATCH`/`DELETE` verbs this client actually sends — the four `/routing/rule` supports (§4.1). */
-export type RestMethod = 'GET' | 'PUT' | 'PATCH' | 'DELETE'
+export type RestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 export class MikrotikRestClient {
   constructor(private readonly config: MikrotikRestConfig) {}
@@ -101,6 +101,16 @@ export class MikrotikRestClient {
 
   get(path: string): Promise<unknown> {
     return this.request('GET', path)
+  }
+
+  /**
+   * Plan 134 (M99) §4.4 — added for `/ping`, RouterOS's one REST endpoint that
+   * DOES something rather than reading or writing a record. Kept off the
+   * write-shaped verbs above deliberately: nothing this client `post`s may
+   * change router state, and the only caller sends ICMP.
+   */
+  post(path: string, body: unknown): Promise<unknown> {
+    return this.request('POST', path, body)
   }
 
   put(path: string, body: unknown): Promise<unknown> {

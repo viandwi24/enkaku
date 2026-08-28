@@ -19,6 +19,8 @@ interface FixtureData {
   routes?: unknown[]
   interfaces?: unknown[]
   leases?: unknown[]
+  /** Plan 134 (M99) — `/ip/dhcp-client`, the router's WAN side. Omitted entirely means the fixture 404s it, which is the degradation case §4.1 must survive. */
+  dhcpClients?: unknown[]
   rules?: unknown[]
   systemResource?: unknown
   authRequired?: boolean
@@ -30,6 +32,7 @@ function startFixtureRouter(data: FixtureData): { port: number; stop: () => void
     '/rest/ip/route': data.routes ?? [],
     '/rest/interface': data.interfaces ?? [],
     '/rest/ip/dhcp-server/lease': data.leases ?? [],
+    ...(data.dhcpClients ? { '/rest/ip/dhcp-client': data.dhcpClients } : {}),
     '/rest/routing/rule': data.rules ?? [],
     '/rest/system/resource': data.systemResource ?? { version: '7.24 (stable)' },
   }
@@ -88,12 +91,15 @@ describe('MikrotikRestDriver.inventory — §4.1, §4.5', () => {
     try {
       const inventory = await driverFor(fixture.port).inventory()
       expect(inventory.paths).toEqual([
-        { id: 'via-modem7-p12', table: 'via-modem7-p12', gateway: '192.168.30.1', hasDefaultRoute: true },
-        { id: 'via-modem2', table: 'via-modem2', gateway: '192.168.40.1', hasDefaultRoute: true },
+        { id: 'via-modem7-p12', table: 'via-modem7-p12', gateway: '192.168.30.1', hasDefaultRoute: true, wanInterface: null },
+        { id: 'via-modem2', table: 'via-modem2', gateway: '192.168.40.1', hasDefaultRoute: true, wanInterface: null },
       ])
       expect(inventory.health).toEqual([
-        { pathId: 'via-modem7-p12', up: true, checkedAt: expect.any(Number) },
-        { pathId: 'via-modem2', up: false, checkedAt: expect.any(Number) },
+        { pathId: 'via-modem7-p12', up: true, checkedAt: expect.any(Number), link: 'ok', gateway: 'ok', egress: 'unknown' },
+        // Plan 133 — the fixture's down route carries no `immediate-gw` field
+        // at all, which degrades to the least-specific reason rather than
+        // claiming a wiring fault nobody observed.
+        { pathId: 'via-modem2', up: false, checkedAt: expect.any(Number), reason: 'gateway-unreachable', link: 'ok', gateway: 'fail', egress: 'unknown' },
       ])
       expect(inventory.interfaces).toEqual([{ id: '*20', name: 'ether1', type: 'ether', running: true, disabled: false }])
       expect(inventory.leases).toEqual([
@@ -109,8 +115,9 @@ describe('MikrotikRestDriver.inventory — §4.1, §4.5', () => {
     const fixture = startFixtureRouter({ tables: [{ '.id': '*1', name: 'via-modem31' }], routes: [] })
     try {
       const inventory = await driverFor(fixture.port).inventory()
-      expect(inventory.paths).toEqual([{ id: 'via-modem31', table: 'via-modem31', gateway: null, hasDefaultRoute: false }])
-      expect(inventory.health).toEqual([{ pathId: 'via-modem31', up: false, checkedAt: expect.any(Number) }])
+      expect(inventory.paths).toEqual([{ id: 'via-modem31', table: 'via-modem31', gateway: null, hasDefaultRoute: false, wanInterface: null }])
+      // Plan 133 — and it now says WHICH kind of down: no default route at all.
+      expect(inventory.health).toEqual([{ pathId: 'via-modem31', up: false, checkedAt: expect.any(Number), reason: 'no-default-route', link: 'fail', gateway: 'unknown', egress: 'unknown' }])
     } finally {
       fixture.stop()
     }
@@ -355,5 +362,128 @@ describe('MikrotikRestDriver write methods — step 122.6', () => {
     const deadPort = boundPort(probe)
     probe.stop(true)
     await expect(driverFor(deadPort).deleteRule('*6')).rejects.toThrow(MikrotikRestError)
+  })
+})
+
+/**
+ * Plan 133 (M98). Three devices on the owner's farm had no internet for three
+ * unrelated reasons and Studio said the same thing about all of them; the
+ * router had known the difference the whole time. The decisive one, printed on
+ * the real router:
+ *
+ *   0 Is  dst-address=0.0.0.0/0 routing-table=via-modem25-s2p7
+ *         gateway=192.168.125.1 immediate-gw="" check-gateway=ping
+ *
+ * `immediate-gw=""` means the router holds no address in that gateway's
+ * subnet, so it cannot reach the modem at all — a VLAN/DHCP fault on a switch
+ * port, not a modem that stopped answering. An operator would never guess that
+ * from the word "down", and it cost a CLI session to find.
+ */
+describe('MikrotikRestDriver.inventory — why a path is down (plan 133 §3.1)', () => {
+  const table = (name: string) => ({ '.id': `*t-${name}`, name })
+  const route = (name: string, over: Record<string, unknown> = {}) => ({
+    '.id': `*r-${name}`,
+    'dst-address': '0.0.0.0/0',
+    'routing-table': name,
+    gateway: '192.168.125.1',
+    active: false,
+    disabled: false,
+    ...over,
+  })
+
+  async function healthOf(data: { tables: unknown[]; routes: unknown[] }) {
+    const fixture = startFixtureRouter(data)
+    try {
+      return (await driverFor(fixture.port).inventory()).health
+    } finally {
+      fixture.stop()
+    }
+  }
+
+  test('an empty immediate-gw is no-route-to-gateway — the router cannot reach the modem at all', async () => {
+    const health = await healthOf({ tables: [table('via-modem25-s2p7')], routes: [route('via-modem25-s2p7', { 'immediate-gw': '' })] })
+    expect(health[0]).toMatchObject({ pathId: 'via-modem25-s2p7', up: false, reason: 'no-route-to-gateway' })
+  })
+
+  test('a resolved immediate-gw that is simply not active is gateway-unreachable — the modem is off or silent', async () => {
+    const health = await healthOf({ tables: [table('via-modem26')], routes: [route('via-modem26', { 'immediate-gw': '192.168.126.1%ether7' })] })
+    expect(health[0]).toMatchObject({ up: false, reason: 'gateway-unreachable' })
+  })
+
+  test('a table with no default route at all is no-default-route', async () => {
+    const health = await healthOf({ tables: [table('via-modem99')], routes: [] })
+    expect(health[0]).toMatchObject({ up: false, reason: 'no-default-route' })
+  })
+
+  test('a healthy path carries no reason — there is nothing to explain', async () => {
+    const health = await healthOf({ tables: [table('via-modem21')], routes: [route('via-modem21', { active: true, 'immediate-gw': '192.168.121.1%ether3' })] })
+    expect(health[0]).toEqual({ pathId: 'via-modem21', up: true, checkedAt: expect.any(Number), link: 'ok', gateway: 'ok', egress: 'unknown' })
+    expect('reason' in health[0]!).toBe(false)
+  })
+
+  test('an ABSENT immediate-gw field degrades to gateway-unreachable, never to a wiring fault nobody observed', async () => {
+    // §8 R1 — a future RouterOS that stops sending the field must not be read
+    // as "the router has no address on that subnet".
+    const health = await healthOf({ tables: [table('via-modem30')], routes: [route('via-modem30')] })
+    expect(health[0]).toMatchObject({ up: false, reason: 'gateway-unreachable' })
+  })
+})
+
+/**
+ * Plan 134 (M99) §3.4 / §4.1 — the fleet fault reaches the health array, and
+ * the new endpoint cannot take the screen down with it.
+ */
+describe('MikrotikRestDriver.inventory — duplicate WAN addresses (plan 134 §3.4)', () => {
+  /** Verbatim from the owner's router during the plan 133 session: two Orbits left on the factory-default subnet. */
+  const DUP_TABLES = [
+    { '.id': '*1', name: 'via-modem25-s2p7' },
+    { '.id': '*2', name: 'via-modem27-s2p9' },
+    { '.id': '*3', name: 'via-modem24-s2p6' },
+  ]
+  const DUP_ROUTES = [
+    { '.id': '*10', 'dst-address': '0.0.0.0/0', gateway: '192.168.125.1', 'routing-table': 'via-modem25-s2p7', active: true, disabled: false, 'immediate-gw': '192.168.125.1%wan-modem25-s2p7' },
+    { '.id': '*11', 'dst-address': '0.0.0.0/0', gateway: '192.168.127.1', 'routing-table': 'via-modem27-s2p9', active: true, disabled: false, 'immediate-gw': '192.168.127.1%wan-modem27-s2p9' },
+    { '.id': '*12', 'dst-address': '0.0.0.0/0', gateway: '192.168.124.1', 'routing-table': 'via-modem24-s2p6', active: true, disabled: false, 'immediate-gw': '192.168.124.1%wan-modem24-s2p6' },
+  ]
+  const DUP_CLIENTS = [
+    { '.id': '*40', interface: 'wan-modem25-s2p7', address: '192.168.8.100/24', status: 'bound', disabled: false },
+    { '.id': '*41', interface: 'wan-modem27-s2p9', address: '192.168.8.100/24', status: 'bound', disabled: false },
+    { '.id': '*42', interface: 'wan-modem24-s2p6', address: '192.168.124.100/24', status: 'bound', disabled: false },
+  ]
+
+  test('two uplinks holding one address are both flagged, naming each other; the third is clean', async () => {
+    const fixture = startFixtureRouter({ tables: DUP_TABLES, routes: DUP_ROUTES, dhcpClients: DUP_CLIENTS })
+    try {
+      const health = await driverFor(fixture.port).inventory().then((i) => i.health)
+      expect(health.find((h) => h.pathId === 'via-modem25-s2p7')?.duplicateAddressWith).toEqual(['via-modem27-s2p9'])
+      expect(health.find((h) => h.pathId === 'via-modem27-s2p9')?.duplicateAddressWith).toEqual(['via-modem25-s2p7'])
+      expect(health.find((h) => h.pathId === 'via-modem24-s2p6')).not.toHaveProperty('duplicateAddressWith')
+    } finally {
+      fixture.stop()
+    }
+  })
+
+  test('a router that does not serve /ip/dhcp-client still returns a full inventory — the warning is lost, never the screen', async () => {
+    // This is not a hypothetical: every pre-existing test in this file 404s
+    // the endpoint, and before it was made best-effort they ALL threw. A
+    // read-restricted API user on a real farm would have hit exactly that.
+    const fixture = startFixtureRouter({ tables: DUP_TABLES, routes: DUP_ROUTES })
+    try {
+      const inventory = await driverFor(fixture.port).inventory()
+      expect(inventory.paths).toHaveLength(3)
+      expect(inventory.health.every((h) => h.up)).toBe(true)
+      expect(inventory.health.some((h) => h.duplicateAddressWith !== undefined)).toBe(false)
+    } finally {
+      fixture.stop()
+    }
+  })
+
+  test('a WAN list in a shape this build has never seen degrades the same way, rather than throwing', async () => {
+    const fixture = startFixtureRouter({ tables: DUP_TABLES, routes: DUP_ROUTES, dhcpClients: [{ unexpected: true }] as unknown[] })
+    try {
+      expect((await driverFor(fixture.port).inventory()).paths).toHaveLength(3)
+    } finally {
+      fixture.stop()
+    }
   })
 })

@@ -113,6 +113,34 @@ const log = (level: Level) => (msg: string, fields?: Record<string, unknown>) =>
 
 const deviceApi = {
   tap: (target: unknown) => request<void>({ method: 'tap', args: { target } } as never),
+  /*
+   * Plan 94 step 94.2's four replay verbs, forwarded HERE — the line they were
+   * missing from until 2026-08-27.
+   *
+   * All four were declared on `DeviceApi` (`packages/sdk/src/types.ts`),
+   * accepted by the wire schema (`ipc.ts`'s `DEVICE_CALL_ARGS`), and
+   * implemented by the executor (`device-executor.ts`'s `'tapNorm'` /
+   * `'swipeNorm'` / `'longPress'` / `'gesture'` cases). Only this object — the
+   * bridge a script actually calls THROUGH — never listed them. So a call
+   * typechecked against the declared interface, published, verified, and died
+   * at runtime with `ctx.device.tapNorm is not a function`.
+   *
+   * That is not a hypothetical: `packages/sdk/src/define-recording.ts` calls
+   * `device.tapNorm(...)` for every point tap, so **every recording containing
+   * one failed on its first replay** — and `plugins/youtube-automation-pack`
+   * hit it on its own first run against hardware, which is how it was found.
+   *
+   * This file's own comment on `app.launch` already records the identical
+   * defect once (`url` declared everywhere and forwarded nowhere): "A field
+   * list spelled out in three places will drift; this is the one that decides."
+   * A method list in three places drifts the same way, and
+   * `child-entry-surface.test.ts` now fails when it does.
+   */
+  tapNorm: (pos: unknown, opts?: { holdMs?: number }) =>
+    request<void>({ method: 'tapNorm', args: { pos, ...(opts?.holdMs !== undefined ? { holdMs: opts.holdMs } : {}) } } as never),
+  swipeNorm: (from: unknown, to: unknown, ms: number) => request<void>({ method: 'swipeNorm', args: { from, to, ms } } as never),
+  longPress: (target: unknown, ms: number) => request<void>({ method: 'longPress', args: { target, ms } } as never),
+  gesture: (samples: unknown) => request<void>({ method: 'gesture', args: { samples } } as never),
   swipe: (from: unknown, to: unknown, ms = 300, opts?: { curvature?: number; easing?: string }) =>
     request<void>({
       method: 'swipe',

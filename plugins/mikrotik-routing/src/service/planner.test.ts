@@ -24,8 +24,8 @@ const desired = (overrides: Partial<PlanDesiredEntry>): PlanDesiredEntry => ({
   ...overrides,
 })
 
-const up = (pathId: string): PathHealth => ({ pathId, up: true, checkedAt: 0 })
-const down = (pathId: string): PathHealth => ({ pathId, up: false, checkedAt: 0 })
+const up = (pathId: string): PathHealth => ({ pathId, up: true, checkedAt: 0, link: 'ok', gateway: 'ok', egress: 'unknown' })
+const down = (pathId: string): PathHealth => ({ pathId, up: false, checkedAt: 0, link: 'ok', gateway: 'fail', egress: 'unknown' })
 
 describe('buildPlan — create', () => {
   test('a desired entry with no existing rule at a healthy, existing path', () => {
@@ -409,5 +409,47 @@ describe('buildPlan — path-missing stays unforceable, by construction (there i
     })
 
     expect(result).toEqual([{ kind: 'skip', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, reason: 'path-missing' }])
+  })
+})
+
+/**
+ * Plan 133 (M98) §3.3 — the reason travels with the row.
+ *
+ * Plan 132 made a down path apply rather than skip, which left "why is it
+ * down" as the operator's only remaining question. `overDownPath` alone
+ * cannot answer it: on the farm session that opened plan 133, two Orbits on a
+ * factory-default subnet and a modem with no data plan were indistinguishable
+ * in Studio.
+ */
+describe('buildPlan — the reason a path is down rides along (plan 133 §3.3)', () => {
+  const d = desired({ pathId: 'via-a' })
+  const base = { desired: [d], rules: [] as RouterRule[], pathIds: new Set(['via-a']) }
+
+  test("a create over a down path carries the router's reason", () => {
+    const rows = buildPlan({ ...base, health: [{ ...down('via-a'), reason: 'no-route-to-gateway' }] })
+    expect(rows[0]).toMatchObject({ kind: 'create', overDownPath: true, overDownPathReason: 'no-route-to-gateway' })
+  })
+
+  test('an update over a down path carries it too — the target path is the one whose health matters', () => {
+    const existing = rule({ '.id': '*1', comment: MARKER(d.groupId, d.endpointKey), 'src-address': d.endpointKey, table: 'via-b' })
+    const rows = buildPlan({
+      ...base,
+      rules: [existing],
+      pathIds: new Set(['via-a', 'via-b']),
+      health: [{ ...down('via-a'), reason: 'gateway-unreachable' }, up('via-b')],
+    })
+    expect(rows[0]).toMatchObject({ kind: 'update', toPathId: 'via-a', overDownPath: true, overDownPathReason: 'gateway-unreachable' })
+  })
+
+  test('a down path whose health carries no reason yields the flag alone — never a guessed reason', () => {
+    const rows = buildPlan({ ...base, health: [down('via-a')] })
+    expect(rows[0]).toMatchObject({ overDownPath: true })
+    expect(rows[0]).not.toHaveProperty('overDownPathReason')
+  })
+
+  test('a healthy path carries neither flag nor reason', () => {
+    const rows = buildPlan({ ...base, health: [up('via-a')] })
+    expect(rows[0]).not.toHaveProperty('overDownPath')
+    expect(rows[0]).not.toHaveProperty('overDownPathReason')
   })
 })

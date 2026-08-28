@@ -1,8 +1,10 @@
 import { z } from 'zod'
 import { MANAGED_COMMENT_PREFIX } from '../shared'
 import { messageOf, MikrotikRestError } from './errors'
+import { deriveFleetFaults, deriveHealth, summarisePing, type EgressProbeResult, type PathDownReason, type Probe } from './health'
 import { MikrotikRestClient, type MikrotikRestConfig } from './rest-client'
 import {
+  DhcpClientListSchema,
   DhcpLeaseListSchema,
   InterfaceListSchema,
   IpRouteListSchema,
@@ -11,6 +13,9 @@ import {
   SystemResourceSchema,
   type RouterRule,
 } from './schemas'
+
+// Plan 134 (M99): re-exported so every existing `import type { PathDownReason } from './router-driver'` keeps working — the derivation moved to `health.ts`, the public surface did not.
+export type { EgressProbeResult, PathDownReason, Probe } from './health'
 
 /**
  * `RouterDriver` — the seam plan 122 §4.1 draws so a second vendor or the
@@ -39,7 +44,25 @@ export interface RouterDriver {
   updateRule(id: string, patch: Partial<DesiredRule>): Promise<void>
   deleteRule(id: string): Promise<void>
   doctor(): Promise<DoctorReport>
+  /**
+   * Plan 134 (M99) §4.4 — send a handful of ICMP packets to `target` OUT OF a
+   * specific uplink, and report what came back. The one check in this plugin
+   * that can tell "the modem answers the router" from "the modem has working
+   * internet" — the distinction that reported device #20 healthy with no data
+   * plan at all (§0.1).
+   *
+   * Never throws. A router that cannot run the probe yields `unknown`, never
+   * `fail`: failing to measure and measuring a failure are different facts,
+   * and only one of them is about the modem.
+   */
+  probeEgress(wanInterface: string, target?: string): Promise<EgressProbeResult>
 }
+
+/** Plan 134 §4.4 — where a probe goes when the operator names nothing. A plain IP, deliberately: resolving a hostname would make a DNS failure look like an egress failure. */
+export const DEFAULT_PROBE_TARGET = '8.8.8.8'
+
+/** How many ICMP packets one probe sends. Small on purpose — §2: every packet is metered LTE data on someone's SIM. */
+const PROBE_PACKET_COUNT = 3
 
 /** One egress path — a RouterOS routing table, identified by its own name (there is no other stable id RouterOS gives a table). */
 export interface Path {
@@ -49,13 +72,84 @@ export interface Path {
   gateway: string | null
   /** Whether a default route (`0.0.0.0/0`) exists in this table at all. */
   hasDefaultRoute: boolean
+  /**
+   * Plan 134 (M99) — the uplink RouterOS itself resolved this path's gateway
+   * to, from the route's `immediate-gw`. `null` when it could not resolve one,
+   * which is precisely the plan 133 fault (`immediate-gw=""`).
+   *
+   * Taken from the router's own answer rather than matched by subnet: on this
+   * farm two ports genuinely shared a subnet (plan 133 §0.3), so a hand-rolled
+   * match would have picked the wrong modem at the one moment it mattered.
+   * It is also what §4.4's probe is addressed to.
+   */
+  wanInterface: string | null
 }
+
+/**
+ * Why a path is down (plan 133 §3.1) — derived entirely from the route object
+ * this driver already fetches, never guessed. The three fixes are unrelated,
+ * which is the whole reason they are three values and not one:
+ *
+ * - `no-default-route` — the table has no `0.0.0.0/0` route. Nothing can
+ *   egress through it at all.
+ * - `no-route-to-gateway` — a default route exists, but `immediate-gw` is
+ *   EMPTY: the router holds no address in the gateway's subnet, so it cannot
+ *   reach the gateway to begin with. A wiring / VLAN / DHCP-client fault on
+ *   the router, not a modem fault. This is the one an operator would never
+ *   guess from the word "down".
+ * - `gateway-unreachable` — the route resolves, but the gateway did not
+ *   answer `check-gateway`. The modem is off, unplugged, or silent.
+ */
 
 /** A path's health, per §4.5: up iff its default route carries the `active` flag. Kept as its own array (matching the `RouterDriver` interface's own shape), not folded into `Path`, because reconcile (§4.7, a later step) refreshes this independently of the path list itself. */
 export interface PathHealth {
   pathId: string
   up: boolean
   checkedAt: number
+  /** Absent when `up` — a healthy path has nothing to explain (plan 133 §4). */
+  reason?: PathDownReason
+  /**
+   * Plan 134 (M99) §3.1 — three independent facts, because one boolean was
+   * answering a different question than the one everybody read it as. See
+   * `health.ts`'s header for the incident. `up` above is unchanged and stays
+   * the field every existing consumer reads.
+   */
+  link: Probe
+  gateway: Probe
+  /**
+   * `unknown` until something actually probed (§3.2: a probe costs LTE data on
+   * a metered SIM, so nothing probes on its own). NEVER `ok` by inference —
+   * that inference is exactly what reported #20 healthy with no data plan.
+   */
+  egress: Probe
+  /** The public IP last observed egressing through this path. Absent until measured — no per-path public IP is assumed from the router side (§0.4). */
+  publicIp?: string
+  egressCheckedAt?: number
+  /** Plan 134 §3.4 — other paths whose uplink holds the same address. The plan 133 fault, named. */
+  duplicateAddressWith?: string[]
+  /** Plan 134 §3.4 — other PROBED paths egressing from the same public IP. Plan 132 §0's ban risk, made visible. */
+  duplicatePublicIpWith?: string[]
+}
+
+/**
+ * `192.168.124.1%wan-modem24-s2p6` → `wan-modem24-s2p6`.
+ *
+ * RouterOS resolves a route's gateway to an interface itself and prints both,
+ * separated by `%`. Taking its answer rather than matching subnets by hand is
+ * the point: the router knows which port it would actually send through, and
+ * on this farm two ports genuinely shared a subnet (plan 133 §0.3), so subnet
+ * matching would have picked the wrong one at exactly the moment it mattered.
+ *
+ * `null` for an absent or unresolved value — `immediate-gw=""` IS the plan 133
+ * fault, and a path whose interface is unknown takes part in no duplicate
+ * group rather than being guessed into one.
+ */
+function interfaceOfImmediateGw(immediateGw: string | undefined): string | null {
+  if (!immediateGw) return null
+  const percent = immediateGw.indexOf('%')
+  if (percent === -1) return null
+  const iface = immediateGw.slice(percent + 1).trim()
+  return iface === '' ? null : iface
 }
 
 export interface Iface {
@@ -164,28 +258,61 @@ export class MikrotikRestDriver implements RouterDriver {
    * consumes them yet — §3.4's lease-kind check (a later step) needs them.
    */
   async inventory(): Promise<RouterInventory> {
-    const [tablesRaw, routesRaw, interfacesRaw, leasesRaw] = await Promise.all([
+    const [tablesRaw, routesRaw, interfacesRaw, leasesRaw, clientsRaw] = await Promise.all([
       this.client.get('/routing/table'),
       this.client.get('/ip/route'),
       this.client.get('/interface'),
       this.client.get('/ip/dhcp-server/lease'),
+      // Plan 134 (M99) §4.1 — the router's WAN side. One GET, and it is where
+      // the plan 133 fault was legible in a single line (§0.3).
+      //
+      // BEST-EFFORT, and that is not caution for its own sake: this endpoint
+      // is additive — it powers a duplicate-address warning and nothing else —
+      // while `inventory()` is what renders the entire Paths tab and feeds
+      // every apply. A router whose API user cannot read `/ip/dhcp-client`, or
+      // a RouterOS that does not serve it, must lose the warning, not the
+      // screen. Caught here rather than around the whole `Promise.all` so a
+      // genuine failure of any OTHER endpoint still throws exactly as before.
+      this.client.get('/ip/dhcp-client').catch(() => null),
     ])
 
     const tables = parseOrThrow(RoutingTableListSchema, tablesRaw, '/routing/table')
     const routes = parseOrThrow(IpRouteListSchema, routesRaw, '/ip/route')
     const interfaces = parseOrThrow(InterfaceListSchema, interfacesRaw, '/interface')
     const leases = parseOrThrow(DhcpLeaseListSchema, leasesRaw, '/ip/dhcp-server/lease')
+    // Same reasoning as the fetch above, one step later: an unparseable WAN
+    // list costs the warning, never the screen. No data means no duplicate
+    // claim — never a claim that there are none.
+    const dhcpClients = clientsRaw === null ? [] : (DhcpClientListSchema.safeParse(clientsRaw).data ?? [])
 
     const checkedAt = Math.floor(Date.now() / 1000)
     const paths: Path[] = []
     const health: PathHealth[] = []
+    const wanInterfaceByPath: { pathId: string; wanInterface: string | null }[] = []
     for (const table of tables) {
       // `routing-table` (v7) preferred over `table` (v6) — see schemas.ts's
       // header on why both are accepted. A route with neither field, or one
       // naming a different table, does not belong to this path.
       const defaultRoute = routes.find((r) => (r['routing-table'] ?? r.table) === table.name && r['dst-address'] === '0.0.0.0/0' && !r.disabled)
-      paths.push({ id: table.name, table: table.name, gateway: defaultRoute?.gateway ?? null, hasDefaultRoute: defaultRoute !== undefined })
-      health.push({ pathId: table.name, up: defaultRoute?.active ?? false, checkedAt })
+      const wanInterface = interfaceOfImmediateGw(defaultRoute?.['immediate-gw'])
+      paths.push({ id: table.name, table: table.name, gateway: defaultRoute?.gateway ?? null, hasDefaultRoute: defaultRoute !== undefined, wanInterface })
+      const derived = deriveHealth(defaultRoute)
+      // Plan 134 §3.2 — `egress` starts `unknown` on every path, every time.
+      // It is only ever raised by something that actually sent a request
+      // through this table, and a refetch of the inventory is not that.
+      health.push({ pathId: table.name, checkedAt, egress: 'unknown', ...derived })
+      // §3.4's join key: the interface the router would actually send through.
+      // `immediate-gw` is RouterOS's own resolution of gateway → interface and
+      // reads `192.168.124.1%wan-modem24-s2p6`, so the interface is the half
+      // after `%`. Absent or unresolved (the plan 133 fault!) yields null, and
+      // a path with no interface simply takes part in no duplicate group.
+      wanInterfaceByPath.push({ pathId: table.name, wanInterface })
+    }
+
+    const faults = deriveFleetFaults(wanInterfaceByPath, dhcpClients)
+    for (const entry of health) {
+      const fault = faults.get(entry.pathId)
+      if (fault && fault.duplicateAddressWith.length > 0) entry.duplicateAddressWith = fault.duplicateAddressWith
     }
 
     return {
@@ -222,6 +349,38 @@ export class MikrotikRestDriver implements RouterDriver {
    * hand-made one for no functional reason is its own small, avoidable
    * confusion.
    */
+  /**
+   * §4.4. `POST /rest/ping` with `interface=` — chosen over `routing-table=`
+   * because the owner's RouterOS 7.24 **rejected** `routing-table` on `/ping`
+   * during the plan 133 session, as a bad parameter. `interface` forces the
+   * packets out of one uplink, which is the same question asked a way this
+   * router actually answers.
+   *
+   * Every failure to RUN the probe becomes `unknown`, and the message says
+   * which failure it was. That is the point of the whole plan: a router that
+   * cannot be asked must not be reported as a modem that failed.
+   */
+  async probeEgress(wanInterface: string, target: string = DEFAULT_PROBE_TARGET): Promise<EgressProbeResult> {
+    try {
+      const raw = await this.client.post('/ping', { address: target, interface: wanInterface, count: PROBE_PACKET_COUNT })
+      return summarisePing(raw, target, wanInterface)
+    } catch (err) {
+      if (err instanceof MikrotikRestError) {
+        // A 400 here is RouterOS rejecting the request itself — an unknown
+        // parameter, or an interface name it does not have. Either way the
+        // probe never left the router, so nothing was learned about the modem.
+        if (err.status === 400) {
+          return { status: 'unknown', message: `This router refused the probe request for ${wanInterface} — it may not support selecting an interface for /ping on this RouterOS version. Egress is unmeasured.` }
+        }
+        if (err.status === 404) {
+          return { status: 'unknown', message: 'This router does not serve /rest/ping, so egress cannot be probed from the router side. Egress is unmeasured.' }
+        }
+        return { status: 'unknown', message: `The probe could not be run: ${err.message}` }
+      }
+      return { status: 'unknown', message: `The probe could not be run: ${messageOf(err)}` }
+    }
+  }
+
   async createRule(rule: DesiredRule): Promise<{ id: string }> {
     const body: Record<string, unknown> = {
       'src-address': `${rule.srcAddress}/32`,

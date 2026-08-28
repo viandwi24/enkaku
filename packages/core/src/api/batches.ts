@@ -4,6 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   BatchArtifactsResponseSchema,
+  BatchResultsResponseSchema,
   BatchResponseSchema,
   BatchStopResponseSchema,
   BatchWithJobsResponseSchema,
@@ -12,6 +13,7 @@ import {
   reconcileParams,
   SkippedDeviceSchema,
   type BatchArtifactInfo,
+  type BatchMemberResult,
   type BatchCounts,
   type BatchInfo,
   type BatchOrder,
@@ -326,6 +328,15 @@ export function createBatchDispatchDeps(
  * scriptId (the script was deleted since the batch ran) resolves to `null`,
  * which `reconcileParams` treats as "no schema, nothing to reconcile".
  */
+/** The result half of {@link paramsSchemaFor} — same two rungs, same reason (2026-08-28). */
+function resultSchemaFor(db: Db, scriptId: string): unknown {
+  // No registry rung, unlike `paramsSchemaFor`: `ScriptEntry` carries no
+  // `resultSchema`, and the `scripts` row is the pinned, authoritative one
+  // anyway — which is the whole reason this is read per batch rather than
+  // resolved `@latest` on the client (plan 97 §4.6).
+  return db.select({ resultSchema: scripts.resultSchema }).from(scripts).where(eq(scripts.id, scriptId)).get()?.resultSchema ?? null
+}
+
 function paramsSchemaFor(db: Db, scriptId: string, registry?: ScriptRegistry): unknown {
   if (registry) return registry.get(scriptId)?.paramsSchema ?? null
   return db.select({ paramsSchema: scripts.paramsSchema }).from(scripts).where(eq(scripts.id, scriptId)).get()?.paramsSchema ?? null
@@ -931,6 +942,103 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
       },
     )
     return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
+  })
+
+  /**
+   * Every member's own result, in one round trip (2026-08-28).
+   *
+   * `job.view`, the same gate `GET /:id` and `/:id/artifacts` use — a
+   * batch-scoped read, not a mutation.
+   *
+   * ## Why this route exists at all
+   *
+   * `GET /:id` returns `rowToJobInfo` for each member, and that projection
+   * deliberately omits `result` (`messages/job.ts`, F18: "a result can be
+   * large, and fifty of them is not what a list is for"). That reasoning is
+   * right for a LIST — and it left an operator with no way to see what a
+   * forty-device batch actually returned except forty visits to
+   * `/jobs/detail`. This route answers the aggregate question the list was
+   * never meant to, under an explicit ceiling rather than by pretending
+   * results are small.
+   *
+   * ## The ceiling, and why it is reported
+   *
+   * `RESULT_LIMITS.defaultMaxResultBytes` is 64 KiB per result; forty of those
+   * is 2.5 MB, which is not a response anyone wants. So results are added until
+   * `BUDGET_BYTES` is reached, and every row past that carries `omitted:
+   * 'budget'` instead of a value — never a blank cell, which reads as "the
+   * script returned nothing". A single result larger than the whole budget is
+   * `'too-large'`: no response could ever carry it inline, and saying so is
+   * more useful than a truncation that looks like data.
+   *
+   * Every member gets a row regardless. On a farm where "which three devices
+   * did not do the thing" IS the question, a table that silently drops members
+   * is worse than no table.
+   */
+  app.get('/:id/results', requirePermission('job.view'), (c) => {
+    const row = mustGet(c.req.param('id'))
+    const jobRows = deps.jobStore.listByBatch(row.id)
+
+    /**
+     * One megabyte. Big enough that a farm-sized batch of ordinary results
+     * (a handful of scalars each) arrives whole; small enough that a batch of
+     * maximum-sized results cannot wedge a browser. Not a setting: an operator
+     * has no way to judge this number, and the response says what it was.
+     */
+    const BUDGET_BYTES = 1024 * 1024
+    let spent = 0
+    let omittedCount = 0
+
+    const names = deps.scriptNames(jobRows.map((j) => j.scriptId))
+    const items: BatchMemberResult[] = jobRows.map((j) => {
+      // Through `rowToJobInfo` rather than off the raw row: `status` and
+      // `resultStatus` are untyped strings in SQLite and that function is the
+      // single place this codebase narrows them. Hand-picking them here would
+      // be a second, quieter narrowing that could drift from it.
+      const info = rowToJobInfo(j, names.get(j.scriptId) ?? null)
+      const base = {
+        jobId: info.jobId,
+        deviceId: info.deviceId,
+        batchSeq: info.batchSeq ?? null,
+        status: info.status,
+        resultStatus: info.resultStatus,
+        resultSummary: info.resultSummary,
+      }
+      // Nothing to carry, and that is not an omission worth counting against
+      // the budget — the job simply has not produced a value yet.
+      if (j.result === null || j.result === undefined) {
+        return info.status === 'success' || info.status === 'failed' ? base : { ...base, omitted: 'unfinished' as const }
+      }
+
+      // Measured on the STORED text, not on a re-serialised object: that is
+      // the size that actually crosses the wire.
+      const size = typeof j.result === 'string' ? j.result.length : JSON.stringify(j.result).length
+      if (size > BUDGET_BYTES) {
+        omittedCount += 1
+        return { ...base, omitted: 'too-large' as const }
+      }
+      if (spent + size > BUDGET_BYTES) {
+        omittedCount += 1
+        return { ...base, omitted: 'budget' as const }
+      }
+      spent += size
+      return { ...base, result: j.result }
+    })
+
+    /*
+     * Inlined for the reason `JobDetailSchema` gives (plan 97 §4.6): resolving
+     * it separately on the client could land on a different version after a
+     * rollback, and the table would then render one version's values through
+     * another version's schema. Read from the PINNED `scripts` row this batch
+     * dispatched against — the same lookup `paramsSchemaFor` above makes for
+     * the params half.
+     */
+    return typedJson(c, BatchResultsResponseSchema, {
+      items,
+      resultSchema: resultSchemaFor(db, row.scriptId) as never,
+      omittedCount,
+      budgetBytes: BUDGET_BYTES,
+    })
   })
 
   /**

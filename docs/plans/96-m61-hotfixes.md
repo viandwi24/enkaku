@@ -4056,3 +4056,156 @@ status line is updated to describe this fix rather than continue the false
 `:7700` dev server (`POST /api/devices/scan` with a real `discovery.networks`
 entry) is left to the owner: this pass did not fabricate a network entry to
 test against one that was not already configured with intent.
+
+---
+
+### 96.46 — Uploading an APK larger than 128 MB failed with an empty-bodied 413 that reads as 403, because `Bun.serve` was never given a `maxRequestBodySize` and `api/artifacts.ts`'s declared 1 GB cap was dead above Bun's default. FIXED 2026-08-26.
+
+**Reported from the owner's farm, 2026-08-26.** Installing
+`com.google.android.googlequicksearchbox_17.52.15.sa.arm64-301797095_minAPI30(arm64-v8a)(nodpi)_apkmirror.com.apk`
+(~210 MB) through the APK-install dialog failed. DevTools showed one red row —
+`POST /api/artifacts` — and its Response tab said **"Failed to load response
+data / No data found for resource with given identifier"**, because there was
+no response body to find. The status was read as **403**, which sent the whole
+investigation at permissions: roles, `shell.mode`, `transfer.enabled`,
+`canUseFiles`, four separate `auth.forbidden` gates. None of them was involved.
+
+**It was 413, and the limit was not one this repo had chosen.**
+`packages/core/src/daemon.ts`'s `Bun.serve({ ... })` never set
+`maxRequestBodySize`, so Bun's own default of **128 MB** applied. Bun enforces
+it in the transport, *before* `fetch` runs — so Hono never sees the request,
+no route can refuse it in words, and the client receives a 413 with an empty
+body. Reproduced directly against the owner's running core with a 210 MB
+multipart POST: `HTTP 413`, zero-length body.
+
+The consequence worth naming: `api/artifacts.ts`'s own
+`MAX_UPLOAD_BYTES = 1024 * 1024 * 1024` and both of its checks
+(`content-length` pre-flight, then `file.size`) were **unreachable for anything
+over 128 MB**. The file read as a 1 GB limit, documented as a 1 GB limit, and
+behaved as a 128 MB one. Its tests passed, because they exercise the route
+directly and never cross a real socket.
+
+**Fixed.** `MAX_UPLOAD_BYTES` is now exported alongside a new
+`MAX_REQUEST_BODY_BYTES` (`MAX_UPLOAD_BYTES + 16 MB`), and `daemon.ts` passes
+the latter to `Bun.serve`. The transport cap sits deliberately **above** the
+route cap rather than equal to it: the transport cap is a blunt backstop, the
+route's check is the one that produces a message an operator can read, and
+whenever both could fire the legible one must win. No limit was raised — 1 GB
+was always the intended number; it simply was not the number being enforced.
+
+**Guards** (`packages/core/src/api/artifacts.test.ts`, 3 new tests). This is
+the "registered but not wired" shape this register has now recorded five times
+(96.5, 96.6, 96.9, 96.11, 96.45), and it cannot be observed from inside the
+Hono app: by the time a route runs, the request already got past the transport.
+So the guard asserts `daemon.ts`'s **source** contains
+`maxRequestBodySize: MAX_REQUEST_BODY_BYTES` — the same discipline
+`tools/adb-server-control.test.ts` uses for `adb kill-server` — plus that the
+transport cap exceeds the route cap, plus that the route cap is still exactly
+1 GB so this can never quietly become permissive.
+
+**Two message losses fixed alongside, because they are why this cost a
+session rather than a minute:**
+
+1. `InstallBatchDialog.submitBatch` replaced every server error with
+   `new Error('Could not create the batch')`, discarding status, code and
+   message. It now uses `api()`, which carries the server's own `code` and
+   `message` into `useAction`'s toast. Six new tests
+   (`InstallBatchDialog.test.tsx`) pin that each of the three hand-written
+   `auth.forbidden` sentences reaches the operator verbatim.
+2. `describeApiError` (`packages/ui/src/lib/actions.ts`) rewrote **every**
+   `auth.forbidden` into "Your role does not allow this — ask an admin." That
+   was written for `requirePermission`'s template — a bare permission NAME,
+   not a sentence anyone chose — but it also swallowed the hand-written ones,
+   and of the four refusals `POST /api/batches` can produce, only one is
+   something an admin can grant (the others need `shell.mode` changed,
+   `transfer.enabled` turned on, or a different device). The rewrite is now
+   scoped to `/^requires the [\w.]+ permission$/`; everything else passes
+   through. Four new tests, including that a message-less 403 still gets the
+   generic line rather than an empty toast.
+
+`ArtifactPicker.uploadArtifactSource` also now explains a body-less 413 in its
+own words, naming the file's real size — "rare" is exactly when a message has
+to stand on its own.
+
+**Verification.** `bash scripts/typecheck.sh` clean.
+`bun test packages/core/src/api/artifacts.test.ts`: 14 pass / 0 fail.
+`bun test src/components/ArtifactPicker.test.tsx src/components/InstallBatchDialog.test.tsx`
+(cwd `packages/studio`): 12 pass / 0 fail.
+`bun test src/lib/actions.test.ts` (cwd `packages/ui`): 22 pass / 0 fail.
+
+**Not verified, and it matters:** the transport fix lives in the CORE, not in
+Studio. It takes effect only when the core binary is rebuilt and restarted —
+rebuilding Studio alone changes nothing about this failure. The owner's running
+core was deliberately left untouched (its farm reaches devices over OTG and a
+restart is not free).
+
+**One leftover.** Diagnosis uploaded a 9-byte `probe.apk`
+(`1abe6308-c3ad-47a2-85df-e2a2cdfc78b4`) to the owner's artifact store while
+reproducing the multipart path. There is no `DELETE /api/artifacts/:id` route,
+so it could not be removed; it is inert and can be ignored.
+
+---
+
+### 96.47 — `tapNorm`/`swipeNorm`/`longPress`/`gesture` were declared on `DeviceApi`, implemented by the executor, and never forwarded by the IPC bridge a script actually calls through. Every recording containing a point tap failed on its first replay. FIXED 2026-08-27.
+
+**Found on hardware, 2026-08-27**, by the first run of a new plugin member
+(`plugins/youtube-automation-pack`'s `search-channel`) against a real device.
+The call `ctx.device.tapNorm(...)` failed with:
+
+```
+ctx.device.tapNorm is not a function
+```
+
+after typechecking cleanly, publishing cleanly, and passing `enkaku publish`'s
+own verification.
+
+**The device API a script calls is spelled out in three places**, and nothing
+made them agree:
+
+1. `packages/sdk/src/types.ts` — `DeviceApi`, what an author's editor checks;
+2. `packages/session/src/device-executor.ts` — the `switch` that performs the
+   call, with a `case` for each of the four (plan 94 step 94.2);
+3. `packages/session/src/runner/child-entry.ts` — the `deviceApi` object the
+   script literally holds and forwards over IPC.
+
+All four verbs were in 1 and 2. **None was in 3.** The wire schema
+(`runner/ipc.ts`'s `DEVICE_CALL_ARGS`) accepted them too, and both the schema
+(`ipc.test.ts`) and the executor (`device-executor.test.ts`) had their own
+tests — so every link in the chain was covered EXCEPT the one that was missing.
+
+**This was not a latent defect waiting for someone to try it.**
+`packages/sdk/src/define-recording.ts` calls `device.tapNorm(target.pos, ...)`
+for every point tap it replays — the exact call plan 94 §3.4 added `tapNorm`
+to make possible. So **every recording containing a point tap threw on its
+first replay**, in every build since step 94.2 landed.
+
+**Fixed** by forwarding all four from `child-entry.ts`'s `deviceApi`, with the
+argument names taken from their schemas (`tapNorm: { pos, holdMs? }`,
+`swipeNorm: { from, to, ms }`, `longPress: { target, ms }`,
+`gesture: { samples }`).
+
+**Guard** — `packages/session/src/runner/child-entry-surface.test.ts`, 27 tests.
+`child-entry.ts` cannot be imported (it runs `process.on(...)` and `send()` at
+module scope, being a child-process entry point), so the guard reads its
+SOURCE — the same discipline `packages/core/src/tools/adb-server-control.test.ts`
+uses for `adb kill-server`, and the one 96.46 used for `Bun.serve`'s
+`maxRequestBodySize`. It enumerates `DEVICE_CALL_ARGS` rather than a hand-written
+list, so a verb added to the protocol tomorrow joins the test without anyone
+remembering to; a verb may only be skipped by being named in an explicit
+`NOT_FOR_SCRIPTS` map with its reason, so "missing" has to be a decision rather
+than an oversight. A second block asserts each of the four forwards the fields
+its schema requires — the subtler drift, and one this exact file has already
+suffered: its own comment records `app.launch`'s `url` being declared on the
+interface and on the wire and dropped here, so a script asked Chrome to open a
+page and the executor received a bare launch. *"A field list spelled out in
+three places will drift; this is the one that decides."* A method list drifts
+the same way.
+
+**Mutation-tested.** Deleting the `tapNorm` line fails 3 of the 27 tests by
+name; restoring it returns them to green.
+
+**Verification.** `bash scripts/typecheck.sh` clean.
+`bun test packages/session/src/runner/`: 243 pass / 0 fail.
+`child-entry.ts` is on EVERY script's path, so the pack that found the bug was
+re-run on real hardware against the patched runner — searched a channel, opened
+it, opened its newest video, watched, and closed, all green.

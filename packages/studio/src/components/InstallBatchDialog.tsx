@@ -11,6 +11,7 @@ import { TransferProgressBar } from '@/components/operations/TransferProgressBar
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import {
+  api,
   Button,
   Dialog,
   DialogContent,
@@ -27,7 +28,6 @@ import {
   useAction,
 } from '@enkaku/ui'
 import { findReattach, resolveTargetDeviceIds, useOperations } from '@/lib/operations'
-import { coreBase } from '@/lib/ws'
 
 const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
 
@@ -166,22 +166,34 @@ export function InstallBatchDialog({
       'install-batch',
       async () => {
         const artifactId = await uploadArtifactSource(source)
-        const res = await fetch(`${coreBase()}/api/batches`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
+        /*
+         * `api()`, not a raw `fetch`. The raw call this replaces collapsed
+         * every possible refusal into one string — "Could not create the
+         * batch" — and `POST /api/batches` with `internal:install` can refuse
+         * for four unrelated reasons, each of which the server already names:
+         *
+         *   - the caller lacks `job.run`
+         *   - the caller's role cannot run an install under the farm's
+         *     current `shell.mode` (`requires device.files`)
+         *   - `transfer.enabled` is off farm-wide
+         *   - the target device belongs to another user
+         *
+         * Those have four different fixes and three different people who can
+         * apply them, and the operator was told none of it. Reported from the
+         * owner's farm on 2026-08-26 as an unexplained 403 that took a code
+         * read to place. `api()` throws an Error carrying the server's own
+         * `code` and `message`, which is what `useAction`'s toast shows.
+         */
+        const body = await api('/api/batches', BatchResponseSchema, {
+          json: {
             scriptId: 'internal:install',
             params: { artifactId },
             target: target === 'cluster' ? { clusterId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds },
             concurrency,
             order,
-          }),
+          },
         })
-        const parsed = BatchResponseSchema.safeParse(await res.json().catch(() => null))
-        if (!res.ok || !parsed.success) {
-          throw new Error('Could not create the batch')
-        }
-        setBatchId(parsed.data.batch.id)
+        setBatchId(body.batch.id)
       },
       { failure: 'Install batch failed to start' },
     )

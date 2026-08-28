@@ -34,9 +34,16 @@ import {
   fileSize,
   relativeTime,
   useAction,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsList } from '@/components/JobsList'
+import { JobDetailPanel } from '@/components/device-popup/JobDetailPanel'
+import { BatchResults } from '@/components/bulk/BatchResults'
 import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups } from '@/components/bulk/SkippedGroups'
 import { batchOutcomeCounts, batchOutcomeGroups } from '@/components/bulk/use-batch-report'
@@ -123,6 +130,19 @@ function BatchDetail() {
   // membership is checked against `jobs` (above) rather than the message
   // itself.
   const [waiting, setWaiting] = useState<Record<string, { reason: 'quiet' | 'paced'; remainingSec: number }>>({})
+  /**
+   * The member whose result is open in the sheet, or `null`.
+   *
+   * Reading a batch used to mean leaving it: every member's only control was a
+   * `next/link` to `/jobs/detail`, so checking forty members cost forty
+   * navigations out and back, and the batch's own progress was unmounted each
+   * time. The panel this opens is `JobDetailPanel` — the SAME component the
+   * device popup already uses for this exact purpose (plan 103 §9 Q2), over
+   * the same `useJobDetail` hook and the same result/logs/artifacts views the
+   * full page renders. Nothing here is a second implementation of any of them,
+   * and the panel carries its own link out for the parts it does not show.
+   */
+  const [openJobId, setOpenJobId] = useState<string | null>(null)
 
   // The batch header (status, counts, identity) is its own small fetch; the
   // jobs table below is fed by PaginatedTable's own fetchPage so there is
@@ -354,6 +374,22 @@ function BatchDetail() {
 
           {isPullBatch && <CollectedFiles batchId={batch.id} />}
 
+          {/*
+            Every member's result, side by side (2026-08-28). Placed ABOVE the
+            members table on purpose: "what did this batch return" is the
+            question a batch page is opened to answer, and until now the answer
+            was forty visits to `/jobs/detail`. The members table below still
+            owns status, timing, pacing and cancellation — this owns values.
+          */}
+          <BatchResults
+            batchId={batch.id}
+            deviceLabel={(id) => {
+              const n = deviceNameOf(id)
+              return { number: n.number, label: n.label }
+            }}
+            onOpenMember={setOpenJobId}
+          />
+
           {/* Shared jobs table (audit finding 1) over this batch's OWN source:
               members come back with the batch itself, not from a jobs query.
               The row is what matters — this table used to hide a failed
@@ -367,6 +403,7 @@ function BatchDetail() {
               const n = deviceNameOf(id)
               return { number: n.number, name: n.label, ident: id }
             }}
+            onOpenDetail={setOpenJobId}
             waiting={waiting}
             empty={{
               title: 'No jobs in this batch',
@@ -462,6 +499,30 @@ function BatchDetail() {
           )}
         </aside>
       </div>
+
+      {/*
+        A sheet rather than the `20rem` aside beside it: a job's logs and
+        artifacts are not readable in a column that narrow. A sheet is also what
+        this app already uses for a read-only side surface
+        (`components/DiscoveredTray.tsx`), so this is the established shape
+        rather than a new one.
+
+        Keyed on the job id so switching members REMOUNTS the panel. Without
+        that, `useJobDetail` holds the previous member's result on screen while
+        the next one loads — the single most misleading state a results view can
+        have on a batch of forty near-identical devices.
+      */}
+      <Sheet open={openJobId !== null} onOpenChange={(next) => !next && setOpenJobId(null)}>
+        <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>Member result</SheetTitle>
+            <SheetDescription>This member&apos;s own result, logs and artifacts — read here, without leaving the batch.</SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            {openJobId && <JobDetailPanel key={openJobId} jobId={openJobId} onBack={() => setOpenJobId(null)} backLabel="Back to the batch" linkToFullPage />}
+          </div>
+        </SheetContent>
+      </Sheet>
     </>
   )
 }

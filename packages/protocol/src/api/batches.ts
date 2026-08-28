@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { BatchInfoSchema } from '../messages/batch'
-import { JobInfoSchema } from '../messages/job'
+import { JobInfoSchema, JobStatusSchema } from '../messages/job'
+import { ResultStatusSchema } from '../schema/result'
+import { JsonSchemaNodeSchema } from './json-schema'
 import { pageSchema } from './pagination'
 
 /** `POST /api/batches`, `POST /api/batches/:id/rerun-failed`. */
@@ -80,3 +82,58 @@ export type BatchArtifactInfo = z.infer<typeof BatchArtifactSchema>
 
 /** `GET /api/batches/:id/artifacts` — unpaged, like `GET /:id`'s own `jobs` array: bounded by the batch's own member count, never an independent unbounded list (plan 30 §2 non-goals). */
 export const BatchArtifactsResponseSchema = z.object({ items: z.array(BatchArtifactSchema) })
+
+/**
+ * One member's own result, for the batch-wide results table (2026-08-28).
+ *
+ * Every member gets a row, always — a table that silently drops members is
+ * worse than no table on a farm where "which three devices did not do the
+ * thing" IS the question. `result` is what may be absent, and when it is,
+ * `omitted` says why in a word rather than leaving a blank cell to be read as
+ * "the script returned nothing".
+ */
+export const BatchMemberResultSchema = z.object({
+  jobId: z.string(),
+  deviceId: z.string(),
+  batchSeq: z.number().int().nullable().default(null),
+  status: JobStatusSchema,
+  resultStatus: ResultStatusSchema.nullable().default(null),
+  resultSummary: z.string().nullable().default(null),
+  /** The script's own return value. Absent when `omitted` says so, and when the job has not settled. */
+  result: z.unknown().optional(),
+  /**
+   * Why `result` is not here.
+   *
+   * - `budget` — the response hit its byte ceiling before reaching this row.
+   *   `GET /api/jobs/:id` still has it; the row links there.
+   * - `too-large` — this ONE result is bigger than the whole budget, so no
+   *   response could ever carry it inline.
+   * - `unfinished` — the job has not settled, so there is nothing to carry.
+   */
+  omitted: z.enum(['budget', 'too-large', 'unfinished']).optional(),
+})
+export type BatchMemberResult = z.infer<typeof BatchMemberResultSchema>
+
+/**
+ * `GET /api/batches/:id/results`.
+ *
+ * `resultSchema` is inlined here for the SAME reason `JobDetailSchema` inlines
+ * it (plan 97 §4.6): a second fetch could resolve to a different script version
+ * after a rollback, and the table would then render one version's values
+ * through another version's schema. A batch pins one script version across
+ * every member, so one schema is the correct shape.
+ *
+ * `omittedCount`/`budgetBytes` are reported, never implied. A results view that
+ * quietly showed 37 of 40 rows' values would be the exact failure this repo has
+ * paid for before (plan 134: an unmeasured thing must never read as a measured
+ * one).
+ */
+export const BatchResultsResponseSchema = z.object({
+  items: z.array(BatchMemberResultSchema),
+  resultSchema: JsonSchemaNodeSchema.nullable().default(null),
+  /** How many rows carry no `result`. Zero when every settled member's value fitted. */
+  omittedCount: z.number().int(),
+  /** The ceiling this response was assembled under, so the number above is legible rather than mysterious. */
+  budgetBytes: z.number().int(),
+})
+export type BatchResultsResponse = z.infer<typeof BatchResultsResponseSchema>

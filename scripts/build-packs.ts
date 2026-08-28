@@ -47,6 +47,8 @@ const PACK_ENTRIES = [
   'plugins/proxy-manager/src/index.ts',
   'plugins/tiktok-automation-pack/src/index.ts',
   'plugins/mikrotik-routing/src/index.ts',
+  'plugins/google-automation-pack/src/index.ts',
+  'plugins/youtube-automation-pack/src/index.ts',
 ]
 
 export interface PackIndexEntry {

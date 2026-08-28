@@ -140,6 +140,25 @@ export async function uploadArtifactSource(source: ArtifactSource): Promise<stri
   const res = await fetch(`${coreBase()}/api/artifacts`, { method: 'POST', body: form })
   const body = (await res.json().catch(() => null)) as { artifact?: { id: string }; error?: { message?: string } } | null
   if (!res.ok || !body?.artifact) {
+    /*
+     * 413 is the one status that can arrive with NO body to explain itself:
+     * `Bun.serve`'s `maxRequestBodySize` is enforced in the transport, so the
+     * core's own route never runs and never gets to say anything. Reported
+     * from the owner's farm on 2026-08-26 — a ~210 MB APK produced a bare red
+     * row in DevTools ("No data found for resource with given identifier"),
+     * and the status was read as 403, which sent the whole investigation at
+     * permissions instead of at size.
+     *
+     * The server-side cap has been raised to match the limit the core actually
+     * declares, so this should now be genuinely rare — but "rare" is exactly
+     * when a message has to stand on its own, and this one names the file's
+     * real size rather than leaving an operator to guess what "too large" is.
+     */
+    if (res.status === 413 && !body?.error?.message) {
+      // `source` is narrowed to the upload case by the early return above.
+      const mb = Math.round(source.file.size / (1024 * 1024))
+      throw new Error(`The server rejected this upload as too large (${mb} MB). It was refused before reaching the app, so there is no server message to show.`)
+    }
     throw new Error(body?.error?.message ?? `Upload failed (HTTP ${res.status})`)
   }
   return body.artifact.id

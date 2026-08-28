@@ -216,3 +216,51 @@ describe('InstallBatchDialog — re-attach instead of a fresh Install (plan 107 
     expect(installButton.disabled).toBe(true)
   })
 })
+
+/**
+ * Reported from the owner's farm, 2026-08-26: submitting this dialog answered
+ * **403** and the toast said only "Install batch failed to start". The server
+ * had named the gate; two layers threw the sentence away before it reached the
+ * screen — `submitBatch` replaced it with `new Error('Could not create the
+ * batch')`, and `describeApiError` rewrote every `auth.forbidden` into "ask an
+ * admin". Placing the failure took a read of the core's source.
+ *
+ * `POST /api/batches` with `internal:install` can refuse for four unrelated
+ * reasons, and only one of them is something an admin can grant.
+ */
+describe('InstallBatchDialog — a refusal says which gate closed', () => {
+  const REFUSALS = [
+    { code: 'auth.forbidden', message: 'you do not have permission to run internal:install (requires device.files)', status: 403 },
+    { code: 'auth.forbidden', message: 'file transfer is disabled for this farm (transfer.enabled)', status: 403 },
+    { code: 'auth.forbidden', message: 'this device belongs to another user', status: 403 },
+  ]
+
+  for (const refusal of REFUSALS) {
+    test(`surfaces "${refusal.message}" rather than a generic failure`, async () => {
+      const user = userEvent.setup()
+      const errors: { message: string; description?: string }[] = []
+      const { toast } = await import('sonner')
+      const original = toast.error
+      // @ts-expect-error — narrowing sonner's overloaded signature is not the point of this test.
+      toast.error = (message: string, opts?: { description?: string }) => {
+        errors.push({ message, ...(opts?.description ? { description: opts.description } : {}) })
+      }
+
+      try {
+        renderWithApi(<InstallBatchDialog open devices={[makeDevice('d1', 'Phone A')]} onOpenChange={() => {}} />, {
+          '/api/artifacts*': (req) => (req.method === 'POST' ? { body: { artifact: { id: 'art-1' } } } : { status: 400, body: {} }),
+          '/api/batches': { status: refusal.status, body: { error: { code: refusal.code, message: refusal.message } } },
+        })
+
+        const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+        await user.upload(fileInput, new File(['x'], 'app.apk', { type: 'application/vnd.android.package-archive' }))
+        await user.click(screen.getByText('Install'))
+
+        await waitFor(() => expect(errors.length).toBe(1))
+        expect(errors[0]?.description).toBe(refusal.message)
+      } finally {
+        toast.error = original
+      }
+    })
+  }
+})

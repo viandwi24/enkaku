@@ -83,7 +83,15 @@ function renderScalar(plan: FieldPlan, value: unknown): string {
  *  for a further nested block, and `planField`'s own `table`/`list` rows
  *  (10/11) never plan an object ITEMS array as anything deeper than this
  *  (an object-items array becomes a `table` one level up, not two). */
-function renderCell(plan: FieldPlan, value: unknown): string {
+/**
+ * One value, as a single line of text.
+ *
+ * Exported since 2026-08-28 for the batch results table, which renders the SAME
+ * planned fields across many members instead of one member's fields down a
+ * page. Sharing this is the point: a value must not read one way on a job's own
+ * page and another way in the table that compares forty of them.
+ */
+export function renderCell(plan: FieldPlan, value: unknown): string {
   return plan.control === 'group' || plan.control === 'table' || plan.control === 'list' ? jsonText(value) : renderScalar(plan, value)
 }
 

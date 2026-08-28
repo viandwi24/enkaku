@@ -107,7 +107,7 @@ import { MANAGED_COMMENT_PREFIX } from '../shared'
 import { sameAddressSpec } from './cidr'
 import type { DesiredAssignment } from './drift'
 import { parseMarker } from './marker'
-import type { PathHealth } from './router-driver'
+import type { PathHealth, PathDownReason } from './router-driver'
 import { resolveTarget } from './resolve'
 import type { RouterRule } from './schemas'
 
@@ -145,8 +145,8 @@ export interface BuildPlanInput {
 export type SkipReason = 'path-missing' | 'duplicate'
 
 export type PlanRow =
-  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string; overDownPath?: true }
-  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule; overDownPath?: true }
+  | { kind: 'create'; endpointKey: string; pathId: string; groupId: string; groupName: string; overDownPath?: true; overDownPathReason?: PathDownReason }
+  | { kind: 'update'; endpointKey: string; fromPathId: string; toPathId: string; groupId: string; groupName: string; rule: RouterRule; overDownPath?: true; overDownPathReason?: PathDownReason }
   | { kind: 'delete'; endpointKey: string; pathId: string | null; groupId: string | null; rule: RouterRule }
   | { kind: 'skip'; endpointKey: string; pathId: string; groupId: string; groupName: string; reason: SkipReason }
   | { kind: 'foreign'; endpointKey: string | null; pathId: string | null; rule: RouterRule }
@@ -195,7 +195,15 @@ function sortRows(rows: PlanRow[]): PlanRow[] {
 export function buildPlan(input: BuildPlanInput): PlanRow[] {
   const rows: PlanRow[] = []
   const healthByPath = new Map<string, boolean>()
-  for (const h of input.health) healthByPath.set(h.pathId, h.up)
+  // Plan 133 (M98) §3.3 — carried alongside `up` so a warning can name WHY a
+  // path is down, not only that it is. Absent for a path whose health the
+  // router reported without a reason (an older core, or a condition this
+  // build has no wording for); the row then reads exactly as it did before.
+  const reasonByPath = new Map<string, PathDownReason>()
+  for (const h of input.health) {
+    healthByPath.set(h.pathId, h.up)
+    if (h.reason !== undefined) reasonByPath.set(h.pathId, h.reason)
+  }
 
   // create / update / skip — one row per desired entry, at most.
   for (const d of input.desired) {
@@ -207,10 +215,12 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
     // falls through to `resolveTarget` exactly as a healthy path does, and
     // the resulting row is flagged so the preview still shows it truthfully.
     const overDownPath = !(healthByPath.get(d.pathId) ?? false)
+    const downReason = overDownPath ? reasonByPath.get(d.pathId) : undefined
+    const downFlags = overDownPath ? { overDownPath: true as const, ...(downReason ? { overDownPathReason: downReason } : {}) } : {}
 
     const resolved = resolveTarget(input.rules, d.endpointKey)
     if (resolved.action === 'create') {
-      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, ...(overDownPath ? { overDownPath: true as const } : {}) })
+      rows.push({ kind: 'create', endpointKey: d.endpointKey, pathId: d.pathId, groupId: d.groupId, groupName: d.groupName, ...downFlags })
     } else if (resolved.action === 'update') {
       if (resolved.rule.table === d.pathId && !resolved.rule.disabled) {
         // Already correct and enabled — no row (mirrors drift.ts's "matches
@@ -226,7 +236,7 @@ export function buildPlan(input: BuildPlanInput): PlanRow[] {
         groupId: d.groupId,
         groupName: d.groupName,
         rule: resolved.rule,
-        ...(overDownPath ? { overDownPath: true as const } : {}),
+        ...downFlags,
       })
     } else {
       // 'refuse-duplicate' — never guess which to keep (§4.3); this endpoint is not safely actionable.

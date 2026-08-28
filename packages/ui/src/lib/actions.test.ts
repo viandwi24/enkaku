@@ -167,6 +167,41 @@ describe('describeApiError()', () => {
   test('a non-Error, non-coded throw still stringifies rather than throwing again', () => {
     expect(describeApiError('network down')).toBe('network down')
   })
+
+  /**
+   * Reported from the owner's farm, 2026-08-26: an APK install answered 403
+   * and the toast said "Your role does not allow this — ask an admin." The
+   * server had actually sent `you do not have permission to run
+   * internal:install (requires device.files)`, which names the exact gate and
+   * points at a farm SETTING (`shell.mode`), not at a role anyone could grant.
+   * Placing it took a read of the core's source.
+   *
+   * So the rewrite is now scoped to `requirePermission`'s own template — a
+   * bare permission name, the thing it was written for — and every
+   * hand-written 403 sentence reaches the operator intact.
+   */
+  test("a hand-written auth.forbidden sentence reaches the operator verbatim — it names a gate the generic line cannot", () => {
+    const err = Object.assign(new Error('you do not have permission to run internal:install (requires device.files)'), { code: 'auth.forbidden' })
+    expect(describeApiError(err)).toBe('you do not have permission to run internal:install (requires device.files)')
+  })
+
+  test('a farm-setting refusal survives too — nobody can fix this by changing a role', () => {
+    const err = Object.assign(new Error('file transfer is disabled for this farm (transfer.enabled)'), { code: 'auth.forbidden' })
+    expect(describeApiError(err)).toBe('file transfer is disabled for this farm (transfer.enabled)')
+  })
+
+  test('an auth.forbidden with no message at all still gets the generic line rather than an empty toast', () => {
+    expect(describeApiError(Object.assign(new Error(''), { code: 'auth.forbidden' }))).toBe('Your role does not allow this — ask an admin.')
+  })
+
+  test('the permission-name rewrite matches the template exactly, not anything containing it', () => {
+    // `requires the device.files permission` (bare) is the machine-ish one.
+    // A sentence that merely mentions a permission is an author's own writing.
+    const bare = Object.assign(new Error('requires the device.files permission'), { code: 'auth.forbidden' })
+    const written = Object.assign(new Error('this batch requires the device.files permission on every target'), { code: 'auth.forbidden' })
+    expect(describeApiError(bare)).toBe('Your role does not allow this — ask an admin.')
+    expect(describeApiError(written)).toBe('this batch requires the device.files permission on every target')
+  })
 })
 
 /**

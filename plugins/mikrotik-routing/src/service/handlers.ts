@@ -61,12 +61,21 @@ export interface HandlerHost {
  * `plugin.runtime` verb here yet: that permission split only earns its keep
  * once an action changes something, and step 122.3 changes nothing.
  */
-export const ROUTER_ROUTES = { inventory: 'inventory', rules: 'rules', doctor: 'doctor' } as const
+export const ROUTER_ROUTES = { inventory: 'inventory', rules: 'rules', doctor: 'doctor', probeEgress: 'probe-egress' } as const
 
 export const ROUTER_ROUTE_PERMISSIONS: Record<keyof typeof ROUTER_ROUTES, string> = {
   inventory: 'script.view',
   rules: 'script.view',
   doctor: 'script.view',
+  /**
+   * Plan 134 (M99) §4.4. `script.view`, like the other three, and the split is
+   * worth stating: this route SENDS something (three ICMP packets out of one
+   * uplink) but CHANGES nothing — no router record is written, no device is
+   * touched, and re-running it leaves the farm exactly as it found it. The
+   * `plugin.runtime` split above earns its keep for `apply`, which alters what
+   * the router does; a read that costs three packets is still a read.
+   */
+  probeEgress: 'script.view',
 }
 
 /** What every route answers with when it cannot even reach a driver, or when the driver's own call throws. Always `200`-shaped — see this file's header. */
@@ -140,6 +149,9 @@ export function toRuleRow(rule: RouterRule): RuleRow {
 
 /** `device.list`'s own output shape (`packages/core/src/capability/device-state.ts`'s `ListOutput`) — the full `DeviceInfoSchema`, not a loose subset, because `identity-bridge.ts`'s `buildIdentityBridge` takes real `DeviceInfo` values. */
 const DeviceListSchema = z.object({ items: z.array(DeviceInfoSchema) })
+
+/** Plan 134 (M99) §4.4 — a probe's input. `target` is optional; the driver's own `DEFAULT_PROBE_TARGET` is the single place that default lives. */
+const ProbeEgressInputSchema = z.object({ wanInterface: z.string().min(1), target: z.string().min(1).optional() })
 
 /**
  * Register the three routes on a live service context.
@@ -233,6 +245,47 @@ export function registerRouterRoutes(
       methods: ['GET'],
       permission: ROUTER_ROUTE_PERMISSIONS.inventory,
       description: 'Every egress path on the router — its routing table, its default route’s gateway, and whether that route is active (§4.5) — read live from the router, never cached.',
+    },
+  )
+
+  /**
+   * Plan 134 (M99) §4.4 — the only check in this plugin that can tell "the
+   * modem answers the router" from "the modem has working internet".
+   *
+   * Operator-triggered, never scheduled (§2): every probe is metered LTE data
+   * on somebody's SIM, and a farm of forty modems probing itself on a timer is
+   * a bill nobody agreed to. The screen has a button; nothing else calls this.
+   *
+   * The interface, not the path, is the parameter. The router itself resolved
+   * gateway → interface in `inventory()`'s `immediate-gw` (`router-driver.ts`),
+   * and on this farm two ports genuinely shared a subnet, so re-deriving it
+   * here from a path id would risk probing the wrong modem at exactly the
+   * moment it mattered.
+   */
+  host.onRequest(
+    ROUTER_ROUTES.probeEgress,
+    async (request) => {
+      const parsed = ProbeEgressInputSchema.safeParse(request.body)
+      if (!parsed.success) {
+        return { body: { ok: false, code: 'E_BAD_INPUT', message: 'a probe needs the uplink interface to send from' } satisfies RouterActionRefusal }
+      }
+      const loaded = await loadDriver()
+      if (!loaded.ok) return { body: loaded.body }
+      // `probeEgress` never throws by contract — it answers `unknown` for
+      // anything it could not run. The try/catch is for a driver that breaks
+      // that contract, and it degrades the same way rather than 500ing.
+      try {
+        const result = await loaded.driver.probeEgress(parsed.data.wanInterface, parsed.data.target)
+        return { body: { ok: true, probe: result } }
+      } catch (err) {
+        return { body: toRefusal(err) }
+      }
+    },
+    {
+      methods: ['POST'],
+      permission: ROUTER_ROUTE_PERMISSIONS.probeEgress,
+      description:
+        'Sends three ICMP packets out of one uplink and reports what came back — the difference between “the modem answers” and “the modem has internet”. Costs metered data, so it runs only when an operator asks. Never reports a path as failed when the probe itself could not run.',
     },
   )
 

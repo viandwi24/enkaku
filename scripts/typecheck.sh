@@ -14,6 +14,7 @@ fail=0
 for dir in packages/protocol packages/ui packages/adb packages/toolchain packages/drivers packages/scrcpy packages/sdk \
            packages/session packages/harness packages/core packages/node packages/studio packages/probe-server \
            plugins/networking plugins/proxy-manager plugins/tiktok-automation-pack plugins/mikrotik-routing \
+           plugins/google-automation-pack plugins/youtube-automation-pack \
            examples; do
   p="${dir##*/}"
   printf '%-10s ' "$p"

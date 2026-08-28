@@ -7,7 +7,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts } from '../db/schema'
-import { createArtifactRoutes } from './artifacts'
+import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES, MAX_UPLOAD_BYTES } from './artifacts'
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -219,5 +219,41 @@ describe('GET /api/artifacts?kind=upload (plan 93 §3.13, §4.4, §4.7, step 93.
     const body = (await res.json()) as { items: unknown[]; total: number | null }
     expect(body.items).toEqual([])
     expect(body.total).toBe(0)
+  })
+})
+
+/**
+ * Plan-less hotfix, 2026-08-26 — the transport cap, and why it is asserted
+ * against `daemon.ts`'s SOURCE rather than through a booted server.
+ *
+ * `Bun.serve`'s `maxRequestBodySize` cannot be observed from inside the Hono
+ * app: by the time a route runs, the request already got past it. The failure
+ * this guards is the "registered but not wired" shape this repo has now been
+ * bitten by five times — a constant declared in one file, meant for a call in
+ * another, and nothing that fails when the two drift.
+ *
+ * What made this one expensive is that the drift was INVISIBLE: the route's
+ * own 1 GB check read as the real limit while Bun silently enforced 128 MB,
+ * and the browser got a 413 with an empty body — no message, nothing in
+ * DevTools' Response tab, a status easily misread as 403.
+ */
+describe('the Bun.serve request-body ceiling is actually wired (2026-08-26)', () => {
+  test('daemon.ts passes maxRequestBodySize, and passes THIS constant rather than a literal of its own', async () => {
+    const source = await Bun.file(new URL('../daemon.ts', import.meta.url)).text()
+    expect(source).toContain('maxRequestBodySize: MAX_REQUEST_BODY_BYTES')
+  })
+
+  test('the transport cap sits ABOVE the route cap, so the legible refusal always wins', () => {
+    // If these were equal, a body at exactly the limit would race between a
+    // 413-with-a-message and a 413-with-nothing, and which one an operator saw
+    // would depend on multipart overhead. The whole point of the fix is that
+    // the message wins whenever both could fire.
+    expect(MAX_REQUEST_BODY_BYTES).toBeGreaterThan(MAX_UPLOAD_BYTES)
+  })
+
+  test('the route cap is still the 1 GB this file has always declared — the fix raises no limit', () => {
+    // The bug was never that 1 GB was too small. It was that 1 GB was not the
+    // number being enforced. Nothing here should quietly become permissive.
+    expect(MAX_UPLOAD_BYTES).toBe(1024 * 1024 * 1024)
   })
 })

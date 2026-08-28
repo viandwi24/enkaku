@@ -139,8 +139,40 @@ export type { PluginConfig, RouterConfig }
 const RefusalSchema = z.looseObject({ ok: z.literal(false), code: z.string(), message: z.string() })
 export type Refusal = z.infer<typeof RefusalSchema>
 
-const PathSchema = z.looseObject({ id: z.string(), table: z.string(), gateway: z.string().nullable(), hasDefaultRoute: z.boolean() })
-const PathHealthSchema = z.looseObject({ pathId: z.string(), up: z.boolean(), checkedAt: z.number() })
+const PathSchema = z.looseObject({
+  id: z.string(),
+  table: z.string(),
+  gateway: z.string().nullable(),
+  hasDefaultRoute: z.boolean(),
+  /** Plan 134 (M99) — the uplink the router itself resolved this path to. Optional/nullable, because a core older than 0.13.0 does not send it and a path whose gateway did not resolve has none. Without it the egress probe is not offered for that row, which is correct: there is nothing to probe THROUGH. */
+  wanInterface: z.string().nullable().optional(),
+})
+/**
+ * `reason` is a plain optional string, not a `z.enum` (plan 133 §3.3, and this
+ * file's own loose-schema philosophy): a core newer than this bundle may send
+ * a reason this build has never heard of, and the UI must fall back to the
+ * plain "down" wording rather than failing to parse the whole fleet response
+ * over one unfamiliar word.
+ */
+const PathHealthSchema = z.looseObject({
+  pathId: z.string(),
+  up: z.boolean(),
+  checkedAt: z.number(),
+  reason: z.string().optional(),
+  /**
+   * Plan 134 (M99) §3.1 — three facts instead of one boolean. Plain strings
+   * for the same forward-compatibility reason `reason` is one, and OPTIONAL
+   * because a core older than this bundle sends none of them; the UI then
+   * renders exactly what it rendered before rather than a row of blanks.
+   */
+  link: z.string().optional(),
+  gateway: z.string().optional(),
+  egress: z.string().optional(),
+  publicIp: z.string().optional(),
+  egressCheckedAt: z.number().optional(),
+  duplicateAddressWith: z.array(z.string()).optional(),
+  duplicatePublicIpWith: z.array(z.string()).optional(),
+})
 const IfaceSchema = z.looseObject({ id: z.string(), name: z.string(), type: z.string().nullable(), running: z.boolean(), disabled: z.boolean() })
 const LeaseSchema = z.looseObject({ id: z.string(), address: z.string().nullable(), macAddress: z.string().nullable(), dynamic: z.boolean(), status: z.string().nullable() })
 
@@ -351,6 +383,8 @@ const PlanRowSchema = z.looseObject({
   reason: z.string().optional(),
   /** Plan 132 (M97) §4.1 — set on a `create`/`update` row whose target path is currently down. The write still happens; this is what lets the UI mark it and total up the warning above the plan list (§4.3). */
   overDownPath: z.boolean().optional(),
+  /** Plan 133 (M98) §3.3 — WHY that path is down, so the warning can name the thing to go and look at. A plain string, not an enum: a newer core may send a value this build has no wording for, and the whole preview must not fail to parse over one word (the UI falls back to the plain "down" line). */
+  overDownPathReason: z.string().optional(),
   rule: z.looseObject({ '.id': z.string(), comment: z.string() }).optional(),
 })
 export type PlanRow = z.infer<typeof PlanRowSchema>
@@ -547,3 +581,22 @@ export async function clearAssignment(stableId: string): Promise<void> {
 }
 
 export type { StoredAssignment }
+
+/**
+ * Plan 134 (M99) §4.4 — probe one uplink's real egress. Operator-triggered
+ * only: every call costs metered LTE data on that modem's SIM, so nothing on
+ * this screen may call it on a timer, on mount, or on a refresh.
+ *
+ * `status: 'unknown'` is an ordinary, expected outcome (a router that cannot
+ * run the probe) and must be rendered as "not measured" — never as a failure
+ * of the modem, and never as a success.
+ */
+export const EgressProbeSchema = z.looseObject({ status: z.string(), message: z.string(), packetLoss: z.number().optional() })
+export type EgressProbe = z.infer<typeof EgressProbeSchema>
+
+const ProbeEgressResultSchema = z.union([z.looseObject({ ok: z.literal(true), probe: EgressProbeSchema }), RefusalSchema])
+export type ProbeEgressResult = z.infer<typeof ProbeEgressResultSchema>
+
+export async function probeEgress(wanInterface: string): Promise<ProbeEgressResult> {
+  return api(`${ROUTER_HTTP_API}/probe-egress`, ProbeEgressResultSchema, { method: 'POST', json: { wanInterface } })
+}

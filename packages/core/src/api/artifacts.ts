@@ -30,7 +30,31 @@ const CONTENT_TYPES: Record<string, string> = {
  * artifact already in the store; this is a blunt safety net against an
  * oversized request body regardless of what the upload is destined for.
  */
-const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
+
+/**
+ * The ceiling `Bun.serve` itself is given (`daemon.ts`), and the reason this
+ * constant exists at all.
+ *
+ * Bun's own default `maxRequestBodySize` is **128 MB**, and it is enforced in
+ * the transport, before `fetch` runs — so Hono never sees the request, the
+ * route above never evaluates, and the client gets a **413 with an empty
+ * body**. The cap declared one line up was therefore dead for anything over
+ * 128 MB: it read as a 1 GB limit and behaved as a 128 MB one.
+ *
+ * Found on the owner's farm, 2026-08-26: installing a ~210 MB APK
+ * (`com.google.android.googlequicksearchbox`, arm64-v8a) failed with a bare
+ * red row in DevTools — "No data found for resource with given identifier",
+ * because there was no response body to find. The status was read as 403 and
+ * cost a debugging session; it was 413 all along, from a limit nothing in this
+ * repo had chosen.
+ *
+ * Set deliberately ABOVE {@link MAX_UPLOAD_BYTES} rather than equal to it: the
+ * transport cap is a blunt backstop, and the route's own check is the one that
+ * produces a message an operator can read. Whenever both could fire, the
+ * legible one must win.
+ */
+export const MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + 16 * 1024 * 1024
 
 const slug = (label: string): string =>
   label

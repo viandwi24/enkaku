@@ -33,10 +33,18 @@ jobs:
       # The packs are EMBEDDED in every archive built below and staged on a user's first boot, so
       # this is the last gate between a broken pack and everyone who downloads this tag. `typecheck`
       # alone does not run them — a pack can compile and still be wrong.
+      #
+      # THIS LIST MUST MATCH `PACK_ENTRIES` in scripts/build-packs.ts, and it drifted the first time
+      # a pack was added: `google-automation-pack` and `youtube-automation-pack` reached that list
+      # and ci.yml but not this file, so both would have shipped inside a tagged binary having never
+      # had their tests run on the path that produces it. `scripts/check-release-packs.sh` (run by
+      # ci.yml) now fails when the two disagree.
       - run: bun run --cwd plugins/networking test
       - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
       - run: bun run --cwd plugins/mikrotik-routing test
+      - run: bun run --cwd plugins/google-automation-pack test
+      - run: bun run --cwd plugins/youtube-automation-pack test
       - run: VERSION="${{ github.ref_name }}" TARGETS="linux-x64 linux-arm64 windows-x64" bash scripts/build-release.sh
       - uses: actions/upload-artifact@v4
         with:

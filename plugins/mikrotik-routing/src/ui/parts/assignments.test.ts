@@ -10,8 +10,7 @@ import {
   selectedRowsClearable,
   summariseOverDownPath,
   toggleSelected,
-  writablePairingRows,
-} from './assignments'
+  writablePairingRows, findSharedPublicIps } from './assignments'
 import type { FleetDeviceRow, PlanRow } from './api'
 import type { PairingRow } from './bulk-builder'
 
@@ -269,5 +268,68 @@ describe('describeSkipReason', () => {
 
   test('no reason at all reads as an empty string, not "undefined"', () => {
     expect(describeSkipReason(undefined)).toBe('')
+  })
+})
+
+/** Plan 133 (M98) §3.3 — the summary above the plan list groups reasons per path. */
+describe('summariseOverDownPath — per-path reasons', () => {
+  test('each distinct path carries the reason its rows reported', () => {
+    const rows: PlanRow[] = [
+      { kind: 'create', endpointKey: 'a', pathId: 'via-a', overDownPath: true, overDownPathReason: 'no-route-to-gateway' },
+      { kind: 'update', endpointKey: 'b', fromPathId: 'via-x', toPathId: 'via-b', overDownPath: true, overDownPathReason: 'gateway-unreachable' },
+      { kind: 'create', endpointKey: 'c', pathId: 'via-a', overDownPath: true, overDownPathReason: 'no-route-to-gateway' },
+    ]
+    expect(summariseOverDownPath(rows)?.paths).toEqual([
+      { pathId: 'via-a', reason: 'no-route-to-gateway' },
+      { pathId: 'via-b', reason: 'gateway-unreachable' },
+    ])
+  })
+
+  test('a row with no reason yields a path entry without one — `pathIds` is unchanged either way', () => {
+    const rows: PlanRow[] = [{ kind: 'create', endpointKey: 'a', pathId: 'via-a', overDownPath: true }]
+    const summary = summariseOverDownPath(rows)
+    expect(summary?.paths).toEqual([{ pathId: 'via-a' }])
+    expect(summary?.pathIds).toEqual(['via-a'])
+  })
+})
+
+/**
+ * Plan 134 (M99) §0.4 — two paths behind one public IP.
+ *
+ * This is the fault plan 132's whole hard-constraint model exists to prevent,
+ * stated by the owner as a ban risk. Until this, nothing in the plugin could
+ * see it: no per-path public IP existed in the data model at all.
+ */
+describe('findSharedPublicIps', () => {
+  const device = (pathId: string, lastPublicIp?: string): FleetDeviceRow =>
+    ({ device: { deviceId: 'd', stableId: 's', label: 'l', state: 'resolved', lanIp: '10.0.0.1' }, assignment: { pathId, groupId: 'g', lanIp: '', lanIpSource: '', leaseKind: '', since: 0, ...(lastPublicIp ? { lastPublicIp } : {}) } }) as unknown as FleetDeviceRow
+
+  test('two paths seen from one IP are reported, naming both', () => {
+    const shared = findSharedPublicIps([device('via-a', '203.0.113.9'), device('via-b', '203.0.113.9'), device('via-c', '203.0.113.10')])
+    expect(shared).toEqual([{ publicIp: '203.0.113.9', pathIds: ['via-a', 'via-b'] }])
+  })
+
+  test('many devices on ONE path sharing an IP is not a fault — that is what a path is', () => {
+    expect(findSharedPublicIps([device('via-a', '203.0.113.9'), device('via-a', '203.0.113.9'), device('via-a', '203.0.113.9')])).toEqual([])
+  })
+
+  test('devices with no reading are absent from the comparison, never grouped with each other', () => {
+    // Forty unverified devices share "no observation". Calling that a shared
+    // identity would bury the one real case under forty invented ones.
+    expect(findSharedPublicIps([device('via-a'), device('via-b'), device('via-c', '  ')])).toEqual([])
+  })
+
+  test('a device with a reading but no assigned path is ignored', () => {
+    expect(findSharedPublicIps([device('', '203.0.113.9'), device('via-b', '203.0.113.9')])).toEqual([])
+  })
+
+  test('more than one shared IP is reported in a stable order', () => {
+    const shared = findSharedPublicIps([
+      device('via-c', '203.0.113.20'),
+      device('via-d', '203.0.113.20'),
+      device('via-a', '203.0.113.10'),
+      device('via-b', '203.0.113.10'),
+    ])
+    expect(shared.map((s) => s.publicIp)).toEqual(['203.0.113.10', '203.0.113.20'])
   })
 })

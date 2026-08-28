@@ -41,7 +41,7 @@ function makeDevice(id: string, address: string | null, extra: Partial<{ label: 
 }
 
 function emptyInventory(overrides: Partial<RouterInventory> = {}): RouterInventory {
-  return { paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true }], interfaces: [], health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000 }], leases: [], ...overrides }
+  return { paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true, wanInterface: null }], interfaces: [], health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000, link: 'ok', gateway: 'ok', egress: 'unknown' }], leases: [], ...overrides }
 }
 
 interface DriverCalls {
@@ -56,6 +56,7 @@ function fakeDriver(overrides: Partial<RouterDriver> = {}): RouterDriver & { cal
     inventory: async () => emptyInventory(),
     listRules: async () => [],
     doctor: async () => ({ reachable: true, authenticated: true, restVersion: null, rules: [], managedRuleCount: 0, foreignRuleCount: 0, errors: [] }),
+    probeEgress: async () => ({ status: 'unknown' as const, message: 'not probed in this test' }),
     createRule: async (rule) => {
       calls.create.push(rule)
       return { id: '*100' }
@@ -231,7 +232,7 @@ describe('previewPlan', () => {
       createDriver: () =>
         fakeDriver({
           listRules: async () => [protectingRule()],
-          inventory: async () => emptyInventory({ paths: [...emptyInventory().paths, { id: 'via-modem2', table: 'via-modem2', gateway: '10.0.0.2', hasDefaultRoute: true }], health: [...emptyInventory().health, { pathId: 'via-modem2', up: true, checkedAt: 1000 }] }),
+          inventory: async () => emptyInventory({ paths: [...emptyInventory().paths, { id: 'via-modem2', table: 'via-modem2', gateway: '10.0.0.2', hasDefaultRoute: true, wanInterface: null }], health: [...emptyInventory().health, { pathId: 'via-modem2', up: true, checkedAt: 1000, link: 'ok', gateway: 'ok', egress: 'unknown' }] }),
         }),
       deriveCoreAddress: async () => OK_CORE_ADDRESS,
       assignmentOverrides: overrides,
@@ -296,7 +297,7 @@ describe('applyNow — executing the plan once the gate is `ok`', () => {
     const devices = [makeDevice('d1', '192.168.10.215')]
     const { host } = fakeHost({ routerKv: ROUTER_CONFIG, devices, assignments: { d1: writeAssignment(assignment({ pathId: 'via-modem9' })) } })
     const existing: RouterRule = { '.id': '*6', comment: 'enkaku:mikrotik-routing:v1:default:192.168.10.215', 'src-address': '192.168.10.215', table: 'via-modem1', disabled: false, inactive: false }
-    const driver = fakeDriver({ listRules: async () => [protectingRule(), existing], inventory: async () => emptyInventory({ paths: [{ id: 'via-modem9', table: 'via-modem9', gateway: null, hasDefaultRoute: true }], health: [{ pathId: 'via-modem9', up: true, checkedAt: 1 }] }) })
+    const driver = fakeDriver({ listRules: async () => [protectingRule(), existing], inventory: async () => emptyInventory({ paths: [{ id: 'via-modem9', table: 'via-modem9', gateway: null, hasDefaultRoute: true, wanInterface: null }], health: [{ pathId: 'via-modem9', up: true, checkedAt: 1, link: 'ok', gateway: 'ok', egress: 'unknown' }] }) })
     const result = await applyNow(host, { createDriver: () => driver, deriveCoreAddress: async () => OK_CORE_ADDRESS })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('unreachable')
@@ -353,7 +354,7 @@ describe('applyNow — executing the plan once the gate is `ok`', () => {
   test('a path that is down is applied anyway, flagged, never held back (plan 132 / M97 — the assignment is a hard constraint)', async () => {
     const devices = [makeDevice('d1', '192.168.10.215')]
     const { host } = fakeHost({ routerKv: ROUTER_CONFIG, devices, assignments: { d1: writeAssignment(assignment({ pathId: 'via-modem1' })) } })
-    const driver = fakeDriver({ listRules: async () => [protectingRule()], inventory: async () => emptyInventory({ health: [{ pathId: 'via-modem1', up: false, checkedAt: 1 }] }) })
+    const driver = fakeDriver({ listRules: async () => [protectingRule()], inventory: async () => emptyInventory({ health: [{ pathId: 'via-modem1', up: false, checkedAt: 1, link: 'ok', gateway: 'fail', egress: 'unknown' }] }) })
     const result = await applyNow(host, { createDriver: () => driver, deriveCoreAddress: async () => OK_CORE_ADDRESS })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('unreachable')

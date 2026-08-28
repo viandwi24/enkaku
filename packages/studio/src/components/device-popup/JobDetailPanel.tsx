@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
+import Link from 'next/link'
 import { JobLogsPanel } from '@/components/jobs/JobLogsPanel'
 import { JobResultSection } from '@/components/jobs/JobResultSection'
 import { ErrorState, LoadingRows, Button, Tabs, TabsContent, TabsList, TabsTrigger, duration, relativeTime } from '@enkaku/ui'
@@ -30,7 +31,32 @@ import { useNow } from '@/lib/useNow'
  * device's own job history is short and mostly about what the run did, not
  * its place in a trigger chain.
  */
-export function JobDetailPanel({ jobId, onBack }: { jobId: string; onBack: () => void }) {
+export function JobDetailPanel({
+  jobId,
+  onBack,
+  backLabel = 'Back to jobs',
+  /**
+   * Offer a link out to `/jobs/detail`. **Default `false`, and that default is
+   * load-bearing.**
+   *
+   * This panel's first home is the device popup, which floats OVER the Wall
+   * (plan 103 §3.2). A `next/link` there is a route change that unmounts the
+   * Wall and the popup with it — the one thing a read popup must not do (§3.3),
+   * and `ReadPopups.test.tsx` asserts the popup contains no links at all. This
+   * link was added unconditionally on 2026-08-28 and that test caught it
+   * immediately.
+   *
+   * The batch sheet passes `true`: leaving a batch page for a job page is an
+   * ordinary navigation, and there the link is the only route to what the panel
+   * does not carry (the trace timeline, the params block, the crash view).
+   */
+  linkToFullPage = false,
+}: {
+  jobId: string
+  onBack: () => void
+  backLabel?: string
+  linkToFullPage?: boolean
+}) {
   const { job, produced, images, files, crashTraceArtifact, logs, logsTruncated, logsPhase, error, load } = useJobDetail(jobId)
   const [tab, setTab] = useState('summary')
   const now = useNow()
@@ -39,7 +65,7 @@ export function JobDetailPanel({ jobId, onBack }: { jobId: string; onBack: () =>
     <div className="space-y-3">
       <Button variant="ghost" size="sm" className="h-7 px-2 text-[12px]" onClick={onBack}>
         <ArrowLeft className="size-3.5" aria-hidden />
-        Back to jobs
+        {backLabel}
       </Button>
 
       {error ? (
@@ -55,6 +81,11 @@ export function JobDetailPanel({ jobId, onBack }: { jobId: string; onBack: () =>
               </span>
               <JobStatusBadge status={job.status} />
             </div>
+            {linkToFullPage && (
+              <Link href={`/jobs/detail?id=${job.jobId}`} className="block text-[11.5px] text-fg-muted hover:text-accent hover:underline">
+                Open the full job page
+              </Link>
+            )}
             <p className="readout text-[11px] text-fg-subtle">
               {relativeTime(job.createdAt, now)} queued
               {job.startedAt ? ` → ${relativeTime(job.startedAt, now)} started` : ''}

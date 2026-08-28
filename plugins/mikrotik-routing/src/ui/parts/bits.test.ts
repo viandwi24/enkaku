@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { isFirstLoad, pathOptions, STALE_PATH_SUFFIX, UNASSIGNED_PATH } from './bits'
+import { describeDownReason } from './paths'
 
 /**
  * Plan 124 step 124.7 — the egress-path picker's option list.
@@ -87,5 +88,42 @@ describe('isFirstLoad', () => {
   test('false once loading has finished, regardless of data', () => {
     expect(isFirstLoad(false, null)).toBe(false)
     expect(isFirstLoad(false, { devices: [] })).toBe(false)
+  })
+})
+
+/**
+ * Plan 133 §3.3 — the sentence a down path shows beside its red chip.
+ *
+ * The farm session that opened plan 133: two Orbits were left on the
+ * factory-default `192.168.8.0/24`, so the router held no address in the
+ * subnet its route pointed at. Both paths read "Down", identically to a modem
+ * that was simply switched off, and telling them apart took a router CLI
+ * session. The first case below is the sentence that would have ended it.
+ */
+describe('describeDownReason (plan 133 §3.3)', () => {
+  test('no-route-to-gateway names the subnet the router is missing, and points at the router not the modem', () => {
+    const s = describeDownReason('no-route-to-gateway', '192.168.125.1')
+    expect(s).toContain('192.168.125.0/24')
+    expect(s).toMatch(/VLAN and DHCP client on the router/i)
+    expect(s).toMatch(/modem itself may be fine/i)
+  })
+
+  test('gateway-unreachable names the gateway and blames the modem, which is the opposite diagnosis', () => {
+    const s = describeDownReason('gateway-unreachable', '192.168.126.1')
+    expect(s).toContain('192.168.126.1')
+    expect(s).toMatch(/off, unplugged, or not responding/i)
+  })
+
+  test('no-default-route says the table itself is empty', () => {
+    expect(describeDownReason('no-default-route', null)).toMatch(/no default route/i)
+  })
+
+  test('an unrecognised reason from a newer core yields null — the cell falls back, never blanks or throws', () => {
+    expect(describeDownReason('something-invented-later', '192.168.1.1')).toBeNull()
+    expect(describeDownReason(undefined, '192.168.1.1')).toBeNull()
+  })
+
+  test('a gateway that is not a dotted quad is passed through rather than mangled into a fake subnet', () => {
+    expect(describeDownReason('no-route-to-gateway', 'fe80::1')).toContain('fe80::1')
   })
 })

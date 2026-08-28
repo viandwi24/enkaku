@@ -1279,3 +1279,166 @@ describe('a batch whose jobs are all gone (device forgotten with history) resolv
     expect(getBody.batch.status).toBe('cancelled')
   })
 })
+
+/**
+ * `GET /:id/results` (2026-08-28).
+ *
+ * `GET /:id` deliberately omits every member's `result` — F18, "a result can be
+ * large, and fifty of them is not what a list is for". Right for a list, and it
+ * left an operator with no way to see what a forty-device batch RETURNED except
+ * forty visits to `/jobs/detail`. This route answers that under a stated
+ * ceiling. Every property below is about the ceiling being honest.
+ */
+describe('GET /:id/results', () => {
+  function makeResultsApp(db: Db, role: 'admin' | 'operator' | null = 'admin') {
+    const deps: BatchRoutesDeps = {
+      db,
+      jobStore: { listByBatch: (batchId: string) => db.select().from(jobs).where(eq(jobs.batchId, batchId)).all() } as unknown as BatchRoutesDeps['jobStore'],
+      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
+      audit: { record: () => {} } as unknown as BatchRoutesDeps['audit'],
+      broadcastBatchStatus: () => {},
+      scriptNames: () => new Map(),
+      registry: { has: () => true } as unknown as BatchRoutesDeps['registry'],
+      findScript: () => ({ enabled: true }),
+    }
+    return withUser(role, createBatchRoutes(deps))
+  }
+
+  function seedResults(db: Db, results: (unknown | null)[], scriptResultSchema?: unknown) {
+    db.insert(batches).values({ id: 'b1', scriptId: 's1', concurrency: 0, order: 'as-listed', status: 'success', createdAt: new Date() }).run()
+    if (scriptResultSchema !== undefined) {
+      db.insert(scripts)
+        .values({
+          pluginId: 'p-results',
+          exportId: 'main',
+          id: 's1',
+          name: 'demo',
+          version: '1.0.0',
+          bundle: 'export {}',
+          enabled: true,
+          paramsSchema: {},
+          resultSchema: scriptResultSchema,
+          createdAt: new Date(),
+        })
+        .run()
+    }
+    results.forEach((result, i) => {
+      db.insert(devices).values({ id: `d${i}`, stableId: `s-d${i}`, serial: `ser-d${i}`, label: `dev${i}`, status: 'idle' }).run()
+      db.insert(jobs)
+        .values({
+          id: `j${i}`,
+          scriptId: 's1',
+          deviceId: `d${i}`,
+          batchId: 'b1',
+          batchSeq: i,
+          status: result === null ? 'running' : 'success',
+          ...(result === null ? {} : { result }),
+          createdAt: new Date(),
+        })
+        .run()
+    })
+  }
+
+  async function results(app: ReturnType<typeof makeResultsApp>) {
+    const res = await app.request('/b1/results')
+    expect(res.status).toBe(200)
+    return (await res.json()) as {
+      items: Array<{ jobId: string; deviceId: string; status: string; result?: unknown; omitted?: string }>
+      resultSchema: unknown
+      omittedCount: number
+      budgetBytes: number
+    }
+  }
+
+  test('returns every member with its own result, in one round trip', async () => {
+    const db = setUp()
+    seedResults(db, [{ ok: true, n: 1 }, { ok: false, n: 2 }])
+    const body = await results(makeResultsApp(db))
+
+    expect(body.items).toHaveLength(2)
+    expect(body.items[0]).toMatchObject({ jobId: 'j0', deviceId: 'd0', result: { ok: true, n: 1 } })
+    expect(body.items[1]).toMatchObject({ jobId: 'j1', deviceId: 'd1', result: { ok: false, n: 2 } })
+    expect(body.omittedCount).toBe(0)
+  })
+
+  /**
+   * The property the whole table rests on. On a farm where "which three devices
+   * did NOT do the thing" is the question, a results view that drops members is
+   * worse than none — the missing three are exactly the ones being looked for.
+   */
+  test('a member with no result still gets a row, and says why it has none', async () => {
+    const db = setUp()
+    seedResults(db, [{ ok: true }, null])
+    const body = await results(makeResultsApp(db))
+
+    expect(body.items).toHaveLength(2)
+    expect(body.items[1]).toMatchObject({ jobId: 'j1', status: 'running', omitted: 'unfinished' })
+    expect(body.items[1]).not.toHaveProperty('result')
+    // An unsettled job is not an omission the ceiling caused — there is simply
+    // nothing yet, and counting it would make the budget look exhausted.
+    expect(body.omittedCount).toBe(0)
+  })
+
+  test('one result larger than the whole budget is reported as such, never truncated into something that looks like data', async () => {
+    const db = setUp()
+    seedResults(db, [{ blob: 'x'.repeat(2 * 1024 * 1024) }, { ok: true }])
+    const body = await results(makeResultsApp(db))
+
+    expect(body.items[0]).toMatchObject({ omitted: 'too-large' })
+    expect(body.items[0]).not.toHaveProperty('result')
+    // The rest of the batch is unaffected — one oversized member must not cost
+    // everyone else their values.
+    expect(body.items[1]).toMatchObject({ result: { ok: true } })
+    expect(body.omittedCount).toBe(1)
+  })
+
+  test('members past the byte ceiling are counted and named, and the count is reported beside the ceiling itself', async () => {
+    const db = setUp()
+    // Four results of ~400 KiB: the first two fit inside 1 MiB, the rest do not.
+    seedResults(db, Array.from({ length: 4 }, (_, i) => ({ i, pad: 'y'.repeat(400 * 1024) })))
+    const body = await results(makeResultsApp(db))
+
+    expect(body.items).toHaveLength(4)
+    const carried = body.items.filter((it) => 'result' in it)
+    const dropped = body.items.filter((it) => it.omitted === 'budget')
+    expect(carried.length + dropped.length).toBe(4)
+    expect(dropped.length).toBe(body.omittedCount)
+    expect(body.omittedCount).toBeGreaterThan(0)
+    // Reported, never implied: the number is meaningless without the ceiling it
+    // was measured against.
+    expect(body.budgetBytes).toBe(1024 * 1024)
+  })
+
+  /**
+   * Inlined for the reason `JobDetailSchema` gives (plan 97 §4.6): resolved
+   * separately on the client it could land on a different version after a
+   * rollback, and the table would render one version's values through another
+   * version's schema.
+   */
+  test("the pinned script's result schema rides along, so the table cannot render values through the wrong version", async () => {
+    const db = setUp()
+    const schema = { type: 'object', properties: { ok: { type: 'boolean', title: 'OK' } } }
+    seedResults(db, [{ ok: true }], schema)
+    const body = await results(makeResultsApp(db))
+    expect(body.resultSchema).toEqual(schema)
+  })
+
+  test('a script that declared no result schema yields null, not an invented one', async () => {
+    const db = setUp()
+    seedResults(db, [{ ok: true }], null)
+    expect((await results(makeResultsApp(db))).resultSchema).toBeNull()
+  })
+
+  test('it is a read: an operator may call it, the same gate GET /:id uses', async () => {
+    const db = setUp()
+    seedResults(db, [{ ok: true }])
+    const res = await makeResultsApp(db, 'operator').request('/b1/results')
+    expect(res.status).toBe(200)
+  })
+
+  test('an unknown batch is a 404, not an empty table', async () => {
+    const db = setUp()
+    const res = await makeResultsApp(db).request('/nope/results')
+    expect(res.status).toBe(404)
+  })
+})

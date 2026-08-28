@@ -1,0 +1,2740 @@
+{
+  "resourceId": "",
+  "text": "",
+  "desc": "",
+  "className": "hierarchy",
+  "packageName": "",
+  "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 0,
+    "bottom": 0
+  },
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "index": 0,
+  "children": [
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.systemui",
+      "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 70
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "com.android.systemui:id/status_bar_launch_animation_container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": []
+        },
+        {
+          "resourceId": "com.android.systemui:id/container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 1,
+          "children": []
+        },
+        {
+          "resourceId": "com.android.systemui:id/status_bar_container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 2,
+          "children": [
+            {
+              "resourceId": "com.android.systemui:id/status_bar",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.android.systemui",
+              "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 70
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.android.systemui:id/status_bar_contents",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.systemui",
+                  "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 706,
+                    "bottom": 70
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "com.android.systemui:id/status_bar_start_side_container",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 14,
+                        "top": 0,
+                        "right": 332,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/status_bar_start_side_content",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.FrameLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 14,
+                            "top": 0,
+                            "right": 293,
+                            "bottom": 70
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/status_bar_start_side_except_heads_up",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.LinearLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 14,
+                                "top": 0,
+                                "right": 293,
+                                "bottom": 70
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/clock",
+                                  "text": "02.04",
+                                  "desc": "02.04",
+                                  "className": "android.widget.TextView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 14,
+                                    "top": 20,
+                                    "right": 98,
+                                    "bottom": 50
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": []
+                                },
+                                {
+                                  "resourceId": "com.android.systemui:id/notification_icon_area",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.widget.FrameLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 98,
+                                    "top": 0,
+                                    "right": 293,
+                                    "bottom": 70
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 1,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.android.systemui:id/notificationIcons",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.view.ViewGroup",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 98,
+                                        "top": 0,
+                                        "right": 293,
+                                        "bottom": 70
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": [
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Sistem Android:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 98,
+                                            "top": 0,
+                                            "right": 137,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 0,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Pembaruan Perangkat Lunak Motorola:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 137,
+                                            "top": 0,
+                                            "right": 176,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 1,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Setelan:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 176,
+                                            "top": 0,
+                                            "right": 215,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 2,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Pengelolaan APL latar belakang:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 215,
+                                            "top": 0,
+                                            "right": 254,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 3,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Layanan Google Play:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 254,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 4,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Google Play Store:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 267,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 5,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Google:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 267,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 6,
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "resourceId": "com.android.systemui:id/cutout_space_view",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.view.View",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 332,
+                        "top": 0,
+                        "right": 380,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 1,
+                      "children": []
+                    },
+                    {
+                      "resourceId": "com.android.systemui:id/status_bar_end_side_container",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 380,
+                        "top": 0,
+                        "right": 699,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 2,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/status_bar_end_side_content",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 632,
+                            "top": 0,
+                            "right": 699,
+                            "bottom": 70
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/system_icons",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.LinearLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 632,
+                                "top": 15,
+                                "right": 699,
+                                "bottom": 54
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/statusIcons",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.widget.LinearLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 637,
+                                    "top": 15,
+                                    "right": 678,
+                                    "bottom": 54
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.android.systemui:id/wifi_combo",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 637,
+                                        "top": 15,
+                                        "right": 667,
+                                        "bottom": 54
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": [
+                                        {
+                                          "resourceId": "com.android.systemui:id/wifi_group",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.LinearLayout",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 641,
+                                            "top": 15,
+                                            "right": 667,
+                                            "bottom": 54
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 0,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.android.systemui:id/wifi_combo",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.FrameLayout",
+                                              "packageName": "com.android.systemui",
+                                              "bounds": {
+                                                "left": 641,
+                                                "top": 21,
+                                                "right": 667,
+                                                "bottom": 47
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "com.android.systemui:id/wifi_signal",
+                                                  "text": "",
+                                                  "desc": "Sinyal Wi-Fi penuh.",
+                                                  "className": "android.widget.ImageView",
+                                                  "packageName": "com.android.systemui",
+                                                  "bounds": {
+                                                    "left": 641,
+                                                    "top": 21,
+                                                    "right": 667,
+                                                    "bottom": 47
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": []
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "resourceId": "com.android.systemui:id/battery",
+                                  "text": "",
+                                  "desc": "Mengisi daya baterai, 93 persen.",
+                                  "className": "android.widget.LinearLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 678,
+                                    "top": 23,
+                                    "right": 692,
+                                    "bottom": 46
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 1,
+                                  "children": [
+                                    {
+                                      "resourceId": "",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.ImageView",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 678,
+                                        "top": 23,
+                                        "right": 692,
+                                        "bottom": 46
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceId": "com.android.systemui:id/navigation_bar_frame",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.systemui",
+      "bounds": {
+        "left": 0,
+        "top": 1556,
+        "right": 720,
+        "bottom": 1640
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "com.android.systemui:id/navigation_bar_view",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 1556,
+            "right": 720,
+            "bottom": 1640
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": [
+            {
+              "resourceId": "com.android.systemui:id/navigation_inflater",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.android.systemui",
+              "bounds": {
+                "left": 0,
+                "top": 1556,
+                "right": 720,
+                "bottom": 1640
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.android.systemui:id/horizontal",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.FrameLayout",
+                  "packageName": "com.android.systemui",
+                  "bounds": {
+                    "left": 0,
+                    "top": 1556,
+                    "right": 720,
+                    "bottom": 1640
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "com.android.systemui:id/nav_buttons",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 14,
+                        "top": 1556,
+                        "right": 706,
+                        "bottom": 1640
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/ends_group",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 14,
+                            "top": 1556,
+                            "right": 706,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 14,
+                                "top": 1556,
+                                "right": 83,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": []
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 83,
+                                "top": 1556,
+                                "right": 221,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 1,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/back",
+                                  "text": "",
+                                  "desc": "Kembali",
+                                  "className": "android.widget.ImageView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 83,
+                                    "top": 1556,
+                                    "right": 221,
+                                    "bottom": 1640
+                                  },
+                                  "clickable": true,
+                                  "enabled": true,
+                                  "focused": true,
+                                  "index": 0,
+                                  "children": []
+                                }
+                              ]
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 498,
+                                "top": 1556,
+                                "right": 636,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 2,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/recent_apps",
+                                  "text": "",
+                                  "desc": "Ringkasan",
+                                  "className": "android.widget.ImageView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 498,
+                                    "top": 1556,
+                                    "right": 636,
+                                    "bottom": 1640
+                                  },
+                                  "clickable": true,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": []
+                                }
+                              ]
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 636,
+                                "top": 1556,
+                                "right": 706,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 3,
+                              "children": []
+                            }
+                          ]
+                        },
+                        {
+                          "resourceId": "com.android.systemui:id/center_group",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 290,
+                            "top": 1556,
+                            "right": 430,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 1,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/home",
+                              "text": "",
+                              "desc": "Utama",
+                              "className": "android.widget.ImageView",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 290,
+                                "top": 1556,
+                                "right": 430,
+                                "bottom": 1640
+                              },
+                              "clickable": true,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.google.android.inputmethod.latin",
+      "bounds": {
+        "left": 0,
+        "top": 992,
+        "right": 720,
+        "bottom": 1556
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.LinearLayout",
+          "packageName": "com.google.android.inputmethod.latin",
+          "bounds": {
+            "left": 0,
+            "top": 992,
+            "right": 720,
+            "bottom": 1556
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": [
+            {
+              "resourceId": "android:id/content",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.google.android.inputmethod.latin",
+              "bounds": {
+                "left": 0,
+                "top": 992,
+                "right": 720,
+                "bottom": 1556
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "android:id/parentPanel",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.google.android.inputmethod.latin",
+                  "bounds": {
+                    "left": 0,
+                    "top": 992,
+                    "right": 720,
+                    "bottom": 1556
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "android:id/inputArea",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.google.android.inputmethod.latin",
+                      "bounds": {
+                        "left": 0,
+                        "top": 992,
+                        "right": 720,
+                        "bottom": 1556
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.FrameLayout",
+                          "packageName": "com.google.android.inputmethod.latin",
+                          "bounds": {
+                            "left": 0,
+                            "top": 992,
+                            "right": 720,
+                            "bottom": 1556
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": true,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.FrameLayout",
+                              "packageName": "com.google.android.inputmethod.latin",
+                              "bounds": {
+                                "left": 0,
+                                "top": 992,
+                                "right": 720,
+                                "bottom": 1556
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.widget.LinearLayout",
+                                  "packageName": "com.google.android.inputmethod.latin",
+                                  "bounds": {
+                                    "left": 0,
+                                    "top": 992,
+                                    "right": 720,
+                                    "bottom": 1556
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.google.android.inputmethod.latin:id/keyboard_holder",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.LinearLayout",
+                                      "packageName": "com.google.android.inputmethod.latin",
+                                      "bounds": {
+                                        "left": 0,
+                                        "top": 992,
+                                        "right": 720,
+                                        "bottom": 1556
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": [
+                                        {
+                                          "resourceId": "com.google.android.inputmethod.latin:id/keyboard_header_view_holder",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.FrameLayout",
+                                          "packageName": "com.google.android.inputmethod.latin",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 992,
+                                            "right": 720,
+                                            "bottom": 1069
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 0,
+                                          "children": [
+                                            {
+                                              "resourceId": "",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.FrameLayout",
+                                              "packageName": "com.google.android.inputmethod.latin",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 992,
+                                                "right": 720,
+                                                "bottom": 1069
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.view.ViewGroup",
+                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 992,
+                                                    "right": 720,
+                                                    "bottom": 1069
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                      "text": "",
+                                                      "desc": "",
+                                                      "className": "android.view.View",
+                                                      "packageName": "com.google.android.inputmethod.latin",
+                                                      "bounds": {
+                                                        "left": 4,
+                                                        "top": 992,
+                                                        "right": 716,
+                                                        "bottom": 1069
+                                                      },
+                                                      "clickable": false,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": []
+                                                    },
+                                                    {
+                                                      "resourceId": "com.google.android.inputmethod.latin:id/key_pos_header_access_points_menu",
+                                                      "text": "",
+                                                      "desc": "Membuka menu fitur",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.inputmethod.latin",
+                                                      "bounds": {
+                                                        "left": 4,
+                                                        "top": 992,
+                                                        "right": 78,
+                                                        "bottom": 1069
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 1,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.inputmethod.latin",
+                                                          "bounds": {
+                                                            "left": 11,
+                                                            "top": 1000,
+                                                            "right": 71,
+                                                            "bottom": 1060
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 16,
+                                                                "top": 1005,
+                                                                "right": 65,
+                                                                "bottom": 1054
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                      "text": "",
+                                                      "desc": "",
+                                                      "className": "android.widget.LinearLayout",
+                                                      "packageName": "com.google.android.inputmethod.latin",
+                                                      "bounds": {
+                                                        "left": 78,
+                                                        "top": 992,
+                                                        "right": 642,
+                                                        "bottom": 1069
+                                                      },
+                                                      "clickable": false,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 2,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.inputmethod.latin",
+                                                          "bounds": {
+                                                            "left": 78,
+                                                            "top": 992,
+                                                            "right": 642,
+                                                            "bottom": 1069
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "com.google.android.inputmethod.latin:id/key_pos_header_power_key",
+                                                      "text": "",
+                                                      "desc": "Gunakan dikte",
+                                                      "className": "android.speech.SpeechRecognizer.VoiceDictationButton",
+                                                      "packageName": "com.google.android.inputmethod.latin",
+                                                      "bounds": {
+                                                        "left": 642,
+                                                        "top": 992,
+                                                        "right": 716,
+                                                        "bottom": 1069
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 3,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.inputmethod.latin:id/host",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.inputmethod.latin",
+                                                          "bounds": {
+                                                            "left": 642,
+                                                            "top": 992,
+                                                            "right": 716,
+                                                            "bottom": 1069
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 642,
+                                                                "top": 992,
+                                                                "right": 716,
+                                                                "bottom": 1069
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.widget.FrameLayout",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 642,
+                                                                    "top": 992,
+                                                                    "right": 716,
+                                                                    "bottom": 1069
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                },
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.widget.FrameLayout",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 649,
+                                                                    "top": 1000,
+                                                                    "right": 709,
+                                                                    "bottom": 1060
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 1,
+                                                                  "children": []
+                                                                },
+                                                                {
+                                                                  "resourceId": "",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.view.View",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 649,
+                                                                    "top": 1000,
+                                                                    "right": 709,
+                                                                    "bottom": 1060
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 2,
+                                                                  "children": []
+                                                                },
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.widget.ImageView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 649,
+                                                                    "top": 1000,
+                                                                    "right": 709,
+                                                                    "bottom": 1060
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 3,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.FrameLayout",
+                                          "packageName": "com.google.android.inputmethod.latin",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 1069,
+                                            "right": 720,
+                                            "bottom": 1556
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 1,
+                                          "children": [
+                                            {
+                                              "resourceId": "",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.FrameLayout",
+                                              "packageName": "com.google.android.inputmethod.latin",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 1069,
+                                                "right": 720,
+                                                "bottom": 1556
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.LinearLayout",
+                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 1069,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "com.google.android.inputmethod.latin:id/input_area",
+                                                      "text": "",
+                                                      "desc": "",
+                                                      "className": "android.widget.LinearLayout",
+                                                      "packageName": "com.google.android.inputmethod.latin",
+                                                      "bounds": {
+                                                        "left": 4,
+                                                        "top": 1083,
+                                                        "right": 716,
+                                                        "bottom": 1453
+                                                      },
+                                                      "clickable": false,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.LinearLayout",
+                                                          "packageName": "com.google.android.inputmethod.latin",
+                                                          "bounds": {
+                                                            "left": 4,
+                                                            "top": 1083,
+                                                            "right": 716,
+                                                            "bottom": 1171
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E01",
+                                                              "text": "",
+                                                              "desc": "1",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 4,
+                                                                "top": 1083,
+                                                                "right": 75,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "1",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 9,
+                                                                    "top": 1083,
+                                                                    "right": 70,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E02",
+                                                              "text": "",
+                                                              "desc": "2",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 75,
+                                                                "top": 1083,
+                                                                "right": 146,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 1,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "2",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 80,
+                                                                    "top": 1083,
+                                                                    "right": 141,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E03",
+                                                              "text": "",
+                                                              "desc": "3",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 146,
+                                                                "top": 1083,
+                                                                "right": 217,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 2,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "3",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 151,
+                                                                    "top": 1083,
+                                                                    "right": 212,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E04",
+                                                              "text": "",
+                                                              "desc": "4",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 217,
+                                                                "top": 1083,
+                                                                "right": 288,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 3,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "4",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 222,
+                                                                    "top": 1083,
+                                                                    "right": 283,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E05",
+                                                              "text": "",
+                                                              "desc": "5",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 288,
+                                                                "top": 1083,
+                                                                "right": 359,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 4,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "5",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 293,
+                                                                    "top": 1083,
+                                                                    "right": 354,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E06",
+                                                              "text": "",
+                                                              "desc": "6",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 359,
+                                                                "top": 1083,
+                                                                "right": 430,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 5,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "6",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 364,
+                                                                    "top": 1083,
+                                                                    "right": 425,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E07",
+                                                              "text": "",
+                                                              "desc": "7",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 430,
+                                                                "top": 1083,
+                                                                "right": 501,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 6,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "7",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 435,
+                                                                    "top": 1083,
+                                                                    "right": 496,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E08",
+                                                              "text": "",
+                                                              "desc": "8",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 501,
+                                                                "top": 1083,
+                                                                "right": 572,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 7,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "8",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 506,
+                                                                    "top": 1083,
+                                                                    "right": 567,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E09",
+                                                              "text": "",
+                                                              "desc": "9",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 572,
+                                                                "top": 1083,
+                                                                "right": 644,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 8,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "9",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 577,
+                                                                    "top": 1083,
+                                                                    "right": 639,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/E10",
+                                                              "text": "",
+                                                              "desc": "0",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 644,
+                                                                "top": 1083,
+                                                                "right": 716,
+                                                                "bottom": 1171
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 9,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.inputmethod.latin:id/0_resource_name_obfuscated",
+                                                                  "text": "",
+                                                                  "desc": "0",
+                                                                  "className": "android.widget.TextView",
+                                                                  "packageName": "com.google.android.inputmethod.latin",
+                                                                  "bounds": {
+                                                                    "left": 649,
+                                                                    "top": 1083,
+                                                                    "right": 711,
+                                                                    "bottom": 1157
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.LinearLayout",
+                                                          "packageName": "com.google.android.inputmethod.latin",
+                                                          "bounds": {
+                                                            "left": 4,
+                                                            "top": 1171,
+                                                            "right": 716,
+                                                            "bottom": 1265
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.inputmethod.latin:id/D01",
+                                                              "text": "",
+                                                              "desc": "q",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.inputmethod.latin",
+                                                              "bounds": {
+                                                                "left": 4,
+                                                                "top": 1171,
+                                                                "right": 75,
+                                                                "bottom": 1265
+                                                              },
+                                                              "clickable": true,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.google.android.youtube",
+      "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 1640
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.LinearLayout",
+          "packageName": "com.google.android.youtube",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1640
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": [
+            {
+              "resourceId": "",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.google.android.youtube",
+              "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 1640
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.google.android.youtube:id/action_bar_root",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.google.android.youtube",
+                  "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 1640
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "android:id/content",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.google.android.youtube",
+                      "bounds": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 720,
+                        "bottom": 1640
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.google.android.youtube:id/more_drawer_container",
+                          "text": "",
+                          "desc": "",
+                          "className": "androidx.drawerlayout.widget.DrawerLayout",
+                          "packageName": "com.google.android.youtube",
+                          "bounds": {
+                            "left": 0,
+                            "top": 0,
+                            "right": 720,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.google.android.youtube:id/slim_status_bar_player_container",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.FrameLayout",
+                              "packageName": "com.google.android.youtube",
+                              "bounds": {
+                                "left": 0,
+                                "top": 0,
+                                "right": 720,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.google.android.youtube:id/navigation_bar_divider_frame",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.view.ViewGroup",
+                                  "packageName": "com.google.android.youtube",
+                                  "bounds": {
+                                    "left": 0,
+                                    "top": 0,
+                                    "right": 720,
+                                    "bottom": 1556
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.google.android.youtube:id/global_slim_status_bar_container",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.google.android.youtube",
+                                      "bounds": {
+                                        "left": 0,
+                                        "top": 0,
+                                        "right": 720,
+                                        "bottom": 1556
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": []
+                                    },
+                                    {
+                                      "resourceId": "com.google.android.youtube:id/accessibility_layer_container",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.google.android.youtube",
+                                      "bounds": {
+                                        "left": 0,
+                                        "top": 0,
+                                        "right": 720,
+                                        "bottom": 1556
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 1,
+                                      "children": [
+                                        {
+                                          "resourceId": "com.google.android.youtube:id/next_gen_watch_container_layout",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.view.ViewGroup",
+                                          "packageName": "com.google.android.youtube",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 0,
+                                            "right": 720,
+                                            "bottom": 1556
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 1,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.google.android.youtube:id/watch_while_layout_coordinator_layout",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.view.ViewGroup",
+                                              "packageName": "com.google.android.youtube",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 0,
+                                                "right": 720,
+                                                "bottom": 1556
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "com.google.android.youtube:id/fab_container",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.FrameLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 0,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "com.google.android.youtube:id/fab",
+                                                      "text": "",
+                                                      "desc": "Penelusuran suara",
+                                                      "className": "android.widget.ImageView",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 608,
+                                                        "top": 1360,
+                                                        "right": 706,
+                                                        "bottom": 1458
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": []
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "resourceId": "com.google.android.youtube:id/pane_fragment_container",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.FrameLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 0,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 1,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "com.google.android.youtube:id/browse_fragment_layout_coordinator_layout",
+                                                      "text": "",
+                                                      "desc": "",
+                                                      "className": "android.widget.ScrollView",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 0,
+                                                        "top": 70,
+                                                        "right": 720,
+                                                        "bottom": 1472
+                                                      },
+                                                      "clickable": false,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/appbar_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.LinearLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 0,
+                                                            "top": 70,
+                                                            "right": 720,
+                                                            "bottom": 154
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/toolbar_container",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 0,
+                                                                "top": 70,
+                                                                "right": 720,
+                                                                "bottom": 154
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.youtube:id/toolbar",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.view.ViewGroup",
+                                                                  "packageName": "com.google.android.youtube",
+                                                                  "bounds": {
+                                                                    "left": 0,
+                                                                    "top": 70,
+                                                                    "right": 720,
+                                                                    "bottom": 154
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 1,
+                                                                  "children": [
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "Kembali ke atas",
+                                                                      "className": "android.widget.ImageButton",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 70,
+                                                                        "right": 98,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": true,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 0,
+                                                                      "children": []
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.widget.RelativeLayout",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 98,
+                                                                        "top": 70,
+                                                                        "right": 649,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 1,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "com.google.android.youtube:id/search_box",
+                                                                          "text": "",
+                                                                          "desc": "",
+                                                                          "className": "android.widget.LinearLayout",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 98,
+                                                                            "top": 70,
+                                                                            "right": 565,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": false,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "com.google.android.youtube:id/search_query",
+                                                                              "text": "eno bening",
+                                                                              "desc": "",
+                                                                              "className": "android.widget.TextView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 98,
+                                                                                "top": 84,
+                                                                                "right": 481,
+                                                                                "bottom": 140
+                                                                              },
+                                                                              "clickable": true,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": []
+                                                                            },
+                                                                            {
+                                                                              "resourceId": "com.google.android.youtube:id/search_clear",
+                                                                              "text": "",
+                                                                              "desc": "Hapus",
+                                                                              "className": "android.widget.ImageView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 481,
+                                                                                "top": 70,
+                                                                                "right": 565,
+                                                                                "bottom": 154
+                                                                              },
+                                                                              "clickable": true,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 1,
+                                                                              "children": []
+                                                                            }
+                                                                          ]
+                                                                        },
+                                                                        {
+                                                                          "resourceId": "com.google.android.youtube:id/voice_search",
+                                                                          "text": "",
+                                                                          "desc": "Penelusuran suara",
+                                                                          "className": "android.widget.ImageView",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 565,
+                                                                            "top": 70,
+                                                                            "right": 649,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 1,
+                                                                          "children": []
+                                                                        }
+                                                                      ]
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.support.v7.widget.LinearLayoutCompat",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 649,
+                                                                        "top": 70,
+                                                                        "right": 720,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 2,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "Opsi lainnya",
+                                                                          "className": "android.widget.ImageView",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 649,
+                                                                            "top": 70,
+                                                                            "right": 720,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": []
+                                                                        }
+                                                                      ]
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/pane_fragment_contents",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 0,
+                                                            "top": 154,
+                                                            "right": 720,
+                                                            "bottom": 1472
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/loading_layout",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 0,
+                                                                "top": 154,
+                                                                "right": 720,
+                                                                "bottom": 1472
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.youtube:id/results",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.support.v7.widget.RecyclerView",
+                                                                  "packageName": "com.google.android.youtube",
+                                                                  "bounds": {
+                                                                    "left": 0,
+                                                                    "top": 154,
+                                                                    "right": 720,
+                                                                    "bottom": 1472
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": true,
+                                                                  "index": 0,
+                                                                  "children": []
+                                                                },
+                                                                {
+                                                                  "resourceId": "com.google.android.youtube:id/load_progress",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.widget.ProgressBar",
+                                                                  "packageName": "com.google.android.youtube",
+                                                                  "bounds": {
+                                                                    "left": 311,
+                                                                    "top": 764,
+                                                                    "right": 409,
+                                                                    "bottom": 862
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 1,
+                                                                  "children": []
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "resourceId": "com.google.android.youtube:id/bottom_bar_container",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.LinearLayout",
+                                          "packageName": "com.google.android.youtube",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 1472,
+                                            "right": 720,
+                                            "bottom": 1556
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 2,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.google.android.youtube:id/pivot_bar",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.HorizontalScrollView",
+                                              "packageName": "com.google.android.youtube",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 1472,
+                                                "right": 720,
+                                                "bottom": 1556
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.LinearLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 1472,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Beranda",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 0,
+                                                        "top": 1472,
+                                                        "right": 180,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 69,
+                                                            "top": 1480,
+                                                            "right": 111,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 69,
+                                                                "top": 1480,
+                                                                "right": 111,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Beranda",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 55,
+                                                            "top": 1526,
+                                                            "right": 126,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Shorts",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 180,
+                                                        "top": 1472,
+                                                        "right": 360,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 1,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 249,
+                                                            "top": 1480,
+                                                            "right": 291,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 249,
+                                                                "top": 1480,
+                                                                "right": 291,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Shorts",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 241,
+                                                            "top": 1526,
+                                                            "right": 299,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Subscription",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 360,
+                                                        "top": 1472,
+                                                        "right": 540,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 2,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 429,
+                                                            "top": 1480,
+                                                            "right": 471,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 429,
+                                                                "top": 1480,
+                                                                "right": 471,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Subscription",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 396,
+                                                            "top": 1526,
+                                                            "right": 504,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Anda",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 540,
+                                                        "top": 1472,
+                                                        "right": 720,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 3,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 609,
+                                                            "top": 1480,
+                                                            "right": 651,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 609,
+                                                                "top": 1480,
+                                                                "right": 651,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Anda",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 606,
+                                                            "top": 1526,
+                                                            "right": 654,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

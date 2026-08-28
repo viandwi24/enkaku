@@ -65,6 +65,8 @@ function fakeDriver(overrides: Partial<RouterDriver> = {}): RouterDriver {
     inventory: async () => emptyInventory(),
     listRules: async () => [],
     doctor: async () => okDoctorReport(),
+    // Plan 134 (M99) §4.4 — nothing in this file probes; a fake that returns `unknown` is the honest default for a driver nobody asked to measure anything.
+    probeEgress: async () => ({ status: 'unknown' as const, message: 'not probed in this test' }),
     createRule: async () => {
       throw new Error('not implemented')
     },
@@ -98,10 +100,13 @@ function fakeHost(routerKv: unknown, devices: DeviceInfo[] = []): { host: Handle
 const FAKE_REQUEST = { method: 'GET', path: '/', query: {}, headers: {}, body: null, caller: { id: 'u1', role: 'admin' } }
 
 describe('registerRouterRoutes — registration table', () => {
-  test('registers exactly inventory/rules/doctor, all on script.view (§4.10: onRequest defaults to it, and none of these three write)', () => {
+  test('registers exactly inventory/rules/doctor/probe-egress, all on script.view (§4.10: onRequest defaults to it, and none of these four write)', () => {
     const { host, registered } = fakeHost(null)
     registerRouterRoutes(host)
-    expect([...registered.keys()].sort()).toEqual(['doctor', 'inventory', 'rules'])
+    // `probe-egress` (plan 134 §4.4) SENDS three ICMP packets and CHANGES
+    // nothing — no router record written, no device touched — so it belongs
+    // with the reads, not behind `plugin.runtime`.
+    expect([...registered.keys()].sort()).toEqual(['doctor', 'inventory', 'probe-egress', 'rules'])
     for (const key of Object.keys(ROUTER_ROUTES) as (keyof typeof ROUTER_ROUTES)[]) {
       expect(registered.get(ROUTER_ROUTES[key])?.opts?.permission).toBe(ROUTER_ROUTE_PERMISSIONS[key])
     }
@@ -141,9 +146,9 @@ describe('registerRouterRoutes — inventory', () => {
 
   test('returns the driver’s inventory verbatim, wrapped in ok:true', async () => {
     const inv: RouterInventory = {
-      paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true }],
+      paths: [{ id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true, wanInterface: null }],
       interfaces: [],
-      health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000 }],
+      health: [{ pathId: 'via-modem1', up: true, checkedAt: 1000, link: 'ok', gateway: 'ok', egress: 'unknown' }],
       leases: [],
     }
     const { host, registered } = fakeHost(routerKv)
@@ -329,5 +334,74 @@ describe('toRuleRow', () => {
     const row = toRuleRow(fakeRule({ comment: 'foreign' }))
     expect(row.srcAddress).toBeNull()
     expect(row.table).toBeNull()
+  })
+})
+
+/**
+ * Plan 134 (M99) §4.4 — the probe route. The property under test throughout is
+ * the plan's one rule: **a probe that could not run is `unknown`, never
+ * `fail`.** Reporting `fail` would blame a modem nobody managed to ask.
+ */
+describe('probe-egress route (plan 134 §4.4)', () => {
+  const ROUTER = { baseUrl: '10.0.0.1', username: 'admin', password: 'pw', tls: false, timeoutMs: 2000 }
+  const coreAddress: CoreAddressResult = { kind: 'derived', address: '10.0.0.5' }
+
+  async function callProbe(driver: Partial<RouterDriver>, body: unknown) {
+    const { host, registered } = fakeHost(ROUTER)
+    registerRouterRoutes(host, { createDriver: () => fakeDriver(driver), deriveCoreAddress: async () => coreAddress })
+    const handler = registered.get('probe-egress')
+    if (!handler) throw new Error('probe-egress was not registered')
+    return (await handler.handler({ ...FAKE_REQUEST, method: 'POST', body }, new AbortController().signal)) as { body: Record<string, unknown> }
+  }
+
+  test('a successful probe is reported with the driver\'s own message', async () => {
+    const response = await callProbe({ probeEgress: async () => ({ status: 'ok', message: '3/3 replies', packetLoss: 0 }) }, { wanInterface: 'wan-modem24-s2p6' })
+    expect(response.body).toEqual({ ok: true, probe: { status: 'ok', message: '3/3 replies', packetLoss: 0 } })
+  })
+
+  test('a modem that answers the router but has no upstream comes back `fail` — the #20 case', async () => {
+    const response = await callProbe({ probeEgress: async () => ({ status: 'fail', message: 'nothing came back', packetLoss: 100 }) }, { wanInterface: 'wan-modem40-s2p22' })
+    expect((response.body.probe as { status: string }).status).toBe('fail')
+  })
+
+  test('a router that cannot run the probe answers `unknown`, and the route passes that through unchanged', async () => {
+    const response = await callProbe({ probeEgress: async () => ({ status: 'unknown', message: 'this router does not serve /rest/ping' }) }, { wanInterface: 'wan-modem24-s2p6' })
+    expect((response.body.probe as { status: string }).status).toBe('unknown')
+    expect(response.body.ok).toBe(true)
+  })
+
+  test('a driver that breaks its never-throw contract degrades to a refusal, not a 500', async () => {
+    const response = await callProbe(
+      {
+        probeEgress: async () => {
+          throw new Error('boom')
+        },
+      },
+      { wanInterface: 'wan-modem24-s2p6' },
+    )
+    expect(response.body.ok).toBe(false)
+  })
+
+  test('a request with no interface is refused rather than probing something guessed', async () => {
+    const response = await callProbe({}, { wanInterface: '' })
+    expect(response.body).toMatchObject({ ok: false, code: 'E_BAD_INPUT' })
+  })
+
+  test("the operator's target reaches the driver verbatim; omitting it leaves the default to the driver", async () => {
+    const seen: [string, string | undefined][] = []
+    const record: RouterDriver['probeEgress'] = async (iface, target) => {
+      seen.push([iface, target])
+      return { status: 'ok', message: 'ok' }
+    }
+
+    await callProbe({ probeEgress: record }, { wanInterface: 'wan-modem24-s2p6', target: '1.1.1.1' })
+    await callProbe({ probeEgress: record }, { wanInterface: 'wan-modem24-s2p6' })
+
+    // The default target lives in ONE place — the driver's own
+    // `DEFAULT_PROBE_TARGET`. The route must not invent a second copy of it.
+    expect(seen).toEqual([
+      ['wan-modem24-s2p6', '1.1.1.1'],
+      ['wan-modem24-s2p6', undefined],
+    ])
   })
 })

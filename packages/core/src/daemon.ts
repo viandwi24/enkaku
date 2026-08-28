@@ -35,7 +35,7 @@ import { createTokenRoutes } from './api/tokens'
 import { createRetentionGc, type RetentionGc } from './maintenance/retention'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
-import { createArtifactRoutes } from './api/artifacts'
+import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES } from './api/artifacts'
 import { createWorkspaceFileRoutes } from './api/workspace'
 import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
@@ -3280,6 +3280,20 @@ let blobGc: BlobGc | null = null
           server = Bun.serve({
             hostname: cfg.host,
           port: cfg.port,
+          /**
+           * Without this, Bun's own default of **128 MB** applies, enforced in
+           * the transport before `fetch` below ever runs — so Hono never sees
+           * an oversized upload, no route can refuse it in words, and the
+           * browser gets a 413 with an EMPTY body. `api/artifacts.ts`'s
+           * declared 1 GB limit read as the real one and was dead above
+           * 128 MB.
+           *
+           * Found on the owner's farm, 2026-08-26: a ~210 MB APK upload failed
+           * as a bare red row with no response to inspect. See
+           * `MAX_REQUEST_BODY_BYTES` for why it sits above the route's own cap
+           * rather than equal to it.
+           */
+          maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
           ...tlsOptions,
           async fetch(req, srv) {
             const url = new URL(req.url)

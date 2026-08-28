@@ -47,6 +47,7 @@ import {
   type StoredAssignment,
 } from './api'
 import { isFirstLoad, pathOptions, useLoader, UNASSIGNED_PATH } from './bits'
+import { describeDownReason } from './paths'
 import { buildPairings, type BulkPairing, type PairingNote, type PairingRow } from './bulk-builder'
 
 /**
@@ -218,14 +219,77 @@ export interface OverDownPathSummary {
   count: number
   /** Distinct path ids the affected rows are being written onto — an `update` row names its target as `toPathId`, a `create` row as `pathId`. */
   pathIds: string[]
+  /**
+   * Plan 133 (M98) §3.3 — the same paths, each with the reason the router
+   * gave for being down. Same order as `pathIds`. `reason` is absent when the
+   * core sent none, which is exactly when the warning stays as plan 132 wrote
+   * it. Distinct from `pathIds` rather than replacing it so `groups.tsx`'s
+   * one-line variant keeps reading the simple thing it needs.
+   */
+  paths: { pathId: string; reason?: string }[]
 }
 
 /** `null` when nothing in the plan is affected — the warning must not render at all in that case. */
 export function summariseOverDownPath(rows: readonly PlanRow[]): OverDownPathSummary | null {
   const affected = overDownPathRows(rows)
   if (affected.length === 0) return null
-  const pathIds = Array.from(new Set(affected.map((row) => row.toPathId ?? row.pathId).filter((id): id is string => Boolean(id))))
-  return { count: affected.length, pathIds }
+  const paths: { pathId: string; reason?: string }[] = []
+  const seen = new Set<string>()
+  for (const row of affected) {
+    const pathId = row.toPathId ?? row.pathId
+    if (!pathId || seen.has(pathId)) continue
+    seen.add(pathId)
+    // Every row targeting one path carries the same health, so the first row
+    // that names the path is as good a source for the reason as any.
+    paths.push({ pathId, ...(row.overDownPathReason ? { reason: row.overDownPathReason } : {}) })
+  }
+  return { count: affected.length, pathIds: paths.map((p) => p.pathId), paths }
+}
+
+/**
+ * Plan 134 (M99) §3.4 / §0.4 — **two paths egressing from the same public IP.**
+ *
+ * This is the risk plan 132 §0 exists for, stated by the owner in their own
+ * words: a device egressing from an identity it should not share **risks a
+ * ban**. Until now nothing in this plugin could see it, because no per-path
+ * public IP existed anywhere in the data model — `verify-egress.ts`'s own
+ * header says exactly that.
+ *
+ * It does exist, in one place: each device's `assignment.lastPublicIp`, which
+ * `verify-egress` writes after reading a real IP-echo page from the device's
+ * own side. Grouping those by path is free — the fleet response already
+ * carries every device and its assignment — and it is the only reading here
+ * that comes from where the traffic actually leaves.
+ *
+ * Only devices that were actually verified count. A device with no reading is
+ * absent from the comparison, never grouped with the other unverified ones:
+ * forty devices sharing "no observation" is not forty devices sharing an IP,
+ * and reporting it as such would bury the one real case.
+ */
+export interface SharedPublicIp {
+  publicIp: string
+  pathIds: string[]
+}
+
+export function findSharedPublicIps(devices: readonly FleetDeviceRow[]): SharedPublicIp[] {
+  const pathsByIp = new Map<string, Set<string>>()
+  for (const device of devices) {
+    const assignment = device.assignment as { pathId?: string; lastPublicIp?: string }
+    const ip = assignment.lastPublicIp?.trim()
+    const pathId = assignment.pathId?.trim()
+    if (!ip || !pathId) continue
+    const set = pathsByIp.get(ip)
+    if (set) set.add(pathId)
+    else pathsByIp.set(ip, new Set([pathId]))
+  }
+  const out: SharedPublicIp[] = []
+  for (const [publicIp, pathIds] of pathsByIp) {
+    // Two DEVICES on ONE path sharing an IP is normal and expected — that is
+    // what a path IS. Two PATHS sharing one is the fault.
+    if (pathIds.size < 2) continue
+    out.push({ publicIp, pathIds: [...pathIds].sort() })
+  }
+  return out.sort((a, b) => a.publicIp.localeCompare(b.publicIp))
 }
 
 /**
@@ -414,6 +478,27 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                 <p className="text-[12px] font-medium text-led-warn">
                   {overDownPath.count} device{overDownPath.count === 1 ? '' : 's'} will have no internet: the assigned path is down ({overDownPath.pathIds.join(', ')}).
                 </p>
+                {/*
+                  Plan 133 (M98) §3.3 — the reason per path, when the router
+                  gave one. Two Orbits left on a factory-default subnet and a
+                  modem someone switched off both read "down" here before this;
+                  telling them apart took a session on the router's CLI. The
+                  gateway is not in the plan payload, so the wording falls back
+                  to the subnet-less phrasing — the Paths tab, which has it,
+                  names the exact subnet.
+                */}
+                {overDownPath.paths.some((p) => describeDownReason(p.reason, null)) ? (
+                  <ul className="space-y-0.5 text-[11px] leading-relaxed text-fg-muted">
+                    {overDownPath.paths.map((p) => {
+                      const why = describeDownReason(p.reason, null)
+                      return why ? (
+                        <li key={p.pathId}>
+                          <span className="readout">{p.pathId}</span> — {why}
+                        </li>
+                      ) : null
+                    })}
+                  </ul>
+                ) : null}
                 <p className="text-[11px] leading-relaxed text-fg-muted">
                   The rule is written anyway — an assignment is a hard constraint, not a preference. This is what keeps a device off any other path (and off any other IP) rather than quietly sharing
                   one it should not be on: it stays offline until the path comes back, instead of falling back to its previous route.
@@ -699,6 +784,8 @@ export function AssignmentsTab() {
   const paths = data?.paths ?? []
   const health = new Map((data?.health ?? []).map((h) => [h.pathId, h]))
   const devices = data?.devices ?? []
+  /** Plan 134 §0.4 — computed over the fleet already in hand; no extra round trip, and nothing is probed to produce it. */
+  const sharedPublicIps = findSharedPublicIps(devices)
 
   /**
    * The filter (plan 124 §4.5). This table lists EVERY enrolled device — on
@@ -861,6 +948,34 @@ export function AssignmentsTab() {
       </div>
 
       {writeError ? <ErrorState message={writeError} onRetry={() => setWriteError(null)} /> : null}
+
+      {/*
+        Plan 134 (M99) §0.4 — the one fault on this screen that is about the
+        thing the owner actually said the whole constraint model exists to
+        prevent: two paths egressing from ONE public IP means two groups are
+        sharing an identity, and the stated consequence is a ban. Rendered
+        above the table, at the top of the screen, for the same reason plan 132
+        moved its own warning above the plan list: a warning at the bottom of a
+        scrolling list is a warning nobody read.
+      */}
+      {sharedPublicIps.length > 0 ? (
+        <div className="space-y-1.5 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3">
+          <p className="text-[12px] font-medium text-led-danger">
+            {sharedPublicIps.length === 1 ? 'Two paths are egressing from one public IP.' : `${sharedPublicIps.length} public IPs are each shared by more than one path.`}
+          </p>
+          <ul className="list-inside list-disc text-[11px] leading-relaxed text-fg-muted">
+            {sharedPublicIps.map((shared) => (
+              <li key={shared.publicIp}>
+                <span className="readout">{shared.publicIp}</span> — seen from {shared.pathIds.join(', ')}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] leading-relaxed text-fg-muted">
+            Read from the devices themselves by <span className="readout">verify-egress</span>, not assumed from the router. Devices on different paths are supposed to carry different identities; two paths behind one
+            IP usually means those modems share an upstream, or one path is not steering the traffic it was assigned.
+          </p>
+        </div>
+      ) : null}
 
       {devices.length === 0 ? (
         <EmptyState title="No devices are enrolled" description="A device has to be enrolled before it can be assigned a path." />

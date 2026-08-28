@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import '@/lib/test/nav'
 import { setSearchParams } from '@/lib/test/nav'
 import { cleanup, renderWithApi } from '@/lib/test/render'
@@ -416,5 +416,67 @@ describe('BatchDetail — the device number (plan 124 §4.4 Group D)', () => {
     // whose HEADER is the literal `#`. That is a column title, not a device
     // number, and it is there whether or not any device has one.
     expect(screen.queryAllByText(/^#\d/).length).toBe(0)
+  })
+})
+
+/**
+ * Reading a batch used to mean leaving it. Every member's only control was a
+ * `next/link` to `/jobs/detail`, so checking forty members cost forty
+ * navigations out and back — and the batch's own progress unmounted each time.
+ * Reported from the owner's farm, 2026-08-28.
+ */
+function batchResponses() {
+  setSearchParams({ id: 'batch-1' })
+  return {
+    '/api/batches/batch-1': { body: { batch, jobs: [job] } },
+    '/api/devices*': { body: { items: [], nextCursor: null, total: 0 } },
+    // What the panel itself fetches once it is open.
+    [`/api/jobs/${job.jobId}`]: { body: { job: { ...job, result: { ok: true }, params: {} } } },
+    [`/api/jobs/${job.jobId}/logs`]: { body: { lines: [], truncated: false } },
+    [`/api/artifacts?jobId=${job.jobId}`]: { body: { artifacts: [] } },
+  }
+}
+
+describe('a member opens its result in place (2026-08-28)', () => {
+  test("the row's control opens the panel instead of linking away", async () => {
+    renderWithApi(<BatchDetailPage />, batchResponses())
+
+    const view = await screen.findByRole('button', { name: 'View result' })
+    // The point of the change: it is a button, not an anchor. An anchor here is
+    // a full-page navigation, which is the behaviour being replaced.
+    expect(view.tagName).toBe('BUTTON')
+    expect(screen.queryByRole('link', { name: /logs & artifacts/i })).toBeNull()
+  })
+
+  test('opening it renders the member’s own result, and a way out to the full page', async () => {
+    renderWithApi(<BatchDetailPage />, batchResponses())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View result' }))
+
+    // The sheet's own heading, and the panel inside it.
+    expect(await screen.findByText('Member result')).toBeTruthy()
+    // Nothing the panel does not carry is lost: the full page is one click away.
+    const out = await screen.findByRole('link', { name: 'Open the full job page' })
+    expect(out.getAttribute('href')).toContain('/jobs/detail?id=')
+  })
+
+  test('the batch stays mounted while a member is open — that is the whole point', async () => {
+    renderWithApi(<BatchDetailPage />, batchResponses())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View result' }))
+    await screen.findByText('Member result')
+
+    // The batch's own progress heading is still on screen behind the sheet.
+    expect(screen.getByText('progress')).toBeTruthy()
+  })
+
+  test('closing it returns to the batch with nothing else changed', async () => {
+    renderWithApi(<BatchDetailPage />, batchResponses())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View result' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to the batch' }))
+
+    await waitFor(() => expect(screen.queryByText('Member result')).toBeNull())
+    expect(screen.getByRole('button', { name: 'View result' })).toBeTruthy()
   })
 })

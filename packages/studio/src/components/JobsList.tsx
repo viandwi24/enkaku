@@ -126,10 +126,19 @@ export interface JobsListProps {
    * (`JobDetailPanel`, `components/device-popup/`) rather than linking out,
    * so the row still needs to be a real control even with `linkToDetail`
    * `false`. Called with the job's id when the script-name cell is
-   * activated; ignored unless `linkToDetail` is also `false` (a caller that
-   * still links out has no use for this). Omitted everywhere else — the
-   * Jobs page, a script's run history, a batch's members all keep linking
-   * out.
+   * activated.
+   *
+   * **Widened 2026-08-28** — it now also drives the trailing `Job` cell (the
+   * one a caller with neither `script` nor `actions` columns gets), so a
+   * BATCH's members can open their result in place too. That cell used to be a
+   * hard `next/link` to `/jobs/detail`, which is a full-page navigation away
+   * from the batch you were reading: checking forty members meant forty round
+   * trips out and back. The panel it opens carries its own link to the full
+   * page, so nothing is lost.
+   *
+   * Independent of `linkToDetail`, which still governs only the script-name
+   * cell. Omitted leaves both cells exactly as they were — the Jobs page and a
+   * script's run history are untouched.
    */
   onOpenDetail?: (jobId: string) => void
   /**
@@ -389,9 +398,15 @@ export function JobsList({
 
             {!columns.actions && !columns.script && (
               <TableCell className="text-right">
-                <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
-                  <Link href={`/jobs/detail?id=${j.jobId}`}>Logs &amp; artifacts</Link>
-                </Button>
+                {onOpenDetail ? (
+                  <Button variant="ghost" size="sm" className="h-7 text-[12px]" onClick={() => onOpenDetail(j.jobId)}>
+                    View result
+                  </Button>
+                ) : (
+                  <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
+                    <Link href={`/jobs/detail?id=${j.jobId}`}>Logs &amp; artifacts</Link>
+                  </Button>
+                )}
               </TableCell>
             )}
           </>

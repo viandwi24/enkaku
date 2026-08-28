@@ -168,6 +168,18 @@ export const IpRouteSchema = z
     gateway: z.string().optional(),
     'routing-table': z.string().optional(),
     table: z.string().optional(),
+    /**
+     * The interface/address RouterOS actually resolved the `gateway` to
+     * (plan 133 §0.2). It has always arrived through `.passthrough()`; typing
+     * it is what makes it readable.
+     *
+     * **Empty means the router cannot reach the gateway at all** — it holds no
+     * address in that gateway's subnet, so there is no interface to send
+     * through. That is a wiring/VLAN/DHCP fault on the router, and it is
+     * nothing like "the modem stopped answering", which is what an operator
+     * assumes when a path merely reads "down".
+     */
+    'immediate-gw': z.string().optional(),
     active: boolish({ absent: false, unreadable: false }),
     disabled: boolish({ absent: false, unreadable: true }),
   })
@@ -216,6 +228,47 @@ export const DhcpLeaseSchema = z
 export type DhcpLease = z.infer<typeof DhcpLeaseSchema>
 
 export const DhcpLeaseListSchema = z.array(DhcpLeaseSchema)
+
+/**
+ * `GET /rest/ip/dhcp-client` — the router's **WAN** side, one row per uplink
+ * port, and the exact opposite of {@link DhcpLeaseSchema} above (which is the
+ * LAN side: addresses this router HANDS OUT). This is the address the router
+ * RECEIVED from each modem.
+ *
+ * Plan 134 (M99) §0.3 — added because the fault behind plan 133 was legible
+ * here in one line and nowhere else without inference. Two Orbits left on the
+ * factory-default subnet printed:
+ *
+ * ```
+ * client5 wan-modem25-s2p7  192.168.8.100/24
+ * client7 wan-modem27-s2p9  192.168.8.100/24
+ * ```
+ *
+ * Two uplinks holding the identical address. Plan 133 reached the same
+ * conclusion from `immediate-gw=""` — correct, but one step downstream of the
+ * cause, and the operator still had to know what to look at.
+ *
+ * Declared per this file's header rule: only fields something actually reads,
+ * every one optional, `.passthrough()` for the rest. Nothing here may reject a
+ * row — a router with an uplink shape this build has never seen must still
+ * render its Paths tab.
+ */
+export const DhcpClientSchema = z
+  .object({
+    '.id': z.string(),
+    /** The uplink interface, e.g. `wan-modem25-s2p7`. The join key to a path's gateway subnet. */
+    interface: z.string().optional(),
+    /** As RouterOS prints it, WITH the prefix: `192.168.124.100/24`. Never assumed to be a bare address. */
+    address: z.string().optional(),
+    /** `bound` on a healthy uplink; `searching...`/`error` otherwise. Free-text — read for display, never branched on as an enum. */
+    status: z.string().optional(),
+    disabled: boolish({ absent: false, unreadable: true }),
+  })
+  .passthrough()
+
+export type DhcpClient = z.infer<typeof DhcpClientSchema>
+
+export const DhcpClientListSchema = z.array(DhcpClientSchema)
 
 /**
  * `GET /rest/system/resource` — used only for `doctor()`'s best-effort

@@ -40,7 +40,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.19",
+      "version": "0.1.30",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -220,9 +220,18 @@
         "react-dom": "^19.0.0",
       },
     },
+    "plugins/google-automation-pack": {
+      "name": "@enkaku/plugin-google",
+      "version": "0.2.0",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
     "plugins/mikrotik-routing": {
       "name": "@enkaku/plugin-mikrotik-routing",
-      "version": "0.2.0",
+      "version": "0.13.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -245,7 +254,7 @@
     },
     "plugins/proxy-manager": {
       "name": "@enkaku/plugin-proxy-manager",
-      "version": "0.9.0",
+      "version": "0.11.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -264,6 +273,15 @@
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
       "version": "1.12.0",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
+    "plugins/youtube-automation-pack": {
+      "name": "@enkaku/plugin-youtube",
+      "version": "0.1.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -316,6 +334,8 @@
 
     "@enkaku/node": ["@enkaku/node@workspace:packages/node"],
 
+    "@enkaku/plugin-google": ["@enkaku/plugin-google@workspace:plugins/google-automation-pack"],
+
     "@enkaku/plugin-mikrotik-routing": ["@enkaku/plugin-mikrotik-routing@workspace:plugins/mikrotik-routing"],
 
     "@enkaku/plugin-networking": ["@enkaku/plugin-networking@workspace:plugins/networking"],
@@ -323,6 +343,8 @@
     "@enkaku/plugin-proxy-manager": ["@enkaku/plugin-proxy-manager@workspace:plugins/proxy-manager"],
 
     "@enkaku/plugin-tiktok": ["@enkaku/plugin-tiktok@workspace:plugins/tiktok-automation-pack"],
+
+    "@enkaku/plugin-youtube": ["@enkaku/plugin-youtube@workspace:plugins/youtube-automation-pack"],
 
     "@enkaku/probe-server": ["@enkaku/probe-server@workspace:packages/probe-server"],
 

@@ -58,11 +58,36 @@ export function issuesFromError(err: unknown): Record<string, string> | undefine
  * that text already explains the specific failure better than anything
  * generic here could.
  */
+/**
+ * `requirePermission`'s own template (`packages/core/src/auth/middleware.ts`):
+ * `requires the <name> permission`. It is a permission NAME, not a sentence
+ * anyone chose to write, so it is the one `auth.forbidden` message worth
+ * replacing with plain English.
+ *
+ * It is matched EXACTLY rather than treating every 403 the same way, because
+ * the other `auth.forbidden` messages in this codebase are hand-written for
+ * an operator and each names a different fix:
+ *
+ *   "you do not have permission to run internal:install (requires device.files)"
+ *   "file transfer is disabled for this farm (transfer.enabled)"
+ *   "this device belongs to another user"
+ *
+ * Those three have three different remedies and two different people who can
+ * apply them. Collapsing them into "ask an admin" is what made an APK-install
+ * 403 on the owner's farm (2026-08-26) impossible to place without reading
+ * the core's source.
+ */
+const PERMISSION_NAME_REFUSAL = /^requires the [\w.]+ permission$/
+
 export function describeApiError(err: unknown): string {
   const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : null
-  if (code === 'auth.forbidden') return 'Your role does not allow this — ask an admin.'
-  return err instanceof Error ? err.message : String(err)
+  const message = (err instanceof Error ? err.message : String(err)).trim()
+  if (code === 'auth.forbidden' && (message === '' || PERMISSION_NAME_REFUSAL.test(message))) {
+    return 'Your role does not allow this — ask an admin.'
+  }
+  return message
 }
+
 
 /**
  * `api()` used to end its body with an unchecked cast of the response to

@@ -55,13 +55,13 @@ function makeDevice(id: string, address: string): DeviceInfo {
 function emptyInventory(overrides: Partial<RouterInventory> = {}): RouterInventory {
   return {
     paths: [
-      { id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true },
-      { id: 'via-modem2', table: 'via-modem2', gateway: '10.0.0.2', hasDefaultRoute: true },
+      { id: 'via-modem1', table: 'via-modem1', gateway: '10.0.0.1', hasDefaultRoute: true, wanInterface: null },
+      { id: 'via-modem2', table: 'via-modem2', gateway: '10.0.0.2', hasDefaultRoute: true, wanInterface: null },
     ],
     interfaces: [],
     health: [
-      { pathId: 'via-modem1', up: true, checkedAt: 1 },
-      { pathId: 'via-modem2', up: true, checkedAt: 1 },
+      { pathId: 'via-modem1', up: true, checkedAt: 1, link: 'ok', gateway: 'ok', egress: 'unknown' },
+      { pathId: 'via-modem2', up: true, checkedAt: 1, link: 'ok', gateway: 'ok', egress: 'unknown' },
     ],
     leases: [],
     ...overrides,
@@ -83,6 +83,7 @@ function fakeDriver(initialRules: RouterRule[]): RouterDriver & { calls: DriverC
     inventory: async () => emptyInventory(),
     listRules: async () => rules,
     doctor: async () => ({ reachable: true, authenticated: true, restVersion: null, rules, managedRuleCount: 0, foreignRuleCount: 0, errors: [] }),
+    probeEgress: async () => ({ status: 'unknown' as const, message: 'not probed in this test' }),
     createRule: async (rule) => {
       calls.create.push(rule)
       const id = `*${nextId++}`

@@ -1,0 +1,2590 @@
+{
+  "resourceId": "",
+  "text": "",
+  "desc": "",
+  "className": "hierarchy",
+  "packageName": "",
+  "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 0,
+    "bottom": 0
+  },
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "index": 0,
+  "children": [
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.systemui",
+      "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 70
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "com.android.systemui:id/status_bar_launch_animation_container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": []
+        },
+        {
+          "resourceId": "com.android.systemui:id/container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 1,
+          "children": []
+        },
+        {
+          "resourceId": "com.android.systemui:id/status_bar_container",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 70
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 2,
+          "children": [
+            {
+              "resourceId": "com.android.systemui:id/status_bar",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.android.systemui",
+              "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 70
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.android.systemui:id/status_bar_contents",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.systemui",
+                  "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 706,
+                    "bottom": 70
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "com.android.systemui:id/status_bar_start_side_container",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 14,
+                        "top": 0,
+                        "right": 332,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/status_bar_start_side_content",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.FrameLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 14,
+                            "top": 0,
+                            "right": 293,
+                            "bottom": 70
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/status_bar_start_side_except_heads_up",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.LinearLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 14,
+                                "top": 0,
+                                "right": 293,
+                                "bottom": 70
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/clock",
+                                  "text": "01.08",
+                                  "desc": "01.08",
+                                  "className": "android.widget.TextView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 14,
+                                    "top": 20,
+                                    "right": 98,
+                                    "bottom": 50
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": []
+                                },
+                                {
+                                  "resourceId": "com.android.systemui:id/notification_icon_area",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.widget.FrameLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 98,
+                                    "top": 0,
+                                    "right": 293,
+                                    "bottom": 70
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 1,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.android.systemui:id/notificationIcons",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.view.ViewGroup",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 98,
+                                        "top": 0,
+                                        "right": 293,
+                                        "bottom": 70
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": [
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Sistem Android:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 98,
+                                            "top": 0,
+                                            "right": 137,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 0,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Pembaruan Perangkat Lunak Motorola:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 137,
+                                            "top": 0,
+                                            "right": 176,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 1,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Setelan:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 176,
+                                            "top": 0,
+                                            "right": 215,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 2,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Pengelolaan APL latar belakang:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 215,
+                                            "top": 0,
+                                            "right": 254,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 3,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Layanan Google Play:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 254,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 4,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Google Play Store:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 267,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 5,
+                                          "children": []
+                                        },
+                                        {
+                                          "resourceId": "",
+                                          "text": "",
+                                          "desc": "Notifikasi Google:",
+                                          "className": "android.widget.ImageView",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 267,
+                                            "top": 0,
+                                            "right": 293,
+                                            "bottom": 70
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 6,
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "resourceId": "com.android.systemui:id/cutout_space_view",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.view.View",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 332,
+                        "top": 0,
+                        "right": 380,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 1,
+                      "children": []
+                    },
+                    {
+                      "resourceId": "com.android.systemui:id/status_bar_end_side_container",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 380,
+                        "top": 0,
+                        "right": 699,
+                        "bottom": 70
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 2,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/status_bar_end_side_content",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 632,
+                            "top": 0,
+                            "right": 699,
+                            "bottom": 70
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/system_icons",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.LinearLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 632,
+                                "top": 15,
+                                "right": 699,
+                                "bottom": 54
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/statusIcons",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.widget.LinearLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 637,
+                                    "top": 15,
+                                    "right": 678,
+                                    "bottom": 54
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.android.systemui:id/wifi_combo",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 637,
+                                        "top": 15,
+                                        "right": 667,
+                                        "bottom": 54
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": [
+                                        {
+                                          "resourceId": "com.android.systemui:id/wifi_group",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.LinearLayout",
+                                          "packageName": "com.android.systemui",
+                                          "bounds": {
+                                            "left": 641,
+                                            "top": 15,
+                                            "right": 667,
+                                            "bottom": 54
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 0,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.android.systemui:id/wifi_combo",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.FrameLayout",
+                                              "packageName": "com.android.systemui",
+                                              "bounds": {
+                                                "left": 641,
+                                                "top": 21,
+                                                "right": 667,
+                                                "bottom": 47
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "com.android.systemui:id/wifi_signal",
+                                                  "text": "",
+                                                  "desc": "Sinyal Wi-Fi penuh.",
+                                                  "className": "android.widget.ImageView",
+                                                  "packageName": "com.android.systemui",
+                                                  "bounds": {
+                                                    "left": 641,
+                                                    "top": 21,
+                                                    "right": 667,
+                                                    "bottom": 47
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": []
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "resourceId": "com.android.systemui:id/battery",
+                                  "text": "",
+                                  "desc": "Mengisi daya baterai, 90 persen.",
+                                  "className": "android.widget.LinearLayout",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 678,
+                                    "top": 23,
+                                    "right": 692,
+                                    "bottom": 46
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 1,
+                                  "children": [
+                                    {
+                                      "resourceId": "",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.ImageView",
+                                      "packageName": "com.android.systemui",
+                                      "bounds": {
+                                        "left": 678,
+                                        "top": 23,
+                                        "right": 692,
+                                        "bottom": 46
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceId": "com.android.systemui:id/navigation_bar_frame",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.systemui",
+      "bounds": {
+        "left": 0,
+        "top": 1556,
+        "right": 720,
+        "bottom": 1640
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "com.android.systemui:id/navigation_bar_view",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.FrameLayout",
+          "packageName": "com.android.systemui",
+          "bounds": {
+            "left": 0,
+            "top": 1556,
+            "right": 720,
+            "bottom": 1640
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": [
+            {
+              "resourceId": "com.android.systemui:id/navigation_inflater",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.android.systemui",
+              "bounds": {
+                "left": 0,
+                "top": 1556,
+                "right": 720,
+                "bottom": 1640
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.android.systemui:id/horizontal",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.FrameLayout",
+                  "packageName": "com.android.systemui",
+                  "bounds": {
+                    "left": 0,
+                    "top": 1556,
+                    "right": 720,
+                    "bottom": 1640
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "com.android.systemui:id/nav_buttons",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.android.systemui",
+                      "bounds": {
+                        "left": 14,
+                        "top": 1556,
+                        "right": 706,
+                        "bottom": 1640
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.android.systemui:id/ends_group",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 14,
+                            "top": 1556,
+                            "right": 706,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 14,
+                                "top": 1556,
+                                "right": 83,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": []
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 83,
+                                "top": 1556,
+                                "right": 221,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 1,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/back",
+                                  "text": "",
+                                  "desc": "Kembali",
+                                  "className": "android.widget.ImageView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 83,
+                                    "top": 1556,
+                                    "right": 221,
+                                    "bottom": 1640
+                                  },
+                                  "clickable": true,
+                                  "enabled": true,
+                                  "focused": true,
+                                  "index": 0,
+                                  "children": []
+                                }
+                              ]
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 498,
+                                "top": 1556,
+                                "right": 636,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 2,
+                              "children": [
+                                {
+                                  "resourceId": "com.android.systemui:id/recent_apps",
+                                  "text": "",
+                                  "desc": "Ringkasan",
+                                  "className": "android.widget.ImageView",
+                                  "packageName": "com.android.systemui",
+                                  "bounds": {
+                                    "left": 498,
+                                    "top": 1556,
+                                    "right": 636,
+                                    "bottom": 1640
+                                  },
+                                  "clickable": true,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": []
+                                }
+                              ]
+                            },
+                            {
+                              "resourceId": "",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.RelativeLayout",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 636,
+                                "top": 1556,
+                                "right": 706,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 3,
+                              "children": []
+                            }
+                          ]
+                        },
+                        {
+                          "resourceId": "com.android.systemui:id/center_group",
+                          "text": "",
+                          "desc": "",
+                          "className": "android.widget.LinearLayout",
+                          "packageName": "com.android.systemui",
+                          "bounds": {
+                            "left": 290,
+                            "top": 1556,
+                            "right": 430,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 1,
+                          "children": [
+                            {
+                              "resourceId": "com.android.systemui:id/home",
+                              "text": "",
+                              "desc": "Utama",
+                              "className": "android.widget.ImageView",
+                              "packageName": "com.android.systemui",
+                              "bounds": {
+                                "left": 290,
+                                "top": 1556,
+                                "right": 430,
+                                "bottom": 1640
+                              },
+                              "clickable": true,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "",
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.google.android.youtube",
+      "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 1640
+      },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": [
+        {
+          "resourceId": "",
+          "text": "",
+          "desc": "",
+          "className": "android.widget.LinearLayout",
+          "packageName": "com.google.android.youtube",
+          "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1640
+          },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": [
+            {
+              "resourceId": "",
+              "text": "",
+              "desc": "",
+              "className": "android.widget.FrameLayout",
+              "packageName": "com.google.android.youtube",
+              "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 1640
+              },
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "index": 0,
+              "children": [
+                {
+                  "resourceId": "com.google.android.youtube:id/action_bar_root",
+                  "text": "",
+                  "desc": "",
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.google.android.youtube",
+                  "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 1640
+                  },
+                  "clickable": false,
+                  "enabled": true,
+                  "focused": false,
+                  "index": 0,
+                  "children": [
+                    {
+                      "resourceId": "android:id/content",
+                      "text": "",
+                      "desc": "",
+                      "className": "android.widget.FrameLayout",
+                      "packageName": "com.google.android.youtube",
+                      "bounds": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 720,
+                        "bottom": 1640
+                      },
+                      "clickable": false,
+                      "enabled": true,
+                      "focused": false,
+                      "index": 0,
+                      "children": [
+                        {
+                          "resourceId": "com.google.android.youtube:id/more_drawer_container",
+                          "text": "",
+                          "desc": "",
+                          "className": "androidx.drawerlayout.widget.DrawerLayout",
+                          "packageName": "com.google.android.youtube",
+                          "bounds": {
+                            "left": 0,
+                            "top": 0,
+                            "right": 720,
+                            "bottom": 1640
+                          },
+                          "clickable": false,
+                          "enabled": true,
+                          "focused": false,
+                          "index": 0,
+                          "children": [
+                            {
+                              "resourceId": "com.google.android.youtube:id/slim_status_bar_player_container",
+                              "text": "",
+                              "desc": "",
+                              "className": "android.widget.FrameLayout",
+                              "packageName": "com.google.android.youtube",
+                              "bounds": {
+                                "left": 0,
+                                "top": 0,
+                                "right": 720,
+                                "bottom": 1640
+                              },
+                              "clickable": false,
+                              "enabled": true,
+                              "focused": false,
+                              "index": 0,
+                              "children": [
+                                {
+                                  "resourceId": "com.google.android.youtube:id/navigation_bar_divider_frame",
+                                  "text": "",
+                                  "desc": "",
+                                  "className": "android.view.ViewGroup",
+                                  "packageName": "com.google.android.youtube",
+                                  "bounds": {
+                                    "left": 0,
+                                    "top": 0,
+                                    "right": 720,
+                                    "bottom": 1556
+                                  },
+                                  "clickable": false,
+                                  "enabled": true,
+                                  "focused": false,
+                                  "index": 0,
+                                  "children": [
+                                    {
+                                      "resourceId": "com.google.android.youtube:id/global_slim_status_bar_container",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.google.android.youtube",
+                                      "bounds": {
+                                        "left": 0,
+                                        "top": 0,
+                                        "right": 720,
+                                        "bottom": 1556
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 0,
+                                      "children": []
+                                    },
+                                    {
+                                      "resourceId": "com.google.android.youtube:id/accessibility_layer_container",
+                                      "text": "",
+                                      "desc": "",
+                                      "className": "android.widget.FrameLayout",
+                                      "packageName": "com.google.android.youtube",
+                                      "bounds": {
+                                        "left": 0,
+                                        "top": 0,
+                                        "right": 720,
+                                        "bottom": 1556
+                                      },
+                                      "clickable": false,
+                                      "enabled": true,
+                                      "focused": false,
+                                      "index": 1,
+                                      "children": [
+                                        {
+                                          "resourceId": "com.google.android.youtube:id/next_gen_watch_container_layout",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.view.ViewGroup",
+                                          "packageName": "com.google.android.youtube",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 0,
+                                            "right": 720,
+                                            "bottom": 1556
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 1,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.google.android.youtube:id/watch_while_layout_coordinator_layout",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.view.ViewGroup",
+                                              "packageName": "com.google.android.youtube",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 0,
+                                                "right": 720,
+                                                "bottom": 1556
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "com.google.android.youtube:id/fab_container",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.FrameLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 0,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": []
+                                                },
+                                                {
+                                                  "resourceId": "com.google.android.youtube:id/pane_fragment_container",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.FrameLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 0,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 1,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "com.google.android.youtube:id/browse_fragment_layout_coordinator_layout",
+                                                      "text": "",
+                                                      "desc": "",
+                                                      "className": "android.widget.ScrollView",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 0,
+                                                        "top": 70,
+                                                        "right": 720,
+                                                        "bottom": 1472
+                                                      },
+                                                      "clickable": false,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/appbar_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.LinearLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 0,
+                                                            "top": 70,
+                                                            "right": 720,
+                                                            "bottom": 154
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/toolbar_container",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 0,
+                                                                "top": 70,
+                                                                "right": 720,
+                                                                "bottom": 154
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.youtube:id/toolbar",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.view.ViewGroup",
+                                                                  "packageName": "com.google.android.youtube",
+                                                                  "bounds": {
+                                                                    "left": 0,
+                                                                    "top": 70,
+                                                                    "right": 720,
+                                                                    "bottom": 154
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 1,
+                                                                  "children": [
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "Kembali ke atas",
+                                                                      "className": "android.widget.ImageButton",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 70,
+                                                                        "right": 98,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": true,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 0,
+                                                                      "children": []
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.widget.RelativeLayout",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 98,
+                                                                        "top": 70,
+                                                                        "right": 649,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 1,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "com.google.android.youtube:id/search_box",
+                                                                          "text": "",
+                                                                          "desc": "",
+                                                                          "className": "android.widget.LinearLayout",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 98,
+                                                                            "top": 70,
+                                                                            "right": 565,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": false,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "com.google.android.youtube:id/search_query",
+                                                                              "text": "eno bening",
+                                                                              "desc": "",
+                                                                              "className": "android.widget.TextView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 98,
+                                                                                "top": 84,
+                                                                                "right": 481,
+                                                                                "bottom": 140
+                                                                              },
+                                                                              "clickable": true,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": []
+                                                                            },
+                                                                            {
+                                                                              "resourceId": "com.google.android.youtube:id/search_clear",
+                                                                              "text": "",
+                                                                              "desc": "Hapus",
+                                                                              "className": "android.widget.ImageView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 481,
+                                                                                "top": 70,
+                                                                                "right": 565,
+                                                                                "bottom": 154
+                                                                              },
+                                                                              "clickable": true,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 1,
+                                                                              "children": []
+                                                                            }
+                                                                          ]
+                                                                        },
+                                                                        {
+                                                                          "resourceId": "com.google.android.youtube:id/voice_search",
+                                                                          "text": "",
+                                                                          "desc": "Penelusuran suara",
+                                                                          "className": "android.widget.ImageView",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 565,
+                                                                            "top": 70,
+                                                                            "right": 649,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 1,
+                                                                          "children": []
+                                                                        }
+                                                                      ]
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.support.v7.widget.LinearLayoutCompat",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 649,
+                                                                        "top": 70,
+                                                                        "right": 720,
+                                                                        "bottom": 154
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 2,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "Opsi lainnya",
+                                                                          "className": "android.widget.ImageView",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 649,
+                                                                            "top": 70,
+                                                                            "right": 720,
+                                                                            "bottom": 154
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": []
+                                                                        }
+                                                                      ]
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/pane_fragment_contents",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 0,
+                                                            "top": 154,
+                                                            "right": 720,
+                                                            "bottom": 1472
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/loading_layout",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.FrameLayout",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 0,
+                                                                "top": 154,
+                                                                "right": 720,
+                                                                "bottom": 1472
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": [
+                                                                {
+                                                                  "resourceId": "com.google.android.youtube:id/results",
+                                                                  "text": "",
+                                                                  "desc": "",
+                                                                  "className": "android.support.v7.widget.RecyclerView",
+                                                                  "packageName": "com.google.android.youtube",
+                                                                  "bounds": {
+                                                                    "left": 0,
+                                                                    "top": 154,
+                                                                    "right": 720,
+                                                                    "bottom": 1472
+                                                                  },
+                                                                  "clickable": false,
+                                                                  "enabled": true,
+                                                                  "focused": false,
+                                                                  "index": 0,
+                                                                  "children": [
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.view.ViewGroup",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 154,
+                                                                        "right": 720,
+                                                                        "bottom": 434
+                                                                      },
+                                                                      "clickable": true,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 0,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "Buka channel",
+                                                                          "className": "android.widget.ImageView",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 21,
+                                                                            "top": 189,
+                                                                            "right": 147,
+                                                                            "bottom": 315
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": true,
+                                                                          "index": 0,
+                                                                          "children": []
+                                                                        },
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "",
+                                                                          "className": "android.view.ViewGroup",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 21,
+                                                                            "top": 336,
+                                                                            "right": 713,
+                                                                            "bottom": 406
+                                                                          },
+                                                                          "clickable": false,
+                                                                          "enabled": false,
+                                                                          "focused": false,
+                                                                          "index": 1,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "",
+                                                                              "text": "",
+                                                                              "desc": "",
+                                                                              "className": "android.support.v7.widget.RecyclerView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 21,
+                                                                                "top": 336,
+                                                                                "right": 713,
+                                                                                "bottom": 406
+                                                                              },
+                                                                              "clickable": false,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": [
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 21,
+                                                                                    "top": 336,
+                                                                                    "right": 204,
+                                                                                    "bottom": 406
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 0,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "Subscribe ke Eno Bening.",
+                                                                                      "className": "android.view.ViewGroup",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 21,
+                                                                                        "top": 336,
+                                                                                        "right": 190,
+                                                                                        "bottom": 406
+                                                                                      },
+                                                                                      "clickable": true,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": [
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.view.ViewGroup",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 21,
+                                                                                            "top": 356,
+                                                                                            "right": 190,
+                                                                                            "bottom": 386
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 0,
+                                                                                          "children": []
+                                                                                        }
+                                                                                      ]
+                                                                                    }
+                                                                                  ]
+                                                                                },
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 204,
+                                                                                    "top": 336,
+                                                                                    "right": 448,
+                                                                                    "bottom": 406
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 1,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "Lihat Channel",
+                                                                                      "className": "android.view.ViewGroup",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 204,
+                                                                                        "top": 336,
+                                                                                        "right": 434,
+                                                                                        "bottom": 406
+                                                                                      },
+                                                                                      "clickable": true,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": []
+                                                                                    }
+                                                                                  ]
+                                                                                },
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 448,
+                                                                                    "top": 336,
+                                                                                    "right": 700,
+                                                                                    "bottom": 406
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 2,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "Komunitas",
+                                                                                      "className": "android.view.ViewGroup",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 448,
+                                                                                        "top": 336,
+                                                                                        "right": 686,
+                                                                                        "bottom": 406
+                                                                                      },
+                                                                                      "clickable": true,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": [
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.widget.ImageView",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 471,
+                                                                                            "top": 350,
+                                                                                            "right": 513,
+                                                                                            "bottom": 392
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 0,
+                                                                                          "children": []
+                                                                                        }
+                                                                                      ]
+                                                                                    }
+                                                                                  ]
+                                                                                }
+                                                                              ]
+                                                                            }
+                                                                          ]
+                                                                        }
+                                                                      ]
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.view.ViewGroup",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 434,
+                                                                        "right": 720,
+                                                                        "bottom": 1017
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 1,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "",
+                                                                          "className": "android.view.ViewGroup",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 0,
+                                                                            "top": 434,
+                                                                            "right": 720,
+                                                                            "bottom": 518
+                                                                          },
+                                                                          "clickable": false,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "",
+                                                                              "text": "",
+                                                                              "desc": "Video terbaru",
+                                                                              "className": "android.view.ViewGroup",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 28,
+                                                                                "top": 457,
+                                                                                "right": 242,
+                                                                                "bottom": 496
+                                                                              },
+                                                                              "clickable": false,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": []
+                                                                            }
+                                                                          ]
+                                                                        },
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "",
+                                                                          "className": "android.view.ViewGroup",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 0,
+                                                                            "top": 518,
+                                                                            "right": 720,
+                                                                            "bottom": 975
+                                                                          },
+                                                                          "clickable": false,
+                                                                          "enabled": false,
+                                                                          "focused": false,
+                                                                          "index": 1,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "",
+                                                                              "text": "",
+                                                                              "desc": "",
+                                                                              "className": "android.support.v7.widget.RecyclerView",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 0,
+                                                                                "top": 518,
+                                                                                "right": 720,
+                                                                                "bottom": 975
+                                                                              },
+                                                                              "clickable": false,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": [
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 14,
+                                                                                    "top": 518,
+                                                                                    "right": 677,
+                                                                                    "bottom": 975
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 0,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "Situasi GTA VI Yang Semakin Bocor - 11 menit, 45 detik -  - Eno Bening - 24 ribu x ditonton - 6 jam yang lalu - putar video",
+                                                                                      "className": "android.view.ViewGroup",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 14,
+                                                                                        "top": 518,
+                                                                                        "right": 677,
+                                                                                        "bottom": 975
+                                                                                      },
+                                                                                      "clickable": true,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": [
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.view.ViewGroup",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 28,
+                                                                                            "top": 527,
+                                                                                            "right": 663,
+                                                                                            "bottom": 884
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 0,
+                                                                                          "children": [
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "",
+                                                                                              "className": "android.widget.ImageView",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 28,
+                                                                                                "top": 527,
+                                                                                                "right": 663,
+                                                                                                "bottom": 884
+                                                                                              },
+                                                                                              "clickable": false,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 0,
+                                                                                              "children": []
+                                                                                            }
+                                                                                          ]
+                                                                                        },
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.view.ViewGroup",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 28,
+                                                                                            "top": 898,
+                                                                                            "right": 666,
+                                                                                            "bottom": 975
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 2,
+                                                                                          "children": [
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "Ketuk untuk menonton livestream, channel Eno Bening",
+                                                                                              "className": "android.view.ViewGroup",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 28,
+                                                                                                "top": 898,
+                                                                                                "right": 105,
+                                                                                                "bottom": 975
+                                                                                              },
+                                                                                              "clickable": true,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 0,
+                                                                                              "children": [
+                                                                                                {
+                                                                                                  "resourceId": "",
+                                                                                                  "text": "",
+                                                                                                  "desc": "",
+                                                                                                  "className": "android.widget.ImageView",
+                                                                                                  "packageName": "com.google.android.youtube",
+                                                                                                  "bounds": {
+                                                                                                    "left": 28,
+                                                                                                    "top": 898,
+                                                                                                    "right": 105,
+                                                                                                    "bottom": 975
+                                                                                                  },
+                                                                                                  "clickable": false,
+                                                                                                  "enabled": true,
+                                                                                                  "focused": false,
+                                                                                                  "index": 0,
+                                                                                                  "children": []
+                                                                                                },
+                                                                                                {
+                                                                                                  "resourceId": "",
+                                                                                                  "text": "",
+                                                                                                  "desc": "",
+                                                                                                  "className": "android.widget.ImageView",
+                                                                                                  "packageName": "com.google.android.youtube",
+                                                                                                  "bounds": {
+                                                                                                    "left": 35,
+                                                                                                    "top": 905,
+                                                                                                    "right": 98,
+                                                                                                    "bottom": 968
+                                                                                                  },
+                                                                                                  "clickable": false,
+                                                                                                  "enabled": true,
+                                                                                                  "focused": false,
+                                                                                                  "index": 1,
+                                                                                                  "children": []
+                                                                                                }
+                                                                                              ]
+                                                                                            },
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "",
+                                                                                              "className": "android.view.ViewGroup",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 126,
+                                                                                                "top": 898,
+                                                                                                "right": 627,
+                                                                                                "bottom": 975
+                                                                                              },
+                                                                                              "clickable": false,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 1,
+                                                                                              "children": [
+                                                                                                {
+                                                                                                  "resourceId": "",
+                                                                                                  "text": "",
+                                                                                                  "desc": "",
+                                                                                                  "className": "android.view.ViewGroup",
+                                                                                                  "packageName": "com.google.android.youtube",
+                                                                                                  "bounds": {
+                                                                                                    "left": 126,
+                                                                                                    "top": 898,
+                                                                                                    "right": 627,
+                                                                                                    "bottom": 960
+                                                                                                  },
+                                                                                                  "clickable": false,
+                                                                                                  "enabled": true,
+                                                                                                  "focused": false,
+                                                                                                  "index": 0,
+                                                                                                  "children": [
+                                                                                                    {
+                                                                                                      "resourceId": "",
+                                                                                                      "text": "",
+                                                                                                      "desc": "",
+                                                                                                      "className": "android.view.ViewGroup",
+                                                                                                      "packageName": "com.google.android.youtube",
+                                                                                                      "bounds": {
+                                                                                                        "left": 126,
+                                                                                                        "top": 898,
+                                                                                                        "right": 627,
+                                                                                                        "bottom": 928
+                                                                                                      },
+                                                                                                      "clickable": false,
+                                                                                                      "enabled": true,
+                                                                                                      "focused": false,
+                                                                                                      "index": 0,
+                                                                                                      "children": []
+                                                                                                    },
+                                                                                                    {
+                                                                                                      "resourceId": "",
+                                                                                                      "text": "",
+                                                                                                      "desc": "",
+                                                                                                      "className": "android.view.ViewGroup",
+                                                                                                      "packageName": "com.google.android.youtube",
+                                                                                                      "bounds": {
+                                                                                                        "left": 126,
+                                                                                                        "top": 928,
+                                                                                                        "right": 578,
+                                                                                                        "bottom": 960
+                                                                                                      },
+                                                                                                      "clickable": false,
+                                                                                                      "enabled": true,
+                                                                                                      "focused": false,
+                                                                                                      "index": 1,
+                                                                                                      "children": []
+                                                                                                    }
+                                                                                                  ]
+                                                                                                }
+                                                                                              ]
+                                                                                            },
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "Menu tindakan",
+                                                                                              "className": "android.widget.ImageView",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 634,
+                                                                                                "top": 898,
+                                                                                                "right": 666,
+                                                                                                "bottom": 930
+                                                                                              },
+                                                                                              "clickable": true,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 2,
+                                                                                              "children": []
+                                                                                            }
+                                                                                          ]
+                                                                                        }
+                                                                                      ]
+                                                                                    }
+                                                                                  ]
+                                                                                },
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 677,
+                                                                                    "top": 518,
+                                                                                    "right": 720,
+                                                                                    "bottom": 975
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 1,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "Ketika Meme Diseriusin - 11 menit, 10 detik -  - Eno Bening - 50 ribu x ditonton - 1 hari yang lalu - putar video",
+                                                                                      "className": "android.view.ViewGroup",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 677,
+                                                                                        "top": 518,
+                                                                                        "right": 720,
+                                                                                        "bottom": 975
+                                                                                      },
+                                                                                      "clickable": true,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": [
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.view.ViewGroup",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 691,
+                                                                                            "top": 527,
+                                                                                            "right": 720,
+                                                                                            "bottom": 884
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 0,
+                                                                                          "children": [
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "",
+                                                                                              "className": "android.widget.ImageView",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 691,
+                                                                                                "top": 527,
+                                                                                                "right": 720,
+                                                                                                "bottom": 884
+                                                                                              },
+                                                                                              "clickable": false,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 0,
+                                                                                              "children": []
+                                                                                            }
+                                                                                          ]
+                                                                                        },
+                                                                                        {
+                                                                                          "resourceId": "",
+                                                                                          "text": "",
+                                                                                          "desc": "",
+                                                                                          "className": "android.view.ViewGroup",
+                                                                                          "packageName": "com.google.android.youtube",
+                                                                                          "bounds": {
+                                                                                            "left": 691,
+                                                                                            "top": 898,
+                                                                                            "right": 720,
+                                                                                            "bottom": 975
+                                                                                          },
+                                                                                          "clickable": false,
+                                                                                          "enabled": true,
+                                                                                          "focused": false,
+                                                                                          "index": 2,
+                                                                                          "children": [
+                                                                                            {
+                                                                                              "resourceId": "",
+                                                                                              "text": "",
+                                                                                              "desc": "Ketuk untuk menonton livestream, channel Eno Bening",
+                                                                                              "className": "android.view.ViewGroup",
+                                                                                              "packageName": "com.google.android.youtube",
+                                                                                              "bounds": {
+                                                                                                "left": 691,
+                                                                                                "top": 898,
+                                                                                                "right": 720,
+                                                                                                "bottom": 975
+                                                                                              },
+                                                                                              "clickable": true,
+                                                                                              "enabled": true,
+                                                                                              "focused": false,
+                                                                                              "index": 0,
+                                                                                              "children": [
+                                                                                                {
+                                                                                                  "resourceId": "",
+                                                                                                  "text": "",
+                                                                                                  "desc": "",
+                                                                                                  "className": "android.widget.ImageView",
+                                                                                                  "packageName": "com.google.android.youtube",
+                                                                                                  "bounds": {
+                                                                                                    "left": 691,
+                                                                                                    "top": 898,
+                                                                                                    "right": 720,
+                                                                                                    "bottom": 975
+                                                                                                  },
+                                                                                                  "clickable": false,
+                                                                                                  "enabled": true,
+                                                                                                  "focused": false,
+                                                                                                  "index": 0,
+                                                                                                  "children": []
+                                                                                                },
+                                                                                                {
+                                                                                                  "resourceId": "",
+                                                                                                  "text": "",
+                                                                                                  "desc": "",
+                                                                                                  "className": "android.widget.ImageView",
+                                                                                                  "packageName": "com.google.android.youtube",
+                                                                                                  "bounds": {
+                                                                                                    "left": 698,
+                                                                                                    "top": 905,
+                                                                                                    "right": 720,
+                                                                                                    "bottom": 968
+                                                                                                  },
+                                                                                                  "clickable": false,
+                                                                                                  "enabled": true,
+                                                                                                  "focused": false,
+                                                                                                  "index": 1,
+                                                                                                  "children": []
+                                                                                                }
+                                                                                              ]
+                                                                                            }
+                                                                                          ]
+                                                                                        }
+                                                                                      ]
+                                                                                    }
+                                                                                  ]
+                                                                                }
+                                                                              ]
+                                                                            }
+                                                                          ]
+                                                                        }
+                                                                      ]
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.view.ViewGroup",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 1017,
+                                                                        "right": 720,
+                                                                        "bottom": 1060
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 2,
+                                                                      "children": []
+                                                                    },
+                                                                    {
+                                                                      "resourceId": "",
+                                                                      "text": "",
+                                                                      "desc": "",
+                                                                      "className": "android.view.ViewGroup",
+                                                                      "packageName": "com.google.android.youtube",
+                                                                      "bounds": {
+                                                                        "left": 0,
+                                                                        "top": 1060,
+                                                                        "right": 720,
+                                                                        "bottom": 1472
+                                                                      },
+                                                                      "clickable": false,
+                                                                      "enabled": true,
+                                                                      "focused": false,
+                                                                      "index": 3,
+                                                                      "children": [
+                                                                        {
+                                                                          "resourceId": "",
+                                                                          "text": "",
+                                                                          "desc": "Suka-Suka Lu Dah Youtube - 12 menit, 44 detik -  - Eno Bening - 89 ribu x ditonton - 7 hari yang lalu - putar video",
+                                                                          "className": "android.view.ViewGroup",
+                                                                          "packageName": "com.google.android.youtube",
+                                                                          "bounds": {
+                                                                            "left": 0,
+                                                                            "top": 1060,
+                                                                            "right": 720,
+                                                                            "bottom": 1472
+                                                                          },
+                                                                          "clickable": true,
+                                                                          "enabled": true,
+                                                                          "focused": false,
+                                                                          "index": 0,
+                                                                          "children": [
+                                                                            {
+                                                                              "resourceId": "",
+                                                                              "text": "",
+                                                                              "desc": "",
+                                                                              "className": "android.view.ViewGroup",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 0,
+                                                                                "top": 1060,
+                                                                                "right": 720,
+                                                                                "bottom": 1465
+                                                                              },
+                                                                              "clickable": false,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 0,
+                                                                              "children": [
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.widget.ImageView",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 0,
+                                                                                    "top": 1060,
+                                                                                    "right": 720,
+                                                                                    "bottom": 1465
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 0,
+                                                                                  "children": []
+                                                                                },
+                                                                                {
+                                                                                  "resourceId": "",
+                                                                                  "text": "",
+                                                                                  "desc": "",
+                                                                                  "className": "android.view.ViewGroup",
+                                                                                  "packageName": "com.google.android.youtube",
+                                                                                  "bounds": {
+                                                                                    "left": 0,
+                                                                                    "top": 1060,
+                                                                                    "right": 720,
+                                                                                    "bottom": 1465
+                                                                                  },
+                                                                                  "clickable": false,
+                                                                                  "enabled": true,
+                                                                                  "focused": false,
+                                                                                  "index": 1,
+                                                                                  "children": [
+                                                                                    {
+                                                                                      "resourceId": "",
+                                                                                      "text": "",
+                                                                                      "desc": "",
+                                                                                      "className": "android.widget.ImageView",
+                                                                                      "packageName": "com.google.android.youtube",
+                                                                                      "bounds": {
+                                                                                        "left": 0,
+                                                                                        "top": 1060,
+                                                                                        "right": 720,
+                                                                                        "bottom": 1465
+                                                                                      },
+                                                                                      "clickable": false,
+                                                                                      "enabled": true,
+                                                                                      "focused": false,
+                                                                                      "index": 0,
+                                                                                      "children": []
+                                                                                    }
+                                                                                  ]
+                                                                                }
+                                                                              ]
+                                                                            },
+                                                                            {
+                                                                              "resourceId": "",
+                                                                              "text": "",
+                                                                              "desc": "",
+                                                                              "className": "android.view.ViewGroup",
+                                                                              "packageName": "com.google.android.youtube",
+                                                                              "bounds": {
+                                                                                "left": 0,
+                                                                                "top": 1465,
+                                                                                "right": 720,
+                                                                                "bottom": 1472
+                                                                              },
+                                                                              "clickable": false,
+                                                                              "enabled": true,
+                                                                              "focused": false,
+                                                                              "index": 1,
+                                                                              "children": []
+                                                                            }
+                                                                          ]
+                                                                        }
+                                                                      ]
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "resourceId": "com.google.android.youtube:id/bottom_bar_container",
+                                          "text": "",
+                                          "desc": "",
+                                          "className": "android.widget.LinearLayout",
+                                          "packageName": "com.google.android.youtube",
+                                          "bounds": {
+                                            "left": 0,
+                                            "top": 1472,
+                                            "right": 720,
+                                            "bottom": 1556
+                                          },
+                                          "clickable": false,
+                                          "enabled": true,
+                                          "focused": false,
+                                          "index": 2,
+                                          "children": [
+                                            {
+                                              "resourceId": "com.google.android.youtube:id/pivot_bar",
+                                              "text": "",
+                                              "desc": "",
+                                              "className": "android.widget.HorizontalScrollView",
+                                              "packageName": "com.google.android.youtube",
+                                              "bounds": {
+                                                "left": 0,
+                                                "top": 1472,
+                                                "right": 720,
+                                                "bottom": 1556
+                                              },
+                                              "clickable": false,
+                                              "enabled": true,
+                                              "focused": false,
+                                              "index": 0,
+                                              "children": [
+                                                {
+                                                  "resourceId": "",
+                                                  "text": "",
+                                                  "desc": "",
+                                                  "className": "android.widget.LinearLayout",
+                                                  "packageName": "com.google.android.youtube",
+                                                  "bounds": {
+                                                    "left": 0,
+                                                    "top": 1472,
+                                                    "right": 720,
+                                                    "bottom": 1556
+                                                  },
+                                                  "clickable": false,
+                                                  "enabled": true,
+                                                  "focused": false,
+                                                  "index": 0,
+                                                  "children": [
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Beranda",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 0,
+                                                        "top": 1472,
+                                                        "right": 180,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 0,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 69,
+                                                            "top": 1480,
+                                                            "right": 111,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 69,
+                                                                "top": 1480,
+                                                                "right": 111,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Beranda",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 55,
+                                                            "top": 1526,
+                                                            "right": 126,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Shorts",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 180,
+                                                        "top": 1472,
+                                                        "right": 360,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 1,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 249,
+                                                            "top": 1480,
+                                                            "right": 291,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 249,
+                                                                "top": 1480,
+                                                                "right": 291,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Shorts",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 241,
+                                                            "top": 1526,
+                                                            "right": 299,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Subscription",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 360,
+                                                        "top": 1472,
+                                                        "right": 540,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 2,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 429,
+                                                            "top": 1480,
+                                                            "right": 471,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 429,
+                                                                "top": 1480,
+                                                                "right": 471,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Subscription",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 396,
+                                                            "top": 1526,
+                                                            "right": 504,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "resourceId": "",
+                                                      "text": "",
+                                                      "desc": "Anda",
+                                                      "className": "android.widget.Button",
+                                                      "packageName": "com.google.android.youtube",
+                                                      "bounds": {
+                                                        "left": 540,
+                                                        "top": 1472,
+                                                        "right": 720,
+                                                        "bottom": 1556
+                                                      },
+                                                      "clickable": true,
+                                                      "enabled": true,
+                                                      "focused": false,
+                                                      "index": 3,
+                                                      "children": [
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                                                          "text": "",
+                                                          "desc": "",
+                                                          "className": "android.widget.FrameLayout",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 609,
+                                                            "top": 1480,
+                                                            "right": 651,
+                                                            "bottom": 1522
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 0,
+                                                          "children": [
+                                                            {
+                                                              "resourceId": "com.google.android.youtube:id/image",
+                                                              "text": "",
+                                                              "desc": "",
+                                                              "className": "android.widget.ImageView",
+                                                              "packageName": "com.google.android.youtube",
+                                                              "bounds": {
+                                                                "left": 609,
+                                                                "top": 1480,
+                                                                "right": 651,
+                                                                "bottom": 1522
+                                                              },
+                                                              "clickable": false,
+                                                              "enabled": true,
+                                                              "focused": false,
+                                                              "index": 0,
+                                                              "children": []
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "resourceId": "com.google.android.youtube:id/text",
+                                                          "text": "Anda",
+                                                          "desc": "",
+                                                          "className": "android.widget.TextView",
+                                                          "packageName": "com.google.android.youtube",
+                                                          "bounds": {
+                                                            "left": 606,
+                                                            "top": 1526,
+                                                            "right": 654,
+                                                            "bottom": 1548
+                                                          },
+                                                          "clickable": false,
+                                                          "enabled": true,
+                                                          "focused": false,
+                                                          "index": 1,
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
