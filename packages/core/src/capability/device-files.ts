@@ -15,7 +15,7 @@ export const devicePush = defineCapability({
   input: PushArgsSchema.extend({ deviceId: z.string() }),
   output: PushResultSchema,
   permission: 'device.files',
-  lease: 'device',
+  activity: { kind: 'transfer' },
   deadline: 120_000,
   effect: 'write',
   description:
@@ -31,7 +31,7 @@ export const devicePull = defineCapability({
   input: PullArgsSchema.extend({ deviceId: z.string() }),
   output: PullOutput,
   permission: 'device.files',
-  lease: 'device',
+  activity: { kind: 'transfer' },
   deadline: 120_000,
   effect: 'read',
   description: 'Pull a file from an absolute path on the device into the artifact store. Returns the new artifactId.',

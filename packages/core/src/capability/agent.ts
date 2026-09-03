@@ -11,7 +11,7 @@ import { defineCapability } from './types'
  * for, message, and cascade-cancel a run, so this file enforces NOTHING
  * itself beyond "there is a current run to act from" — depth/run-count caps
  * (§3.6), the authority intersection (§3.4), the descendant/parent edge
- * checks (§4.2), and the tree lease rule (§3.7) all live in `ctx.agentTree`'s
+ * checks (§4.2), and the tree's device-lock rule (§3.7) all live in `ctx.agentTree`'s
  * implementation.
  *
  * All five share the `agent.run` permission — operating an agent (including
@@ -44,7 +44,6 @@ export const agentSpawn = defineCapability({
   }),
   output: SpawnOutput,
   permission: 'agent.run',
-  lease: 'none',
   // Generous on purpose: a `waitFor: true` call can legitimately block for as long as the PARENT's
   // own `maxRunSeconds` allows (plan 67 §3.2) — `invoke`'s deadline (plan 63 §3.4 step 6) must never
   // fire before that budget does, so this is set far above any realistic `maxRunSeconds`, not tuned
@@ -71,7 +70,6 @@ export const agentSend = defineCapability({
   input: z.object({ runId: z.string(), message: z.string().min(1) }),
   output: z.object({ queued: z.literal(true), inboxId: z.string() }),
   permission: 'agent.run',
-  lease: 'none',
   deadline: 5_000,
   effect: 'write',
   description:
@@ -89,7 +87,6 @@ export const agentReply = defineCapability({
   input: z.object({ message: z.string().min(1) }),
   output: z.object({ queued: z.literal(true), inboxId: z.string() }),
   permission: 'agent.run',
-  lease: 'none',
   deadline: 5_000,
   effect: 'write',
   description:
@@ -113,7 +110,6 @@ export const agentStatus = defineCapability({
     lastMessage: z.string().nullable(),
   }),
   permission: 'agent.run',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description: 'Check a DESCENDANT run\'s status, step count, and last message (any depth). Refused if runId is not one of your own descendants.',
@@ -128,7 +124,6 @@ export const agentCancel = defineCapability({
   input: z.object({ runId: z.string() }),
   output: z.object({ ok: z.literal(true), cancelledCount: z.number().int() }),
   permission: 'agent.run',
-  lease: 'none',
   deadline: 30_000,
   effect: 'destructive',
   description:
