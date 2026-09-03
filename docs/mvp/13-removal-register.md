@@ -201,7 +201,7 @@ Method: `rg` over `packages/ apps/ plugins/ examples/ scripts/ docs/`, excluding
 
 ## Part C — How this register is used
 
-1. Every MVP plan (numbered from 130) copies the rows it owns from Part A and Part B into its own Removed section, and the plan's acceptance includes a grep of each name returning zero hits outside its changelog.
+1. Every MVP plan (numbered from 200) copies the rows it owns from Part A and Part B into its own Removed section, and the plan's acceptance includes a grep of each name returning zero hits outside its changelog.
 2. Part B rows that no MVP plan owns (licensing, telemetry, the small exports, the two tokens, the stale docs) are collected into one housekeeping plan that runs first, so the rebuild starts from a tree with no known dead code.
 3. `packages/harness` is excluded from every deletion by the provenance check; anything unused there stays.
 4. A row is closed only by a commit that deletes it, never by a comment saying it is deprecated.

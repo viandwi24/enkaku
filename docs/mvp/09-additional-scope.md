@@ -9,7 +9,7 @@
 
 `docs/spec.md` is 220 KB, `docs/plans/` holds 129 milestone plans, and the repo rule is that the spec wins over the code. After the rebuild decided in documents 03–08, most of §10, §11, §19 and parts of §7 will contradict the shipped product, and any contributor or agent following the rule will reintroduce what was removed.
 
-Proposal: write a new, compact `docs/spec.md` from the decisions in this directory once they are final; move the current spec and every plan to `docs/archive/` as history, referenced but not authoritative; keep `docs/design.md` and update it with the CEO's new UI design. The MVP documents then become plans under `docs/plans/` again, numbered from 130, each with the "Removed" section the README requires.
+Proposal: write a new, compact `docs/spec.md` from the decisions in this directory once they are final; move the current spec and every plan to `docs/archive/` as history, referenced but not authoritative; keep `docs/design.md` and update it with the CEO's new UI design. The MVP documents then become plans under `docs/plans/` again, numbered from 200, each with the "Removed" section the README requires.
 
 ## 2. Device lifecycle reliability
 
@@ -43,7 +43,7 @@ Proposal: decide the packaging (CTO recommendation: single binary plus browser f
 
 Studio has about 170 isolated test processes taking 80 s per run, which is why `CLAUDE.md` forbids full-suite runs and records an overheating incident. The rebuild is the moment to change the shape rather than the rules:
 
-- Unit tests stay colocated and small; Studio component tests move to a single process with per-file mock hygiene instead of `--isolate`, or shrink to the components that carry logic.
+- **Decided 2026-09-03 (CEO):** Studio and `@enkaku/ui` have zero tests; the whole web suite and its DOM toolchain are deleted in plan 201. Backend tests exist only for the critical list in plan 200 §8.3 (protocol schemas and framing, policy and resolvers, migrations, queue and runs, demuxer and HID encoders, the plugin pipeline, the inspector lifecycle, toolchain verification). UI verification is typecheck, the design handoff, and an owner smoke at each wave gate.
 - One hardware smoke suite on the lab device, run by a self-hosted CI runner on every merge to main, replacing the `ENKAKU_TEST_DEVICE=1` gate that CI never exercises.
 - A full suite under two minutes on a laptop is the acceptance criterion; the "never run a full suite" rule is retired when it is met.
 

@@ -1,7 +1,7 @@
 # MVP 16 — The consolidated picture: what the MVP is, what changes, in what order
 
 > Status: written by the CTO on 2026-09-03 after documents 01–15 were reconciled with the design handoff and the CEO's corrections. **Where this document and an earlier one disagree, this one wins**; the earlier documents keep their research and history.
-> Purpose: one page an investor, a client, or a new engineer can read to know what the MVP is; one dependency order the plans from 130 onward follow.
+> Purpose: one page an investor, a client, or a new engineer can read to know what the MVP is; one dependency order the plans from 200 onward follow.
 
 ---
 

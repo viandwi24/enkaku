@@ -675,3 +675,33 @@ This plan introduces none from `docs/plans/200-mvp-program.md` §2.4. The vocabu
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+
+---
+
+## 12. Amendment 2026-09-03 — delete the Studio and `@enkaku/ui` test suites (plan 200 §8.3)
+
+Added after the CEO's decision that Studio has zero tests and backend tests cover only the critical list. This amendment is part of this plan's scope; its rows are appended to §0 and §10 below and the executor treats them like any other step.
+
+### 12.1 Step 201.A — remove the web test suites
+
+- Files deleted: every file matching `packages/studio/src/**/*.test.ts`, `packages/studio/src/**/*.test.tsx`, `packages/ui/src/**/*.test.ts`, `packages/ui/src/**/*.test.tsx`, `packages/studio/src/test/**` and any `setup`/`preload` module referenced by `packages/studio/bunfig.toml` (read the file first and list what it names), `packages/studio/src/lib/dependency-gaps.test.ts` (a cross-package guard; its assertion moves nowhere: the routes it guards are deleted by plan 207).
+- Files changed: `packages/studio/bunfig.toml` (delete the `[test]` block; delete the file if nothing else remains), `packages/studio/package.json` and `packages/ui/package.json` (delete the `test` script; remove `happy-dom`, `@testing-library/*`, `@happy-dom/*` from devDependencies; run `bun install` and commit the lockfile), root `bunfig.toml` (delete the `pathIgnorePatterns` entry for `packages/studio/**` once no test file exists there; keep `[test] root`), `.github/workflows/ci.yml` (delete the `bun run --cwd packages/studio test` and `bun run --cwd packages/ui test` steps and the plugin test steps that only exist for Studio-rendered views — read the job and list each removed line), `CLAUDE.md` (the "Commands" block: delete the two studio/ui test lines; the paragraph beginning "A bare `bun test` from the repo root never runs `packages/studio`'s tests" is replaced by one sentence: "Studio and `@enkaku/ui` have no tests (plan 200 §8.3)."; the "NEVER run a full test suite" section keeps its rule until plan 224 retires it, but its Studio examples are removed).
+- Do not: keep a single "smoke" component test; add a `vitest` or `playwright` dependency; move a Studio test into `packages/core` unless it tests logic on plan 200 §8.3's critical list (none of the existing Studio tests do; verify by reading each file's `describe` names and record the count in §11).
+- Verifiable result: `find packages/studio packages/ui -name '*.test.*' | wc -l` prints `0`; `rg -n "happy-dom|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty; `rg -n "cwd packages/studio test|cwd packages/ui test" .github CLAUDE.md package.json` → empty; `bun run typecheck` clean.
+
+### 12.2 Added §0 rows
+
+| # | Goal | Parameter | Verified by | Done |
+|---|---|---|---|---|
+| G11 | No test file exists under Studio or ui | 0 files | `find packages/studio packages/ui -name '*.test.*' \| wc -l` prints `0` | [ ] |
+| G12 | The DOM test toolchain is gone from the web packages | 0 matches | `rg -n "happy-dom\|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty | [ ] |
+| G13 | CI and CLAUDE.md no longer run or describe the web suites | 0 matches | `rg -n "cwd packages/studio test\|cwd packages/ui test" .github CLAUDE.md package.json` → empty | [ ] |
+
+### 12.3 Added §10 rows
+
+| What | Where it was | Proof |
+|---|---|---|
+| Every Studio and ui test file, the Studio test preload, the two `test` scripts | `packages/studio/**`, `packages/ui/**` | `find packages/studio packages/ui -name '*.test.*' \| wc -l` → `0` |
+| `happy-dom`, `@testing-library/*` devDependencies | both `package.json`s, `bun.lock` | `rg -n "happy-dom\|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty |
+| CI steps for the web suites; the root `pathIgnorePatterns` entry for `packages/studio/**` | `.github/workflows/ci.yml`, `bunfig.toml` | `rg -n "packages/studio" .github/workflows/ci.yml bunfig.toml` → only the `build:studio` step, if any |

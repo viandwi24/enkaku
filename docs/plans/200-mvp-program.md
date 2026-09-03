@@ -42,7 +42,9 @@ These are hard rules. A plan may add rules; it may not relax these.
 ### 2.3 Testing
 
 - `bun run typecheck` may be run freely and must be clean before the report.
-- Run **only** the test files or directories the plan's §7 names, one invocation at a time, never concurrently with another test run. Never run a bare `bun test`, never `bun run --cwd packages/studio test`. If a step cannot be tested within that scope, skip the test and say so in the report.
+- Run **only** the test files or directories the plan's §7 names, one invocation at a time, never concurrently with another test run. Never run a bare `bun test`. If a step cannot be tested within that scope, skip the test and say so in the report.
+- **Studio and `@enkaku/ui` have no tests** (decided 2026-09-03 with the CEO, §8.3). Do not write a `*.test.tsx` or any test under `packages/studio` or `packages/ui`; do not add happy-dom, testing-library, or a `[test].preload`. Logic that deserves a test lives in `packages/protocol` or `packages/core` and is tested there.
+- **Backend tests exist only for the critical list in §8.3.** A test that asserts UI copy, wiring, or a snapshot is not written; an existing one in the files you touch is deleted, not maintained.
 - Tests that need a device are gated behind `ENKAKU_TEST_DEVICE=1` and are run by the owner, not the agent, unless the plan says the lab device is attached.
 - Every process you started is dead before the report: `ps -Ao pid=,command= | grep -i "[o]penpf"` shows nothing but your shell.
 
@@ -234,3 +236,26 @@ Decided 2026-09-03 with the CEO. Executors may run in parallel and focus on writ
 | | `bash scripts/check-plan-status.sh`, `bash scripts/check-dead-code.sh` |
 
 The scoped tests are not optional: they are what turns a §0 row from a claim into evidence while five executors change shared files at once. What is deferred is the expensive part, which is also the part that once overheated the maintainer's machine (`CLAUDE.md`, "NEVER run a full test suite"). An executor that cannot scope a test to the files it touched skips it and says so in §11; it does not run a suite to compensate.
+
+### 8.3 What is tested, and what is not (decided 2026-09-03 with the CEO)
+
+The prototype's Studio suite is about 170 isolated processes, each building a DOM, about 80 s per run, and it once overheated the maintainer's machine. Most of it asserts copy and wiring on screens the MVP deletes. The MVP replaces it with three checks: `bun run typecheck`, the design handoff as the specification, and one owner smoke run on the farm at each wave gate.
+
+**Studio and `@enkaku/ui`: zero tests.** Plan 201 deletes every `packages/studio/**/*.test.ts(x)`, `packages/ui/**/*.test.ts(x)`, `packages/studio/bunfig.toml`'s `[test]` block, the happy-dom and testing-library dependencies, the `test` scripts in both `package.json`s, and the two CI steps that run them. No MVP plan adds one back.
+
+**Backend: tests only for the critical list.** A test is written for, and only for:
+
+| Area | Why it is critical |
+|---|---|
+| `packages/protocol` Zod schemas and binary framing | the wire contract between core, Studio, node, plugins |
+| activity policy matrix (205), target resolver (207), actions per-device results | the rules that decide whether something runs on a phone |
+| Drizzle migrations that rewrite rows (205, 207, 210, 211) | data already on disk |
+| queue claim SQL, heartbeat reaper, workflow orchestrator, runs (211) | job correctness under concurrency |
+| scrcpy demuxer, frame header, UHID report encoders (203, 209) | byte layouts nothing else checks |
+| plugin stage → verify → activate pipeline | the only way code reaches a farm |
+| inspector lifecycle state machine and fail-fast parser (208) | the automation bottleneck |
+| toolchain sha256 and download verification | supply chain |
+
+Not tested: HTTP route wiring, UI copy, settings section lists, log wording, anything a typecheck already proves. An existing backend test outside the list is deleted by the plan that touches its module (listed in that plan's §10).
+
+**Target:** the full backend `bun test` under 60 s on the maintainer's laptop by plan 224, at which point `CLAUDE.md`'s "never run a full suite" rule is retired and executors run their package's suite instead of scoped files.
