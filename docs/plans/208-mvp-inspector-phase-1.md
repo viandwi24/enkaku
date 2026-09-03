@@ -891,3 +891,12 @@ Expected output: empty.
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+---
+
+## 12. Amendment 2026-09-03 — testing policy (plan 200 §8.3)
+
+Studio and `@enkaku/ui` have zero tests. Two references above are superseded:
+
+- **§4.1 fixture edits**: `packages/studio/src/app/settings/page.test.tsx` and `packages/studio/src/components/AdbServerCard.test.tsx` are not edited. Plan 201 deletes them. If this plan runs before 201 has merged and one of them fails to compile because of the `streams` shape change, delete the file in this plan and record it in §11. The core fixture edits (`packages/core/src/doctor/checks/streams.test.ts`, `packages/core/src/doctor/render.test.ts`) stand: those are backend tests on plan 200 §8.3's critical list (toolchain and doctor verification).
+- **§7**: remove the two `bun test packages/studio/...` commands. The Studio side of the `pinned` stream count is verified by `bun run typecheck` and by the owner smoke already listed (the Tools page shows the pinned count beside the lane count).
